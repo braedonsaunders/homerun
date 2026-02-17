@@ -36,6 +36,25 @@ def _to_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
     return aware.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
+def _has_custom_detect_async(strategy) -> bool:
+    """Return True if *strategy* overrides detect_async from BaseStrategy.
+
+    We avoid calling the base-class default (which just delegates to sync
+    detect()) on the event loop — that would block async handlers.  Only
+    strategies that provide their own async implementation should be awaited
+    directly.
+    """
+    from services.strategies.base import BaseStrategy
+
+    method = getattr(type(strategy), "detect_async", None)
+    if method is None:
+        return False
+    # If the method is the one defined on BaseStrategy itself, it's not a
+    # custom override — fall through to the sync thread-pool path.
+    base_method = getattr(BaseStrategy, "detect_async", None)
+    return method is not base_method
+
+
 class ArbitrageScanner:
     """Main scanner that orchestrates arbitrage detection"""
 
@@ -1034,10 +1053,10 @@ class ArbitrageScanner:
                     print(f"  Prioritizer error (non-fatal, using all markets): {e}")
                     markets_to_evaluate = markets
 
-            # Run all strategies concurrently in a thread pool.
-            # strategy.detect() is synchronous CPU-bound work; running it
-            # on the event loop blocks all async handlers (including
-            # GET /api/opportunities) causing the UI to hang during scans.
+            # Run all strategies concurrently.  Strategies implementing
+            # detect_async() (I/O-bound: LLM calls, HTTP, etc.) are awaited
+            # directly on the event loop.  Sync-only strategies are dispatched
+            # to the default thread-pool executor so they don't block the loop.
             all_opportunities = []
             await self._ensure_runtime_strategies_loaded()
             loop = asyncio.get_running_loop()
@@ -1045,7 +1064,16 @@ class ArbitrageScanner:
             await self._set_activity(f"Running {len(all_strategies)} strategies...")
 
             async def _run_strategy(strategy):
-                """Run a single strategy in the default thread-pool executor."""
+                """Run a single strategy, preferring async detect if available.
+
+                Strategies that override detect_async() (e.g. those needing
+                I/O like LLM calls or HTTP requests) are awaited directly on
+                the event loop.  Strategies with only sync detect() are
+                dispatched to the default thread-pool executor so they don't
+                block the loop.
+                """
+                if _has_custom_detect_async(strategy):
+                    return strategy, await strategy.detect_async(events, markets_to_evaluate, prices)
                 return strategy, await loop.run_in_executor(None, strategy.detect, events, markets_to_evaluate, prices)
 
             results = await asyncio.gather(
@@ -1271,6 +1299,12 @@ class ArbitrageScanner:
             fast_opportunities = []
 
             async def _run_strategy(strategy):
+                if _has_custom_detect_async(strategy):
+                    return strategy, await strategy.detect_async(
+                        events_for_strategies,
+                        all_markets_for_strategies,
+                        merged_prices,
+                    )
                 return strategy, await loop.run_in_executor(
                     None,
                     strategy.detect,

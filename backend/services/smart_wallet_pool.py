@@ -837,6 +837,133 @@ class SmartWalletPoolService:
 
         return output
 
+    async def get_tracked_trader_firehose_signals(
+        self,
+        limit: int = 250,
+        min_tier: str = "WATCH",
+        include_filtered: bool = False,
+    ) -> list[dict]:
+        """Return the raw trader-signal firehose for strategy-owned filtering.
+
+        This path intentionally avoids hard filtering (tradability/crypto/source
+        qualification). Those gates are owned by the user-configurable
+        traders_confluence opportunity strategy.
+        """
+        safe_limit = max(1, int(limit))
+        tier_rank = {"WATCH": 1, "HIGH": 2, "EXTREME": 3}
+        min_rank = tier_rank.get(min_tier.upper(), 1)
+
+        async with AsyncSessionLocal() as session:
+            if include_filtered:
+                filtered_cutoff = utcnow() - timedelta(hours=24)
+                result = await session.execute(
+                    select(MarketConfluenceSignal)
+                    .where(
+                        func.coalesce(
+                            MarketConfluenceSignal.last_seen_at,
+                            MarketConfluenceSignal.detected_at,
+                        )
+                        >= filtered_cutoff
+                    )
+                    .order_by(
+                        MarketConfluenceSignal.conviction_score.desc(),
+                        MarketConfluenceSignal.last_seen_at.desc(),
+                    )
+                    .limit(max(safe_limit * 6, safe_limit + 50))
+                )
+            else:
+                result = await session.execute(
+                    select(MarketConfluenceSignal)
+                    .where(MarketConfluenceSignal.is_active == True)  # noqa: E712
+                    .order_by(
+                        MarketConfluenceSignal.conviction_score.desc(),
+                        MarketConfluenceSignal.last_seen_at.desc(),
+                    )
+                    .limit(max(safe_limit * 6, safe_limit + 50))
+                )
+            raw = list(result.scalars().all())
+
+            signals = [s for s in raw if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank]
+            if signals:
+                await self._refresh_signal_market_metadata(session=session, signals=signals)
+
+            addresses = {addr.lower() for s in signals for addr in (s.wallets or []) if isinstance(addr, str)}
+            profile_rows = await session.execute(
+                select(DiscoveredWallet).where(DiscoveredWallet.address.in_(list(addresses)))
+            )
+            profiles = {
+                w.address: {
+                    "address": w.address,
+                    "username": w.username,
+                    "rank_score": w.rank_score or 0.0,
+                    "composite_score": w.composite_score or 0.0,
+                    "quality_score": w.quality_score or 0.0,
+                    "activity_score": w.activity_score or 0.0,
+                }
+                for w in profile_rows.scalars().all()
+            }
+
+            question_market_ids: dict[str, set[str]] = {}
+            for s in signals:
+                question_norm = str(s.market_question or "").strip().lower()
+                market_id_norm = str(s.market_id or "").strip().lower()
+                if question_norm and market_id_norm:
+                    question_market_ids.setdefault(question_norm, set()).add(market_id_norm)
+
+            output: list[dict] = []
+            for s in signals:
+                top_wallets = []
+                for address in (s.wallets or [])[:8]:
+                    profile = profiles.get(address.lower())
+                    if profile:
+                        top_wallets.append(profile)
+
+                market_question = str(s.market_question or "").strip()
+                question_norm = market_question.lower()
+                distinct_market_count = len(question_market_ids.get(question_norm, set()))
+                if market_question and distinct_market_count >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD:
+                    market_question = f"Market {s.market_id}"
+                if not market_question:
+                    market_question = f"Market {s.market_id}"
+
+                output.append(
+                    {
+                        "id": s.id,
+                        "market_id": s.market_id,
+                        "market_question": market_question,
+                        "market_slug": s.market_slug,
+                        "signal_type": s.signal_type,
+                        "outcome": s.outcome,
+                        "tier": s.tier or "WATCH",
+                        "conviction_score": s.conviction_score or 0.0,
+                        "strength": s.strength or 0.0,
+                        "wallet_count": s.wallet_count or 0,
+                        "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count or 0,
+                        "unique_core_wallets": s.unique_core_wallets or 0,
+                        "weighted_wallet_score": s.weighted_wallet_score or 0.0,
+                        "window_minutes": s.window_minutes or 60,
+                        "avg_entry_price": s.avg_entry_price,
+                        "total_size": s.total_size,
+                        "net_notional": s.net_notional,
+                        "conflicting_notional": s.conflicting_notional,
+                        "market_liquidity": s.market_liquidity,
+                        "market_volume_24h": s.market_volume_24h,
+                        "first_seen_at": s.first_seen_at.isoformat() if s.first_seen_at else None,
+                        "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
+                        "detected_at": (
+                            s.detected_at.isoformat()
+                            if s.detected_at
+                            else (s.last_seen_at.isoformat() if s.last_seen_at else utcnow().isoformat())
+                        ),
+                        "is_active": bool(s.is_active),
+                        "is_tradeable": bool(s.is_active),
+                        "wallets": s.wallets or [],
+                        "top_wallets": top_wallets,
+                    }
+                )
+
+        return output[:safe_limit]
+
     async def _filter_signals_to_known_trader_sources(
         self,
         *,

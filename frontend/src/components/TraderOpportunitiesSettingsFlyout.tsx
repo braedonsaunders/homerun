@@ -151,6 +151,7 @@ export default function TraderOpportunitiesSettingsFlyout({
         <div className="p-3 space-y-3 pb-6">
           <p className="text-[11px] text-muted-foreground/70">
             These settings control which signals are displayed in the Traders opportunities feed.
+            Firehose eligibility filters are strategy-owned in the Traders Confluence Python strategy.
             Auto-trader and copy trading settings are configured in the Auto Trader flyout.
           </p>
 
@@ -227,41 +228,16 @@ export default function TraderOpportunitiesSettingsFlyout({
             </div>
           </Card>
 
-          {/* ============ INDIVIDUAL SIGNAL FEED ============ */}
+          {/* ============ STRATEGY-OWNED FIREHOSE FILTERING ============ */}
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-amber-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Individual Trade Feed</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Firehose Filtering Ownership</h4>
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <NumericField
-                label="Individual Trade Limit"
-                help="1-500"
-                value={form.individual_trade_limit}
-                onChange={(v) => setForm((prev) => ({ ...prev, individual_trade_limit: v }))}
-                min={1}
-                max={500}
-                step={1}
-              />
-              <NumericField
-                label="Min Confidence"
-                help="0.00-1.00"
-                value={form.individual_trade_min_confidence}
-                onChange={(v) => setForm((prev) => ({ ...prev, individual_trade_min_confidence: v }))}
-                min={0}
-                max={1}
-                step={0.01}
-              />
-              <NumericField
-                label="Max Age (min)"
-                help="1-1440"
-                value={form.individual_trade_max_age_minutes}
-                onChange={(v) => setForm((prev) => ({ ...prev, individual_trade_max_age_minutes: v }))}
-                min={1}
-                max={1440}
-                step={1}
-              />
-            </div>
+            <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+              Traders firehose inclusion/exclusion gates (tradability, crypto exclusion, source qualification,
+              age windows) are controlled in the <span className="text-foreground">Traders Confluence strategy config</span> below.
+            </p>
           </Card>
 
           {/* Dynamic strategy config sections from config_schema */}

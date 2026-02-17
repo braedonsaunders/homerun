@@ -586,6 +586,13 @@ export default function NewsWorkflowSettingsFlyout({
               </div>
               <Switch checked={form.require_second_source} onCheckedChange={(v) => set('require_second_source', v)} className="scale-75" disabled={!form.enabled} />
             </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium">Require LLM Verifier</p>
+                <p className="text-[10px] text-muted-foreground">When enabled, candidates must pass LLM verification. When disabled, unverified candidates pass with reduced confidence.</p>
+              </div>
+              <Switch checked={form.require_verifier} onCheckedChange={(v) => set('require_verifier', v)} className="scale-75" disabled={!form.enabled} />
+            </div>
           </Section>
 
           {/* Model Override */}

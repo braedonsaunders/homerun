@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 from sqlalchemy import select
 
@@ -26,6 +26,7 @@ from services.insider_detector import insider_detector
 from services.signal_bus import emit_tracked_trader_signals
 from services.market_cache import market_cache_service
 from services.smart_wallet_pool import smart_wallet_pool
+from services.traders_firehose_pipeline import apply_traders_firehose_strategy
 from services.wallet_intelligence import wallet_intelligence
 from services.worker_state import (
     clear_worker_run_request,
@@ -47,7 +48,6 @@ ACTIVITY_RECONCILE_INTERVAL = timedelta(minutes=2)
 POOL_RECOMPUTE_INTERVAL = timedelta(minutes=1)
 FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=20)
 INSIDER_RESCORING_INTERVAL = timedelta(minutes=10)
-TRADER_OPP_SIDE_MAP = {"all": "all", "buy": "buy", "sell": "sell"}
 # Legacy values are kept for compatibility so worker telemetry reflects
 # canonical UI filters without introducing separate insider channels.
 TRADER_OPP_SOURCE_MAP = {
@@ -57,7 +57,6 @@ TRADER_OPP_SOURCE_MAP = {
     "tracked": "tracked",
     "pool": "pool",
 }
-TRADER_OPP_MIN_TIER_MAP = {"WATCH": "WATCH", "HIGH": "HIGH", "EXTREME": "EXTREME"}
 POOL_RECOMPUTE_MODE_MAP = {"quality_only": "quality_only", "balanced": "balanced"}
 
 
@@ -77,58 +76,9 @@ def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> 
     return max(minimum, min(maximum, parsed))
 
 
-def _to_utc_naive(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except Exception:
-            return None
-        if parsed.tzinfo is None:
-            return parsed
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return None
-
-
-def _confluence_direction(signal: dict[str, Any]) -> str | None:
-    outcome = str(signal.get("outcome") or "").strip().upper()
-    if outcome == "YES":
-        return "buy_yes"
-    if outcome == "NO":
-        return "buy_no"
-
-    signal_type = str(signal.get("signal_type") or "").strip().lower()
-    if "sell" in signal_type:
-        return "buy_no"
-    if "buy" in signal_type or "accumulation" in signal_type:
-        return "buy_yes"
-    return None
-
-
-def _matches_side(side_filter: str, direction: str | None) -> bool:
-    normalized = str(side_filter or "all").strip().lower()
-    if normalized == "all":
-        return True
-    if normalized == "buy":
-        return direction == "buy_yes"
-    if normalized == "sell":
-        return direction == "buy_no"
-    return True
-
-
 async def _trader_opportunity_intent_settings() -> dict[str, Any]:
     config = {
         "source_filter": "all",
-        "min_tier": "WATCH",
-        "side_filter": "all",
         "confluence_limit": 50,
     }
     try:
@@ -138,12 +88,7 @@ async def _trader_opportunity_intent_settings() -> dict[str, Any]:
                 return config
 
             source_filter = str(row.discovery_trader_opps_source_filter or "all").strip().lower()
-            min_tier = str(row.discovery_trader_opps_min_tier or "WATCH").strip().upper()
-            side_filter = str(row.discovery_trader_opps_side_filter or "all").strip().lower()
-
             config["source_filter"] = TRADER_OPP_SOURCE_MAP.get(source_filter, "all")
-            config["min_tier"] = TRADER_OPP_MIN_TIER_MAP.get(min_tier, "WATCH")
-            config["side_filter"] = TRADER_OPP_SIDE_MAP.get(side_filter, "all")
             config["confluence_limit"] = _clamp_int(
                 row.discovery_trader_opps_confluence_limit,
                 default=50,
@@ -291,60 +236,6 @@ async def _pool_runtime_settings() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Failed to read pool runtime settings: %s", exc)
     return config
-
-
-def _rank_confluence_signal(signal: dict[str, Any]) -> tuple[float, float, float]:
-    conviction = float(signal.get("conviction_score") or 0.0)
-    wallets = float(signal.get("cluster_adjusted_wallet_count") or signal.get("wallet_count") or 0.0)
-    last_seen = _to_utc_naive(signal.get("last_seen_at") or signal.get("detected_at"))
-    last_seen_ts = last_seen.timestamp() if last_seen is not None else 0.0
-    return (conviction, wallets, last_seen_ts)
-
-
-def _filter_executable_confluence(
-    opportunities: list[dict[str, Any]],
-    *,
-    side_filter: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    eligible: list[dict[str, Any]] = []
-    for signal in opportunities:
-        market_id = str(signal.get("market_id") or "").strip()
-        if not market_id:
-            continue
-        if signal.get("is_tradeable") is False:
-            continue
-        direction = _confluence_direction(signal)
-        if not _matches_side(side_filter, direction):
-            continue
-
-        wallets = int(signal.get("cluster_adjusted_wallet_count") or signal.get("wallet_count") or 0)
-        if wallets <= 0:
-            continue
-
-        entry = signal.get("avg_entry_price")
-        if entry is not None:
-            try:
-                price = float(entry)
-            except Exception:
-                continue
-            if price < 0.0 or price > 1.0:
-                continue
-
-        eligible.append(signal)
-
-    eligible.sort(key=_rank_confluence_signal, reverse=True)
-
-    by_market: dict[str, dict[str, Any]] = {}
-    for signal in eligible:
-        market_key = str(signal.get("market_id") or "").strip().lower()
-        if not market_key or market_key in by_market:
-            continue
-        by_market[market_key] = signal
-        if len(by_market) >= limit:
-            break
-
-    return list(by_market.values())
 
 
 async def _market_cache_hygiene_settings() -> dict:
@@ -538,19 +429,18 @@ async def _run_loop() -> None:
 
             trader_intent_settings = await _trader_opportunity_intent_settings()
 
-            side_filter = trader_intent_settings["side_filter"]
             confluence_limit = int(trader_intent_settings["confluence_limit"])
 
-            confluence_scan_limit = max(250, confluence_limit * 4)
-            opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
+            confluence_scan_limit = max(250, confluence_limit * 6)
+            opportunities = await smart_wallet_pool.get_tracked_trader_firehose_signals(
                 limit=confluence_scan_limit,
-                min_tier=str(trader_intent_settings["min_tier"]),
+                min_tier="WATCH",
             )
             confluence_scanned = len(opportunities)
 
-            executable_confluence = _filter_executable_confluence(
+            executable_confluence = await apply_traders_firehose_strategy(
                 opportunities,
-                side_filter=side_filter,
+                include_filtered=False,
                 limit=confluence_limit,
             )
 

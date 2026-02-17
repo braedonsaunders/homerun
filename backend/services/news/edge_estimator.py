@@ -29,6 +29,24 @@ logger = logging.getLogger(__name__)
 
 _LLM_CALL_TIMEOUT_SECONDS = 20.0
 
+# ---------------------------------------------------------------------------
+# Confidence shaping constants
+# ---------------------------------------------------------------------------
+# Multipliers applied to raw LLM confidence based on information novelty.
+# "known" was previously 0.5 which rejected ~17% of valid findings as
+# low_confidence; 0.8 is less aggressive since markets still misprice
+# widely-known information (e.g. consensus shifts, reinterpretations).
+KNOWN_NOVELTY_CONFIDENCE_FACTOR = 0.80
+NOVELTY_CONFIDENCE_MULTIPLIERS = {
+    "breaking": 1.0,   # Just happened -- full confidence
+    "recent": 0.90,    # Hours old -- slight haircut (was 0.85)
+    "known": KNOWN_NOVELTY_CONFIDENCE_FACTOR,  # Widely known -- moderate haircut (was 0.5)
+    "stale": 0.15,     # Old news -- heavy haircut (was 0.1)
+}
+# Minimum confidence threshold after novelty adjustment; below this the
+# finding is rejected as low_confidence.
+MIN_POST_NOVELTY_CONFIDENCE = 0.20
+
 
 @dataclass
 class WorkflowFinding:
@@ -254,6 +272,20 @@ class EdgeEstimator:
             },
         }
 
+        # Include entity overlap data from pre-LLM filtering for debugging.
+        # This helps diagnose why certain article-market pairs were scored
+        # higher or lower and whether entity-type mismatches contributed.
+        entity_overlap = getattr(rc, "entity_overlap", None)
+        if entity_overlap and isinstance(entity_overlap, dict):
+            # Serialize sets to lists for JSON compatibility
+            serializable_overlap = {}
+            for k, v in entity_overlap.items():
+                if isinstance(v, set):
+                    serializable_overlap[k] = sorted(v)
+                else:
+                    serializable_overlap[k] = v
+            evidence["entity_overlap"] = serializable_overlap
+
         event_graph = {
             "event_type": event.event_type,
             "actors": event.actors,
@@ -350,10 +382,16 @@ class EdgeEstimator:
         direction = "buy_yes" if prob_yes > market_price else "buy_no"
 
         # Novelty-adjusted confidence
-        novelty_mult = {"breaking": 1.0, "recent": 0.85, "known": 0.5, "stale": 0.1}
-        confidence *= novelty_mult.get(novelty, 0.5)
+        # Uses module-level NOVELTY_CONFIDENCE_MULTIPLIERS so the factors are
+        # tunable without code changes.  The "known" factor was raised from
+        # 0.5 -> 0.8 because markets still misprice information that is
+        # "known" but whose implications haven't been fully absorbed (e.g.
+        # consensus shifts, reinterpretations of existing data).  The "recent"
+        # factor was raised from 0.85 -> 0.90 for similar reasons -- hours-old
+        # news is often still under-priced.
+        confidence *= NOVELTY_CONFIDENCE_MULTIPLIERS.get(novelty, 0.5)
         confidence = self._normalize_confidence(confidence, fallback=0.0)
-        if confidence < 0.2:
+        if confidence < MIN_POST_NOVELTY_CONFIDENCE:
             return _rejected(
                 "low_confidence",
                 reasoning=f"{reasoning} Filtered: confidence={confidence:.2f} after novelty adjustment.",

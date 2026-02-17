@@ -19,7 +19,6 @@ import {
 import { cn } from '../lib/utils'
 import {
   discoveryApi,
-  type TrackedTraderOpportunity,
   type TraderGroup,
   type TraderGroupSuggestion,
 } from '../services/discoveryApi'
@@ -28,7 +27,6 @@ import {
   getDiscoverySettings,
   updateDiscoverySettings,
   type DiscoverySettings,
-  type RecentTradeFromWallet,
 } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import {
@@ -205,166 +203,6 @@ function signalPriority(signal: UnifiedTraderSignal): number {
   return sourceCoverage + confidence + tier + recency
 }
 
-function normalizeTrackedTradeDirection(
-  trade: RecentTradeFromWallet,
-): { direction: 'BUY' | 'SELL' | null; normalizedOutcome: 'YES' | 'NO' | null } {
-  const side = String(trade.side || '').trim().toUpperCase()
-  const outcome = String(trade.outcome || '').trim().toUpperCase()
-
-  let direction: 'BUY' | 'SELL' | null = null
-  if (outcome === 'YES') {
-    direction = side === 'SELL' ? 'SELL' : 'BUY'
-  } else if (outcome === 'NO') {
-    direction = side === 'SELL' ? 'BUY' : 'SELL'
-  } else if (side === 'BUY') {
-    direction = 'BUY'
-  } else if (side === 'SELL') {
-    direction = 'SELL'
-  }
-
-  const normalizedOutcome = direction === 'BUY' ? 'YES' : direction === 'SELL' ? 'NO' : null
-  return { direction, normalizedOutcome }
-}
-
-function resolveTrackedTradeMarketId(trade: RecentTradeFromWallet): string {
-  return String(trade.market || '').trim()
-    || String(trade.market_slug || '').trim()
-    || String(trade.asset_id || '').trim()
-}
-
-function normalizeTrackedTradeAsSignal(
-  trade: RecentTradeFromWallet,
-  index: number,
-): TrackedTraderOpportunity | null {
-  const marketId = resolveTrackedTradeMarketId(trade)
-  if (!marketId) return null
-
-  const detectedDate = safeParseTime(
-    trade.timestamp_iso || trade.match_time || trade.timestamp || trade.time || trade.created_at,
-  ) || new Date()
-  const detectedAt = detectedDate.toISOString()
-
-  const { direction, normalizedOutcome } = normalizeTrackedTradeDirection(trade)
-  const rawPrice = Number(trade.price)
-  const price = Number.isFinite(rawPrice) ? Math.max(0, Math.min(1, rawPrice)) : null
-  const rawSize = Number(trade.size)
-  const size = Number.isFinite(rawSize) ? Math.max(0, rawSize) : null
-  const rawCost = Number(trade.cost)
-  const cost = Number.isFinite(rawCost)
-    ? Math.max(0, rawCost)
-    : (
-      price != null
-      && size != null
-        ? Math.max(0, price * size)
-        : null
-    )
-  const ageMinutes = Math.max(0, (Date.now() - detectedDate.getTime()) / 60_000)
-  const convictionScore = Math.round(clampNumber(80 - ageMinutes / 6, 35, 85))
-
-  const walletAddress = String(trade.wallet_address || '').trim().toLowerCase()
-  if (!walletAddress.startsWith('0x')) return null
-
-  const txHash = String(trade.transaction_hash || trade.id || '').trim()
-  const signalId = txHash
-    ? `tracked-trade:${txHash}`
-    : `tracked-trade:${walletAddress}:${marketId}:${detectedAt}:${index}`
-
-  const yesPrice = (
-    price == null
-      ? null
-      : normalizedOutcome === 'YES'
-        ? price
-        : 1 - price
-  )
-  const noPrice = (
-    price == null
-      ? null
-      : normalizedOutcome === 'NO'
-        ? price
-        : 1 - price
-  )
-
-  const isValid = Boolean(direction && price != null)
-  const validationReasons = [
-    ...(direction ? [] : ['missing_direction']),
-    ...(price == null ? ['missing_price_reference'] : []),
-  ]
-
-  return {
-    id: signalId,
-    market_id: marketId,
-    market_question: String(trade.market_title || '').trim() || marketId,
-    market_slug: trade.market_slug || trade.event_slug || null,
-    yes_price: yesPrice,
-    no_price: noPrice,
-    signal_type: direction === 'SELL' ? 'tracked_trade_sell' : 'tracked_trade_buy',
-    strength: convictionScore / 100,
-    conviction_score: convictionScore,
-    tier: 'WATCH',
-    window_minutes: 60,
-    wallet_count: 1,
-    cluster_adjusted_wallet_count: 1,
-    unique_core_wallets: 1,
-    weighted_wallet_score: 0,
-    wallets: [walletAddress],
-    outcome: normalizedOutcome,
-    avg_entry_price: price,
-    total_size: size,
-    avg_wallet_rank: null,
-    net_notional: cost,
-    conflicting_notional: 0,
-    market_liquidity: null,
-    market_volume_24h: null,
-    is_active: true,
-    first_seen_at: detectedAt,
-    last_seen_at: detectedAt,
-    detected_at: detectedAt,
-    top_wallets: [
-      {
-        address: walletAddress,
-        username: trade.wallet_username || null,
-        rank_score: 0,
-        composite_score: 0,
-        quality_score: 0,
-        activity_score: 0,
-      },
-    ],
-    source_flags: {
-      from_pool: false,
-      from_tracked_traders: true,
-      from_trader_groups: false,
-      qualified: true,
-    },
-    source_breakdown: {
-      wallets_considered: 1,
-      pool_wallets: 0,
-      tracked_wallets: 1,
-      group_wallets: 0,
-      group_count: 0,
-      group_ids: [],
-    },
-    validation: {
-      is_valid: isValid,
-      is_actionable: isValid,
-      is_tradeable: isValid,
-      checks: {
-        has_market_id: true,
-        has_wallets: true,
-        has_direction: Boolean(direction),
-        has_price_reference: price != null,
-        price_in_bounds: price != null,
-        has_qualified_source: true,
-        upstream_tradable: true,
-      },
-      reasons: validationReasons,
-    },
-    is_valid: isValid,
-    is_actionable: isValid,
-    is_tradeable: isValid,
-    validation_reasons: validationReasons,
-  }
-}
-
 export default function RecentTradesPanel({
   onNavigateToWallet,
   onOpenCopilot,
@@ -448,8 +286,6 @@ export default function RecentTradesPanel({
     ? CONFLUENCE_FETCH_LIMIT_MAX
     : Math.min(CONFLUENCE_FETCH_LIMIT_MAX, signalLimit)
   const confluenceFetchMinTier: TierFilter = showFilteredSignals ? 'WATCH' : minTier
-  const includePoolConfluence = sourceFilter === 'all' || sourceFilter === 'pool'
-  const includeTrackedIndividualTrades = sourceFilter === 'all' || sourceFilter === 'tracked'
 
   const {
     data: confluenceOpportunities = [],
@@ -463,17 +299,17 @@ export default function RecentTradesPanel({
       confluenceFetchLimit,
       confluenceFetchMinTier,
       showFilteredSignals,
-      includePoolConfluence,
+      sourceFilter,
     ],
     queryFn: () =>
       discoveryApi.getTrackedTraderOpportunities(
         confluenceFetchLimit,
         confluenceFetchMinTier,
         showFilteredSignals,
-        'pool',
+        sourceFilter,
       ),
     refetchInterval: 30000,
-    enabled: showOpportunities && includePoolConfluence,
+    enabled: showOpportunities,
   })
 
   const {
@@ -485,7 +321,7 @@ export default function RecentTradesPanel({
     queryKey: ['recent-trades-from-wallets', hoursFilter, 500],
     queryFn: () => getRecentTradesFromWallets({ limit: 500, hours: hoursFilter }),
     refetchInterval: 30000,
-    enabled: showManagement || (showOpportunities && includeTrackedIndividualTrades),
+    enabled: showManagement,
   })
 
   const {
@@ -615,52 +451,22 @@ export default function RecentTradesPanel({
   }, [showOpportunities, discoverySettings])
 
   const rawTrades = rawTradesData?.trades || []
-  const trackedIndividualSignals = useMemo(() => {
-    if (!showOpportunities || !includeTrackedIndividualTrades) return []
-
-    const normalized = rawTrades
-      .map((trade, index) => normalizeTrackedTradeAsSignal(trade, index))
-      .filter((row): row is TrackedTraderOpportunity => Boolean(row))
-      .sort((a, b) => {
-        const bTime = safeParseTime(b.detected_at || b.last_seen_at)?.getTime() || 0
-        const aTime = safeParseTime(a.detected_at || a.last_seen_at)?.getTime() || 0
-        return bTime - aTime
-      })
-
-    const deduped = new Map<string, TrackedTraderOpportunity>()
-    for (const signal of normalized) {
-      const key = signal.id
-      if (!deduped.has(key)) deduped.set(key, signal)
-      if (deduped.size >= Math.max(1, individualTradeLimit)) break
+  const opportunities = confluenceOpportunities
+  const trackedWalletsFromSignals = useMemo(() => {
+    const addresses = new Set<string>()
+    for (const signal of opportunities) {
+      for (const raw of signal.wallets || []) {
+        const address = String(raw || '').trim().toLowerCase()
+        if (address.startsWith('0x')) addresses.add(address)
+      }
     }
-    return Array.from(deduped.values())
-  }, [showOpportunities, includeTrackedIndividualTrades, rawTrades, individualTradeLimit])
-  const opportunities = useMemo(() => {
-    const merged = [
-      ...confluenceOpportunities,
-      ...trackedIndividualSignals,
-    ]
-    if (merged.length === 0) return merged
-
-    const byId = new Map<string, TrackedTraderOpportunity>()
-    for (const row of merged) {
-      const key = String(row.id || '').trim()
-      if (!key) continue
-      byId.set(key, row)
-    }
-    return Array.from(byId.values())
-  }, [confluenceOpportunities, trackedIndividualSignals])
-  const trackedWallets = rawTradesData?.tracked_wallets || 0
-  const isLoading = opportunitiesLoading || (
-    (showManagement || (showOpportunities && includeTrackedIndividualTrades))
-    && rawTradesLoading
-  )
+    return addresses.size
+  }, [opportunities])
+  const trackedWallets = rawTradesData?.tracked_wallets || trackedWalletsFromSignals
+  const isLoading = opportunitiesLoading || (showManagement && rawTradesLoading)
   const isRefetching =
     isRefetchingSignals
-    || (
-      (showManagement || (showOpportunities && includeTrackedIndividualTrades))
-      && isRefetchingRawTrades
-    )
+    || (showManagement && isRefetchingRawTrades)
 
   const sortedConfluenceSignals = useMemo(() => {
     return [...opportunities].sort((a, b) => {
@@ -826,7 +632,7 @@ export default function RecentTradesPanel({
   }, [trackedWalletActivity])
 
   const handleRefresh = () => {
-    if (showManagement || (showOpportunities && includeTrackedIndividualTrades)) {
+    if (showManagement) {
       refetchRawTrades()
     }
     if (showOpportunities) {
@@ -933,7 +739,7 @@ export default function RecentTradesPanel({
                   {showOpportunities && showManagement
                     ? 'Tracked traders, trader groups, and discovery confluence from high-quality discovered wallets'
                     : showOpportunities
-                      ? 'Pool confluence plus individual trades from tracked and grouped traders'
+                      ? 'Strategy-filtered trader firehose confluence from tracked wallets, groups, and pool members'
                       : groupsOnlyManagement
                         ? 'Create, track, and manage discovery trader groups'
                         : 'Tracked trader lists, group management, and monitoring controls'}

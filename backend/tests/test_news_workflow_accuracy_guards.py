@@ -198,16 +198,39 @@ def test_require_verifier_rejects_non_llm_rerank_candidates():
         used_llm=False,
     )
 
-    verified, rejected = orchestrator._split_verified_candidates(
+    # Case 1: LLM was NOT requested (budget skip) -> penalized, not rejected.
+    verified, penalized, rejected = orchestrator._split_verified_candidates(
         article=article,
         event=event,
         reranked=[reranked],
+        llm_was_requested=False,
     )
-
     assert verified == []
-    assert len(rejected) == 1
-    reasons = rejected[0].evidence.get("rejection_reasons", [])
-    assert reasons == ["verifier_unavailable"]
+    assert len(penalized) == 1
+    assert rejected == []
+    # Penalized candidates get a 0.7x confidence penalty and a tag.
+    assert penalized[0].rerank_score == reranked.rerank_score  # Already applied in-place
+    assert "unverified_budget_skip" in penalized[0].rationale
+
+    # Case 2: LLM WAS requested but candidate not scored -> hard rejection.
+    reranked2 = RerankedCandidate(
+        candidate=candidate,
+        relevance=0.36,
+        rationale="Retrieval score (LLM unavailable)",
+        rerank_score=0.36,
+        used_llm=False,
+    )
+    verified2, penalized2, rejected2 = orchestrator._split_verified_candidates(
+        article=article,
+        event=event,
+        reranked=[reranked2],
+        llm_was_requested=True,
+    )
+    assert verified2 == []
+    assert penalized2 == []
+    assert len(rejected2) == 1
+    reasons = rejected2[0].evidence.get("rejection_reasons", [])
+    assert reasons == ["verifier_failed"]
 
 
 def test_edge_estimator_records_rejection_when_llm_not_used():

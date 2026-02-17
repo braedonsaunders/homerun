@@ -17,6 +17,7 @@ from models.database import (
     NewsWorkflowFinding,
     NewsWorkflowSnapshot,
 )
+from services.event_bus import event_bus
 from services.market_tradability import get_market_tradability_map
 from services.news.rss_config import (
     default_custom_rss_feeds,
@@ -114,6 +115,29 @@ async def write_news_snapshot(
         row.budget_remaining_usd = status.get("budget_remaining")
     row.stats_json = stats if stats is not None else (status.get("stats") or {})
     await session.commit()
+
+    # Publish news events so the broadcaster can relay immediately.
+    try:
+        news_status_data = {
+            "running": bool(status.get("running", True)),
+            "enabled": bool(status.get("enabled", True)),
+            "interval_seconds": int(status.get("interval_seconds", 120)),
+            "last_scan": status.get("last_scan"),
+            "next_scan": status.get("next_scan"),
+            "current_activity": status.get("current_activity"),
+            "last_error": status.get("last_error"),
+            "degraded_mode": bool(status.get("degraded_mode", False)),
+        }
+        await event_bus.publish("news_workflow_status", news_status_data)
+        resolved_stats = stats if stats is not None else (status.get("stats") or {})
+        await event_bus.publish("news_workflow_update", {
+            "status": news_status_data,
+            "findings": int(resolved_stats.get("findings", 0) or 0),
+            "intents": int(resolved_stats.get("intents", 0) or 0),
+            "pending_intents": 0,
+        })
+    except Exception:
+        pass  # fire-and-forget
 
 
 async def read_news_snapshot(session: AsyncSession) -> dict[str, Any]:
@@ -366,6 +390,14 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
         ):
             db.news_workflow_max_edge_evals_per_article = 6
             mutated = True
+        # Lift overly strict edge/confidence defaults that caused zero
+        # actionable findings in most cycles.
+        if getattr(db, "news_workflow_min_edge_percent", None) in (None, 8.0):
+            db.news_workflow_min_edge_percent = 5.0
+            mutated = True
+        if getattr(db, "news_workflow_min_confidence", None) in (None, 0.6):
+            db.news_workflow_min_confidence = 0.45
+            mutated = True
         raw_custom_feeds = getattr(db, "news_rss_feeds_json", None)
         existing_custom_feeds = normalize_custom_rss_feeds(raw_custom_feeds) if raw_custom_feeds else []
         merged_custom_feeds = merge_custom_rss_feeds(existing_custom_feeds)
@@ -410,8 +442,12 @@ async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
         "market_max_days_to_resolution": int(getattr(db, "news_workflow_market_max_days_to_resolution", 365) or 365),
         "min_keyword_signal": float(getattr(db, "news_workflow_min_keyword_signal", 0.04) or 0.04),
         "min_semantic_signal": float(getattr(db, "news_workflow_min_semantic_signal", 0.05) or 0.05),
-        "min_edge_percent": float(getattr(db, "news_workflow_min_edge_percent", 8.0) or 8.0),
-        "min_confidence": float(getattr(db, "news_workflow_min_confidence", 0.6) or 0.6),
+        # min_edge_percent: 5% edge covers fees + slippage and is meaningful
+        # in prediction markets.  Previous 8% default filtered too aggressively.
+        "min_edge_percent": float(getattr(db, "news_workflow_min_edge_percent", 5.0) or 5.0),
+        # min_confidence: 0.45 allows moderate-confidence news signals through.
+        # News edges carry inherent uncertainty; 0.6 was too strict.
+        "min_confidence": float(getattr(db, "news_workflow_min_confidence", 0.45) or 0.45),
         "require_second_source": bool(getattr(db, "news_workflow_require_second_source", False)),
         "orchestrator_enabled": bool(getattr(db, "news_workflow_orchestrator_enabled", True)),
         "orchestrator_min_edge": float(getattr(db, "news_workflow_orchestrator_min_edge", 10.0) or 10.0),

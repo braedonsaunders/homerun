@@ -137,6 +137,43 @@ def _base_signal() -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
+async def test_reconcile_orphan_open_orders_routes_paper_and_non_paper(monkeypatch):
+    rows = [
+        SimpleNamespace(trader_id="orphan-paper", mode_key="paper", count=2),
+        SimpleNamespace(trader_id="orphan-live", mode_key="live", count=1),
+    ]
+
+    class _Result:
+        def all(self):
+            return rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result()
+
+    reconcile_mock = AsyncMock(return_value={"closed": 2})
+    cleanup_mock = AsyncMock(return_value={"updated": 1})
+    sync_mock = AsyncMock(return_value={})
+    event_mock = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "cleanup_trader_open_orders", cleanup_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", event_mock)
+
+    summary = await trader_orchestrator_worker._reconcile_orphan_open_orders(_Session())
+
+    assert summary["traders_seen"] == 2
+    assert summary["rows_seen"] == 2
+    assert summary["paper_closed"] == 2
+    assert summary["non_paper_cancelled"] == 1
+    reconcile_mock.assert_awaited_once()
+    cleanup_mock.assert_awaited_once()
+    sync_mock.assert_awaited_once()
+    event_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_run_trader_once_blocks_stacking_when_allow_averaging_false(monkeypatch):
     signal = _base_signal()
     decisions: list[dict] = []

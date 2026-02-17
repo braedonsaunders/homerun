@@ -21,6 +21,7 @@ from models.database import (
     OpportunityEvent,
 )
 from models.opportunity import ArbitrageOpportunity, OpportunityFilter
+from services.event_bus import event_bus
 from services.market_tradability import get_market_tradability_map
 from utils.utcnow import utcnow
 
@@ -121,6 +122,24 @@ async def write_scanner_snapshot(
         row.market_history_json = market_history
     await _persist_incremental_state(session, payload, status, last_scan)
     await session.commit()
+
+    # Publish events so the broadcaster can relay immediately.
+    try:
+        scanner_status = {
+            "running": status.get("running", True),
+            "enabled": status.get("enabled", True),
+            "interval_seconds": status.get("interval_seconds", 60),
+            "last_scan": status.get("last_scan"),
+            "opportunities_count": len(opportunities),
+            "current_activity": status.get("current_activity"),
+        }
+        await event_bus.publish("scanner_status", scanner_status)
+        await event_bus.publish("opportunities_update", {
+            "count": len(opportunities),
+            "source": "scanner_snapshot_write",
+        })
+    except Exception:
+        pass  # fire-and-forget
 
 
 async def _persist_incremental_state(
@@ -278,6 +297,12 @@ async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
         row.current_activity = activity
         row.updated_at = utcnow()
     await session.commit()
+
+    # Publish activity change event.
+    try:
+        await event_bus.publish("scanner_activity", {"activity": activity})
+    except Exception:
+        pass  # fire-and-forget
 
 
 async def read_scanner_snapshot(

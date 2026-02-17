@@ -3,7 +3,14 @@ Plugin Loader
 
 Dynamically loads user-written strategy plugins from source code stored in
 the database. Each plugin is a Python file that defines a class extending
-BaseStrategy with a detect() method — exactly like the built-in strategies.
+BaseStrategy with a detect() or detect_async() method.
+
+Plugins may implement either:
+  - detect()       -- synchronous, executed in a thread-pool executor.
+  - detect_async() -- async (preferred for I/O-bound work like LLM calls,
+                      HTTP requests, or DB queries). Awaited directly on
+                      the event loop by the scanner.
+  - Both           -- detect_async() takes priority at runtime.
 
 The loader validates, compiles, and instantiates plugins at runtime, making
 them available to the scanner alongside the built-in strategies.
@@ -29,6 +36,10 @@ PLUGIN_TEMPLATE = '''"""
 Plugin: My Custom Strategy
 
 Describe what your strategy does here. This docstring is for your reference.
+
+Implement detect() for synchronous strategies, or detect_async() for
+strategies that need async I/O (LLM calls, HTTP requests, etc.).
+If you implement detect_async(), it takes priority over detect().
 """
 
 from models import Market, Event, ArbitrageOpportunity
@@ -299,12 +310,21 @@ def _find_strategy_class(tree: ast.AST) -> Optional[str]:
 
 
 def _check_detect_method(tree: ast.AST, class_name: str) -> bool:
-    """Check that the strategy class has a detect method."""
+    """Check that the strategy class has a detect or detect_async method.
+
+    Plugins may implement either:
+    * ``detect()``        -- synchronous, run in a thread-pool executor.
+    * ``detect_async()``  -- async (preferred for I/O-bound strategies).
+    * Both                -- detect_async takes priority at runtime.
+
+    The base class provides a default ``detect_async`` that delegates to
+    ``detect()``, so defining either one is sufficient.
+    """
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if item.name == "detect":
+                    if item.name in ("detect", "detect_async"):
                         return True
     return False
 
@@ -378,12 +398,13 @@ def validate_plugin_source(source_code: str) -> dict:
         return result
     result["class_name"] = class_name
 
-    # 4. Check detect() method
+    # 4. Check detect() or detect_async() method
     if not _check_detect_method(tree, class_name):
         result["errors"].append(
-            f"Class '{class_name}' must implement a detect() method. "
-            f"This method receives (events, markets, prices) and returns "
-            f"a list of ArbitrageOpportunity objects."
+            f"Class '{class_name}' must implement detect() or detect_async(). "
+            f"Use detect() for synchronous strategies or detect_async() "
+            f"(preferred) for async I/O-bound strategies. Both receive "
+            f"(events, markets, prices) and return a list of ArbitrageOpportunity objects."
         )
         return result
 

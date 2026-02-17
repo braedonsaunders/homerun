@@ -49,7 +49,12 @@ class TradersConfluenceStrategy(BaseStrategy):
         "min_wallet_count": 2,
         "max_entry_price": 0.85,
         "risk_base_score": 0.40,
+        "firehose_require_tradable_market": True,
+        "firehose_exclude_crypto_markets": True,
+        "firehose_require_qualified_source": True,
+        "firehose_max_age_minutes": 180,
     }
+    default_config = dict(DEFAULT_CONFIG)
 
     TIER_ORDER = {"low": 0, "medium": 1, "high": 2, "extreme": 3}
 
@@ -63,6 +68,226 @@ class TradersConfluenceStrategy(BaseStrategy):
             for key in self.DEFAULT_CONFIG:
                 if key in config:
                     self._config[key] = config[key]
+
+    def _effective_config(self) -> dict:
+        cfg = dict(self.DEFAULT_CONFIG)
+        if isinstance(self._config, dict):
+            cfg.update(self._config)
+        runtime_cfg = getattr(self, "config", None)
+        if isinstance(runtime_cfg, dict):
+            cfg.update(runtime_cfg)
+        return cfg
+
+    @staticmethod
+    def _to_bool(value: object, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    @staticmethod
+    def _safe_float(value: object, default: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            return default
+        if parsed != parsed or parsed in (float("inf"), float("-inf")):
+            return default
+        return parsed
+
+    @staticmethod
+    def _has_direction(signal: dict) -> bool:
+        outcome = str(signal.get("outcome") or "").strip().upper()
+        if outcome in {"YES", "NO"}:
+            return True
+        signal_type = str(signal.get("signal_type") or "").strip().lower()
+        return "buy" in signal_type or "sell" in signal_type or "accumulation" in signal_type
+
+    @staticmethod
+    def _price_checks(signal: dict) -> tuple[bool, bool]:
+        prices = []
+        for key in ("avg_entry_price", "entry_price", "yes_price", "no_price"):
+            raw = signal.get(key)
+            if raw is None:
+                continue
+            try:
+                parsed = float(raw)
+            except Exception:
+                continue
+            prices.append(parsed)
+        if not prices:
+            return False, False
+        return True, all(0.0 <= price <= 1.0 for price in prices)
+
+    @staticmethod
+    def _confidence(signal: dict) -> float:
+        direct = signal.get("firehose_confidence")
+        if direct is not None:
+            return max(0.0, min(1.0, TradersConfluenceStrategy._safe_float(direct, 0.0)))
+
+        strength = signal.get("strength")
+        if strength is not None:
+            return max(0.0, min(1.0, TradersConfluenceStrategy._safe_float(strength, 0.0)))
+
+        conviction = TradersConfluenceStrategy._safe_float(signal.get("conviction_score"), 0.0)
+        if conviction > 1.0:
+            conviction = conviction / 100.0
+        return max(0.0, min(1.0, conviction))
+
+    @staticmethod
+    def _tier_value(tier: object) -> int:
+        normalized = str(tier or "watch").strip().lower()
+        return TradersConfluenceStrategy.TIER_ORDER.get(normalized, 0)
+
+    def evaluate_firehose_signal(
+        self,
+        signal: dict,
+        *,
+        cfg: Optional[dict] = None,
+    ) -> tuple[bool, list[str], dict[str, bool]]:
+        """Evaluate one traders firehose row.
+
+        This gate is the source of truth for Traders opportunities filtering.
+        """
+        config = cfg or self._effective_config()
+        checks: dict[str, bool] = {}
+        reasons: list[str] = []
+
+        market_id = str(signal.get("market_id") or "").strip()
+        checks["has_market_id"] = bool(market_id)
+        if not checks["has_market_id"]:
+            reasons.append("missing_market_id")
+
+        wallets = signal.get("wallets") or []
+        checks["has_wallets"] = bool(wallets)
+        if not checks["has_wallets"]:
+            reasons.append("missing_wallets")
+
+        checks["has_direction"] = self._has_direction(signal)
+        if not checks["has_direction"]:
+            reasons.append("missing_direction")
+
+        has_price_reference, price_in_bounds = self._price_checks(signal)
+        checks["has_price_reference"] = has_price_reference
+        checks["price_in_bounds"] = price_in_bounds
+        if not has_price_reference:
+            reasons.append("missing_price_reference")
+        elif not price_in_bounds:
+            reasons.append("price_out_of_bounds")
+
+        source_flags = signal.get("source_flags") or {}
+        qualified = bool(source_flags.get("qualified", True))
+        require_qualified = self._to_bool(config.get("firehose_require_qualified_source"), True)
+        checks["has_qualified_source"] = qualified or (not require_qualified)
+        if require_qualified and not qualified:
+            reasons.append("unqualified_wallet_source")
+
+        upstream_tradable = bool(signal.get("firehose_market_tradable", signal.get("is_tradeable", True)))
+        require_tradable = self._to_bool(config.get("firehose_require_tradable_market"), True)
+        checks["upstream_tradable"] = upstream_tradable or (not require_tradable)
+        if require_tradable and not upstream_tradable:
+            reasons.append("market_not_tradable")
+
+        is_crypto = bool(signal.get("firehose_is_crypto", False))
+        exclude_crypto = self._to_bool(config.get("firehose_exclude_crypto_markets"), True)
+        checks["not_crypto_market"] = (not is_crypto) or (not exclude_crypto)
+        if exclude_crypto and is_crypto:
+            reasons.append("crypto_market_excluded")
+
+        max_age_minutes = self._safe_float(config.get("firehose_max_age_minutes"), 0.0)
+        age_minutes = self._safe_float(signal.get("firehose_age_minutes"), 0.0)
+        checks["within_age_limit"] = max_age_minutes <= 0 or age_minutes <= max_age_minutes
+        if max_age_minutes > 0 and age_minutes > max_age_minutes:
+            reasons.append("signal_too_old")
+
+        confidence = self._confidence(signal)
+        min_conf = self._safe_float(config.get("min_confidence"), 0.0)
+        checks["meets_min_confidence"] = confidence >= min_conf
+        if confidence < min_conf:
+            reasons.append("confidence_below_threshold")
+
+        min_tier = self._tier_value(config.get("min_tier", "high"))
+        signal_tier = self._tier_value(signal.get("tier", "watch"))
+        checks["meets_min_tier"] = signal_tier >= min_tier
+        if signal_tier < min_tier:
+            reasons.append("tier_below_threshold")
+
+        min_wallet_count = max(1, int(self._safe_float(config.get("min_wallet_count"), 2)))
+        wallet_count = int(self._safe_float(signal.get("cluster_adjusted_wallet_count"), 0))
+        if wallet_count <= 0:
+            wallet_count = int(self._safe_float(signal.get("wallet_count"), 0))
+        checks["meets_min_wallet_count"] = wallet_count >= min_wallet_count
+        if wallet_count < min_wallet_count:
+            reasons.append("insufficient_wallet_count")
+
+        max_entry_price = self._safe_float(config.get("max_entry_price"), 1.0)
+        entry_price = signal.get("avg_entry_price")
+        if entry_price is None:
+            entry_price = signal.get("entry_price")
+        parsed_entry = self._safe_float(entry_price, 1.0)
+        checks["entry_price_within_bounds"] = parsed_entry <= max_entry_price
+        if parsed_entry > max_entry_price:
+            reasons.append("entry_price_too_high")
+
+        passed = len(reasons) == 0
+        return passed, reasons, checks
+
+    def apply_firehose_filters(
+        self,
+        signals: list[dict],
+        *,
+        include_filtered: bool = False,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        """Filter and annotate traders firehose rows for UI/worker consumption."""
+        cfg = self._effective_config()
+        output: list[dict] = []
+
+        for signal in signals:
+            if not isinstance(signal, dict):
+                continue
+            row = dict(signal)
+            passed, reasons, checks = self.evaluate_firehose_signal(row, cfg=cfg)
+            row["validation"] = {
+                "is_valid": passed,
+                "is_actionable": passed,
+                "is_tradeable": passed,
+                "checks": checks,
+                "reasons": list(reasons),
+            }
+            row["is_valid"] = passed
+            row["is_actionable"] = passed
+            row["is_tradeable"] = passed
+            row["validation_reasons"] = list(reasons)
+
+            if passed or include_filtered:
+                output.append(row)
+
+        output.sort(
+            key=lambda signal: (
+                self._safe_float(signal.get("conviction_score"), 0.0),
+                self._safe_float(
+                    signal.get("cluster_adjusted_wallet_count", signal.get("wallet_count")),
+                    0.0,
+                ),
+                str(signal.get("last_seen_at") or signal.get("detected_at") or ""),
+            ),
+            reverse=True,
+        )
+
+        if limit is not None:
+            try:
+                safe_limit = max(1, int(limit))
+            except Exception:
+                safe_limit = 50
+            return output[:safe_limit]
+        return output
 
     def detect(
         self,

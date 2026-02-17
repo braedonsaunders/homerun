@@ -26,6 +26,7 @@ from models.database import (
     TraderSignalCursor,
     TraderSignalConsumption,
 )
+from services.event_bus import event_bus
 from services.simulation import simulation_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.trader_orchestrator.strategy_catalog import (
@@ -61,6 +62,8 @@ _TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
 _SOURCE_STRATEGY_MATRIX_FALLBACK: dict[str, set[str]] = {
     key: set(values) for key, values in source_to_strategy_keys().items()
 }
+_ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 5.0
+_ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 15.0
 _SOURCE_DEFAULT_STRATEGY: dict[str, str] = default_strategy_by_source()
 _LEGACY_OMNI_STRATEGY_BY_SOURCE: dict[str, str] = {
     "crypto": "crypto_15m",
@@ -462,14 +465,31 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
 
 
 def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
+    interval_seconds = int(row.interval_seconds or 2)
+    lag_seconds: Optional[float] = None
+    if row.last_run_at is not None:
+        try:
+            lag_seconds = max(0.0, (_now() - row.last_run_at).total_seconds())
+        except Exception:
+            lag_seconds = None
+
+    running = bool(row.running)
+    if running and lag_seconds is not None:
+        stale_after_seconds = max(
+            _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS,
+            float(max(1, interval_seconds)) * _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER,
+        )
+        if lag_seconds > stale_after_seconds:
+            running = False
+
     return {
         "id": row.id,
         "updated_at": _to_iso(row.updated_at),
         "last_run_at": _to_iso(row.last_run_at),
-        "running": bool(row.running),
+        "running": running,
         "enabled": bool(row.enabled),
         "current_activity": row.current_activity,
-        "interval_seconds": int(row.interval_seconds or 2),
+        "interval_seconds": interval_seconds,
         "traders_total": int(row.traders_total or 0),
         "traders_running": int(row.traders_running or 0),
         "decisions_count": int(row.decisions_count or 0),
@@ -674,7 +694,15 @@ async def write_orchestrator_snapshot(
         row.daily_pnl = float(stats.get("daily_pnl", row.daily_pnl or 0.0) or 0.0)
     await session.commit()
     await session.refresh(row)
-    return _serialize_snapshot(row)
+    snapshot_data = _serialize_snapshot(row)
+
+    # Publish orchestrator status event.
+    try:
+        await event_bus.publish("trader_orchestrator_status", snapshot_data)
+    except Exception:
+        pass  # fire-and-forget
+
+    return snapshot_data
 
 
 def list_trader_templates() -> list[dict[str, Any]]:
@@ -902,6 +930,48 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
             f"or pass force=True to delete anyway."
         )
 
+    if force and active_orders > 0:
+        # Force-delete should never leave active/open orders behind, even when
+        # SQLite FK cascade enforcement is unavailable in local/dev runtimes.
+        try:
+            await cleanup_trader_open_orders(
+                session,
+                trader_id=trader_id,
+                scope="all",
+                dry_run=False,
+                target_status="cancelled",
+                reason="force_delete_cleanup",
+            )
+        except Exception:
+            now = _now()
+            active_rows = list(
+                (
+                    await session.execute(
+                        select(TraderOrder).where(
+                            TraderOrder.trader_id == trader_id,
+                            TraderOrder.status.in_(OPEN_ORDER_STATUSES),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for active_row in active_rows:
+                payload = dict(active_row.payload_json or {})
+                payload["cleanup"] = {
+                    "previous_status": str(active_row.status or ""),
+                    "target_status": "cancelled",
+                    "reason": "force_delete_cleanup_fallback",
+                    "performed_at": _to_iso(now),
+                }
+                active_row.status = "cancelled"
+                active_row.updated_at = now
+                active_row.payload_json = payload
+            await session.commit()
+            await sync_trader_position_inventory(session, trader_id=trader_id)
+    elif force and open_positions > 0:
+        await sync_trader_position_inventory(session, trader_id=trader_id)
+
     await session.delete(row)
     await session.commit()
     return True
@@ -996,6 +1066,13 @@ async def create_trader_event(
         await session.refresh(row)
     else:
         await session.flush()
+
+    # Publish trader event.
+    try:
+        await event_bus.publish("trader_event", _serialize_event(row))
+    except Exception:
+        pass  # fire-and-forget
+
     return row
 
 
@@ -1143,6 +1220,13 @@ async def create_trader_decision(
         await session.refresh(row)
     else:
         await session.flush()
+
+    # Publish trader decision event.
+    try:
+        await event_bus.publish("trader_decision", _serialize_decision(row))
+    except Exception:
+        pass  # fire-and-forget
+
     return row
 
 
@@ -1227,6 +1311,13 @@ async def create_trader_order(
     if commit:
         await session.commit()
         await session.refresh(row)
+
+    # Publish trader order event.
+    try:
+        await event_bus.publish("trader_order", _serialize_order(row))
+    except Exception:
+        pass  # fire-and-forget
+
     return row
 
 

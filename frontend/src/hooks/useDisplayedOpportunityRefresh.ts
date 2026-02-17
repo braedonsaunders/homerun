@@ -14,11 +14,13 @@ export function useDisplayedOpportunityRefresh({
   opportunitiesView,
   queryClient,
   refreshMs = DEFAULT_REFRESH_MS,
+  isConnected = false,
 }: {
   activeTab: string
   opportunitiesView: string
   queryClient: QueryClient
   refreshMs?: number
+  isConnected?: boolean
 }) {
   const [isVisible, setIsVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),
@@ -33,6 +35,8 @@ export function useDisplayedOpportunityRefresh({
   }, [])
 
   useEffect(() => {
+    // Skip polling when WS is connected and pushing data
+    if (isConnected) return
     if (activeTab !== 'opportunities' || !isVisible) return
 
     const refreshDisplayedView = () => {
@@ -76,5 +80,5 @@ export function useDisplayedOpportunityRefresh({
     refreshDisplayedView()
     const interval = window.setInterval(refreshDisplayedView, refreshMs)
     return () => window.clearInterval(interval)
-  }, [activeTab, opportunitiesView, queryClient, refreshMs, isVisible])
+  }, [activeTab, opportunitiesView, queryClient, refreshMs, isVisible, isConnected])
 }

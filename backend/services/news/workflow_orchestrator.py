@@ -15,13 +15,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,6 +102,184 @@ class CycleBudget:
         )
 
 
+@dataclass
+class StageBudgetTracker:
+    """Per-stage LLM call budget allocation within a cycle.
+
+    The total cycle budget is split across pipeline stages so that
+    downstream stages (reranking, edge estimation) are not starved by
+    upstream event extraction.
+
+    Default allocation:
+      - event_extraction: 50%
+      - reranking:        30%
+      - edge_estimation:  20%
+
+    Leftover budget from a completed stage is redistributed to the
+    next stage in sequence.
+    """
+
+    total_calls: int = 0
+
+    # Per-stage allocations (set at init from total_calls).
+    event_extraction_budget: int = 0
+    reranking_budget: int = 0
+    edge_estimation_budget: int = 0
+
+    # Per-stage usage counters.
+    event_extraction_used: int = 0
+    reranking_used: int = 0
+    edge_estimation_used: int = 0
+
+    # Track whether redistribution has already occurred.
+    _event_finished: bool = False
+    _rerank_finished: bool = False
+
+    # Allocation fractions (configurable).
+    _event_frac: float = 0.50
+    _rerank_frac: float = 0.30
+    _edge_frac: float = 0.20
+
+    def __post_init__(self) -> None:
+        if self.total_calls > 0 and self.event_extraction_budget == 0:
+            self._allocate()
+
+    def _allocate(self) -> None:
+        self.event_extraction_budget = max(1, int(math.floor(self.total_calls * self._event_frac)))
+        self.reranking_budget = max(1, int(math.floor(self.total_calls * self._rerank_frac)))
+        # Give edge estimation the remainder so rounding doesn't lose calls.
+        self.edge_estimation_budget = max(
+            1, self.total_calls - self.event_extraction_budget - self.reranking_budget
+        )
+
+    def finish_event_extraction(self) -> None:
+        """Redistribute leftover event extraction budget to reranking (idempotent)."""
+        if self._event_finished:
+            return
+        self._event_finished = True
+        leftover = max(0, self.event_extraction_budget - self.event_extraction_used)
+        if leftover > 0:
+            self.reranking_budget += leftover
+
+    def finish_reranking(self) -> None:
+        """Redistribute leftover reranking budget to edge estimation (idempotent)."""
+        if self._rerank_finished:
+            return
+        self._rerank_finished = True
+        leftover = max(0, self.reranking_budget - self.reranking_used)
+        if leftover > 0:
+            self.edge_estimation_budget += leftover
+
+    def remaining(self, stage: str) -> int:
+        """Return remaining budget for a stage.
+
+        For edge_estimation, also includes any unused budget from earlier
+        stages to allow flexible borrowing in interleaved pipelines.
+        """
+        if stage == "event_extraction":
+            return max(0, self.event_extraction_budget - self.event_extraction_used)
+        if stage == "reranking":
+            return max(0, self.reranking_budget - self.reranking_used)
+        if stage == "edge_estimation":
+            own = max(0, self.edge_estimation_budget - self.edge_estimation_used)
+            # Borrow from earlier stages if they have unused budget.
+            borrow_event = max(0, self.event_extraction_budget - self.event_extraction_used)
+            borrow_rerank = max(0, self.reranking_budget - self.reranking_used)
+            return own + borrow_event + borrow_rerank
+        return 0
+
+    def use(self, stage: str, count: int = 1) -> None:
+        if stage == "event_extraction":
+            self.event_extraction_used += count
+        elif stage == "reranking":
+            self.reranking_used += count
+        elif stage == "edge_estimation":
+            self.edge_estimation_used += count
+
+    def to_dict(self) -> dict:
+        return {
+            "total_calls": self.total_calls,
+            "event_extraction": {
+                "budget": self.event_extraction_budget,
+                "used": self.event_extraction_used,
+                "remaining": self.remaining("event_extraction"),
+            },
+            "reranking": {
+                "budget": self.reranking_budget,
+                "used": self.reranking_used,
+                "remaining": self.remaining("reranking"),
+            },
+            "edge_estimation": {
+                "budget": self.edge_estimation_budget,
+                "used": self.edge_estimation_used,
+                "remaining": self.remaining("edge_estimation"),
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# Negative rejection cache -- skip recently rejected (cluster, market) pairs.
+# ---------------------------------------------------------------------------
+
+_NEGATIVE_CACHE_TTL_SECONDS = 2 * 60 * 60  # 2 hours
+
+
+class _NegativeCache:
+    """In-memory TTL cache for rejected (article/cluster, market, reason) triples.
+
+    Prevents redundant LLM calls for pairs recently rejected for the
+    same structural reason (entity alignment, temporal mismatch, etc.).
+    """
+
+    def __init__(self, ttl_seconds: int = _NEGATIVE_CACHE_TTL_SECONDS) -> None:
+        self._ttl_seconds = ttl_seconds
+        # key -> expiry timestamp (float, UTC epoch seconds)
+        self._store: Dict[Tuple[str, str, str], float] = {}
+        self._hits: int = 0
+        self._misses: int = 0
+
+    @staticmethod
+    def _make_key(article_or_cluster_id: str, market_id: str, reason: str) -> Tuple[str, str, str]:
+        return (article_or_cluster_id, market_id, reason)
+
+    def get(self, article_or_cluster_id: str, market_id: str, reason: str) -> bool:
+        """Return True if a recent rejection exists (cache hit)."""
+        key = self._make_key(article_or_cluster_id, market_id, reason)
+        expiry = self._store.get(key)
+        if expiry is not None and expiry > datetime.now(timezone.utc).timestamp():
+            self._hits += 1
+            return True
+        # Expired or absent.
+        if expiry is not None:
+            del self._store[key]
+        self._misses += 1
+        return False
+
+    def put(self, article_or_cluster_id: str, market_id: str, reason: str) -> None:
+        """Record a rejection."""
+        key = self._make_key(article_or_cluster_id, market_id, reason)
+        self._store[key] = datetime.now(timezone.utc).timestamp() + self._ttl_seconds
+
+    def prune_expired(self) -> int:
+        """Remove expired entries. Returns number of entries pruned."""
+        now = datetime.now(timezone.utc).timestamp()
+        expired_keys = [k for k, v in self._store.items() if v <= now]
+        for k in expired_keys:
+            del self._store[k]
+        return len(expired_keys)
+
+    def reset_stats(self) -> Tuple[int, int]:
+        """Return (hits, misses) and reset counters."""
+        hits, misses = self._hits, self._misses
+        self._hits = 0
+        self._misses = 0
+        return hits, misses
+
+    @property
+    def size(self) -> int:
+        return len(self._store)
+
+
 class WorkflowOrchestrator:
     """Worker-safe orchestrator for the independent news workflow."""
 
@@ -110,6 +289,7 @@ class WorkflowOrchestrator:
         self._last_intents_count: int = 0
         self._cycle_count: int = 0
         self._is_cycling = False
+        self._negative_cache = _NegativeCache()
 
     async def run_cycle(self, session: AsyncSession) -> dict:
         """Run one cycle. Caller (worker) owns loop scheduling and control flow."""
@@ -310,19 +490,29 @@ class WorkflowOrchestrator:
             )
 
             # 5) Event extraction with adaptive LLM usage.
+            # Per-stage budget tracker splits the cycle cap across pipeline stages
+            # so downstream stages (rerank, edge) are not starved by extraction.
+            stage_budget = StageBudgetTracker(total_calls=effective_call_cap)
+
             # Local models get broader quotas; remote models stay capped.
             if local_model_mode and budget.llm_available:
                 event_llm_quota = len(clusters)
                 rerank_llm_quota = len(clusters)
             else:
                 event_llm_quota = (
-                    max(0, min(len(clusters), int(effective_call_cap * 0.25))) if effective_call_cap >= 5 else 0
+                    max(0, min(len(clusters), stage_budget.event_extraction_budget)) if effective_call_cap >= 5 else 0
                 )
                 rerank_llm_quota = (
-                    max(0, min(len(clusters), int(effective_call_cap * 0.3))) if effective_call_cap >= 5 else 0
+                    max(0, min(len(clusters), stage_budget.reranking_budget)) if effective_call_cap >= 5 else 0
                 )
             event_llm_used = 0
             rerank_llm_used = 0
+
+            # Prune expired entries from the negative rejection cache at cycle start.
+            neg_cache_pruned = self._negative_cache.prune_expired()
+            if neg_cache_pruned:
+                logger.debug("Negative cache: pruned %d expired entries", neg_cache_pruned)
+            neg_cache_skipped = 0
             alignment_dropped = 0
             cluster_events = 0
 
@@ -345,17 +535,28 @@ class WorkflowOrchestrator:
                 for m in market_infos
             }
 
-            top_k = int(wf_settings.get("top_k", 8) or 8)
-            rerank_top_n = int(wf_settings.get("rerank_top_n", 5) or 5)
+            top_k = int(wf_settings.get("top_k", 20) or 20)
+            rerank_top_n = int(wf_settings.get("rerank_top_n", 8) or 8)
             kw_weight = float(wf_settings.get("keyword_weight", 0.25) or 0.25)
             sem_weight = float(wf_settings.get("semantic_weight", 0.45) or 0.45)
             evt_weight = float(wf_settings.get("event_weight", 0.30) or 0.30)
-            sim_threshold = float(wf_settings.get("similarity_threshold", 0.42) or 0.42)
+            # similarity_threshold: 0.20 casts a wider net for retrieval, allowing
+            # the LLM reranker to make the final relevance decision.  Previous
+            # value of 0.42 filtered too aggressively before reranking.
+            sim_threshold = float(wf_settings.get("similarity_threshold", 0.20) or 0.20)
             min_keyword_signal = float(wf_settings.get("min_keyword_signal", 0.04) or 0.04)
-            min_semantic_signal = float(wf_settings.get("min_semantic_signal", 0.22) or 0.22)
-            min_edge = float(wf_settings.get("min_edge_percent", 8.0) or 8.0)
-            min_conf = float(wf_settings.get("min_confidence", 0.6) or 0.6)
-            max_edge_evals_per_cluster = int(wf_settings.get("max_edge_evals_per_article", 3) or 3)
+            # min_semantic_signal: 0.05 lets through candidates with partial
+            # semantic overlap; the reranker handles false positives.
+            min_semantic_signal = float(wf_settings.get("min_semantic_signal", 0.05) or 0.05)
+            # min_edge_percent: 5% edge is meaningful in prediction markets
+            # (covers fees + slippage).  Old default of 8% filtered too many
+            # actionable opportunities.
+            min_edge = float(wf_settings.get("min_edge_percent", 5.0) or 5.0)
+            # min_confidence: 0.45 allows moderate-confidence signals through.
+            # News-driven edges often have inherent uncertainty; 0.6 was too
+            # strict and caused zero actionable findings in most cycles.
+            min_conf = float(wf_settings.get("min_confidence", 0.45) or 0.45)
+            max_edge_evals_per_cluster = int(wf_settings.get("max_edge_evals_per_article", 6) or 6)
             cache_ttl_minutes = int(wf_settings.get("cache_ttl_minutes", 30) or 30)
 
             all_findings: list[WorkflowFinding] = []
@@ -375,9 +576,14 @@ class WorkflowOrchestrator:
                     break
                 article = cluster.representative
                 allow_llm = False
-                if event_llm_used < event_llm_quota and budget.reserve_calls(1) == 1:
+                if (
+                    event_llm_used < event_llm_quota
+                    and stage_budget.remaining("event_extraction") > 0
+                    and budget.reserve_calls(1) == 1
+                ):
                     allow_llm = True
                     event_llm_used += 1
+                    stage_budget.use("event_extraction")
                 event = await event_extractor.extract(
                     title=cluster.headline or article.title,
                     summary=(cluster.summary or cluster.merged_text or article.summary or "")[:1000],
@@ -410,11 +616,38 @@ class WorkflowOrchestrator:
                 if not candidates:
                     continue
 
+                # Negative cache: skip candidates recently rejected for structural reasons.
+                cluster_key = cluster.article_key
+                neg_filtered = []
+                for c in candidates:
+                    # Check all structural rejection reasons.
+                    cached_reasons = []
+                    for reason in (
+                        "entity_alignment_mismatch",
+                        "temporal_mismatch",
+                        "verifier_failed",
+                    ):
+                        if self._negative_cache.get(cluster_key, c.market_id, reason):
+                            cached_reasons.append(reason)
+                    if cached_reasons:
+                        neg_cache_skipped += 1
+                        continue
+                    neg_filtered.append(c)
+                candidates = neg_filtered
+                if not candidates:
+                    continue
+
                 use_llm_rerank = self._should_use_llm_rerank(candidates)
                 allow_llm_rerank = False
-                if use_llm_rerank and rerank_llm_used < rerank_llm_quota and budget.reserve_calls(1) == 1:
+                if (
+                    use_llm_rerank
+                    and rerank_llm_used < rerank_llm_quota
+                    and stage_budget.remaining("reranking") > 0
+                    and budget.reserve_calls(1) == 1
+                ):
                     allow_llm_rerank = True
                     rerank_llm_used += 1
+                    stage_budget.use("reranking")
                 reranked = await reranker.rerank(
                     article_title=cluster.headline or article.title,
                     article_summary=(cluster.summary or cluster.merged_text or article.summary or "")[:900],
@@ -426,15 +659,20 @@ class WorkflowOrchestrator:
                 if not reranked:
                     continue
 
+                # Capture the detected market type for this cluster's candidates
+                # so it can be injected into every finding's evidence dict.
+                cluster_market_type = reranker.last_detected_market_type
+
                 reranked = [r for r in reranked if r.rerank_score >= max(0.2, sim_threshold * 0.7)]
                 if not reranked:
                     continue
 
                 if bool(wf_settings.get("require_verifier", True)):
-                    verified, rejected = self._split_verified_candidates(
+                    verified, penalized, rejected = self._split_verified_candidates(
                         article=article,
                         event=event,
                         reranked=reranked,
+                        llm_was_requested=allow_llm_rerank,
                     )
                     for rejected_finding in rejected:
                         self._attach_cluster_metadata(rejected_finding, cluster)
@@ -444,7 +682,14 @@ class WorkflowOrchestrator:
                         )
                         self._assign_finding_keys(rejected_finding)
                         all_findings.append(rejected_finding)
-                    reranked = verified
+                        # Record hard rejections in negative cache.
+                        self._negative_cache.put(
+                            cluster.article_key,
+                            rejected_finding.market_id,
+                            "verifier_failed",
+                        )
+                    # Penalized candidates (budget-skipped) continue with reduced confidence.
+                    reranked = verified + penalized
                     if not reranked:
                         continue
 
@@ -465,6 +710,9 @@ class WorkflowOrchestrator:
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
+                        self._negative_cache.put(
+                            cluster.article_key, rc.candidate.market_id, "temporal_mismatch"
+                        )
                         continue
 
                     if self._has_event_market_alignment(event, rc.candidate):
@@ -489,6 +737,9 @@ class WorkflowOrchestrator:
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
+                        self._negative_cache.put(
+                            cluster.article_key, rc.candidate.market_id, "entity_alignment_mismatch"
+                        )
                 if not aligned_reranked:
                     continue
                 reranked = aligned_reranked[: max(1, max_edge_evals_per_cluster)]
@@ -533,7 +784,10 @@ class WorkflowOrchestrator:
                     else:
                         to_estimate.append(rc)
 
-                llm_calls_for_edges = budget.reserve_calls(len(to_estimate))
+                edge_calls_wanted = min(len(to_estimate), stage_budget.remaining("edge_estimation"))
+                llm_calls_for_edges = budget.reserve_calls(edge_calls_wanted)
+                if llm_calls_for_edges > 0:
+                    stage_budget.use("edge_estimation", llm_calls_for_edges)
                 findings = await edge_estimator.estimate_batch(
                     article_title=cluster.headline or article.title,
                     article_summary=(cluster.summary or cluster.merged_text or article.summary or "")[:1000],
@@ -559,6 +813,10 @@ class WorkflowOrchestrator:
                     self._assign_finding_keys(finding)
                     market_sources_seen[finding.market_id].update(self._finding_sources(finding))
                 all_findings.extend(article_findings)
+
+            # Finalize stage budgets (redistribution for logging accuracy).
+            stage_budget.finish_event_extraction()
+            stage_budget.finish_reranking()
 
             deduped_findings = self._dedupe_findings(all_findings)
 
@@ -620,6 +878,7 @@ class WorkflowOrchestrator:
             self._last_findings_count = len(deduped_findings)
             self._last_intents_count = len(intents)
 
+            neg_cache_hits, neg_cache_misses = self._negative_cache.reset_stats()
             elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
             stats = {
                 "cycle_count": self._cycle_count,
@@ -641,6 +900,13 @@ class WorkflowOrchestrator:
                 "alignment_dropped": alignment_dropped,
                 "time_budget_exhausted": time_budget_exhausted,
                 "elapsed_seconds": round(elapsed, 2),
+                "stage_budgets": stage_budget.to_dict(),
+                "negative_cache": {
+                    "hits": neg_cache_hits,
+                    "misses": neg_cache_misses,
+                    "skipped_candidates": neg_cache_skipped,
+                    "size": self._negative_cache.size,
+                },
                 "market_index": {
                     "initialized": market_watcher_index._initialized,
                     "ml_mode": market_watcher_index.is_ml_mode,
@@ -1008,22 +1274,67 @@ class WorkflowOrchestrator:
             created_at=datetime.now(timezone.utc),
         )
 
-    def _split_verified_candidates(self, article, event, reranked):
+    def _split_verified_candidates(self, article, event, reranked, llm_was_requested: bool = False):
+        """Split reranked candidates into verified, penalized (budget-skip), and rejected.
+
+        Semantics:
+        - verified: LLM reranked and scored positively -> pass through.
+        - penalized: LLM was NOT called due to budget exhaustion (not failure).
+          These get a confidence penalty (0.7x) and a soft warning tag, but are
+          NOT rejected. They continue through the pipeline with reduced priority.
+        - rejected: LLM was called but the candidate was NOT scored or scored
+          negatively, indicating the LLM actively excluded it.
+
+        Args:
+            article: Source article object.
+            event: Extracted event.
+            reranked: List of RerankedCandidate from the reranker.
+            llm_was_requested: Whether LLM reranking was actually requested
+                (True = budget was available and LLM was called).
+
+        Returns:
+            Tuple of (verified, penalized, rejected) lists.
+        """
         verified = []
+        penalized = []
         rejected = []
+
         for rc in reranked:
             if getattr(rc, "used_llm", False):
+                # LLM scored this candidate -- it passed verification.
                 verified.append(rc)
                 continue
-            rejected.append(
-                self._build_rejected_finding(
-                    article=article,
-                    event=event,
-                    rc=rc,
-                    reason="verifier_unavailable",
-                )
+
+            if not llm_was_requested:
+                # Budget was exhausted before the LLM was called at all.
+                # This is a budget-skip, not a verification failure.
+                # Apply confidence penalty and tag, but do NOT reject.
+                if hasattr(rc, "rerank_score"):
+                    rc.rerank_score = rc.rerank_score * 0.7
+                if hasattr(rc, "relevance"):
+                    rc.relevance = rc.relevance * 0.7
+                # Tag the rationale so downstream can see it was unverified.
+                original_rationale = getattr(rc, "rationale", "") or ""
+                rc.rationale = f"[unverified_budget_skip] {original_rationale}".strip()
+                penalized.append(rc)
+                continue
+
+            # LLM was called but this candidate was NOT scored by it.
+            # The LLM actively excluded it -- treat as a real verification failure.
+            finding = self._build_rejected_finding(
+                article=article,
+                event=event,
+                rc=rc,
+                reason="verifier_failed",
             )
-        return verified, rejected
+            # Add verifier context to evidence.
+            evidence = dict(getattr(finding, "evidence", {}) or {})
+            evidence.setdefault("warnings", [])
+            evidence["warnings"].append("verifier_failed: LLM did not score this candidate")
+            finding.evidence = evidence
+            rejected.append(finding)
+
+        return verified, penalized, rejected
 
     @staticmethod
     def _attach_cluster_metadata(finding, cluster) -> None:

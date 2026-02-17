@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -26,6 +26,17 @@ class BaseStrategy(ABC):
 
     Built-in strategies set strategy_type to a StrategyType enum value.
     Plugin strategies set strategy_type to their unique slug string.
+
+    Subclasses must implement at least one of:
+
+    * ``detect()`` -- synchronous detection, run in a thread-pool executor.
+    * ``detect_async()`` -- async detection (preferred for I/O-bound work
+      such as LLM calls, HTTP requests, or database queries).  Awaited
+      directly on the event loop.
+
+    If a strategy implements ``detect_async()``, the scanner will call it
+    instead of ``detect()``.  The default ``detect_async()`` falls back to
+    ``detect()`` so existing sync strategies work without changes.
     """
 
     strategy_type: str  # StrategyType value or plugin slug
@@ -36,10 +47,35 @@ class BaseStrategy(ABC):
         self.fee = settings.POLYMARKET_FEE
         self.min_profit = settings.MIN_PROFIT_THRESHOLD
 
-    @abstractmethod
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
-        """Detect arbitrage opportunities"""
-        pass
+        """Detect arbitrage opportunities (sync).
+
+        Called every scan cycle with the full set of active events, markets,
+        and live CLOB prices.  Override this for CPU-bound strategies that
+        don't need async I/O.
+
+        The default implementation returns an empty list.  Subclasses should
+        override this method or ``detect_async()`` (or both).
+        """
+        return []
+
+    async def detect_async(
+        self,
+        events: list[Event],
+        markets: list[Market],
+        prices: dict[str, dict],
+    ) -> list[ArbitrageOpportunity]:
+        """Detect arbitrage opportunities (async, preferred for I/O-bound work).
+
+        The scanner calls this method when it exists.  The default
+        implementation delegates to the synchronous ``detect()`` so
+        existing strategies continue to work without modification.
+
+        Override this (instead of ``detect()``) when your strategy needs
+        to ``await`` coroutines -- e.g. LLM calls via ``services.ai``,
+        HTTP requests via ``httpx``, or database queries.
+        """
+        return self.detect(events, markets, prices)
 
     def calculate_risk_score(
         self, markets: list[Market], resolution_date: Optional[datetime] = None

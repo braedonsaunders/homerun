@@ -1539,55 +1539,6 @@ export default function TradingPanel() {
   }, [selectedTraderId, traders])
 
   useEffect(() => {
-    if (!selectedTrader) return
-    const traderSourceConfigs = Array.isArray(selectedTrader.source_configs) ? selectedTrader.source_configs : []
-    const normalizedSourceKeys = uniqueSourceList(
-      traderSourceConfigs.map((config) => normalizeSourceKey(String(config.source_key || '')))
-    )
-    const sourceStrategyMap: Record<string, string> = {}
-    for (const config of traderSourceConfigs) {
-      const sourceKey = normalizeSourceKey(String(config.source_key || ''))
-      if (!sourceKey) continue
-      sourceStrategyMap[sourceKey] = normalizeStrategyKeyForSource(
-        sourceKey,
-        config.strategy_key || defaultStrategyForSource(sourceKey, sourceCards)
-      )
-    }
-    const primaryParams = (traderSourceConfigs[0]?.strategy_params || {}) as Record<string, unknown>
-    const cryptoParams =
-      (traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'crypto')?.strategy_params ||
-        primaryParams) as Record<string, unknown>
-    const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')?.traders_scope
-
-    setDraftName(selectedTrader.name)
-    setDraftDescription(selectedTrader.description || '')
-    setDraftStrategyKey(normalizeStrategyKey(sourceStrategyMap.crypto || DEFAULT_STRATEGY_KEY))
-    setDraftSourceStrategies(sourceStrategyMap)
-    setDraftInterval(String(selectedTrader.interval_seconds || 60))
-    setDraftSources(normalizedSourceKeys.join(', ') || defaultSourceCsv)
-    setDraftEnabled(Boolean(selectedTrader.is_enabled))
-    setDraftPaused(Boolean(selectedTrader.is_paused))
-    const risk = selectedTrader.risk_limits || {}
-    const metadata = selectedTrader.metadata || {}
-    setDraftParams(JSON.stringify(primaryParams, null, 2))
-    setDraftRisk(JSON.stringify(risk, null, 2))
-    setDraftMetadata(JSON.stringify(metadata, null, 2))
-    setAdvancedConfig(computeAdvancedConfig(cryptoParams, risk, metadata))
-    setDraftTradersScopeModes(
-      (tradersScope?.modes || ['tracked', 'pool'])
-        .map((mode) => String(mode || '').toLowerCase())
-        .filter((mode): mode is TradersScopeMode => TRADERS_SCOPE_OPTIONS.some((option) => option.key === mode))
-    )
-    setDraftTradersIndividualWallets(
-      (tradersScope?.individual_wallets || []).map((wallet) => String(wallet || '').trim().toLowerCase()).filter(Boolean)
-    )
-    setDraftTradersGroupIds(
-      (tradersScope?.group_ids || []).map((groupId) => String(groupId || '').trim()).filter(Boolean)
-    )
-    setSaveError(null)
-  }, [defaultSourceCsv, selectedTrader, sourceCards])
-
-  useEffect(() => {
     if (selectedDecisions.length === 0) {
       setSelectedDecisionId(null)
       return
@@ -4378,11 +4329,15 @@ export default function TradingPanel() {
                   </FlyoutSection>
                 ) : null}
 
-                {saveError ? <div className="text-xs text-red-500">{saveError}</div> : null}
               </div>
             </ScrollArea>
 
             <div className="border-t border-border px-4 py-3 flex flex-wrap items-center justify-end gap-2">
+              {saveError ? (
+                <div className="mr-auto text-xs text-red-500 max-w-[65%] truncate" title={saveError}>
+                  {saveError}
+                </div>
+              ) : null}
               <Button variant="outline" onClick={() => setTraderFlyoutOpen(false)} disabled={traderFlyoutBusy}>
                 Close
               </Button>

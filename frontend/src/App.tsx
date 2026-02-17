@@ -366,6 +366,7 @@ function App() {
     activeTab,
     opportunitiesView,
     queryClient,
+    isConnected,
   })
 
   // Reset page when filters change
@@ -425,7 +426,7 @@ function App() {
   const { data: workersData } = useQuery({
     queryKey: ['workers-status'],
     queryFn: getWorkersStatus,
-    refetchInterval: 5000,
+    refetchInterval: isConnected ? false : 5000,
   })
 
   const workers = workersData?.workers || []
@@ -551,7 +552,7 @@ function App() {
       limit: 1,
     }),
     enabled: activeTab === 'opportunities',
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? false : 30000,
   })
 
   const { data: weatherWorkflowExecutableCount } = useQuery({
@@ -562,14 +563,14 @@ function App() {
       offset: 0,
     }),
     enabled: activeTab === 'opportunities',
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? false : 30000,
   })
 
   const { data: cryptoMarketCounts } = useQuery({
     queryKey: ['crypto-markets-count'],
     queryFn: () => getCryptoMarkets({ viewer_active: false }),
     enabled: activeTab === 'opportunities',
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? false : 30000,
   })
 
   const tradersCount = trackedTradersExecutableCount ?? 0

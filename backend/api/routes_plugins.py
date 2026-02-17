@@ -107,11 +107,19 @@ class PluginResponse(BaseModel):
 
 def _extract_config_schema(p: StrategyPlugin) -> Optional[dict]:
     """Extract config_schema from the config._schema key or seed catalog."""
+    from services.opportunity_strategy_catalog import SYSTEM_OPPORTUNITY_STRATEGY_SEEDS
+
+    # System rows should track the latest seed schema so UI param sections
+    # stay aligned with shipped strategy capabilities.
+    if bool(p.is_system):
+        for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
+            if seed.slug == p.slug and seed.config_schema:
+                return seed.config_schema
+
     cfg = p.config or {}
     if isinstance(cfg, dict) and "_schema" in cfg:
         return cfg["_schema"]
-    # Fall back to seed catalog lookup
-    from services.opportunity_strategy_catalog import SYSTEM_OPPORTUNITY_STRATEGY_SEEDS
+    # Fall back to seed catalog lookup for non-system rows that mirror seed slugs.
     for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
         if seed.slug == p.slug and seed.config_schema:
             return seed.config_schema
@@ -155,11 +163,13 @@ async def get_plugin_template():
     return {
         "template": PLUGIN_TEMPLATE,
         "instructions": (
-            "Create a class that extends BaseStrategy and implements detect(). "
-            "Your detect() method receives events, markets, and live prices on "
-            "every scan cycle. Use self.create_opportunity() to build opportunities "
-            "with automatic fee calculation, hard filters, and risk scoring. "
-            "Access your plugin's config via self.config."
+            "Create a class that extends BaseStrategy and implements detect() or "
+            "detect_async(). Use detect() for synchronous strategies or "
+            "detect_async() (preferred) for strategies needing async I/O like "
+            "LLM calls or HTTP requests. Both receive events, markets, and live "
+            "prices on every scan cycle. Use self.create_opportunity() to build "
+            "opportunities with automatic fee calculation, hard filters, and "
+            "risk scoring. Access your plugin's config via self.config."
         ),
         "available_imports": [
             "models (Market, Event, ArbitrageOpportunity, StrategyType)",
@@ -186,7 +196,11 @@ async def get_plugin_docs():
             "title": "Opportunity Strategy API Reference",
             "description": (
                 "Each strategy is a Python class that extends BaseStrategy. "
-                "Your class must implement detect() which is called every scan cycle "
+                "Your class must implement detect() or detect_async(). "
+                "detect() is synchronous and runs in a thread-pool executor. "
+                "detect_async() is async and preferred for I/O-bound strategies "
+                "(LLM calls, HTTP requests, database queries). If both are defined, "
+                "detect_async() takes priority. Both are called every scan cycle "
                 "with the full set of active markets, events, and live prices. "
                 "Return a list of ArbitrageOpportunity objects for any opportunities found."
             ),
@@ -211,7 +225,10 @@ async def get_plugin_docs():
         },
         "detect_method": {
             "signature": "def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]",
-            "description": "Called every scan cycle. Return detected opportunities.",
+            "description": (
+                "Synchronous detection method. Called every scan cycle in a thread-pool "
+                "executor. Use this for CPU-bound strategies that do not need async I/O."
+            ),
             "parameters": {
                 "events": {
                     "type": "list[Event]",
@@ -261,6 +278,39 @@ async def get_plugin_docs():
                 },
             },
             "returns": "list[ArbitrageOpportunity] — Use self.create_opportunity() to build these",
+        },
+        "detect_async_method": {
+            "signature": "async def detect_async(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]",
+            "description": (
+                "Async detection method (preferred for I/O-bound strategies). "
+                "Awaited directly on the event loop by the scanner. Use this when your "
+                "strategy needs to make LLM calls (services.ai), HTTP requests (httpx), "
+                "database queries, or any other async I/O. Same parameters and return "
+                "type as detect(). If both detect() and detect_async() are defined, "
+                "detect_async() takes priority at runtime."
+            ),
+            "parameters": "Same as detect() above",
+            "returns": "list[ArbitrageOpportunity] — Use self.create_opportunity() to build these",
+            "example": (
+                "async def detect_async(self, events, markets, prices):\n"
+                "    opportunities = []\n"
+                "    for market in markets:\n"
+                "        if market.closed or not market.active:\n"
+                "            continue\n"
+                "        # Make async LLM call\n"
+                "        from services.ai import get_llm_manager\n"
+                "        from services.ai.llm_provider import LLMMessage\n"
+                "        manager = get_llm_manager()\n"
+                "        if not manager.is_available():\n"
+                "            continue\n"
+                "        response = await manager.chat(\n"
+                "            messages=[LLMMessage(role='user', content=f'Analyze: {market.question}')],\n"
+                "            model='gpt-4o-mini',\n"
+                "            purpose='custom_strategy',\n"
+                "        )\n"
+                "        # ... process response and create opportunities\n"
+                "    return opportunities"
+            ),
         },
         "create_opportunity_method": {
             "signature": (
@@ -451,7 +501,9 @@ async def get_plugin_docs():
                 "ToolCall": "ToolCall(id, name, arguments) — parsed tool call from response",
             },
             "notes": [
-                "LLM calls are async — use asyncio.get_event_loop().run_until_complete() if called from sync detect()",
+                "LLM calls are async — implement detect_async() to use them directly with await",
+                "If using sync detect(), wrap async calls with asyncio.get_event_loop().run_until_complete()",
+                "Prefer detect_async() over detect() when making LLM or HTTP calls",
                 "Calls respect the global pause state — they are blocked when the system is paused",
                 "Usage is logged automatically to the LLMUsageLog table with cost tracking",
                 "Always set purpose='custom_strategy' for usage attribution",

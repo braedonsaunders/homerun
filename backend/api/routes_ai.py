@@ -574,11 +574,14 @@ async def _build_context_pack(
         trader_signal: Optional[dict[str, Any]] = None
 
         if source_hint in {None, "confluence"}:
-            from services.smart_wallet_pool import smart_wallet_pool
+            from services.traders_firehose_pipeline import (
+                get_strategy_filtered_trader_opportunities,
+            )
 
-            confluence_rows = await smart_wallet_pool.get_tracked_trader_opportunities(
+            confluence_rows = await get_strategy_filtered_trader_opportunities(
                 limit=250,
                 min_tier="WATCH",
+                include_filtered=True,
             )
             match = next(
                 (row for row in confluence_rows if str(row.get("id") or "") == signal_id),

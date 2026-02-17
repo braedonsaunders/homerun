@@ -87,13 +87,18 @@ export function useRealtimeInvalidation(
     }
 
     if (messageType === 'opportunities_update' || messageType === 'init') {
-      queueInvalidations(
-        [
-          ...(viewingArbitrage ? ([['opportunities']] as QueryKey[]) : []),
-          ['opportunity-counts'],
-          ['scanner-status'],
-        ],
-      )
+      // Direct cache update for the primary opportunities query
+      if (lastMessage.data?.opportunities) {
+        queryClient.setQueryData(['opportunities'], (old: any) => ({
+          ...old,
+          ...lastMessage.data,
+        }))
+      }
+      // Still invalidate derived/secondary queries
+      queueInvalidations([
+        ['opportunity-counts'],
+        ['scanner-status'],
+      ])
     }
     if (messageType === 'opportunity_events') {
       queueInvalidations(
@@ -132,11 +137,43 @@ export function useRealtimeInvalidation(
         ['discovery-leaderboard'],
       ])
     }
-    if (
-      messageType === 'news_update'
-      || messageType === 'news_workflow_update'
-      || messageType === 'news_workflow_status'
-    ) {
+    if (messageType === 'news_workflow_status' && lastMessage.data) {
+      // Direct cache update for news workflow status
+      queryClient.setQueryData(['news-workflow-status'], lastMessage.data)
+      queueInvalidations([
+        ['news-workflow-findings-count'],
+        ...(viewingNews
+          ? ([
+              ['news-articles'],
+              ['news-matches'],
+              ['news-edges'],
+              ['news-feed-status'],
+              ['news-workflow-findings'],
+              ['news-workflow-intents'],
+            ] as QueryKey[])
+          : []),
+      ])
+    }
+    if (messageType === 'news_workflow_update' && lastMessage.data) {
+      // Direct cache update for news workflow status from the status sub-field
+      if (lastMessage.data.status) {
+        queryClient.setQueryData(['news-workflow-status'], lastMessage.data.status)
+      }
+      queueInvalidations([
+        ['news-workflow-findings-count'],
+        ...(viewingNews
+          ? ([
+              ['news-articles'],
+              ['news-matches'],
+              ['news-edges'],
+              ['news-feed-status'],
+              ['news-workflow-findings'],
+              ['news-workflow-intents'],
+            ] as QueryKey[])
+          : []),
+      ])
+    }
+    if (messageType === 'news_update') {
       queueInvalidations([
         ['news-workflow-status'],
         ['news-workflow-findings-count'],
@@ -152,9 +189,31 @@ export function useRealtimeInvalidation(
           : []),
       ])
     }
-    if (messageType === 'weather_update' || messageType === 'weather_status') {
+    if (messageType === 'weather_update' && lastMessage.data) {
+      // Direct cache update for weather opportunities and status
+      if (lastMessage.data.opportunities) {
+        queryClient.setQueryData(['weather-workflow-opportunities'], (old: any) => ({
+          ...old,
+          ...lastMessage.data,
+        }))
+      }
+      if (lastMessage.data.status) {
+        queryClient.setQueryData(['weather-workflow-status'], lastMessage.data.status)
+      }
+      // Still invalidate derived queries
       queueInvalidations([
-        ['weather-workflow-status'],
+        ...(viewingWeather
+          ? ([
+              ['weather-workflow-intents'],
+              ['weather-workflow-performance'],
+            ] as QueryKey[])
+          : []),
+      ])
+    }
+    if (messageType === 'weather_status' && lastMessage.data) {
+      // Direct cache update for weather status
+      queryClient.setQueryData(['weather-workflow-status'], lastMessage.data)
+      queueInvalidations([
         ...(viewingWeather
           ? ([
               ['weather-workflow-opportunities'],
@@ -164,9 +223,10 @@ export function useRealtimeInvalidation(
           : []),
       ])
     }
-    if (messageType === 'world_intelligence_update' || messageType === 'world_intelligence_status') {
+    if (messageType === 'world_intelligence_status' && lastMessage.data) {
+      // Direct cache update for world intelligence status
+      queryClient.setQueryData(['world-intelligence-status'], lastMessage.data)
       queueInvalidations([
-        ['world-intelligence-status'],
         ...(viewingWorld
           ? ([
               ['world-signals'],
@@ -181,24 +241,69 @@ export function useRealtimeInvalidation(
           : []),
       ])
     }
-    if (messageType === 'worker_status_update') {
+    if (messageType === 'world_intelligence_update' && lastMessage.data) {
+      // Direct cache update for world intelligence status and signals
+      if (lastMessage.data.status) {
+        queryClient.setQueryData(['world-intelligence-status'], lastMessage.data.status)
+      }
+      if (lastMessage.data.signals) {
+        queryClient.setQueryData(['world-signals'], (old: any) => ({
+          ...old,
+          ...lastMessage.data,
+        }))
+      }
+      // Still invalidate derived queries
       queueInvalidations([
-        ['workers-status'],
+        ...(viewingWorld
+          ? ([
+              ['world-instability'],
+              ['world-tensions'],
+              ['world-convergences'],
+              ['world-anomalies'],
+              ['world-regions'],
+              ['world-intelligence-summary'],
+              ['world-intelligence-sources'],
+            ] as QueryKey[])
+          : []),
+      ])
+    }
+    if (messageType === 'worker_status_update' && lastMessage.data) {
+      // Direct cache update for workers status
+      queryClient.setQueryData(['workers-status'], lastMessage.data)
+      // Still invalidate related status queries
+      queueInvalidations([
         ['scanner-status'],
         ['news-workflow-status'],
         ['weather-workflow-status'],
       ])
     }
-    if (messageType === 'signals_update') {
+    if (messageType === 'signals_update' && lastMessage.data) {
+      // Direct cache update for signals
+      if (lastMessage.data.sources) {
+        queryClient.setQueryData(['signals'], (old: any) => ({
+          ...old,
+          ...lastMessage.data,
+        }))
+      }
+      // Still invalidate derived queries
       queueInvalidations([
-        ['signals'],
         ['signals-stats'],
       ])
     }
-    if (messageType === 'trader_orchestrator_status') {
+    if (messageType === 'crypto_markets_update' && lastMessage.data) {
+      // Direct cache update for crypto markets
+      if (lastMessage.data.markets) {
+        queryClient.setQueryData(['crypto-markets'], (old: any) => ({
+          ...old,
+          ...lastMessage.data,
+        }))
+      }
+    }
+    if (messageType === 'trader_orchestrator_status' && lastMessage.data) {
+      // Direct cache update for trader orchestrator status
+      queryClient.setQueryData(['trader-orchestrator-status'], lastMessage.data)
       queueInvalidations([
         ['trader-orchestrator-overview'],
-        ['trader-orchestrator-status'],
         ...(viewingTrading ? ([['traders-list']] as QueryKey[]) : []),
       ])
     }

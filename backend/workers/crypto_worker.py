@@ -26,6 +26,7 @@ from models.database import AsyncSessionLocal, init_database
 from services.chainlink_feed import get_chainlink_feed
 from services.crypto_service import get_crypto_service
 from services.signal_bus import emit_crypto_market_signals
+from services.event_bus import event_bus
 from services.worker_state import (
     clear_worker_run_request,
     ensure_worker_control,
@@ -501,6 +502,12 @@ async def _run_loop() -> None:
                         "markets": markets_payload,
                     },
                 )
+
+            # Publish crypto markets update event for immediate WS broadcast.
+            try:
+                await event_bus.publish("crypto_markets_update", {"markets": markets_payload})
+            except Exception:
+                pass  # fire-and-forget
 
             logger.info(
                 "Crypto cycle complete: markets=%s signals=%s duration=%.3fs fast_mode=%s sleep=%ss",

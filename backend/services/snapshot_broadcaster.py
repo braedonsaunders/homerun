@@ -1,15 +1,21 @@
 """
 Snapshot broadcaster.
 
-Bridges scanner-worker DB snapshots to connected WebSocket clients in the API
-process. This removes the need for aggressive frontend polling.
+Bridges worker data to connected WebSocket clients in the API process.
+
+**Primary path (event-driven):** Workers publish events on the in-process
+``event_bus``; the broadcaster subscribes and immediately relays them to WS
+clients, applying signature-based deduplication for high-frequency events.
+
+**Fallback path (DB poll):** A slow 5-second DB-poll loop runs as a safety
+net so data is never lost even if a worker forgets (or fails) to publish.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import select
 
@@ -25,6 +31,7 @@ from models.database import (
     WorldIntelligenceSnapshot,
 )
 from services import shared_state
+from services.event_bus import event_bus
 from services.news import shared_state as news_shared_state
 from services.trader_orchestrator_state import read_orchestrator_snapshot
 from services.worker_state import list_worker_snapshots
@@ -34,13 +41,26 @@ from utils.market_urls import serialize_opportunity_with_links
 
 logger = get_logger("snapshot_broadcaster")
 
+# Event types that use signature-based deduplication to avoid flooding WS.
+_DEDUP_EVENT_TYPES = frozenset({
+    "scanner_status",
+    "scanner_activity",
+    "worker_status_update",
+    "crypto_markets_update",
+    "weather_status",
+    "news_workflow_status",
+    "trader_orchestrator_status",
+})
+
 
 class SnapshotBroadcaster:
-    """Poll scanner snapshot and broadcast deltas over WebSocket."""
+    """Event-driven broadcaster with DB-poll fallback."""
 
     def __init__(self) -> None:
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._fallback_task: Optional[asyncio.Task] = None
+        self._listener_task: Optional[asyncio.Task] = None
+        # Signature caches for deduplication (shared by event path + fallback).
         self._last_activity: Optional[str] = None
         self._last_status_sig: Optional[tuple] = None
         self._last_opp_sig: Optional[tuple] = None
@@ -58,6 +78,12 @@ class SnapshotBroadcaster:
         self._last_trader_decision_ts: Optional[datetime] = None
         self._last_trader_order_ts: Optional[datetime] = None
         self._last_trader_event_ts: Optional[datetime] = None
+        # Async queue fed by event bus subscription.
+        self._event_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    # ------------------------------------------------------------------
+    # Signature helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _opportunity_ai_signature(opportunities: list) -> int:
@@ -80,27 +106,148 @@ class SnapshotBroadcaster:
             )
         return hash(tuple(signature_rows))
 
+    def _compute_dedup_sig(self, event_type: str, data: dict[str, Any]) -> Optional[tuple]:
+        """Return a signature tuple for dedup-eligible event types, else None."""
+        if event_type == "scanner_status":
+            return (
+                data.get("running"),
+                data.get("enabled"),
+                data.get("interval_seconds"),
+                data.get("last_scan"),
+                data.get("opportunities_count"),
+            )
+        if event_type == "scanner_activity":
+            return (data.get("activity"),)
+        if event_type == "worker_status_update":
+            workers = data.get("workers") or []
+            return tuple(
+                (
+                    row.get("worker_name"),
+                    row.get("running"),
+                    row.get("enabled"),
+                    row.get("updated_at"),
+                    row.get("last_run_at"),
+                    row.get("last_error"),
+                )
+                for row in workers
+            )
+        if event_type == "crypto_markets_update":
+            markets = data.get("markets") or []
+            return (
+                len(markets),
+                ((markets[0] or {}).get("id") if markets else None),
+                ((markets[0] or {}).get("oracle_updated_at_ms") if markets else None),
+            )
+        if event_type == "weather_status":
+            return (
+                data.get("running"),
+                data.get("enabled"),
+                data.get("interval_seconds"),
+                data.get("last_scan"),
+                data.get("opportunities_count"),
+            )
+        if event_type == "news_workflow_status":
+            return (
+                data.get("running"),
+                data.get("enabled"),
+                data.get("paused"),
+                data.get("interval_seconds"),
+                data.get("last_scan"),
+                data.get("next_scan"),
+                data.get("pending_intents"),
+                data.get("degraded_mode"),
+                data.get("last_error"),
+            )
+        if event_type == "trader_orchestrator_status":
+            return (
+                data.get("running"),
+                data.get("enabled"),
+                data.get("last_run_at"),
+                data.get("decisions_count"),
+                data.get("orders_count"),
+                data.get("open_orders"),
+                data.get("gross_exposure_usd"),
+                data.get("daily_pnl"),
+                data.get("last_error"),
+            )
+        return None
+
+    def _get_last_sig(self, event_type: str) -> Optional[tuple]:
+        sig_map = {
+            "scanner_status": "_last_status_sig",
+            "scanner_activity": "_last_activity",
+            "worker_status_update": "_last_worker_status_sig",
+            "crypto_markets_update": "_last_crypto_markets_sig",
+            "weather_status": "_last_weather_status_sig",
+            "news_workflow_status": "_last_news_status_sig",
+            "trader_orchestrator_status": "_last_orchestrator_status_sig",
+        }
+        attr = sig_map.get(event_type)
+        if attr is None:
+            return None
+        val = getattr(self, attr, None)
+        # scanner_activity stores a plain string; wrap it for comparison.
+        if event_type == "scanner_activity":
+            return (val,) if val is not None else None
+        return val
+
+    def _set_last_sig(self, event_type: str, sig: tuple) -> None:
+        if event_type == "scanner_status":
+            self._last_status_sig = sig
+        elif event_type == "scanner_activity":
+            self._last_activity = sig[0] if sig else None
+        elif event_type == "worker_status_update":
+            self._last_worker_status_sig = sig
+        elif event_type == "crypto_markets_update":
+            self._last_crypto_markets_sig = sig
+        elif event_type == "weather_status":
+            self._last_weather_status_sig = sig
+        elif event_type == "news_workflow_status":
+            self._last_news_status_sig = sig
+        elif event_type == "trader_orchestrator_status":
+            self._last_orchestrator_status_sig = sig
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self, interval_seconds: float = 1.0) -> None:
-        """Start background poll loop (idempotent)."""
+        """Start event listener + fallback DB-poll loop (idempotent)."""
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(
-            self._run_loop(interval_seconds=max(0.25, interval_seconds)),
-            name="snapshot-broadcaster",
+
+        # Subscribe to ALL events on the bus.
+        event_bus.subscribe("*", self._on_event)
+
+        # Primary: event listener that drains the queue and broadcasts.
+        self._listener_task = asyncio.create_task(
+            self._run_event_listener(),
+            name="snapshot-broadcaster-events",
         )
-        logger.info("Snapshot broadcaster started", interval_seconds=interval_seconds)
+        # Fallback: slow DB poll at 5s for data consistency.
+        self._fallback_task = asyncio.create_task(
+            self._run_loop(interval_seconds=5.0),
+            name="snapshot-broadcaster-fallback",
+        )
+        logger.info(
+            "Snapshot broadcaster started (event-driven primary, DB-poll fallback at 5s)",
+            interval_seconds=interval_seconds,
+        )
 
     async def stop(self) -> None:
-        """Stop background poll loop."""
+        """Stop all tasks."""
         self._running = False
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        self._task = None
+        event_bus.unsubscribe("*", self._on_event)
+        for task in (self._listener_task, self._fallback_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._listener_task = None
+        self._fallback_task = None
         self._last_activity = None
         self._last_status_sig = None
         self._last_opp_sig = None
@@ -120,7 +267,59 @@ class SnapshotBroadcaster:
         self._last_trader_event_ts = None
         logger.info("Snapshot broadcaster stopped")
 
+    # ------------------------------------------------------------------
+    # Event-driven path (primary)
+    # ------------------------------------------------------------------
+
+    async def _on_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Event bus callback -- enqueue for the listener task."""
+        try:
+            self._event_queue.put_nowait((event_type, data))
+        except asyncio.QueueFull:
+            logger.debug("Event queue full, dropping event", event_type=event_type)
+
+    async def _run_event_listener(self) -> None:
+        """Drain events from the queue and broadcast to WS clients."""
+        while self._running:
+            try:
+                event_type, data = await asyncio.wait_for(
+                    self._event_queue.get(), timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+            try:
+                await self._broadcast_event(event_type, data)
+            except Exception as exc:
+                logger.debug("Event broadcast failed", event_type=event_type, error=str(exc))
+
+    async def _broadcast_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Broadcast a single event, applying dedup for high-frequency types."""
+        # For dedup-eligible events, check signature first.
+        if event_type in _DEDUP_EVENT_TYPES:
+            sig = self._compute_dedup_sig(event_type, data)
+            if sig is not None:
+                last = self._get_last_sig(event_type)
+                if sig == last:
+                    return  # duplicate -- skip
+                self._set_last_sig(event_type, sig)
+
+        # Broadcast the message in the exact {type, data} format the
+        # frontend expects.
+        await manager.broadcast({"type": event_type, "data": data})
+
+    # ------------------------------------------------------------------
+    # Fallback DB-poll path (runs every 5 seconds)
+    # ------------------------------------------------------------------
+
     async def _run_loop(self, interval_seconds: float) -> None:
+        """FALLBACK: Slow DB poll loop to ensure data consistency.
+
+        This is the original polling logic, reduced from 1s to 5s interval.
+        It catches any data that workers may not have published to the bus.
+        """
         while self._running:
             try:
                 async with AsyncSessionLocal() as session:
@@ -566,7 +765,7 @@ class SnapshotBroadcaster:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.debug("Snapshot broadcaster poll failed", error=str(exc))
+                logger.debug("Snapshot broadcaster fallback poll failed", error=str(exc))
 
             await asyncio.sleep(interval_seconds)
 

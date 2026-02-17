@@ -38,6 +38,7 @@ from services.trader_orchestrator.strategy_catalog import (
 )
 from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
 from services.trader_orchestrator_state import (
+    cleanup_trader_open_orders,
     compute_orchestrator_metrics,
     create_trader_decision,
     create_trader_decision_checks,
@@ -67,6 +68,7 @@ from utils.secrets import decrypt_secret
 logger = logging.getLogger("trader_orchestrator_worker")
 _RESUME_POLICIES = {"resume_full", "manage_only", "flatten_then_start"}
 _PAPER_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
+_ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE = 32
 _ORCHESTRATOR_CYCLE_LOCK_KEY = 0x54524F5243485354  # "TRORCHST"
 _orchestrator_lock_ctx: tuple[Any, Any] | None = None
 
@@ -1561,6 +1563,95 @@ async def _run_trader_once(
     return decisions_written, orders_written
 
 
+async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
+    """Close/cancel open orders for trader_ids that no longer exist."""
+    rows = (
+        await session.execute(
+            select(
+                TraderOrder.trader_id,
+                func.lower(func.coalesce(TraderOrder.mode, "")).label("mode_key"),
+                func.count(TraderOrder.id).label("count"),
+            )
+            .select_from(TraderOrder)
+            .outerjoin(Trader, Trader.id == TraderOrder.trader_id)
+            .where(Trader.id.is_(None))
+            .where(func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(_PAPER_ACTIVE_ORDER_STATUSES)))
+            .group_by(TraderOrder.trader_id, func.lower(func.coalesce(TraderOrder.mode, "")))
+            .limit(_ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE)
+        )
+    ).all()
+
+    if not rows:
+        return {
+            "traders_seen": 0,
+            "rows_seen": 0,
+            "paper_closed": 0,
+            "non_paper_cancelled": 0,
+        }
+
+    per_trader_mode: dict[tuple[str, str], int] = {}
+    for row in rows:
+        trader_id = str(row.trader_id or "").strip()
+        if not trader_id:
+            continue
+        mode_key = str(row.mode_key or "").strip().lower()
+        if mode_key == "":
+            mode_key = "other"
+        per_trader_mode[(trader_id, mode_key)] = int(row.count or 0)
+
+    paper_closed = 0
+    non_paper_cancelled = 0
+    for trader_id, mode_key in per_trader_mode:
+        if mode_key == "paper":
+            result = await reconcile_paper_positions(
+                session,
+                trader_id=trader_id,
+                trader_params={},
+                dry_run=False,
+                force_mark_to_market=False,
+                reason="orphan_trader_lifecycle",
+            )
+            paper_closed += int(result.get("closed", 0))
+            await sync_trader_position_inventory(session, trader_id=trader_id, mode="paper")
+            continue
+
+        cleanup = await cleanup_trader_open_orders(
+            session,
+            trader_id=trader_id,
+            scope="all",
+            dry_run=False,
+            target_status="cancelled",
+            reason="orphan_trader_cleanup",
+        )
+        non_paper_cancelled += int(cleanup.get("updated", 0))
+
+    await create_trader_event(
+        session,
+        trader_id=None,
+        event_type="orphan_orders_reconciled",
+        severity="warn",
+        source="worker",
+        message=(
+            f"Reconciled orphan trader open orders "
+            f"(paper_closed={paper_closed}, non_paper_cancelled={non_paper_cancelled})"
+        ),
+        payload={
+            "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
+            "rows_seen": len(per_trader_mode),
+            "paper_closed": paper_closed,
+            "non_paper_cancelled": non_paper_cancelled,
+        },
+        commit=True,
+    )
+
+    return {
+        "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
+        "rows_seen": len(per_trader_mode),
+        "paper_closed": paper_closed,
+        "non_paper_cancelled": non_paper_cancelled,
+    }
+
+
 async def run_worker_loop() -> None:
     logger.info("Starting trader orchestrator worker loop")
 
@@ -1588,6 +1679,16 @@ async def run_worker_loop() -> None:
                         await strategy_db_loader.refresh_from_db(session=session)
                     except Exception as exc:
                         logger.warning("Failed to refresh DB strategy registry: %s", exc)
+
+                    try:
+                        orphan_cleanup = await _reconcile_orphan_open_orders(session)
+                        if orphan_cleanup.get("rows_seen", 0) > 0:
+                            logger.warning(
+                                "Reconciled orphan trader orders",
+                                extra={"orphan_cleanup": orphan_cleanup},
+                            )
+                    except Exception as exc:
+                        logger.warning("Failed orphan-order reconciliation pass: %s", exc)
 
                     control = await read_orchestrator_control(session)
                     interval = max(1, int(control.get("run_interval_seconds") or 2))

@@ -18,6 +18,7 @@ from models.database import (
     WeatherTradeIntent,
 )
 from models.opportunity import ArbitrageOpportunity
+from services.event_bus import event_bus
 from services.market_tradability import get_market_tradability_map
 
 WEATHER_SNAPSHOT_ID = "latest"
@@ -192,6 +193,26 @@ async def write_weather_snapshot(
     row.interval_seconds = status.get("interval_seconds", app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS)
     row.stats_json = stats if stats is not None else status.get("stats", {})
     await session.commit()
+
+    # Publish weather events so the broadcaster can relay immediately.
+    try:
+        weather_status_data = {
+            "running": status.get("running", True),
+            "enabled": status.get("enabled", True),
+            "interval_seconds": status.get("interval_seconds", app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS),
+            "last_scan": status.get("last_scan"),
+            "opportunities_count": len(opportunities),
+            "current_activity": status.get("current_activity"),
+            "stats": stats if stats is not None else status.get("stats", {}),
+        }
+        await event_bus.publish("weather_status", weather_status_data)
+        await event_bus.publish("weather_update", {
+            "count": len(opportunities),
+            "status": weather_status_data,
+            "source": "weather_snapshot_write",
+        })
+    except Exception:
+        pass  # fire-and-forget
 
 
 async def read_weather_snapshot(

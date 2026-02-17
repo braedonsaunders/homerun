@@ -397,6 +397,10 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "firehose_require_tradable_market", "label": "Require Tradable Market", "type": "boolean"},
+                {"key": "firehose_exclude_crypto_markets", "label": "Exclude Crypto Markets", "type": "boolean"},
+                {"key": "firehose_require_qualified_source", "label": "Require Qualified Source", "type": "boolean"},
+                {"key": "firehose_max_age_minutes", "label": "Firehose Max Age (min)", "type": "integer", "min": 1, "max": 1440},
             ]
         },
     ),

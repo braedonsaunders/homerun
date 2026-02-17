@@ -40,6 +40,7 @@ from services.smart_wallet_pool import (
 from services.wallet_tracker import wallet_tracker
 from services.worker_state import read_worker_snapshot
 from services.polymarket import polymarket_client
+from services.traders_firehose_pipeline import get_strategy_filtered_trader_opportunities
 from utils.validation import validate_eth_address
 
 # Maps time_period query values to rolling window keys stored in the DB
@@ -957,11 +958,49 @@ async def _annotate_trader_signal_rows(
 
         row["source_flags"] = source_flags
         row["source_breakdown"] = source_breakdown
-        row["validation"] = validation
-        row["is_valid"] = bool(validation.get("is_valid"))
-        row["is_actionable"] = bool(validation.get("is_actionable"))
-        row["is_tradeable"] = bool(validation.get("is_tradeable"))
-        row["validation_reasons"] = list(validation.get("reasons") or [])
+        strategy_validation = row.get("validation")
+        has_strategy_validation = isinstance(strategy_validation, dict) and (
+            "is_tradeable" in row or "validation_reasons" in row
+        )
+        if has_strategy_validation:
+            checks = dict(strategy_validation.get("checks") or {})
+            checks.setdefault("has_market_id", bool(_normalize_market_id(row.get("market_id"))))
+            checks.setdefault("has_wallets", bool(wallet_addresses))
+            checks.setdefault("has_direction", _signal_has_direction(row))
+            has_price_reference, price_in_bounds = _signal_has_price_reference(row)
+            checks.setdefault("has_price_reference", has_price_reference)
+            checks.setdefault("price_in_bounds", price_in_bounds)
+            checks["has_qualified_source"] = has_qualified_source
+            checks.setdefault(
+                "upstream_tradable",
+                bool(row.get("firehose_market_tradable", row.get("is_tradeable", True))),
+            )
+
+            row["validation"] = {
+                "is_valid": bool(row.get("is_valid", strategy_validation.get("is_valid", True))),
+                "is_actionable": bool(
+                    row.get("is_actionable", strategy_validation.get("is_actionable", True))
+                ),
+                "is_tradeable": bool(
+                    row.get("is_tradeable", strategy_validation.get("is_tradeable", True))
+                ),
+                "checks": checks,
+                "reasons": list(
+                    row.get("validation_reasons")
+                    or strategy_validation.get("reasons")
+                    or []
+                ),
+            }
+            row["is_valid"] = bool(row["validation"]["is_valid"])
+            row["is_actionable"] = bool(row["validation"]["is_actionable"])
+            row["is_tradeable"] = bool(row["validation"]["is_tradeable"])
+            row["validation_reasons"] = list(row["validation"]["reasons"])
+        else:
+            row["validation"] = validation
+            row["is_valid"] = bool(validation.get("is_valid"))
+            row["is_actionable"] = bool(validation.get("is_actionable"))
+            row["is_tradeable"] = bool(validation.get("is_tradeable"))
+            row["validation_reasons"] = list(validation.get("reasons") or [])
 
     return rows
 
@@ -2221,9 +2260,10 @@ async def get_traders_overview(
             reverse=True,
         )
 
-        confluence_signals = await smart_wallet_pool.get_tracked_trader_opportunities(
+        confluence_signals = await get_strategy_filtered_trader_opportunities(
             limit=confluence_limit,
             min_tier=min_tier,
+            include_filtered=False,
         )
         market_history = await _load_scanner_market_history(session)
         _attach_market_history_to_signal_rows(confluence_signals, market_history)
@@ -2273,7 +2313,7 @@ async def get_tracked_trader_opportunities(
 ):
     """Legacy alias for confluence signals powering the Traders surface."""
     try:
-        opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
+        opportunities = await get_strategy_filtered_trader_opportunities(
             limit=limit,
             min_tier=min_tier,
             include_filtered=include_filtered,
@@ -2283,7 +2323,7 @@ async def get_tracked_trader_opportunities(
             # recover quickly after stale/expired signal windows.
             try:
                 await wallet_intelligence.confluence.scan_for_confluence()
-                opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
+                opportunities = await get_strategy_filtered_trader_opportunities(
                     limit=limit,
                     min_tier=min_tier,
                     include_filtered=include_filtered,
