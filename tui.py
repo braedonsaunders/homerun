@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import ctypes
 import json
 import os
 import shutil
@@ -30,6 +31,72 @@ from textual.widgets import (
     TabPane,
     TextArea,
 )
+
+# ---------------------------------------------------------------------------
+# Windows Job Object – ensures ALL child processes die when the TUI exits,
+# regardless of how it exits (graceful quit, terminal close, crash, etc.).
+# ---------------------------------------------------------------------------
+_win_job_handle = None
+
+if sys.platform == "win32":
+    try:
+        import ctypes.wintypes
+
+        _kernel32 = ctypes.windll.kernel32
+
+        # Job Object constants
+        _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+        class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.wintypes.DWORD),
+                ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                ("PriorityClass", ctypes.wintypes.DWORD),
+                ("SchedulingClass", ctypes.wintypes.DWORD),
+            ]
+
+        class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", ctypes.c_byte * 48),  # IO_COUNTERS
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        _win_job_handle = _kernel32.CreateJobObjectW(None, None)
+        if _win_job_handle:
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            _kernel32.SetInformationJobObject(
+                _win_job_handle,
+                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+    except Exception:
+        _win_job_handle = None
+
+
+def _assign_to_job(proc: subprocess.Popen) -> None:
+    """Assign a subprocess to the Windows Job Object so it dies when we die."""
+    if _win_job_handle is None or sys.platform != "win32":
+        return
+    try:
+        handle = _kernel32.OpenProcess(0x1FFFFF, False, proc.pid)  # PROCESS_ALL_ACCESS
+        if handle:
+            _kernel32.AssignProcessToJobObject(_win_job_handle, handle)
+            _kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1516,6 +1583,7 @@ class HomerunApp(App):
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+            _assign_to_job(proc)
             worker_stream = threading.Thread(
                 target=self._stream_output,
                 args=(proc, tag),
@@ -1743,6 +1811,7 @@ class HomerunApp(App):
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+            _assign_to_job(self.backend_proc)
         except Exception as e:
             self._enqueue_log(
                 f"FATAL: Failed to start backend: {e}",
@@ -1779,6 +1848,7 @@ class HomerunApp(App):
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+            _assign_to_job(self.frontend_proc)
         except Exception as e:
             self._enqueue_log(
                 f"FATAL: Failed to start frontend: {e}",
@@ -2227,8 +2297,26 @@ def main() -> None:
         print(f"Setup not complete. Run {setup_cmd} first.")
         sys.exit(1)
 
+    # On Windows, closing the terminal window sends SIGBREAK. Handle it to
+    # trigger a clean exit (the Job Object will clean up children regardless,
+    # but this lets _kill_children() run for a more orderly shutdown).
+    if sys.platform == "win32":
+        def _sigbreak_handler(signum, frame):
+            os._exit(0)
+        signal.signal(signal.SIGBREAK, _sigbreak_handler)
+
     app = HomerunApp()
     app.run()
+
+    # Close the Job Object handle — this triggers JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    # which terminates ALL child processes (workers, backend, frontend) immediately.
+    # This is the safety net that guarantees cleanup even if _kill_children() missed
+    # something or if the TUI exited abnormally.
+    if _win_job_handle:
+        try:
+            _kernel32.CloseHandle(_win_job_handle)
+        except Exception:
+            pass
 
     # Force-exit to avoid hanging on background thread joins.
     # Textual worker threads (subprocess readers) may still be blocked
