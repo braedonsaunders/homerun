@@ -9,6 +9,7 @@ import {
   CloudRain,
   Brain,
   Thermometer,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
@@ -316,6 +317,30 @@ export default function WeatherWorkflowSettingsFlyout({
                   Celsius
                 </Button>
               </div>
+            </div>
+          </Card>
+
+          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium">Strategy Code</p>
+                <p className="text-[10px] text-muted-foreground">Edit the Weather Edge opportunity strategy source code</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onClose()
+                  setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent('navigate-to-tab', { detail: 'strategies' }))
+                    window.dispatchEvent(new CustomEvent('navigate-strategies-subtab', { detail: { subtab: 'opportunity', sourceFilter: 'weather' } }))
+                  }, 150)
+                }}
+                className="gap-1.5 text-[10px] h-7"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Edit Strategy Code
+              </Button>
             </div>
           </Card>
         </div>
