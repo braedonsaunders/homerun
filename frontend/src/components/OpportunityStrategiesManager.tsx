@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -37,6 +38,7 @@ import {
   updateOpportunityStrategy,
   validateOpportunityStrategy,
 } from '../services/api'
+import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
 
 function parseJsonObject(value: string): { value?: Record<string, unknown>; error?: string } {
   try {
@@ -126,6 +128,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
   const [showDocs, setShowDocs] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
+  const [showApiDocs, setShowApiDocs] = useState(false)
   const [strategyFilterSource, setStrategyFilterSource] = useState<string>(initialSourceFilter || 'all')
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
   const [strategyDraftToken, setStrategyDraftToken] = useState<string | null>(null)
@@ -591,6 +594,16 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
                   variant="outline"
                   size="sm"
                   className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowApiDocs(true)}
+                >
+                  <BookOpen className="w-3 h-3" />
+                  API Docs
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
                   onClick={() => validateStrategyMutation.mutate()}
                   disabled={managerBusy || !strategyEditorCode.trim()}
                 >
@@ -894,6 +907,8 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
           </>
         )}
       </div>
+
+      <StrategyApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} variant="opportunity" />
     </div>
   )
 }

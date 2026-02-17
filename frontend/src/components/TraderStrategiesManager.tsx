@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -35,6 +36,7 @@ import {
   updateTraderStrategy,
   validateTraderStrategy,
 } from '../services/api'
+import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
 
 function parseJsonObject(value: string): { value?: Record<string, unknown>; error?: string } {
   try {
@@ -86,6 +88,7 @@ export default function TraderStrategiesManager() {
   const queryClient = useQueryClient()
   const [showDocs, setShowDocs] = useState(false)
   const [showParams, setShowParams] = useState(false)
+  const [showApiDocs, setShowApiDocs] = useState(false)
   const [strategyFilterSource, setStrategyFilterSource] = useState<string>('all')
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
   const [strategyEditorCode, setStrategyEditorCode] = useState('')
@@ -475,6 +478,16 @@ export default function TraderStrategiesManager() {
                   variant="outline"
                   size="sm"
                   className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowApiDocs(true)}
+                >
+                  <BookOpen className="w-3 h-3" />
+                  API Docs
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
                   onClick={() => validateStrategyMutation.mutate()}
                   disabled={strategyManagerBusy || !selectedStrategy}
                 >
@@ -801,6 +814,8 @@ export default function TraderStrategiesManager() {
           </>
         )}
       </div>
+
+      <StrategyApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} variant="trader" />
     </div>
   )
 }
