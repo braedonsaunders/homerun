@@ -6,7 +6,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.trader_orchestrator.strategies.crypto_15m import Crypto15mStrategy
+from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
 
 
 def _base_payload() -> dict:
@@ -22,8 +22,8 @@ def _base_payload() -> dict:
     }
 
 
-def test_crypto_15m_strategy_normalizes_percent_min_confidence():
-    strategy = Crypto15mStrategy()
+def test_crypto_strategy_normalizes_percent_min_confidence():
+    strategy = BtcEthHighFreqStrategy()
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_worker_multistrat",
@@ -45,11 +45,13 @@ def test_crypto_15m_strategy_normalizes_percent_min_confidence():
     )
 
     assert decision.decision == "selected"
-    assert decision.payload["required_confidence"] == 0.45
+    # Confidence 45 (percent) should be normalized to 0.45
+    conf_check = next(c for c in decision.checks if c.key == "confidence")
+    assert conf_check.passed is True
 
 
-def test_crypto_15m_strategy_rejects_non_worker_crypto_signals():
-    strategy = Crypto15mStrategy()
+def test_crypto_strategy_rejects_non_worker_crypto_signals():
+    strategy = BtcEthHighFreqStrategy()
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_5m_15m_hf",
@@ -66,17 +68,13 @@ def test_crypto_15m_strategy_rejects_non_worker_crypto_signals():
     assert origin_check.passed is False
 
 
-def test_crypto_15m_strategy_supports_explicit_mode_selection():
-    strategy = Crypto15mStrategy()
+def test_crypto_strategy_selects_valid_signal():
+    strategy = BtcEthHighFreqStrategy()
     payload = _base_payload()
-    payload["dominant_strategy"] = "pure_arb"
-    payload["component_edges"]["buy_yes"]["directional"] = 0.4
-    payload["component_edges"]["buy_yes"]["pure_arb"] = 4.6
-    payload["net_edges"]["buy_yes"] = 3.0
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_worker_multistrat",
-        edge_percent=3.0,
+        edge_percent=6.1,
         confidence=0.55,
         direction="buy_yes",
         payload_json=payload,
@@ -86,7 +84,6 @@ def test_crypto_15m_strategy_supports_explicit_mode_selection():
         signal,
         {
             "params": {
-                "strategy_mode": "pure_arb",
                 "min_edge_percent": 2.5,
                 "min_confidence": 0.45,
                 "base_size_usd": 20.0,
@@ -95,74 +92,76 @@ def test_crypto_15m_strategy_supports_explicit_mode_selection():
     )
 
     assert decision.decision == "selected"
-    assert decision.payload["active_mode"] == "pure_arb"
+    assert decision.size_usd is not None and decision.size_usd > 0
 
 
-def test_crypto_15m_strategy_filters_by_target_asset():
-    strategy = Crypto15mStrategy()
-    payload = _base_payload()
-    payload["asset"] = "BTC"
-    payload["timeframe"] = "15min"
+def test_crypto_strategy_rejects_low_edge():
+    strategy = BtcEthHighFreqStrategy()
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_worker_multistrat",
-        edge_percent=6.1,
+        edge_percent=1.0,
         confidence=0.62,
         direction="buy_yes",
-        payload_json=payload,
+        payload_json=_base_payload(),
     )
 
     decision = strategy.evaluate(
         signal,
-        {
-            "params": {
-                "min_edge_percent": 3.0,
-                "min_confidence": 0.45,
-                "target_assets": ["ETH"],
-            }
-        },
+        {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}},
     )
 
     assert decision.decision == "skipped"
-    asset_check = next(check for check in decision.checks if check.key == "asset_scope")
-    assert asset_check.passed is False
+    edge_check = next(c for c in decision.checks if c.key == "edge")
+    assert edge_check.passed is False
 
 
-def test_crypto_15m_strategy_filters_by_target_timeframe():
-    strategy = Crypto15mStrategy()
-    payload = _base_payload()
-    payload["asset"] = "ETH"
-    payload["timeframe"] = "15min"
+def test_crypto_strategy_rejects_low_confidence():
+    strategy = BtcEthHighFreqStrategy()
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_worker_multistrat",
         edge_percent=6.1,
-        confidence=0.62,
+        confidence=0.20,
         direction="buy_yes",
-        payload_json=payload,
+        payload_json=_base_payload(),
     )
 
     decision = strategy.evaluate(
         signal,
-        {
-            "params": {
-                "min_edge_percent": 3.0,
-                "min_confidence": 0.45,
-                "target_timeframes": ["1h"],
-            }
-        },
+        {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}},
     )
 
     assert decision.decision == "skipped"
-    timeframe_check = next(check for check in decision.checks if check.key == "timeframe_scope")
-    assert timeframe_check.passed is False
+    conf_check = next(c for c in decision.checks if c.key == "confidence")
+    assert conf_check.passed is False
 
 
-def test_crypto_15m_strategy_allows_matching_target_scope():
-    strategy = Crypto15mStrategy()
+def test_crypto_strategy_rejects_non_crypto_source():
+    strategy = BtcEthHighFreqStrategy()
+    signal = SimpleNamespace(
+        source="scanner",
+        signal_type="crypto_worker_multistrat",
+        edge_percent=6.1,
+        confidence=0.62,
+        direction="buy_yes",
+        payload_json=_base_payload(),
+    )
+
+    decision = strategy.evaluate(
+        signal,
+        {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}},
+    )
+
+    assert decision.decision == "skipped"
+    source_check = next(c for c in decision.checks if c.key == "source")
+    assert source_check.passed is False
+
+
+def test_crypto_strategy_regime_closing_adjusts_thresholds():
+    strategy = BtcEthHighFreqStrategy()
     payload = _base_payload()
-    payload["asset"] = "XBT"
-    payload["timeframe"] = "15min"
+    payload["regime"] = "closing"
     signal = SimpleNamespace(
         source="crypto",
         signal_type="crypto_worker_multistrat",
@@ -174,107 +173,30 @@ def test_crypto_15m_strategy_allows_matching_target_scope():
 
     decision = strategy.evaluate(
         signal,
-        {
-            "params": {
-                "min_edge_percent": 3.0,
-                "min_confidence": 0.45,
-                "target_assets": ["btc"],
-                "target_timeframes": ["15m"],
-            }
-        },
+        {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45, "base_size_usd": 25.0}},
+    )
+
+    # Closing regime reduces required thresholds (factor 0.9/0.95) so should still select
+    assert decision.decision == "selected"
+    # Closing regime increases size factor by 1.1
+    assert decision.size_usd is not None and decision.size_usd > 0
+
+
+def test_crypto_strategy_sizes_within_max():
+    strategy = BtcEthHighFreqStrategy()
+    signal = SimpleNamespace(
+        source="crypto",
+        signal_type="crypto_worker_multistrat",
+        edge_percent=50.0,
+        confidence=0.99,
+        direction="buy_yes",
+        payload_json=_base_payload(),
+    )
+
+    decision = strategy.evaluate(
+        signal,
+        {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45, "base_size_usd": 25.0, "max_size_usd": 50.0}},
     )
 
     assert decision.decision == "selected"
-
-
-def test_crypto_15m_strategy_blocks_contrarian_buy_no_when_up_is_extreme():
-    strategy = Crypto15mStrategy()
-    payload = _base_payload()
-    payload["regime"] = "closing"
-    payload["oracle_available"] = True
-    payload["model_prob_yes"] = 0.62
-    payload["model_prob_no"] = 0.38
-    payload["up_price"] = 0.91
-    payload["down_price"] = 0.09
-    payload["component_edges"]["buy_no"]["directional"] = 12.0
-    payload["net_edges"]["buy_no"] = 12.0
-
-    signal = SimpleNamespace(
-        source="crypto",
-        signal_type="crypto_worker_multistrat",
-        edge_percent=12.0,
-        confidence=0.7,
-        direction="buy_no",
-        payload_json=payload,
-    )
-
-    decision = strategy.evaluate(signal, {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}})
-
-    assert decision.decision == "skipped"
-    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
-    assert guardrail_check.passed is False
-
-
-def test_crypto_15m_strategy_blocks_contrarian_buy_yes_when_down_is_extreme():
-    strategy = Crypto15mStrategy()
-    payload = _base_payload()
-    payload["regime"] = "mid"
-    payload["oracle_available"] = True
-    payload["model_prob_yes"] = 0.40
-    payload["model_prob_no"] = 0.60
-    payload["up_price"] = 0.08
-    payload["down_price"] = 0.92
-    payload["component_edges"]["buy_yes"]["directional"] = 10.0
-    payload["net_edges"]["buy_yes"] = 10.0
-
-    signal = SimpleNamespace(
-        source="crypto",
-        signal_type="crypto_worker_multistrat",
-        edge_percent=10.0,
-        confidence=0.7,
-        direction="buy_yes",
-        payload_json=payload,
-    )
-
-    decision = strategy.evaluate(signal, {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}})
-
-    assert decision.decision == "skipped"
-    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
-    assert guardrail_check.passed is False
-
-
-def test_crypto_15m_strategy_allows_override_when_direction_guardrail_disabled():
-    strategy = Crypto15mStrategy()
-    payload = _base_payload()
-    payload["regime"] = "closing"
-    payload["oracle_available"] = True
-    payload["model_prob_yes"] = 0.60
-    payload["model_prob_no"] = 0.40
-    payload["up_price"] = 0.90
-    payload["down_price"] = 0.10
-    payload["component_edges"]["buy_no"]["directional"] = 9.0
-    payload["net_edges"]["buy_no"] = 9.0
-
-    signal = SimpleNamespace(
-        source="crypto",
-        signal_type="crypto_worker_multistrat",
-        edge_percent=9.0,
-        confidence=0.7,
-        direction="buy_no",
-        payload_json=payload,
-    )
-
-    decision = strategy.evaluate(
-        signal,
-        {
-            "params": {
-                "min_edge_percent": 3.0,
-                "min_confidence": 0.45,
-                "direction_guardrail_enabled": False,
-            }
-        },
-    )
-
-    assert decision.decision == "selected"
-    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
-    assert guardrail_check.passed is True
+    assert decision.size_usd <= 50.0

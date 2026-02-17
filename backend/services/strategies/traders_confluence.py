@@ -17,14 +17,19 @@ Pipeline:
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from functools import partial
+from utils.converters import safe_float
 
 logger = logging.getLogger(__name__)
+
+_safe_float_nan = partial(safe_float, reject_nan_inf=True)
 
 
 class TradersConfluenceStrategy(BaseStrategy):
@@ -91,15 +96,6 @@ class TradersConfluenceStrategy(BaseStrategy):
             return False
         return default
 
-    @staticmethod
-    def _safe_float(value: object, default: float = 0.0) -> float:
-        try:
-            parsed = float(value)
-        except Exception:
-            return default
-        if parsed != parsed or parsed in (float("inf"), float("-inf")):
-            return default
-        return parsed
 
     @staticmethod
     def _has_direction(signal: dict) -> bool:
@@ -129,13 +125,13 @@ class TradersConfluenceStrategy(BaseStrategy):
     def _confidence(signal: dict) -> float:
         direct = signal.get("firehose_confidence")
         if direct is not None:
-            return max(0.0, min(1.0, TradersConfluenceStrategy._safe_float(direct, 0.0)))
+            return max(0.0, min(1.0, _safe_float_nan(direct, 0.0)))
 
         strength = signal.get("strength")
         if strength is not None:
-            return max(0.0, min(1.0, TradersConfluenceStrategy._safe_float(strength, 0.0)))
+            return max(0.0, min(1.0, _safe_float_nan(strength, 0.0)))
 
-        conviction = TradersConfluenceStrategy._safe_float(signal.get("conviction_score"), 0.0)
+        conviction = _safe_float_nan(signal.get("conviction_score"), 0.0)
         if conviction > 1.0:
             conviction = conviction / 100.0
         return max(0.0, min(1.0, conviction))
@@ -200,14 +196,14 @@ class TradersConfluenceStrategy(BaseStrategy):
         if exclude_crypto and is_crypto:
             reasons.append("crypto_market_excluded")
 
-        max_age_minutes = self._safe_float(config.get("firehose_max_age_minutes"), 0.0)
-        age_minutes = self._safe_float(signal.get("firehose_age_minutes"), 0.0)
+        max_age_minutes = _safe_float_nan(config.get("firehose_max_age_minutes"), 0.0)
+        age_minutes = _safe_float_nan(signal.get("firehose_age_minutes"), 0.0)
         checks["within_age_limit"] = max_age_minutes <= 0 or age_minutes <= max_age_minutes
         if max_age_minutes > 0 and age_minutes > max_age_minutes:
             reasons.append("signal_too_old")
 
         confidence = self._confidence(signal)
-        min_conf = self._safe_float(config.get("min_confidence"), 0.0)
+        min_conf = _safe_float_nan(config.get("min_confidence"), 0.0)
         checks["meets_min_confidence"] = confidence >= min_conf
         if confidence < min_conf:
             reasons.append("confidence_below_threshold")
@@ -218,19 +214,19 @@ class TradersConfluenceStrategy(BaseStrategy):
         if signal_tier < min_tier:
             reasons.append("tier_below_threshold")
 
-        min_wallet_count = max(1, int(self._safe_float(config.get("min_wallet_count"), 2)))
-        wallet_count = int(self._safe_float(signal.get("cluster_adjusted_wallet_count"), 0))
+        min_wallet_count = max(1, int(_safe_float_nan(config.get("min_wallet_count"), 2)))
+        wallet_count = int(_safe_float_nan(signal.get("cluster_adjusted_wallet_count"), 0))
         if wallet_count <= 0:
-            wallet_count = int(self._safe_float(signal.get("wallet_count"), 0))
+            wallet_count = int(_safe_float_nan(signal.get("wallet_count"), 0))
         checks["meets_min_wallet_count"] = wallet_count >= min_wallet_count
         if wallet_count < min_wallet_count:
             reasons.append("insufficient_wallet_count")
 
-        max_entry_price = self._safe_float(config.get("max_entry_price"), 1.0)
+        max_entry_price = _safe_float_nan(config.get("max_entry_price"), 1.0)
         entry_price = signal.get("avg_entry_price")
         if entry_price is None:
             entry_price = signal.get("entry_price")
-        parsed_entry = self._safe_float(entry_price, 1.0)
+        parsed_entry = _safe_float_nan(entry_price, 1.0)
         checks["entry_price_within_bounds"] = parsed_entry <= max_entry_price
         if parsed_entry > max_entry_price:
             reasons.append("entry_price_too_high")
@@ -271,8 +267,8 @@ class TradersConfluenceStrategy(BaseStrategy):
 
         output.sort(
             key=lambda signal: (
-                self._safe_float(signal.get("conviction_score"), 0.0),
-                self._safe_float(
+                _safe_float_nan(signal.get("conviction_score"), 0.0),
+                _safe_float_nan(
                     signal.get("cluster_adjusted_wallet_count", signal.get("wallet_count")),
                     0.0,
                 ),
@@ -492,3 +488,117 @@ class TradersConfluenceStrategy(BaseStrategy):
             mispricing_type=MispricingType.NEWS_INFORMATION,
             positions_to_take=positions,
         )
+
+    # ------------------------------------------------------------------
+    # Evaluate / Should-Exit  (unified strategy interface)
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Evaluate traders confluence signal with channel strength gating."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+
+        # Channel derivation: payload.traders_channel -> signal_type fallback
+        payload_channel = str(payload.get("traders_channel") or "").strip().lower()
+        if payload_channel:
+            channel = payload_channel
+        else:
+            signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
+            if signal_type == "confluence":
+                channel = "confluence"
+            else:
+                channel = signal_type or "unknown"
+
+        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.48), 0.48)
+        min_confluence_strength = to_confidence(
+            params.get("min_confluence_strength", 0.55),
+            0.55,
+        )
+        base_size = to_float(params.get("base_size_usd", 18.0), 18.0)
+        max_size = max(1.0, to_float(params.get("max_size_usd", 120.0), 120.0))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        confluence_strength = to_confidence(
+            payload.get("strength", payload.get("conviction_score", 0.0)),
+            0.0,
+        )
+
+        source_ok = source == "traders"
+        channel_ok = channel == "confluence"
+        channel_threshold_ok = channel == "confluence" and confluence_strength >= min_confluence_strength
+
+        checks = [
+            DecisionCheck(
+                "source",
+                "Unified traders source",
+                source_ok,
+                detail="Requires source=traders.",
+            ),
+            DecisionCheck(
+                "channel",
+                "Supported traders channel",
+                channel_ok,
+                detail="Requires confluence channel.",
+            ),
+            DecisionCheck(
+                "channel_threshold",
+                "Channel strength threshold",
+                channel_threshold_ok,
+                score=confluence_strength,
+                detail=f"confluence>={min_confluence_strength:.2f}",
+            ),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+        ]
+
+        if not all(check.passed for check in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="Traders flow filters not met",
+                score=(edge * 0.6) + (confidence * 40.0),
+                checks=checks,
+                payload={
+                    "channel": channel,
+                    "edge": edge,
+                    "confidence": confidence,
+                    "confluence_strength": confluence_strength,
+                    "min_edge_percent": min_edge,
+                    "min_confidence": min_conf,
+                    "min_confluence_strength": min_confluence_strength,
+                },
+            )
+
+        channel_score = confluence_strength
+        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.9 + channel_score)
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision(
+            decision="selected",
+            reason=f"Traders flow {channel} signal selected",
+            score=(edge * 0.55) + (confidence * 35.0) + (channel_score * 10.0),
+            size_usd=size,
+            checks=checks,
+            payload={
+                "channel": channel,
+                "edge": edge,
+                "confidence": confidence,
+                "confluence_strength": confluence_strength,
+                "size_usd": size,
+            },
+        )
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Traders confluence: standard TP/SL exit."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        return self.default_exit_check(position, market_state)

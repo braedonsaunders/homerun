@@ -13,6 +13,7 @@ from typing import Any, Optional
 import httpx
 
 from config import settings
+from utils.converters import to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,6 @@ _CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS = float(
 _CHOKEPOINTS_MAX_DAILY_ROWS = int(max(100, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_MAX_DAILY_ROWS", 500) or 500))
 
 _STATIC_REGIONS_FILE = Path(__file__).resolve().parents[2] / "data" / "world_intelligence" / "regions.json"
-
-
-def _to_iso(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    else:
-        value = value.astimezone(timezone.utc)
-    return value.replace(tzinfo=None).isoformat() + "Z"
 
 
 def _to_utc_datetime_from_epoch_ms(value: Any) -> Optional[datetime]:
@@ -118,7 +109,7 @@ class ChokepointFeed:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, datetime):
-            return _to_iso(value)
+            return to_iso(value)
         return str(value)
 
     def seed_cache(
@@ -297,7 +288,7 @@ class ChokepointFeed:
                 "daily_transit_general_cargo": _coerce_int(attrs.get("n_general_cargo")),
                 "daily_transit_roro": _coerce_int(attrs.get("n_roro")),
                 "daily_capacity_estimate": _coerce_int(attrs.get("capacity")),
-                "daily_metrics_date": _to_iso(_to_utc_datetime_from_epoch_ms(attrs.get("date"))),
+                "daily_metrics_date": to_iso(_to_utc_datetime_from_epoch_ms(attrs.get("date"))),
             }
         return by_portid, latest_dt
 
@@ -342,8 +333,8 @@ class ChokepointFeed:
                     metrics = daily_metrics.get(str(point.get("portid") or ""), {})
                     item = dict(point)
                     item.update(metrics)
-                    item["daily_dataset_updated_at"] = _to_iso(daily_latest_dt)
-                    item["last_updated"] = _to_iso(datetime.now(timezone.utc))
+                    item["daily_dataset_updated_at"] = to_iso(daily_latest_dt)
+                    item["last_updated"] = to_iso(datetime.now(timezone.utc))
                     merged.append(item)
                 merged.sort(
                     key=lambda item: (
@@ -401,7 +392,7 @@ class ChokepointFeed:
             "enabled": _CHOKEPOINTS_ENABLED,
             "source": self._last_source,
             "last_error": self._last_error,
-            "last_updated": _to_iso(self._last_updated_at),
+            "last_updated": to_iso(self._last_updated_at),
             "cache_ttl_seconds": _CHOKEPOINTS_REFRESH_SECONDS,
             "request_timeout_seconds": _CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS,
             "max_daily_rows": _CHOKEPOINTS_MAX_DAILY_ROWS,

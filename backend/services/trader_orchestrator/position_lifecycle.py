@@ -12,18 +12,12 @@ from models.database import TradeSignal, TraderOrder
 from services.polymarket import polymarket_client
 from services.simulation import simulation_service
 from utils.utcnow import utcnow
+from utils.converters import safe_float
 
 logger = logging.getLogger("position_lifecycle")
 
 PAPER_ACTIVE_STATUSES = {"submitted", "executed", "open"}
 LIVE_ACTIVE_STATUSES = {"submitted", "executed", "open"}
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    try:
-        return float(value)
-    except Exception:
-        return None
 
 
 def _safe_bool(value: Any, default: bool = False) -> bool:
@@ -59,7 +53,7 @@ def _extract_signal_side_price(payload: dict[str, Any], outcome_idx: int) -> Opt
             f"{prefix}_mid",
             f"{prefix}Mid",
         ):
-            parsed = _safe_float(payload.get(key))
+            parsed = safe_float(payload.get(key))
             if parsed is not None and parsed >= 0:
                 return parsed
 
@@ -67,7 +61,7 @@ def _extract_signal_side_price(payload: dict[str, Any], outcome_idx: int) -> Opt
     if not isinstance(prices, list):
         prices = payload.get("outcomePrices")
     if isinstance(prices, list) and len(prices) > outcome_idx:
-        parsed = _safe_float(prices[outcome_idx])
+        parsed = safe_float(prices[outcome_idx])
         if parsed is not None and parsed >= 0:
             return parsed
     return None
@@ -77,12 +71,12 @@ def _extract_market_side_price(market_info: Optional[dict[str, Any]], outcome_id
     if not isinstance(market_info, dict):
         return None
     key = "yes_price" if outcome_idx == 0 else "no_price"
-    parsed = _safe_float(market_info.get(key))
+    parsed = safe_float(market_info.get(key))
     if parsed is not None and parsed >= 0:
         return parsed
     prices = market_info.get("outcome_prices")
     if isinstance(prices, list) and len(prices) > outcome_idx:
-        parsed = _safe_float(prices[outcome_idx])
+        parsed = safe_float(prices[outcome_idx])
         if parsed is not None and parsed >= 0:
             return parsed
     return None
@@ -138,8 +132,8 @@ def _extract_winning_outcome_index_from_prices(
     settle_floor = min(1.0, max(0.5, settle_floor))
     settle_ceiling = max(0.0, 1.0 - settle_floor)
 
-    yes_price = _safe_float(market_info.get("yes_price"))
-    no_price = _safe_float(market_info.get("no_price"))
+    yes_price = safe_float(market_info.get("yes_price"))
+    no_price = safe_float(market_info.get("no_price"))
     if yes_price is None or no_price is None:
         prices = market_info.get("outcome_prices")
         if isinstance(prices, list) and len(prices) >= 2:
@@ -147,7 +141,7 @@ def _extract_winning_outcome_index_from_prices(
             if isinstance(outcomes, list) and len(outcomes) == len(prices):
                 for idx, raw_label in enumerate(outcomes):
                     label = str(raw_label or "").strip().lower()
-                    parsed = _safe_float(prices[idx])
+                    parsed = safe_float(prices[idx])
                     if parsed is None:
                         continue
                     if yes_price is None and label in {"yes", "up", "true"}:
@@ -155,9 +149,9 @@ def _extract_winning_outcome_index_from_prices(
                     if no_price is None and label in {"no", "down", "false"}:
                         no_price = parsed
             if yes_price is None:
-                yes_price = _safe_float(prices[0])
+                yes_price = safe_float(prices[0])
             if no_price is None:
-                no_price = _safe_float(prices[1])
+                no_price = safe_float(prices[1])
 
     yes_price = _state_price_floor(yes_price)
     no_price = _state_price_floor(no_price)
@@ -219,17 +213,17 @@ async def reconcile_paper_positions(
     reason: str = "paper_position_lifecycle",
 ) -> dict[str, Any]:
     params = dict(trader_params or {})
-    take_profit_pct = _safe_float(params.get("paper_take_profit_pct"))
-    stop_loss_pct = _safe_float(params.get("paper_stop_loss_pct"))
-    max_hold_minutes = _safe_float(params.get("paper_max_hold_minutes"))
-    min_hold_minutes = max(0.0, _safe_float(params.get("paper_min_hold_minutes")) or 0.0)
-    trailing_stop_pct = _safe_float(params.get("paper_trailing_stop_pct"))
+    take_profit_pct = safe_float(params.get("paper_take_profit_pct"))
+    stop_loss_pct = safe_float(params.get("paper_stop_loss_pct"))
+    max_hold_minutes = safe_float(params.get("paper_max_hold_minutes"))
+    min_hold_minutes = max(0.0, safe_float(params.get("paper_min_hold_minutes")) or 0.0)
+    trailing_stop_pct = safe_float(params.get("paper_trailing_stop_pct"))
     resolve_only = _safe_bool(params.get("paper_resolve_only"), False)
     close_on_inactive_market = _safe_bool(params.get("paper_close_on_inactive_market"), False)
     resolution_infer_from_prices = _safe_bool(params.get("paper_resolution_infer_from_prices"), True)
     resolution_settle_floor = min(
         1.0,
-        max(0.5, _safe_float(params.get("paper_resolution_settle_floor")) or 0.98),
+        max(0.5, safe_float(params.get("paper_resolution_settle_floor")) or 0.98),
     )
 
     candidates = list(
@@ -263,7 +257,10 @@ async def reconcile_paper_positions(
                 select(TradeSignal.id, TradeSignal.payload_json).where(TradeSignal.id.in_(signal_ids))
             )
         ).all()
-        signal_payloads = {str(row.id): dict(row.payload_json or {}) for row in signal_rows}
+        signal_payloads = {
+            str(row.id): dict(row.payload_json or {})
+            for row in signal_rows
+        }
 
     market_info_by_id = await load_market_info_for_orders(candidates)
 
@@ -279,10 +276,10 @@ async def reconcile_paper_positions(
     state_updates = 0
 
     for row in candidates:
-        entry_price = _safe_float(row.effective_price)
+        entry_price = safe_float(row.effective_price)
         if entry_price is None or entry_price <= 0:
-            entry_price = _safe_float(row.entry_price)
-        notional = _safe_float(row.notional_usd) or 0.0
+            entry_price = safe_float(row.entry_price)
+        notional = safe_float(row.notional_usd) or 0.0
         outcome_idx = _direction_outcome_index(row.direction)
         if outcome_idx is None or entry_price is None or entry_price <= 0 or notional <= 0:
             skipped += 1
@@ -327,9 +324,9 @@ async def reconcile_paper_positions(
 
         payload = dict(row.payload_json or {})
         position_state = _extract_position_state(payload)
-        prev_high = _safe_float(position_state.get("highest_price"))
-        prev_low = _safe_float(position_state.get("lowest_price"))
-        prev_last_mark = _safe_float(position_state.get("last_mark_price"))
+        prev_high = safe_float(position_state.get("highest_price"))
+        prev_low = safe_float(position_state.get("lowest_price"))
+        prev_last_mark = safe_float(position_state.get("last_mark_price"))
         prev_mark_source = str(position_state.get("last_mark_source") or "")
         highest_price = prev_high
         lowest_price = prev_low
@@ -369,48 +366,61 @@ async def reconcile_paper_positions(
                 # If the strategy that opened this position has a
                 # should_exit() method, call it first and respect its
                 # decision before falling through to default TP/SL/etc.
+                # Tries plugin_loader first, then DB-loaded unified strategies.
                 strategy_slug = (payload.get("strategy_type") or "").strip().lower()
                 strategy_exit = None
+                _exit_instance = None
                 if strategy_slug:
                     from services.plugin_loader import plugin_loader
-
                     plugin = plugin_loader.get_plugin(strategy_slug)
                     if plugin and hasattr(plugin.instance, "should_exit"):
+                        _exit_instance = plugin.instance
+                    if _exit_instance is None:
                         try:
+                            from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
+                            db_strat = strategy_db_loader.get_strategy(strategy_slug)
+                            if db_strat and hasattr(db_strat, "should_exit"):
+                                _exit_instance = db_strat
+                        except Exception:
+                            pass
+                if _exit_instance is not None:
+                    try:
+                        class _PaperPositionView:
+                            pass
+                        pos_view = _PaperPositionView()
+                        pos_view.entry_price = entry_price
+                        pos_view.current_price = current_price
+                        pos_view.highest_price = highest_price
+                        pos_view.lowest_price = lowest_price
+                        pos_view.age_minutes = age_minutes
+                        pos_view.pnl_percent = pnl_pct
+                        pos_view.strategy_context = payload.get("strategy_context", {})
+                        pos_view.config = payload.get("strategy_exit_config", {})
+                        pos_view.outcome_idx = outcome_idx
 
-                            class _PaperPositionView:
-                                pass
+                        market_state_dict = {
+                            "current_price": current_price,
+                            "market_tradable": market_tradable,
+                            "is_resolved": False,
+                            "winning_outcome": None,
+                        }
 
-                            pos_view = _PaperPositionView()
-                            pos_view.entry_price = entry_price
-                            pos_view.current_price = current_price
-                            pos_view.highest_price = highest_price
-                            pos_view.lowest_price = lowest_price
-                            pos_view.age_minutes = age_minutes
-                            pos_view.pnl_percent = pnl_pct
-                            pos_view.strategy_context = payload.get("strategy_context", {})
-                            pos_view.config = payload.get("strategy_exit_config", {})
-                            pos_view.outcome_idx = outcome_idx
-
-                            market_state_dict = {
-                                "current_price": current_price,
-                                "market_tradable": market_tradable,
-                                "is_resolved": False,
-                                "winning_outcome": None,
-                            }
-
-                            exit_decision = plugin.instance.should_exit(pos_view, market_state_dict)
-                            if exit_decision is not None and getattr(exit_decision, "action", None) == "close":
-                                strategy_exit = exit_decision
-                        except Exception as exc:
-                            logger.warning(
-                                "Strategy should_exit() error for %s: %s",
-                                strategy_slug,
-                                exc,
-                            )
+                        exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
+                        if exit_decision is not None and getattr(exit_decision, "action", None) == "close":
+                            strategy_exit = exit_decision
+                    except Exception as exc:
+                        logger.warning(
+                            "Strategy should_exit() error for %s: %s",
+                            strategy_slug,
+                            exc,
+                        )
 
                 if strategy_exit is not None:
-                    close_price = strategy_exit.close_price if strategy_exit.close_price is not None else current_price
+                    close_price = (
+                        strategy_exit.close_price
+                        if strategy_exit.close_price is not None
+                        else current_price
+                    )
                     close_trigger = f"strategy:{strategy_exit.reason}"
                     price_source = current_price_source
                 elif (
@@ -523,9 +533,9 @@ async def reconcile_paper_positions(
                         proceeds = float(simulation_close.get("actual_payout", proceeds))
                 except Exception as exc:
                     skipped += 1
-                    skipped_reasons["simulation_close_error"] = (
-                        int(skipped_reasons.get("simulation_close_error", 0)) + 1
-                    )
+                    skipped_reasons["simulation_close_error"] = int(
+                        skipped_reasons.get("simulation_close_error", 0)
+                    ) + 1
                     details.append(
                         {
                             "order_id": row.id,
@@ -628,17 +638,17 @@ async def reconcile_live_positions(
     simulation ledger (that is paper-only).
     """
     params = dict(trader_params or {})
-    take_profit_pct = _safe_float(params.get("live_take_profit_pct"))
-    stop_loss_pct = _safe_float(params.get("live_stop_loss_pct"))
-    max_hold_minutes = _safe_float(params.get("live_max_hold_minutes"))
-    min_hold_minutes = max(0.0, _safe_float(params.get("live_min_hold_minutes")) or 0.0)
-    trailing_stop_pct = _safe_float(params.get("live_trailing_stop_pct"))
+    take_profit_pct = safe_float(params.get("live_take_profit_pct"))
+    stop_loss_pct = safe_float(params.get("live_stop_loss_pct"))
+    max_hold_minutes = safe_float(params.get("live_max_hold_minutes"))
+    min_hold_minutes = max(0.0, safe_float(params.get("live_min_hold_minutes")) or 0.0)
+    trailing_stop_pct = safe_float(params.get("live_trailing_stop_pct"))
     resolve_only = _safe_bool(params.get("live_resolve_only"), False)
     close_on_inactive_market = _safe_bool(params.get("live_close_on_inactive_market"), False)
     resolution_infer_from_prices = _safe_bool(params.get("live_resolution_infer_from_prices"), True)
     resolution_settle_floor = min(
         1.0,
-        max(0.5, _safe_float(params.get("live_resolution_settle_floor")) or 0.98),
+        max(0.5, safe_float(params.get("live_resolution_settle_floor")) or 0.98),
     )
 
     candidates = list(
@@ -672,7 +682,10 @@ async def reconcile_live_positions(
                 select(TradeSignal.id, TradeSignal.payload_json).where(TradeSignal.id.in_(signal_ids))
             )
         ).all()
-        signal_payloads = {str(row.id): dict(row.payload_json or {}) for row in signal_rows}
+        signal_payloads = {
+            str(row.id): dict(row.payload_json or {})
+            for row in signal_rows
+        }
 
     market_info_by_id = await load_market_info_for_orders(candidates)
 
@@ -688,10 +701,10 @@ async def reconcile_live_positions(
     state_updates = 0
 
     for row in candidates:
-        entry_price = _safe_float(row.effective_price)
+        entry_price = safe_float(row.effective_price)
         if entry_price is None or entry_price <= 0:
-            entry_price = _safe_float(row.entry_price)
-        notional = _safe_float(row.notional_usd) or 0.0
+            entry_price = safe_float(row.entry_price)
+        notional = safe_float(row.notional_usd) or 0.0
         outcome_idx = _direction_outcome_index(row.direction)
         if outcome_idx is None or entry_price is None or entry_price <= 0 or notional <= 0:
             skipped += 1
@@ -736,9 +749,9 @@ async def reconcile_live_positions(
 
         payload = dict(row.payload_json or {})
         position_state = _extract_position_state(payload)
-        prev_high = _safe_float(position_state.get("highest_price"))
-        prev_low = _safe_float(position_state.get("lowest_price"))
-        prev_last_mark = _safe_float(position_state.get("last_mark_price"))
+        prev_high = safe_float(position_state.get("highest_price"))
+        prev_low = safe_float(position_state.get("lowest_price"))
+        prev_last_mark = safe_float(position_state.get("last_mark_price"))
         prev_mark_source = str(position_state.get("last_mark_source") or "")
         highest_price = prev_high
         lowest_price = prev_low
@@ -782,14 +795,11 @@ async def reconcile_live_positions(
                 strategy_exit = None
                 if strategy_slug:
                     from services.plugin_loader import plugin_loader
-
                     plugin = plugin_loader.get_plugin(strategy_slug)
                     if plugin and hasattr(plugin.instance, "should_exit"):
                         try:
-
                             class _LivePositionView:
                                 pass
-
                             pos_view = _LivePositionView()
                             pos_view.entry_price = entry_price
                             pos_view.current_price = current_price
@@ -819,7 +829,11 @@ async def reconcile_live_positions(
                             )
 
                 if strategy_exit is not None:
-                    close_price = strategy_exit.close_price if strategy_exit.close_price is not None else current_price
+                    close_price = (
+                        strategy_exit.close_price
+                        if strategy_exit.close_price is not None
+                        else current_price
+                    )
                     close_trigger = f"strategy:{strategy_exit.reason}"
                     price_source = current_price_source
                 elif (

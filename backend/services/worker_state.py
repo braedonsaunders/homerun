@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import WorkerControl, WorkerSnapshot
 from services.event_bus import event_bus
+from utils.converters import to_iso
 
 
 DEFAULT_WORKER_INTERVALS: dict[str, int] = {
@@ -27,16 +28,6 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
 
 def _now() -> datetime:
     return utcnow()
-
-
-def _to_iso(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
 def _default_interval(worker_name: str) -> int:
@@ -163,25 +154,20 @@ async def write_worker_snapshot(
 
     # Publish worker status update event.
     try:
-        await event_bus.publish(
-            "worker_status_update",
-            {
-                "workers": [
-                    {
-                        "worker_name": worker_name,
-                        "running": bool(running),
-                        "enabled": bool(enabled),
-                        "current_activity": current_activity,
-                        "interval_seconds": int(row.interval_seconds or _default_interval(worker_name)),
-                        "last_run_at": _to_iso(last_run_at),
-                        "lag_seconds": lag_seconds,
-                        "last_error": last_error,
-                        "stats": stats or {},
-                        "updated_at": _to_iso(row.updated_at),
-                    }
-                ],
-            },
-        )
+        await event_bus.publish("worker_status_update", {
+            "workers": [{
+                "worker_name": worker_name,
+                "running": bool(running),
+                "enabled": bool(enabled),
+                "current_activity": current_activity,
+                "interval_seconds": int(row.interval_seconds or _default_interval(worker_name)),
+                "last_run_at": to_iso(last_run_at),
+                "lag_seconds": lag_seconds,
+                "last_error": last_error,
+                "stats": stats or {},
+                "updated_at": to_iso(row.updated_at),
+            }],
+        })
     except Exception:
         pass  # fire-and-forget
 
@@ -213,11 +199,11 @@ async def read_worker_snapshot(
         "enabled": bool(row.enabled),
         "current_activity": row.current_activity,
         "interval_seconds": int(row.interval_seconds or _default_interval(worker_name)),
-        "last_run_at": _to_iso(row.last_run_at),
+        "last_run_at": to_iso(row.last_run_at),
         "lag_seconds": row.lag_seconds,
         "last_error": row.last_error,
         "stats": row.stats_json or {},
-        "updated_at": _to_iso(row.updated_at),
+        "updated_at": to_iso(row.updated_at),
     }
 
 
@@ -236,11 +222,11 @@ async def list_worker_snapshots(session: AsyncSession) -> list[dict[str, Any]]:
                 "enabled": bool(row.enabled),
                 "current_activity": row.current_activity,
                 "interval_seconds": int(row.interval_seconds or _default_interval(row.worker_name)),
-                "last_run_at": _to_iso(row.last_run_at),
+                "last_run_at": to_iso(row.last_run_at),
                 "lag_seconds": row.lag_seconds,
                 "last_error": row.last_error,
                 "stats": row.stats_json or {},
-                "updated_at": _to_iso(row.updated_at),
+                "updated_at": to_iso(row.updated_at),
             }
         )
 

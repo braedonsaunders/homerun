@@ -53,6 +53,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.basic",
         class_name="BasicArbStrategy",
         sort_order=10,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="negrisk",
@@ -62,6 +71,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.negrisk",
         class_name="NegRiskStrategy",
         sort_order=20,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_markets", "label": "Min Markets", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="mutually_exclusive",
@@ -71,6 +90,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.mutually_exclusive",
         class_name="MutuallyExclusiveStrategy",
         sort_order=30,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_markets", "label": "Min Markets", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="contradiction",
@@ -80,6 +109,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.contradiction",
         class_name="ContradictionStrategy",
         sort_order=40,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_markets", "label": "Min Markets", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="must_happen",
@@ -89,6 +128,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.must_happen",
         class_name="MustHappenStrategy",
         sort_order=50,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_markets", "label": "Min Markets", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="miracle",
@@ -98,6 +147,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.miracle",
         class_name="MiracleStrategy",
         sort_order=60,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="combinatorial",
@@ -107,6 +165,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.combinatorial",
         class_name="CombinatorialStrategy",
         sort_order=70,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_markets", "label": "Min Markets", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="settlement_lag",
@@ -116,6 +184,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.settlement_lag",
         class_name="SettlementLagStrategy",
         sort_order=80,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="cross_platform",
@@ -125,6 +202,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.cross_platform",
         class_name="CrossPlatformStrategy",
         sort_order=90,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="bayesian_cascade",
@@ -134,6 +220,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.bayesian_cascade",
         class_name="BayesianCascadeStrategy",
         sort_order=100,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="liquidity_vacuum",
@@ -143,6 +238,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.liquidity_vacuum",
         class_name="LiquidityVacuumStrategy",
         sort_order=110,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="entropy_arb",
@@ -152,6 +256,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.entropy_arb",
         class_name="EntropyArbStrategy",
         sort_order=120,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="event_driven",
@@ -161,6 +274,16 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.event_driven",
         class_name="EventDrivenStrategy",
         sort_order=130,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="temporal_decay",
@@ -170,6 +293,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.temporal_decay",
         class_name="TemporalDecayStrategy",
         sort_order=140,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="correlation_arb",
@@ -179,6 +311,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.correlation_arb",
         class_name="CorrelationArbStrategy",
         sort_order=150,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="market_making",
@@ -188,6 +329,17 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.market_making",
         class_name="MarketMakingStrategy",
         sort_order=160,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+                {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="stat_arb",
@@ -197,6 +349,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.stat_arb",
         class_name="StatArbStrategy",
         sort_order=170,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+            ]
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="flash_crash_reversion",

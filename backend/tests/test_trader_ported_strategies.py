@@ -9,11 +9,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.trader_orchestrator.strategies.crypto_spike_reversion import CryptoSpikeReversionStrategy
-from services.trader_orchestrator.strategies.opportunity_ported import (
-    OpportunityFlashReversionStrategy,
-    OpportunityTailCarryStrategy,
-)
+from services.strategies.crypto_spike_reversion import CryptoSpikeReversionStrategy
+from services.strategies.flash_crash_reversion import FlashCrashReversionStrategy
+from services.strategies.tail_end_carry import TailEndCarryStrategy
 
 
 def _signal(**kwargs):
@@ -41,8 +39,8 @@ def _live_context(*, move_5m: float, move_30m: float, move_2h: float) -> dict:
     }
 
 
-def test_opportunity_flash_reversion_selects_when_alignment_and_risk_pass() -> None:
-    strategy = OpportunityFlashReversionStrategy()
+def test_flash_reversion_selects_when_alignment_and_risk_pass() -> None:
+    strategy = FlashCrashReversionStrategy()
     signal = _signal(
         payload_json={
             "strategy": "flash_crash_reversion",
@@ -68,8 +66,8 @@ def test_opportunity_flash_reversion_selects_when_alignment_and_risk_pass() -> N
     assert decision.payload.get("sizing", {}).get("policy") == "kelly"
 
 
-def test_opportunity_flash_reversion_skips_when_move_not_aligned() -> None:
-    strategy = OpportunityFlashReversionStrategy()
+def test_flash_reversion_skips_when_move_not_aligned() -> None:
+    strategy = FlashCrashReversionStrategy()
     signal = _signal(
         direction="buy_yes",
         payload_json={
@@ -91,8 +89,8 @@ def test_opportunity_flash_reversion_skips_when_move_not_aligned() -> None:
     assert check.passed is False
 
 
-def test_opportunity_tail_carry_selects_for_near_expiry_window() -> None:
-    strategy = OpportunityTailCarryStrategy()
+def test_tail_carry_selects_for_near_expiry_window() -> None:
+    strategy = TailEndCarryStrategy()
     resolution_date = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat().replace("+00:00", "Z")
     signal = _signal(
         edge_percent=2.3,

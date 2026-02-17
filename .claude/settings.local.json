@@ -59,7 +59,14 @@
       "Bash(npm run build:*)",
       "Bash(./venv/bin/python:*)",
       "Bash(xargs:*)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun\\\\backend && python -c \"\"from services.trader_orchestrator.strategy_catalog import build_system_strategy_rows; rows = build_system_strategy_rows\\(\\); r = rows[0]; print\\(''strategy_key:'', r[''strategy_key'']\\); print\\(''slug:'', r[''slug'']\\); print\\(''OK''\\)\"\"\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun\\\\backend && ..\\\\venv\\\\Scripts\\\\python.exe -c \"\"from services.trader_orchestrator.strategy_catalog import build_system_strategy_rows; rows = build_system_strategy_rows\\(\\); r = rows[0]; print\\(''strategy_key:'', r[''strategy_key'']\\); print\\(''slug:'', r[''slug'']\\); print\\(''OK''\\)\"\"\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun\\\\backend && C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"\"from services.trader_orchestrator.strategy_catalog import build_system_strategy_rows; rows = build_system_strategy_rows\\(\\); r = rows[0]; print\\(''strategy_key:'', r[''strategy_key'']\\); print\\(''slug:'', r[''slug'']\\); print\\(''OK''\\)\"\"\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun && git status\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun && git diff backend/services/trader_orchestrator/strategy_catalog.py\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun && git log --oneline -5\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\bsaunders\\\\Documents\\\\homerun && git add backend/services/trader_orchestrator/strategy_catalog.py && git commit -m \"\"Fix KeyError: ''strategy_key'' crashing all services on startup\n\nbuild_system_strategy_rows\\(\\) was refactored to return unified strategies table\nkeys \\(slug, name, config\\) but older Alembic migrations \\(202602160001,\n202602170001\\) still access the legacy trader_strategy_definitions keys\n\\(strategy_key, label, default_params_json\\). Add legacy key aliases to the\nreturned dict and filter them out when constructing Strategy ORM objects.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\"\"\")"
     ]
   }
 }

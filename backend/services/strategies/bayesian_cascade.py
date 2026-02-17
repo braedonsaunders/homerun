@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType, MispricingType
 from config import settings
-from .base import BaseStrategy
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -730,3 +731,45 @@ class BayesianCascadeStrategy(BaseStrategy):
         stale_ids = [k for k in self._prev_prices if k not in active_ids]
         for sid in stale_ids:
             del self._prev_prices[sid]
+
+    # ------------------------------------------------------------------
+    # Unified evaluate / should_exit
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Bayesian cascade evaluation with probability graph edge gating."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 3.5), 3.5)
+        min_conf = to_confidence(params.get("min_confidence", 0.45), 0.45)
+        max_risk = to_confidence(params.get("max_risk_score", 0.75), 0.75)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 18.0), 18.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 150.0), 150.0))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+        market_count = len(payload.get("markets") or [])
+
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        score = (edge * 0.60) + (confidence * 32.0) + (min(4, market_count) * 1.5) - (risk_score * 9.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision("skipped", "Bayesian cascade filters not met", score=score, checks=checks)
+
+        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence)
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision("selected", "Bayesian cascade signal selected", score=score, size_usd=size, checks=checks)
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Bayesian cascade: standard TP/SL exit."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        return self.default_exit_check(position, market_state)

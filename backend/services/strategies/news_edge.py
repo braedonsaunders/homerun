@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market, StrategyType
@@ -32,7 +32,8 @@ from models.opportunity import MispricingType
 from services.news.edge_detector import NewsEdge
 from services.news.feed_service import news_feed_service
 from services.news.semantic_matcher import MarketInfo, semantic_matcher
-from services.strategies.base import BaseStrategy
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
 
 logger = logging.getLogger(__name__)
 
@@ -324,3 +325,58 @@ class NewsEdgeStrategy(BaseStrategy):
         )
 
         return opp
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        params = context.get("params") or {}
+        min_edge = to_float(params.get("min_edge_percent", 8.0), 8.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.55), 0.55)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 20.0), 20.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 200.0), 200.0))
+
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        source_ok = source in {"news"}
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+
+        checks = [
+            DecisionCheck("source", "News-capable source", source_ok, detail="news"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.1f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+        ]
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="News reaction filters not met",
+                score=(edge + confidence) / 2.0,
+                checks=checks,
+                payload={"source": source, "edge": edge, "confidence": confidence},
+            )
+
+        size = max(1.0, min(max_size, base_size * (1.0 + confidence)))
+        return StrategyDecision(
+            decision="selected",
+            reason="News reaction signal selected",
+            score=(edge * 0.55) + (confidence * 45.0),
+            size_usd=size,
+            checks=checks,
+            payload={"source": source, "edge": edge, "confidence": confidence},
+        )
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """News edge decays quickly -- exit on time or standard TP/SL."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        age_minutes = float(getattr(position, "age_minutes", 0) or 0)
+        max_hold = float(config.get("max_hold_minutes", 240) or 240)
+        if age_minutes > max_hold:
+            current_price = market_state.get("current_price")
+            return ExitDecision("close", f"News cycle decay ({age_minutes:.0f} min)", close_price=current_price)
+        return self.default_exit_check(position, market_state)

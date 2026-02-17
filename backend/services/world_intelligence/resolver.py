@@ -9,13 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.market_tradability import get_market_tradability_map
 from services.shared_state import read_scanner_snapshot
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
+from utils.converters import safe_float, to_iso
 
 
 def _normalize_outcome(value: Any) -> Optional[str]:
@@ -67,7 +61,7 @@ def _signal_related_market_ids(signal: Any) -> list[str]:
 
 def estimate_edge_percent(signal: Any) -> float:
     signal_type = str(_signal_value(signal, "signal_type") or "").strip().lower()
-    severity = _safe_float(_signal_value(signal, "severity"), 0.0)
+    severity = safe_float(_signal_value(signal, "severity"), 0.0)
     edge = max(0.0, severity) * 15.0
     if signal_type == "convergence":
         edge *= 1.3
@@ -83,14 +77,14 @@ def infer_direction(signal: Any) -> Optional[str]:
         return explicit
 
     signal_type = str(_signal_value(signal, "signal_type") or "").strip().lower()
-    severity = _safe_float(_signal_value(signal, "severity"), 0.0)
+    severity = safe_float(_signal_value(signal, "severity"), 0.0)
 
     if signal_type in {"conflict", "military", "instability", "convergence", "tension"}:
         if severity >= 0.6:
             return "buy_yes"
 
     if signal_type == "anomaly":
-        z_score = _safe_float(metadata.get("z_score"), 0.0)
+        z_score = safe_float(metadata.get("z_score"), 0.0)
         if z_score >= 2.0:
             return "buy_yes"
         if z_score <= -2.0:
@@ -110,16 +104,6 @@ def map_signal_to_strategy(signal_type: str) -> str:
         "infrastructure": "event_driven",
     }
     return mapping.get(str(signal_type or "").strip().lower(), "event_driven")
-
-
-def _to_iso(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    else:
-        value = value.astimezone(timezone.utc)
-    return value.replace(tzinfo=None).isoformat() + "Z"
 
 
 def _build_market_lookup(opportunities: list[Any]) -> dict[str, dict[str, Any]]:
@@ -151,18 +135,18 @@ def _build_market_lookup(opportunities: list[Any]) -> dict[str, dict[str, Any]]:
                     "event_slug": event_slug or None,
                     "event_title": event_title or None,
                     "category": category or None,
-                    "liquidity": _safe_float(market.get("liquidity"), _safe_float(getattr(opp, "min_liquidity", 0.0))),
+                    "liquidity": safe_float(market.get("liquidity"), safe_float(getattr(opp, "min_liquidity", 0.0))),
                     "yes": {"token_id": None, "price": None},
                     "no": {"token_id": None, "price": None},
                 },
             )
-            yes_price = _safe_float(
+            yes_price = safe_float(
                 market.get("yes_price"),
-                _safe_float(market.get("best_bid"), 0.0),
+                safe_float(market.get("best_bid"), 0.0),
             )
-            no_price = _safe_float(
+            no_price = safe_float(
                 market.get("no_price"),
-                _safe_float(market.get("best_ask"), 0.0),
+                safe_float(market.get("best_ask"), 0.0),
             )
             if yes_price > 0 and row["yes"]["price"] is None:
                 row["yes"]["price"] = yes_price
@@ -187,14 +171,14 @@ def _build_market_lookup(opportunities: list[Any]) -> dict[str, dict[str, Any]]:
                     "event_slug": event_slug or None,
                     "event_title": event_title or None,
                     "category": category or None,
-                    "liquidity": _safe_float(getattr(opp, "min_liquidity", 0.0)),
+                    "liquidity": safe_float(getattr(opp, "min_liquidity", 0.0)),
                     "yes": {"token_id": None, "price": None},
                     "no": {"token_id": None, "price": None},
                 },
             )
             side = row[outcome]
             token_id = str(position.get("token_id") or "").strip() or None
-            price = _safe_float(position.get("price"), 0.0)
+            price = safe_float(position.get("price"), 0.0)
             if token_id and not side["token_id"]:
                 side["token_id"] = token_id
             if price > 0 and side["price"] is None:
@@ -212,8 +196,8 @@ def _resolve_candidate(
 ) -> dict[str, Any]:
     signal_id = str(_signal_value(signal, "signal_id", _signal_value(signal, "id", "")) or "")
     signal_type = str(_signal_value(signal, "signal_type", "unknown") or "unknown")
-    severity = _safe_float(_signal_value(signal, "severity"), 0.0)
-    market_relevance_score = _safe_float(_signal_value(signal, "market_relevance_score"), 0.0)
+    severity = safe_float(_signal_value(signal, "severity"), 0.0)
+    market_relevance_score = safe_float(_signal_value(signal, "market_relevance_score"), 0.0)
     direction = infer_direction(signal)
     market = market_lookup.get(market_id, {})
 
@@ -230,7 +214,7 @@ def _resolve_candidate(
         token_id = market.get("no", {}).get("token_id")
         entry_price = market.get("no", {}).get("price")
 
-    entry_price_value = _safe_float(entry_price, 0.0)
+    entry_price_value = safe_float(entry_price, 0.0)
     if entry_price_value <= 0:
         entry_price = None
     else:
@@ -261,7 +245,7 @@ def _resolve_candidate(
 
     detected_at_raw = _signal_value(signal, "detected_at")
     if isinstance(detected_at_raw, datetime):
-        detected_at = _to_iso(detected_at_raw)
+        detected_at = to_iso(detected_at_raw)
     elif isinstance(detected_at_raw, str):
         detected_at = detected_at_raw
     else:
@@ -284,7 +268,7 @@ def _resolve_candidate(
         "event_slug": market.get("event_slug"),
         "event_title": market.get("event_title"),
         "category": market.get("category"),
-        "liquidity": _safe_float(market.get("liquidity"), 0.0),
+        "liquidity": safe_float(market.get("liquidity"), 0.0),
         "direction": direction,
         "outcome": outcome,
         "token_id": token_id,
@@ -339,8 +323,8 @@ async def resolve_world_signal_opportunities(
     resolved.sort(
         key=lambda item: (
             bool(item.get("tradable")),
-            _safe_float(item.get("market_relevance_score"), 0.0),
-            _safe_float(item.get("severity"), 0.0),
+            safe_float(item.get("market_relevance_score"), 0.0),
+            safe_float(item.get("severity"), 0.0),
         ),
         reverse=True,
     )

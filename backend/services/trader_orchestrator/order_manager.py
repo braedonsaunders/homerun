@@ -4,18 +4,13 @@ import re
 from typing import Any
 
 from services.live_execution_adapter import execute_live_order
+from utils.converters import safe_float
 
 
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
 
 
 def _normalize_id(value: Any) -> str:
@@ -100,7 +95,7 @@ async def submit_order(
 ) -> tuple[str, float | None, str | None, dict[str, Any]]:
     """Submit an order for paper/live orchestrator modes."""
 
-    entry_price = _safe_float(getattr(signal, "entry_price", None), 0.0) or None
+    entry_price = safe_float(getattr(signal, "entry_price", None), 0.0) or None
     mode_key = str(mode or "").strip().lower()
 
     if mode_key == "live":
@@ -126,7 +121,7 @@ async def submit_order(
                 },
             )
 
-        execution_price = _safe_float(live_context.get("live_selected_price"), entry_price or 0.0) or entry_price
+        execution_price = safe_float(live_context.get("live_selected_price"), entry_price or 0.0) or entry_price
         if execution_price is None or execution_price <= 0:
             return (
                 "failed",

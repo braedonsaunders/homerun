@@ -10,14 +10,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from models.database import Base, TraderStrategyDefinition
+from models.database import Base, Strategy
 from services.trader_orchestrator.strategy_catalog import (
     build_system_strategy_rows,
     ensure_system_trader_strategies_seeded,
 )
 from services.trader_orchestrator.strategy_db_loader import (
     StrategyDBLoader,
-    validate_trader_strategy_source,
+    validate_strategy_source,
 )
 
 
@@ -39,7 +39,7 @@ REQUIRED_STRATEGY_KEYS = {
 
 
 async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "trader_strategy_loader.db"
+    db_path = tmp_path / "strategy_loader.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
@@ -60,7 +60,7 @@ def test_system_strategy_catalog_uses_executable_source_files():
         class_name = str(row.get("class_name") or "")
         assert "System strategy seed wrapper loaded from DB" not in source_code
         assert class_name in source_code
-        validation = validate_trader_strategy_source(source_code, class_name)
+        validation = validate_strategy_source(source_code, class_name)
         assert validation["valid"] is True
         assert validation.get("class_name") == class_name
 
@@ -69,15 +69,15 @@ def test_validate_strategy_source_rejects_blocked_import():
     source_code = "\n".join(
         [
             "import os",
-            "from services.trader_orchestrator.strategies.base import BaseTraderStrategy, StrategyDecision",
+            "from services.strategies.base import BaseStrategy, StrategyDecision",
             "",
-            "class BlockedImportStrategy(BaseTraderStrategy):",
+            "class BlockedImportStrategy(BaseStrategy):",
             "    key = 'blocked_import_strategy'",
             "    def evaluate(self, signal, context):",
             "        return StrategyDecision(decision='skipped', reason='blocked', score=0.0, checks=[], payload={})",
         ]
     )
-    validation = validate_trader_strategy_source(source_code, "BlockedImportStrategy")
+    validation = validate_strategy_source(source_code, "BlockedImportStrategy")
     assert validation["valid"] is False
     assert any("Blocked import" in err for err in validation["errors"])
 
@@ -89,9 +89,9 @@ async def test_loader_isolates_error_rows_and_loads_valid_rows(tmp_path):
         async with session_factory() as session:
             valid_source = "\n".join(
                 [
-                    "from services.trader_orchestrator.strategies.base import BaseTraderStrategy, StrategyDecision",
+                    "from services.strategies.base import BaseStrategy, StrategyDecision",
                     "",
-                    "class UnitGoodStrategy(BaseTraderStrategy):",
+                    "class UnitGoodStrategy(BaseStrategy):",
                     "    key = 'unit_good_strategy'",
                     "    def evaluate(self, signal, context):",
                     "        return StrategyDecision(decision='skipped', reason='ok', score=0.0, checks=[], payload={})",
@@ -100,9 +100,9 @@ async def test_loader_isolates_error_rows_and_loads_valid_rows(tmp_path):
             invalid_source = "\n".join(
                 [
                     "import os",
-                    "from services.trader_orchestrator.strategies.base import BaseTraderStrategy, StrategyDecision",
+                    "from services.strategies.base import BaseStrategy, StrategyDecision",
                     "",
-                    "class UnitBadStrategy(BaseTraderStrategy):",
+                    "class UnitBadStrategy(BaseStrategy):",
                     "    key = 'unit_bad_strategy'",
                     "    def evaluate(self, signal, context):",
                     "        return StrategyDecision(decision='skipped', reason='bad', score=0.0, checks=[], payload={})",
@@ -110,11 +110,11 @@ async def test_loader_isolates_error_rows_and_loads_valid_rows(tmp_path):
             )
 
             session.add(
-                TraderStrategyDefinition(
+                Strategy(
                     id="unit-good-row",
-                    strategy_key="unit_good_strategy",
+                    slug="unit_good_strategy",
                     source_key="crypto",
-                    label="Unit Good",
+                    name="Unit Good",
                     description="Unit good row",
                     class_name="UnitGoodStrategy",
                     source_code=valid_source,
@@ -125,11 +125,11 @@ async def test_loader_isolates_error_rows_and_loads_valid_rows(tmp_path):
                 )
             )
             session.add(
-                TraderStrategyDefinition(
+                Strategy(
                     id="unit-bad-row",
-                    strategy_key="unit_bad_strategy",
+                    slug="unit_bad_strategy",
                     source_key="crypto",
-                    label="Unit Bad",
+                    name="Unit Bad",
                     description="Unit bad row",
                     class_name="UnitBadStrategy",
                     source_code=invalid_source,
@@ -149,8 +149,8 @@ async def test_loader_isolates_error_rows_and_loads_valid_rows(tmp_path):
             assert loader.get_strategy("unit_good_strategy") is not None
             assert loader.get_strategy("unit_bad_strategy") is None
 
-            good_row = await session.get(TraderStrategyDefinition, "unit-good-row")
-            bad_row = await session.get(TraderStrategyDefinition, "unit-bad-row")
+            good_row = await session.get(Strategy, "unit-good-row")
+            bad_row = await session.get(Strategy, "unit-bad-row")
             assert good_row is not None and good_row.status == "loaded"
             assert bad_row is not None and bad_row.status == "error"
     finally:
@@ -165,25 +165,25 @@ async def test_ensure_system_seed_rewrites_legacy_wrapper_rows(tmp_path):
             legacy_source = "\n".join(
                 [
                     '"""System strategy seed wrapper loaded from DB."""',
-                    "from services.trader_orchestrator.strategies.base import BaseTraderStrategy",
-                    "from services.trader_orchestrator.strategies.crypto_15m import Crypto15mStrategy as _SeedStrategy",
+                    "from services.strategies.base import BaseStrategy",
+                    "from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy as _SeedStrategy",
                     "",
-                    "class Crypto15mStrategy(_SeedStrategy):",
+                    "class BtcEthHighFreqStrategy(_SeedStrategy):",
                     "    pass",
                 ]
             )
             session.add(
-                TraderStrategyDefinition(
+                Strategy(
                     id="legacy-crypto-15m",
-                    strategy_key="crypto_15m",
+                    slug="crypto_15m",
                     source_key="crypto",
-                    label="Crypto 15m",
+                    name="Crypto 15m",
                     description="Legacy wrapper",
-                    class_name="Crypto15mStrategy",
+                    class_name="BtcEthHighFreqStrategy",
                     source_code=legacy_source,
-                    default_params_json={},
-                    param_schema_json={},
-                    aliases_json=[],
+                    config={},
+                    config_schema={},
+                    aliases=[],
                     is_system=True,
                     enabled=True,
                     status="loaded",
@@ -198,14 +198,16 @@ async def test_ensure_system_seed_rewrites_legacy_wrapper_rows(tmp_path):
             row = (
                 (
                     await session.execute(
-                        select(TraderStrategyDefinition).where(TraderStrategyDefinition.strategy_key == "crypto_15m")
+                        select(Strategy).where(
+                            Strategy.slug == "crypto_15m"
+                        )
                     )
                 )
                 .scalars()
                 .one()
             )
             assert "System strategy seed wrapper loaded from DB" not in (row.source_code or "")
-            assert "from services.trader_orchestrator.strategies.base import" in (row.source_code or "")
+            assert "from services.strategies" in (row.source_code or "")
             assert int(row.version or 0) == 2
     finally:
         await engine.dispose()

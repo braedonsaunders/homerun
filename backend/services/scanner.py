@@ -14,6 +14,7 @@ from services.plugin_loader import plugin_loader, PluginValidationError
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
 from services.pause_state import global_pause_state
+from utils.converters import to_iso
 from services.market_prioritizer import market_prioritizer, MarketTier
 from services.ws_feeds import get_feed_manager
 from sqlalchemy import select
@@ -26,14 +27,6 @@ def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-def _to_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetime as canonical UTC ISO string with trailing Z."""
-    aware = _make_aware(dt)
-    if aware is None:
-        return None
-    return aware.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
 def _has_custom_detect_async(strategy) -> bool:
@@ -1899,7 +1892,7 @@ class ArbitrageScanner:
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
             "auto_ai_scoring": self._auto_ai_scoring,
-            "last_scan": _to_iso_utc_z(self._last_scan),
+            "last_scan": to_iso(self._last_scan),
             "opportunities_count": len(self._opportunities),
             "current_activity": self._current_activity,
             "strategies": [
@@ -1927,8 +1920,8 @@ class ArbitrageScanner:
                 "fast_scan_interval": settings.FAST_SCAN_INTERVAL_SECONDS,
                 "full_scan_interval": settings.FULL_SCAN_INTERVAL_SECONDS,
                 "fast_scan_cycle": self._fast_scan_cycle,
-                "last_full_scan": _to_iso_utc_z(self._last_full_scan),
-                "last_fast_scan": _to_iso_utc_z(self._last_fast_scan),
+                "last_full_scan": to_iso(self._last_full_scan),
+                "last_fast_scan": to_iso(self._last_fast_scan),
                 "cached_markets": len(self._cached_markets),
                 "cached_events": len(self._cached_events),
                 **prioritizer_stats,

@@ -7,31 +7,22 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from utils.converters import to_iso
+
 router = APIRouter()
 
 
-def _to_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _to_iso_utc_z(value: Optional[datetime]) -> Optional[str]:
-    dt = _to_utc_datetime(value)
-    if dt is None:
-        return None
-    return dt.replace(tzinfo=None).isoformat() + "Z"
-
-
 def _article_recency_timestamp(article) -> float:
-    published_ts = _to_utc_datetime(getattr(article, "published", None))
-    if published_ts is not None:
-        return published_ts.timestamp()
-    fetched_ts = _to_utc_datetime(getattr(article, "fetched_at", None))
-    if fetched_ts is not None:
-        return fetched_ts.timestamp()
+    published = getattr(article, "published", None)
+    if published is not None:
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        return published.timestamp()
+    fetched = getattr(article, "fetched_at", None)
+    if fetched is not None:
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        return fetched.timestamp()
     return 0.0
 
 
@@ -76,7 +67,7 @@ async def trigger_news_fetch():
                     "source": a.source,
                     "feed_source": _normalize_feed_source(a.feed_source),
                     "url": a.url,
-                    "published": _to_iso_utc_z(a.published),
+                    "published": to_iso(a.published),
                     "category": a.category,
                 }
                 for a in new_articles[:20]
@@ -122,11 +113,11 @@ async def get_articles(
                 "source": a.source,
                 "feed_source": _normalize_feed_source(a.feed_source),
                 "url": a.url,
-                "published": _to_iso_utc_z(a.published),
+                "published": to_iso(a.published),
                 "category": a.category,
                 "summary": a.summary[:200] if a.summary else "",
                 "has_embedding": a.embedding is not None,
-                "fetched_at": _to_iso_utc_z(a.fetched_at),
+                "fetched_at": to_iso(a.fetched_at),
             }
             for a in page
         ],
@@ -157,11 +148,11 @@ async def search_articles(
                 "source": a.source,
                 "feed_source": _normalize_feed_source(a.feed_source),
                 "url": a.url,
-                "published": _to_iso_utc_z(a.published),
+                "published": to_iso(a.published),
                 "category": a.category,
                 "summary": a.summary[:200] if a.summary else "",
                 "has_embedding": a.embedding is not None,
-                "fetched_at": _to_iso_utc_z(a.fetched_at),
+                "fetched_at": to_iso(a.fetched_at),
             }
             for a in results
         ],

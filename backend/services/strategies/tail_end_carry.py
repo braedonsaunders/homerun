@@ -8,23 +8,15 @@ liquidity/spread quality and non-trivial expected repricing room.
 from __future__ import annotations
 
 from datetime import timezone
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, make_aware, utcnow
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware, utcnow
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from utils.converters import safe_float
 
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
 
 
 class TailEndCarryStrategy(BaseStrategy):
@@ -65,8 +57,8 @@ class TailEndCarryStrategy(BaseStrategy):
         prices: dict[str, dict],
         outcome: str,
     ) -> tuple[float, Optional[float], Optional[float], Optional[str]]:
-        yes = _safe_float(getattr(market, "yes_price", 0.0))
-        no = _safe_float(getattr(market, "no_price", 0.0))
+        yes = safe_float(getattr(market, "yes_price", 0.0))
+        no = safe_float(getattr(market, "no_price", 0.0))
         tokens = list(getattr(market, "clob_token_ids", []) or [])
 
         if outcome == "YES":
@@ -99,15 +91,15 @@ class TailEndCarryStrategy(BaseStrategy):
         cfg = dict(self.default_config)
         cfg.update(getattr(self, "config", {}) or {})
 
-        min_probability = _clamp(_safe_float(cfg.get("min_probability"), 0.88), 0.5, 0.99)
-        max_probability = _clamp(_safe_float(cfg.get("max_probability"), 0.98), min_probability + 0.01, 0.995)
-        min_days = max(0.0, _safe_float(cfg.get("min_days_to_resolution"), 0.15))
-        max_days = max(min_days + 0.01, _safe_float(cfg.get("max_days_to_resolution"), 10.0))
-        min_liquidity = max(100.0, _safe_float(cfg.get("min_liquidity"), 5000.0))
-        max_spread = _clamp(_safe_float(cfg.get("max_spread"), 0.03), 0.005, 0.20)
-        min_repricing_buffer = _clamp(_safe_float(cfg.get("min_repricing_buffer"), 0.015), 0.005, 0.10)
-        repricing_weight = _clamp(_safe_float(cfg.get("repricing_weight"), 0.45), 0.10, 0.90)
-        max_opportunities = max(1, int(_safe_float(cfg.get("max_opportunities"), 35)))
+        min_probability = clamp(safe_float(cfg.get("min_probability"), 0.88), 0.5, 0.99)
+        max_probability = clamp(safe_float(cfg.get("max_probability"), 0.98), min_probability + 0.01, 0.995)
+        min_days = max(0.0, safe_float(cfg.get("min_days_to_resolution"), 0.15))
+        max_days = max(min_days + 0.01, safe_float(cfg.get("max_days_to_resolution"), 10.0))
+        min_liquidity = max(100.0, safe_float(cfg.get("min_liquidity"), 5000.0))
+        max_spread = clamp(safe_float(cfg.get("max_spread"), 0.03), 0.005, 0.20)
+        min_repricing_buffer = clamp(safe_float(cfg.get("min_repricing_buffer"), 0.015), 0.005, 0.10)
+        repricing_weight = clamp(safe_float(cfg.get("repricing_weight"), 0.45), 0.10, 0.90)
+        max_opportunities = max(1, int(safe_float(cfg.get("max_opportunities"), 35)))
 
         event_by_market: dict[str, Event] = {}
         for event in events:
@@ -120,7 +112,7 @@ class TailEndCarryStrategy(BaseStrategy):
         for market in markets:
             if market.closed or not market.active:
                 continue
-            if _safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
+            if safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
                 continue
             if (
                 len(list(getattr(market, "clob_token_ids", []) or [])) < 2
@@ -187,10 +179,10 @@ class TailEndCarryStrategy(BaseStrategy):
                     continue
 
                 time_score = 1.0 - (days_to_resolution / max_days)
-                black_swan_penalty = _clamp((price - 0.90) * 0.40, 0.0, 0.12)
+                black_swan_penalty = clamp((price - 0.90) * 0.40, 0.0, 0.12)
                 spread_penalty = min(0.14, spread * 2.8)
                 risk = 0.56 - (time_score * 0.10) + black_swan_penalty + spread_penalty
-                opp.risk_score = _clamp(risk, 0.35, 0.82)
+                opp.risk_score = clamp(risk, 0.35, 0.82)
                 opp.risk_factors = [
                     f"Near-expiry carry ({days_to_resolution:.1f} days)",
                     f"Selected probability {price:.1%}",
@@ -218,3 +210,116 @@ class TailEndCarryStrategy(BaseStrategy):
             if len(out) >= max_opportunities:
                 break
         return out
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 1.6), 1.6)
+        min_conf = to_confidence(params.get("min_confidence", 0.35), 0.35)
+        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+        min_entry = clamp(to_float(params.get("min_entry_price", 0.85), 0.85), 0.01, 0.99)
+        max_entry = clamp(to_float(params.get("max_entry_price", 0.985), 0.985), min_entry, 0.999)
+        min_days = max(0.0, to_float(params.get("min_days_to_resolution", 0.03), 0.03))
+        max_days = max(min_days + 0.01, to_float(params.get("max_days_to_resolution", 7.0), 7.0))
+
+        base_size = max(1.0, to_float(params.get("base_size_usd", 14.0), 14.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 90.0), 90.0))
+        sizing_policy = str(params.get("sizing_policy", "adaptive") or "adaptive")
+
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+
+        strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
+        strategy_ok = strategy_type == "tail_end_carry"
+
+        entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)
+        if entry_price <= 0.0:
+            positions = payload.get("positions_to_take") if isinstance(payload.get("positions_to_take"), list) else []
+            if positions:
+                entry_price = to_float((positions[0] or {}).get("price"), 0.0)
+
+        dtr = days_to_resolution(payload)
+        days_ok = dtr is not None and min_days <= dtr <= max_days
+
+        checks = [
+            DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
+            DecisionCheck("strategy", "Tail carry strategy type", strategy_ok, detail="strategy=tail_end_carry"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("entry", "Entry probability band", min_entry <= entry_price <= max_entry, score=entry_price, detail=f"[{min_entry:.3f}, {max_entry:.3f}]"),
+            DecisionCheck(
+                "resolution_window",
+                "Resolution window",
+                days_ok,
+                score=dtr,
+                detail=f"[{min_days:.2f}, {max_days:.2f}] days",
+            ),
+        ]
+
+        score = (edge * 0.55) + (confidence * 28.0) + (entry_price * 6.0) - (risk_score * 9.0)
+        if dtr is not None:
+            score += max(0.0, (max_days - dtr) * 0.4)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="Tail carry filters not met",
+                score=score,
+                checks=checks,
+                payload={
+                    "edge": edge,
+                    "confidence": confidence,
+                    "risk_score": risk_score,
+                    "entry_price": entry_price,
+                    "days_to_resolution": dtr,
+                },
+            )
+
+        direction = str(getattr(signal, "direction", "") or "")
+        probability = selected_probability(signal, payload, direction)
+
+        from services.trader_orchestrator.strategies.sizing import compute_position_size
+        sizing = compute_position_size(
+            base_size_usd=base_size,
+            max_size_usd=max_size,
+            edge_percent=edge,
+            confidence=confidence,
+            sizing_policy=sizing_policy,
+            probability=probability,
+            entry_price=entry_price if entry_price > 0 else None,
+            liquidity_usd=liquidity,
+            liquidity_cap_fraction=0.06,
+        )
+
+        return StrategyDecision(
+            decision="selected",
+            reason="Tail carry signal selected",
+            score=score,
+            size_usd=float(sizing["size_usd"]),
+            checks=checks,
+            payload={
+                "edge": edge,
+                "confidence": confidence,
+                "risk_score": risk_score,
+                "entry_price": entry_price,
+                "days_to_resolution": dtr,
+                "sizing": sizing,
+                "strategy_type": strategy_type,
+            },
+        )
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Near-expiry carry: hold to resolution with tight trailing stop."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        config.setdefault("trailing_stop_pct", 3.0)
+        config.setdefault("resolve_only", False)
+        position.config = config
+        return self.default_exit_check(position, market_state)

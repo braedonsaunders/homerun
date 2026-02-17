@@ -26,6 +26,7 @@ from models.database import (
 )
 from models.opportunity import ArbitrageOpportunity
 from services.market_tradability import get_market_tradability_map
+from utils.converters import clamp
 
 
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
@@ -840,9 +841,6 @@ async def emit_tracked_trader_signals(
     return emitted
 
 
-def _clamp(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, value))
-
 
 def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
@@ -876,7 +874,7 @@ def _parse_end_time(value: Any) -> Optional[datetime]:
 
 def _crypto_regime(seconds_left: float, timeframe_seconds: int) -> str:
     denom = float(max(1, timeframe_seconds))
-    ratio = _clamp(seconds_left / denom, 0.0, 1.0)
+    ratio = clamp(seconds_left / denom, 0.0, 1.0)
     if ratio > 0.67:
         return "opening"
     if ratio < 0.33:
@@ -943,10 +941,10 @@ async def emit_crypto_market_signals(
 
         if has_oracle and ptb is not None and oracle is not None:
             diff_pct = ((oracle - ptb) / ptb) * 100.0
-            time_ratio = _clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
+            time_ratio = clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
             directional_scale = max(0.08, 0.50 * time_ratio)
-            directional_z = _clamp(diff_pct / directional_scale, -60.0, 60.0)
-            model_prob_yes = _clamp(
+            directional_z = clamp(diff_pct / directional_scale, -60.0, 60.0)
+            model_prob_yes = clamp(
                 1.0 / (1.0 + math.exp(-directional_z)),
                 0.03,
                 0.97,
@@ -966,7 +964,7 @@ async def emit_crypto_market_signals(
         pure_arb_yes = underround * 100.0
         pure_arb_no = underround * 100.0
 
-        neutrality = _clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
+        neutrality = clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
         rebalance_yes = max(0.0, (0.5 - up) * 100.0) * neutrality
         rebalance_no = max(0.0, (0.5 - down) * 100.0) * neutrality
 
@@ -983,13 +981,13 @@ async def emit_crypto_market_signals(
         )
 
         spread = _to_float(market.get("spread"), 0.0) or 0.0
-        spread = _clamp(spread, 0.0, 0.10)
+        spread = clamp(spread, 0.0, 0.10)
         liquidity = max(0.0, _to_float(market.get("liquidity"), 0.0) or 0.0)
         fees_enabled = bool(market.get("fees_enabled", False))
 
         fee_penalty = 0.45 if fees_enabled else 0.25
         spread_penalty = spread * 100.0 * 0.35
-        liquidity_scale = _clamp(liquidity / 250000.0, 0.0, 1.0)
+        liquidity_scale = clamp(liquidity / 250000.0, 0.0, 1.0)
         regime_slippage_factor = 1.1 if regime == "closing" else 1.0
         slippage_penalty = (1.35 - (0.95 * liquidity_scale)) * regime_slippage_factor
         execution_penalty = fee_penalty + spread_penalty + slippage_penalty
@@ -1020,16 +1018,16 @@ async def emit_crypto_market_signals(
         dominant_strategy = max(weighted_components, key=lambda key: weighted_components[key])
         dominant_weighted_edge = weighted_components[dominant_strategy]
         edge_gap = abs(net_yes - net_no)
-        confidence = _clamp(
+        confidence = clamp(
             0.32
-            + _clamp(edge_percent / 20.0, 0.0, 0.35)
-            + _clamp(edge_gap / 18.0, 0.0, 0.12)
-            + _clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
+            + clamp(edge_percent / 20.0, 0.0, 0.35)
+            + clamp(edge_gap / 18.0, 0.0, 0.12)
+            + clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
             0.05,
             0.97,
         )
         if not has_oracle:
-            confidence = _clamp(confidence * 0.75, 0.05, 0.85)
+            confidence = clamp(confidence * 0.75, 0.05, 0.85)
 
         dedupe_key = make_dedupe_key(
             market.get("slug"),

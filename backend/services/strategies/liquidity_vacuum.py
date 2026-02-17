@@ -14,12 +14,13 @@ toward the thick side because there's no resistance.
 NOT risk-free arbitrage - this is statistical edge trading.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy, utcnow, make_aware
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 
 
 class LiquidityVacuumStrategy(BaseStrategy):
@@ -541,6 +542,47 @@ class LiquidityVacuumStrategy(BaseStrategy):
             factors.append("Very strong imbalance signal")
 
         return factors
+
+    # ------------------------------------------------------------------
+    # Unified evaluate / should_exit
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Liquidity vacuum evaluation — order-book imbalance gating."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 4.0), 4.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.45), 0.45)
+        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 130.0), 130.0))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        score = (edge * 0.55) + (confidence * 30.0) - (risk_score * 8.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision("skipped", "Liquidity vacuum filters not met", score=score, checks=checks)
+
+        size = base_size * (1.0 + (edge / 100.0)) * (0.70 + confidence)
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision("selected", "Liquidity vacuum signal selected", score=score, size_usd=size, checks=checks)
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Liquidity vacuum: standard TP/SL exit."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        return self.default_exit_check(position, market_state)
 
 
 def market_liquidity_estimate(default: float = 0) -> float:

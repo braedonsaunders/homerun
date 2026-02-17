@@ -31,6 +31,7 @@ from models.database import (
 )
 from services.pause_state import global_pause_state
 from services.polymarket import polymarket_client
+from utils.converters import clamp
 from utils.logger import get_logger
 
 logger = get_logger("smart_wallet_pool")
@@ -144,10 +145,6 @@ POOL_RUNTIME_DEFAULTS: dict[str, Any] = {
     "activity_reconciliation_interval_seconds": 120,
     "pool_recompute_interval_seconds": 60,
 }
-
-
-def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(value, hi))
 
 
 def _looks_like_crypto_market(
@@ -1781,11 +1778,11 @@ class SmartWalletPoolService:
                     wallet=wallet,
                 )
                 stability = self._score_stability(wallet)
-                composite = _clamp(0.45 * quality + 0.35 * activity + 0.20 * stability)
-                insider = _clamp(float(wallet.insider_score or 0.0))
+                composite = clamp(0.45 * quality + 0.35 * activity + 0.20 * stability, 0.0, 1.0)
+                insider = clamp(float(wallet.insider_score or 0.0), 0.0, 1.0)
                 source_confidence = self._score_source_confidence(wallet)
-                diversity_score = _clamp(unique_markets_24h / 14.0)
-                momentum = _clamp(0.6 * (trades_1h / 4.0) + 0.4 * (trades_24h / 24.0))
+                diversity_score = clamp(unique_markets_24h / 14.0, 0.0, 1.0)
+                momentum = clamp(0.6 * (trades_1h / 4.0) + 0.4 * (trades_24h / 24.0), 0.0, 1.0)
                 selection_score = self._score_selection(
                     composite=composite,
                     rank_score=float(wallet.rank_score or 0.0),
@@ -2233,7 +2230,7 @@ class SmartWalletPoolService:
             score += 0.10
         if flags.get("holders"):
             score += 0.05
-        return _clamp(score)
+        return clamp(score, 0.0, 1.0)
 
     def _score_selection(
         self,
@@ -2245,14 +2242,14 @@ class SmartWalletPoolService:
         diversity_score: float,
         momentum_score: float,
     ) -> float:
-        return _clamp(
-            0.62 * _clamp(composite)
-            + 0.16 * _clamp(rank_score)
-            + 0.08 * _clamp(insider_score)
-            + 0.06 * _clamp(source_confidence)
-            + 0.05 * _clamp(diversity_score)
-            + 0.03 * _clamp(momentum_score)
-        )
+        return clamp(
+            0.62 * clamp(composite)
+            + 0.16 * clamp(rank_score)
+            + 0.08 * clamp(insider_score)
+            + 0.06 * clamp(source_confidence)
+            + 0.05 * clamp(diversity_score)
+            + 0.03 * clamp(momentum_score)
+        , 0.0, 1.0)
 
     def _append_unique_inplace(
         self,
@@ -2350,7 +2347,7 @@ class SmartWalletPoolService:
             return None
         if total == 1:
             return 1.0
-        return round(_clamp(1.0 - ((rank - 1) / max(total - 1, 1))), 6)
+        return round(clamp(1.0 - ((rank - 1) / max(total - 1, 1)), 0.0, 1.0), 6)
 
     def _derive_selection_reasons(
         self,
@@ -2459,17 +2456,17 @@ class SmartWalletPoolService:
         return reasons
 
     def _score_quality(self, wallet: DiscoveredWallet) -> float:
-        rank = _clamp(float(wallet.rank_score or 0.0))
-        win = _clamp(float(wallet.win_rate or 0.0))
+        rank = clamp(float(wallet.rank_score or 0.0), 0.0, 1.0)
+        win = clamp(float(wallet.win_rate or 0.0), 0.0, 1.0)
 
         sharpe = wallet.sharpe_ratio
-        sharpe_norm = 0.0 if sharpe is None or not math.isfinite(sharpe) else _clamp(sharpe / 3.0)
+        sharpe_norm = 0.0 if sharpe is None or not math.isfinite(sharpe) else clamp(sharpe / 3.0, 0.0, 1.0)
 
         pf = wallet.profit_factor
-        pf_norm = 0.0 if pf is None or not math.isfinite(pf) else _clamp(pf / 5.0)
+        pf_norm = 0.0 if pf is None or not math.isfinite(pf) else clamp(pf / 5.0, 0.0, 1.0)
 
         pnl = float(wallet.total_pnl or 0.0)
-        pnl_norm = _clamp((math.tanh(pnl / 25000.0) + 1.0) / 2.0)
+        pnl_norm = clamp((math.tanh(pnl / 25000.0) + 1.0) / 2.0, 0.0, 1.0)
 
         recommendation = str(getattr(wallet, "recommendation", "") or "").strip().lower()
         recommendation_boost = 0.0
@@ -2478,9 +2475,9 @@ class SmartWalletPoolService:
         elif recommendation == "monitor":
             recommendation_boost = 0.02
 
-        return _clamp(
+        return clamp(
             0.35 * rank + 0.25 * win + 0.15 * sharpe_norm + 0.15 * pf_norm + 0.10 * pnl_norm + recommendation_boost
-        )
+        , 0.0, 1.0)
 
     def _score_activity(
         self,
@@ -2490,16 +2487,16 @@ class SmartWalletPoolService:
         now: datetime,
         wallet: Optional[DiscoveredWallet] = None,
     ) -> float:
-        flow_1h = _clamp(trades_1h / 6.0)
-        flow_24h = _clamp(trades_24h / 40.0)
+        flow_1h = clamp(trades_1h / 6.0, 0.0, 1.0)
+        flow_24h = clamp(trades_24h / 40.0, 0.0, 1.0)
 
         if last_trade_at is None:
             recency = 0.0
         else:
             age_hours = max((now - last_trade_at).total_seconds() / 3600.0, 0.0)
-            recency = _clamp(1.0 - (age_hours / ACTIVE_WINDOW_HOURS))
+            recency = clamp(1.0 - (age_hours / ACTIVE_WINDOW_HOURS), 0.0, 1.0)
 
-        base_score = _clamp(0.50 * flow_1h + 0.30 * flow_24h + 0.20 * recency)
+        base_score = clamp(0.50 * flow_1h + 0.30 * flow_24h + 0.20 * recency, 0.0, 1.0)
         if wallet is None:
             return base_score
 
@@ -2508,22 +2505,22 @@ class SmartWalletPoolService:
         analysis_verified = wallet.last_analyzed_at is not None and source_version == QUALITY_METRICS_SOURCE_VERSION
         if analysis_verified:
             return base_score
-        return _clamp(base_score * 0.35)
+        return clamp(base_score * 0.35, 0.0, 1.0)
 
     def _score_stability(self, wallet: DiscoveredWallet) -> float:
         drawdown = wallet.max_drawdown
-        consistency = 0.5 if drawdown is None else _clamp(1.0 - min(drawdown, 1.0))
+        consistency = 0.5 if drawdown is None else clamp(1.0 - min(drawdown, 1.0), 0.0, 1.0)
 
         roi_std = float(wallet.roi_std or 0.0)
-        roi_penalty = _clamp(abs(roi_std) / 50.0) * 0.25
+        roi_penalty = clamp(abs(roi_std) / 50.0, 0.0, 1.0) * 0.25
 
-        anomaly = _clamp(float(wallet.anomaly_score or 0.0))
+        anomaly = clamp(float(wallet.anomaly_score or 0.0), 0.0, 1.0)
         anomaly_penalty = anomaly * 0.35
 
         cluster_penalty = 0.10 if wallet.cluster_id else 0.0
         profitable_bonus = 0.15 if wallet.is_profitable else 0.0
 
-        return _clamp(consistency - roi_penalty - anomaly_penalty - cluster_penalty + profitable_bonus)
+        return clamp(consistency - roi_penalty - anomaly_penalty - cluster_penalty + profitable_bonus, 0.0, 1.0)
 
     def _apply_churn_guard(
         self,

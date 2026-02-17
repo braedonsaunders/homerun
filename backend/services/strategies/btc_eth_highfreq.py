@@ -26,14 +26,148 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings as _cfg
-from .base import BaseStrategy
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
+from services.strategies._evaluate_helpers import to_float, to_confidence, to_bool, signal_payload
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Evaluate-method constants (ported from BaseCryptoTimeframeStrategy)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_MODES = {"auto", "directional", "pure_arb", "rebalance"}
+_REGIMES = {"opening", "mid", "closing"}
+
+_EDGE_MODE_FACTORS: dict[str, dict[str, float]] = {
+    "opening": {"auto": 1.0, "directional": 1.05, "pure_arb": 0.90, "rebalance": 1.05},
+    "mid": {"auto": 1.0, "directional": 1.00, "pure_arb": 0.85, "rebalance": 1.00},
+    "closing": {"auto": 0.9, "directional": 0.90, "pure_arb": 0.80, "rebalance": 0.85},
+}
+
+_CONF_MODE_FACTORS: dict[str, float] = {
+    "auto": 1.0,
+    "directional": 1.0,
+    "pure_arb": 0.9,
+    "rebalance": 0.95,
+}
+
+_REGIME_CONF_FACTORS: dict[str, float] = {
+    "opening": 1.0,
+    "mid": 1.0,
+    "closing": 0.95,
+}
+
+_MODE_SIZE_FACTORS: dict[str, float] = {
+    "auto": 1.0,
+    "directional": 1.0,
+    "pure_arb": 0.85,
+    "rebalance": 0.9,
+}
+
+_REGIME_SIZE_FACTORS: dict[str, float] = {
+    "opening": 0.95,
+    "mid": 1.0,
+    "closing": 1.1,
+}
+
+
+# ---------------------------------------------------------------------------
+# Evaluate-method helpers (ported from BaseCryptoTimeframeStrategy)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_mode(value: Any) -> str:
+    mode = str(value or "auto").strip().lower()
+    if mode not in _ALLOWED_MODES:
+        return "auto"
+    return mode
+
+
+def _normalize_regime(value: Any) -> str:
+    regime = str(value or "mid").strip().lower()
+    if regime not in _REGIMES:
+        return "mid"
+    return regime
+
+
+def _normalize_asset(value: Any) -> str:
+    asset = str(value or "").strip().upper()
+    if asset == "XBT":
+        return "BTC"
+    return asset
+
+
+def _normalize_timeframe(value: Any) -> str:
+    tf = str(value or "").strip().lower()
+    if tf in {"5m", "5min", "5"}:
+        return "5m"
+    if tf in {"15m", "15min", "15"}:
+        return "15m"
+    if tf in {"1h", "1hr", "60m", "60min"}:
+        return "1h"
+    if tf in {"4h", "4hr", "240m", "240min"}:
+        return "4h"
+    return tf
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",")]
+    return []
+
+
+def _normalize_scope(value: Any, normalizer: Callable[[Any], str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in _as_list(value):
+        normalized = normalizer(raw)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _normalize_regime_scope(value: Any) -> set[str]:
+    allowed = set(_REGIMES)
+    normalized: set[str] = set()
+    for raw in _as_list(value):
+        regime = _normalize_regime(raw)
+        if regime in allowed:
+            normalized.add(regime)
+    return normalized
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _get_component_edge(payload: dict[str, Any], direction: str, mode: str) -> float:
+    component_edges = payload.get("component_edges")
+    if not isinstance(component_edges, dict):
+        return 0.0
+    side_edges = component_edges.get(direction)
+    if not isinstance(side_edges, dict):
+        return 0.0
+    return max(0.0, to_float(side_edges.get(mode), 0.0))
+
+
+def _get_net_edge(payload: dict[str, Any], direction: str, fallback: float) -> float:
+    net_edges = payload.get("net_edges")
+    if not isinstance(net_edges, dict):
+        return fallback
+    return to_float(net_edges.get(direction), fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -1751,3 +1885,292 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "sub_strategy_params": params,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Evaluate / Should-Exit  (unified strategy interface)
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
+        """Full crypto high-frequency evaluation with multi-mode regime system,
+        direction guardrails, component edges, and asset/timeframe filtering.
+
+        Ported from BaseCryptoTimeframeStrategy.evaluate().
+        """
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        # --- Core thresholds ---
+        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.45), 0.45)
+        base_size = to_float(params.get("base_size_usd", 25.0), 25.0)
+        max_size = max(1.0, to_float(params.get("max_size_usd", base_size * 3.0), base_size * 3.0))
+
+        # --- Direction guardrail parameters ---
+        guardrail_enabled = to_bool(params.get("direction_guardrail_enabled"), True)
+        guardrail_prob_floor = max(
+            0.5,
+            min(1.0, to_float(params.get("direction_guardrail_prob_floor", 0.55), 0.55)),
+        )
+        guardrail_price_floor = max(
+            0.5,
+            min(1.0, to_float(params.get("direction_guardrail_price_floor", 0.80), 0.80)),
+        )
+        guardrail_regimes = _normalize_regime_scope(
+            params.get("direction_guardrail_regimes", ["mid", "closing"])
+        )
+        if not guardrail_regimes:
+            guardrail_regimes = {"mid", "closing"}
+
+        # --- Mode selection ---
+        requested_mode = _normalize_mode(params.get("strategy_mode") or params.get("mode"))
+        direction = str(getattr(signal, "direction", "") or "").strip().lower()
+        regime = _normalize_regime(payload.get("regime"))
+
+        # --- Asset / timeframe extraction ---
+        signal_asset = _normalize_asset(
+            payload.get("asset") or payload.get("coin") or payload.get("symbol")
+        )
+        signal_timeframe = _normalize_timeframe(
+            payload.get("timeframe") or payload.get("cadence") or payload.get("interval")
+        )
+
+        # --- Asset/timeframe scope filtering ---
+        target_assets = _normalize_scope(
+            _first_present(
+                params.get("target_assets"),
+                params.get("allowed_assets"),
+                params.get("assets"),
+                params.get("coins"),
+            ),
+            _normalize_asset,
+        )
+        target_timeframes = _normalize_scope(
+            _first_present(
+                params.get("target_timeframes"),
+                params.get("allowed_timeframes"),
+                params.get("timeframes"),
+                params.get("cadence"),
+            ),
+            _normalize_timeframe,
+        )
+        asset_scope_ok = (not target_assets) or (
+            bool(signal_asset) and signal_asset in target_assets
+        )
+        # Unified strategy handles all timeframes — no fixed expected_timeframe.
+        # The strategy_timeframe check passes when no single timeframe is enforced.
+        strategy_timeframe_ok = True
+        timeframe_scope_ok = (not target_timeframes) or (
+            bool(signal_timeframe) and signal_timeframe in target_timeframes
+        )
+
+        # --- Active mode resolution ---
+        dominant_mode = _normalize_mode(payload.get("dominant_strategy"))
+        active_mode = dominant_mode if requested_mode == "auto" and dominant_mode != "auto" else requested_mode
+        if active_mode == "auto":
+            active_mode = "directional"
+
+        # --- Source / origin checks ---
+        source_ok = str(getattr(signal, "source", "")) == "crypto"
+        signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
+        origin_ok = (
+            str(payload.get("strategy_origin") or "").strip().lower() == "crypto_worker"
+            or signal_type.startswith("crypto_worker")
+        )
+
+        # --- Edge / confidence ---
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        mode_edge = _get_component_edge(payload, direction, active_mode)
+        net_edge = _get_net_edge(payload, direction, edge)
+
+        # --- Oracle / guardrail data ---
+        model_prob_yes = max(0.0, min(1.0, to_float(payload.get("model_prob_yes"), 0.5)))
+        model_prob_no = max(0.0, min(1.0, to_float(payload.get("model_prob_no"), 0.5)))
+        up_price = max(0.0, min(1.0, to_float(payload.get("up_price"), 0.5)))
+        down_price = max(0.0, min(1.0, to_float(payload.get("down_price"), 0.5)))
+        oracle_available = bool(payload.get("oracle_available")) or payload.get("oracle_delta_pct") is not None
+
+        # --- Regime-aware required thresholds ---
+        required_edge = min_edge * _EDGE_MODE_FACTORS.get(regime, {}).get(active_mode, 1.0)
+        required_conf = (
+            min_conf
+            * _CONF_MODE_FACTORS.get(active_mode, 1.0)
+            * _REGIME_CONF_FACTORS.get(regime, 1.0)
+        )
+
+        # --- Direction guardrail ---
+        guardrail_blocked = False
+        guardrail_detail = "disabled"
+        if guardrail_enabled:
+            guardrail_detail = "guardrail conditions not met"
+            if oracle_available and regime in guardrail_regimes:
+                if (
+                    direction == "buy_no"
+                    and model_prob_yes >= guardrail_prob_floor
+                    and up_price >= guardrail_price_floor
+                ):
+                    guardrail_blocked = True
+                    guardrail_detail = (
+                        f"blocked contrarian buy_no: model_prob_yes={model_prob_yes:.3f} up_price={up_price:.3f}"
+                    )
+                elif (
+                    direction == "buy_yes"
+                    and model_prob_no >= guardrail_prob_floor
+                    and down_price >= guardrail_price_floor
+                ):
+                    guardrail_blocked = True
+                    guardrail_detail = (
+                        f"blocked contrarian buy_yes: model_prob_no={model_prob_no:.3f} down_price={down_price:.3f}"
+                    )
+
+        # --- Adaptive edge gating ---
+        edge_for_gate = min(edge, mode_edge) if mode_edge > 0.0 else edge
+
+        # --- Decision checks ---
+        checks = [
+            DecisionCheck("source", "Crypto source", source_ok, detail="Requires crypto worker signals."),
+            DecisionCheck(
+                "signal_origin",
+                "Dedicated crypto worker signal",
+                origin_ok,
+                detail="Legacy scanner crypto opportunities are unsupported.",
+            ),
+            DecisionCheck(
+                "asset_scope",
+                "Asset target scope",
+                asset_scope_ok,
+                detail=(
+                    f"asset={signal_asset or 'unknown'} targets={','.join(target_assets) or 'all'}"
+                ),
+            ),
+            DecisionCheck(
+                "timeframe_scope",
+                "Cadence target scope",
+                timeframe_scope_ok,
+                detail=(
+                    f"timeframe={signal_timeframe or 'unknown'} targets={','.join(target_timeframes) or 'all'}"
+                ),
+            ),
+            DecisionCheck(
+                "strategy_timeframe",
+                "Strategy timeframe",
+                strategy_timeframe_ok,
+                detail=(
+                    f"observed={signal_timeframe or 'unknown'} (unified strategy accepts all timeframes)"
+                ),
+            ),
+            DecisionCheck(
+                "direction_guardrail",
+                "Direction guardrail",
+                not guardrail_blocked,
+                detail=guardrail_detail,
+            ),
+            DecisionCheck(
+                "edge",
+                "Edge threshold",
+                edge_for_gate >= required_edge,
+                score=edge_for_gate,
+                detail=f"mode={active_mode} regime={regime} min={required_edge:.2f}",
+            ),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= required_conf,
+                score=confidence,
+                detail=f"min={required_conf:.2f}",
+            ),
+            DecisionCheck(
+                "execution_edge",
+                "Execution-adjusted edge",
+                net_edge > 0.0,
+                score=net_edge,
+                detail="Requires positive post-penalty edge.",
+            ),
+        ]
+
+        if requested_mode != "auto":
+            checks.append(
+                DecisionCheck(
+                    "mode_signal",
+                    "Requested strategy mode has signal",
+                    mode_edge > 0.0,
+                    score=mode_edge,
+                    detail=f"requested={requested_mode}",
+                )
+            )
+
+        # --- Build shared payload dict (28+ fields) ---
+        decision_payload: dict[str, Any] = {
+            "requested_mode": requested_mode,
+            "active_mode": active_mode,
+            "dominant_mode": dominant_mode,
+            "regime": regime,
+            "edge": edge,
+            "mode_edge": mode_edge,
+            "net_edge": net_edge,
+            "confidence": confidence,
+            "required_edge": required_edge,
+            "required_confidence": required_conf,
+            "asset": signal_asset,
+            "timeframe": signal_timeframe,
+            "direction_guardrail": {
+                "enabled": guardrail_enabled,
+                "blocked": guardrail_blocked,
+                "oracle_available": oracle_available,
+                "regime": regime,
+                "regimes": sorted(guardrail_regimes),
+                "prob_floor": guardrail_prob_floor,
+                "price_floor": guardrail_price_floor,
+                "model_prob_yes": model_prob_yes,
+                "model_prob_no": model_prob_no,
+                "up_price": up_price,
+                "down_price": down_price,
+            },
+            "target_assets": target_assets,
+            "target_timeframes": target_timeframes,
+        }
+
+        score = (edge_for_gate * 0.7) + (confidence * 30.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="Crypto worker filters not met",
+                score=score,
+                checks=checks,
+                payload=decision_payload,
+            )
+
+        # --- Position sizing ---
+        edge_boost = 1.0 + max(0.0, edge_for_gate - required_edge) / 30.0
+        conf_boost = 0.8 + (confidence * 0.8)
+        size = (
+            base_size
+            * _MODE_SIZE_FACTORS.get(active_mode, 1.0)
+            * _REGIME_SIZE_FACTORS.get(regime, 1.0)
+            * edge_boost
+            * conf_boost
+        )
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision(
+            decision="selected",
+            reason=f"Crypto {active_mode} setup validated ({regime})",
+            score=score,
+            size_usd=size,
+            checks=checks,
+            payload=decision_payload,
+        )
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Crypto: tight TP/SL with short max hold."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        config.setdefault("take_profit_pct", 8.0)
+        config.setdefault("stop_loss_pct", 5.0)
+        config.setdefault("trailing_stop_pct", 3.0)
+        config.setdefault("max_hold_minutes", 60)
+        position.config = config
+        return self.default_exit_check(position, market_state)

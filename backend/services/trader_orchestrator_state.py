@@ -42,6 +42,7 @@ from services.trader_orchestrator.templates import (
 )
 from utils.utcnow import utcnow
 from utils.secrets import decrypt_secret
+from utils.converters import safe_float, safe_int, to_iso
 
 ORCHESTRATOR_CONTROL_ID = "default"
 _UNSET = object()  # Sentinel: distinguish "not provided" from explicit None
@@ -80,30 +81,6 @@ def _now() -> datetime:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
-
-
-def _to_iso(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    else:
-        value = value.astimezone(timezone.utc)
-    return value.replace(tzinfo=None).isoformat() + "Z"
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
 
 
 def _normalize_mode_key(mode: Any) -> str:
@@ -146,7 +123,7 @@ def _position_identity_key(mode: Any, market_id: Any, direction: Any) -> tuple[s
 
 
 def _normalize_confidence_fraction(value: Any, default: float = 0.0) -> float:
-    parsed = _safe_float(value, default)
+    parsed = safe_float(value, default)
     if parsed < 0.0:
         parsed = 0.0
     elif parsed <= 1.0:
@@ -452,10 +429,10 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
         "is_paused": bool(row.is_paused),
         "mode": str(row.mode or "paper"),
         "run_interval_seconds": int(row.run_interval_seconds or 2),
-        "requested_run_at": _to_iso(row.requested_run_at),
+        "requested_run_at": to_iso(row.requested_run_at),
         "kill_switch": bool(row.kill_switch),
         "settings": row.settings_json or {},
-        "updated_at": _to_iso(row.updated_at),
+        "updated_at": to_iso(row.updated_at),
     }
 
 
@@ -479,8 +456,8 @@ def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
 
     return {
         "id": row.id,
-        "updated_at": _to_iso(row.updated_at),
-        "last_run_at": _to_iso(row.last_run_at),
+        "updated_at": to_iso(row.updated_at),
+        "last_run_at": to_iso(row.last_run_at),
         "running": running,
         "enabled": bool(row.enabled),
         "current_activity": row.current_activity,
@@ -517,11 +494,11 @@ def _serialize_trader(row: Trader) -> dict[str, Any]:
         "is_enabled": bool(row.is_enabled),
         "is_paused": bool(row.is_paused),
         "interval_seconds": int(row.interval_seconds or 60),
-        "requested_run_at": _to_iso(row.requested_run_at),
-        "last_run_at": _to_iso(row.last_run_at),
-        "next_run_at": _to_iso(row.next_run_at),
-        "created_at": _to_iso(row.created_at),
-        "updated_at": _to_iso(row.updated_at),
+        "requested_run_at": to_iso(row.requested_run_at),
+        "last_run_at": to_iso(row.last_run_at),
+        "next_run_at": to_iso(row.next_run_at),
+        "created_at": to_iso(row.created_at),
+        "updated_at": to_iso(row.updated_at),
     }
 
 
@@ -540,7 +517,7 @@ def _serialize_decision(row: TraderDecision) -> dict[str, Any]:
         "checks_summary": row.checks_summary_json or {},
         "risk_snapshot": row.risk_snapshot_json or {},
         "payload": row.payload_json or {},
-        "created_at": _to_iso(row.created_at),
+        "created_at": to_iso(row.created_at),
     }
 
 
@@ -567,9 +544,9 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
         "error_message": row.error_message,
         "event_id": row.event_id,
         "trace_id": row.trace_id,
-        "created_at": _to_iso(row.created_at),
-        "executed_at": _to_iso(row.executed_at),
-        "updated_at": _to_iso(row.updated_at),
+        "created_at": to_iso(row.created_at),
+        "executed_at": to_iso(row.executed_at),
+        "updated_at": to_iso(row.updated_at),
     }
 
 
@@ -584,7 +561,7 @@ def _serialize_event(row: TraderEvent) -> dict[str, Any]:
         "message": row.message,
         "trace_id": row.trace_id,
         "payload": row.payload_json or {},
-        "created_at": _to_iso(row.created_at),
+        "created_at": to_iso(row.created_at),
     }
 
 
@@ -743,7 +720,7 @@ async def _normalize_trader_payload(
         "metadata": metadata,
         "is_enabled": bool(payload.get("is_enabled", True)),
         "is_paused": bool(payload.get("is_paused", False)),
-        "interval_seconds": max(1, min(86400, _safe_int(payload.get("interval_seconds"), 60))),
+        "interval_seconds": max(1, min(86400, safe_int(payload.get("interval_seconds"), 60))),
     }
 
 
@@ -957,7 +934,7 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
                     "previous_status": str(active_row.status or ""),
                     "target_status": "cancelled",
                     "reason": "force_delete_cleanup_fallback",
-                    "performed_at": _to_iso(now),
+                    "performed_at": to_iso(now),
                 }
                 active_row.status = "cancelled"
                 active_row.updated_at = now
@@ -1171,7 +1148,7 @@ async def get_trader_decision_detail(session: AsyncSession, decision_id: str) ->
                 "score": check.score,
                 "detail": check.detail,
                 "payload": check.payload_json or {},
-                "created_at": _to_iso(check.created_at),
+                "created_at": to_iso(check.created_at),
             }
             for check in checks
         ],
@@ -1495,8 +1472,8 @@ async def sync_trader_position_inventory(
             }
             grouped[identity] = bucket
 
-        notional = abs(_safe_float(row.notional_usd, 0.0))
-        entry_price = _safe_float(row.effective_price, 0.0) or _safe_float(row.entry_price, 0.0)
+        notional = abs(safe_float(row.notional_usd, 0.0))
+        entry_price = safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0)
         bucket["open_order_count"] = int(bucket["open_order_count"]) + 1
         bucket["total_notional_usd"] = float(bucket["total_notional_usd"]) + max(0.0, notional)
         if entry_price and entry_price > 0 and notional > 0:
@@ -1793,9 +1770,9 @@ async def cleanup_trader_open_orders(
                         mark_price = None
                         position_state = existing_payload.get("position_state")
                         if isinstance(position_state, dict):
-                            mark_price = _safe_float(position_state.get("last_mark_price"), 0.0)
+                            mark_price = safe_float(position_state.get("last_mark_price"), 0.0)
                         if not mark_price:
-                            mark_price = _safe_float(row.effective_price, 0.0) or _safe_float(row.entry_price, 0.0)
+                            mark_price = safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0)
                         try:
                             simulation_cleanup = await simulation_service.close_orchestrator_paper_fill(
                                 account_id=sim_account_id,
@@ -1820,7 +1797,7 @@ async def cleanup_trader_open_orders(
                 "previous_status": previous_status,
                 "target_status": target_status,
                 "reason": note_reason,
-                "performed_at": _to_iso(now),
+                "performed_at": to_iso(now),
             }
             row.payload_json = existing_payload
             if note_reason:
@@ -2113,9 +2090,9 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
         "kill_switch": bool(control.get("kill_switch", False)),
         "run_interval_seconds": int(control.get("run_interval_seconds") or 2),
         "global_risk": {
-            "max_gross_exposure_usd": _safe_float(global_risk.get("max_gross_exposure_usd"), 5000.0),
-            "max_daily_loss_usd": _safe_float(global_risk.get("max_daily_loss_usd"), 500.0),
-            "max_orders_per_cycle": _safe_int(global_risk.get("max_orders_per_cycle"), 50),
+            "max_gross_exposure_usd": safe_float(global_risk.get("max_gross_exposure_usd"), 5000.0),
+            "max_daily_loss_usd": safe_float(global_risk.get("max_daily_loss_usd"), 500.0),
+            "max_orders_per_cycle": safe_int(global_risk.get("max_orders_per_cycle"), 50),
         },
         "trading_domains": settings_json.get("trading_domains") or ["event_markets", "crypto"],
         "enabled_strategies": settings_json.get("enabled_strategies") or [],
@@ -2207,7 +2184,7 @@ async def create_live_preflight(
         "status": status,
         "checks": checks,
         "failed_checks": failed,
-        "created_at": _to_iso(_now()),
+        "created_at": to_iso(_now()),
     }
 
     settings_json = dict(control_row.settings_json or {})
@@ -2248,7 +2225,7 @@ async def arm_live_start(
     expires_at = _now() + timedelta(seconds=max(30, min(ttl_seconds, 1800)))
     arm_data = {
         "arm_token": arm_token,
-        "expires_at": _to_iso(expires_at),
+        "expires_at": to_iso(expires_at),
         "consumed_at": None,
         "requested_by": requested_by,
     }
@@ -2295,7 +2272,7 @@ async def consume_live_arm_token(session: AsyncSession, arm_token: str) -> bool:
     if expires_at is not None and _now().astimezone(timezone.utc) > expires_at.astimezone(timezone.utc):
         return False
 
-    arm_data["consumed_at"] = _to_iso(_now())
+    arm_data["consumed_at"] = to_iso(_now())
     settings_json["live_arm"] = arm_data
     control_row.settings_json = settings_json
     control_row.updated_at = _now()

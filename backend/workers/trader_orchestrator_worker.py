@@ -64,6 +64,7 @@ from services.trader_orchestrator_state import (
 )
 from services.signal_bus import expire_stale_signals, set_trade_signal_status
 from utils.utcnow import utcnow
+from utils.converters import safe_float, safe_int
 from utils.secrets import decrypt_secret
 
 logger = logging.getLogger("trader_orchestrator_worker")
@@ -84,20 +85,6 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return parsed
     except Exception:
         return None
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _safe_float(value: Any, default: float | None = None) -> float | None:
-    try:
-        return float(value)
-    except Exception:
-        return default
 
 
 def _parse_hhmm_utc(value: Any) -> tuple[int, int] | None:
@@ -371,10 +358,10 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
             continue
 
         attempted += 1
-        entry_price = _safe_float(row.effective_price, None)
+        entry_price = safe_float(row.effective_price, None)
         if entry_price is None or entry_price <= 0:
-            entry_price = _safe_float(row.entry_price, None)
-        notional = _safe_float(row.notional_usd, None)
+            entry_price = safe_float(row.entry_price, None)
+        notional = safe_float(row.notional_usd, None)
         if entry_price is None or entry_price <= 0 or notional is None or notional <= 0:
             skipped += 1
             continue
@@ -396,8 +383,8 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
                     "source": str(row.source or ""),
                     "backfilled_from_order_id": str(row.id),
                     "backfilled_at": now.isoformat() + "Z",
-                    "edge_percent": _safe_float(row.edge_percent, 0.0) or 0.0,
-                    "confidence": _safe_float(row.confidence, 0.0) or 0.0,
+                    "edge_percent": safe_float(row.edge_percent, 0.0) or 0.0,
+                    "confidence": safe_float(row.confidence, 0.0) or 0.0,
                 },
                 session=session,
                 commit=False,
@@ -422,7 +409,11 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
 
 
 async def _build_traders_scope_context(session: Any, traders_scope: dict[str, Any]) -> dict[str, Any]:
-    modes = {str(mode or "").strip().lower() for mode in (traders_scope.get("modes") or []) if str(mode or "").strip()}
+    modes = {
+        str(mode or "").strip().lower()
+        for mode in (traders_scope.get("modes") or [])
+        if str(mode or "").strip()
+    }
     context: dict[str, Any] = {
         "modes": modes,
         "individual_wallets": {
@@ -441,34 +432,34 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
     }
 
     if "tracked" in modes:
-        tracked_rows = (await session.execute(select(TrackedWallet.address))).scalars().all()
+        tracked_rows = (
+            await session.execute(select(TrackedWallet.address))
+        ).scalars().all()
         context["tracked_wallets"] = {
             _normalize_wallet(address) for address in tracked_rows if _normalize_wallet(address)
         }
 
     if "pool" in modes:
         pool_rows = (
-            (
-                await session.execute(
-                    select(DiscoveredWallet.address).where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
-                )
+            await session.execute(
+                select(DiscoveredWallet.address).where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
             )
-            .scalars()
-            .all()
-        )
-        context["pool_wallets"] = {_normalize_wallet(address) for address in pool_rows if _normalize_wallet(address)}
+        ).scalars().all()
+        context["pool_wallets"] = {
+            _normalize_wallet(address) for address in pool_rows if _normalize_wallet(address)
+        }
 
     if "group" in modes and context["group_ids"]:
         group_rows = (
-            (
-                await session.execute(
-                    select(TraderGroupMember.wallet_address).where(TraderGroupMember.group_id.in_(context["group_ids"]))
+            await session.execute(
+                select(TraderGroupMember.wallet_address).where(
+                    TraderGroupMember.group_id.in_(context["group_ids"])
                 )
             )
-            .scalars()
-            .all()
-        )
-        context["group_wallets"] = {_normalize_wallet(address) for address in group_rows if _normalize_wallet(address)}
+        ).scalars().all()
+        context["group_wallets"] = {
+            _normalize_wallet(address) for address in group_rows if _normalize_wallet(address)
+        }
 
     return context
 
@@ -531,7 +522,9 @@ async def _run_trader_once(
                     trader_id=trader_id,
                     event_type="paper_ledger_backfill",
                     source="worker",
-                    message=(f"Backfilled {int(backfill_result['backfilled'])} paper order(s) into simulation ledger"),
+                    message=(
+                        f"Backfilled {int(backfill_result['backfilled'])} paper order(s) into simulation ledger"
+                    ),
                     payload=backfill_result,
                 )
 
@@ -613,7 +606,9 @@ async def _run_trader_once(
                     f"Resume policy flatten_then_start waiting to flatten {open_positions} open paper position(s)"
                 )
             else:
-                block_entries_reason = f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
+                block_entries_reason = (
+                    f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
+                )
 
         effective_process_signals = bool(process_signals)
         if block_entries_reason is not None and process_signals:
@@ -640,7 +635,7 @@ async def _run_trader_once(
                 1,
                 min(
                     500,
-                    _safe_int(default_strategy_params.get("max_signals_per_cycle"), 200),
+                    safe_int(default_strategy_params.get("max_signals_per_cycle"), 200),
                 ),
             )
         )
@@ -649,7 +644,7 @@ async def _run_trader_once(
                 1,
                 min(
                     500,
-                    _safe_int(default_strategy_params.get("scan_batch_size"), max_signals_per_cycle),
+                    safe_int(default_strategy_params.get("scan_batch_size"), max_signals_per_cycle),
                 ),
             )
         )
@@ -663,7 +658,7 @@ async def _run_trader_once(
                 300,
                 min(
                     21600,
-                    _safe_int(
+                    safe_int(
                         control_settings.get("live_market_history_window_seconds", 7200),
                         7200,
                     ),
@@ -675,7 +670,7 @@ async def _run_trader_once(
                 30,
                 min(
                     1800,
-                    _safe_int(
+                    safe_int(
                         control_settings.get("live_market_history_fidelity_seconds", 300),
                         300,
                     ),
@@ -687,7 +682,7 @@ async def _run_trader_once(
                 20,
                 min(
                     240,
-                    _safe_int(
+                    safe_int(
                         control_settings.get("live_market_history_max_points", 120),
                         120,
                     ),
@@ -700,11 +695,11 @@ async def _run_trader_once(
         global_limits = dict((control.get("settings") or {}).get("global_risk") or {})
         effective_risk_limits = dict(risk_limits)
         if "max_orders_per_cycle" not in effective_risk_limits:
-            fallback_cycle_limit = _safe_int(global_limits.get("max_orders_per_cycle"), 50)
+            fallback_cycle_limit = safe_int(global_limits.get("max_orders_per_cycle"), 50)
             if fallback_cycle_limit > 0:
                 effective_risk_limits["max_orders_per_cycle"] = fallback_cycle_limit
         if "max_daily_loss_usd" not in effective_risk_limits:
-            fallback_daily_loss = _safe_float(global_limits.get("max_daily_loss_usd"), 0.0) or 0.0
+            fallback_daily_loss = safe_float(global_limits.get("max_daily_loss_usd"), 0.0) or 0.0
             if fallback_daily_loss > 0:
                 effective_risk_limits["max_daily_loss_usd"] = fallback_daily_loss
         allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
@@ -733,7 +728,7 @@ async def _run_trader_once(
             trader_id=trader_id,
             mode=run_mode,
         )
-        cooldown_seconds = max(0, _safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
+        cooldown_seconds = max(0, safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
         cooldown_active = False
         cooldown_remaining_seconds = 0
         if cooldown_seconds > 0 and last_loss_at is not None and trader_loss_streak > 0:
@@ -829,7 +824,9 @@ async def _run_trader_once(
                     strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
                     strategy_params = dict(source_config.get("strategy_params") or {})
                     strategy_status = strategy_db_loader.get_availability(strategy_key)
-                    resolved_strategy_key = strategy_status.resolved_key or strategy_key
+                    resolved_strategy_key = (
+                        strategy_status.resolved_key or strategy_key
+                    )
                     live_context = live_contexts.get(signal_id, {})
                     runtime_signal = RuntimeTradeSignalView(signal, live_context=live_context)
                     runtime_signal.source = signal_source
@@ -846,7 +843,9 @@ async def _run_trader_once(
                     #    the trader uses a generic strategy_key like "opportunity_general"
                     #    but the signal originated from a specific plugin strategy.
                     if strategy is None:
-                        signal_strategy_type = str(getattr(signal, "strategy_type", "") or "").strip().lower()
+                        signal_strategy_type = str(
+                            getattr(signal, "strategy_type", "") or ""
+                        ).strip().lower()
                         if signal_strategy_type:
                             plugin = plugin_loader.get_plugin(signal_strategy_type)
                             if plugin and hasattr(plugin.instance, "evaluate"):
@@ -1056,8 +1055,8 @@ async def _run_trader_once(
                             }
                         )
                         drift_pct = live_context.get("entry_price_delta_pct")
-                        drift_score = _safe_float(drift_pct)
-                        max_drift = _safe_float(
+                        drift_score = safe_float(drift_pct)
+                        max_drift = safe_float(
                             effective_risk_limits.get("max_entry_drift_pct"),
                             10.0,
                         )
@@ -1247,23 +1246,23 @@ async def _run_trader_once(
                             if not paper_account_id:
                                 status = "failed"
                                 normalized_order_status = "failed"
-                                error_message = (
-                                    "Paper account is not configured; set paper_account_id to execute paper trades."
-                                )
+                                error_message = "Paper account is not configured; set paper_account_id to execute paper trades."
                             else:
-                                entry_price = _safe_float(effective_price, None)
+                                entry_price = safe_float(effective_price, None)
                                 if entry_price is None or entry_price <= 0:
-                                    entry_price = _safe_float(getattr(runtime_signal, "entry_price", None), None)
+                                    entry_price = safe_float(getattr(runtime_signal, "entry_price", None), None)
                                 if entry_price is None or entry_price <= 0:
                                     live_price = None
                                     if isinstance(live_context, dict):
-                                        live_price = _safe_float(live_context.get("live_selected_price"), None)
+                                        live_price = safe_float(live_context.get("live_selected_price"), None)
                                     entry_price = live_price
 
                                 signal_payload = getattr(runtime_signal, "payload_json", None)
                                 signal_payload = signal_payload if isinstance(signal_payload, dict) else {}
                                 signal_live_context = (
-                                    runtime_signal.live_context if isinstance(runtime_signal.live_context, dict) else {}
+                                    runtime_signal.live_context
+                                    if isinstance(runtime_signal.live_context, dict)
+                                    else {}
                                 )
                                 token_id = (
                                     str(
@@ -1294,14 +1293,8 @@ async def _run_trader_once(
                                             token_id=token_id,
                                             payload={
                                                 "source": signal_source,
-                                                "edge_percent": _safe_float(
-                                                    getattr(runtime_signal, "edge_percent", None), 0.0
-                                                )
-                                                or 0.0,
-                                                "confidence": _safe_float(
-                                                    getattr(runtime_signal, "confidence", None), 0.0
-                                                )
-                                                or 0.0,
+                                                "edge_percent": safe_float(getattr(runtime_signal, "edge_percent", None), 0.0) or 0.0,
+                                                "confidence": safe_float(getattr(runtime_signal, "confidence", None), 0.0) or 0.0,
                                             },
                                             session=session,
                                             commit=False,
@@ -1326,7 +1319,9 @@ async def _run_trader_once(
                         # ── Enrich order payload with strategy context & exit config ──
                         # so position_lifecycle can invoke strategy-based should_exit().
                         order_payload = dict(execution_payload or {})
-                        order_payload["strategy_type"] = str(getattr(signal, "strategy_type", "") or "").strip().lower()
+                        order_payload["strategy_type"] = str(
+                            getattr(signal, "strategy_type", "") or ""
+                        ).strip().lower()
                         order_payload["strategy_context"] = (
                             getattr(signal, "strategy_context_json", None)
                             or getattr(signal, "strategy_context", None)
@@ -1342,7 +1337,9 @@ async def _run_trader_once(
                             "close_on_inactive_market",
                         }
                         order_payload["strategy_exit_config"] = {
-                            k: v for k, v in (strategy_params or {}).items() if k in _exit_param_keys
+                            k: v
+                            for k, v in (strategy_params or {}).items()
+                            if k in _exit_param_keys
                         }
 
                         await create_trader_order(

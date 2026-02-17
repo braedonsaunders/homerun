@@ -9,23 +9,15 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from utils.converters import safe_float
 
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
 
 
 class FlashCrashReversionStrategy(BaseStrategy):
@@ -69,8 +61,8 @@ class FlashCrashReversionStrategy(BaseStrategy):
         market: Market,
         prices: dict[str, dict],
     ) -> tuple[float, float, Optional[float], Optional[float], Optional[float], Optional[float]]:
-        yes = _safe_float(market.yes_price)
-        no = _safe_float(market.no_price)
+        yes = safe_float(market.yes_price)
+        no = safe_float(market.no_price)
         yes_bid = None
         yes_ask = None
         no_bid = None
@@ -98,8 +90,8 @@ class FlashCrashReversionStrategy(BaseStrategy):
             no_ask = self._extract_book_value(no_raw, "ask") or self._extract_book_value(no_raw, "best_ask")
 
         if (yes <= 0.0 or no <= 0.0) and len(getattr(market, "outcome_prices", []) or []) >= 2:
-            yes = yes if yes > 0.0 else _safe_float(market.outcome_prices[0])
-            no = no if no > 0.0 else _safe_float(market.outcome_prices[1])
+            yes = yes if yes > 0.0 else safe_float(market.outcome_prices[0])
+            no = no if no > 0.0 else safe_float(market.outcome_prices[1])
 
         return yes, no, yes_bid, yes_ask, no_bid, no_ask
 
@@ -123,15 +115,15 @@ class FlashCrashReversionStrategy(BaseStrategy):
         cfg = dict(self.default_config)
         cfg.update(getattr(self, "config", {}) or {})
 
-        lookback_seconds = max(30.0, _safe_float(cfg.get("lookback_seconds"), 240.0))
-        stale_history_seconds = max(lookback_seconds * 2.0, _safe_float(cfg.get("stale_history_seconds"), 1800.0))
-        drop_threshold = _clamp(_safe_float(cfg.get("drop_threshold"), 0.08), 0.01, 0.50)
-        min_rebound_fraction = _clamp(_safe_float(cfg.get("min_rebound_fraction"), 0.45), 0.10, 0.95)
-        min_target_move = _clamp(_safe_float(cfg.get("min_target_move"), 0.015), 0.005, 0.15)
-        max_entry_price = _clamp(_safe_float(cfg.get("max_entry_price"), 0.82), 0.2, 0.99)
-        max_spread = _clamp(_safe_float(cfg.get("max_spread"), 0.07), 0.005, 0.25)
-        min_liquidity = max(100.0, _safe_float(cfg.get("min_liquidity"), 2500.0))
-        max_opportunities = max(1, int(_safe_float(cfg.get("max_opportunities"), 40)))
+        lookback_seconds = max(30.0, safe_float(cfg.get("lookback_seconds"), 240.0))
+        stale_history_seconds = max(lookback_seconds * 2.0, safe_float(cfg.get("stale_history_seconds"), 1800.0))
+        drop_threshold = clamp(safe_float(cfg.get("drop_threshold"), 0.08), 0.01, 0.50)
+        min_rebound_fraction = clamp(safe_float(cfg.get("min_rebound_fraction"), 0.45), 0.10, 0.95)
+        min_target_move = clamp(safe_float(cfg.get("min_target_move"), 0.015), 0.005, 0.15)
+        max_entry_price = clamp(safe_float(cfg.get("max_entry_price"), 0.82), 0.2, 0.99)
+        max_spread = clamp(safe_float(cfg.get("max_spread"), 0.07), 0.005, 0.25)
+        min_liquidity = max(100.0, safe_float(cfg.get("min_liquidity"), 2500.0))
+        max_opportunities = max(1, int(safe_float(cfg.get("max_opportunities"), 40)))
 
         event_by_market: dict[str, Event] = {}
         for event in events:
@@ -149,7 +141,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
                 and len(list(getattr(market, "clob_token_ids", []) or [])) < 2
             ):
                 continue
-            if _safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
+            if safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
                 continue
 
             yes, no, yes_bid, yes_ask, no_bid, no_ask = self._extract_yes_no_snapshot(market, prices)
@@ -180,7 +172,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
                 ("YES", 1, yes_bid, yes_ask),
                 ("NO", 2, no_bid, no_ask),
             ):
-                old_price = _safe_float(baseline[idx])
+                old_price = safe_float(baseline[idx])
                 current_price = yes if outcome == "YES" else no
                 if old_price <= 0.0 or current_price <= 0.0:
                     continue
@@ -242,10 +234,10 @@ class FlashCrashReversionStrategy(BaseStrategy):
                 if not opp:
                     continue
 
-                liquidity = _safe_float(getattr(market, "liquidity", 0.0))
+                liquidity = safe_float(getattr(market, "liquidity", 0.0))
                 liquidity_penalty = 0.0 if liquidity >= 10000.0 else 0.08
                 risk_score = 0.66 - min(0.20, drop * 1.25) + min(0.16, spread * 2.5) + liquidity_penalty
-                opp.risk_score = _clamp(risk_score, 0.35, 0.86)
+                opp.risk_score = clamp(risk_score, 0.35, 0.86)
                 opp.risk_factors = [
                     f"Short-window crash magnitude {drop:.1%}",
                     f"Targeting partial rebound ({target_move:.1%})",
@@ -273,3 +265,129 @@ class FlashCrashReversionStrategy(BaseStrategy):
             if len(out) >= max_opportunities:
                 break
         return out
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+        live_market = context.get("live_market") or {}
+
+        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
+        max_risk = to_confidence(params.get("max_risk_score", 0.80), 0.80)
+        min_liquidity = max(0.0, to_float(params.get("min_liquidity", 1500.0), 1500.0))
+        min_abs_move_5m = max(0.1, to_float(params.get("min_abs_move_5m", 1.5), 1.5))
+        require_alignment = bool(params.get("require_crash_alignment", True))
+
+        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 130.0), 130.0))
+        sizing_policy = str(params.get("sizing_policy", "kelly") or "kelly")
+        kelly_fractional_scale = to_float(params.get("kelly_fractional_scale", 0.5), 0.5)
+
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        direction = str(getattr(signal, "direction", "") or "").strip().lower()
+
+        strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
+        strategy_ok = strategy_type == "flash_crash_reversion"
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+
+        move_5m_pct = live_move(live_market, "move_5m")
+        alignment_ok = True
+        if require_alignment:
+            if move_5m_pct is None:
+                alignment_ok = False
+            elif direction == "buy_yes":
+                alignment_ok = move_5m_pct <= -min_abs_move_5m
+            elif direction == "buy_no":
+                alignment_ok = move_5m_pct >= min_abs_move_5m
+            else:
+                alignment_ok = False
+
+        checks = [
+            DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
+            DecisionCheck("strategy", "Flash reversion strategy type", strategy_ok, detail="strategy=flash_crash_reversion"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity, score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck(
+                "alignment_5m",
+                "Crash alignment (5m move)",
+                alignment_ok,
+                score=move_5m_pct,
+                detail=f"abs move >= {min_abs_move_5m:.2f}% in signal direction",
+            ),
+        ]
+
+        score = (edge * 0.65) + (confidence * 30.0) + (min(1.0, liquidity / 10000.0) * 8.0) - (risk_score * 10.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="Flash reversion filters not met",
+                score=score,
+                checks=checks,
+                payload={
+                    "edge": edge,
+                    "confidence": confidence,
+                    "risk_score": risk_score,
+                    "liquidity": liquidity,
+                    "move_5m_pct": move_5m_pct,
+                },
+            )
+
+        probability = selected_probability(signal, payload, direction)
+        entry_price = to_float(getattr(signal, "entry_price", None), 0.0)
+
+        from services.trader_orchestrator.strategies.sizing import compute_position_size
+        sizing = compute_position_size(
+            base_size_usd=base_size,
+            max_size_usd=max_size,
+            edge_percent=edge,
+            confidence=confidence,
+            sizing_policy=sizing_policy,
+            probability=probability,
+            entry_price=entry_price if entry_price > 0 else None,
+            kelly_fractional_scale=kelly_fractional_scale,
+            liquidity_usd=liquidity,
+            liquidity_cap_fraction=0.08,
+        )
+
+        return StrategyDecision(
+            decision="selected",
+            reason="Flash reversion signal selected",
+            score=score,
+            size_usd=float(sizing["size_usd"]),
+            checks=checks,
+            payload={
+                "edge": edge,
+                "confidence": confidence,
+                "risk_score": risk_score,
+                "liquidity": liquidity,
+                "move_5m_pct": move_5m_pct,
+                "sizing": sizing,
+                "strategy_type": strategy_type,
+            },
+        )
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Exit on reversion target hit, time decay, or trailing stop."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        ctx = getattr(position, "strategy_context", None) or {}
+        current_price = market_state.get("current_price")
+        age_minutes = float(getattr(position, "age_minutes", 0) or 0)
+
+        target_price = ctx.get("target_price") or config.get("target_price")
+        if target_price and current_price and current_price >= float(target_price):
+            return ExitDecision("close", f"Reversion target hit ({current_price:.4f} >= {target_price})", close_price=current_price)
+
+        max_hold = float(config.get("max_hold_minutes", 120) or 120)
+        if age_minutes > max_hold:
+            return ExitDecision("close", f"Flash reversion time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price)
+
+        return self.default_exit_check(position, market_state)

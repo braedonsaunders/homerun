@@ -22,8 +22,9 @@ def test_supports_live_market_context_excludes_crypto_source():
 
 
 def test_strategy_registry_supports_legacy_default_alias():
+    from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
     strategy = get_strategy("strategy.default")
-    assert strategy.key == "crypto_15m"
+    assert isinstance(strategy, BtcEthHighFreqStrategy)
 
 
 def test_resume_policy_normalizes_to_supported_values():

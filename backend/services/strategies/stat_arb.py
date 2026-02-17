@@ -19,11 +19,12 @@ NOT risk-free. This is informed speculation with statistical edge.
 
 import re
 import statistics
-from typing import Optional
+from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy, utcnow
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 
 
 # Round numbers where human anchoring bias is common
@@ -614,3 +615,44 @@ class StatArbStrategy(BaseStrategy):
         )
 
         return opportunities
+
+    # ------------------------------------------------------------------
+    # Unified evaluate / should_exit
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Statistical arb evaluation — ensemble edge gating."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 3.5), 3.5)
+        min_conf = to_confidence(params.get("min_confidence", 0.45), 0.45)
+        max_risk = to_confidence(params.get("max_risk_score", 0.75), 0.75)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 18.0), 18.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 150.0), 150.0))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        score = (edge * 0.58) + (confidence * 32.0) - (risk_score * 8.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision("skipped", "Stat arb filters not met", score=score, checks=checks)
+
+        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence)
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision("selected", "Stat arb signal selected", score=score, size_usd=size, checks=checks)
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Stat arb: standard TP/SL exit."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        return self.default_exit_check(position, market_state)

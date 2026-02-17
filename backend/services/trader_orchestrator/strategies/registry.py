@@ -1,52 +1,39 @@
 from __future__ import annotations
 
-from .base import BaseTraderStrategy, TraderStrategy
+from services.strategies.base import BaseStrategy
 from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
-from .crypto_15m import (
-    Crypto15mStrategy,
-    Crypto1hStrategy,
-    Crypto4hStrategy,
-    Crypto5mStrategy,
-)
-from .news_reaction import NewsReactionStrategy
-from .opportunity_weather import (
-    OpportunityGeneralStrategy,
-    OpportunityStructuralStrategy,
-)
-from .opportunity_ported import (
-    OpportunityFlashReversionStrategy,
-    OpportunityTailCarryStrategy,
-)
-from .traders_flow import TradersFlowStrategy
-from .weather_models import (
-    WeatherAlertsStrategy,
-    WeatherConsensusStrategy,
-)
-from .crypto_spike_reversion import CryptoSpikeReversionStrategy
+from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
+from services.strategies.news_edge import NewsEdgeStrategy
+from services.strategies.basic import BasicArbStrategy
+from services.strategies.negrisk import NegRiskStrategy
+from services.strategies.flash_crash_reversion import FlashCrashReversionStrategy
+from services.strategies.tail_end_carry import TailEndCarryStrategy
+from services.strategies.traders_confluence import TradersConfluenceStrategy
+from services.strategies.weather_edge import WeatherEdgeStrategy
+from services.strategies.weather_distribution import WeatherDistributionStrategy
+from services.strategies.crypto_spike_reversion import CryptoSpikeReversionStrategy
 
 
-# Static strategy map is kept as a seed/reference fallback only.
-_REFERENCE_STRATEGIES: dict[str, TraderStrategy] = {
-    Crypto5mStrategy.key: Crypto5mStrategy(),
-    Crypto15mStrategy.key: Crypto15mStrategy(),
-    Crypto1hStrategy.key: Crypto1hStrategy(),
-    Crypto4hStrategy.key: Crypto4hStrategy(),
-    NewsReactionStrategy.key: NewsReactionStrategy(),
-    OpportunityGeneralStrategy.key: OpportunityGeneralStrategy(),
-    OpportunityStructuralStrategy.key: OpportunityStructuralStrategy(),
-    OpportunityFlashReversionStrategy.key: OpportunityFlashReversionStrategy(),
-    OpportunityTailCarryStrategy.key: OpportunityTailCarryStrategy(),
-    WeatherConsensusStrategy.key: WeatherConsensusStrategy(),
-    WeatherAlertsStrategy.key: WeatherAlertsStrategy(),
-    TradersFlowStrategy.key: TradersFlowStrategy(),
-    CryptoSpikeReversionStrategy.key: CryptoSpikeReversionStrategy(),
+_REFERENCE_STRATEGIES: dict[str, BaseStrategy] = {
+    "crypto_5m": BtcEthHighFreqStrategy(),
+    "crypto_15m": BtcEthHighFreqStrategy(),
+    "crypto_1h": BtcEthHighFreqStrategy(),
+    "crypto_4h": BtcEthHighFreqStrategy(),
+    "news_reaction": NewsEdgeStrategy(),
+    "opportunity_general": BasicArbStrategy(),
+    "opportunity_structural": NegRiskStrategy(),
+    "opportunity_flash_reversion": FlashCrashReversionStrategy(),
+    "opportunity_tail_carry": TailEndCarryStrategy(),
+    "weather_consensus": WeatherEdgeStrategy(),
+    "weather_alerts": WeatherDistributionStrategy(),
+    "traders_flow": TradersConfluenceStrategy(),
+    "crypto_spike_reversion": CryptoSpikeReversionStrategy(),
 }
 
 _STRATEGY_ALIASES: dict[str, str] = {
-    # Backward compatibility for older UI defaults.
-    "strategy.default": Crypto15mStrategy.key,
-    "default": Crypto15mStrategy.key,
-    "opportunity_weather": OpportunityGeneralStrategy.key,
+    "strategy.default": "crypto_15m",
+    "default": "crypto_15m",
+    "opportunity_weather": "opportunity_general",
 }
 
 
@@ -64,11 +51,11 @@ def list_strategy_keys(*, include_reference: bool = True) -> list[str]:
     return sorted(loaded)
 
 
-def get_strategy(strategy_key: str, *, use_static_fallback: bool = True) -> TraderStrategy:
+def get_strategy(strategy_key: str, *, use_static_fallback: bool = True) -> BaseStrategy:
     key = _resolve_strategy_key(strategy_key)
     loaded = strategy_db_loader.get_strategy(key)
     if loaded is not None:
         return loaded
     if use_static_fallback:
-        return _REFERENCE_STRATEGIES.get(key, BaseTraderStrategy())
-    return BaseTraderStrategy()
+        return _REFERENCE_STRATEGIES.get(key, BaseStrategy())
+    return BaseStrategy()

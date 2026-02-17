@@ -180,7 +180,7 @@ async def get_unified_template():
         "available_imports": [
             "models (Market, Event, ArbitrageOpportunity, StrategyType)",
             "services.strategies.base (BaseStrategy)",
-            "services.trader_orchestrator.strategies.base (BaseTraderStrategy, StrategyDecision, DecisionCheck)",
+            "services.trader_orchestrator.strategies.base (BaseStrategy, StrategyDecision, DecisionCheck)",
             "services.strategies.* (built-in strategy modules)",
             "services.news.* (news strategy helpers)",
             "services.optimization.*",
@@ -217,7 +217,7 @@ async def get_unified_docs():
                 "ArbitrageOpportunity objects."
             ),
             "execute": (
-                "Trader-execution strategies extend BaseTraderStrategy and implement "
+                "Trader-execution strategies extend BaseStrategy and implement "
                 "evaluate(signal, context). They decide whether a detected signal "
                 "should be traded, at what size, and with what confidence."
             ),
@@ -241,7 +241,7 @@ async def get_unified_docs():
             ),
         },
         "execute_strategy": {
-            "base_class": "BaseTraderStrategy",
+            "base_class": "BaseStrategy",
             "required_method": "evaluate(signal, context) -> StrategyDecision",
             "signal_fields": {
                 "source": "str — Signal source (scanner, crypto, news, weather, traders)",

@@ -17,6 +17,14 @@ from .validation import (
     SimulationParams,
     CopyTradingParams,
 )
+from .converters import (
+    safe_float,
+    safe_int,
+    clamp,
+    to_confidence,
+    to_iso,
+    normalize_market_id,
+)
 
 __all__ = [
     # Logger
@@ -42,4 +50,11 @@ __all__ = [
     "OpportunityFilterParams",
     "SimulationParams",
     "CopyTradingParams",
+    # Converters
+    "safe_float",
+    "safe_int",
+    "clamp",
+    "to_confidence",
+    "to_iso",
+    "normalize_market_id",
 ]

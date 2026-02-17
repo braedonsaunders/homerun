@@ -50,6 +50,8 @@ from services.world_intelligence.chokepoint_reference_source import (
     sync_chokepoint_reference_from_portwatch,
 )
 
+from utils.converters import to_iso
+
 router = APIRouter(tags=["world-intelligence"])
 logger = logging.getLogger(__name__)
 
@@ -73,16 +75,6 @@ _BENIGN_SOURCE_ERROR_MARKERS = (
     "name or service not known",
     "temporary failure in name resolution",
 )
-
-
-def _to_iso(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    else:
-        value = value.astimezone(timezone.utc)
-    return value.replace(tzinfo=None).isoformat() + "Z"
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -241,7 +233,7 @@ def _signal_row_to_dict(row: WorldIntelligenceSignal) -> dict[str, Any]:
         "title": row.title,
         "description": row.description or "",
         "source": row.source or "unknown",
-        "detected_at": _to_iso(row.detected_at),
+        "detected_at": to_iso(row.detected_at),
         "metadata": row.metadata_json or {},
         "related_market_ids": list(row.related_market_ids or []),
         "market_relevance_score": (
@@ -549,7 +541,7 @@ async def _dynamic_military_hotspots(
                 "lon_min": round(lon_min, 3),
                 "lon_max": round(lon_max, 3),
                 "event_count": event_count,
-                "last_detected_at": _to_iso(data.get("latest_at")),
+                "last_detected_at": to_iso(data.get("latest_at")),
                 "activity_types": sorted(activity_types, key=activity_types.get, reverse=True),
             }
         )
@@ -593,7 +585,7 @@ async def _dynamic_chokepoint_scores(
                     "risk_method": "proximity_weighted_v1",
                     "source": f"{base_source}+live_signals",
                     "chokepoint_source": base_source,
-                    "last_updated": str(cp.get("last_updated") or _to_iso(datetime.now(timezone.utc))),
+                    "last_updated": str(cp.get("last_updated") or to_iso(datetime.now(timezone.utc))),
                 }
             )
             out.append(enriched)
@@ -650,7 +642,7 @@ async def _dynamic_chokepoint_scores(
                 "risk_method": "proximity_weighted_v1",
                 "source": f"{base_source}+live_signals",
                 "chokepoint_source": base_source,
-                "last_updated": _to_iso(newest_ts) if newest_ts else _to_iso(datetime.now(timezone.utc)),
+                "last_updated": to_iso(newest_ts) if newest_ts else to_iso(datetime.now(timezone.utc)),
             }
         )
         out.append(enriched)
@@ -710,7 +702,7 @@ async def get_world_regions(session: AsyncSession = Depends(get_db_session)):
     )
     return {
         "version": int(static_regions.get("version", 0) or 0),
-        "updated_at": _to_iso(datetime.now(timezone.utc)),
+        "updated_at": to_iso(datetime.now(timezone.utc)),
         "hotspots": hotspots,
         "chokepoints": chokepoints,
         "chokepoint_source_health": chokepoint_feed.get_health(),
@@ -838,7 +830,7 @@ async def get_world_signals(
     if snapshot and isinstance(snapshot.status, dict):
         last_collection = snapshot.status.get("last_scan")
     if not last_collection and snapshot:
-        last_collection = _to_iso(snapshot.updated_at)
+        last_collection = to_iso(snapshot.updated_at)
 
     next_offset_raw = offset_value + scanned_count
     has_more = next_offset_raw < int(total)
@@ -986,7 +978,7 @@ async def get_instability_scores(
                 "change_7d": change_7d,
                 "components": row.components or {},
                 "contributing_signals": (row.components or {}).get("contributing_signals", []),
-                "last_updated": _to_iso(row.computed_at),
+                "last_updated": to_iso(row.computed_at),
             }
         )
 
@@ -1043,7 +1035,7 @@ async def get_tension_pairs(
                     ).get("top_event_types")
                     or []
                 ),
-                "last_updated": _to_iso(row.computed_at),
+                "last_updated": to_iso(row.computed_at),
             }
         )
 
@@ -1086,7 +1078,7 @@ async def get_convergence_zones(
                 "urgency_score": round(float(meta.get("urgency_score") or (float(row.severity or 0.0) * 100.0)), 1),
                 "country": country_catalog.country_name(row.country) or "",
                 "nearby_markets": list(row.related_market_ids or []),
-                "detected_at": _to_iso(row.detected_at),
+                "detected_at": to_iso(row.detected_at),
             }
         )
 
@@ -1135,7 +1127,7 @@ async def get_temporal_anomalies(
                 "baseline_mean": round(float(meta.get("baseline_mean") or 0.0), 2),
                 "baseline_std": round(float(meta.get("baseline_std") or 0.0), 2),
                 "description": row.description or "",
-                "detected_at": _to_iso(row.detected_at),
+                "detected_at": to_iso(row.detected_at),
             }
         )
 
@@ -1221,7 +1213,7 @@ async def get_infrastructure_events(session: AsyncSession = Depends(get_db_sessi
                 "event_type": meta.get("event_type") or "internet_outage",
                 "country": country_catalog.country_name(row.country) or row.country,
                 "severity": round(float(row.severity or 0.0), 2),
-                "started_at": _to_iso(row.detected_at),
+                "started_at": to_iso(row.detected_at),
                 "description": row.description or "",
                 "source": row.source,
                 "cascade_risk_score": round(float(meta.get("cascade_risk_score") or 0.0), 2),
@@ -1283,7 +1275,7 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     return {
         "sources": normalized_sources,
         "errors": normalized_errors,
-        "updated_at": _to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
+        "updated_at": to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
     }
 
 
@@ -1462,7 +1454,7 @@ async def get_world_intelligence_summary(
     if not last_collection:
         last_collection = worker.get("last_run_at")
     if not last_collection and snapshot:
-        last_collection = _to_iso(snapshot.updated_at)
+        last_collection = to_iso(snapshot.updated_at)
 
     return {
         "signal_summary": {
@@ -1530,5 +1522,5 @@ async def get_world_intelligence_status(
     return {
         "status": status,
         "stats": public_stats,
-        "updated_at": _to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
+        "updated_at": to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
     }

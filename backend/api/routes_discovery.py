@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, delete
 from typing import Any, Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from functools import partial
+from utils.converters import normalize_market_id, safe_float
+
+_safe_float = partial(safe_float, reject_nan_inf=True)
 
 from models.database import (
     AsyncSessionLocal,
@@ -166,10 +170,6 @@ def _normalize_win_rate_ratio(value: object) -> float:
     return max(0.0, min(wr, 1.0))
 
 
-def _normalize_market_id(value: object) -> str:
-    return str(value or "").strip().lower()
-
-
 def _is_placeholder_market_question(question: object) -> bool:
     text = str(question or "").strip().lower()
     return text.startswith("market 0x")
@@ -273,7 +273,7 @@ async def _load_scanner_market_history(session: AsyncSession) -> dict[str, list[
 
     out: dict[str, list[dict]] = {}
     for market_id, points in row.market_history_json.items():
-        key = _normalize_market_id(market_id)
+        key = normalize_market_id(market_id)
         if not key or not isinstance(points, list):
             continue
         out[key] = [p for p in points if isinstance(p, dict)]
@@ -289,7 +289,7 @@ def _attach_market_history_to_signal_rows(
         return
 
     for row in rows:
-        market_id = _normalize_market_id(row.get("market_id"))
+        market_id = normalize_market_id(row.get("market_id"))
         if not market_id:
             continue
 
@@ -308,16 +308,6 @@ def _attach_market_history_to_signal_rows(
             slug_fallback = _humanize_market_slug(row.get("market_slug"))
             if slug_fallback:
                 row["market_question"] = slug_fallback
-
-
-def _safe_float(value: object) -> Optional[float]:
-    try:
-        parsed = float(value)
-    except Exception:
-        return None
-    if parsed != parsed or parsed in (float("inf"), float("-inf")):
-        return None
-    return parsed
 
 
 def _normalize_signal_wallet_address(value: object) -> Optional[str]:
@@ -391,7 +381,7 @@ def _build_signal_validation_payload(
     wallet_addresses: list[str],
     has_qualified_source: bool,
 ) -> dict[str, Any]:
-    has_market_id = bool(_normalize_market_id(signal.get("market_id")))
+    has_market_id = bool(normalize_market_id(signal.get("market_id")))
     has_wallets = bool(wallet_addresses)
     has_direction = _signal_has_direction(signal)
     has_price_reference, price_in_bounds = _signal_has_price_reference(signal)
@@ -560,7 +550,7 @@ async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
     market_info_cache: dict[str, Optional[dict[str, Any]]] = {}
 
     async def _load_market_info(market_id: str) -> Optional[dict[str, Any]]:
-        normalized = _normalize_market_id(market_id)
+        normalized = normalize_market_id(market_id)
         if not normalized:
             return None
         if normalized in market_info_cache:
@@ -577,7 +567,7 @@ async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
         return info
 
     for row in rows:
-        market_id = _normalize_market_id(row.get("market_id"))
+        market_id = normalize_market_id(row.get("market_id"))
         if not market_id:
             row["outcome_labels"] = ["Yes", "No"]
             row["yes_label"] = "Yes"
@@ -624,13 +614,13 @@ async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
 
 def _history_candidates_for_row(row: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
-    primary = _normalize_market_id(row.get("market_id"))
+    primary = normalize_market_id(row.get("market_id"))
     if primary:
         candidates.extend([primary, primary.upper()])
     token_ids = row.get("market_token_ids")
     if isinstance(token_ids, list):
         for token_id in token_ids:
-            token_norm = _normalize_market_id(token_id)
+            token_norm = normalize_market_id(token_id)
             if token_norm:
                 candidates.extend([token_norm, token_norm.upper()])
     return list(dict.fromkeys(candidates))
@@ -731,7 +721,7 @@ async def _attach_activity_history_fallback(
 
     events_by_market: dict[str, list[tuple[datetime, str, float]]] = defaultdict(list)
     for market_id, traded_at, side, price in raw_rows:
-        market_norm = _normalize_market_id(market_id)
+        market_norm = normalize_market_id(market_id)
         if not market_norm or traded_at is None:
             continue
         price_f = _safe_float(price)
@@ -960,7 +950,7 @@ async def _annotate_trader_signal_rows(
         )
         if has_strategy_validation:
             checks = dict(strategy_validation.get("checks") or {})
-            checks.setdefault("has_market_id", bool(_normalize_market_id(row.get("market_id"))))
+            checks.setdefault("has_market_id", bool(normalize_market_id(row.get("market_id"))))
             checks.setdefault("has_wallets", bool(wallet_addresses))
             checks.setdefault("has_direction", _signal_has_direction(row))
             has_price_reference, price_in_bounds = _signal_has_price_reference(row)

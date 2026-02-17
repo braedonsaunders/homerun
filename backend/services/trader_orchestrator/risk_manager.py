@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.converters import safe_float, safe_int
+
 # ---------------------------------------------------------------------------
 # ABSOLUTE SAFETY CEILINGS FOR LIVE TRADING
 #
@@ -33,20 +35,6 @@ class RiskResult:
     allowed: bool
     reason: str
     checks: list[RiskCheck] = field(default_factory=list)
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
 
 
 def _safe_bool(value: Any, default: bool = False) -> bool:
@@ -86,7 +74,7 @@ def evaluate_risk(
     checks: list[RiskCheck] = []
 
     # --- Daily loss limits ---
-    global_max_daily_loss = abs(_safe_float(global_limits.get("max_daily_loss_usd"), 500.0))
+    global_max_daily_loss = abs(safe_float(global_limits.get("max_daily_loss_usd"), 500.0))
     # Safety ceiling: in live mode, cap at the hard-coded absolute maximum.
     if is_live:
         global_max_daily_loss = min(global_max_daily_loss, ABSOLUTE_MAX_DAILY_LOSS_USD)
@@ -100,7 +88,7 @@ def evaluate_risk(
     )
 
     trader_max_daily_loss = abs(
-        _safe_float(
+        safe_float(
             trader_limits.get("max_daily_loss_usd"),
             global_max_daily_loss,
         )
@@ -151,7 +139,7 @@ def evaluate_risk(
     )
 
     halt_on_losses = _safe_bool(trader_limits.get("halt_on_consecutive_losses"), False)
-    max_consecutive_losses = max(1, _safe_int(trader_limits.get("max_consecutive_losses"), 4))
+    max_consecutive_losses = max(1, safe_int(trader_limits.get("max_consecutive_losses"), 4))
     checks.append(
         RiskCheck(
             key="trader_loss_streak",
@@ -172,7 +160,7 @@ def evaluate_risk(
         )
     )
 
-    max_orders_per_cycle = max(1, _safe_int(trader_limits.get("max_orders_per_cycle"), 50))
+    max_orders_per_cycle = max(1, safe_int(trader_limits.get("max_orders_per_cycle"), 50))
     checks.append(
         RiskCheck(
             key="trader_orders_per_cycle",
@@ -185,9 +173,9 @@ def evaluate_risk(
     # --- Trade notional limit ---
     # Derive a sensible default from max_gross_exposure (10% of gross cap, floor $50)
     # rather than the previous $1M which provided no real protection.
-    _gross_cap = _safe_float(global_limits.get("max_gross_exposure_usd"), 5000.0)
+    _gross_cap = safe_float(global_limits.get("max_gross_exposure_usd"), 5000.0)
     _notional_default = max(50.0, _gross_cap * 0.10)
-    max_trade_notional = max(1.0, _safe_float(trader_limits.get("max_trade_notional_usd"), _notional_default))
+    max_trade_notional = max(1.0, safe_float(trader_limits.get("max_trade_notional_usd"), _notional_default))
     # Safety ceiling: in live mode, cap at the hard-coded absolute maximum.
     if is_live:
         max_trade_notional = min(max_trade_notional, ABSOLUTE_MAX_TRADE_NOTIONAL_USD)
@@ -201,7 +189,7 @@ def evaluate_risk(
     )
 
     # --- Gross exposure limit ---
-    max_gross = _safe_float(global_limits.get("max_gross_exposure_usd"), 5000.0)
+    max_gross = safe_float(global_limits.get("max_gross_exposure_usd"), 5000.0)
     # Safety ceiling: in live mode, cap at the hard-coded absolute maximum.
     if is_live:
         max_gross = min(max_gross, ABSOLUTE_MAX_GROSS_EXPOSURE_USD)
@@ -215,7 +203,7 @@ def evaluate_risk(
         )
     )
 
-    max_trader_orders = _safe_int(
+    max_trader_orders = safe_int(
         trader_limits.get("max_open_positions", trader_limits.get("max_open_orders")),
         10,
     )
@@ -229,7 +217,7 @@ def evaluate_risk(
     )
 
     # --- Per-market exposure limit ---
-    max_per_market = _safe_float(trader_limits.get("max_per_market_exposure_usd"), 500.0)
+    max_per_market = safe_float(trader_limits.get("max_per_market_exposure_usd"), 500.0)
     # Safety ceiling: in live mode, cap at the hard-coded absolute maximum.
     if is_live:
         max_per_market = min(max_per_market, ABSOLUTE_MAX_PER_MARKET_EXPOSURE_USD)

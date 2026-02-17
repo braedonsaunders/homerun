@@ -6,18 +6,12 @@ import time
 from typing import Any, Optional
 
 from services.polymarket import polymarket_client
+from utils.converters import safe_float
 from utils.utcnow import utcnow
 
 _POLYMARKET_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _POLYMARKET_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _POLYMARKET_HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    try:
-        return float(value)
-    except Exception:
-        return None
 
 
 def _normalize_identifier(value: Any) -> str:
@@ -88,8 +82,8 @@ def _normalize_history_points(
     for item in points:
         if not isinstance(item, dict):
             continue
-        t = _safe_float(item.get("t"))
-        p = _safe_float(item.get("p"))
+        t = safe_float(item.get("t"))
+        p = safe_float(item.get("p"))
         if t is None or p is None:
             continue
         if t < 10_000_000_000:
@@ -150,8 +144,8 @@ def _build_history_summary(history: list[dict[str, float]]) -> dict[str, Any]:
 
 def _extract_model_probability(signal: Any, *, direction: str) -> Optional[float]:
     # Generic fallback for directional signals where edge = model_probability - entry_price.
-    entry = _safe_float(getattr(signal, "entry_price", None))
-    edge = _safe_float(getattr(signal, "edge_percent", None))
+    entry = safe_float(getattr(signal, "entry_price", None))
+    edge = safe_float(getattr(signal, "edge_percent", None))
     if entry is not None and edge is not None:
         implied = entry + (edge / 100.0)
         if 0.0 <= implied <= 1.0:
@@ -162,12 +156,12 @@ def _extract_model_probability(signal: Any, *, direction: str) -> Optional[float
         return None
 
     for key in ("model_probability", "selected_probability"):
-        value = _safe_float(payload.get(key))
+        value = safe_float(payload.get(key))
         if value is not None and 0.0 <= value <= 1.0:
             return value
 
     # Common field for directional intents.
-    value = _safe_float(payload.get("expected_payout"))
+    value = safe_float(payload.get("expected_payout"))
     if value is not None and 0.0 <= value <= 1.0:
         return value
 
@@ -177,12 +171,12 @@ def _extract_model_probability(signal: Any, *, direction: str) -> Optional[float
 
     weather = metadata.get("weather")
     if isinstance(weather, dict):
-        consensus_yes = _safe_float(weather.get("consensus_probability"))
+        consensus_yes = safe_float(weather.get("consensus_probability"))
         if consensus_yes is not None and 0.0 <= consensus_yes <= 1.0:
             return (1.0 - consensus_yes) if direction == "buy_no" else consensus_yes
 
     for key in ("model_probability", "selected_probability"):
-        value = _safe_float(metadata.get(key))
+        value = safe_float(metadata.get(key))
         if value is not None and 0.0 <= value <= 1.0:
             return value
 
@@ -266,7 +260,7 @@ async def build_live_signal_contexts(
                 norm = _normalize_identifier(token_id)
                 if not norm or not isinstance(payload, dict):
                     continue
-                mid = _safe_float(payload.get("mid"))
+                mid = safe_float(payload.get("mid"))
                 if mid is None:
                     continue
                 if 0.0 <= mid <= 1.0:
@@ -333,9 +327,9 @@ async def build_live_signal_contexts(
         yes_live = live_prices.get(yes_token) if yes_token else None
         no_live = live_prices.get(no_token) if no_token else None
         if yes_live is None:
-            yes_live = _safe_float(market_info.get("yes_price"))
+            yes_live = safe_float(market_info.get("yes_price"))
         if no_live is None:
-            no_live = _safe_float(market_info.get("no_price"))
+            no_live = safe_float(market_info.get("no_price"))
 
         selected_outcome: Optional[str] = None
         selected_live: Optional[float] = None
@@ -356,7 +350,7 @@ async def build_live_signal_contexts(
         if selected_live is None and selected_history:
             selected_live = selected_history[-1]["p"]
 
-        signal_entry = _safe_float(getattr(signal, "entry_price", None))
+        signal_entry = safe_float(getattr(signal, "entry_price", None))
         entry_delta = None
         entry_delta_pct = None
         adverse_move = None
@@ -413,8 +407,8 @@ class RuntimeTradeSignalView:
         self._base_signal = base_signal
         self.live_context = live_context or {}
 
-        live_entry = _safe_float(self.live_context.get("live_selected_price"))
-        live_edge = _safe_float(self.live_context.get("live_edge_percent"))
+        live_entry = safe_float(self.live_context.get("live_selected_price"))
+        live_edge = safe_float(self.live_context.get("live_edge_percent"))
         self.entry_price = live_entry if live_entry is not None else getattr(base_signal, "entry_price", None)
         self.edge_percent = live_edge if live_edge is not None else getattr(base_signal, "edge_percent", None)
 

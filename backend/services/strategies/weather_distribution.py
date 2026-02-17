@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
+from services.strategies.base import DecisionCheck, StrategyDecision
 from services.strategies.weather_base import BaseWeatherStrategy
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, weather_metadata, hours_to_target
 from services.weather.signal_engine import (
     ensemble_bucket_probability,
     compute_confidence,
@@ -64,6 +66,126 @@ class WeatherDistributionStrategy(BaseWeatherStrategy):
         "max_buckets_per_event": 2,  # max simultaneous positions in one event
         "risk_base_score": 0.30,
     }
+
+    # ------------------------------------------------------------------
+    # evaluate()  (unified strategy interface — ported from
+    # WeatherAlertsStrategy in trader_orchestrator)
+    # ------------------------------------------------------------------
+
+    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+        weather = weather_metadata(payload)
+
+        min_edge = to_float(params.get("min_edge_percent", 8.0), 8.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.46), 0.46)
+        min_temp_dislocation = max(0.0, to_float(params.get("min_temp_dislocation_c", 1.5), 1.5))
+        min_source_count = max(1, int(to_float(params.get("min_source_count", 1), 1)))
+        max_target_hours = max(1.0, to_float(params.get("max_target_hours", 96.0), 96.0))
+        max_source_spread = max(0.0, to_float(params.get("max_source_spread_c", 6.0), 6.0))
+        base_size = max(1.0, to_float(params.get("base_size_usd", 12.0), 12.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 80.0), 80.0))
+
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        source_ok = source in {"weather"}
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
+        source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
+        consensus_temp = to_float(weather.get("consensus_temp_c"), 0.0)
+        implied_temp = to_float(weather.get("market_implied_temp_c"), 0.0)
+        temp_dislocation = abs(consensus_temp - implied_temp)
+        htt = hours_to_target(weather.get("target_time"))
+        target_window_ok = htt is None or (0.0 <= htt <= max_target_hours)
+
+        checks = [
+            DecisionCheck("source", "Weather source", source_ok, detail="Requires source=weather."),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+            DecisionCheck(
+                "temp_dislocation",
+                "Temperature dislocation (C)",
+                temp_dislocation >= min_temp_dislocation,
+                score=temp_dislocation,
+                detail=f"min={min_temp_dislocation:.2f}",
+            ),
+            DecisionCheck(
+                "source_count",
+                "Forecast source depth",
+                source_count >= min_source_count,
+                score=float(source_count),
+                detail=f"min={min_source_count}",
+            ),
+            DecisionCheck(
+                "source_spread",
+                "Model spread ceiling (C)",
+                source_spread_c <= max_source_spread,
+                score=source_spread_c,
+                detail=f"max={max_source_spread:.2f}",
+            ),
+            DecisionCheck(
+                "target_window",
+                "Target window horizon",
+                target_window_ok,
+                score=htt,
+                detail=f"max={max_target_hours:.0f}h",
+            ),
+        ]
+
+        score = (
+            (edge * 0.58)
+            + (confidence * 28.0)
+            + (temp_dislocation * 2.5)
+            + (min(3, source_count) * 1.5)
+            - (source_spread_c * 1.1)
+        )
+        if not all(check.passed for check in checks):
+            return StrategyDecision(
+                decision="skipped",
+                reason="Weather alerts filters not met",
+                score=score,
+                checks=checks,
+                payload={
+                    "source": source,
+                    "edge": edge,
+                    "confidence": confidence,
+                    "source_count": source_count,
+                    "source_spread_c": source_spread_c,
+                    "consensus_temp_c": consensus_temp,
+                    "market_implied_temp_c": implied_temp,
+                    "temp_dislocation_c": temp_dislocation,
+                    "hours_to_target": htt,
+                },
+            )
+
+        dislocation_scale = 1.0 + min(0.45, temp_dislocation / 8.0)
+        size = base_size * (1.0 + (edge / 100.0)) * (0.7 + confidence) * dislocation_scale
+        size = max(1.0, min(max_size, size))
+        return StrategyDecision(
+            decision="selected",
+            reason="Weather alerts signal selected",
+            score=score,
+            size_usd=size,
+            checks=checks,
+            payload={
+                "source": source,
+                "edge": edge,
+                "confidence": confidence,
+                "source_count": source_count,
+                "source_spread_c": source_spread_c,
+                "consensus_temp_c": consensus_temp,
+                "market_implied_temp_c": implied_temp,
+                "temp_dislocation_c": temp_dislocation,
+                "hours_to_target": htt,
+                "size_usd": size,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Override _evaluate_intent entirely -- the distribution flow with

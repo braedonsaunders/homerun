@@ -5,13 +5,7 @@ from typing import Any, Optional
 
 from services.polymarket import polymarket_client
 from services.trading import OrderSide, trading_service
-
-
-def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
-    try:
-        return float(value)
-    except Exception:
-        return default
+from utils.converters import safe_float
 
 
 def _normalize_side(value: Any) -> OrderSide | None:
@@ -56,8 +50,8 @@ async def execute_live_order(
 ) -> LiveOrderExecution:
     normalized_token_id = str(token_id or "").strip()
     normalized_side = _normalize_side(side)
-    requested_size = max(0.0, _safe_float(size, 0.0) or 0.0)
-    fallback = _safe_float(fallback_price)
+    requested_size = max(0.0, safe_float(size, 0.0) or 0.0)
+    fallback = safe_float(fallback_price)
 
     base_payload = {
         "adapter": "live_execution_adapter_v1",
@@ -99,13 +93,9 @@ async def execute_live_order(
     resolved_price = fallback
     try:
         if normalized_side == OrderSide.BUY:
-            resolved_price = _safe_float(
-                await polymarket_client.get_price(normalized_token_id, side="BUY"), resolved_price
-            )
+            resolved_price = safe_float(await polymarket_client.get_price(normalized_token_id, side="BUY"), resolved_price)
         else:
-            resolved_price = _safe_float(
-                await polymarket_client.get_price(normalized_token_id, side="SELL"), resolved_price
-            )
+            resolved_price = safe_float(await polymarket_client.get_price(normalized_token_id, side="SELL"), resolved_price)
     except Exception:
         pass
 
@@ -140,7 +130,7 @@ async def execute_live_order(
 
     mapped_status = _map_trading_status(getattr(order, "status", None))
     error_message = getattr(order, "error_message", None) if mapped_status == "failed" else None
-    average_fill = _safe_float(getattr(order, "average_fill_price", None))
+    average_fill = safe_float(getattr(order, "average_fill_price", None))
     effective_price = average_fill if average_fill and average_fill > 0 else resolved_price
     order_id = str(getattr(order, "id", "") or "") or None
     clob_order_id = str(getattr(order, "clob_order_id", "") or "") or None
@@ -157,7 +147,7 @@ async def execute_live_order(
             "order_id": order_id,
             "clob_order_id": clob_order_id,
             "trading_status": str(getattr(getattr(order, "status", None), "value", getattr(order, "status", "")) or ""),
-            "filled_size": _safe_float(getattr(order, "filled_size", None), 0.0) or 0.0,
+            "filled_size": safe_float(getattr(order, "filled_size", None), 0.0) or 0.0,
             "average_fill_price": average_fill,
         },
     )

@@ -7,23 +7,15 @@ reasonable spread-capture targets and liquidity constraints.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, make_aware, utcnow
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware, utcnow
+from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from utils.converters import safe_float
 
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
 
 
 class SpreadDislocationStrategy(BaseStrategy):
@@ -85,16 +77,16 @@ class SpreadDislocationStrategy(BaseStrategy):
         cfg = dict(self.default_config)
         cfg.update(getattr(self, "config", {}) or {})
 
-        min_spread = _clamp(_safe_float(cfg.get("min_spread"), 0.03), 0.005, 0.5)
-        max_spread = max(min_spread, _clamp(_safe_float(cfg.get("max_spread"), 0.18), 0.01, 0.6))
-        min_mid_price = _clamp(_safe_float(cfg.get("min_mid_price"), 0.55), 0.05, 0.98)
-        max_mid_price = _clamp(_safe_float(cfg.get("max_mid_price"), 0.92), min_mid_price + 0.01, 0.99)
-        capture_fraction = _clamp(_safe_float(cfg.get("capture_fraction"), 0.55), 0.1, 0.95)
-        min_target_move = _clamp(_safe_float(cfg.get("min_target_move"), 0.01), 0.002, 0.15)
-        min_liquidity = max(100.0, _safe_float(cfg.get("min_liquidity"), 6000.0))
-        min_days = max(0.0, _safe_float(cfg.get("min_days_to_resolution"), 0.5))
-        max_days = max(min_days + 0.1, _safe_float(cfg.get("max_days_to_resolution"), 60.0))
-        max_opportunities = max(1, int(_safe_float(cfg.get("max_opportunities"), 50)))
+        min_spread = clamp(safe_float(cfg.get("min_spread"), 0.03), 0.005, 0.5)
+        max_spread = max(min_spread, clamp(safe_float(cfg.get("max_spread"), 0.18), 0.01, 0.6))
+        min_mid_price = clamp(safe_float(cfg.get("min_mid_price"), 0.55), 0.05, 0.98)
+        max_mid_price = clamp(safe_float(cfg.get("max_mid_price"), 0.92), min_mid_price + 0.01, 0.99)
+        capture_fraction = clamp(safe_float(cfg.get("capture_fraction"), 0.55), 0.1, 0.95)
+        min_target_move = clamp(safe_float(cfg.get("min_target_move"), 0.01), 0.002, 0.15)
+        min_liquidity = max(100.0, safe_float(cfg.get("min_liquidity"), 6000.0))
+        min_days = max(0.0, safe_float(cfg.get("min_days_to_resolution"), 0.5))
+        max_days = max(min_days + 0.1, safe_float(cfg.get("max_days_to_resolution"), 60.0))
+        max_opportunities = max(1, int(safe_float(cfg.get("max_opportunities"), 50)))
 
         event_by_market: dict[str, Event] = {}
         for event in events:
@@ -107,7 +99,7 @@ class SpreadDislocationStrategy(BaseStrategy):
         for market in markets:
             if market.closed or not market.active:
                 continue
-            if _safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
+            if safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
                 continue
             if len(list(getattr(market, "clob_token_ids", []) or [])) < 2:
                 continue
@@ -176,10 +168,10 @@ class SpreadDislocationStrategy(BaseStrategy):
                 if not opp:
                     continue
 
-                liquidity = _safe_float(getattr(market, "liquidity", 0.0))
+                liquidity = safe_float(getattr(market, "liquidity", 0.0))
                 liquidity_discount = min(0.12, liquidity / 120000.0)
                 risk = 0.58 + min(0.18, spread * 1.8) - liquidity_discount
-                opp.risk_score = _clamp(risk, 0.32, 0.82)
+                opp.risk_score = clamp(risk, 0.32, 0.82)
                 opp.risk_factors = [
                     f"Book spread {spread:.2%}",
                     "Execution depends on passive/limit queue quality",
@@ -207,3 +199,48 @@ class SpreadDislocationStrategy(BaseStrategy):
             if len(out) >= max_opportunities:
                 break
         return out
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
+        max_risk = to_confidence(params.get("max_risk_score", 0.80), 0.80)
+        min_liquidity = max(0.0, to_float(params.get("min_liquidity", 500.0), 500.0))
+        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 120.0), 120.0))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity, score=liquidity, detail=f"min={min_liquidity:.0f}"),
+        ]
+
+        score = (edge * 0.60) + (confidence * 28.0) + (min(1.0, liquidity / 8000.0) * 6.0) - (risk_score * 9.0)
+
+        if not all(c.passed for c in checks):
+            return StrategyDecision("skipped", "Spread dislocation filters not met", score=score, checks=checks)
+
+        size = base_size * (1.0 + (edge / 100.0)) * (0.70 + confidence)
+        size = max(1.0, min(max_size, size))
+
+        return StrategyDecision("selected", "Spread dislocation signal selected", score=score, size_usd=size, checks=checks)
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        """Exit when spread closes or on time decay."""
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        age_minutes = float(getattr(position, "age_minutes", 0) or 0)
+        max_hold = float(config.get("max_hold_minutes", 180) or 180)
+        if age_minutes > max_hold:
+            current_price = market_state.get("current_price")
+            return ExitDecision("close", f"Spread dislocation time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price)
+        return self.default_exit_check(position, market_state)

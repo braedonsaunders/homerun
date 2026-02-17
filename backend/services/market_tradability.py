@@ -9,6 +9,7 @@ from typing import Iterable, Optional
 
 from services.polymarket import polymarket_client
 from utils.utcnow import utcnow
+from utils.converters import normalize_market_id
 
 _CACHE_TTL = timedelta(minutes=3)
 _CACHE_MAX_SIZE = 5000
@@ -16,10 +17,6 @@ _cache: dict[str, tuple[datetime, bool]] = {}
 _POLYMARKET_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _POLYMARKET_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _POLYMARKET_HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
-
-
-def _normalize_market_id(value: object) -> str:
-    return str(value or "").strip().lower()
 
 
 def _is_polymarket_condition_id(value: str) -> bool:
@@ -67,7 +64,7 @@ async def is_market_tradable(
 
     Unknown/lookup-failed markets are treated as tradable to avoid false drops.
     """
-    key = _normalize_market_id(market_id)
+    key = normalize_market_id(market_id)
     if not key:
         return False
 
@@ -106,7 +103,7 @@ async def get_market_tradability_map(
 ) -> dict[str, bool]:
     """Resolve a batch of market ids -> tradability boolean."""
     ref_now = now or utcnow()
-    keys = sorted({_normalize_market_id(mid) for mid in market_ids if _normalize_market_id(mid)})
+    keys = sorted({normalize_market_id(mid) for mid in market_ids if normalize_market_id(mid)})
     if not keys:
         return {}
 

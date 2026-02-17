@@ -21,7 +21,7 @@ _LEGACY_WRAPPER_MARKERS = (
 
 
 @dataclass(frozen=True)
-class SystemTraderStrategySeed:
+class SystemStrategySeed:
     strategy_key: str
     source_key: str
     label: str
@@ -39,8 +39,10 @@ def _seed_source_code(import_module: str) -> str:
     module_rel_path = import_module.replace(".", "/") + ".py"
     source_path = _BACKEND_ROOT / module_rel_path
     source = source_path.read_text(encoding="utf-8")
-    # DB-loaded modules are not package-scoped, so rewrite local relative imports.
-    source = _RELATIVE_IMPORT_RE.sub(r"\1from services.trader_orchestrator.strategies.\2 import ", source)
+    # DB-loaded modules are not package-scoped, so rewrite local relative imports
+    # to the fully-qualified package path derived from the import_module.
+    parent_package = import_module.rsplit(".", 1)[0]
+    source = _RELATIVE_IMPORT_RE.sub(rf"\1from {parent_package}.\2 import ", source)
     return source
 
 
@@ -48,15 +50,15 @@ def _is_legacy_wrapper_source(source_code: str) -> bool:
     return any(marker in source_code for marker in _LEGACY_WRAPPER_MARKERS)
 
 
-SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
-    SystemTraderStrategySeed(
+SYSTEM_STRATEGY_SEEDS: list[SystemStrategySeed] = [
+    SystemStrategySeed(
         strategy_key="crypto_5m",
         source_key="crypto",
         label="Crypto 5m",
         description="Dedicated crypto execution for 5m markets.",
-        class_name="Crypto5mStrategy",
-        import_module="services.trader_orchestrator.strategies.crypto_15m",
-        import_class="Crypto5mStrategy",
+        class_name="BtcEthHighFreqStrategy",
+        import_module="services.strategies.btc_eth_highfreq",
+        import_class="BtcEthHighFreqStrategy",
         default_params={
             "strategy_mode": "auto",
             "target_assets": ["BTC", "ETH", "SOL", "XRP"],
@@ -107,14 +109,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="crypto_15m",
         source_key="crypto",
         label="Crypto 15m",
         description="Dedicated crypto execution for 15m markets.",
-        class_name="Crypto15mStrategy",
-        import_module="services.trader_orchestrator.strategies.crypto_15m",
-        import_class="Crypto15mStrategy",
+        class_name="BtcEthHighFreqStrategy",
+        import_module="services.strategies.btc_eth_highfreq",
+        import_class="BtcEthHighFreqStrategy",
         default_params={
             "strategy_mode": "auto",
             "target_assets": ["BTC", "ETH", "SOL", "XRP"],
@@ -165,14 +167,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=["strategy.default", "default"],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="crypto_1h",
         source_key="crypto",
         label="Crypto 1h",
         description="Dedicated crypto execution for 1h markets.",
-        class_name="Crypto1hStrategy",
-        import_module="services.trader_orchestrator.strategies.crypto_15m",
-        import_class="Crypto1hStrategy",
+        class_name="BtcEthHighFreqStrategy",
+        import_module="services.strategies.btc_eth_highfreq",
+        import_class="BtcEthHighFreqStrategy",
         default_params={
             "strategy_mode": "auto",
             "target_assets": ["BTC", "ETH", "SOL", "XRP"],
@@ -223,14 +225,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="crypto_4h",
         source_key="crypto",
         label="Crypto 4h",
         description="Dedicated crypto execution for 4h markets.",
-        class_name="Crypto4hStrategy",
-        import_module="services.trader_orchestrator.strategies.crypto_15m",
-        import_class="Crypto4hStrategy",
+        class_name="BtcEthHighFreqStrategy",
+        import_module="services.strategies.btc_eth_highfreq",
+        import_class="BtcEthHighFreqStrategy",
         default_params={
             "strategy_mode": "auto",
             "target_assets": ["BTC", "ETH", "SOL", "XRP"],
@@ -281,13 +283,13 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="crypto_spike_reversion",
         source_key="crypto",
         label="Crypto Spike Reversion",
         description="Spike-reversion execution using live 5m/30m/2h movement context.",
         class_name="CryptoSpikeReversionStrategy",
-        import_module="services.trader_orchestrator.strategies.crypto_spike_reversion",
+        import_module="services.strategies.crypto_spike_reversion",
         import_class="CryptoSpikeReversionStrategy",
         default_params={
             "min_edge_percent": 2.8,
@@ -326,14 +328,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="opportunity_general",
         source_key="scanner",
         label="Opportunity General",
         description="General-purpose scanner strategy across all opportunity shapes.",
-        class_name="OpportunityGeneralStrategy",
-        import_module="services.trader_orchestrator.strategies.opportunity_weather",
-        import_class="OpportunityGeneralStrategy",
+        class_name="BasicArbStrategy",
+        import_module="services.strategies.basic",
+        import_class="BasicArbStrategy",
         default_params={
             "min_edge_percent": 4.0,
             "min_confidence": 0.45,
@@ -356,14 +358,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=["opportunity_weather"],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="opportunity_structural",
         source_key="scanner",
         label="Opportunity Structural",
         description="Risk-first structural/multi-leg opportunity execution.",
-        class_name="OpportunityStructuralStrategy",
-        import_module="services.trader_orchestrator.strategies.opportunity_weather",
-        import_class="OpportunityStructuralStrategy",
+        class_name="NegRiskStrategy",
+        import_module="services.strategies.negrisk",
+        import_class="NegRiskStrategy",
         default_params={
             "min_edge_percent": 3.0,
             "min_confidence": 0.42,
@@ -384,14 +386,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="opportunity_flash_reversion",
         source_key="scanner",
         label="Opportunity Flash Reversion",
         description="Execution strategy specialized for flash-crash reversion opportunities.",
-        class_name="OpportunityFlashReversionStrategy",
-        import_module="services.trader_orchestrator.strategies.opportunity_ported",
-        import_class="OpportunityFlashReversionStrategy",
+        class_name="FlashCrashReversionStrategy",
+        import_module="services.strategies.flash_crash_reversion",
+        import_class="FlashCrashReversionStrategy",
         default_params={
             "min_edge_percent": 3.0,
             "min_confidence": 0.4,
@@ -431,14 +433,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="opportunity_tail_carry",
         source_key="scanner",
         label="Opportunity Tail Carry",
         description="Execution strategy specialized for near-expiry tail-carry opportunities.",
-        class_name="OpportunityTailCarryStrategy",
-        import_module="services.trader_orchestrator.strategies.opportunity_ported",
-        import_class="OpportunityTailCarryStrategy",
+        class_name="TailEndCarryStrategy",
+        import_module="services.strategies.tail_end_carry",
+        import_class="TailEndCarryStrategy",
         default_params={
             "min_edge_percent": 1.6,
             "min_confidence": 0.35,
@@ -472,14 +474,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="news_reaction",
         source_key="news",
         label="News Reaction",
         description="Executes high-conviction news signals.",
-        class_name="NewsReactionStrategy",
-        import_module="services.trader_orchestrator.strategies.news_reaction",
-        import_class="NewsReactionStrategy",
+        class_name="NewsEdgeStrategy",
+        import_module="services.strategies.news_edge",
+        import_class="NewsEdgeStrategy",
         default_params={
             "min_edge_percent": 8.0,
             "min_confidence": 0.55,
@@ -494,14 +496,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="traders_flow",
         source_key="traders",
         label="Traders Flow",
         description="Confluence-driven trader-flow strategy.",
-        class_name="TradersFlowStrategy",
-        import_module="services.trader_orchestrator.strategies.traders_flow",
-        import_class="TradersFlowStrategy",
+        class_name="TradersConfluenceStrategy",
+        import_module="services.strategies.traders_confluence",
+        import_class="TradersConfluenceStrategy",
         default_params={
             "min_edge_percent": 3.0,
             "min_confidence": 0.48,
@@ -526,14 +528,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="weather_consensus",
         source_key="weather",
         label="Weather Consensus",
         description="Consensus-driven weather strategy with source agreement gating.",
-        class_name="WeatherConsensusStrategy",
-        import_module="services.trader_orchestrator.strategies.weather_models",
-        import_class="WeatherConsensusStrategy",
+        class_name="WeatherEdgeStrategy",
+        import_module="services.strategies.weather_edge",
+        import_class="WeatherEdgeStrategy",
         default_params={
             "min_edge_percent": 6.0,
             "min_confidence": 0.58,
@@ -558,14 +560,14 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
         },
         aliases=[],
     ),
-    SystemTraderStrategySeed(
+    SystemStrategySeed(
         strategy_key="weather_alerts",
         source_key="weather",
         label="Weather Alerts",
         description="Alert-style weather dislocation strategy for sharp model/market divergence.",
-        class_name="WeatherAlertsStrategy",
-        import_module="services.trader_orchestrator.strategies.weather_models",
-        import_class="WeatherAlertsStrategy",
+        class_name="WeatherDistributionStrategy",
+        import_module="services.strategies.weather_distribution",
+        import_class="WeatherDistributionStrategy",
         default_params={
             "min_edge_percent": 8.0,
             "min_confidence": 0.46,
@@ -594,12 +596,12 @@ SYSTEM_TRADER_STRATEGY_SEEDS: list[SystemTraderStrategySeed] = [
 
 
 def list_system_strategy_keys() -> list[str]:
-    return [seed.strategy_key for seed in SYSTEM_TRADER_STRATEGY_SEEDS]
+    return [seed.strategy_key for seed in SYSTEM_STRATEGY_SEEDS]
 
 
 def source_to_strategy_keys() -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
-    for seed in SYSTEM_TRADER_STRATEGY_SEEDS:
+    for seed in SYSTEM_STRATEGY_SEEDS:
         grouped.setdefault(seed.source_key, []).append(seed.strategy_key)
     for key in grouped:
         grouped[key] = sorted(grouped[key])
@@ -608,14 +610,14 @@ def source_to_strategy_keys() -> dict[str, list[str]]:
 
 def default_strategy_by_source() -> dict[str, str]:
     defaults: dict[str, str] = {}
-    for seed in SYSTEM_TRADER_STRATEGY_SEEDS:
+    for seed in SYSTEM_STRATEGY_SEEDS:
         defaults.setdefault(seed.source_key, seed.strategy_key)
     return defaults
 
 
 def build_system_strategy_rows() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for seed in SYSTEM_TRADER_STRATEGY_SEEDS:
+    for seed in SYSTEM_STRATEGY_SEEDS:
         strategy_id = uuid.uuid5(uuid.NAMESPACE_URL, f"homerun.trader_strategy.{seed.strategy_key}").hex
         rows.append(
             {
