@@ -5,7 +5,7 @@
 <h1 align="center">Homerun</h1>
 
 <p align="center">
-  <strong>The autonomous prediction market trading OS:<br/>zero-config setup, institutional-grade data, and multi-strategy execution in one dashboard.</strong>
+  <strong>Open-source prediction market arbitrage scanner and trading platform.<br/>Clone, run, and start finding mispriced markets in under a minute.</strong>
 </p>
 
 <p align="center">
@@ -16,10 +16,10 @@
 </p>
 
 <p align="center">
-  <a href="#zero-config-start">Quick Start</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#data-breadth--signal-quality">Data Engine</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#18-strategies-one-scanner">Strategies</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#the-full-stack">Features</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#quick-start">Quick Start</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#what-it-does">What It Does</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#strategies">Strategies</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#dashboard">Dashboard</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
   <a href="#copy-trading--wallet-intelligence">Copy Trading</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
   <a href="#api-reference">API</a>
 </p>
@@ -32,43 +32,17 @@
 
 <br/>
 
-## Why This Exists
+## What It Does
 
-Prediction markets are inefficient in bursts, not in theory.
+Homerun scans Polymarket and Kalshi for arbitrage opportunities — cases where market prices are internally inconsistent or diverge across platforms — and can execute trades automatically.
 
-[Published research](https://arxiv.org/abs/2503.18773) (Kroer et al.) identified **$40M+ in extractable Polymarket arbitrage**. In practice, that edge appears when:
+It ships with a set of built-in detection strategies (basic arbitrage, NegRisk bundles, cross-platform discrepancies, news-driven edges, and more), but strategies are **fully user-definable** — you can write your own in Python and plug them in at runtime.
 
-- Mutually exclusive outcomes price to **less than $1.00**
-- The same event is priced **differently on Polymarket vs Kalshi**
-- Crypto binaries drift away from **true oracle reference levels**
-- News lands and markets **lag repricing for minutes**
-
-The hard part is not finding one setup. The hard part is running all of them at once, with reliable live data and safe execution controls.
-
-Homerun does exactly that.
+The scanner runs continuously, pushes results to a real-time dashboard, and supports paper trading out of the box with no API keys required.
 
 <br/>
 
-## Data Breadth = Signal Quality
-
-Homerun is designed around source diversity and low-latency ingestion, so opportunities are backed by real market structure instead of one noisy feed.
-
-| Layer | Sources | Why It Matters |
-|-------|---------|----------------|
-| **Prediction markets** | Polymarket Gamma + CLOB, Kalshi APIs | Detect cross-market and cross-venue mispricing, not just single-book anomalies |
-| **Crypto resolution data** | Polymarket RTDS `crypto_prices_chainlink` | Uses the same Chainlink-backed reference stream used for market resolution |
-| **High-frequency crypto ticks** | Polymarket RTDS `crypto_prices` updates | Faster quote updates for short-window binaries and spread monitoring |
-| **News intelligence** | Google News RSS + GDELT DOC 2.0 + custom feeds | Catches catalysts earlier and maps them to tradable markets |
-| **Wallet intelligence** | On-chain wallet activity + anomaly filters | Distinguishes signal wallets from copy-trading noise |
-| **Global macro inputs** | Weather, world intelligence, and event feeds | Adds context for contracts tied to real-world events |
-
-<br/>
-
-## Zero-Config Start
-
-From clone to live dashboard in under a minute.
-
-No `.env` file. No database setup. No API keys. Clone and run:
+## Quick Start
 
 ```bash
 git clone https://github.com/braedonsaunders/homerun.git
@@ -76,24 +50,21 @@ cd homerun
 ./run.sh
 ```
 
-Open **http://localhost:3000** and you are immediately scanning live opportunities.
+Open **http://localhost:3000**. The scanner starts immediately with a virtual $10k paper account.
 
-Everything boots with **SQLite** out of the box, auto-creates schema on first launch, and starts paper trading with a virtual $10k account.
+No `.env` file. No database setup. No API keys. SQLite is created automatically on first run.
 
-> **Windows?** Run `.\run.ps1` in PowerShell.
+> **Windows?** Run `.\run.ps1` in PowerShell, or double-click `Homerun.bat`.
 
-### One-Click Launchers (No CLI typing)
-
-You can launch Homerun by double-clicking these files in the repo root:
+<details>
+<summary><strong>One-click launchers</strong></summary>
+<br/>
 
 - **macOS:** `Homerun.command`
 - **Windows:** `Homerun.bat`
-- **Linux:** `Homerun.desktop`
+- **Linux:** `Homerun.desktop` (run `chmod +x run.sh Homerun.desktop` first)
 
-Linux notes:
-
-- Run `chmod +x run.sh Homerun.desktop` once.
-- In some desktop environments, right-click `Homerun.desktop` and choose **Allow Launching** the first time.
+</details>
 
 <details>
 <summary><strong>Requirements</strong></summary>
@@ -114,157 +85,121 @@ Linux notes:
 
 <br/>
 
-## 18 Strategies, One Scanner
+## Strategies
 
-Most arb bots run one strategy. Homerun runs 18 simultaneously.
+Homerun ships with built-in strategies covering the most common prediction market mispricings:
 
-### Core Strategies
+| Strategy | What It Detects |
+|----------|----------------|
+| **Basic Arbitrage** | YES + NO on the same market sum to less than $1.00 |
+| **NegRisk** | Mutually exclusive outcome bundles priced below guaranteed payout |
+| **Mutually Exclusive** | Two events where only one can happen, both underpriced |
+| **Contradiction** | Markets implying logically inconsistent outcomes |
+| **Must-Happen** | Exhaustive outcome sets where probabilities sum below 100% |
+| **Miracle Scanner** | Near-impossible events priced too high on YES |
+| **Combinatorial** | Multi-leg integer programming across related markets |
+| **Settlement Lag** | Markets that haven't repriced after an outcome is already known |
+| **BTC/ETH High-Frequency** | Short-window crypto binaries drifting from Chainlink oracle prices |
+| **Cross-Platform** | Price discrepancies between Polymarket and Kalshi |
+| **News Edge** | LLM reads breaking news, estimates probability, flags the gap |
+| **Bayesian Cascade** | Belief propagation across correlated market graphs |
+| **Liquidity Vacuum** | Order book imbalance exploitation |
+| **Entropy Arbitrage** | Information-theoretic mispricing detection |
+| **Event-Driven** | Price lag after news catalysts |
+| **Temporal Decay** | Time-decay mispricing near resolution deadlines |
+| **Correlation Arbitrage** | Mean-reversion on correlated pair spreads |
+| **Market Making** | Earn bid-ask spread as liquidity provider |
 
-| # | Strategy | How It Works | Edge |
-|---|----------|-------------|------|
-| 1 | **Basic Arbitrage** | Buy YES + NO on same market when sum < $1.00 | $10.58M historical profit |
-| 2 | **NegRisk** | Buy YES on all outcomes in mutually exclusive events | **$28.99M profit, 29x capital efficiency** |
-| 3 | **Mutually Exclusive** | Two events where only one can happen — buy both | Cross-event mispricing |
-| 4 | **Contradiction** | Markets saying opposite things — buy both sides | Logical inconsistency |
-| 5 | **Must-Happen** | Exhaustive outcomes where one must occur | Probability sum < 100% |
-| 6 | **Miracle Scanner** | Bet NO on near-impossible events (aliens, WW3 by Friday) | Garbage collection for free money |
-| 7 | **Combinatorial** | Integer programming across multiple markets | Multi-leg guaranteed profit |
-| 8 | **Settlement Lag** | Trade after outcome is known but prices haven't updated | Hours-long windows |
+### Custom Strategies
 
-### Advanced Strategies
+Strategies are pluggable. Write a Python class extending `BaseStrategy`, submit it through the UI, and it runs alongside the built-ins every scan cycle:
 
-| # | Strategy | How It Works |
-|---|----------|-------------|
-| 9 | **BTC/ETH High-Frequency** | 15min/1hr binary crypto market arbitrage with Chainlink oracle tracking |
-| 10 | **Cross-Platform** | Price discrepancies between Polymarket and Kalshi |
-| 11 | **News Edge** | LLM reads breaking news, estimates probability, trades the gap |
-| 12 | **Bayesian Cascade** | Belief propagation across correlated market graphs |
-| 13 | **Liquidity Vacuum** | Order book imbalance exploitation |
-| 14 | **Entropy Arbitrage** | Information-theoretic mispricing detection |
-| 15 | **Event-Driven** | Price lag after news catalysts |
-| 16 | **Temporal Decay** | Time-decay mispricing near deadlines |
-| 17 | **Correlation Arbitrage** | Mean-reversion on correlated pair spreads |
-| 18 | **Market Making** | Earn bid-ask spread as liquidity provider |
+```python
+from services.strategies.base import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    name = "My Custom Strategy"
+    description = "What this detects"
+
+    def detect(self, events, markets, prices):
+        opportunities = []
+        # your detection logic
+        return opportunities
+```
+
+Plugins are stored in the database and loaded dynamically at runtime.
 
 <br/>
 
-## The Full Stack
+## Dashboard
 
-This isn't a script. It's a platform.
-
-### Dashboard (8 tabs)
+Eight tabs, each with its own real-time data pipeline via WebSocket:
 
 | Tab | What It Does |
 |-----|-------------|
-| **Opportunities** | Live arbitrage feed with 4 views: card, table, terminal, and Polymarket search |
-| **Trading** | Trader orchestrator cockpit + copy trading config |
+| **Opportunities** | Live arbitrage feed — card, table, terminal, and Polymarket search views |
+| **Trading** | Trader orchestrator cockpit + copy trading configuration |
 | **Accounts** | Paper and live account management |
 | **Traders** | Wallet discovery, tracking, and deep analysis |
 | **Positions** | Open positions across all accounts |
 | **Performance** | Equity curves, P&L charts, trade history |
 | **AI** | LLM copilot, opportunity scoring, resolution analysis |
-| **Settings** | 180+ configurable parameters, all persisted to database |
+| **Settings** | 180+ configurable parameters, persisted to database |
 
-The Opportunities tab has sub-views for **arbitrage**, **recent trades**, **news intelligence**, and **crypto markets** — each with its own real-time data pipeline.
+### Trading Modes
 
-### Autonomous Trading
-
-Four modes, one engine:
-
-| Mode | What It Does |
+| Mode | Description |
 |------|-------------|
-| **Paper** | Virtual $10k account — learn risk-free, no API keys needed |
-| **Shadow** | Tracks every trade without executing — full backtest |
-| **Live** | Real money on Polymarket's CLOB |
+| **Paper** | Virtual $10k account — no API keys needed |
+| **Shadow** | Tracks every trade without executing |
+| **Live** | Real money on Polymarket CLOB |
 | **Mock** | Full pipeline with simulated execution |
 
-Trading infrastructure: Kelly Criterion sizing, VWAP execution, circuit breakers, emergency kill switch, daily loss limits, price chasing, maker mode for rebates, and configurable order types (GTC, FOK, GTD).
+Trading infrastructure includes Kelly Criterion sizing, VWAP execution, circuit breakers, emergency kill switch, daily loss limits, maker mode for rebates, and configurable order types (GTC, FOK, GTD, FAK).
 
-### Copy Trading & Wallet Intelligence
+<br/>
 
-Don't build a strategy — copy someone who already has one.
+## Copy Trading & Wallet Intelligence
 
-- **Full copy trading** — mirror all trades from profitable wallets (proportional sizing)
+- **Full copy trading** — mirror trades from profitable wallets with proportional sizing
 - **Arb-only copy** — only replicate trades matching detected arbitrage patterns
-- **Whale filtering** — ignore noise, only copy trades above configurable thresholds
-- **Wallet discovery engine** — scans the blockchain for wallets with proven track records
-- **Anomaly detection** — flags impossible win rates, front-running, wash trading, coordinated patterns
-- **Real-time monitoring** — WebSocket-powered wallet activity tracking (<1s latency)
+- **Whale filtering** — ignore noise below configurable thresholds
+- **Wallet discovery** — scans the blockchain for wallets with strong track records
+- **Anomaly detection** — flags impossible win rates, front-running, wash trading
+- **Real-time monitoring** — WebSocket-powered activity tracking
 
-### AI Intelligence Layer
+<br/>
 
-LLM-powered analysis with multi-provider support (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio):
+## AI Layer
 
-- **ReAct agent loop** — reasoning + tool use for market analysis
-- **LLM-as-judge scoring** — profit viability, resolution safety, execution feasibility
+Multi-provider LLM support (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio):
+
+- **ReAct agent** — reasoning + tool use for market analysis
+- **LLM-as-judge** — scores opportunities on profit viability, resolution safety, execution feasibility
 - **Resolution analysis** — detects ambiguity and dispute risk in market criteria
-- **News Edge** — reads breaking news, estimates true probability, flags mispriced markets
-- **AI Copilot** — context-aware chat panel for any opportunity, wallet, or market
-- **5 built-in skills** — wallet evaluation, arbitrage assessment, miracle validation, market correlation, resolution analysis
+- **News Edge** — estimates true probability from breaking news, flags mispriced markets
+- **AI Copilot** — context-aware chat for any opportunity, wallet, or market
 
-### Crypto Markets
+<br/>
 
-Dedicated crypto pipeline running independently from the main scanner:
+## Data Sources
 
-- **2-second scan loop** on live 15-minute binaries (BTC, ETH, SOL, XRP)
-- **Resolution-grade reference data** from Polymarket RTDS `crypto_prices_chainlink`
-- **High-frequency market updates** from Polymarket RTDS `crypto_prices` stream
-- **Price-to-beat tracking** anchored to oracle history for each contract window
-- **Maker mode** — limit orders to earn exchange rebates
-- **Thin liquidity detection** — avoids traps below $500 depth
-- Real-time WebSocket push to the dashboard with freshness/health tracking
-
-### News Intelligence
-
-Multi-source aggregation with semantic matching:
-
-- **Google News RSS** + **GDELT DOC 2.0 API** + custom RSS feeds
-- **Semantic embeddings** (sentence-transformers with TF-IDF fallback) match articles to active markets
-- **Edge detection** — LLM estimates probability from news, compares to market price, flags opportunities when edge > 8%
-
-### ML False-Positive Classifier
-
-A custom logistic regression model (numpy-based, zero sklearn dependency) that learns from your trading history:
-
-- Trains on `OpportunityHistory` outcomes
-- Predicts probability of profitability
-- Recommendations: execute / skip / review
-- Feature importance analysis
-- Auto-retrains as data accumulates
-
-### Terminal UI
-
-Run `./run.sh` (or `.\run.ps1` on Windows) for a full terminal dashboard:
-
-- Launches backend + frontend as managed subprocesses
-- Real-time health monitoring with sparklines
-- Stats grid (opportunities, wallets, trades, profit)
-- Activity feed and structured log viewer with filtering
-- Keyboard shortcuts for everything
-
-### Production Infrastructure
-
-| Feature | Details |
-|---------|---------|
-| **SQLite by default** | Zero-config database, auto-created on first run, versioned Alembic migrations |
-| **Rate Limiting** | Respects Polymarket limits (Gamma: 300-4000/10s, CLOB: 500-1500/10s) |
-| **Circuit Breakers** | Per-token and portfolio-level trip mechanisms |
-| **Health Checks** | Kubernetes-compatible liveness + readiness probes |
-| **Prometheus Metrics** | Full system observability at `/metrics` |
-| **Structured Logging** | JSON logs for aggregation and analysis |
-| **WebSockets** | Real-time push for opportunities, trades, wallets, news, scanner status |
-| **Telegram Alerts** | Real-time notifications to your phone (optional) |
-| **CSV Audit Log** | Append-only trade audit trail |
-| **180+ Settings** | All configurable via UI, persisted to database |
+| Layer | Sources |
+|-------|---------|
+| **Prediction markets** | Polymarket (Gamma + CLOB + Data APIs), Kalshi |
+| **Crypto resolution data** | Polymarket RTDS, Chainlink oracle feeds |
+| **News** | Google News RSS, GDELT DOC 2.0, custom RSS feeds |
+| **Wallet intelligence** | On-chain activity via Polygon RPC, anomaly filtering |
+| **World intelligence** | Military aircraft (OpenSky), maritime vessels (AIS Stream), conflict data (ACLED, UCDP), earthquakes (USGS) |
 
 <br/>
 
 ## Going Live
 
-Paper trading and scanning work with zero configuration. To trade real money:
+Paper trading works with zero configuration. To trade real money:
 
 1. Get API credentials from [Polymarket Settings](https://polymarket.com/settings/api-keys)
-2. Add your keys via the **Settings** tab in the dashboard, or set environment variables:
+2. Add keys via the **Settings** tab, or set environment variables:
 
 ```bash
 TRADING_ENABLED=true
@@ -274,7 +209,7 @@ POLYMARKET_API_SECRET=your_secret
 POLYMARKET_API_PASSPHRASE=your_passphrase
 ```
 
-3. **Start with paper mode first.** Verify it works before risking real money.
+3. **Start with paper mode first.** Verify everything works before risking real money.
 
 <br/>
 
@@ -286,7 +221,7 @@ POLYMARKET_API_PASSPHRASE=your_passphrase
 <summary><strong>Opportunities</strong></summary>
 
 ```
-GET  /api/opportunities          # Current arbitrage opportunities (with filtering)
+GET  /api/opportunities          # Current arbitrage opportunities
 GET  /api/opportunities/{id}     # Specific opportunity details
 POST /api/scan                   # Trigger manual scan
 GET  /api/strategies             # Available strategies
@@ -323,7 +258,6 @@ GET  /api/simulation/accounts/{id}/equity  # Equity curve data
 
 ```
 GET    /api/trader-orchestrator/overview
-GET    /api/trader-orchestrator/status
 POST   /api/trader-orchestrator/start
 POST   /api/trader-orchestrator/stop
 POST   /api/trader-orchestrator/kill-switch
@@ -398,25 +332,17 @@ GET  /api/crypto/prices          # Chainlink oracle prices
 </details>
 
 <details>
-<summary><strong>Settings</strong></summary>
+<summary><strong>Settings & Health</strong></summary>
 
 ```
 GET  /api/settings               # Current settings
-PUT  /api/settings               # Update settings (persisted to DB)
-```
-
-</details>
-
-<details>
-<summary><strong>Health & Monitoring</strong></summary>
-
-```
-GET  /health              # Basic health check
-GET  /health/live         # Liveness probe
-GET  /health/ready        # Readiness probe
-GET  /health/detailed     # Full system diagnostics
-GET  /metrics             # Prometheus metrics
-WS   /ws                  # Real-time updates
+PUT  /api/settings               # Update settings
+GET  /health                     # Basic health check
+GET  /health/live                # Liveness probe
+GET  /health/ready               # Readiness probe
+GET  /health/detailed            # Full system diagnostics
+GET  /metrics                    # Prometheus metrics
+WS   /ws                         # Real-time updates
 ```
 
 </details>
@@ -430,10 +356,11 @@ backend/
 ├── main.py                      # FastAPI entry, lifespan, health checks, metrics
 ├── config.py                    # 180+ settings via Pydantic Settings
 ├── alembic/                     # Versioned schema/data migrations
-├── api/                         # REST + WebSocket endpoints (11 route modules)
+├── api/                         # REST + WebSocket endpoints
 ├── services/
-│   ├── scanner.py               # Orchestrates all 18 strategies
-│   ├── trader_orchestrator/      # Multi-trader orchestration engine
+│   ├── scanner.py               # Orchestrates all strategies per scan cycle
+│   ├── strategies/              # Built-in strategy implementations
+│   ├── trader_orchestrator/     # Multi-trader orchestration engine
 │   ├── trading.py               # Polymarket CLOB execution
 │   ├── copy_trader.py           # Copy trading orchestration
 │   ├── crypto_service.py        # Dedicated crypto market pipeline
@@ -441,22 +368,23 @@ backend/
 │   ├── wallet_intelligence.py   # Pattern analysis
 │   ├── anomaly_detector.py      # Statistical anomaly detection
 │   ├── ml_classifier.py         # False-positive classifier
-│   ├── strategies/              # 18 strategy implementations
+│   ├── plugin_loader.py         # Dynamic strategy loading
 │   ├── optimization/            # Frank-Wolfe, VWAP, constraint solver
 │   ├── news/                    # Feed aggregation, semantic matching, edge detection
+│   ├── world_intelligence/      # Geopolitical signal tracking
 │   └── ai/                      # LLM agent, skills, copilot, judgment
 ├── models/
-│   ├── database.py              # 25+ SQLAlchemy tables + migration bootstrap
+│   ├── database.py              # 25+ SQLAlchemy tables
 │   └── market.py                # Market + opportunity schemas
-└── utils/                       # Logging, rate limiting, retry
+└── workers/                     # Background scan loops (scanner, news, crypto, discovery, etc.)
 
 frontend/
 ├── src/
-│   ├── App.tsx                  # 8-tab dashboard with sub-views
-│   ├── components/              # 25+ components (shadcn/ui + custom)
-│   ├── services/api.ts          # Fully typed API client
-│   ├── hooks/                   # WebSocket, keyboard shortcuts, data simulation
-│   └── store/                   # Jotai atoms for global state
+│   ├── App.tsx                  # 8-tab dashboard
+│   ├── components/              # 50+ components (shadcn/ui + custom)
+│   ├── services/api.ts          # Typed API client
+│   ├── hooks/                   # WebSocket, keyboard shortcuts
+│   └── store/                   # Jotai atoms
 
 tui.py                           # Terminal UI (Textual + Rich)
 ```
@@ -468,13 +396,12 @@ tui.py                           # Terminal UI (Textual + Rich)
 | **Backend** | Python 3.10+ · FastAPI · SQLAlchemy 2.0 (async) · Pydantic |
 | **Frontend** | React 18 · TypeScript · Vite · TailwindCSS · shadcn/ui · Jotai · TanStack Query |
 | **Database** | SQLite (zero-config, auto-created) |
-| **Real-time** | WebSockets · React Query · Framer Motion |
+| **Real-time** | WebSockets · Framer Motion |
 | **Trading** | Polymarket CLOB · Kalshi API · Polygon RPC |
 | **AI** | Multi-provider LLM (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio) · ReAct agent |
 | **ML** | Custom logistic regression · FAISS (optional) · sentence-transformers (optional) |
 | **Crypto** | Chainlink oracle feeds · Binary market scanner |
-| **Notifications** | Telegram Bot API |
-| **Infra** | GitHub Actions · Prometheus · Textual TUI |
+| **Infra** | GitHub Actions · Prometheus · Textual TUI · Telegram alerts |
 
 <br/>
 
