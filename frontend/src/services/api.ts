@@ -673,6 +673,7 @@ export interface StrategyPlugin {
   status: 'unloaded' | 'loaded' | 'error'
   error_message: string | null
   config: Record<string, unknown>
+  config_schema: { param_fields: { key: string; label: string; type: string; min?: number; max?: number; options?: string[] }[] } | null
   version: number
   sort_order: number
   created_at: string | null

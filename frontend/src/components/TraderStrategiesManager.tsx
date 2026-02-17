@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import CodeEditor from './CodeEditor'
+import StrategyConfigForm from './StrategyConfigForm'
 import {
   cloneTraderStrategy,
   createTraderStrategy,
@@ -98,6 +99,7 @@ export default function TraderStrategiesManager() {
   const [strategyEditorAliasesCsv, setStrategyEditorAliasesCsv] = useState('')
   const [strategyDraftKey, setStrategyDraftKey] = useState('')
   const [strategyEditorError, setStrategyEditorError] = useState<string | null>(null)
+  const [showRawParams, setShowRawParams] = useState(false)
   const [strategyValidation, setStrategyValidation] = useState<{
     valid: boolean
     errors: string[]
@@ -699,35 +701,99 @@ export default function TraderStrategiesManager() {
                   )}
                   <Settings2 className="w-3 h-3" />
                   <span>Parameters &amp; Schema</span>
+                  {(() => {
+                    try {
+                      const schema = JSON.parse(strategyEditorSchemaJson || '{}')
+                      const count = schema?.param_fields?.length || 0
+                      if (count > 0) return (
+                        <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 ml-1">
+                          {count} fields
+                        </Badge>
+                      )
+                    } catch { /* ignore */ }
+                    return null
+                  })()}
                 </button>
                 {showParams && (
-                  <div className="px-3 pb-3 grid gap-3 grid-cols-1 lg:grid-cols-2 animate-in fade-in duration-200">
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[11px] font-medium text-muted-foreground">Default Params</span>
-                        <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
-                      </div>
-                      <CodeEditor
-                        value={strategyEditorParamsJson}
-                        onChange={setStrategyEditorParamsJson}
-                        language="json"
-                        minHeight="140px"
-                        placeholder="{}"
-                      />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[11px] font-medium text-muted-foreground">Param Schema</span>
-                        <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
-                      </div>
-                      <CodeEditor
-                        value={strategyEditorSchemaJson}
-                        onChange={setStrategyEditorSchemaJson}
-                        language="json"
-                        minHeight="140px"
-                        placeholder='{"param_fields": []}'
-                      />
-                    </div>
+                  <div className="px-3 pb-3 space-y-3 animate-in fade-in duration-200">
+                    {/* Dynamic config form when schema has param_fields */}
+                    {(() => {
+                      try {
+                        const schema = JSON.parse(strategyEditorSchemaJson || '{}')
+                        if (schema?.param_fields?.length > 0 && !showRawParams) {
+                          const paramValues = (() => {
+                            try { return JSON.parse(strategyEditorParamsJson || '{}') } catch { return {} }
+                          })()
+                          return (
+                            <>
+                              <StrategyConfigForm
+                                schema={schema}
+                                values={paramValues}
+                                onChange={(vals) => setStrategyEditorParamsJson(JSON.stringify(vals, null, 2))}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowRawParams(true)}
+                                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
+                              >
+                                Show Raw JSON
+                              </button>
+                            </>
+                          )
+                        }
+                      } catch { /* ignore */ }
+                      return null
+                    })()}
+                    {/* Raw JSON editors — shown when no schema or toggled */}
+                    {(() => {
+                      let hasSchema = false
+                      try {
+                        const schema = JSON.parse(strategyEditorSchemaJson || '{}')
+                        hasSchema = (schema?.param_fields?.length || 0) > 0
+                      } catch { /* ignore */ }
+                      if (hasSchema && !showRawParams) return null
+                      return (
+                        <>
+                          <div className="grid gap-3 grid-cols-1 lg:grid-cols-2">
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-[11px] font-medium text-muted-foreground">Default Params</span>
+                                <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
+                              </div>
+                              <CodeEditor
+                                value={strategyEditorParamsJson}
+                                onChange={setStrategyEditorParamsJson}
+                                language="json"
+                                minHeight="140px"
+                                placeholder="{}"
+                              />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-[11px] font-medium text-muted-foreground">Param Schema</span>
+                                <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
+                              </div>
+                              <CodeEditor
+                                value={strategyEditorSchemaJson}
+                                onChange={setStrategyEditorSchemaJson}
+                                language="json"
+                                minHeight="140px"
+                                placeholder='{"param_fields": []}'
+                              />
+                            </div>
+                          </div>
+                          {hasSchema && (
+                            <button
+                              type="button"
+                              onClick={() => setShowRawParams(false)}
+                              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
+                            >
+                              Show Config Form
+                            </button>
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                 )}
               </div>

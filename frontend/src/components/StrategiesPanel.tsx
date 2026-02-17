@@ -6,14 +6,31 @@ import TraderStrategiesManager from './TraderStrategiesManager'
 
 type StrategiesSubTab = 'opportunity' | 'autotrader'
 
+interface NavigateStrategiesDetail {
+  subtab?: StrategiesSubTab
+  sourceFilter?: string
+}
+
 export default function StrategiesPanel() {
   const [subTab, setSubTab] = useState<StrategiesSubTab>('opportunity')
+  const [initialSourceFilter, setInitialSourceFilter] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const next = (event as CustomEvent<StrategiesSubTab>).detail
-      if (next === 'opportunity' || next === 'autotrader') {
-        setSubTab(next)
+      const detail = (event as CustomEvent<StrategiesSubTab | NavigateStrategiesDetail>).detail
+      // Support both legacy string format and new object format
+      if (typeof detail === 'string') {
+        if (detail === 'opportunity' || detail === 'autotrader') {
+          setSubTab(detail)
+        }
+      } else if (detail && typeof detail === 'object') {
+        const next = detail.subtab || 'opportunity'
+        if (next === 'opportunity' || next === 'autotrader') {
+          setSubTab(next)
+        }
+        if (detail.sourceFilter) {
+          setInitialSourceFilter(detail.sourceFilter)
+        }
       }
     }
     window.addEventListener('navigate-strategies-subtab', handler as EventListener)
@@ -52,7 +69,7 @@ export default function StrategiesPanel() {
       </div>
 
       <div className={cn('flex-1 min-h-0', subTab === 'opportunity' ? '' : 'hidden')}>
-        <OpportunityStrategiesManager />
+        <OpportunityStrategiesManager initialSourceFilter={initialSourceFilter} />
       </div>
 
       <div className={cn('flex-1 min-h-0', subTab === 'autotrader' ? '' : 'hidden')}>

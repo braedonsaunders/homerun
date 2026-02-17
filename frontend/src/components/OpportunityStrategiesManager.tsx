@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  Link2,
   Loader2,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import CodeEditor from './CodeEditor'
+import StrategyConfigForm from './StrategyConfigForm'
 import {
   createOpportunityStrategy,
   deleteOpportunityStrategy,
@@ -106,11 +108,25 @@ const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
 }
 
-export default function OpportunityStrategiesManager() {
+const PIPELINE_SOURCES = new Set(['news', 'crypto', 'weather', 'traders'])
+
+const SOURCE_LABELS: Record<string, string> = {
+  news: 'News tab',
+  crypto: 'Crypto tab',
+  weather: 'Weather tab',
+  traders: 'Traders tab',
+}
+
+interface OpportunityStrategiesManagerProps {
+  initialSourceFilter?: string
+}
+
+export default function OpportunityStrategiesManager({ initialSourceFilter }: OpportunityStrategiesManagerProps) {
   const queryClient = useQueryClient()
   const [showDocs, setShowDocs] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
-  const [strategyFilterSource, setStrategyFilterSource] = useState<string>('all')
+  const [showRawJson, setShowRawJson] = useState(false)
+  const [strategyFilterSource, setStrategyFilterSource] = useState<string>(initialSourceFilter || 'all')
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
   const [strategyDraftToken, setStrategyDraftToken] = useState<string | null>(null)
   const [strategyEditorSlug, setStrategyEditorSlug] = useState('')
@@ -140,6 +156,13 @@ export default function OpportunityStrategiesManager() {
     queryFn: getPluginTemplate,
     staleTime: Infinity,
   })
+
+  // Sync filter when initialSourceFilter prop changes (e.g., cross-link navigation)
+  useEffect(() => {
+    if (initialSourceFilter) {
+      setStrategyFilterSource(initialSourceFilter)
+    }
+  }, [initialSourceFilter])
 
   const strategyCatalog = strategiesQuery.data || []
 
@@ -403,52 +426,113 @@ export default function OpportunityStrategiesManager() {
           </Select>
         </div>
 
-        {/* Strategy list */}
+        {/* Strategy list — grouped by scanner vs pipeline */}
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-1.5 space-y-1">
             {filteredStrategies.length === 0 ? (
               <p className="px-3 py-6 text-xs text-muted-foreground text-center">No strategies found.</p>
             ) : (
-              filteredStrategies.map((strategy) => {
-                const active = selectedStrategyId === strategy.id
-                const sColor = STATUS_COLORS[strategy.status] || STATUS_COLORS.draft
-                return (
-                  <button
-                    key={strategy.id}
-                    type="button"
-                    onClick={() => {
-                      setStrategyDraftToken(null)
-                      setSelectedStrategyId(strategy.id)
-                    }}
-                    className={cn(
-                      'w-full rounded-md px-2.5 py-2 text-left transition-all duration-150',
-                      active
-                        ? 'bg-amber-500/10 ring-1 ring-amber-500/30'
-                        : 'hover:bg-muted/50'
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium truncate" title={strategy.name}>
-                        {strategy.name}
-                      </p>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {!strategy.enabled && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" title="Disabled" />
-                        )}
-                        <Badge
-                          variant="outline"
-                          className={cn('text-[9px] px-1.5 py-0 h-4 border', sColor)}
-                        >
-                          {strategy.status}
-                        </Badge>
-                      </div>
-                    </div>
-                    <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
-                      {strategy.slug}
-                    </p>
-                  </button>
-                )
-              })
+              <>
+                {/* Scanner strategies */}
+                {(() => {
+                  const scannerStrategies = filteredStrategies.filter((s) => !PIPELINE_SOURCES.has(s.source_key))
+                  const pipelineStrategies = filteredStrategies.filter((s) => PIPELINE_SOURCES.has(s.source_key))
+                  return (
+                    <>
+                      {scannerStrategies.length > 0 && (
+                        <>
+                          {pipelineStrategies.length > 0 && (
+                            <p className="px-2.5 pt-1.5 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
+                              Scanner ({scannerStrategies.length})
+                            </p>
+                          )}
+                          {scannerStrategies.map((strategy) => {
+                            const active = selectedStrategyId === strategy.id
+                            const sColor = STATUS_COLORS[strategy.status] || STATUS_COLORS.draft
+                            return (
+                              <button
+                                key={strategy.id}
+                                type="button"
+                                onClick={() => {
+                                  setStrategyDraftToken(null)
+                                  setSelectedStrategyId(strategy.id)
+                                }}
+                                className={cn(
+                                  'w-full rounded-md px-2.5 py-2 text-left transition-all duration-150',
+                                  active ? 'bg-amber-500/10 ring-1 ring-amber-500/30' : 'hover:bg-muted/50'
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-medium truncate" title={strategy.name}>
+                                    {strategy.name}
+                                  </p>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    {!strategy.enabled && (
+                                      <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" title="Disabled" />
+                                    )}
+                                    <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0 h-4 border', sColor)}>
+                                      {strategy.status}
+                                    </Badge>
+                                  </div>
+                                </div>
+                                <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
+                                  {strategy.slug}
+                                </p>
+                              </button>
+                            )
+                          })}
+                        </>
+                      )}
+                      {/* Pipeline strategies */}
+                      {pipelineStrategies.length > 0 && (
+                        <>
+                          <div className="px-2.5 pt-3 pb-1 flex items-center gap-1.5">
+                            <div className="flex-1 h-px bg-border/50" />
+                            <p className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium shrink-0">
+                              Pipelines ({pipelineStrategies.length})
+                            </p>
+                            <div className="flex-1 h-px bg-border/50" />
+                          </div>
+                          {pipelineStrategies.map((strategy) => {
+                            const active = selectedStrategyId === strategy.id
+                            const sColor = STATUS_COLORS[strategy.status] || STATUS_COLORS.draft
+                            const tabLabel = SOURCE_LABELS[strategy.source_key] || strategy.source_key
+                            return (
+                              <button
+                                key={strategy.id}
+                                type="button"
+                                onClick={() => {
+                                  setStrategyDraftToken(null)
+                                  setSelectedStrategyId(strategy.id)
+                                }}
+                                className={cn(
+                                  'w-full rounded-md px-2.5 py-2 text-left transition-all duration-150',
+                                  active ? 'bg-amber-500/10 ring-1 ring-amber-500/30' : 'hover:bg-muted/50'
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <Link2 className="w-3 h-3 text-muted-foreground shrink-0" />
+                                    <p className="text-xs font-medium truncate" title={strategy.name}>
+                                      {strategy.name}
+                                    </p>
+                                  </div>
+                                  <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0 h-4 border', sColor)}>
+                                    {strategy.status}
+                                  </Badge>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-1 truncate pl-[18px]">
+                                  → {tabLabel}
+                                </p>
+                              </button>
+                            )
+                          })}
+                        </>
+                      )}
+                    </>
+                  )
+                })()}
+              </>
             )}
           </div>
         </ScrollArea>
@@ -558,15 +642,22 @@ export default function OpportunityStrategiesManager() {
                     size="sm"
                     className="h-7 px-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10"
                     onClick={() => {
-                      const confirmed = window.confirm(
-                        selectedStrategy.is_system
+                      const isPipeline = PIPELINE_SOURCES.has(selectedStrategy.source_key) && selectedStrategy.is_system
+                      const pipelineLabel = SOURCE_LABELS[selectedStrategy.source_key] || selectedStrategy.source_key
+                      const message = isPipeline
+                        ? `⚠️ "${selectedStrategy.name}" is a pipeline strategy that powers the ${pipelineLabel}.\n\nDeleting it will tombstone it permanently and break that tab's functionality.\n\nAre you sure?`
+                        : selectedStrategy.is_system
                           ? `Delete system strategy "${selectedStrategy.name}"? It will be tombstoned and will NOT auto-reseed.`
                           : `Delete "${selectedStrategy.name}"? This cannot be undone.`
-                      )
+                      const confirmed = window.confirm(message)
                       if (confirmed) deleteStrategyMutation.mutate()
                     }}
                     disabled={managerBusy}
-                    title="Delete strategy"
+                    title={
+                      PIPELINE_SOURCES.has(selectedStrategy.source_key) && selectedStrategy.is_system
+                        ? `Pipeline strategy — powers the ${SOURCE_LABELS[selectedStrategy.source_key] || selectedStrategy.source_key}`
+                        : 'Delete strategy'
+                    }
                   >
                     <Trash2 className="w-3 h-3" />
                   </Button>
@@ -744,16 +835,58 @@ export default function OpportunityStrategiesManager() {
                   )}
                   <Settings2 className="w-3 h-3" />
                   <span>Runtime Config</span>
+                  {(selectedStrategy?.config_schema?.param_fields?.length ?? 0) > 0 && (
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 ml-1">
+                      {selectedStrategy!.config_schema!.param_fields.length} fields
+                    </Badge>
+                  )}
                 </button>
                 {showDocs && (
-                  <div className="px-3 pb-3 animate-in fade-in duration-200">
-                    <CodeEditor
-                      value={strategyEditorConfigJson}
-                      onChange={setStrategyEditorConfigJson}
-                      language="json"
-                      minHeight="120px"
-                      placeholder="{}"
-                    />
+                  <div className="px-3 pb-3 animate-in fade-in duration-200 space-y-3">
+                    {/* Dynamic config form when schema is available */}
+                    {(selectedStrategy?.config_schema?.param_fields?.length ?? 0) > 0 && !showRawJson && (
+                      <>
+                        <StrategyConfigForm
+                          schema={selectedStrategy!.config_schema!}
+                          values={(() => {
+                            try {
+                              return JSON.parse(strategyEditorConfigJson || '{}')
+                            } catch {
+                              return {}
+                            }
+                          })()}
+                          onChange={(vals) => setStrategyEditorConfigJson(JSON.stringify(vals, null, 2))}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowRawJson(true)}
+                          className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
+                        >
+                          Show Raw JSON
+                        </button>
+                      </>
+                    )}
+                    {/* Raw JSON editor — shown always when no schema, or when toggled */}
+                    {(!(selectedStrategy?.config_schema?.param_fields?.length) || showRawJson) && (
+                      <>
+                        <CodeEditor
+                          value={strategyEditorConfigJson}
+                          onChange={setStrategyEditorConfigJson}
+                          language="json"
+                          minHeight="120px"
+                          placeholder="{}"
+                        />
+                        {(selectedStrategy?.config_schema?.param_fields?.length ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowRawJson(false)}
+                            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
+                          >
+                            Show Config Form
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
               </div>

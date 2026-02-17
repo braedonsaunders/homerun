@@ -20,6 +20,7 @@ import {
   Pause,
   Play,
   Settings,
+  Settings2,
   Terminal,
   Briefcase,
   BarChart3,
@@ -288,6 +289,12 @@ function App() {
   const handleNavigateToAI = useCallback((section: string) => {
     setActiveTab('ai')
     window.dispatchEvent(new CustomEvent('navigate-ai-section', { detail: section }))
+  }, [])
+
+  // Navigate to Strategies tab with optional source filter
+  const handleNavigateToStrategy = useCallback((sourceFilter: string) => {
+    setActiveTab('strategies')
+    window.dispatchEvent(new CustomEvent('navigate-strategies-subtab', { detail: { subtab: 'opportunity', sourceFilter } }))
   }, [])
 
   // Navigate to news tab with a keyword search from an opportunity
@@ -1091,6 +1098,18 @@ function App() {
                         <AnimatedNumber value={totalOpportunities} decimals={0} className="" />
                       </span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToStrategy('scanner')}
+                          className="p-1 -ml-1 rounded text-muted-foreground/50 hover:text-green-400 hover:bg-green-500/10 transition-colors"
+                        >
+                          <Settings2 className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">Edit scanner strategies</TooltipContent>
+                    </Tooltip>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1108,6 +1127,18 @@ function App() {
                         <AnimatedNumber value={tradersCount} decimals={0} className="" />
                       </span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToStrategy('traders')}
+                          className="p-1 -ml-1 rounded text-muted-foreground/50 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+                        >
+                          <Settings2 className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">Edit traders strategy</TooltipContent>
+                    </Tooltip>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1125,6 +1156,18 @@ function App() {
                         <AnimatedNumber value={newsCount} decimals={0} className="" />
                       </span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToStrategy('news')}
+                          className="p-1 -ml-1 rounded text-muted-foreground/50 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                        >
+                          <Settings2 className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">Edit news strategy</TooltipContent>
+                    </Tooltip>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1142,6 +1185,18 @@ function App() {
                         <AnimatedNumber value={weatherCount} decimals={0} className="" />
                       </span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToStrategy('weather')}
+                          className="p-1 -ml-1 rounded text-muted-foreground/50 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+                        >
+                          <Settings2 className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">Edit weather strategy</TooltipContent>
+                    </Tooltip>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1159,6 +1214,18 @@ function App() {
                         <AnimatedNumber value={cryptoCount} decimals={0} className="" />
                       </span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateToStrategy('crypto')}
+                          className="p-1 -ml-1 rounded text-muted-foreground/50 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+                        >
+                          <Settings2 className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">Edit crypto strategy</TooltipContent>
+                    </Tooltip>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1985,7 +2052,7 @@ function App() {
           onManageStrategies={() => {
             setSearchFiltersOpen(false)
             setActiveTab('strategies')
-            window.dispatchEvent(new CustomEvent('navigate-strategies-subtab', { detail: 'opportunity' }))
+            window.dispatchEvent(new CustomEvent('navigate-strategies-subtab', { detail: { subtab: 'opportunity', sourceFilter: 'scanner' } }))
           }}
         />
 
