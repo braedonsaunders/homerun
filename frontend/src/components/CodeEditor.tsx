@@ -75,12 +75,13 @@ export default function CodeEditor({
         '&': {
           fontSize: '12.5px',
           minHeight,
+          height: '100%',
           borderRadius: '0.375rem',
         },
         '.cm-scroller': {
           fontFamily: "'JetBrains Mono', monospace",
           lineHeight: '1.6',
-          overflow: 'auto',
+          overflow: 'auto !important',
         },
         '.cm-content': {
           padding: '8px 0',
@@ -160,7 +161,7 @@ export default function CodeEditor({
     <div
       ref={containerRef}
       className={cn(
-        'overflow-hidden rounded-md border border-border/70 bg-[#282c34]',
+        'overflow-auto rounded-md border border-border/70 bg-[#282c34]',
         readOnly && 'opacity-75',
         className
       )}
