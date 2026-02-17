@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="homerun-logo.png" alt="Homerun" width="180"/>
+  <img src="../homerun-logo.png" alt="Homerun" width="180"/>
 </p>
 
 <h1 align="center">Homerun</h1>
@@ -27,7 +27,7 @@
 <br/>
 
 <p align="center">
-  <img src="screenshots/screenshot.png" alt="Homerun Dashboard" width="800"/>
+  <img src="../screenshots/screenshot.png" alt="Homerun Dashboard" width="800"/>
 </p>
 
 <br/>
