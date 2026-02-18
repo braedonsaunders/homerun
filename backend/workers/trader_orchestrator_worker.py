@@ -29,7 +29,6 @@ from services.trader_orchestrator.session_engine import ExecutionSessionEngine
 from services.trader_orchestrator.position_lifecycle import reconcile_live_positions, reconcile_paper_positions
 from services.simulation import simulation_service
 from services.trader_orchestrator.risk_manager import evaluate_risk
-from services.data_events import BlockReason
 from services.trader_orchestrator.decision_gates import (
     apply_platform_decision_gates,
     is_within_trading_window_utc,

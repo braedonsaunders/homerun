@@ -16,7 +16,7 @@ from models import (
 )
 from config import settings
 from services.fee_model import fee_model
-from services.data_events import BlockReason, DataEvent, EventType
+from services.data_events import DataEvent, EventType
 
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import signal_payload

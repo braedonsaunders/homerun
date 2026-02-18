@@ -601,46 +601,6 @@ class DataSourceSDK:
 
         return result
 
-    @staticmethod
-    async def get_recent_runs(
-        source_slug: str,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        slug = str(source_slug or "").strip().lower()
-        if not slug:
-            return []
-
-        safe_limit = max(1, min(200, int(limit)))
-        query = (
-            select(DataSourceRun)
-            .where(DataSourceRun.source_slug == slug)
-            .order_by(desc(DataSourceRun.started_at))
-            .limit(safe_limit)
-        )
-        async with AsyncSessionLocal() as session:
-            rows = (await session.execute(query)).scalars().all()
-
-        return [_serialize_run(row) for row in rows]
-
-    @staticmethod
-    async def run_source(source_slug: str, max_records: int = 500) -> dict[str, Any]:
-        slug = str(source_slug or "").strip().lower()
-        if not slug:
-            raise ValueError("source_slug is required")
-
-        safe_limit = max(1, min(5000, int(max_records)))
-        from services.data_source_runner import run_data_source_by_slug
-
-        async with AsyncSessionLocal() as session:
-            result = await run_data_source_by_slug(
-                session,
-                source_slug=slug,
-                max_records=safe_limit,
-                commit=True,
-            )
-
-        return result
-
 
 __all__ = [
     "BaseDataSource",
