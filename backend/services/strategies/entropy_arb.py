@@ -35,7 +35,7 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,6 @@ class EntropyArbStrategy(BaseStrategy):
     description = "NegRisk rebalancing ranked by entropy quality"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
-
 
     scoring_weights = ScoringWeights(
         edge_weight=0.58,
@@ -562,4 +561,3 @@ class EntropyArbStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
-

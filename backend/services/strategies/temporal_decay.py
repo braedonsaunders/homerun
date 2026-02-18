@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy: Temporal Decay Arbitrage
 
@@ -14,6 +12,8 @@ as expected, it's mispriced.
 Uses a modified Black-Scholes-like decay model adapted for binary outcomes.
 """
 
+from __future__ import annotations
+
 import re
 import time
 from datetime import datetime, timezone
@@ -21,9 +21,7 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -142,7 +140,6 @@ class TemporalDecayStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_resolution_date = True
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 2.5,
@@ -817,4 +814,3 @@ class TemporalDecayStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
-

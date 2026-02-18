@@ -22,10 +22,9 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from utils.converters import to_confidence
 from functools import partial
 from utils.converters import safe_float
 
@@ -102,7 +101,6 @@ class TradersConfluenceStrategy(BaseStrategy):
         if text in {"0", "false", "no", "off"}:
             return False
         return default
-
 
     @staticmethod
     def _has_direction(signal: dict) -> bool:
@@ -457,15 +455,6 @@ class TradersConfluenceStrategy(BaseStrategy):
             }
         ]
 
-        market_dict = {
-            "id": market.id,
-            "slug": market.slug,
-            "question": market.question,
-            "yes_price": market.yes_price,
-            "no_price": market.no_price,
-            "liquidity": market.liquidity,
-        }
-
         opp = self.create_opportunity(
             title=f"Trader Flow: {wallet_count} wallets → {market.question[:40]}",
             description=(
@@ -534,15 +523,23 @@ class TradersConfluenceStrategy(BaseStrategy):
         return [
             DecisionCheck("source", "Unified traders source", source_ok, detail="Requires source=traders."),
             DecisionCheck("channel", "Supported traders channel", channel_ok, detail="Requires confluence channel."),
-            DecisionCheck("channel_threshold", "Channel strength threshold", channel_threshold_ok, score=confluence_strength, detail=f"confluence>={min_confluence_strength:.2f}"),
+            DecisionCheck(
+                "channel_threshold",
+                "Channel strength threshold",
+                channel_threshold_ok,
+                score=confluence_strength,
+                detail=f"confluence>={min_confluence_strength:.2f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         return (edge * 0.55) + (confidence * 35.0) + (self._confluence_strength * 10.0)
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float, market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.9 + self._confluence_strength)
         return max(1.0, min(max_size, size))
 

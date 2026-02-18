@@ -48,7 +48,7 @@ def test_system_strategy_catalog_uses_executable_source_files():
         assert "System strategy seed wrapper loaded from DB" not in source_code
         assert class_name in source_code
         validation = validate_strategy_source(source_code, class_name)
-        assert validation["valid"] is True, f'{row["slug"]}: {validation["errors"]}'
+        assert validation["valid"] is True, f"{row['slug']}: {validation['errors']}"
         assert validation.get("class_name") == class_name
 
 
@@ -182,15 +182,7 @@ async def test_ensure_system_seed_rewrites_legacy_wrapper_rows(tmp_path):
             changed = await ensure_system_opportunity_strategies_seeded(session)
             assert changed >= 1
 
-            row = (
-                (
-                    await session.execute(
-                        select(Strategy).where(Strategy.slug == "basic")
-                    )
-                )
-                .scalars()
-                .one()
-            )
+            row = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().one()
             assert "System opportunity strategy wrapper loaded from DB" not in (row.source_code or "")
             assert "from services.strategies" in (row.source_code or "")
             assert int(row.version or 0) == 2

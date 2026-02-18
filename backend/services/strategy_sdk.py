@@ -505,9 +505,7 @@ class StrategySDK:
         try:
             from services.news.feed_service import news_feed_service
 
-            articles = news_feed_service.search_articles(
-                query=query, limit=max_articles
-            )
+            articles = news_feed_service.search_articles(query=query, limit=max_articles)
             return [
                 {
                     "title": getattr(a, "title", ""),
@@ -542,9 +540,7 @@ class StrategySDK:
             if not question:
                 return []
 
-            matches = semantic_matcher.find_matches(
-                question, top_k=max_articles
-            )
+            matches = semantic_matcher.find_matches(question, top_k=max_articles)
             return [
                 {
                     "title": m.get("title", ""),

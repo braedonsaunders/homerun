@@ -27,10 +27,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload, weather_metadata, hours_to_target
+from utils.converters import to_float
+from utils.signal_helpers import weather_metadata, hours_to_target
 from services.weather.signal_engine import (
     ensemble_bucket_probability,
     compute_confidence,
@@ -66,7 +66,7 @@ class WeatherDistributionStrategy(BaseStrategy):
 
     DEFAULT_CONFIG = {
         "min_edge_percent": 5.0,
-        "sigma_c": 1.8,           # std dev for normal distribution (when no ensemble)
+        "sigma_c": 1.8,  # std dev for normal distribution (when no ensemble)
         "min_confidence": 0.50,
         "max_entry_price": 0.85,
         "max_buckets_per_event": 2,  # max simultaneous positions in one event
@@ -188,15 +188,17 @@ class WeatherDistributionStrategy(BaseStrategy):
 
         all_buckets = [current_bucket]
         for sib in sibling_markets:
-            all_buckets.append({
-                "bucket_low_c": float(sib.get("bucket_low_c", 0)),
-                "bucket_high_c": float(sib.get("bucket_high_c", 0)),
-                "yes_price": float(sib.get("yes_price", 0.5)),
-                "no_price": float(sib.get("no_price", 0.5)),
-                "market_id": sib.get("market_id"),
-                "clob_token_ids": sib.get("clob_token_ids"),
-                "is_current": False,
-            })
+            all_buckets.append(
+                {
+                    "bucket_low_c": float(sib.get("bucket_low_c", 0)),
+                    "bucket_high_c": float(sib.get("bucket_high_c", 0)),
+                    "yes_price": float(sib.get("yes_price", 0.5)),
+                    "no_price": float(sib.get("no_price", 0.5)),
+                    "market_id": sib.get("market_id"),
+                    "clob_token_ids": sib.get("clob_token_ids"),
+                    "is_current": False,
+                }
+            )
 
         # -----------------------------------------------------------
         # 2. Compute raw model probability for each bucket
@@ -295,9 +297,7 @@ class WeatherDistributionStrategy(BaseStrategy):
         side = "YES" if direction == "buy_yes" else "NO"
         token_id = None
         if market.clob_token_ids:
-            idx = 0 if direction == "buy_yes" else (
-                1 if len(market.clob_token_ids) > 1 else 0
-            )
+            idx = 0 if direction == "buy_yes" else (1 if len(market.clob_token_ids) > 1 else 0)
             token_id = market.clob_token_ids[idx]
 
         expected_payout = target_price
@@ -339,14 +339,16 @@ class WeatherDistributionStrategy(BaseStrategy):
 
         distribution_snapshot = []
         for bucket in ranked:
-            distribution_snapshot.append({
-                "bucket_low_c": bucket["bucket_low_c"],
-                "bucket_high_c": bucket["bucket_high_c"],
-                "model_prob": round(bucket["model_prob"], 4),
-                "yes_price": bucket["yes_price"],
-                "edge": round(bucket["edge"], 4),
-                "market_id": bucket.get("market_id"),
-            })
+            distribution_snapshot.append(
+                {
+                    "bucket_low_c": bucket["bucket_low_c"],
+                    "bucket_high_c": bucket["bucket_high_c"],
+                    "model_prob": round(bucket["model_prob"], 4),
+                    "yes_price": bucket["yes_price"],
+                    "edge": round(bucket["edge"], 4),
+                    "market_id": bucket.get("market_id"),
+                }
+            )
 
         positions = [
             {
@@ -372,15 +374,6 @@ class WeatherDistributionStrategy(BaseStrategy):
                 },
             }
         ]
-
-        market_dict = {
-            "id": market.id,
-            "slug": market.slug,
-            "question": market.question,
-            "yes_price": market.yes_price,
-            "no_price": market.no_price,
-            "liquidity": market.liquidity,
-        }
 
         title = f"Distribution: {city} - {question[:40]}"
         description = (
@@ -456,14 +449,39 @@ class WeatherDistributionStrategy(BaseStrategy):
 
         return [
             DecisionCheck("source", "Weather source", source_ok, detail="Requires source=weather."),
-            DecisionCheck("temp_dislocation", "Temperature dislocation (C)", temp_dislocation >= min_temp_dislocation, score=temp_dislocation, detail=f"min={min_temp_dislocation:.2f}"),
-            DecisionCheck("source_count", "Forecast source depth", source_count >= min_source_count, score=float(source_count), detail=f"min={min_source_count}"),
-            DecisionCheck("source_spread", "Model spread ceiling (C)", source_spread_c <= max_source_spread, score=source_spread_c, detail=f"max={max_source_spread:.2f}"),
-            DecisionCheck("target_window", "Target window horizon", target_window_ok, score=htt, detail=f"max={max_target_hours:.0f}h"),
+            DecisionCheck(
+                "temp_dislocation",
+                "Temperature dislocation (C)",
+                temp_dislocation >= min_temp_dislocation,
+                score=temp_dislocation,
+                detail=f"min={min_temp_dislocation:.2f}",
+            ),
+            DecisionCheck(
+                "source_count",
+                "Forecast source depth",
+                source_count >= min_source_count,
+                score=float(source_count),
+                detail=f"min={min_source_count}",
+            ),
+            DecisionCheck(
+                "source_spread",
+                "Model spread ceiling (C)",
+                source_spread_c <= max_source_spread,
+                score=source_spread_c,
+                detail=f"max={max_source_spread:.2f}",
+            ),
+            DecisionCheck(
+                "target_window",
+                "Target window horizon",
+                target_window_ok,
+                score=htt,
+                detail=f"max={max_target_hours:.0f}h",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         return (
             (edge * 0.58)
             + (confidence * 28.0)
@@ -472,8 +490,9 @@ class WeatherDistributionStrategy(BaseStrategy):
             - (self._dist_source_spread_c * 1.1)
         )
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float, market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         dislocation_scale = 1.0 + min(0.45, self._dist_temp_dislocation / 8.0)
         size = base_size * (1.0 + (edge / 100.0)) * (0.7 + confidence) * dislocation_scale
         return max(1.0, min(max_size, size))

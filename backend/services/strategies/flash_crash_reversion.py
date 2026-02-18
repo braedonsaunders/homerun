@@ -14,11 +14,17 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
+from services.strategies.base import (
+    BaseStrategy,
+    DecisionCheck,
+    StrategyDecision,
+    ExitDecision,
+    ScoringWeights,
+    SizingConfig,
+)
 from utils.converters import to_float, to_confidence, clamp
-from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
+from utils.signal_helpers import signal_payload, selected_probability, live_move
 from utils.converters import safe_float
-
 
 
 class FlashCrashReversionStrategy(BaseStrategy):
@@ -294,8 +300,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         """Flash crash reversion: source, strategy type, liquidity, crash alignment checks."""
         live_market = context.get("live_market") or {}
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 1500.0), 1500.0))
@@ -329,9 +334,16 @@ class FlashCrashReversionStrategy(BaseStrategy):
 
         return [
             DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
-            DecisionCheck("strategy", "Flash reversion strategy type", strategy_ok, detail="strategy=flash_crash_reversion"),
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
-                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck(
+                "strategy", "Flash reversion strategy type", strategy_ok, detail="strategy=flash_crash_reversion"
+            ),
+            DecisionCheck(
+                "liquidity",
+                "Liquidity floor",
+                liquidity >= min_liquidity,
+                score=liquidity,
+                detail=f"min={min_liquidity:.0f}",
+            ),
             DecisionCheck(
                 "alignment_5m",
                 "Crash alignment (5m move)",
@@ -341,16 +353,12 @@ class FlashCrashReversionStrategy(BaseStrategy):
             ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Flash crash: edge*0.65 + conf*30 + liq_score*8 - risk*10."""
         liquidity = float(payload.get("_signal_liquidity", 0) or 0)
-        return (
-            (edge * 0.65)
-            + (confidence * 30.0)
-            + (min(1.0, liquidity / 10000.0) * 8.0)
-            - (risk_score * 10.0)
-        )
+        return (edge * 0.65) + (confidence * 30.0) + (min(1.0, liquidity / 10000.0) * 8.0) - (risk_score * 10.0)
 
     def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
         """Flash crash reversion: composable pipeline with Kelly sizing and custom payload."""
@@ -372,12 +380,17 @@ class FlashCrashReversionStrategy(BaseStrategy):
 
         # Standard checks
         checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
-                          score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
-                          score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk,
-                          score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+            DecisionCheck(
+                "risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"
+            ),
         ]
 
         # Strategy-specific checks (also stashes liquidity/direction/etc in payload)
@@ -409,6 +422,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
         entry_price = to_float(getattr(signal, "entry_price", None), 0.0)
 
         from services.trader_orchestrator.strategies.sizing import compute_position_size
+
         sizing = compute_position_size(
             base_size_usd=base_size,
             max_size_usd=max_size,
@@ -450,11 +464,16 @@ class FlashCrashReversionStrategy(BaseStrategy):
 
         target_price = ctx.get("target_price") or config.get("target_price")
         if target_price and current_price and current_price >= float(target_price):
-            return ExitDecision("close", f"Reversion target hit ({current_price:.4f} >= {target_price})", close_price=current_price)
+            return ExitDecision(
+                "close", f"Reversion target hit ({current_price:.4f} >= {target_price})", close_price=current_price
+            )
 
         max_hold = float(config.get("max_hold_minutes", 120) or 120)
         if age_minutes > max_hold:
-            return ExitDecision("close", f"Flash reversion time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price)
+            return ExitDecision(
+                "close",
+                f"Flash reversion time decay ({age_minutes:.0f} > {max_hold:.0f} min)",
+                close_price=current_price,
+            )
 
         return self.default_exit_check(position, market_state)
-

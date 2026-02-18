@@ -32,10 +32,8 @@ from models.opportunity import MispricingType
 from services.news.edge_detector import NewsEdge
 from services.news.feed_service import news_feed_service
 from services.news.semantic_matcher import MarketInfo, semantic_matcher
-from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
-from utils.converters import to_float, to_confidence, clamp
-from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +118,22 @@ class NewsEdgeStrategy(BaseStrategy):
             edge_percent = float(intent.get("edge_percent") or 0.0)
             confidence = float(intent.get("confidence") or 0.0)
             question = intent.get("market_question") or ""
-            metadata = {k: v for k, v in intent.items() if k not in {
-                "id", "market_id", "market_question", "direction",
-                "entry_price", "edge_percent", "confidence", "status", "created_at",
-            }}
+            metadata = {
+                k: v
+                for k, v in intent.items()
+                if k
+                not in {
+                    "id",
+                    "market_id",
+                    "market_question",
+                    "direction",
+                    "entry_price",
+                    "edge_percent",
+                    "confidence",
+                    "status",
+                    "created_at",
+                }
+            }
 
             side = "YES" if direction == "buy_yes" else "NO"
             target_price = entry_price + (edge_percent / 100.0) if entry_price > 0 else 0.0
@@ -139,14 +149,16 @@ class NewsEdgeStrategy(BaseStrategy):
                 total_cost=entry_price,
                 expected_payout=target_price,
                 markets=[market],
-                positions=[{
-                    "action": "BUY",
-                    "outcome": side,
-                    "price": entry_price,
-                    "news_metadata": metadata,
-                }],
+                positions=[
+                    {
+                        "action": "BUY",
+                        "outcome": side,
+                        "price": entry_price,
+                        "news_metadata": metadata,
+                    }
+                ],
                 is_guaranteed=False,
-                skip_fee_model=True,          # News edge uses its own net_profit calc
+                skip_fee_model=True,  # News edge uses its own net_profit calc
                 custom_roi_percent=edge_percent,
                 custom_risk_score=1.0 - confidence,
                 confidence=confidence,
@@ -354,8 +366,6 @@ class NewsEdgeStrategy(BaseStrategy):
 
         risk_score = min(risk_score, 1.0)
 
-        resolution_date = market.end_date
-
         positions = [
             {
                 "action": "BUY",
@@ -377,15 +387,6 @@ class NewsEdgeStrategy(BaseStrategy):
                 },
             }
         ]
-
-        market_dict = {
-            "id": market.id,
-            "slug": market.slug,
-            "question": market.question,
-            "yes_price": mi.yes_price,
-            "no_price": mi.no_price,
-            "liquidity": market.liquidity,
-        }
 
         opp = self.create_opportunity(
             title=f"News Edge: {market.question[:50]}...",
@@ -424,12 +425,14 @@ class NewsEdgeStrategy(BaseStrategy):
             DecisionCheck("source", "News-capable source", source_ok, detail="news"),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         return (edge * 0.55) + (confidence * 45.0)
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float, market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         return max(1.0, min(max_size, base_size * (1.0 + confidence)))
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:

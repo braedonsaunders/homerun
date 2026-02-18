@@ -46,7 +46,6 @@ from services.trader_orchestrator_state import (
     create_trader_decision,
     create_trader_decision_checks,
     create_trader_event,
-    create_trader_order,
     get_consecutive_loss_count,
     get_daily_realized_pnl,
     get_gross_exposure,
@@ -409,11 +408,7 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
 
 
 async def _build_traders_scope_context(session: Any, traders_scope: dict[str, Any]) -> dict[str, Any]:
-    modes = {
-        str(mode or "").strip().lower()
-        for mode in (traders_scope.get("modes") or [])
-        if str(mode or "").strip()
-    }
+    modes = {str(mode or "").strip().lower() for mode in (traders_scope.get("modes") or []) if str(mode or "").strip()}
     context: dict[str, Any] = {
         "modes": modes,
         "individual_wallets": {
@@ -432,34 +427,34 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
     }
 
     if "tracked" in modes:
-        tracked_rows = (
-            await session.execute(select(TrackedWallet.address))
-        ).scalars().all()
+        tracked_rows = (await session.execute(select(TrackedWallet.address))).scalars().all()
         context["tracked_wallets"] = {
             _normalize_wallet(address) for address in tracked_rows if _normalize_wallet(address)
         }
 
     if "pool" in modes:
         pool_rows = (
-            await session.execute(
-                select(DiscoveredWallet.address).where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
+            (
+                await session.execute(
+                    select(DiscoveredWallet.address).where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
+                )
             )
-        ).scalars().all()
-        context["pool_wallets"] = {
-            _normalize_wallet(address) for address in pool_rows if _normalize_wallet(address)
-        }
+            .scalars()
+            .all()
+        )
+        context["pool_wallets"] = {_normalize_wallet(address) for address in pool_rows if _normalize_wallet(address)}
 
     if "group" in modes and context["group_ids"]:
         group_rows = (
-            await session.execute(
-                select(TraderGroupMember.wallet_address).where(
-                    TraderGroupMember.group_id.in_(context["group_ids"])
+            (
+                await session.execute(
+                    select(TraderGroupMember.wallet_address).where(TraderGroupMember.group_id.in_(context["group_ids"]))
                 )
             )
-        ).scalars().all()
-        context["group_wallets"] = {
-            _normalize_wallet(address) for address in group_rows if _normalize_wallet(address)
-        }
+            .scalars()
+            .all()
+        )
+        context["group_wallets"] = {_normalize_wallet(address) for address in group_rows if _normalize_wallet(address)}
 
     return context
 
@@ -522,9 +517,7 @@ async def _run_trader_once(
                     trader_id=trader_id,
                     event_type="paper_ledger_backfill",
                     source="worker",
-                    message=(
-                        f"Backfilled {int(backfill_result['backfilled'])} paper order(s) into simulation ledger"
-                    ),
+                    message=(f"Backfilled {int(backfill_result['backfilled'])} paper order(s) into simulation ledger"),
                     payload=backfill_result,
                 )
 
@@ -622,9 +615,7 @@ async def _run_trader_once(
                     f"Resume policy flatten_then_start waiting to flatten {open_positions} open paper position(s)"
                 )
             else:
-                block_entries_reason = (
-                    f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
-                )
+                block_entries_reason = f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
 
         effective_process_signals = bool(process_signals)
         if block_entries_reason is not None and process_signals:
@@ -667,7 +658,6 @@ async def _run_trader_once(
         sources = _query_sources_for_configs(source_configs)
 
         control_settings = control.get("settings") or {}
-        paper_account_id = str(control_settings.get("paper_account_id") or "").strip() or None
         enable_live_market_context = bool(control_settings.get("enable_live_market_context", True))
         history_window_seconds = int(
             max(
@@ -840,9 +830,7 @@ async def _run_trader_once(
                     strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
                     strategy_params = dict(source_config.get("strategy_params") or {})
                     strategy_status = strategy_loader.get_availability(strategy_key)
-                    resolved_strategy_key = (
-                        strategy_status.resolved_key or strategy_key
-                    )
+                    resolved_strategy_key = strategy_status.resolved_key or strategy_key
                     live_context = live_contexts.get(signal_id, {})
                     runtime_signal = RuntimeTradeSignalView(signal, live_context=live_context)
                     runtime_signal.source = signal_source
@@ -858,9 +846,7 @@ async def _run_trader_once(
 
                     # 2. Fallback: try the signal's strategy_type slug
                     if strategy is None and strategy_status.available:
-                        signal_strategy_type = str(
-                            getattr(signal, "strategy_type", "") or ""
-                        ).strip().lower()
+                        signal_strategy_type = str(getattr(signal, "strategy_type", "") or "").strip().lower()
                         if signal_strategy_type:
                             loaded = strategy_loader.get_strategy(signal_strategy_type)
                             candidate = _strategy_instance_from_loaded(loaded)

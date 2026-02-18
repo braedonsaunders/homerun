@@ -93,9 +93,13 @@ async def execute_live_order(
     resolved_price = fallback
     try:
         if normalized_side == OrderSide.BUY:
-            resolved_price = safe_float(await polymarket_client.get_price(normalized_token_id, side="BUY"), resolved_price)
+            resolved_price = safe_float(
+                await polymarket_client.get_price(normalized_token_id, side="BUY"), resolved_price
+            )
         else:
-            resolved_price = safe_float(await polymarket_client.get_price(normalized_token_id, side="SELL"), resolved_price)
+            resolved_price = safe_float(
+                await polymarket_client.get_price(normalized_token_id, side="SELL"), resolved_price
+            )
     except Exception:
         pass
 

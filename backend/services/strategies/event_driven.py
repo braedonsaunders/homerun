@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy: Event-Driven Arbitrage
 
@@ -15,14 +13,14 @@ Example:
 This exploits the information propagation delay across markets.
 """
 
+from __future__ import annotations
+
 import time
 from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -148,7 +146,6 @@ class EventDrivenStrategy(BaseStrategy):
     description = "Exploit price lag after significant market moves"
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 3.5,
@@ -591,6 +588,9 @@ class EventDrivenStrategy(BaseStrategy):
         max_hold = float(config.get("max_hold_minutes", 720) or 720)
         if age_minutes > max_hold:
             current_price = market_state.get("current_price")
-            return ExitDecision("close", f"Event catalyst time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price)
+            return ExitDecision(
+                "close",
+                f"Event catalyst time decay ({age_minutes:.0f} > {max_hold:.0f} min)",
+                close_price=current_price,
+            )
         return self.default_exit_check(position, market_state)
-

@@ -475,7 +475,9 @@ async def _run_loop() -> None:
             opportunities = await event_dispatcher.dispatch(trader_event)
             async with AsyncSessionLocal() as session:
                 emitted = await bridge_opportunities_to_signals(
-                    session, opportunities, source="traders",
+                    session,
+                    opportunities,
+                    source="traders",
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)

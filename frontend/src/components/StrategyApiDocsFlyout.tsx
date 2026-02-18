@@ -7,7 +7,6 @@ import {
   Code2,
   Zap,
   Package,
-  AlertTriangle,
   Copy,
   Check,
   Settings2,
@@ -84,14 +83,14 @@ function Section({
 
 // ==================== FIELD TABLE ====================
 
-function FieldTable({ fields }: { fields: Record<string, string | Record<string, unknown>> }) {
+function FieldTable({ fields }: { fields: Record<string, string | Record<string, any>> }) {
   return (
     <div className="space-y-0.5">
       {Object.entries(fields).map(([key, desc]) => (
         <div key={key} className="flex gap-2 text-[11px] py-0.5">
           <code className="text-amber-400 font-mono shrink-0">{key}</code>
           <span className="text-muted-foreground">
-            {typeof desc === 'string' ? desc : (desc as Record<string, unknown>)?.description as string || JSON.stringify(desc)}
+            {typeof desc === 'string' ? desc : (desc as Record<string, any>)?.description as string || JSON.stringify(desc)}
           </span>
         </div>
       ))}
@@ -124,21 +123,21 @@ function PhaseCard({ phase }: { phase: Record<string, string> }) {
 
 // ==================== UNIFIED DOCS ====================
 
-function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
-  const overview = docs.overview as Record<string, unknown> | undefined
-  const baseStrategy = docs.base_strategy as Record<string, unknown> | undefined
-  const detectPhase = docs.detect_phase as Record<string, unknown> | undefined
-  const evaluatePhase = docs.evaluate_phase as Record<string, unknown> | undefined
-  const exitPhase = docs.exit_phase as Record<string, unknown> | undefined
-  const composableEvaluate = docs.composable_evaluate as Record<string, unknown> | undefined
-  const eventSubscriptions = docs.event_subscriptions as Record<string, unknown> | undefined
-  const qualityFilter = docs.quality_filter as Record<string, unknown> | undefined
-  const platformHooks = docs.platform_hooks as Record<string, unknown> | undefined
-  const configSchema = docs.config_schema as Record<string, unknown> | undefined
-  const imports = docs.imports as Record<string, unknown> | undefined
+function UnifiedDocs({ docs }: { docs: Record<string, any> }) {
+  const overview = docs.overview as Record<string, any> | undefined
+  const baseStrategy = docs.base_strategy as Record<string, any> | undefined
+  const detectPhase = docs.detect_phase as Record<string, any> | undefined
+  const evaluatePhase = docs.evaluate_phase as Record<string, any> | undefined
+  const exitPhase = docs.exit_phase as Record<string, any> | undefined
+  const composableEvaluate = docs.composable_evaluate as Record<string, any> | undefined
+  const eventSubscriptions = docs.event_subscriptions as Record<string, any> | undefined
+  const qualityFilter = docs.quality_filter as Record<string, any> | undefined
+  const platformHooks = docs.platform_hooks as Record<string, any> | undefined
+  const configSchema = docs.config_schema as Record<string, any> | undefined
+  const imports = docs.imports as Record<string, any> | undefined
   const examples = docs.examples as Record<string, Record<string, string>> | undefined
-  const backtesting = docs.backtesting as Record<string, unknown> | undefined
-  const validation = docs.validation as Record<string, unknown> | undefined
+  const backtesting = docs.backtesting as Record<string, any> | undefined
+  const validation = docs.validation as Record<string, any> | undefined
   const endpoints = docs.endpoints as Record<string, Record<string, string>> | undefined
   const quickStart = docs.quick_start as string[] | undefined
 
@@ -170,9 +169,9 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
         <Section title="Three-Phase Lifecycle" icon={Zap} iconColor="text-amber-400" defaultOpen>
           <div className="space-y-2 pt-2">
             <p className="text-[11px] text-muted-foreground">
-              {(overview.three_phase_lifecycle as Record<string, unknown>).description as string}
+              {(overview.three_phase_lifecycle as Record<string, any>).description as string}
             </p>
-            {((overview.three_phase_lifecycle as Record<string, unknown>).phases as Record<string, string>[])?.map((phase) => (
+            {((overview.three_phase_lifecycle as Record<string, any>).phases as Record<string, string>[])?.map((phase) => (
               <PhaseCard key={phase.phase} phase={phase} />
             ))}
           </div>
@@ -190,7 +189,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
             {baseStrategy.class_attributes && (
               <div>
                 <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Class Attributes</div>
-                <FieldTable fields={baseStrategy.class_attributes as Record<string, Record<string, unknown>>} />
+                <FieldTable fields={baseStrategy.class_attributes as Record<string, Record<string, any>>} />
               </div>
             )}
 
@@ -204,7 +203,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
             {baseStrategy.helper_methods && (
               <div>
                 <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Helper Methods</div>
-                {Object.entries(baseStrategy.helper_methods as Record<string, Record<string, unknown>>).map(([name, info]) => (
+                {Object.entries(baseStrategy.helper_methods as Record<string, Record<string, any>>).map(([name, info]) => (
                   <div key={name} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
                     <code className="text-[10px] text-emerald-400 font-mono">{name}</code>
                     <p className="text-[10px] text-muted-foreground">{info.description as string}</p>
@@ -287,7 +286,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
                   Signal Object
                 </div>
                 <p className="text-[10px] text-muted-foreground mb-1">
-                  {(evaluatePhase.signal_object as Record<string, unknown>).description as string}
+                  {(evaluatePhase.signal_object as Record<string, any>).description as string}
                 </p>
                 <FieldTable fields={(evaluatePhase.signal_object as Record<string, Record<string, string>>).fields} />
               </div>
@@ -299,7 +298,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
                   Context Object
                 </div>
                 <p className="text-[10px] text-muted-foreground mb-1">
-                  {(evaluatePhase.context_object as Record<string, unknown>).description as string}
+                  {(evaluatePhase.context_object as Record<string, any>).description as string}
                 </p>
                 <FieldTable fields={(evaluatePhase.context_object as Record<string, Record<string, string>>).fields} />
               </div>
@@ -311,16 +310,16 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
                   StrategyDecision
                 </div>
                 <code className="text-[9px] text-muted-foreground/70 font-mono block mb-1">
-                  {(evaluatePhase.return_value as Record<string, string>).constructor}
+                  {String((evaluatePhase.return_value as any).constructor ?? '')}
                 </code>
                 {(evaluatePhase.return_value as Record<string, Record<string, string>>).decision_values && (
                   <FieldTable fields={(evaluatePhase.return_value as Record<string, Record<string, string>>).decision_values} />
                 )}
-                {(evaluatePhase.return_value as Record<string, Record<string, unknown>>).checks_field && (
+                {(evaluatePhase.return_value as Record<string, Record<string, any>>).checks_field && (
                   <div className="mt-1">
                     <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">DecisionCheck</div>
                     <code className="text-[9px] text-muted-foreground/70 font-mono block">
-                      {((evaluatePhase.return_value as Record<string, Record<string, string>>).checks_field).constructor}
+                      {String(((evaluatePhase.return_value as any).checks_field?.constructor) ?? '')}
                     </code>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
                       {((evaluatePhase.return_value as Record<string, Record<string, string>>).checks_field).purpose}
@@ -364,7 +363,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
                   ExitDecision
                 </div>
                 <code className="text-[9px] text-muted-foreground/70 font-mono block mb-1">
-                  {(exitPhase.return_value as Record<string, string>).constructor}
+                  {String((exitPhase.return_value as any).constructor ?? '')}
                 </code>
                 {(exitPhase.return_value as Record<string, Record<string, string>>).action_values && (
                   <FieldTable fields={(exitPhase.return_value as Record<string, Record<string, string>>).action_values} />
@@ -753,7 +752,7 @@ class MyStrategy(BaseStrategy):
             {validation.response && (
               <div>
                 <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Response</div>
-                <FieldTable fields={validation.response as Record<string, string | Record<string, unknown>>} />
+                <FieldTable fields={validation.response as Record<string, string | Record<string, any>>} />
               </div>
             )}
           </div>

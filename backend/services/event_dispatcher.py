@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Set
+from typing import Awaitable, Callable, Set
 
 from utils.logger import get_logger
 from services.data_events import DataEvent, EventType
@@ -57,10 +57,7 @@ class EventDispatcher:
 
     def unsubscribe_all(self, strategy_slug: str) -> None:
         for event_type in list(self._subscriptions.get(strategy_slug, [])):
-            self._handlers[event_type] = [
-                (slug, h) for slug, h in self._handlers[event_type]
-                if slug != strategy_slug
-            ]
+            self._handlers[event_type] = [(slug, h) for slug, h in self._handlers[event_type] if slug != strategy_slug]
         self._subscriptions.pop(strategy_slug, None)
 
     async def dispatch(self, event: DataEvent, include_strategies: Set[str] | None = None) -> list:
@@ -74,21 +71,12 @@ class EventDispatcher:
         # Also dispatch to wildcard subscribers
         handlers.extend(self._handlers.get("*", []))
         if include_strategies is not None:
-            handlers = [
-                (slug, handler)
-                for slug, handler in handlers
-                if slug in include_strategies
-            ]
+            handlers = [(slug, handler) for slug, handler in handlers if slug in include_strategies]
 
         if not handlers:
             return []
 
-        tasks = [
-            asyncio.create_task(
-                self._safe_invoke(slug, handler, event)
-            )
-            for slug, handler in handlers
-        ]
+        tasks = [asyncio.create_task(self._safe_invoke(slug, handler, event)) for slug, handler in handlers]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

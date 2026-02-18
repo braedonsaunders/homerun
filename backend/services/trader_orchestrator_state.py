@@ -178,7 +178,7 @@ async def _fetch_enabled_strategy_catalog(
             valid_keys.add(slug)
             by_source.setdefault(src, set()).add(slug)
             # Include aliases so old strategy keys keep working
-            for alias in (row.get("aliases") or []):
+            for alias in row.get("aliases") or []:
                 a = str(alias).strip().lower()
                 if a:
                     valid_keys.add(a)
@@ -1400,13 +1400,7 @@ async def _refresh_execution_session_rollups(
         return None
 
     legs = (
-        (
-            await session.execute(
-                select(ExecutionSessionLeg).where(
-                    ExecutionSessionLeg.session_id == session_id
-                )
-            )
-        )
+        (await session.execute(select(ExecutionSessionLeg).where(ExecutionSessionLeg.session_id == session_id)))
         .scalars()
         .all()
     )
@@ -1477,11 +1471,7 @@ async def create_execution_session(
         policy=str(policy or "SINGLE_LEG"),
         plan_id=str(plan_id or "") or None,
         market_ids_json=sorted(
-            {
-                str(leg.get("market_id") or "").strip()
-                for leg in legs
-                if str(leg.get("market_id") or "").strip()
-            }
+            {str(leg.get("market_id") or "").strip() for leg in legs if str(leg.get("market_id") or "").strip()}
         ),
         legs_total=0,
         legs_completed=0,
@@ -2575,9 +2565,7 @@ async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
         (
             await session.execute(
                 select(func.count(ExecutionSession.id)).where(
-                    func.lower(func.coalesce(ExecutionSession.status, "")).in_(
-                        tuple(ACTIVE_EXECUTION_SESSION_STATUSES)
-                    )
+                    func.lower(func.coalesce(ExecutionSession.status, "")).in_(tuple(ACTIVE_EXECUTION_SESSION_STATUSES))
                 )
             )
         ).scalar()

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy: Cross-Platform Oracle Arbitrage
 
@@ -32,6 +30,8 @@ Key safeguards (each addresses a documented class of false positive):
 - Minimum profit: reject < $0.01 guaranteed to avoid execution risk drag
 """
 
+from __future__ import annotations
+
 import re
 import string
 import time
@@ -43,9 +43,7 @@ import httpx
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -734,7 +732,6 @@ class CrossPlatformStrategy(BaseStrategy):
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
 
-
     pipeline_defaults = {
         "min_edge_percent": 4.0,
         "min_confidence": 0.45,
@@ -1171,8 +1168,9 @@ class CrossPlatformStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Cross-platform: edge*0.55 + conf*30 - risk*8 + 3.0 if guaranteed (default True)."""
         score = (edge * 0.55) + (confidence * 30.0) - (risk_score * 8.0)
         if bool(payload.get("is_guaranteed", True)):
@@ -1187,4 +1185,3 @@ class CrossPlatformStrategy(BaseStrategy):
         if config.get("resolve_only", True):
             return ExitDecision("hold", "Cross-platform spread — holding to resolution")
         return self.default_exit_check(position, market_state)
-

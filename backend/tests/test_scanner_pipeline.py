@@ -69,8 +69,14 @@ class TestScannerInit:
         types = {s.strategy_type for s in scanner.strategies}
         # NewsEdge is handled by a separate async/manual path, not in scanner.strategies.
         expected = {
-            "basic", "negrisk", "mutually_exclusive", "contradiction",
-            "must_happen", "miracle", "combinatorial", "settlement_lag",
+            "basic",
+            "negrisk",
+            "mutually_exclusive",
+            "contradiction",
+            "must_happen",
+            "miracle",
+            "combinatorial",
+            "settlement_lag",
         }
         assert types == expected
 

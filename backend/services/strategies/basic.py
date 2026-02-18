@@ -4,8 +4,7 @@ from typing import Any
 
 from models import Market, Event, ArbitrageOpportunity
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from utils.converters import to_float
 
 
 class BasicArbStrategy(BaseStrategy):
@@ -121,8 +120,7 @@ class BasicArbStrategy(BaseStrategy):
 
     SOURCES = {"scanner"}
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         source = str(getattr(signal, "source", "") or "").strip().lower()
         source_ok = source in self.SOURCES
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 25.0), 25.0))

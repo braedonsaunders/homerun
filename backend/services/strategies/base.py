@@ -81,6 +81,7 @@ class ScoringWeights:
         - (risk_score * risk_penalty) + (market_count * market_count_bonus)
         + (liquidity_score * liquidity_weight) + structural_bonus (if guaranteed)
     """
+
     edge_weight: float = 0.55
     confidence_weight: float = 30.0
     risk_penalty: float = 8.0
@@ -101,6 +102,7 @@ class SizingConfig:
     risk_scale = max(risk_floor, 1.0 - risk_score * risk_scale_factor)
     market_scale = 1.0 + min(market_scale_cap, max(0, markets-1)) * market_scale_factor
     """
+
     base_divisor: float = 100.0
     confidence_offset: float = 0.75
     risk_scale_factor: float = 0.35
@@ -121,21 +123,22 @@ class StrategyContext(TypedDict, total=False):
     know and consumers access what they need. Strategy-specific extras go in
     the ``extra`` key to avoid namespace collisions.
     """
-    source: str                  # Data source ("scanner", "crypto", "weather", ...)
-    strategy_type: str           # Strategy slug (mirrors signal.strategy_type)
-    roi_percent: float           # Raw theoretical ROI from detect()
-    realistic_roi: float         # VWAP-adjusted ROI (when order book data available)
-    confidence: float            # Detection-time confidence [0, 1]
-    risk_score: float            # Risk score [0, 1] from calculate_risk_score()
-    risk_factors: list           # Human-readable list of risk factor strings
-    liquidity: float             # Min liquidity across all legs
-    edge_percent: float          # Edge in percent (same as roi_percent for arb)
-    num_legs: int                # Number of markets / trade legs
-    resolution_date: str         # ISO 8601 UTC resolution date string
-    days_to_resolution: float    # Fractional days until resolution
-    annualized_roi: float        # ROI annualized over days_to_resolution
-    is_guaranteed: bool          # True for guaranteed-spread arb
-    extra: dict                  # Strategy-specific extras (namespaced per strategy)
+
+    source: str  # Data source ("scanner", "crypto", "weather", ...)
+    strategy_type: str  # Strategy slug (mirrors signal.strategy_type)
+    roi_percent: float  # Raw theoretical ROI from detect()
+    realistic_roi: float  # VWAP-adjusted ROI (when order book data available)
+    confidence: float  # Detection-time confidence [0, 1]
+    risk_score: float  # Risk score [0, 1] from calculate_risk_score()
+    risk_factors: list  # Human-readable list of risk factor strings
+    liquidity: float  # Min liquidity across all legs
+    edge_percent: float  # Edge in percent (same as roi_percent for arb)
+    num_legs: int  # Number of markets / trade legs
+    resolution_date: str  # ISO 8601 UTC resolution date string
+    days_to_resolution: float  # Fractional days until resolution
+    annualized_roi: float  # ROI annualized over days_to_resolution
+    is_guaranteed: bool  # True for guaranteed-spread arb
+    extra: dict  # Strategy-specific extras (namespaced per strategy)
 
 
 def _has_custom_detect_async(strategy: "BaseStrategy") -> bool:
@@ -270,8 +273,7 @@ class BaseStrategy(ABC):
         if own_realtime_mode is not None:
             if own_realtime_mode not in {"auto", "incremental", "full_snapshot"}:
                 raise TypeError(
-                    f"{cls.__name__}.realtime_processing_mode must be one of "
-                    f"['auto', 'incremental', 'full_snapshot']"
+                    f"{cls.__name__}.realtime_processing_mode must be one of ['auto', 'incremental', 'full_snapshot']"
                 )
         # Only validate strategy_type if this class explicitly declares it.
         # Intermediate base classes (e.g. BaseWeatherStrategy) do not declare
@@ -281,8 +283,7 @@ class BaseStrategy(ABC):
         st = cls.__dict__["strategy_type"]
         if not isinstance(st, str) or not st.strip():
             raise TypeError(
-                f"{cls.__name__}.strategy_type must be a non-empty string. "
-                f"Example: strategy_type = 'my_strategy'"
+                f"{cls.__name__}.strategy_type must be a non-empty string. Example: strategy_type = 'my_strategy'"
             )
 
     def __init__(self):
@@ -349,9 +350,7 @@ class BaseStrategy(ABC):
             # Prefer detect_async() if the subclass provides its own override;
             # otherwise run the synchronous detect() off the event loop.
             if _has_custom_detect_async(self):
-                return await self.detect_async(
-                    event.events or [], event.markets or [], event.prices or {}
-                )
+                return await self.detect_async(event.events or [], event.markets or [], event.prices or {})
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
                 None, self.detect, event.events or [], event.markets or [], event.prices or {}
@@ -504,8 +503,7 @@ class BaseStrategy(ABC):
 
     # ── Composable evaluate pipeline ─────────────────────────
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         """Override to add strategy-specific checks beyond the standard pipeline.
 
         Called during the composable evaluate pipeline after the standard
@@ -514,8 +512,9 @@ class BaseStrategy(ABC):
         """
         return []
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Compute composite score using scoring_weights.
 
         Override for fully custom scoring logic. Default uses the
@@ -535,9 +534,9 @@ class BaseStrategy(ABC):
             score += w.structural_bonus
         return score
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float,
-                     market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         """Compute position size using sizing_config.
 
         Override for fully custom sizing logic (e.g. Kelly criterion).
@@ -546,7 +545,13 @@ class BaseStrategy(ABC):
         cfg = self.sizing_config or SizingConfig()
         risk_scale = max(cfg.risk_floor, 1.0 - (risk_score * cfg.risk_scale_factor))
         market_scale = 1.0 + (min(cfg.market_scale_cap, max(0, market_count - 1)) * cfg.market_scale_factor)
-        size = base_size * (1.0 + (edge / cfg.base_divisor)) * (cfg.confidence_offset + confidence) * market_scale * risk_scale
+        size = (
+            base_size
+            * (1.0 + (edge / cfg.base_divisor))
+            * (cfg.confidence_offset + confidence)
+            * market_scale
+            * risk_scale
+        )
         return max(1.0, min(max_size, size))
 
     def _pipeline_evaluate(self, signal: Any, context: dict) -> StrategyDecision:
@@ -557,16 +562,21 @@ class BaseStrategy(ABC):
         # Merge strategy-specific defaults (pipeline_defaults) with caller params.
         # Caller params take precedence; pipeline_defaults provide fallbacks.
         d = self.pipeline_defaults
-        min_edge = to_float(params.get("min_edge_percent", d.get("min_edge_percent", 3.0)),
-                            d.get("min_edge_percent", 3.0))
-        min_conf = to_confidence(params.get("min_confidence", d.get("min_confidence", 0.42)),
-                                 d.get("min_confidence", 0.42))
-        max_risk = to_confidence(params.get("max_risk_score", d.get("max_risk_score", 0.68)),
-                                 d.get("max_risk_score", 0.68))
-        base_size = max(1.0, to_float(params.get("base_size_usd", d.get("base_size_usd", 20.0)),
-                                      d.get("base_size_usd", 20.0)))
-        max_size = max(base_size, to_float(params.get("max_size_usd", d.get("max_size_usd", 180.0)),
-                                           d.get("max_size_usd", 180.0)))
+        min_edge = to_float(
+            params.get("min_edge_percent", d.get("min_edge_percent", 3.0)), d.get("min_edge_percent", 3.0)
+        )
+        min_conf = to_confidence(
+            params.get("min_confidence", d.get("min_confidence", 0.42)), d.get("min_confidence", 0.42)
+        )
+        max_risk = to_confidence(
+            params.get("max_risk_score", d.get("max_risk_score", 0.68)), d.get("max_risk_score", 0.68)
+        )
+        base_size = max(
+            1.0, to_float(params.get("base_size_usd", d.get("base_size_usd", 20.0)), d.get("base_size_usd", 20.0))
+        )
+        max_size = max(
+            base_size, to_float(params.get("max_size_usd", d.get("max_size_usd", 180.0)), d.get("max_size_usd", 180.0))
+        )
 
         edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
         confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
@@ -575,12 +585,21 @@ class BaseStrategy(ABC):
 
         # Standard checks
         checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
-                          score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
-                          score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk,
-                          score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+            DecisionCheck(
+                "risk_score",
+                "Risk score ceiling",
+                risk_score <= max_risk,
+                score=risk_score,
+                detail=f"max={max_risk:.2f}",
+            ),
         ]
 
         # Strategy-specific checks
@@ -817,8 +836,7 @@ class BaseStrategy(ABC):
                     leg_id=f"leg_{index + 1}",
                     market_id=market_id,
                     market_question=str(
-                        position.get("market_question")
-                        or (market.question if market is not None else "")
+                        position.get("market_question") or (market.question if market is not None else "")
                     )
                     or None,
                     token_id=token_id,
@@ -931,6 +949,7 @@ class BaseStrategy(ABC):
                 multi_leg_slippage = 0.0
                 total_fees = 0.0
                 fee_as_pct_of_payout = 0.0
+
             fee_breakdown = _ZeroFees()
         else:
             fee_breakdown = fee_model.calculate_fees(
@@ -951,12 +970,10 @@ class BaseStrategy(ABC):
 
         # Use realistic profit for filtering when VWAP data is available
         # (kept for enrichment metadata; hard filters are now in QualityFilterPipeline)
-        effective_roi = realistic_roi if vwap_total_cost is not None else roi
 
         # Apply custom_roi_percent override (pre-computed by strategy from model)
         if custom_roi_percent is not None:
             roi = float(custom_roi_percent)
-            effective_roi = roi
 
         # Calculate max position size based on liquidity
         min_liquidity = min((m.liquidity for m in markets), default=0)

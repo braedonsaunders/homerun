@@ -1182,6 +1182,7 @@ class FeedManager:
             from services.data_events import DataEvent
             from services.event_dispatcher import event_dispatcher
             from utils.utcnow import utcnow
+
             event = DataEvent(
                 event_type="price_change",
                 source="polymarket_ws",

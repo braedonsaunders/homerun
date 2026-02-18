@@ -104,11 +104,7 @@ def _normalize_execution_plan(opportunity: ArbitrageOpportunity) -> dict[str, An
             {
                 "leg_id": str(position.get("leg_id") or f"leg_{index + 1}"),
                 "market_id": market_id,
-                "market_question": str(
-                    position.get("market_question")
-                    or market.get("question")
-                    or opportunity.title
-                ),
+                "market_question": str(position.get("market_question") or market.get("question") or opportunity.title),
                 "token_id": str(position.get("token_id") or "").strip() or None,
                 "side": "sell" if action.startswith("sell") else "buy",
                 "outcome": str(position.get("outcome") or "").strip().lower() or None,
@@ -176,17 +172,8 @@ def build_signal_contract_from_opportunity(
     primary_leg = _primary_plan_leg(plan) or {}
     first_market = (opportunity.markets or [{}])[0]
 
-    market_id = str(
-        primary_leg.get("market_id")
-        or first_market.get("id")
-        or opportunity.event_id
-        or opportunity.id
-    )
-    market_question = str(
-        primary_leg.get("market_question")
-        or first_market.get("question")
-        or opportunity.title
-    )
+    market_id = str(primary_leg.get("market_id") or first_market.get("id") or opportunity.event_id or opportunity.id)
+    market_question = str(primary_leg.get("market_question") or first_market.get("question") or opportunity.title)
     direction = _direction_from_outcome(primary_leg.get("outcome"))
     entry_price = primary_leg.get("limit_price")
     if entry_price is None:
@@ -736,4 +723,3 @@ async def emit_scanner_signals(
     await session.commit()
     await refresh_trade_signal_snapshots(session)
     return emitted
-

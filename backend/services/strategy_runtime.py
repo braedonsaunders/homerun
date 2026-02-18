@@ -16,11 +16,7 @@ _last_loaded_revision_stamps: dict[str, str] = {}
 
 def _normalize_source_keys(source_keys: list[str] | None) -> list[str]:
     return sorted(
-        {
-            str(source_key or "").strip().lower()
-            for source_key in (source_keys or [])
-            if str(source_key or "").strip()
-        }
+        {str(source_key or "").strip().lower() for source_key in (source_keys or []) if str(source_key or "").strip()}
     )
 
 
@@ -38,10 +34,10 @@ async def _read_revision_map(
     if not scopes:
         return {}
     rows = (
-        await session.execute(
-            select(StrategyRuntimeRevision).where(StrategyRuntimeRevision.scope.in_(scopes))
-        )
-    ).scalars().all()
+        (await session.execute(select(StrategyRuntimeRevision).where(StrategyRuntimeRevision.scope.in_(scopes))))
+        .scalars()
+        .all()
+    )
     return {str(row.scope): int(row.revision or 0) for row in rows}
 
 

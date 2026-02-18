@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 
 class EventType:
@@ -77,17 +77,19 @@ class EventType:
     }
     """
 
-    _ALL: frozenset[str] = frozenset({
-        "price_change",
-        "market_data_refresh",
-        "market_resolved",
-        "crypto_update",
-        "weather_update",
-        "trader_activity",
-        "news_update",
-        "news_event",
-        "world_intel_update",
-    })
+    _ALL: frozenset[str] = frozenset(
+        {
+            "price_change",
+            "market_data_refresh",
+            "market_resolved",
+            "crypto_update",
+            "weather_update",
+            "trader_activity",
+            "news_update",
+            "news_event",
+            "world_intel_update",
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,7 @@ class DataEvent:
         EventType.NEWS_EVENT            - Breaking news signal from news worker
         EventType.WORLD_INTEL_UPDATE    - Geopolitical signals from world intel worker
     """
+
     event_type: str
     source: str
     timestamp: datetime

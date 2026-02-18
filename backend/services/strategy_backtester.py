@@ -208,24 +208,27 @@ async def run_strategy_backtest(
         # Run QualityFilterPipeline on raw opportunities for audit trail
         try:
             from services.quality_filter import quality_filter as qf_pipeline
+
             for opp in opps or []:
                 try:
                     report = qf_pipeline.evaluate(opp)
-                    result.quality_reports.append({
-                        "opportunity_id": report.opportunity_id,
-                        "passed": report.passed,
-                        "rejection_reasons": report.rejection_reasons,
-                        "filters": [
-                            {
-                                "filter_name": f.filter_name,
-                                "passed": f.passed,
-                                "reason": f.reason,
-                                "threshold": f.threshold,
-                                "actual_value": f.actual_value,
-                            }
-                            for f in report.filters
-                        ],
-                    })
+                    result.quality_reports.append(
+                        {
+                            "opportunity_id": report.opportunity_id,
+                            "passed": report.passed,
+                            "rejection_reasons": report.rejection_reasons,
+                            "filters": [
+                                {
+                                    "filter_name": f.filter_name,
+                                    "passed": f.passed,
+                                    "reason": f.reason,
+                                    "threshold": f.threshold,
+                                    "actual_value": f.actual_value,
+                                }
+                                for f in report.filters
+                            ],
+                        }
+                    )
                 except Exception:
                     pass
         except Exception:
@@ -332,11 +335,8 @@ async def run_evaluate_backtest(
 
         async with AsyncSessionLocal() as session:
             from models.database import TradeSignalEmission
-            query = (
-                select(TradeSignalEmission)
-                .order_by(TradeSignalEmission.created_at.desc())
-                .limit(max_signals)
-            )
+
+            query = select(TradeSignalEmission).order_by(TradeSignalEmission.created_at.desc()).limit(max_signals)
             signals = list((await session.execute(query)).scalars().all())
         result.num_signals = len(signals)
     except Exception as e:
@@ -392,7 +392,7 @@ async def run_evaluate_backtest(
                 }
                 decision = strategy.evaluate(sig, context)
                 checks_payload: list[dict[str, Any]] = []
-                for c in (getattr(decision, "checks", None) or []):
+                for c in getattr(decision, "checks", None) or []:
                     checks_payload.append(
                         {
                             "check_key": str(getattr(c, "key", "") or getattr(c, "check_key", "")),
@@ -453,19 +453,21 @@ async def run_evaluate_backtest(
                 decision_str = str(gate_result["final_decision"])
                 reason_str = str(gate_result["final_reason"])
 
-                result.decisions.append({
-                    "signal_id": getattr(sig, "id", None),
-                    "source": getattr(sig, "source", ""),
-                    "strategy_type": getattr(sig, "strategy_type", ""),
-                    "strategy_decision": gate_result["strategy_decision"],
-                    "strategy_reason": gate_result["strategy_reason"],
-                    "decision": decision_str,
-                    "reason": reason_str,
-                    "size_usd": gate_result["size_usd"],
-                    "checks": gate_result["checks_payload"],
-                    "platform_gates": gate_result["platform_gates"],
-                    "risk_snapshot": gate_result["risk_snapshot"],
-                })
+                result.decisions.append(
+                    {
+                        "signal_id": getattr(sig, "id", None),
+                        "source": getattr(sig, "source", ""),
+                        "strategy_type": getattr(sig, "strategy_type", ""),
+                        "strategy_decision": gate_result["strategy_decision"],
+                        "strategy_reason": gate_result["strategy_reason"],
+                        "decision": decision_str,
+                        "reason": reason_str,
+                        "size_usd": gate_result["size_usd"],
+                        "checks": gate_result["checks_payload"],
+                        "platform_gates": gate_result["platform_gates"],
+                        "risk_snapshot": gate_result["risk_snapshot"],
+                    }
+                )
 
                 if decision_str == "selected":
                     result.selected += 1
@@ -474,12 +476,14 @@ async def run_evaluate_backtest(
                 else:
                     result.skipped += 1
             except Exception as exc:
-                result.decisions.append({
-                    "signal_id": getattr(sig, "id", None),
-                    "decision": "error",
-                    "reason": str(exc),
-                    "checks": [],
-                })
+                result.decisions.append(
+                    {
+                        "signal_id": getattr(sig, "id", None),
+                        "decision": "error",
+                        "reason": str(exc),
+                        "checks": [],
+                    }
+                )
 
         result.success = True
     except Exception as e:
@@ -606,6 +610,7 @@ async def run_exit_backtest(
 
                 class _PositionView:
                     pass
+
                 pos_view = _PositionView()
                 pos_view.entry_price = entry_price
                 pos_view.current_price = current_price
@@ -628,26 +633,30 @@ async def run_exit_backtest(
                 action = getattr(exit_decision, "action", "hold") if exit_decision else "hold"
                 reason = getattr(exit_decision, "reason", "") if exit_decision else ""
 
-                result.exit_decisions.append({
-                    "position_id": pos.id,
-                    "market_id": getattr(pos, "market_id", None),
-                    "entry_price": entry_price,
-                    "current_price": current_price,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "action": action,
-                    "reason": reason,
-                })
+                result.exit_decisions.append(
+                    {
+                        "position_id": pos.id,
+                        "market_id": getattr(pos, "market_id", None),
+                        "entry_price": entry_price,
+                        "current_price": current_price,
+                        "pnl_pct": round(pnl_pct, 2),
+                        "action": action,
+                        "reason": reason,
+                    }
+                )
 
                 if action == "close":
                     result.would_close += 1
                 else:
                     result.would_hold += 1
             except Exception as exc:
-                result.exit_decisions.append({
-                    "position_id": pos.id,
-                    "action": "error",
-                    "reason": str(exc),
-                })
+                result.exit_decisions.append(
+                    {
+                        "position_id": pos.id,
+                        "action": "error",
+                        "reason": str(exc),
+                    }
+                )
 
         result.success = True
     except Exception as e:

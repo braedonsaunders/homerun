@@ -27,10 +27,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
 from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload, weather_metadata
+from utils.signal_helpers import weather_metadata
 from services.weather.signal_engine import (
     compute_confidence,
     ensemble_bucket_probability,
@@ -60,13 +60,13 @@ class WeatherConservativeNoStrategy(BaseStrategy):
     subscriptions = ["weather_update"]
 
     DEFAULT_CONFIG = {
-        "min_safe_distance_c": 2.5,   # min degrees C away from consensus to bet NO
-        "max_no_price": 0.92,         # don't bet NO if it costs more than this
+        "min_safe_distance_c": 2.5,  # min degrees C away from consensus to bet NO
+        "max_no_price": 0.92,  # don't bet NO if it costs more than this
         "min_model_agreement": 0.60,
         "max_source_spread_c": 4.0,
         "min_source_count": 2,
         "max_positions_per_event": 3,
-        "risk_base_score": 0.20,      # lower risk since these are high-probability bets
+        "risk_base_score": 0.20,  # lower risk since these are high-probability bets
     }
 
     # ------------------------------------------------------------------
@@ -221,13 +221,11 @@ class WeatherConservativeNoStrategy(BaseStrategy):
         # --- 7. Model probability of NOT being in this bucket ---
         ensemble_members = intent.get("ensemble_members")
         if ensemble_members and isinstance(ensemble_members, list) and len(ensemble_members) > 0:
-            bucket_prob = ensemble_bucket_probability(
-                ensemble_members, bucket_low_c, bucket_high_c
-            )
+            bucket_prob = ensemble_bucket_probability(ensemble_members, bucket_low_c, bucket_high_c)
             model_prob_no = 1.0 - bucket_prob
         else:
             # Gaussian decay: probability decays with distance squared
-            gaussian_prob = max(0.01, math.exp(-(distance ** 2) / (2 * 2.0 ** 2)))
+            gaussian_prob = max(0.01, math.exp(-(distance**2) / (2 * 2.0**2)))
             model_prob_no = 1.0 - gaussian_prob
 
         # --- 8. Edge calculation ---
@@ -319,19 +317,9 @@ class WeatherConservativeNoStrategy(BaseStrategy):
             }
         ]
 
-        market_dict = {
-            "id": market.id,
-            "slug": market.slug,
-            "question": market.question,
-            "yes_price": market.yes_price,
-            "no_price": market.no_price,
-            "liquidity": market.liquidity,
-        }
-
         title = f"Conservative NO: {city} - {question[:40]}"
         description = (
-            f"Bet NO on {bucket_center:.0f}C "
-            f"(distance {distance:.1f}C from {consensus_value_c:.1f}C consensus)"
+            f"Bet NO on {bucket_center:.0f}C (distance {distance:.1f}C from {consensus_value_c:.1f}C consensus)"
         )
 
         opp = self.create_opportunity(
@@ -395,14 +383,39 @@ class WeatherConservativeNoStrategy(BaseStrategy):
         self._weather_source_spread_c = source_spread_c
 
         return [
-            DecisionCheck("agreement", "Model agreement", agreement >= min_agreement, score=agreement, detail=f"min={min_agreement:.2f}"),
-            DecisionCheck("source_count", "Forecast source depth", source_count >= min_source_count, score=float(source_count), detail=f"min={min_source_count}"),
-            DecisionCheck("source_spread", "Model spread ceiling (C)", source_spread_c <= max_source_spread, score=source_spread_c, detail=f"max={max_source_spread:.2f}"),
-            DecisionCheck("entry_price", "Entry price ceiling", 0.0 < entry_price <= max_entry_price, score=entry_price, detail=f"max={max_entry_price:.2f}"),
+            DecisionCheck(
+                "agreement",
+                "Model agreement",
+                agreement >= min_agreement,
+                score=agreement,
+                detail=f"min={min_agreement:.2f}",
+            ),
+            DecisionCheck(
+                "source_count",
+                "Forecast source depth",
+                source_count >= min_source_count,
+                score=float(source_count),
+                detail=f"min={min_source_count}",
+            ),
+            DecisionCheck(
+                "source_spread",
+                "Model spread ceiling (C)",
+                source_spread_c <= max_source_spread,
+                score=source_spread_c,
+                detail=f"max={max_source_spread:.2f}",
+            ),
+            DecisionCheck(
+                "entry_price",
+                "Entry price ceiling",
+                0.0 < entry_price <= max_entry_price,
+                score=entry_price,
+                detail=f"max={max_entry_price:.2f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         return (
             (edge * 0.6)
             + (confidence * 30.0)
@@ -411,8 +424,9 @@ class WeatherConservativeNoStrategy(BaseStrategy):
             - (self._weather_source_spread_c * 1.2)
         )
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float, market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         spread_scale = max(0.55, 1.0 - min(0.4, self._weather_source_spread_c / 10.0))
         size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.8 + self._weather_agreement) * spread_scale
         return max(1.0, min(max_size, size))

@@ -49,8 +49,6 @@ MIN_TOTAL_TRADES = 30
 MIN_SAMPLE_FOR_DISPLAY = 15
 
 
-
-
 def _floor_to_minutes(ts: datetime, bucket_minutes: int) -> datetime:
     minute = (ts.minute // bucket_minutes) * bucket_minutes
     return ts.replace(minute=minute, second=0, microsecond=0)

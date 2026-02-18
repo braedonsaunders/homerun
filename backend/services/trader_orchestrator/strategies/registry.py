@@ -4,6 +4,7 @@ All strategies live in the DB and are loaded by the unified loader.
 This module provides convenience accessors for callers that need a
 strategy instance by slug.
 """
+
 from __future__ import annotations
 
 from services.strategies.base import BaseStrategy

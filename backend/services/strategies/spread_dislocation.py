@@ -12,11 +12,17 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
-from utils.converters import to_float, to_confidence, clamp
-from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
+from services.strategies.base import (
+    BaseStrategy,
+    DecisionCheck,
+    ExitDecision,
+    ScoringWeights,
+    SizingConfig,
+    make_aware,
+    utcnow,
+)
+from utils.converters import to_float, clamp
 from utils.converters import safe_float
-
 
 
 class SpreadDislocationStrategy(BaseStrategy):
@@ -28,7 +34,6 @@ class SpreadDislocationStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_order_book = True
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 3.0,
@@ -235,28 +240,28 @@ class SpreadDislocationStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         """Spread dislocation: extra liquidity floor check."""
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 500.0), 500.0))
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
         # Stash for compute_score
         payload["_signal_liquidity"] = liquidity
         return [
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
-                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck(
+                "liquidity",
+                "Liquidity floor",
+                liquidity >= min_liquidity,
+                score=liquidity,
+                detail=f"min={min_liquidity:.0f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Spread dislocation: edge*0.60 + conf*28 + liq_score*6 - risk*9."""
         liquidity = float(payload.get("_signal_liquidity", 0) or 0)
-        return (
-            (edge * 0.60)
-            + (confidence * 28.0)
-            + (min(1.0, liquidity / 8000.0) * 6.0)
-            - (risk_score * 9.0)
-        )
+        return (edge * 0.60) + (confidence * 28.0) + (min(1.0, liquidity / 8000.0) * 6.0) - (risk_score * 9.0)
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Exit when spread closes or on time decay."""
@@ -267,6 +272,9 @@ class SpreadDislocationStrategy(BaseStrategy):
         max_hold = float(config.get("max_hold_minutes", 180) or 180)
         if age_minutes > max_hold:
             current_price = market_state.get("current_price")
-            return ExitDecision("close", f"Spread dislocation time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price)
+            return ExitDecision(
+                "close",
+                f"Spread dislocation time decay ({age_minutes:.0f} > {max_hold:.0f} min)",
+                close_price=current_price,
+            )
         return self.default_exit_check(position, market_state)
-

@@ -1925,9 +1925,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.5,
             min(1.0, to_float(params.get("direction_guardrail_price_floor", 0.80), 0.80)),
         )
-        guardrail_regimes = _normalize_regime_scope(
-            params.get("direction_guardrail_regimes", ["mid", "closing"])
-        )
+        guardrail_regimes = _normalize_regime_scope(params.get("direction_guardrail_regimes", ["mid", "closing"]))
         if not guardrail_regimes:
             guardrail_regimes = {"mid", "closing"}
 
@@ -1937,9 +1935,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         regime = _normalize_regime(payload.get("regime"))
 
         # --- Asset / timeframe extraction ---
-        signal_asset = _normalize_asset(
-            payload.get("asset") or payload.get("coin") or payload.get("symbol")
-        )
+        signal_asset = _normalize_asset(payload.get("asset") or payload.get("coin") or payload.get("symbol"))
         signal_timeframe = _normalize_timeframe(
             payload.get("timeframe") or payload.get("cadence") or payload.get("interval")
         )
@@ -1963,9 +1959,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             ),
             _normalize_timeframe,
         )
-        asset_scope_ok = (not target_assets) or (
-            bool(signal_asset) and signal_asset in target_assets
-        )
+        asset_scope_ok = (not target_assets) or (bool(signal_asset) and signal_asset in target_assets)
         # Unified strategy handles all timeframes — no fixed expected_timeframe.
         # The strategy_timeframe check passes when no single timeframe is enforced.
         strategy_timeframe_ok = True
@@ -1982,10 +1976,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # --- Source / origin checks ---
         source_ok = str(getattr(signal, "source", "")) == "crypto"
         signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
-        origin_ok = (
-            str(payload.get("strategy_origin") or "").strip().lower() == "crypto_worker"
-            or signal_type.startswith("crypto_worker")
-        )
+        origin_ok = str(
+            payload.get("strategy_origin") or ""
+        ).strip().lower() == "crypto_worker" or signal_type.startswith("crypto_worker")
 
         # --- Edge / confidence ---
         edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
@@ -2002,11 +1995,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         # --- Regime-aware required thresholds ---
         required_edge = min_edge * _EDGE_MODE_FACTORS.get(regime, {}).get(active_mode, 1.0)
-        required_conf = (
-            min_conf
-            * _CONF_MODE_FACTORS.get(active_mode, 1.0)
-            * _REGIME_CONF_FACTORS.get(regime, 1.0)
-        )
+        required_conf = min_conf * _CONF_MODE_FACTORS.get(active_mode, 1.0) * _REGIME_CONF_FACTORS.get(regime, 1.0)
 
         # --- Direction guardrail ---
         guardrail_blocked = False
@@ -2049,25 +2038,19 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "asset_scope",
                 "Asset target scope",
                 asset_scope_ok,
-                detail=(
-                    f"asset={signal_asset or 'unknown'} targets={','.join(target_assets) or 'all'}"
-                ),
+                detail=(f"asset={signal_asset or 'unknown'} targets={','.join(target_assets) or 'all'}"),
             ),
             DecisionCheck(
                 "timeframe_scope",
                 "Cadence target scope",
                 timeframe_scope_ok,
-                detail=(
-                    f"timeframe={signal_timeframe or 'unknown'} targets={','.join(target_timeframes) or 'all'}"
-                ),
+                detail=(f"timeframe={signal_timeframe or 'unknown'} targets={','.join(target_timeframes) or 'all'}"),
             ),
             DecisionCheck(
                 "strategy_timeframe",
                 "Strategy timeframe",
                 strategy_timeframe_ok,
-                detail=(
-                    f"observed={signal_timeframe or 'unknown'} (unified strategy accepts all timeframes)"
-                ),
+                detail=(f"observed={signal_timeframe or 'unknown'} (unified strategy accepts all timeframes)"),
             ),
             DecisionCheck(
                 "direction_guardrail",
@@ -2220,6 +2203,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if isinstance(end_time_raw, str) and end_time_raw.strip():
             try:
                 from datetime import datetime as _dt
+
                 end_date = _dt.fromisoformat(end_time_raw.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 pass
@@ -2268,6 +2252,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 if isinstance(end_time, str) and end_time.strip():
                     try:
                         from datetime import datetime as _dt, timezone as _tz
+
                         parsed = _dt.fromisoformat(end_time.replace("Z", "+00:00"))
                         seconds_left = max(0.0, (parsed - _dt.now(_tz.utc)).total_seconds())
                     except Exception:
@@ -2373,30 +2358,31 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             opp = self.create_opportunity(
                 title=f"Crypto HF: {slug} {side}",
                 description=(
-                    f"{regime} regime, {dominant_strategy} dominant | "
-                    f"edge={edge_percent:.1f}%, conf={confidence:.0%}"
+                    f"{regime} regime, {dominant_strategy} dominant | edge={edge_percent:.1f}%, conf={confidence:.0%}"
                 ),
                 total_cost=entry_price,
                 expected_payout=entry_price + (edge_percent / 100.0),
                 markets=[typed_market],
-                positions=[{
-                    "action": "BUY",
-                    "outcome": side,
-                    "price": entry_price,
-                    # Carry crypto-specific context through positions payload
-                    "_crypto_context": {
-                        "signal_version": "crypto_worker_v2",
-                        "signal_family": "crypto_multistrategy",
-                        "strategy_origin": "crypto_worker",
-                        "selected_direction": direction,
-                        "regime": regime,
-                        "oracle_available": has_oracle,
-                        "dominant_strategy": dominant_strategy,
-                        "execution_penalty_percent": round(execution_penalty, 6),
-                    },
-                }],
+                positions=[
+                    {
+                        "action": "BUY",
+                        "outcome": side,
+                        "price": entry_price,
+                        # Carry crypto-specific context through positions payload
+                        "_crypto_context": {
+                            "signal_version": "crypto_worker_v2",
+                            "signal_family": "crypto_multistrategy",
+                            "strategy_origin": "crypto_worker",
+                            "selected_direction": direction,
+                            "regime": regime,
+                            "oracle_available": has_oracle,
+                            "dominant_strategy": dominant_strategy,
+                            "execution_penalty_percent": round(execution_penalty, 6),
+                        },
+                    }
+                ],
                 is_guaranteed=False,
-                skip_fee_model=True,              # Crypto uses its own execution penalty model
+                skip_fee_model=True,  # Crypto uses its own execution penalty model
                 custom_roi_percent=edge_percent,
                 custom_risk_score=1.0 - confidence,
                 confidence=confidence,

@@ -4,9 +4,8 @@ from typing import Any
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
+from utils.converters import to_float
 
 
 class MustHappenStrategy(BaseStrategy):
@@ -52,7 +51,6 @@ class MustHappenStrategy(BaseStrategy):
     description = "Buy YES on all outcomes - REQUIRES MANUAL VERIFICATION of exhaustiveness"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
-
 
     scoring_weights = ScoringWeights(
         edge_weight=0.65,
@@ -289,17 +287,22 @@ class MustHappenStrategy(BaseStrategy):
 
         return opp
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         min_markets = max(1, int(to_float(params.get("min_markets", 2), 2)))
         market_count = len(payload.get("markets") or [])
         return [
-            DecisionCheck("markets", "Multi-leg structure", market_count >= min_markets,
-                          score=float(market_count), detail=f"min={min_markets}"),
+            DecisionCheck(
+                "markets",
+                "Multi-leg structure",
+                market_count >= min_markets,
+                score=float(market_count),
+                detail=f"min={min_markets}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         is_guaranteed = bool(payload.get("is_guaranteed", True))
         return (
             (edge * 0.65)
@@ -309,9 +312,9 @@ class MustHappenStrategy(BaseStrategy):
             + (4.0 if is_guaranteed else 0.0)
         )
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float,
-                     market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         market_scale = 1.0 + min(0.45, market_count * 0.06)
         size = base_size * (1.0 + (edge / 120.0)) * (0.8 + confidence) * market_scale
         return max(1.0, min(max_size, size))
@@ -324,4 +327,3 @@ class MustHappenStrategy(BaseStrategy):
         if not config.get("resolve_only", True):
             return self.default_exit_check(position, market_state)
         return ExitDecision("hold", "Guaranteed spread — holding to resolution")
-

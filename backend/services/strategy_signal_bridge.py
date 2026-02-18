@@ -9,7 +9,6 @@ pattern as the existing signal_bus emit_* functions.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 

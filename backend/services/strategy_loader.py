@@ -13,6 +13,7 @@ and implements one or more of:
 The loader validates source via AST, enforces an import allow-list, compiles
 in an isolated module, and exposes runtime status tracking for dashboards.
 """
+
 from __future__ import annotations
 
 import ast
@@ -22,7 +23,7 @@ import json
 import sys
 import traceback
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -201,7 +202,7 @@ BLOCKED_IMPORTS = {
     "ctypes",
     "socket",
     "http",
-    "urllib",       # urllib itself is blocked; urllib.parse is allowed via prefix
+    "urllib",  # urllib itself is blocked; urllib.parse is allowed via prefix
     "requests",
     "aiohttp",
     "pickle",
@@ -238,6 +239,7 @@ _BLOCKED_CALL_NAMES = {"exec", "eval", "compile", "__import__", "open", "input"}
 
 class StrategyValidationError(Exception):
     """Raised when strategy source code fails validation or loading."""
+
     pass
 
 
@@ -291,9 +293,7 @@ def _check_blocked_calls(tree: ast.AST) -> list[str]:
             if node.func.attr in _BLOCKED_CALL_NAMES:
                 target = node.func.value
                 if isinstance(target, ast.Name) and target.id in {"builtins", "__builtins__"}:
-                    violations.append(
-                        f"Blocked call '{target.id}.{node.func.attr}()' (line {node.lineno})"
-                    )
+                    violations.append(f"Blocked call '{target.id}.{node.func.attr}()' (line {node.lineno})")
     return violations
 
 
@@ -426,9 +426,7 @@ def validate_strategy_source(
     found_class = _find_strategy_class(tree, class_name)
     if not found_class:
         if class_name:
-            result["errors"].append(
-                f"Class '{class_name}' was not found in strategy source."
-            )
+            result["errors"].append(f"Class '{class_name}' was not found in strategy source.")
         else:
             result["errors"].append(
                 "No class extending BaseStrategy found. "
@@ -467,13 +465,10 @@ def validate_strategy_source(
     strategy_description = _extract_class_attribute(tree, found_class, "description")
 
     if not strategy_name:
-        result["warnings"].append(
-            f"Class '{found_class}' has no 'name' attribute. A default name will be used."
-        )
+        result["warnings"].append(f"Class '{found_class}' has no 'name' attribute. A default name will be used.")
     if not strategy_description:
         result["warnings"].append(
-            f"Class '{found_class}' has no 'description' attribute. "
-            f"A default description will be used."
+            f"Class '{found_class}' has no 'description' attribute. A default description will be used."
         )
 
     result["strategy_name"] = strategy_name
@@ -490,6 +485,7 @@ def validate_strategy_source(
 @dataclass
 class StrategyAvailability:
     """Whether a strategy is available for use."""
+
     available: bool
     strategy_key: str
     resolved_key: str
@@ -501,7 +497,7 @@ class LoadedStrategy:
     """Runtime state for a loaded strategy."""
 
     slug: str
-    instance: Any              # BaseStrategy instance
+    instance: Any  # BaseStrategy instance
     class_name: str
     source_hash: str
     loaded_at: datetime
@@ -570,9 +566,7 @@ class StrategyLoader:
         # Validate
         validation = validate_strategy_source(source_code)
         if not validation["valid"]:
-            raise StrategyValidationError(
-                "Strategy validation failed:\n" + "\n".join(validation["errors"])
-            )
+            raise StrategyValidationError("Strategy validation failed:\n" + "\n".join(validation["errors"]))
 
         class_name = validation["class_name"]
 
@@ -603,20 +597,15 @@ class StrategyLoader:
             strategy_class = getattr(module, class_name, None)
             if strategy_class is None:
                 raise StrategyValidationError(
-                    f"Class '{class_name}' not found after loading. "
-                    f"This is likely a bug in the strategy loader."
+                    f"Class '{class_name}' not found after loading. This is likely a bug in the strategy loader."
                 )
 
             # Verify it extends BaseStrategy
             from services.strategies.base import BaseStrategy
 
-            is_valid_class = isinstance(strategy_class, type) and issubclass(
-                strategy_class, BaseStrategy
-            )
+            is_valid_class = isinstance(strategy_class, type) and issubclass(strategy_class, BaseStrategy)
             if not is_valid_class:
-                raise StrategyValidationError(
-                    f"Class '{class_name}' does not extend BaseStrategy."
-                )
+                raise StrategyValidationError(f"Class '{class_name}' does not extend BaseStrategy.")
 
             # Set strategy_type to slug
             strategy_class.strategy_type = slug
@@ -672,9 +661,7 @@ class StrategyLoader:
         except Exception as e:
             sys.modules.pop(module_name, None)
             tb = traceback.format_exc()
-            raise StrategyValidationError(
-                f"Failed to load strategy '{slug}': {e}\n\n{tb}"
-            ) from e
+            raise StrategyValidationError(f"Failed to load strategy '{slug}': {e}\n\n{tb}") from e
 
     def unload(self, slug: str) -> None:
         """Unload a strategy by slug."""
@@ -710,11 +697,7 @@ class StrategyLoader:
         from models.database import Strategy
         from sqlalchemy import select
 
-        row = (
-            await session.execute(
-                select(Strategy).where(Strategy.slug == slug)
-            )
-        ).scalar_one_or_none()
+        row = (await session.execute(select(Strategy).where(Strategy.slug == slug))).scalar_one_or_none()
 
         if not row:
             return {"status": "not_found", "slug": slug}
@@ -781,16 +764,8 @@ class StrategyLoader:
         from sqlalchemy import func, select
         from utils.utcnow import utcnow
 
-        keys_filter = {
-            str(key or "").strip().lower()
-            for key in (strategy_keys or [])
-            if str(key or "").strip()
-        }
-        source_filter = {
-            str(key or "").strip().lower()
-            for key in (source_keys or [])
-            if str(key or "").strip()
-        }
+        keys_filter = {str(key or "").strip().lower() for key in (strategy_keys or []) if str(key or "").strip()}
+        source_filter = {str(key or "").strip().lower() for key in (source_keys or []) if str(key or "").strip()}
 
         async with self.refresh_lock:
             query = select(Strategy).order_by(Strategy.slug.asc())
@@ -805,11 +780,7 @@ class StrategyLoader:
             next_loaded = dict(self._loaded)
             next_errors = dict(self._errors)
             db_state_changed = False
-            selected_slugs = {
-                str(row.slug or "").strip().lower()
-                for row in rows
-                if str(row.slug or "").strip()
-            }
+            selected_slugs = {str(row.slug or "").strip().lower() for row in rows if str(row.slug or "").strip()}
 
             is_filtered_refresh = bool(keys_filter or source_filter)
             should_prune = bool(prune_unlisted or not is_filtered_refresh)
@@ -929,9 +900,7 @@ class StrategyLoader:
         """Check if a strategy is loaded and available for use."""
         slug = str(strategy_key or "").strip().lower()
         if slug in self._loaded:
-            return StrategyAvailability(
-                available=True, strategy_key=strategy_key, resolved_key=slug
-            )
+            return StrategyAvailability(available=True, strategy_key=strategy_key, resolved_key=slug)
         reason = self._errors.get(slug)
         return StrategyAvailability(
             available=False,
@@ -1003,12 +972,7 @@ class StrategyLoader:
 
     def get_all_statuses(self) -> list[dict]:
         """Get status for all loaded strategies."""
-        return [
-            self.get_status(slug)
-            for slug in self._loaded
-            if self.get_status(slug) is not None
-        ]
-
+        return [self.get_status(slug) for slug in self._loaded if self.get_status(slug) is not None]
 
 
 # ---------------------------------------------------------------------------

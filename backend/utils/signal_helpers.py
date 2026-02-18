@@ -3,6 +3,7 @@
 These utilities parse signal data, extract nested payloads, and compute
 time-based metrics used across all unified strategies.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -46,16 +47,23 @@ def days_to_resolution(payload: dict[str, Any]) -> float | None:
 
 
 def selected_probability(
-    signal: Any, payload: dict[str, Any], direction: str,
+    signal: Any,
+    payload: dict[str, Any],
+    direction: str,
 ) -> float | None:
     """Extract the best probability estimate for the selected side."""
     entry = _to_float(getattr(signal, "entry_price", None), -1.0)
     if 0.0 < entry < 1.0:
         return entry
 
-    positions = payload.get("positions_to_take") if isinstance(
-        payload.get("positions_to_take"), list,
-    ) else []
+    positions = (
+        payload.get("positions_to_take")
+        if isinstance(
+            payload.get("positions_to_take"),
+            list,
+        )
+        else []
+    )
     if positions:
         candidate = _to_float((positions[0] or {}).get("price"), -1.0)
         if 0.0 < candidate < 1.0:

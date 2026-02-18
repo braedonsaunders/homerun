@@ -23,9 +23,9 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload, weather_metadata, hours_to_target
+from utils.signal_helpers import weather_metadata
 from services.weather.signal_engine import (
     compute_confidence,
 )
@@ -524,14 +524,39 @@ class BaseWeatherStrategy(BaseStrategy):
         self._weather_source_spread_c = source_spread_c
 
         return [
-            DecisionCheck("agreement", "Model agreement", agreement >= min_agreement, score=agreement, detail=f"min={min_agreement:.2f}"),
-            DecisionCheck("source_count", "Forecast source depth", source_count >= min_source_count, score=float(source_count), detail=f"min={min_source_count}"),
-            DecisionCheck("source_spread", "Model spread ceiling (C)", source_spread_c <= max_source_spread, score=source_spread_c, detail=f"max={max_source_spread:.2f}"),
-            DecisionCheck("entry_price", "Entry price ceiling", 0.0 < entry_price <= max_entry_price, score=entry_price, detail=f"max={max_entry_price:.2f}"),
+            DecisionCheck(
+                "agreement",
+                "Model agreement",
+                agreement >= min_agreement,
+                score=agreement,
+                detail=f"min={min_agreement:.2f}",
+            ),
+            DecisionCheck(
+                "source_count",
+                "Forecast source depth",
+                source_count >= min_source_count,
+                score=float(source_count),
+                detail=f"min={min_source_count}",
+            ),
+            DecisionCheck(
+                "source_spread",
+                "Model spread ceiling (C)",
+                source_spread_c <= max_source_spread,
+                score=source_spread_c,
+                detail=f"max={max_source_spread:.2f}",
+            ),
+            DecisionCheck(
+                "entry_price",
+                "Entry price ceiling",
+                0.0 < entry_price <= max_entry_price,
+                score=entry_price,
+                detail=f"max={max_entry_price:.2f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         return (
             (edge * 0.6)
             + (confidence * 30.0)
@@ -540,8 +565,9 @@ class BaseWeatherStrategy(BaseStrategy):
             - (self._weather_source_spread_c * 1.2)
         )
 
-    def compute_size(self, base_size: float, max_size: float, edge: float,
-                     confidence: float, risk_score: float, market_count: int) -> float:
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
         spread_scale = max(0.55, 1.0 - min(0.4, self._weather_source_spread_c / 10.0))
         size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.8 + self._weather_agreement) * spread_scale
         return max(1.0, min(max_size, size))

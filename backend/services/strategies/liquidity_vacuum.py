@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy: Liquidity Vacuum - Order Book Imbalance Exploitation
 
@@ -16,14 +14,14 @@ toward the thick side because there's no resistance.
 NOT risk-free arbitrage - this is statistical edge trading.
 """
 
+from __future__ import annotations
+
 from typing import Any, Optional
 
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 
 
 class LiquidityVacuumStrategy(BaseStrategy):
@@ -43,7 +41,6 @@ class LiquidityVacuumStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_order_book = True
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 4.0,
@@ -584,4 +581,3 @@ class LiquidityVacuumStrategy(BaseStrategy):
 def market_liquidity_estimate(default: float = 0) -> float:
     """Placeholder for when we cannot determine depth from prices dict."""
     return default
-

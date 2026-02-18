@@ -44,15 +44,7 @@ async def test_seed_skips_tombstoned_system_slug(tmp_path):
             expected = len(SYSTEM_OPPORTUNITY_STRATEGY_SEEDS) - 1
             assert changed == expected
 
-            basic_row = (
-                (
-                    await session.execute(
-                        select(Strategy).where(Strategy.slug == "basic")
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            basic_row = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().first()
             assert basic_row is None
     finally:
         await engine.dispose()
@@ -66,15 +58,7 @@ async def test_delete_system_strategy_creates_tombstone_and_blocks_reseed(tmp_pa
     try:
         async with session_factory() as session:
             await ensure_system_opportunity_strategies_seeded(session)
-            basic_row = (
-                (
-                    await session.execute(
-                        select(Strategy).where(Strategy.slug == "basic")
-                    )
-                )
-                .scalars()
-                .one()
-            )
+            basic_row = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().one()
             basic_id = basic_row.id
 
         result = await routes_strategies.delete_strategy(basic_id)
@@ -84,27 +68,11 @@ async def test_delete_system_strategy_creates_tombstone_and_blocks_reseed(tmp_pa
             tombstone = await session.get(StrategyTombstone, "basic")
             assert tombstone is not None
 
-            deleted_row = (
-                (
-                    await session.execute(
-                        select(Strategy).where(Strategy.slug == "basic")
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            deleted_row = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().first()
             assert deleted_row is None
 
             await ensure_system_opportunity_strategies_seeded(session)
-            reseeded = (
-                (
-                    await session.execute(
-                        select(Strategy).where(Strategy.slug == "basic")
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            reseeded = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().first()
             assert reseeded is None
     finally:
         await engine.dispose()

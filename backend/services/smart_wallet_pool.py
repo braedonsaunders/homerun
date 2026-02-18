@@ -2248,8 +2248,10 @@ class SmartWalletPoolService:
             + 0.08 * clamp(insider_score)
             + 0.06 * clamp(source_confidence)
             + 0.05 * clamp(diversity_score)
-            + 0.03 * clamp(momentum_score)
-        , 0.0, 1.0)
+            + 0.03 * clamp(momentum_score),
+            0.0,
+            1.0,
+        )
 
     def _append_unique_inplace(
         self,
@@ -2476,8 +2478,10 @@ class SmartWalletPoolService:
             recommendation_boost = 0.02
 
         return clamp(
-            0.35 * rank + 0.25 * win + 0.15 * sharpe_norm + 0.15 * pf_norm + 0.10 * pnl_norm + recommendation_boost
-        , 0.0, 1.0)
+            0.35 * rank + 0.25 * win + 0.15 * sharpe_norm + 0.15 * pf_norm + 0.10 * pnl_norm + recommendation_boost,
+            0.0,
+            1.0,
+        )
 
     def _score_activity(
         self,

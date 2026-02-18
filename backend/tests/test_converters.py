@@ -17,6 +17,7 @@ from utils.converters import (
 
 # --- safe_float ---
 
+
 class TestSafeFloat:
     def test_valid_string(self):
         assert safe_float("3.14") == 3.14
@@ -52,6 +53,7 @@ class TestSafeFloat:
 
 # --- safe_int ---
 
+
 class TestSafeInt:
     def test_valid_string(self):
         assert safe_int("42") == 42
@@ -69,6 +71,7 @@ class TestSafeInt:
 
 # --- clamp ---
 
+
 class TestClamp:
     def test_within_range(self):
         assert clamp(5.0, 0.0, 10.0) == 5.0
@@ -85,6 +88,7 @@ class TestClamp:
 
 
 # --- to_confidence ---
+
 
 class TestToConfidence:
     def test_normal_value(self):
@@ -108,6 +112,7 @@ class TestToConfidence:
 
 # --- to_iso ---
 
+
 class TestToIso:
     def test_none(self):
         assert to_iso(None) is None
@@ -127,6 +132,7 @@ class TestToIso:
 
 
 # --- normalize_market_id ---
+
 
 class TestNormalizeMarketId:
     def test_strips_and_lowercases(self):

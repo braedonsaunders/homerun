@@ -12,7 +12,7 @@ from interfaces import MarketDataProvider
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
-from services.strategy_loader import strategy_loader, StrategyValidationError
+from services.strategy_loader import strategy_loader
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
 from services.pause_state import global_pause_state
@@ -32,7 +32,6 @@ def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
-
 
 
 class ArbitrageScanner:
@@ -448,11 +447,7 @@ class ArbitrageScanner:
             yes_val = float(round(min(1.0, max(0.0, yes_price)), 6))
             no_val = float(round(min(1.0, max(0.0, no_price)), 6))
             raw = list(getattr(market, "outcome_prices", None) or [])
-            if (
-                len(raw) >= 2
-                and abs(float(raw[0]) - yes_val) < 1e-9
-                and abs(float(raw[1]) - no_val) < 1e-9
-            ):
+            if len(raw) >= 2 and abs(float(raw[0]) - yes_val) < 1e-9 and abs(float(raw[1]) - no_val) < 1e-9:
                 continue
 
             market.outcome_prices = [yes_val, no_val]
@@ -586,9 +581,7 @@ class ArbitrageScanner:
 
         all_opportunities: list[ArbitrageOpportunity] = []
         if incremental_slugs:
-            all_opportunities.extend(
-                await event_dispatcher.dispatch(event, include_strategies=incremental_slugs)
-            )
+            all_opportunities.extend(await event_dispatcher.dispatch(event, include_strategies=incremental_slugs))
 
         if full_slugs:
             snapshot_markets = list(full_market_snapshot if full_market_snapshot is not None else (event.markets or []))
@@ -611,9 +604,7 @@ class ArbitrageScanner:
                 changed_market_ids=event.changed_market_ids,
                 affected_market_ids=event.affected_market_ids,
             )
-            all_opportunities.extend(
-                await event_dispatcher.dispatch(full_event, include_strategies=full_slugs)
-            )
+            all_opportunities.extend(await event_dispatcher.dispatch(full_event, include_strategies=full_slugs))
 
         return all_opportunities
 
@@ -1071,12 +1062,12 @@ class ArbitrageScanner:
             if targeted_condition_ids:
                 _target_set = {cid.lower() for cid in targeted_condition_ids}
                 markets = [
-                    m for m in markets
-                    if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
+                    m for m in markets if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
                 ]
                 for event in events:
                     event.markets = [
-                        m for m in event.markets
+                        m
+                        for m in event.markets
                         if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
                     ]
                 # Drop events with no remaining markets
@@ -1172,8 +1163,10 @@ class ArbitrageScanner:
                 token_sample = sorted_token_ids[:PRICE_BATCH_CAP]
                 await self._set_activity(f"Fetching prices for {len(token_sample)} tokens...")
                 prices = await self.market_data.get_prices_batch(token_sample)
-                print(f"  Fetched prices for {len(prices)}/{len(all_token_ids)} tokens "
-                      f"({len(priority_token_ids)} prioritized)")
+                print(
+                    f"  Fetched prices for {len(prices)}/{len(all_token_ids)} tokens "
+                    f"({len(priority_token_ids)} prioritized)"
+                )
 
             # Overlay WebSocket real-time prices where available
             prices = self._merge_ws_prices(prices, sorted_token_ids[:PRICE_BATCH_CAP])
@@ -1254,7 +1247,7 @@ class ArbitrageScanner:
             # Strategies subscribe to "market_data_refresh" and implement on_event()
             # which delegates to their detect()/detect_async() methods.
             await self._ensure_runtime_strategies_loaded()
-            await self._set_activity(f"Dispatching market_data_refresh to strategies...")
+            await self._set_activity("Dispatching market_data_refresh to strategies...")
 
             data_event = DataEvent(
                 event_type=EventType.MARKET_DATA_REFRESH,
@@ -1430,16 +1423,15 @@ class ArbitrageScanner:
                 affected_market_ids = self._resolve_affected_market_ids(reactive_tokens)
                 self._last_reactive_batch_markets = len(affected_market_ids)
                 candidate_markets = [
-                    self._cached_market_by_id[mid]
-                    for mid in affected_market_ids
-                    if mid in self._cached_market_by_id
+                    self._cached_market_by_id[mid] for mid in affected_market_ids if mid in self._cached_market_by_id
                 ]
                 candidate_markets = [
-                    m for m in candidate_markets
-                    if m.end_date is None or _make_aware(m.end_date) > now
+                    m for m in candidate_markets if m.end_date is None or _make_aware(m.end_date) > now
                 ]
                 if not candidate_markets:
-                    print("  Reactive batch had no currently cached/active markets; falling back to HOT-tier timer path")
+                    print(
+                        "  Reactive batch had no currently cached/active markets; falling back to HOT-tier timer path"
+                    )
                     reactive_mode = False
 
             if not reactive_mode:
@@ -1449,7 +1441,9 @@ class ArbitrageScanner:
                     prioritizer.update_stability_scores()
                     return prioritizer.classify_all(mkts, ts)
 
-                tier_map = await loop.run_in_executor(None, _classify_cached, self._prioritizer, self._cached_markets, now)
+                tier_map = await loop.run_in_executor(
+                    None, _classify_cached, self._prioritizer, self._cached_markets, now
+                )
                 candidate_markets = tier_map[MarketTier.HOT]
                 affected_market_ids = [str(getattr(m, "id", "") or "") for m in candidate_markets]
                 if not candidate_markets:
@@ -1472,9 +1466,7 @@ class ArbitrageScanner:
                     except Exception:
                         pass
                 if ws_prices:
-                    print(
-                        f"  Reactive WS overlay: {len(ws_prices)}/{len(candidate_token_ids)} tokens"
-                    )
+                    print(f"  Reactive WS overlay: {len(ws_prices)}/{len(candidate_token_ids)} tokens")
             else:
                 token_sample = candidate_token_ids[:200]
                 if token_sample:
@@ -1508,8 +1500,7 @@ class ArbitrageScanner:
                 scan_mode = "fast_timer"
 
             markets_for_strategies = [
-                m for m in markets_for_strategies
-                if m.end_date is None or _make_aware(m.end_date) > now
+                m for m in markets_for_strategies if m.end_date is None or _make_aware(m.end_date) > now
             ]
             changed_market_ids = [str(getattr(m, "id", "") or "") for m in changed_markets]
             affected_ids_payload = [str(getattr(m, "id", "") or "") for m in markets_for_strategies]
@@ -1776,8 +1767,7 @@ class ArbitrageScanner:
         merged = [
             opp
             for opp in existing_map.values()
-            if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now)
-            and not _is_stale(opp)
+            if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now) and not _is_stale(opp)
         ]
 
         expired_count = len(existing_map) - len(merged)

@@ -13,11 +13,19 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
+from services.strategies.base import (
+    BaseStrategy,
+    DecisionCheck,
+    StrategyDecision,
+    ExitDecision,
+    ScoringWeights,
+    SizingConfig,
+    make_aware,
+    utcnow,
+)
 from utils.converters import to_float, to_confidence, clamp
-from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
+from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability
 from utils.converters import safe_float
-
 
 
 class TailEndCarryStrategy(BaseStrategy):
@@ -29,7 +37,6 @@ class TailEndCarryStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_resolution_date = True
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 1.6,
@@ -237,8 +244,7 @@ class TailEndCarryStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         """Tail carry: source, strategy type, entry band, resolution window checks."""
         min_entry = clamp(to_float(params.get("min_entry_price", 0.85), 0.85), 0.01, 0.99)
         max_entry = clamp(to_float(params.get("max_entry_price", 0.985), 0.985), min_entry, 0.999)
@@ -267,8 +273,13 @@ class TailEndCarryStrategy(BaseStrategy):
         return [
             DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
             DecisionCheck("strategy", "Tail carry strategy type", strategy_ok, detail="strategy=tail_end_carry"),
-            DecisionCheck("entry", "Entry probability band", min_entry <= entry_price <= max_entry,
-                          score=entry_price, detail=f"[{min_entry:.3f}, {max_entry:.3f}]"),
+            DecisionCheck(
+                "entry",
+                "Entry probability band",
+                min_entry <= entry_price <= max_entry,
+                score=entry_price,
+                detail=f"[{min_entry:.3f}, {max_entry:.3f}]",
+            ),
             DecisionCheck(
                 "resolution_window",
                 "Resolution window",
@@ -278,8 +289,9 @@ class TailEndCarryStrategy(BaseStrategy):
             ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Tail carry: edge*0.55 + conf*28 + entry*6 - risk*9 + time_bonus."""
         entry_price = float(payload.get("_entry_price", 0) or 0)
         dtr = payload.get("_dtr")
@@ -310,12 +322,17 @@ class TailEndCarryStrategy(BaseStrategy):
 
         # Standard checks
         checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
-                          score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
-                          score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk,
-                          score=risk_score, detail=f"max={max_risk:.2f}"),
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck(
+                "confidence",
+                "Confidence threshold",
+                confidence >= min_conf,
+                score=confidence,
+                detail=f"min={min_conf:.2f}",
+            ),
+            DecisionCheck(
+                "risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"
+            ),
         ]
 
         # Strategy-specific checks (also stashes entry_price/dtr/etc in payload)
@@ -346,6 +363,7 @@ class TailEndCarryStrategy(BaseStrategy):
         probability = selected_probability(signal, payload, direction)
 
         from services.trader_orchestrator.strategies.sizing import compute_position_size
+
         sizing = compute_position_size(
             base_size_usd=base_size,
             max_size_usd=max_size,
@@ -385,4 +403,3 @@ class TailEndCarryStrategy(BaseStrategy):
         config.setdefault("resolve_only", False)
         position.config = config
         return self.default_exit_check(position, market_state)
-

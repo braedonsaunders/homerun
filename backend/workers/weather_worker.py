@@ -184,7 +184,9 @@ async def _run_loop() -> None:
             opportunities = await event_dispatcher.dispatch(weather_event)
             async with AsyncSessionLocal() as session:
                 emitted = await bridge_opportunities_to_signals(
-                    session, opportunities, source="weather",
+                    session,
+                    opportunities,
+                    source="weather",
                 )
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:
@@ -234,7 +236,9 @@ async def _run_loop() -> None:
                         stats=status.get("stats") or {},
                     )
                     try:
-                        pending = len(await shared_state.list_weather_intents(session, status_filter="pending", limit=2000))
+                        pending = len(
+                            await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
+                        )
                     except Exception:
                         pending = 0
                     await write_worker_snapshot(

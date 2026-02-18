@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy 8: Settlement Lag Arbitrage
 
@@ -24,12 +22,13 @@ Detection approach:
 4. Look for events where external signals suggest settlement
 """
 
+from __future__ import annotations
+
 from typing import Any, Optional
 from models import Market, Event, ArbitrageOpportunity, MispricingType
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from utils.converters import to_float
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -56,7 +55,6 @@ class SettlementLagStrategy(BaseStrategy):
     description = "Exploit delayed price updates after outcome determination"
     mispricing_type = "settlement_lag"
     subscriptions = ["market_data_refresh"]
-
 
     scoring_weights = ScoringWeights(
         edge_weight=0.55,
@@ -408,18 +406,23 @@ class SettlementLagStrategy(BaseStrategy):
 
         return opportunities
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 25.0), 25.0))
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
         payload["_signal_liquidity"] = liquidity
         return [
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
-                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck(
+                "liquidity",
+                "Liquidity floor",
+                liquidity >= min_liquidity,
+                score=liquidity,
+                detail=f"min={min_liquidity:.0f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         liquidity = float(payload.get("_signal_liquidity", 0) or 0)
         is_guaranteed = bool(payload.get("is_guaranteed", True))
         return (
@@ -438,4 +441,3 @@ class SettlementLagStrategy(BaseStrategy):
         if not config.get("resolve_only", True):
             return self.default_exit_check(position, market_state)
         return ExitDecision("hold", "Guaranteed spread — holding to resolution")
-

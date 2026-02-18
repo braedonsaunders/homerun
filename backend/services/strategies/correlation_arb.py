@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy: Correlation / Cointegration Arbitrage
 
@@ -14,6 +12,8 @@ Example:
 Uses rolling correlation calculation and z-score of spread.
 """
 
+from __future__ import annotations
+
 import math
 import time
 from collections import deque
@@ -21,9 +21,7 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -188,7 +186,6 @@ class CorrelationArbStrategy(BaseStrategy):
     description = "Mean-reversion on correlated market pair spreads"
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 3.0,
@@ -593,4 +590,3 @@ class CorrelationArbStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
-

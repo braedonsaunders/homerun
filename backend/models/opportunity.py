@@ -85,10 +85,7 @@ class ExecutionPlan(BaseModel):
         if self.plan_id:
             return
         leg_fingerprint = "|".join(
-            sorted(
-                f"{leg.market_id}:{leg.token_id or ''}:{leg.side}:{leg.outcome or ''}"
-                for leg in self.legs
-            )
+            sorted(f"{leg.market_id}:{leg.token_id or ''}:{leg.side}:{leg.outcome or ''}" for leg in self.legs)
         )
         digest = hashlib.sha256(leg_fingerprint.encode("utf-8")).hexdigest()[:16]
         self.plan_id = f"plan_{digest}"

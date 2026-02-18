@@ -25,9 +25,7 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity, MispricingType
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -286,7 +284,6 @@ class BayesianCascadeStrategy(BaseStrategy):
     )
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
-
 
     pipeline_defaults = {
         "min_edge_percent": 3.5,
@@ -765,19 +762,14 @@ class BayesianCascadeStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         """Bayesian cascade: edge*0.60 + conf*32 + min(4,markets)*1.5 - risk*9."""
-        return (
-            (edge * 0.60)
-            + (confidence * 32.0)
-            + (min(4, market_count) * 1.5)
-            - (risk_score * 9.0)
-        )
+        return (edge * 0.60) + (confidence * 32.0) + (min(4, market_count) * 1.5) - (risk_score * 9.0)
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Bayesian cascade: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
-

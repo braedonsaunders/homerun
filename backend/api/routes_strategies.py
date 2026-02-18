@@ -213,7 +213,6 @@ async def get_unified_docs():
     return {
         "title": "Strategy Developer Reference",
         "version": "2.0",
-
         # ── Section 1: Overview ──────────────────────────────────────
         "overview": {
             "summary": (
@@ -267,7 +266,6 @@ async def get_unified_docs():
                 "note": "Type is auto-inferred from which methods your class implements.",
             },
         },
-
         # ── Section 2: BaseStrategy Interface ────────────────────────
         "base_strategy": {
             "import": "from services.strategies.base import BaseStrategy, StrategyDecision, ExitDecision, DecisionCheck",
@@ -339,7 +337,6 @@ async def get_unified_docs():
                 },
             },
         },
-
         # ── Section 3: DETECT Phase ──────────────────────────────────
         "detect_phase": {
             "methods": {
@@ -388,7 +385,6 @@ async def get_unified_docs():
                 ),
             },
         },
-
         # ── Section 4: EVALUATE Phase ────────────────────────────────
         "evaluate_phase": {
             "method": "evaluate(self, signal, context) -> StrategyDecision",
@@ -439,7 +435,6 @@ async def get_unified_docs():
                 },
             },
         },
-
         # ── Section 5: EXIT Phase ────────────────────────────────────
         "exit_phase": {
             "method": "should_exit(self, position, market_state) -> ExitDecision",
@@ -484,7 +479,6 @@ async def get_unified_docs():
                 ),
             },
         },
-
         # ── Section 5b: Composable Evaluate Pipeline ────────────────
         "composable_evaluate": {
             "description": (
@@ -515,9 +509,7 @@ async def get_unified_docs():
                 "type": "SizingConfig dataclass",
                 "import": "from services.strategies.base import SizingConfig",
                 "formula": (
-                    "base_size * (1 + edge/base_divisor) "
-                    "* (confidence_offset + confidence) "
-                    "* market_scale * risk_scale"
+                    "base_size * (1 + edge/base_divisor) * (confidence_offset + confidence) * market_scale * risk_scale"
                 ),
                 "fields": {
                     "base_divisor": "float = 100.0 — Edge normalization divisor",
@@ -529,9 +521,7 @@ async def get_unified_docs():
                 },
             },
             "custom_checks_override": {
-                "signature": (
-                    "custom_checks(self, signal, context, params, payload) -> list[DecisionCheck]"
-                ),
+                "signature": ("custom_checks(self, signal, context, params, payload) -> list[DecisionCheck]"),
                 "description": (
                     "Override to add strategy-specific checks beyond the standard pipeline. "
                     "Called after the standard edge/confidence/risk checks. Return additional "
@@ -553,7 +543,6 @@ async def get_unified_docs():
                 "Override compute_score() or compute_size() for fully custom logic."
             ),
         },
-
         # ── Section 5c: Event Subscriptions ─────────────────────────
         "event_subscriptions": {
             "description": (
@@ -591,8 +580,7 @@ async def get_unified_docs():
                         "realtime_reactive",
                     ],
                     "payload_fields": (
-                        "markets, events, prices, scan_mode, changed_token_ids, "
-                        "changed_market_ids, affected_market_ids"
+                        "markets, events, prices, scan_mode, changed_token_ids, changed_market_ids, affected_market_ids"
                     ),
                 },
                 "market_resolved": {
@@ -646,7 +634,6 @@ async def get_unified_docs():
                 ),
             },
         },
-
         # ── Section 5d: Quality Filter Pipeline ─────────────────────
         "quality_filter": {
             "description": (
@@ -694,7 +681,6 @@ async def get_unified_docs():
                 "annualized_roi — Annualized ROI >= MIN_ANNUALIZED_ROI",
             ],
         },
-
         # ── Section 5e: Platform Hooks ──────────────────────────────
         "platform_hooks": {
             "description": (
@@ -727,7 +713,6 @@ async def get_unified_docs():
                 ],
             },
         },
-
         # ── Section 6: Config Schema ─────────────────────────────────
         "config_schema": {
             "description": (
@@ -778,7 +763,6 @@ async def get_unified_docs():
                 "5. In evaluate(), access via context['params'] which is the same merged config."
             ),
         },
-
         # ── Section 7: Available Imports ──────────────────────────────
         "imports": {
             "description": (
@@ -800,14 +784,39 @@ async def get_unified_docs():
                 "utils": "Shared utility functions",
             },
             "standard_library": [
-                "math", "statistics", "collections", "datetime", "time",
-                "re", "json", "random", "asyncio", "threading",
-                "itertools", "functools", "operator", "copy",
-                "decimal", "fractions", "calendar",
-                "dataclasses", "typing", "abc", "enum",
-                "hashlib", "hmac", "base64", "uuid",
-                "urllib.parse", "logging", "bisect", "heapq",
-                "textwrap", "string", "concurrent", "pathlib",
+                "math",
+                "statistics",
+                "collections",
+                "datetime",
+                "time",
+                "re",
+                "json",
+                "random",
+                "asyncio",
+                "threading",
+                "itertools",
+                "functools",
+                "operator",
+                "copy",
+                "decimal",
+                "fractions",
+                "calendar",
+                "dataclasses",
+                "typing",
+                "abc",
+                "enum",
+                "hashlib",
+                "hmac",
+                "base64",
+                "uuid",
+                "urllib.parse",
+                "logging",
+                "bisect",
+                "heapq",
+                "textwrap",
+                "string",
+                "concurrent",
+                "pathlib",
             ],
             "third_party": {
                 "httpx": "HTTP client — use for external API calls (async-friendly)",
@@ -824,7 +833,6 @@ async def get_unified_docs():
                 "process": "multiprocessing, signal — no process control",
             },
         },
-
         # ── Section 8: Complete Examples ──────────────────────────────
         "examples": {
             "minimal_detect_only": {
@@ -988,7 +996,6 @@ async def get_unified_docs():
                 ),
             },
         },
-
         # ── Section 9: Backtesting ───────────────────────────────────
         "backtesting": {
             "description": (
@@ -1027,7 +1034,6 @@ async def get_unified_docs():
                 "config": "dict | null — Config overrides (merged with default_config)",
             },
         },
-
         # ── Section 10: Validation ───────────────────────────────────
         "validation": {
             "endpoint": "POST /strategy-manager/validate",
@@ -1057,7 +1063,6 @@ async def get_unified_docs():
                 "errors": "list[str] — Validation errors if not valid",
             },
         },
-
         # ── Section 11: API Endpoints ────────────────────────────────
         "endpoints": {
             "strategies": {
@@ -1078,7 +1083,6 @@ async def get_unified_docs():
                 "POST /validation/code-backtest/exit": "Run should_exit() backtest against open positions",
             },
         },
-
         # ── Section 12: Quick Start ──────────────────────────────────
         "quick_start": [
             "1. GET /strategy-manager/template → copy the starter template",

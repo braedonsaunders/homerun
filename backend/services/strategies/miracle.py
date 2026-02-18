@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Strategy 6: Miracle Market Scanner (Garbage Collection)
 
@@ -28,15 +26,16 @@ The strategy:
 4. Flag stale markets where events already became logically impossible
 """
 
+from __future__ import annotations
+
 import re
 from datetime import datetime
 from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
-from utils.converters import to_float, to_confidence
-from utils.signal_helpers import signal_payload
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from utils.converters import to_float
 
 
 # Keywords indicating highly improbable events
@@ -149,7 +148,6 @@ class MiracleStrategy(BaseStrategy):
     description = "Bet NO on impossible/absurd events (garbage collection)"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
-
 
     scoring_weights = ScoringWeights(
         edge_weight=0.55,
@@ -313,10 +311,6 @@ class MiracleStrategy(BaseStrategy):
 
             if no_price < 0.95:
                 risk_factors.append("NO price below 95% - higher uncertainty")
-
-            # Calculate max position based on liquidity
-            min_liquidity = market.liquidity
-            max_position = min_liquidity * 0.05  # Conservative: 5% of liquidity
 
             positions = [
                 {
@@ -517,18 +511,23 @@ class MiracleStrategy(BaseStrategy):
 
         return opportunities
 
-    def custom_checks(self, signal: Any, context: dict, params: dict,
-                      payload: dict) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 25.0), 25.0))
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
         payload["_signal_liquidity"] = liquidity
         return [
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
-                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck(
+                "liquidity",
+                "Liquidity floor",
+                liquidity >= min_liquidity,
+                score=liquidity,
+                detail=f"min={min_liquidity:.0f}",
+            ),
         ]
 
-    def compute_score(self, edge: float, confidence: float, risk_score: float,
-                      market_count: int, payload: dict) -> float:
+    def compute_score(
+        self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
+    ) -> float:
         liquidity = float(payload.get("_signal_liquidity", 0) or 0)
         is_guaranteed = bool(payload.get("is_guaranteed", True))
         return (
@@ -547,4 +546,3 @@ class MiracleStrategy(BaseStrategy):
         if not config.get("resolve_only", True):
             return self.default_exit_check(position, market_state)
         return ExitDecision("hold", "Guaranteed spread — holding to resolution")
-

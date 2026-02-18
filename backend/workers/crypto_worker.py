@@ -507,7 +507,9 @@ async def _run_loop() -> None:
                 opportunities = await event_dispatcher.dispatch(crypto_event)
                 async with AsyncSessionLocal() as session:
                     emitted = await bridge_opportunities_to_signals(
-                        session, opportunities, source="crypto",
+                        session,
+                        opportunities,
+                        source="crypto",
                     )
             except Exception as exc:
                 emitted = 0

@@ -171,9 +171,7 @@ class CopyTradingConfig(Base):
 
     enabled = Column(Boolean, default=True)
     copy_mode = Column(SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES)
-    min_roi_threshold = Column(
-        Float, default=2.5
-    )  # Only copy if ROI > X% (arb_only mode)
+    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X% (arb_only mode)
     max_position_size = Column(Float, default=1000.0)
     copy_delay_seconds = Column(Integer, default=5)
     slippage_tolerance = Column(Float, default=1.0)
@@ -287,9 +285,7 @@ class WalletTrade(Base):
     __tablename__ = "wallet_trades"
 
     id = Column(String, primary_key=True)
-    wallet_address = Column(
-        String, ForeignKey("tracked_wallets.address"), nullable=False
-    )
+    wallet_address = Column(String, ForeignKey("tracked_wallets.address"), nullable=False)
 
     # Trade details
     market_id = Column(String, nullable=False)
@@ -485,9 +481,7 @@ class NewsTradeIntent(Base):
     confidence = Column(Float, nullable=True)
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    status = Column(
-        String, default="pending", nullable=False
-    )  # pending | submitted | executed | skipped | expired
+    status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
@@ -545,9 +539,7 @@ class MLModelWeights(Base):
 
     id = Column(String, primary_key=True)
     model_version = Column(Integer, nullable=False, default=1)
-    weights = Column(
-        JSON, nullable=False
-    )  # Model parameters (weights, bias, thresholds)
+    weights = Column(JSON, nullable=False)  # Model parameters (weights, bias, thresholds)
     feature_names = Column(JSON, nullable=False)  # Ordered list of feature names
     metrics = Column(JSON, nullable=True)  # accuracy, precision, recall, f1
     training_samples = Column(Integer, default=0)
@@ -603,9 +595,7 @@ class ValidationJob(Base):
 
     id = Column(String, primary_key=True)
     job_type = Column(String, nullable=False)  # backtest | optimize | execution_simulation
-    status = Column(
-        String, nullable=False, default="queued"
-    )  # queued | running | completed | failed | cancelled
+    status = Column(String, nullable=False, default="queued")  # queued | running | completed | failed | cancelled
     payload = Column(JSON, nullable=True)
     result = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
@@ -684,9 +674,7 @@ class AppSettings(Base):
     # LLM/AI Service Settings
     openai_api_key = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
-    llm_provider = Column(
-        String, default="none"
-    )  # none, openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    llm_provider = Column(String, default="none")  # none, openai, anthropic, google, xai, deepseek, ollama, lmstudio
     llm_model = Column(String, nullable=True)
     google_api_key = Column(String, nullable=True)
     xai_api_key = Column(String, nullable=True)
@@ -698,15 +686,11 @@ class AppSettings(Base):
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
-    ai_resolution_analysis = Column(
-        Boolean, default=True
-    )  # Auto-analyze resolution criteria
+    ai_resolution_analysis = Column(Boolean, default=True)  # Auto-analyze resolution criteria
     ai_opportunity_scoring = Column(Boolean, default=True)  # LLM-as-judge scoring
     ai_news_sentiment = Column(Boolean, default=True)  # News/sentiment analysis
     ai_max_monthly_spend = Column(Float, default=50.0)  # Monthly LLM cost cap
-    ai_default_model = Column(
-        String, default="gpt-4o-mini"
-    )  # Default model for AI tasks
+    ai_default_model = Column(String, default="gpt-4o-mini")  # Default model for AI tasks
     ai_premium_model = Column(String, default="gpt-4o")  # Model for high-value analysis
 
     # Notification Settings
@@ -902,14 +886,10 @@ class AppSettings(Base):
 
     # Trading VPN/Proxy (routes ONLY trading requests through proxy)
     trading_proxy_enabled = Column(Boolean, default=False)
-    trading_proxy_url = Column(
-        String, nullable=True
-    )  # socks5://host:port, http://host:port
+    trading_proxy_url = Column(String, nullable=True)  # socks5://host:port, http://host:port
     trading_proxy_verify_ssl = Column(Boolean, default=True)
     trading_proxy_timeout = Column(Float, default=30.0)
-    trading_proxy_require_vpn = Column(
-        Boolean, default=True
-    )  # Block trades if VPN unreachable
+    trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
 
     # Validation guardrails (auto strategy demotion/promotion)
     validation_guardrails_enabled = Column(Boolean, default=True)
@@ -1021,12 +1001,7 @@ class StrategyTombstone(Base):
     deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     reason = Column(String, nullable=True)
 
-    __table_args__ = (
-        Index("idx_strategy_tombstones_deleted_at", "deleted_at"),
-    )
-
-
-
+    __table_args__ = (Index("idx_strategy_tombstones_deleted_at", "deleted_at"),)
 
 
 class Strategy(Base):
@@ -1066,6 +1041,7 @@ class Strategy(Base):
         Index("idx_strategy_status", "status"),
     )
 
+
 class StrategyRuntimeRevision(Base):
     """Revision counters used by workers for strategy hot-reload polling."""
 
@@ -1075,9 +1051,7 @@ class StrategyRuntimeRevision(Base):
     revision = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_strategy_runtime_revisions_updated", "updated_at"),
-    )
+    __table_args__ = (Index("idx_strategy_runtime_revisions_updated", "updated_at"),)
 
 
 # ==================== LLM MODELS CACHE ====================
@@ -1093,9 +1067,7 @@ class LLMModelCache(Base):
     __tablename__ = "llm_model_cache"
 
     id = Column(String, primary_key=True)
-    provider = Column(
-        String, nullable=False
-    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model_id = Column(String, nullable=False)  # The model identifier used in API calls
     display_name = Column(String, nullable=True)  # Human-readable name
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1146,9 +1118,7 @@ class ResearchSession(Base):
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
-    entries = relationship(
-        "ScratchpadEntry", back_populates="session", cascade="all, delete-orphan"
-    )
+    entries = relationship("ScratchpadEntry", back_populates="session", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_research_type", "session_type"),
@@ -1173,9 +1143,7 @@ class ScratchpadEntry(Base):
     sequence = Column(Integer, nullable=False)  # Order within session
 
     # Entry content
-    entry_type = Column(
-        String, nullable=False
-    )  # "thinking", "tool_call", "tool_result", "observation", "answer"
+    entry_type = Column(String, nullable=False)  # "thinking", "tool_call", "tool_result", "observation", "answer"
     tool_name = Column(String, nullable=True)  # Which tool was called
     input_data = Column(JSON, nullable=True)  # Tool input or thinking content
     output_data = Column(JSON, nullable=True)  # Tool output or result
@@ -1258,9 +1226,7 @@ class ResolutionAnalysis(Base):
     resolution_rules = Column(Text, nullable=True)
 
     # Analysis results
-    clarity_score = Column(
-        Float, nullable=True
-    )  # 0-1: how clear/unambiguous the resolution criteria are
+    clarity_score = Column(Float, nullable=True)  # 0-1: how clear/unambiguous the resolution criteria are
     risk_score = Column(Float, nullable=True)  # 0-1: risk of unexpected resolution
     confidence = Column(Float, nullable=True)  # 0-1: confidence in the analysis
 
@@ -1268,9 +1234,7 @@ class ResolutionAnalysis(Base):
     ambiguities = Column(JSON, nullable=True)  # List of identified ambiguities
     edge_cases = Column(JSON, nullable=True)  # Potential edge cases
     key_dates = Column(JSON, nullable=True)  # Important dates for resolution
-    resolution_likelihood = Column(
-        JSON, nullable=True
-    )  # Likelihood assessment per outcome
+    resolution_likelihood = Column(JSON, nullable=True)  # Likelihood assessment per outcome
     summary = Column(Text, nullable=True)  # Human-readable summary
     recommendation = Column(String, nullable=True)  # "safe", "caution", "avoid"
 
@@ -1304,18 +1268,12 @@ class OpportunityJudgment(Base):
     overall_score = Column(Float, nullable=False)  # Composite score
     profit_viability = Column(Float, nullable=True)  # Will the profit materialize?
     resolution_safety = Column(Float, nullable=True)  # Will it resolve as expected?
-    execution_feasibility = Column(
-        Float, nullable=True
-    )  # Can we execute at these prices?
-    market_efficiency = Column(
-        Float, nullable=True
-    )  # Is this a real inefficiency or noise?
+    execution_feasibility = Column(Float, nullable=True)  # Can we execute at these prices?
+    market_efficiency = Column(Float, nullable=True)  # Is this a real inefficiency or noise?
 
     # LLM reasoning
     reasoning = Column(Text, nullable=True)  # Concise decision rationale
-    recommendation = Column(
-        String, nullable=False
-    )  # "strong_execute", "execute", "review", "skip", "strong_skip"
+    recommendation = Column(String, nullable=False)  # "strong_execute", "execute", "review", "skip", "strong_skip"
     risk_factors = Column(JSON, nullable=True)
 
     # Comparison with ML classifier
@@ -1378,9 +1336,7 @@ class LLMUsageLog(Base):
     __tablename__ = "llm_usage_log"
 
     id = Column(String, primary_key=True)
-    provider = Column(
-        String, nullable=False
-    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model = Column(String, nullable=False)
 
     # Usage
@@ -1389,9 +1345,7 @@ class LLMUsageLog(Base):
     cost_usd = Column(Float, nullable=False)
 
     # Context
-    purpose = Column(
-        String, nullable=True
-    )  # "resolution_analysis", "opportunity_judge", etc.
+    purpose = Column(String, nullable=True)  # "resolution_analysis", "opportunity_judge", etc.
     session_id = Column(String, nullable=True)
 
     # Timing
@@ -1452,9 +1406,7 @@ class DiscoveredWallet(Base):
     # Risk-adjusted metrics
     sharpe_ratio = Column(Float, nullable=True)
     sortino_ratio = Column(Float, nullable=True)
-    max_drawdown = Column(
-        Float, nullable=True
-    )  # Stored as positive fraction (0.15 = 15% drawdown)
+    max_drawdown = Column(Float, nullable=True)  # Stored as positive fraction (0.15 = 15% drawdown)
     profit_factor = Column(Float, nullable=True)  # gross_profit / gross_loss
     calmar_ratio = Column(Float, nullable=True)  # annualized_return / max_drawdown
 
@@ -1469,9 +1421,7 @@ class DiscoveredWallet(Base):
     anomaly_score = Column(Float, default=0.0)
     is_bot = Column(Boolean, default=False)
     is_profitable = Column(Boolean, default=False)
-    recommendation = Column(
-        String, default="unanalyzed"
-    )  # copy_candidate, monitor, avoid, unanalyzed
+    recommendation = Column(String, default="unanalyzed")  # copy_candidate, monitor, avoid, unanalyzed
     strategies_detected = Column(JSON, default=list)
 
     # Leaderboard ranking (computed periodically)
@@ -1535,9 +1485,7 @@ class WalletTag(Base):
     name = Column(String, nullable=False, unique=True)  # e.g., "smart_predictor"
     display_name = Column(String, nullable=False)  # e.g., "Smart Predictor"
     description = Column(Text, nullable=True)
-    category = Column(
-        String, default="behavioral"
-    )  # behavioral, performance, risk, strategy
+    category = Column(String, default="behavioral")  # behavioral, performance, risk, strategy
     color = Column(String, default="#6B7280")  # Hex color for UI
     criteria = Column(JSON, nullable=True)  # Auto-assignment criteria
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1564,9 +1512,7 @@ class WalletCluster(Base):
     avg_win_rate = Column(Float, default=0.0)
 
     # Detection method
-    detection_method = Column(
-        String, nullable=True
-    )  # funding_source, timing_correlation, pattern_match
+    detection_method = Column(String, nullable=True)  # funding_source, timing_correlation, pattern_match
     evidence = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1603,9 +1549,7 @@ class TraderGroupMember(Base):
     __tablename__ = "trader_group_members"
 
     id = Column(String, primary_key=True)
-    group_id = Column(
-        String, ForeignKey("trader_groups.id", ondelete="CASCADE"), nullable=False
-    )
+    group_id = Column(String, ForeignKey("trader_groups.id", ondelete="CASCADE"), nullable=False)
     wallet_address = Column(String, nullable=False)
     source = Column(String, default="manual")  # manual, suggested, imported
     confidence = Column(Float, nullable=True)
@@ -1630,9 +1574,7 @@ class MarketConfluenceSignal(Base):
     market_slug = Column(String, nullable=True)
 
     # Signal details
-    signal_type = Column(
-        String, nullable=False
-    )  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
+    signal_type = Column(String, nullable=False)  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
     strength = Column(Float, default=0.0)  # 0-1 signal strength
     conviction_score = Column(Float, default=0.0)  # 0-100 signal conviction
     tier = Column(String, default="WATCH")  # WATCH, HIGH, EXTREME
@@ -1647,9 +1589,7 @@ class MarketConfluenceSignal(Base):
     outcome = Column(String, nullable=True)  # YES or NO
     avg_entry_price = Column(Float, nullable=True)
     total_size = Column(Float, nullable=True)  # Combined position size
-    avg_wallet_rank = Column(
-        Float, nullable=True
-    )  # Average rank of participating wallets
+    avg_wallet_rank = Column(Float, nullable=True)  # Average rank of participating wallets
     net_notional = Column(Float, nullable=True)
     conflicting_notional = Column(Float, nullable=True)
     market_liquidity = Column(Float, nullable=True)
@@ -1716,9 +1656,7 @@ class CrossPlatformEntity(Base):
     combined_pnl = Column(Float, default=0.0)
 
     # Behavioral analysis
-    cross_platform_arb = Column(
-        Boolean, default=False
-    )  # Trades same event on both platforms
+    cross_platform_arb = Column(Boolean, default=False)  # Trades same event on both platforms
     hedging_detected = Column(Boolean, default=False)
     matching_markets = Column(JSON, default=list)  # Markets traded on both platforms
 
@@ -1784,9 +1722,7 @@ class OpportunityEvent(Base):
     id = Column(String, primary_key=True)
     stable_id = Column(String, nullable=False)
     run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=False)
-    event_type = Column(
-        String, nullable=False
-    )  # detected | updated | expired | reactivated
+    event_type = Column(String, nullable=False)  # detected | updated | expired | reactivated
     opportunity_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -1943,9 +1879,7 @@ class WeatherTradeIntent(Base):
     model_agreement = Column(Float, nullable=True)
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    status = Column(
-        String, default="pending", nullable=False
-    )  # pending | submitted | executed | skipped | expired
+    status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
@@ -2016,7 +1950,6 @@ class TradeSignalSnapshot(Base):
 
 
 # ==================== DB-NATIVE TRADER STRATEGIES ====================
-
 
 
 # TraderStrategyDefinition has been removed — all strategies are in the unified
@@ -2295,9 +2228,7 @@ class TraderDecisionCheck(Base):
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    __table_args__ = (
-        Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),
-    )
+    __table_args__ = (Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),)
 
 
 class TraderOrder(Base):
@@ -2509,9 +2440,7 @@ class ExecutionSessionEvent(Base):
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
-    __table_args__ = (
-        Index("idx_execution_session_events_session_created", "session_id", "created_at"),
-    )
+    __table_args__ = (Index("idx_execution_session_events_session_created", "session_id", "created_at"),)
 
 
 class TraderPosition(Base):
@@ -2610,9 +2539,7 @@ class TraderEvent(Base):
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
-    __table_args__ = (
-        Index("idx_trader_events_type_created", "event_type", "created_at"),
-    )
+    __table_args__ = (Index("idx_trader_events_type_created", "event_type", "created_at"),)
 
 
 class TraderConfigRevision(Base):
@@ -2635,6 +2562,7 @@ class TraderConfigRevision(Base):
     trader_after_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
+
 # ==================== WORLD INTELLIGENCE ====================
 
 
@@ -2644,7 +2572,9 @@ class WorldIntelligenceSignal(Base):
     __tablename__ = "world_intelligence_signals"
 
     id = Column(String, primary_key=True)
-    signal_type = Column(String, nullable=False)  # conflict, tension, instability, convergence, anomaly, military, infrastructure
+    signal_type = Column(
+        String, nullable=False
+    )  # conflict, tension, instability, convergence, anomaly, military, infrastructure
     severity = Column(Float, nullable=False, default=0.0)  # 0-1 normalized
     country = Column(String, nullable=True)
     iso3 = Column(String, nullable=True)
@@ -2771,10 +2701,7 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
 # Apply pragmas on each new SQLite connection
 event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_pragma)
 
-AsyncSessionLocal = sessionmaker(
-    async_engine, class_=AsyncSession, expire_on_commit=False
-)
-
+AsyncSessionLocal = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 def _run_alembic_upgrade(connection) -> None:
@@ -2842,10 +2769,7 @@ def _sqlite_migration_lock():
                     break
                 except (PermissionError, OSError):
                     if time.monotonic() >= deadline:
-                        logger.warning(
-                            "Could not acquire migration lock after 30s, "
-                            "proceeding without lock"
-                        )
+                        logger.warning("Could not acquire migration lock after 30s, proceeding without lock")
                         break
                     time.sleep(0.5)
             try:

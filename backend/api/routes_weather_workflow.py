@@ -172,7 +172,6 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
             detail="Global pause is active. Resume all workers before refreshing weather workflow.",
         )
     try:
-        wf_settings = await shared_state.get_weather_settings(session)
         result = await weather_workflow_orchestrator.run_cycle(session)
         pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
         intent_dicts = []
@@ -204,7 +203,9 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
         )
         opportunities = await event_dispatcher.dispatch(weather_event)
         emitted = await bridge_opportunities_to_signals(
-            session, opportunities, source="weather",
+            session,
+            opportunities,
+            source="weather",
         )
         # Clear any previously queued manual run requests to avoid duplicate
         # immediate reruns by the background weather worker loop.

@@ -1,7 +1,7 @@
 """Add persistent multi-leg execution session tables.
 
-Revision ID: 202602180001
-Revises: 202602170005
+Revision ID: 202602180002
+Revises: 202602180001
 Create Date: 2026-02-18 00:00:01.000000
 """
 
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from alembic_helpers import index_names, table_names
 
 
-revision = "202602180001"
-down_revision = "202602170005"
+revision = "202602180002"
+down_revision = "202602180001"
 branch_labels = None
 depends_on = None
 
@@ -166,7 +166,9 @@ def upgrade() -> None:
             unique=False,
         )
     if "ix_execution_session_orders_session_id" not in execution_order_indexes:
-        op.create_index("ix_execution_session_orders_session_id", "execution_session_orders", ["session_id"], unique=False)
+        op.create_index(
+            "ix_execution_session_orders_session_id", "execution_session_orders", ["session_id"], unique=False
+        )
     if "ix_execution_session_orders_leg_id" not in execution_order_indexes:
         op.create_index("ix_execution_session_orders_leg_id", "execution_session_orders", ["leg_id"], unique=False)
     if "ix_execution_session_orders_trader_order_id" not in execution_order_indexes:
@@ -215,7 +217,9 @@ def upgrade() -> None:
             unique=False,
         )
     if "ix_execution_session_events_session_id" not in execution_event_indexes:
-        op.create_index("ix_execution_session_events_session_id", "execution_session_events", ["session_id"], unique=False)
+        op.create_index(
+            "ix_execution_session_events_session_id", "execution_session_events", ["session_id"], unique=False
+        )
     if "ix_execution_session_events_leg_id" not in execution_event_indexes:
         op.create_index("ix_execution_session_events_leg_id", "execution_session_events", ["leg_id"], unique=False)
     if "ix_execution_session_events_event_type" not in execution_event_indexes:

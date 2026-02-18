@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import ExecutionSessionLeg, TradeSignal
+from models.database import ExecutionSessionLeg
 from services.signal_bus import set_trade_signal_status
 from services.trader_orchestrator.execution_policies import (
     allocate_leg_notionals,
@@ -69,16 +69,16 @@ class ExecutionSessionEngine:
             fallback_market_id = str(getattr(signal, "market_id", "") or "")
             fallback_market_question = str(getattr(signal, "market_question", "") or "")
             fallback_direction = str(getattr(signal, "direction", "") or "").strip().lower()
-            fallback_outcome = "yes" if fallback_direction == "buy_yes" else "no" if fallback_direction == "buy_no" else None
+            fallback_outcome = (
+                "yes" if fallback_direction == "buy_yes" else "no" if fallback_direction == "buy_no" else None
+            )
             legs = [
                 {
                     "leg_id": "leg_1",
                     "market_id": fallback_market_id,
                     "market_question": fallback_market_question,
                     "token_id": str(
-                        signal_payload.get("selected_token_id")
-                        or signal_payload.get("token_id")
-                        or ""
+                        signal_payload.get("selected_token_id") or signal_payload.get("token_id") or ""
                     ).strip()
                     or None,
                     "side": "buy",
@@ -150,13 +150,7 @@ class ExecutionSessionEngine:
 
     async def _fetch_leg_rows(self, session_id: str) -> dict[str, ExecutionSessionLeg]:
         rows = (
-            (
-                await self.db.execute(
-                    select(ExecutionSessionLeg).where(
-                        ExecutionSessionLeg.session_id == session_id
-                    )
-                )
-            )
+            (await self.db.execute(select(ExecutionSessionLeg).where(ExecutionSessionLeg.session_id == session_id)))
             .scalars()
             .all()
         )
@@ -254,10 +248,7 @@ class ExecutionSessionEngine:
         max_reprice_attempts = safe_int(constraints.get("max_reprice_attempts"), 3)
 
         for wave_index, wave in enumerate(waves):
-            wave_with_notionals = [
-                (leg, safe_float(leg.get("requested_notional_usd"), 0.0))
-                for leg in wave
-            ]
+            wave_with_notionals = [(leg, safe_float(leg.get("requested_notional_usd"), 0.0)) for leg in wave]
             wave_results = await submit_execution_wave(
                 mode=mode,
                 signal=signal,
@@ -266,7 +257,9 @@ class ExecutionSessionEngine:
 
             for result in wave_results:
                 leg_id = str(result.leg_id)
-                leg_payload = next((candidate for candidate in wave if str(candidate.get("leg_id")) == leg_id), None) or {}
+                leg_payload = (
+                    next((candidate for candidate in wave if str(candidate.get("leg_id")) == leg_id), None) or {}
+                )
                 leg_row = leg_rows.get(leg_id)
                 if leg_row is None:
                     continue
@@ -294,7 +287,9 @@ class ExecutionSessionEngine:
                             await submit_execution_wave(
                                 mode=mode,
                                 signal=signal,
-                                legs_with_notionals=[(leg_payload, safe_float(leg_payload.get("requested_notional_usd"), 0.0))],
+                                legs_with_notionals=[
+                                    (leg_payload, safe_float(leg_payload.get("requested_notional_usd"), 0.0))
+                                ],
                             )
                         )[0]
                         normalized_retry = str(retry_result.status or "").strip().lower()
@@ -317,8 +312,14 @@ class ExecutionSessionEngine:
                                 commit=False,
                             )
 
-                filled_notional = safe_float(result.notional_usd, 0.0) if normalized_status in {"executed", "open", "submitted"} else 0.0
-                filled_shares = safe_float(result.shares, 0.0) if normalized_status in {"executed", "open", "submitted"} else 0.0
+                filled_notional = (
+                    safe_float(result.notional_usd, 0.0)
+                    if normalized_status in {"executed", "open", "submitted"}
+                    else 0.0
+                )
+                filled_shares = (
+                    safe_float(result.shares, 0.0) if normalized_status in {"executed", "open", "submitted"} else 0.0
+                )
 
                 await update_execution_leg(
                     self.db,
@@ -343,13 +344,9 @@ class ExecutionSessionEngine:
                     "leg_ref": leg_id,
                     "policy": plan["policy"],
                 }
-                order_payload["strategy_type"] = str(
-                    getattr(signal, "strategy_type", "") or ""
-                ).strip().lower()
+                order_payload["strategy_type"] = str(getattr(signal, "strategy_type", "") or "").strip().lower()
                 order_payload["strategy_context"] = (
-                    getattr(signal, "strategy_context_json", None)
-                    or getattr(signal, "strategy_context", None)
-                    or {}
+                    getattr(signal, "strategy_context_json", None) or getattr(signal, "strategy_context", None) or {}
                 )
                 exit_keys = {
                     "take_profit_pct",
@@ -421,7 +418,10 @@ class ExecutionSessionEngine:
                     event_type="pair_lock_violation",
                     severity="warn",
                     message="Unhedged notional exceeded configured pair lock threshold",
-                    payload={"current_unhedged_notional_usd": current_unhedged, "max_unhedged_notional_usd": max_unhedged},
+                    payload={
+                        "current_unhedged_notional_usd": current_unhedged,
+                        "max_unhedged_notional_usd": max_unhedged,
+                    },
                     commit=False,
                 )
                 failed_legs = max(failed_legs, 1)

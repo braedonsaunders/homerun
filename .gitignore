@@ -8,6 +8,9 @@ venv/
 .venv/
 ENV/
 env/
+backend/venv/
+backend/venv*/
+backend/.venv/
 .env
 .setup-stamp.json
 *.egg-info/

@@ -154,20 +154,25 @@ async def write_worker_snapshot(
 
     # Publish worker status update event.
     try:
-        await event_bus.publish("worker_status_update", {
-            "workers": [{
-                "worker_name": worker_name,
-                "running": bool(running),
-                "enabled": bool(enabled),
-                "current_activity": current_activity,
-                "interval_seconds": int(row.interval_seconds or _default_interval(worker_name)),
-                "last_run_at": to_iso(last_run_at),
-                "lag_seconds": lag_seconds,
-                "last_error": last_error,
-                "stats": stats or {},
-                "updated_at": to_iso(row.updated_at),
-            }],
-        })
+        await event_bus.publish(
+            "worker_status_update",
+            {
+                "workers": [
+                    {
+                        "worker_name": worker_name,
+                        "running": bool(running),
+                        "enabled": bool(enabled),
+                        "current_activity": current_activity,
+                        "interval_seconds": int(row.interval_seconds or _default_interval(worker_name)),
+                        "last_run_at": to_iso(last_run_at),
+                        "lag_seconds": lag_seconds,
+                        "last_error": last_error,
+                        "stats": stats or {},
+                        "updated_at": to_iso(row.updated_at),
+                    }
+                ],
+            },
+        )
     except Exception:
         pass  # fire-and-forget
 

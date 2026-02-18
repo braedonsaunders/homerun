@@ -17,24 +17,67 @@ from .country_catalog import country_catalog
 logger = logging.getLogger(__name__)
 
 # Conflict/crisis keywords used to bump severity
-_HIGH_SEVERITY_KEYWORDS = frozenset({
-    "war", "attack", "invasion", "conflict", "offensive", "airstrike",
-    "bombing", "explosion", "troops", "missile", "nuclear", "ceasefire",
-    "coup", "crisis", "emergency", "sanctions", "assassination",
-    "hostages", "casualties", "killed", "deaths", "wounded",
-})
+_HIGH_SEVERITY_KEYWORDS = frozenset(
+    {
+        "war",
+        "attack",
+        "invasion",
+        "conflict",
+        "offensive",
+        "airstrike",
+        "bombing",
+        "explosion",
+        "troops",
+        "missile",
+        "nuclear",
+        "ceasefire",
+        "coup",
+        "crisis",
+        "emergency",
+        "sanctions",
+        "assassination",
+        "hostages",
+        "casualties",
+        "killed",
+        "deaths",
+        "wounded",
+    }
+)
 
-_MED_SEVERITY_KEYWORDS = frozenset({
-    "military", "tension", "protest", "unrest", "evacuation",
-    "threat", "warning", "alert", "standoff", "blockade",
-    "disputed", "escalation", "clashes", "riot", "strike",
-})
+_MED_SEVERITY_KEYWORDS = frozenset(
+    {
+        "military",
+        "tension",
+        "protest",
+        "unrest",
+        "evacuation",
+        "threat",
+        "warning",
+        "alert",
+        "standoff",
+        "blockade",
+        "disputed",
+        "escalation",
+        "clashes",
+        "riot",
+        "strike",
+    }
+)
 
 # Government-source agency names that get a severity boost
-_GOV_AGENCIES = frozenset({
-    "white_house", "state_department", "defense", "treasury",
-    "federal_reserve", "sec", "doj", "faa", "cdc",
-})
+_GOV_AGENCIES = frozenset(
+    {
+        "white_house",
+        "state_department",
+        "defense",
+        "treasury",
+        "federal_reserve",
+        "sec",
+        "doj",
+        "faa",
+        "cdc",
+    }
+)
 
 
 def _stable_news_signal_id(article_id: str) -> str:
@@ -116,7 +159,6 @@ class WorldIntelRSSMonitor:
         Returns an empty list (not an exception) if the news table is empty
         or unavailable — world intel degrades gracefully without RSS.
         """
-        from dataclasses import dataclass, field as dc_field
 
         # Import here to avoid circular imports at module level
         from models.database import AsyncSessionLocal, NewsArticleCache
@@ -160,18 +202,20 @@ class WorldIntelRSSMonitor:
                     published = published.replace(tzinfo=timezone.utc)
                 detected_at = published or fetched_at or datetime.now(timezone.utc)
 
-                articles.append({
-                    "article_id": row.article_id,
-                    "title": title,
-                    "summary": summary,
-                    "source": source,
-                    "feed_source": feed_source,
-                    "category": category,
-                    "country": country,
-                    "severity": severity,
-                    "detected_at": detected_at,
-                    "url": str(row.url or "").strip(),
-                })
+                articles.append(
+                    {
+                        "article_id": row.article_id,
+                        "title": title,
+                        "summary": summary,
+                        "source": source,
+                        "feed_source": feed_source,
+                        "category": category,
+                        "country": country,
+                        "severity": severity,
+                        "detected_at": detected_at,
+                        "url": str(row.url or "").strip(),
+                    }
+                )
 
             self._last_count = len(articles)
             self._last_error = None
