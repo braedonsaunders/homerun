@@ -259,8 +259,8 @@ def _seed_system_trader_strategies() -> None:
         default_params_json = (
             row.get("default_params_json") if row.get("default_params_json") is not None else row.get("config")
         )
-        param_schema_json = row.get("param_schema_json") if row.get("param_schema_json") is not None else row.get(
-            "config_schema"
+        param_schema_json = (
+            row.get("param_schema_json") if row.get("param_schema_json") is not None else row.get("config_schema")
         )
         aliases_json = row.get("aliases_json") if row.get("aliases_json") is not None else row.get("aliases")
 

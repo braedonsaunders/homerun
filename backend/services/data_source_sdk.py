@@ -266,9 +266,7 @@ class DataSourceSDK:
             raise ValueError("source_slug is required")
 
         async with AsyncSessionLocal() as session:
-            row = (
-                await session.execute(select(DataSource).where(DataSource.slug == slug))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(DataSource).where(DataSource.slug == slug))).scalar_one_or_none()
             if row is None:
                 raise ValueError(f"Data source '{slug}' not found")
 
@@ -306,11 +304,7 @@ class DataSourceSDK:
         resolved_name = str(name or validation.get("source_name") or normalized_slug.replace("_", " ").title()).strip()
         if not resolved_name:
             raise ValueError("name is required")
-        resolved_description = (
-            description
-            if description is not None
-            else validation.get("source_description")
-        )
+        resolved_description = description if description is not None else validation.get("source_description")
 
         status = "unloaded"
         error_message = None
@@ -515,9 +509,7 @@ class DataSourceSDK:
             raise ValueError("source_slug is required")
 
         async with AsyncSessionLocal() as session:
-            row = (
-                await session.execute(select(DataSource).where(DataSource.slug == slug))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(DataSource).where(DataSource.slug == slug))).scalar_one_or_none()
             if row is None:
                 raise ValueError(f"Data source '{slug}' not found")
 

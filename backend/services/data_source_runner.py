@@ -254,13 +254,7 @@ async def run_data_source(
 
         transformed_count = len(normalized_rows)
 
-        external_ids = sorted(
-            {
-                record["external_id"]
-                for record in normalized_rows
-                if record.get("external_id")
-            }
-        )
+        external_ids = sorted({record["external_id"] for record in normalized_rows if record.get("external_id")})
 
         existing_by_external_id: dict[str, DataSourceRecord] = {}
         if external_ids:
@@ -275,11 +269,7 @@ async def run_data_source(
                 .scalars()
                 .all()
             )
-            existing_by_external_id = {
-                str(row.external_id): row
-                for row in existing_rows
-                if row.external_id
-            }
+            existing_by_external_id = {str(row.external_id): row for row in existing_rows if row.external_id}
 
         ingested_at = _utcnow_naive()
         for normalized in normalized_rows:

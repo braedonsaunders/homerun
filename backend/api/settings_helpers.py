@@ -687,9 +687,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.market_fetch_order = getattr(scan, "market_fetch_order", "volume")
         settings.min_liquidity = scan.min_liquidity
         settings.scanner_max_opportunities_total = int(getattr(scan, "max_opportunities_total", 500))
-        settings.scanner_max_opportunities_per_strategy = int(
-            getattr(scan, "max_opportunities_per_strategy", 120)
-        )
+        settings.scanner_max_opportunities_per_strategy = int(getattr(scan, "max_opportunities_per_strategy", 120))
 
     if trading:
         trade = trading

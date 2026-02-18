@@ -205,7 +205,9 @@ async def _run_detect_once(
     )
 
 
-async def _fetch_prices_for_markets(markets: list[Any], *, token_cap: int = 2000, batch_size: int = 250) -> dict[str, dict]:
+async def _fetch_prices_for_markets(
+    markets: list[Any], *, token_cap: int = 2000, batch_size: int = 250
+) -> dict[str, dict]:
     token_ids: list[str] = []
     seen: set[str] = set()
     for market in markets:
@@ -664,7 +666,9 @@ async def run_strategy_backtest(
         )
 
         replay_run = ReplayDetectRun()
-        should_run_replay = bool(use_ohlc_replay) and len(opportunities or []) == 0 and not _has_custom_detect_async(strategy)
+        should_run_replay = (
+            bool(use_ohlc_replay) and len(opportunities or []) == 0 and not _has_custom_detect_async(strategy)
+        )
         if should_run_replay:
             replay_run = await _run_ohlc_replay_detection(
                 strategy,

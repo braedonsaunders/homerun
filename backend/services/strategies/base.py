@@ -566,7 +566,9 @@ class BaseStrategy(ABC):
 
     # ── Composable evaluate pipeline ─────────────────────────
 
-    def custom_checks(self, signal: Any, context: "EvaluateContext | dict", params: dict, payload: dict) -> list[DecisionCheck]:
+    def custom_checks(
+        self, signal: Any, context: "EvaluateContext | dict", params: dict, payload: dict
+    ) -> list[DecisionCheck]:
         """Override to add strategy-specific checks beyond the standard pipeline.
 
         Called during the composable evaluate pipeline after the standard

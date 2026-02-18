@@ -65,9 +65,7 @@ async def read_strategy_file_override_stamp(
 
     query = select(Strategy.slug).order_by(Strategy.slug.asc())
     if normalized:
-        query = query.where(
-            func.lower(func.coalesce(Strategy.source_key, "")).in_(tuple(normalized))
-        )
+        query = query.where(func.lower(func.coalesce(Strategy.source_key, "")).in_(tuple(normalized)))
 
     rows = (await session.execute(query)).all()
     parts: list[str] = []

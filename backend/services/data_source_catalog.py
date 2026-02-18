@@ -35,7 +35,7 @@ def _now_or_default(now: datetime | None) -> datetime:
     return now or datetime.utcnow()
 
 
-NEWS_FEED_BRIDGE_SOURCE_CODE = '''# System data source seed
+NEWS_FEED_BRIDGE_SOURCE_CODE = """# System data source seed
 from services.data_source_sdk import BaseDataSource
 
 
@@ -81,10 +81,10 @@ class NewsFeedBridgeSource(BaseDataSource):
             )
 
         return out
-'''
+"""
 
 
-RSS_NEWS_SOURCE_CODE = '''# System data source seed
+RSS_NEWS_SOURCE_CODE = """# System data source seed
 from services.data_source_sdk import BaseDataSource
 
 
@@ -160,10 +160,10 @@ class RssNewsSource(BaseDataSource):
                 break
 
         return rows
-'''
+"""
 
 
-GDELT_WORLD_NEWS_SOURCE_CODE = '''# System data source seed
+GDELT_WORLD_NEWS_SOURCE_CODE = """# System data source seed
 from services.data_source_sdk import BaseDataSource
 
 
@@ -233,10 +233,10 @@ class GdeltWorldNewsSource(BaseDataSource):
                 break
 
         return rows
-'''
+"""
 
 
-WORLD_SIGNALS_BRIDGE_SOURCE_CODE = '''# System data source seed
+WORLD_SIGNALS_BRIDGE_SOURCE_CODE = """# System data source seed
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import desc, select
@@ -308,7 +308,7 @@ class WorldSignalsBridgeSource(BaseDataSource):
             )
 
         return out
-'''
+"""
 
 
 BASE_SYSTEM_DATA_SOURCE_SEEDS: list[SystemDataSourceSeed] = [
@@ -679,10 +679,7 @@ async def ensure_system_data_sources_seeded(session: AsyncSession) -> int:
         current.sort_order = int(row["sort_order"])
         current.updated_at = row["updated_at"]
 
-        if (
-            not str(current.source_code or "").strip()
-            or _is_seed_source_code(str(current.source_code or ""))
-        ):
+        if not str(current.source_code or "").strip() or _is_seed_source_code(str(current.source_code or "")):
             if str(current.source_code or "") != row["source_code"]:
                 current.source_code = row["source_code"]
                 current.version = int(current.version or 1) + 1

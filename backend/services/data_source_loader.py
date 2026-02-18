@@ -283,9 +283,7 @@ def validate_data_source_source(source_code: str, class_name: Optional[str] = No
 
     source_name = _extract_class_attribute(tree, detected_class_name, "name") if detected_class_name else None
     source_description = (
-        _extract_class_attribute(tree, detected_class_name, "description")
-        if detected_class_name
-        else None
+        _extract_class_attribute(tree, detected_class_name, "description") if detected_class_name else None
     )
 
     if not source_name:
@@ -421,11 +419,7 @@ class DataSourceLoader:
 
         try:
             rows = (
-                (
-                    await db.execute(
-                        select(DataSource).order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
-                    )
-                )
+                (await db.execute(select(DataSource).order_by(DataSource.sort_order.asc(), DataSource.slug.asc())))
                 .scalars()
                 .all()
             )

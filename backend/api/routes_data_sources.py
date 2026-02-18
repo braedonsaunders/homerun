@@ -269,9 +269,7 @@ async def get_data_source_docs():
             },
             "method_selection": {
                 "note": "Implement at least one of fetch() or fetch_async().",
-                "runner_behavior": (
-                    "Runner prefers fetch_async() when available; otherwise it executes fetch()."
-                ),
+                "runner_behavior": ("Runner prefers fetch_async() when available; otherwise it executes fetch()."),
             },
         },
         "record_contract": {

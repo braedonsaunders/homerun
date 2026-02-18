@@ -105,12 +105,16 @@ def _make_event(market: Market) -> Event:
 
 
 def _patch_common(monkeypatch, strategy_instance: BaseStrategy, market: Market, event: Event) -> None:
-    monkeypatch.setattr(strategy_backtester, "validate_strategy_source", lambda source: {
-        "valid": True,
-        "errors": [],
-        "warnings": [],
-        "class_name": strategy_instance.__class__.__name__,
-    })
+    monkeypatch.setattr(
+        strategy_backtester,
+        "validate_strategy_source",
+        lambda source: {
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "class_name": strategy_instance.__class__.__name__,
+        },
+    )
     monkeypatch.setattr(strategy_backtester, "StrategyLoader", lambda: _FakeLoader(strategy_instance))
     monkeypatch.setattr(strategy_backtester.scanner, "_cached_events", [event], raising=False)
     monkeypatch.setattr(strategy_backtester.scanner, "_cached_markets", [market], raising=False)

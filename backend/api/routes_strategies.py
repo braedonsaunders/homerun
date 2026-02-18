@@ -796,9 +796,7 @@ async def get_unified_docs():
                 "services.ws_feeds": "WebSocket market data feeds",
                 "services.chainlink_feed": "Chainlink oracle price feeds",
                 "services.fee_model": "Fee calculation model",
-                "services.strategy_sdk": (
-                    "Strategy utilities including full data-source workflows via StrategySDK.*"
-                ),
+                "services.strategy_sdk": ("Strategy utilities including full data-source workflows via StrategySDK.*"),
                 "services.data_source_sdk": (
                     "Full source SDK: list/get/validate/create/update/delete/reload/run and record access"
                 ),
