@@ -414,7 +414,9 @@ class TradersConfluenceStrategy(BaseStrategy):
             confidence = self._confidence(signal)
             strength = max(0.0, min(1.0, _safe_float_nan(signal.get("strength"), confidence)))
             wallet_count = int(
-                _safe_float_nan(signal.get("cluster_adjusted_wallet_count"), _safe_float_nan(signal.get("wallet_count"), 0))
+                _safe_float_nan(
+                    signal.get("cluster_adjusted_wallet_count"), _safe_float_nan(signal.get("wallet_count"), 0)
+                )
             )
             tier = StrategySDK.normalize_trader_tier(signal.get("tier"), default="low")
             edge_percent = _safe_float_nan(signal.get("edge_percent"), 0.0)

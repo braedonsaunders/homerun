@@ -571,11 +571,7 @@ async def _build_context_pack(
                 source="traders",
             )
             match = next(
-                (
-                    opp
-                    for opp in trader_opps
-                    if str(opp.id or "") == signal_id or str(opp.stable_id or "") == signal_id
-                ),
+                (opp for opp in trader_opps if str(opp.id or "") == signal_id or str(opp.stable_id or "") == signal_id),
                 None,
             )
         else:
@@ -607,9 +603,7 @@ async def _build_context_pack(
                 "yes_price": market.get("yes_price"),
                 "no_price": market.get("no_price"),
                 "price_history": (
-                    market.get("price_history", [])[-20:]
-                    if isinstance(market.get("price_history"), list)
-                    else []
+                    market.get("price_history", [])[-20:] if isinstance(market.get("price_history"), list) else []
                 ),
             }
 

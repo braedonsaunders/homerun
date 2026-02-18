@@ -41,9 +41,7 @@ def upgrade() -> None:
     )
 
     row = (
-        bind.execute(
-            sa.select(strategies.c.id, strategies.c.config).where(strategies.c.slug == "traders_confluence")
-        )
+        bind.execute(sa.select(strategies.c.id, strategies.c.config).where(strategies.c.slug == "traders_confluence"))
         .mappings()
         .first()
     )
@@ -58,11 +56,7 @@ def upgrade() -> None:
     if normalized == raw_config:
         return
 
-    bind.execute(
-        strategies.update()
-        .where(strategies.c.id == row["id"])
-        .values(config=normalized)
-    )
+    bind.execute(strategies.update().where(strategies.c.id == row["id"]).values(config=normalized))
 
 
 def downgrade() -> None:

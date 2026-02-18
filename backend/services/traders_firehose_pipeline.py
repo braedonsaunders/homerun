@@ -311,7 +311,9 @@ async def apply_traders_firehose_strategy(
     if not rows:
         return []
 
-    cloned_rows: list[dict[str, Any]] = [StrategySDK.normalize_trader_signal(dict(row)) for row in rows if isinstance(row, dict)]
+    cloned_rows: list[dict[str, Any]] = [
+        StrategySDK.normalize_trader_signal(dict(row)) for row in rows if isinstance(row, dict)
+    ]
     if not cloned_rows:
         return []
 

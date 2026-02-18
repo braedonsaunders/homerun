@@ -168,7 +168,11 @@ async def write_traders_snapshot(
     skipped = 0
     for o in opportunities:
         try:
-            item = o.model_dump(mode="json") if hasattr(o, "model_dump") else ArbitrageOpportunity.model_validate(o).model_dump(mode="json")
+            item = (
+                o.model_dump(mode="json")
+                if hasattr(o, "model_dump")
+                else ArbitrageOpportunity.model_validate(o).model_dump(mode="json")
+            )
             if isinstance(item.get("strategy_context"), dict):
                 item["strategy_context"]["source_key"] = "traders"
             else:
