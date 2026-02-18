@@ -23,9 +23,14 @@ from services.strategies.base import (
     make_aware,
     utcnow,
 )
+import logging
+
 from utils.converters import to_float, to_confidence, clamp
 from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability
 from utils.converters import safe_float
+from services.quality_filter import QualityFilterOverrides
+
+logger = logging.getLogger(__name__)
 
 
 class TailEndCarryStrategy(BaseStrategy):
@@ -37,6 +42,12 @@ class TailEndCarryStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_resolution_date = True
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "incremental"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=1.0,
+        max_resolution_months=1.0,
+    )
 
     pipeline_defaults = {
         "min_edge_percent": 1.6,
@@ -405,3 +416,13 @@ class TailEndCarryStrategy(BaseStrategy):
         config.setdefault("resolve_only", False)
         position.config = config
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

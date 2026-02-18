@@ -34,6 +34,8 @@ from services.news.feed_service import news_feed_service
 from services.news.semantic_matcher import MarketInfo, semantic_matcher
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
+from services.quality_filter import QualityFilterOverrides
+from services.strategy_sdk import StrategySDK
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,11 @@ class NewsEdgeStrategy(BaseStrategy):
     requires_news_data = True
     allow_deduplication = False
     subscriptions = ["news_update"]
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=3.0,
+        max_resolution_months=6.0,
+    )
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:
         """Sync detect -- not used for this strategy.
@@ -342,11 +349,16 @@ class NewsEdgeStrategy(BaseStrategy):
         if roi < settings.NEWS_MIN_EDGE_PERCENT / 2:
             return None
 
-        # Position sizing: conservative for directional bets
-        min_liquidity = market.liquidity
-        max_position = min(min_liquidity * 0.05, 500.0)  # 5% of liquidity, max $500
-
-        if max_position < settings.MIN_POSITION_SIZE:
+        sizing = StrategySDK.resolve_position_sizing(
+            liquidity_usd=market.liquidity,
+            liquidity_fraction=0.05,
+            hard_cap_usd=500.0,
+            signal=None,
+            default_min_size=float(settings.MIN_POSITION_SIZE),
+        )
+        min_liquidity = float(sizing.get("liquidity_usd", 0.0) or 0.0)
+        max_position = float(sizing.get("max_position_size", 0.0) or 0.0)
+        if not bool(sizing.get("is_tradeable", False)):
             return None
 
         # Risk scoring for news-driven trades (higher risk than pure arb)
@@ -446,3 +458,13 @@ class NewsEdgeStrategy(BaseStrategy):
             current_price = market_state.get("current_price")
             return ExitDecision("close", f"News cycle decay ({age_minutes:.0f} min)", close_price=current_price)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

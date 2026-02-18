@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from models import Market, Event, Opportunity
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
+from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float
+
+logger = logging.getLogger(__name__)
 
 
 class BasicArbStrategy(BaseStrategy):
@@ -27,6 +31,12 @@ class BasicArbStrategy(BaseStrategy):
     description = "Buy YES and NO on same market when total < $1"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "incremental"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=0.3,
+        min_annualized_roi=0.0,
+    )
 
     scoring_weights = ScoringWeights(
         edge_weight=0.55,
@@ -160,3 +170,13 @@ class BasicArbStrategy(BaseStrategy):
         if not config.get("resolve_only", True):
             return self.default_exit_check(position, market_state)
         return ExitDecision("hold", "Guaranteed spread — holding to resolution")
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

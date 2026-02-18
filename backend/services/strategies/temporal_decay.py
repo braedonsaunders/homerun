@@ -1,15 +1,14 @@
 """
-Strategy: Temporal Decay Arbitrage
+Strategy: Certainty Shock (Temporal Decay)
 
-Markets with time-based questions should follow predictable decay curves,
-similar to options theta. When prices deviate from the expected curve,
-there's a trading opportunity.
+Primary detection: rapid repricing toward certainty near deadlines.
+When a market with a known deadline suddenly reprices (YES surging or
+crashing), the move often overshoots or continues toward resolution.
+This strategy rides the momentum of near-deadline certainty shocks.
 
-Key insight: A "BTC above $100K by June" market should lose value
-as time passes without BTC reaching $100K. If it doesn't decay
-as expected, it's mispriced.
-
-Uses a modified Black-Scholes-like decay model adapted for binary outcomes.
+Secondary (low-priority) detection: sqrt-decay model deviations on
+deadline markets.  This branch fires rarely and has lower edge than
+the shock detector.
 """
 
 from __future__ import annotations
@@ -21,7 +20,9 @@ from typing import Any, Optional
 
 from models import Market, Event, Opportunity
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -124,27 +125,37 @@ _MULTILEG_MARKET_PREFIXES = ("KXMVESPORTSMULTIGAMEEXTENDED-",)
 
 class TemporalDecayStrategy(BaseStrategy):
     """
-    Temporal Decay Arbitrage: Exploit time-decay mispricing in deadline markets.
+    Certainty Shock: Detect rapid near-deadline repricing toward resolution.
 
-    Identifies markets with time-based questions (e.g. "X by [date]") and
-    calculates expected price decay using a square-root decay model. When
-    actual prices deviate significantly from expected decay, flags as
-    opportunity.
+    Primary mode: when a deadline market suddenly reprices (YES surging or
+    crashing), ride the momentum toward certainty.  Benefits from reactive,
+    incremental scanning since shock windows are short-lived.
 
-    This is a statistical edge strategy, not risk-free arbitrage.
+    Secondary mode: sqrt-decay deviation detector for slower mispricing.
     """
 
     strategy_type = "temporal_decay"
     name = "Temporal Decay"
-    description = "Exploit time-decay mispricing in deadline markets"
+    description = "Detect rapid near-deadline repricing toward certainty"
     mispricing_type = "within_market"
     requires_resolution_date = True
+    realtime_processing_mode = "incremental"
     subscriptions = ["market_data_refresh"]
 
-    pipeline_defaults = {
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=3.0,
+    )
+
+    default_config = {
         "min_edge_percent": 2.5,
         "min_confidence": 0.40,
         "max_risk_score": 0.78,
+        "shock_lookback_seconds": 21600,
+        "shock_min_abs_move": 0.18,
+        "shock_max_retrace": 0.12,
+        "shock_min_favored_price": 0.55,
+        "shock_target_certainty": 0.96,
         "base_size_usd": 16.0,
         "max_size_usd": 140.0,
     }
@@ -167,10 +178,12 @@ class TemporalDecayStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__()
-        # market_id -> [(timestamp, yes_price)] for tracking decay over time
-        self._price_history: dict[str, list[tuple[float, float]]] = {}
-        # market_id -> (deadline_dt, first_seen_price) for decay calculation
-        self._market_baselines: dict[str, tuple[datetime, float]] = {}
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:
         if not settings.TEMPORAL_DECAY_ENABLED:
@@ -200,13 +213,14 @@ class TemporalDecayStrategy(BaseStrategy):
             yes_price = self._get_live_price(market, prices)
             no_price = self._get_live_no_price(market, prices)
 
-            # Record price history
-            if market.id not in self._price_history:
-                self._price_history[market.id] = []
-            self._price_history[market.id].append((scan_time, yes_price))
+            # Record price history (cross-cycle persistence via self.state)
+            price_history = self.state.setdefault("price_history", {})
+            if market.id not in price_history:
+                price_history[market.id] = []
+            price_history[market.id].append((scan_time, yes_price))
             # Keep bounded
-            if len(self._price_history[market.id]) > 100:
-                self._price_history[market.id] = self._price_history[market.id][-100:]
+            if len(price_history[market.id]) > 100:
+                price_history[market.id] = price_history[market.id][-100:]
 
             # Fast directional branch: detect sudden repricing toward certainty
             # in either direction (YES surge or YES crash -> NO surge).
@@ -237,21 +251,22 @@ class TemporalDecayStrategy(BaseStrategy):
             # Use the historical maximum observed price as the baseline,
             # which better approximates the initial/peak price than a
             # single first-seen snapshot.
-            if market.id not in self._market_baselines:
+            market_baselines = self.state.setdefault("market_baselines", {})
+            if market.id not in market_baselines:
                 initial_price = max(yes_price, 0.10)  # Floor at 0.10
-                self._market_baselines[market.id] = (deadline, initial_price)
+                market_baselines[market.id] = (deadline, initial_price)
             else:
-                stored_deadline, stored_price = self._market_baselines[market.id]
+                stored_deadline, stored_price = market_baselines[market.id]
                 # Update baseline if we see a higher price (better peak estimate)
                 initial_price = max(stored_price, yes_price)
                 if initial_price > stored_price:
-                    self._market_baselines[market.id] = (stored_deadline, initial_price)
+                    market_baselines[market.id] = (stored_deadline, initial_price)
 
-            if len(self._price_history[market.id]) < _MIN_HISTORY_POINTS:
+            if len(price_history[market.id]) < _MIN_HISTORY_POINTS:
                 continue
 
             # Calculate total days from first observation to deadline
-            first_seen_time = self._price_history[market.id][0][0]
+            first_seen_time = price_history[market.id][0][0]
             first_seen_dt = datetime.fromtimestamp(first_seen_time, tz=timezone.utc)
             total_days = max((deadline - first_seen_dt).total_seconds() / 86400.0, 1.0)
 
@@ -313,7 +328,8 @@ class TemporalDecayStrategy(BaseStrategy):
         if not getattr(settings, "TEMPORAL_SHOCK_ENABLED", True):
             return None
 
-        history = self._price_history.get(market.id, [])
+        price_history = self.state.setdefault("price_history", {})
+        history = price_history.get(market.id, [])
         min_points = int(getattr(settings, "TEMPORAL_SHOCK_MIN_POINTS", _SHOCK_MIN_POINTS))
         if len(history) < min_points:
             return None
@@ -809,8 +825,29 @@ class TemporalDecayStrategy(BaseStrategy):
 
         return opp
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for temporal decay."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Temporal decay: exit when time target passes or standard TP/SL."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

@@ -24,6 +24,7 @@ from config import settings
 from models import Opportunity, Event, Market
 from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
+from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import weather_metadata
 from services.weather.signal_engine import (
@@ -54,6 +55,11 @@ class BaseWeatherStrategy(BaseStrategy):
 
     # Subclasses MUST define these.
     DEFAULT_CONFIG: dict = {}
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=0.5,
+    )
 
     # ------------------------------------------------------------------
     # Init / configure
@@ -580,3 +586,13 @@ class BaseWeatherStrategy(BaseStrategy):
         if config.get("resolve_only", True):
             return ExitDecision("hold", "Weather — holding to forecast resolution")
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

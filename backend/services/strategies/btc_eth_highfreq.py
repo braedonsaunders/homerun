@@ -36,6 +36,7 @@ from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.data_events import DataEvent
 from utils.converters import to_float, to_confidence, to_bool, clamp
 from utils.signal_helpers import signal_payload
+from services.quality_filter import QualityFilterOverrides
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -818,6 +819,19 @@ class BtcEthHighFreqStrategy(BaseStrategy):
     market_categories = ["crypto"]
     requires_historical_prices = True
     subscriptions = ["crypto_update"]
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=1.0,
+        max_resolution_months=0.1,
+    )
+
+    default_config = {
+        "min_edge_percent": 2.0,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.80,
+        "base_size_usd": 20.0,
+        "max_size_usd": 150.0,
+    }
 
     def __init__(self) -> None:
         super().__init__()
@@ -2444,3 +2458,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if regime == "closing":
             return {"directional": 0.0, "pure_arb": 0.45, "rebalance": 0.55}
         return {"directional": 0.0, "pure_arb": 0.55, "rebalance": 0.45}
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

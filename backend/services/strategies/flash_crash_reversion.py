@@ -22,9 +22,14 @@ from services.strategies.base import (
     ScoringWeights,
     SizingConfig,
 )
+import logging
+
 from utils.converters import to_float, to_confidence, clamp
 from utils.signal_helpers import signal_payload, selected_probability, live_move
 from utils.converters import safe_float
+from services.quality_filter import QualityFilterOverrides
+
+logger = logging.getLogger(__name__)
 
 
 class FlashCrashReversionStrategy(BaseStrategy):
@@ -35,6 +40,12 @@ class FlashCrashReversionStrategy(BaseStrategy):
     description = "Short-horizon crash detector with liquidity/spread gating"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "incremental"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=1.0,
+        max_resolution_months=1.0,
+    )
 
     requires_historical_prices = True
 
@@ -72,10 +83,6 @@ class FlashCrashReversionStrategy(BaseStrategy):
     def __init__(self) -> None:
         super().__init__()
         self.config = dict(self.default_config)
-        # market_id -> deque[(ts, yes, no, yes_bid, yes_ask, no_bid, no_ask)]
-        self._history: dict[
-            str, deque[tuple[float, float, float, Optional[float], Optional[float], Optional[float], Optional[float]]]
-        ] = {}
 
     @staticmethod
     def _extract_book_value(payload: Optional[dict], key: str) -> Optional[float]:
@@ -179,7 +186,10 @@ class FlashCrashReversionStrategy(BaseStrategy):
                 continue
 
             row = (now, yes, no, yes_bid, yes_ask, no_bid, no_ask)
-            history = self._history.setdefault(market.id, deque(maxlen=180))
+            all_history = self.state.setdefault("price_history", {})
+            if market.id not in all_history:
+                all_history[market.id] = deque(maxlen=180)
+            history = all_history[market.id]
             history.append(row)
 
             # Keep only recent rows for crash detection.
@@ -477,3 +487,13 @@ class FlashCrashReversionStrategy(BaseStrategy):
             )
 
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

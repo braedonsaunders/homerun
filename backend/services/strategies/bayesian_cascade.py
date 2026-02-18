@@ -25,7 +25,9 @@ from typing import Any, Optional
 
 from models import Market, Event, Opportunity, MispricingType
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -284,6 +286,21 @@ class BayesianCascadeStrategy(BaseStrategy):
     )
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "full_snapshot"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=3.0,
+    )
+
+    default_config = {
+        "min_edge_percent": 4.0,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.75,
+        "min_propagation_edge": 0.05,
+        "base_size_usd": 15.0,
+        "max_size_usd": 120.0,
+    }
 
     pipeline_defaults = {
         "min_edge_percent": 3.5,
@@ -316,9 +333,6 @@ class BayesianCascadeStrategy(BaseStrategy):
 
     def __init__(self) -> None:
         super().__init__()
-        # Persistent state: previous YES prices keyed by market id.
-        # Survives across detect() calls so we can compute deltas.
-        self._prev_prices: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -375,7 +389,8 @@ class BayesianCascadeStrategy(BaseStrategy):
             if current_price <= 0.01 or current_price >= 0.99:
                 continue
 
-            prev_price = self._prev_prices.get(market.id, current_price)
+            prev_prices = self.state.setdefault("dependency_graph", {})
+            prev_price = prev_prices.get(market.id, current_price)
             delta = current_price - prev_price
 
             entities = _extract_entities(market.question)
@@ -555,8 +570,9 @@ class BayesianCascadeStrategy(BaseStrategy):
             for m in event.markets:
                 market_to_event[m.id] = event
 
-        # Track visited targets to avoid duplicate opportunities
-        flagged_pairs: set[tuple[str, str]] = set()
+        # Track visited targets to avoid duplicate opportunities (cross-cycle)
+        propagation_cache = self.state.setdefault("propagation_cache", {})
+        flagged_pairs: set[tuple[str, str]] = set(propagation_cache.get("flagged_pairs", []))
 
         for mover in movers:
             # BFS propagation through the graph
@@ -569,6 +585,9 @@ class BayesianCascadeStrategy(BaseStrategy):
                 flagged_pairs=flagged_pairs,
                 opportunities=opportunities,
             )
+
+        # Persist flagged pairs for cross-cycle deduplication
+        propagation_cache["flagged_pairs"] = list(flagged_pairs)
 
         return opportunities
 
@@ -749,18 +768,25 @@ class BayesianCascadeStrategy(BaseStrategy):
 
     def _save_prices(self, graph: BayesianGraph) -> None:
         """Store current prices for the next scan cycle."""
+        prev_prices = self.state.setdefault("dependency_graph", {})
         for node_id, node in graph.nodes.items():
-            self._prev_prices[node_id] = node.price
+            prev_prices[node_id] = node.price
 
         # Prune markets no longer in the graph to prevent unbounded growth
         active_ids = set(graph.nodes.keys())
-        stale_ids = [k for k in self._prev_prices if k not in active_ids]
+        stale_ids = [k for k in prev_prices if k not in active_ids]
         for sid in stale_ids:
-            del self._prev_prices[sid]
+            del prev_prices[sid]
 
     # ------------------------------------------------------------------
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
 
     def compute_score(
         self, edge: float, confidence: float, risk_score: float, market_count: int, payload: dict
@@ -768,8 +794,29 @@ class BayesianCascadeStrategy(BaseStrategy):
         """Bayesian cascade: edge*0.60 + conf*32 + min(4,markets)*1.5 - risk*9."""
         return (edge * 0.60) + (confidence * 32.0) + (min(4, market_count) * 1.5) - (risk_score * 9.0)
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for Bayesian cascade."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Bayesian cascade: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

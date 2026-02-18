@@ -975,6 +975,18 @@ class BaseStrategy(ABC):
         days_until = max((resolution_aware - utcnow()).total_seconds() / 86400.0, 1.0)
         return roi_percent * (365.0 / days_until)
 
+    @staticmethod
+    def fee_adjusted_edge_pct(edge_pct: float, entry_price: float, platform: str = "polymarket") -> float:
+        """Return edge percent after platform taker fees."""
+        from utils.kelly import polymarket_taker_fee, kalshi_taker_fee
+        if platform == "polymarket":
+            fee = polymarket_taker_fee(entry_price)
+        elif platform == "kalshi":
+            fee = kalshi_taker_fee(entry_price)
+        else:
+            fee = 0.0
+        return edge_pct - (fee * 100.0)
+
     def _build_execution_plan(
         self,
         *,

@@ -11,13 +11,17 @@ worker, not by a detect() scan.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.data_events import DataEvent
+from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import signal_payload, live_move, selected_probability
 from services.trader_orchestrator.strategies.sizing import compute_position_size
+
+logger = logging.getLogger(__name__)
 
 
 class CryptoSpikeReversionStrategy(BaseStrategy):
@@ -31,6 +35,20 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     worker_affinity = "crypto"
     market_categories = ["crypto"]
     subscriptions = ["crypto_update"]
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=1.0,
+        max_resolution_months=0.1,
+    )
+
+    default_config = {
+        "min_edge_percent": 2.8,
+        "min_confidence": 0.44,
+        "min_abs_move_5m": 1.8,
+        "max_abs_move_2h": 14.0,
+        "base_size_usd": 20.0,
+        "max_size_usd": 120.0,
+    }
 
     async def on_event(self, event: DataEvent) -> list:
         # Evaluate-only strategy: detection is handled by btc_eth_highfreq.
@@ -175,3 +193,13 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         at configuration time.
         """
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

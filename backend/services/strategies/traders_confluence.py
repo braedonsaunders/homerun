@@ -24,6 +24,7 @@ from models import Opportunity, Event, Market, Token
 from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
+from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
 from utils.converters import to_confidence
 from functools import partial
@@ -51,6 +52,10 @@ class TradersConfluenceStrategy(BaseStrategy):
     worker_affinity = "traders"
     allow_deduplication = False
     subscriptions = ["trader_activity"]
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+    )
 
     # Default config thresholds (overridden by DB config column)
     DEFAULT_CONFIG = {
@@ -640,3 +645,13 @@ class TradersConfluenceStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

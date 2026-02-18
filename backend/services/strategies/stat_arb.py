@@ -23,9 +23,15 @@ import re
 import statistics
 from typing import Any, Optional
 
+import logging
+
 from models import Market, Event, Opportunity
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, utcnow
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
+
+logger = logging.getLogger(__name__)
 
 
 # Round numbers where human anchoring bias is common
@@ -99,6 +105,20 @@ class StatArbStrategy(BaseStrategy):
     description = "Trade deviations from estimated fair probability"
     mispricing_type = "within_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "full_snapshot"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=3.0,
+    )
+
+    default_config = {
+        "min_edge_percent": 5.0,
+        "min_confidence": 0.45,
+        "max_risk_score": 0.75,
+        "base_size_usd": 15.0,
+        "max_size_usd": 120.0,
+    }
 
     pipeline_defaults = {
         "min_edge_percent": 3.5,
@@ -625,8 +645,35 @@ class StatArbStrategy(BaseStrategy):
 
         return opportunities
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for statistical arbitrage."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Stat arb: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

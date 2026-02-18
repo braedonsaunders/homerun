@@ -20,13 +20,19 @@ The strategy identifies ideal market-making candidates:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
 from config import settings
+import logging
+
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float
+
+logger = logging.getLogger(__name__)
 
 
 class MarketMakingStrategy(BaseStrategy):
@@ -50,6 +56,23 @@ class MarketMakingStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_order_book = True
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "incremental"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=0.5,
+        max_resolution_months=2.0,
+        min_liquidity=5000.0,
+    )
+
+    default_config = {
+        "min_spread": 0.03,
+        "max_spread": 0.18,
+        "min_liquidity": 5000.0,
+        "min_volume_24h": 1000.0,
+        "gamma": 0.1,
+        "base_size_usd": 50.0,
+        "max_size_usd": 500.0,
+    }
 
     pipeline_defaults = {
         "min_edge_percent": 2.5,
@@ -220,6 +243,70 @@ class MarketMakingStrategy(BaseStrategy):
         risk_score = max(0.30, min(0.50, base_risk))
         return risk_score, factors
 
+    # ------------------------------------------------------------------
+    # Avellaneda-Stoikov reservation price model
+    #
+    # The Avellaneda-Stoikov (2008) market-making model adjusts the
+    # fair value (reservation price) to account for inventory risk and
+    # computes an optimal spread that balances profit-per-fill against
+    # adverse selection.  The two key equations are:
+    #
+    #   Reservation price:  r(t) = S(t) - q * gamma * sigma^2 * (T - t)
+    #   Optimal spread:     delta = gamma*sigma^2*(T-t) + (2/gamma)*ln(1 + gamma/kappa)
+    #
+    # where q = inventory, gamma = risk aversion, sigma^2 = price
+    # variance, T-t = fraction of time remaining, and kappa = order
+    # arrival rate.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reservation_price(mid: float, inventory: float, gamma: float,
+                           sigma_sq: float, time_remaining: float) -> float:
+        """Avellaneda-Stoikov reservation price adjusted for inventory.
+
+        r(t) = S(t) - q * gamma * sigma^2 * (T - t)
+
+        Args:
+            mid: Current mid price
+            inventory: Current inventory (positive = long, negative = short)
+            gamma: Risk aversion parameter (higher = more conservative)
+            sigma_sq: Price variance estimate
+            time_remaining: Fraction of time remaining to resolution (0-1)
+        """
+        return mid - inventory * gamma * sigma_sq * time_remaining
+
+    @staticmethod
+    def _optimal_spread(gamma: float, sigma_sq: float, time_remaining: float,
+                        kappa: float = 1.5) -> float:
+        """Avellaneda-Stoikov optimal spread.
+
+        delta = gamma * sigma^2 * (T-t) + (2/gamma) * ln(1 + gamma/kappa)
+
+        Args:
+            gamma: Risk aversion parameter
+            sigma_sq: Price variance estimate
+            time_remaining: Fraction of time remaining
+            kappa: Order arrival rate parameter
+        """
+        inventory_component = gamma * sigma_sq * time_remaining
+        spread_component = (2.0 / gamma) * math.log(1.0 + gamma / kappa)
+        return inventory_component + spread_component
+
+    @staticmethod
+    def _estimate_volatility(price_history: list[float], window: int = 20) -> float:
+        """Estimate price variance from recent history."""
+        if len(price_history) < 2:
+            return 0.01  # Default variance
+        recent = price_history[-window:]
+        if len(recent) < 2:
+            return 0.01
+        returns = [(recent[i] - recent[i - 1]) for i in range(1, len(recent))]
+        if not returns:
+            return 0.01
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        return max(0.001, variance)
+
     def detect(
         self,
         events: list[Event],
@@ -283,8 +370,64 @@ class MarketMakingStrategy(BaseStrategy):
             if spread < min_spread_absolute:
                 continue
 
+            # --- Inventory risk ---
+            inv_risk = self._calculate_inventory_risk(yes_price)
+
+            # Skip markets with extreme inventory risk
+            if inv_risk > 0.80:
+                continue
+
+            # ----------------------------------------------------------
+            # Avellaneda-Stoikov model: compute reservation price and
+            # optimal spread to decide quoting levels.
+            #
+            # We treat each market independently with zero starting
+            # inventory (q=0) since we have no carry-over state between
+            # scans.  The model still provides useful guidance:
+            #   - The optimal spread tells us how wide to quote given
+            #     current volatility and time-to-resolution.
+            #   - If the actual spread exceeds the A-S optimal spread,
+            #     the opportunity is extra attractive (spread_dislocation).
+            # ----------------------------------------------------------
+
+            # Build a price history proxy from outcome_prices snapshot.
+            # In production this would use tick history; here we use
+            # the single observation and fall back to the default variance.
+            price_history_proxy: list[float] = [yes_price]
+            sigma_sq = self._estimate_volatility(price_history_proxy)
+
+            # Model parameters
+            gamma = 0.5  # Moderate risk aversion for prediction markets
+            inventory = 0.0  # No carry-over inventory between scans
+
+            # Time remaining: fraction of resolution window left (0-1)
+            time_remaining = 1.0
+            if market.end_date:
+                resolution_aware = make_aware(market.end_date)
+                total_seconds = max(1.0, (resolution_aware - utcnow()).total_seconds())
+                # Cap at 90 days worth of seconds for normalization
+                time_remaining = min(1.0, total_seconds / (90.0 * 86400.0))
+
+            # Reservation price: A-S inventory-adjusted fair value
+            reservation = self._reservation_price(
+                mid=yes_price,
+                inventory=inventory,
+                gamma=gamma,
+                sigma_sq=sigma_sq,
+                time_remaining=time_remaining,
+            )
+
+            # A-S optimal spread
+            as_optimal_spread = self._optimal_spread(
+                gamma=gamma,
+                sigma_sq=sigma_sq,
+                time_remaining=time_remaining,
+            )
+
             # --- Fair value and quote prices ---
-            fair_value = yes_price
+            # Use the reservation price as the quoting centre instead of
+            # the raw mid, so that quotes are inventory-aware.
+            fair_value = reservation
             half_spread = spread / 2.0
             buy_price = round(fair_value - half_spread, 4)
             sell_price = round(fair_value + half_spread, 4)
@@ -293,12 +436,21 @@ class MarketMakingStrategy(BaseStrategy):
             if buy_price <= 0 or sell_price >= 1.0:
                 continue
 
-            # --- Inventory risk ---
-            inv_risk = self._calculate_inventory_risk(yes_price)
-
-            # Skip markets with extreme inventory risk
-            if inv_risk > 0.80:
-                continue
+            # --- Spread dislocation: passive entry via bid ---
+            # When the actual spread is wider than the A-S optimal spread,
+            # the market is dislocated.  We use the bid (buy_price) as entry
+            # and set a target partway up the spread (capture_fraction).
+            # capture_fraction = 0.0 means pure bid entry, 1.0 means full
+            # spread capture.  We target 60% of the excess spread.
+            spread_dislocation = spread - as_optimal_spread
+            capture_fraction = 0.6
+            if spread_dislocation > 0:
+                # Passive entry: aim to capture a fraction of the excess
+                passive_target = round(
+                    buy_price + capture_fraction * spread_dislocation, 4
+                )
+            else:
+                passive_target = sell_price  # No dislocation, normal target
 
             # --- Profit calculation ---
             # Market making profit: if both sides fill, we earn the spread.
@@ -367,11 +519,25 @@ class MarketMakingStrategy(BaseStrategy):
                 market_platform = "kalshi" if str(getattr(market, "id", "")).upper().startswith("KX") else "polymarket"
 
             # --- Build the opportunity via create_opportunity() ---
+            # Description includes Avellaneda-Stoikov metrics so downstream
+            # consumers can audit the model's quoting rationale.
+            as_spread_label = (
+                f"A-S optimal {as_optimal_spread:.1%}"
+                if as_optimal_spread < 1.0
+                else f"A-S optimal {as_optimal_spread:.4f}"
+            )
+            dislocation_label = (
+                f" | Dislocation +{spread_dislocation:.1%}, passive target ${passive_target:.3f}"
+                if spread_dislocation > 0
+                else ""
+            )
+
             opp = self.create_opportunity(
                 title=f"MM: {market.question[:60]}",
                 description=(
                     f"Market make YES @ bid ${buy_price:.3f} / ask ${sell_price:.3f} | "
-                    f"Spread {spread:.1%} | Inv risk {inv_risk:.0%}"
+                    f"Spread {spread:.1%} ({as_spread_label}){dislocation_label} | "
+                    f"Reservation ${reservation:.3f} | Inv risk {inv_risk:.0%}"
                 ),
                 total_cost=total_cost,
                 expected_payout=expected_payout,
@@ -436,3 +602,13 @@ class MarketMakingStrategy(BaseStrategy):
                 "close", f"Market making time decay ({age_minutes:.0f} > {max_hold:.0f} min)", close_price=current_price
             )
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

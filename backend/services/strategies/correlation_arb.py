@@ -21,7 +21,9 @@ from typing import Any, Optional
 
 from models import Market, Event, Opportunity
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -186,6 +188,22 @@ class CorrelationArbStrategy(BaseStrategy):
     description = "Mean-reversion on correlated market pair spreads"
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "full_snapshot"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=3.0,
+    )
+
+    default_config = {
+        "min_edge_percent": 4.0,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.75,
+        "min_correlation": 0.6,
+        "z_score_threshold": 2.0,
+        "base_size_usd": 15.0,
+        "max_size_usd": 120.0,
+    }
 
     pipeline_defaults = {
         "min_edge_percent": 3.0,
@@ -213,17 +231,8 @@ class CorrelationArbStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__()
-        # market_id -> deque of (timestamp, yes_price)
-        self._price_history: dict[str, deque[tuple[float, float]]] = {}
-        # market_id -> event_id
-        self._market_to_event: dict[str, str] = {}
-        # market_id -> category
-        self._market_to_category: dict[str, str] = {}
-        # market_id -> Market (latest snapshot)
+        # Transient cache rebuilt each scan (Market objects are not serializable)
         self._market_cache: dict[str, Market] = {}
-        # Cache of already-checked pairs (reset periodically)
-        self._pair_cache: dict[tuple[str, str], float] = {}  # (id_a, id_b) -> correlation
-        self._pair_cache_time: float = 0.0
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:
         if not settings.CORRELATION_ARB_ENABLED:
@@ -233,11 +242,17 @@ class CorrelationArbStrategy(BaseStrategy):
         min_corr = settings.CORRELATION_ARB_MIN_CORRELATION
         min_divergence = max(0.0, float(settings.CORRELATION_ARB_MIN_DIVERGENCE))
 
+        # Cross-cycle persistence via self.state
+        price_history = self.state.setdefault("price_history", {})
+        market_to_event = self.state.setdefault("market_to_event", {})
+        market_to_category = self.state.setdefault("market_to_category", {})
+        spread_history = self.state.setdefault("spread_history", {})
+
         # Build event/category mappings
         for event in events:
             for m in event.markets:
-                self._market_to_event[m.id] = event.id
-                self._market_to_category[m.id] = event.category or ""
+                market_to_event[m.id] = event.id
+                market_to_category[m.id] = event.category or ""
 
         # Record current prices
         active_ids: list[str] = []
@@ -251,14 +266,15 @@ class CorrelationArbStrategy(BaseStrategy):
             self._market_cache[market.id] = market
             active_ids.append(market.id)
 
-            if market.id not in self._price_history:
-                self._price_history[market.id] = deque(maxlen=_MAX_HISTORY)
-            self._price_history[market.id].append((now, yes_price))
+            if market.id not in price_history:
+                price_history[market.id] = deque(maxlen=_MAX_HISTORY)
+            price_history[market.id].append((now, yes_price))
 
-        # Invalidate pair cache every 5 minutes
-        if now - self._pair_cache_time > 300:
-            self._pair_cache.clear()
-            self._pair_cache_time = now
+        # Invalidate spread_history (pair cache) every 5 minutes
+        pair_cache_time = self.state.get("pair_cache_time", 0.0)
+        if now - pair_cache_time > 300:
+            spread_history.clear()
+            self.state["pair_cache_time"] = now
 
         # Find candidate pairs (same event or same category)
         candidate_pairs = self._find_candidate_pairs(active_ids)
@@ -266,8 +282,8 @@ class CorrelationArbStrategy(BaseStrategy):
         opportunities: list[Opportunity] = []
 
         for id_a, id_b in candidate_pairs:
-            hist_a = self._price_history.get(id_a)
-            hist_b = self._price_history.get(id_b)
+            hist_a = price_history.get(id_a)
+            hist_b = price_history.get(id_b)
 
             if not hist_a or not hist_b:
                 continue
@@ -281,7 +297,7 @@ class CorrelationArbStrategy(BaseStrategy):
 
             pair_key = (min(id_a, id_b), max(id_a, id_b))
             corr, var_a, var_b = _pearson_correlation(prices_a, prices_b)
-            self._pair_cache[pair_key] = corr
+            spread_history[pair_key] = corr
 
             # Reject pairs where either series has near-zero variance.
             # Static prices produce spurious r≈1.0 correlations.
@@ -301,16 +317,50 @@ class CorrelationArbStrategy(BaseStrategy):
             # Calculate spread: spread = price_A - corr * price_B
             spreads = [prices_a[i] - corr * prices_b[i] for i in range(len(prices_a))]
 
-            # Z-score of the current spread
+            # ----------------------------------------------------------
+            # Ornstein-Uhlenbeck calibration on the spread series.
+            #
+            # Instead of a simple rolling z-score we calibrate an OU
+            # process to the spread history.  This gives us:
+            #   theta - mean reversion speed
+            #   mu    - calibrated long-run equilibrium
+            #   sigma - OU volatility
+            #
+            # The half-life (ln2/theta) filters out pairs where mean
+            # reversion is too slow to be tradeable, and the OU z-score
+            # provides a more principled entry signal than the naive
+            # (spread - mean) / std formula.
+            # ----------------------------------------------------------
+            theta, ou_mu, ou_sigma = self._calibrate_ou(spreads)
+            hl = self._half_life(theta)
+
             current_spread = spreads[-1]
-            mean_spread = sum(spreads) / len(spreads)
-            variance = sum((s - mean_spread) ** 2 for s in spreads) / len(spreads)
-            std_spread = math.sqrt(variance) if variance > 0 else 0.0
 
-            if std_spread == 0:
-                continue
+            # If OU calibration succeeded (theta > 0), use OU-based
+            # z-score and half-life filter.  Otherwise fall back to the
+            # simple rolling z-score so we never silently drop pairs
+            # just because the series is too short for calibration.
+            if theta > 0 and ou_sigma > 0:
+                # Filter: skip pairs where mean reversion is too slow.
+                # A half-life beyond 50 observations means the spread
+                # takes too long to converge for a practical trade.
+                _MAX_HALF_LIFE = 50.0
+                if hl > _MAX_HALF_LIFE:
+                    continue
 
-            zscore = (current_spread - mean_spread) / std_spread
+                # OU z-score: deviation from calibrated equilibrium
+                zscore = self._ou_z_score(current_spread, ou_mu, ou_sigma)
+                mean_spread = ou_mu
+            else:
+                # Fallback: simple rolling z-score
+                mean_spread = sum(spreads) / len(spreads)
+                variance = sum((s - mean_spread) ** 2 for s in spreads) / len(spreads)
+                std_spread = math.sqrt(variance) if variance > 0 else 0.0
+
+                if std_spread == 0:
+                    continue
+
+                zscore = (current_spread - mean_spread) / std_spread
 
             if abs(zscore) < _ZSCORE_THRESHOLD:
                 continue  # Not diverged enough
@@ -328,6 +378,9 @@ class CorrelationArbStrategy(BaseStrategy):
                 current_spread,
                 mean_spread,
                 prices,
+                ou_theta=theta,
+                ou_half_life=hl,
+                ou_sigma=ou_sigma,
             )
             if opp:
                 opportunities.append(opp)
@@ -357,10 +410,13 @@ class CorrelationArbStrategy(BaseStrategy):
         """
         pairs: set[tuple[str, str]] = set()
 
+        market_to_event = self.state.setdefault("market_to_event", {})
+        market_to_category = self.state.setdefault("market_to_category", {})
+
         # Group by event — same-event markets are always valid candidates
         event_groups: dict[str, list[str]] = {}
         for mid in active_ids:
-            eid = self._market_to_event.get(mid)
+            eid = market_to_event.get(mid)
             if eid:
                 if eid not in event_groups:
                     event_groups[eid] = []
@@ -376,7 +432,7 @@ class CorrelationArbStrategy(BaseStrategy):
         # unrelated markets (e.g., different hockey games under "Sports")
         cat_groups: dict[str, list[str]] = {}
         for mid in active_ids:
-            cat = self._market_to_category.get(mid, "")
+            cat = market_to_category.get(mid, "")
             if cat:
                 if cat not in cat_groups:
                     cat_groups[cat] = []
@@ -434,6 +490,84 @@ class CorrelationArbStrategy(BaseStrategy):
 
         return prices_a, prices_b
 
+    # ------------------------------------------------------------------
+    # Ornstein-Uhlenbeck mean-reversion model
+    #
+    # The spread between correlated pairs is modelled as an OU process:
+    #
+    #   dx_t = theta * (mu - x_t) * dt + sigma * dW_t
+    #
+    # where theta = mean-reversion speed, mu = long-run equilibrium,
+    # sigma = volatility.  Parameters are calibrated from the spread
+    # history via OLS regression on consecutive observations.
+    #
+    # Half-life = ln(2) / theta gives the expected time for a
+    # deviation to halve -- pairs with very long half-lives are poor
+    # candidates for convergence trades.
+    #
+    # The OU z-score replaces the simple z-score for entry signals,
+    # giving a more principled measure of how far the spread has
+    # deviated from its calibrated equilibrium.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _calibrate_ou(spread_history: list[float], dt: float = 1.0) -> tuple[float, float, float]:
+        """Calibrate Ornstein-Uhlenbeck parameters from spread history.
+
+        dx_t = theta * (mu - x_t) * dt + sigma * dW_t
+
+        Returns:
+            (theta, mu, sigma) - mean reversion speed, long-run mean, volatility
+        """
+        if len(spread_history) < 10:
+            return (0.0, 0.0, 0.0)
+
+        x = spread_history[:-1]
+        y = spread_history[1:]
+
+        # OLS regression: y = a + b*x + epsilon
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+        sum_x2 = sum(xi ** 2 for xi in x)
+        n_pts = len(x)
+
+        denom = n_pts * sum_x2 - sum_x ** 2
+        if abs(denom) < 1e-12:
+            return (0.0, sum_y / n_pts if n_pts > 0 else 0.0, 0.0)
+
+        b = (n_pts * sum_xy - sum_x * sum_y) / denom
+        a = (sum_y - b * sum_x) / n_pts
+
+        # OU parameters from regression
+        # b = exp(-theta * dt), so theta = -ln(b) / dt
+        if b <= 0 or b >= 1:
+            return (0.0, sum_y / n_pts, 0.0)
+
+        theta = -math.log(b) / dt
+        mu = a / (1.0 - b)
+
+        # Residual variance for sigma
+        residuals = [yi - (a + b * xi) for xi, yi in zip(x, y)]
+        var_resid = sum(r ** 2 for r in residuals) / max(1, len(residuals))
+        sigma = math.sqrt(var_resid * 2.0 * theta / (1.0 - b ** 2)) if (1.0 - b ** 2) > 0 else 0.0
+
+        return (theta, mu, sigma)
+
+    @staticmethod
+    def _half_life(theta: float) -> float:
+        """Half-life of mean reversion in same units as dt."""
+        if theta <= 0:
+            return float('inf')
+        return math.log(2) / theta
+
+    @staticmethod
+    def _ou_z_score(current_spread: float, mu: float, sigma: float) -> float:
+        """Z-score of current spread relative to OU equilibrium."""
+        if sigma <= 0:
+            return 0.0
+        return (current_spread - mu) / sigma
+
     def _create_convergence_opportunity(
         self,
         id_a: str,
@@ -444,12 +578,21 @@ class CorrelationArbStrategy(BaseStrategy):
         current_spread: float,
         mean_spread: float,
         prices: dict[str, dict],
+        ou_theta: float = 0.0,
+        ou_half_life: float = float('inf'),
+        ou_sigma: float = 0.0,
     ) -> Optional[Opportunity]:
         """
         Create a convergence trade opportunity.
 
         When z-score > 0: A is overpriced relative to B -> buy B (YES), fade A (buy NO)
         When z-score < 0: A is underpriced relative to B -> buy A (YES), fade B (buy NO)
+
+        OU parameters (when calibrated) enrich the opportunity description
+        and risk assessment:
+            ou_theta     - mean reversion speed (higher = faster reversion)
+            ou_half_life - expected periods for deviation to halve
+            ou_sigma     - OU process volatility
         """
         market_a = self._market_cache.get(id_a)
         market_b = self._market_cache.get(id_b)
@@ -547,7 +690,31 @@ class CorrelationArbStrategy(BaseStrategy):
         base_risk = 0.55
         corr_adjustment = (correlation - 0.7) * 0.5  # Up to 0.15 reduction
         zscore_adjustment = min((abs(zscore) - 2.0) * 0.05, 0.10)  # Stronger signal
-        risk_score = max(base_risk - corr_adjustment - zscore_adjustment, 0.40)
+
+        # OU half-life adjustment: faster mean reversion = lower risk.
+        # A half-life under 10 observations is quite fast and reduces
+        # risk; above 30 is sluggish and adds risk.
+        if ou_theta > 0:
+            if ou_half_life < 10:
+                hl_adjustment = 0.05
+            elif ou_half_life < 20:
+                hl_adjustment = 0.02
+            elif ou_half_life > 30:
+                hl_adjustment = -0.03  # Slow reversion increases risk
+            else:
+                hl_adjustment = 0.0
+        else:
+            hl_adjustment = 0.0  # No OU data, no adjustment
+
+        risk_score = max(base_risk - corr_adjustment - zscore_adjustment - hl_adjustment, 0.40)
+
+        # Build description with OU model metrics when available
+        ou_label = ""
+        if ou_theta > 0:
+            ou_label = (
+                f" OU: theta={ou_theta:.3f}, half-life={ou_half_life:.1f}, "
+                f"sigma={ou_sigma:.4f}."
+            )
 
         opp = self.create_opportunity(
             title=f"Correlation Arb: {q_a[:25]} vs {q_b[:25]}",
@@ -556,7 +723,7 @@ class CorrelationArbStrategy(BaseStrategy):
                 f"Spread: {current_spread:.3f} vs mean {mean_spread:.3f} "
                 f"(|delta|={divergence:.3f}). "
                 f"A: ${yes_a:.3f}, B: ${yes_b:.3f}. "
-                f"Bet on convergence."
+                f"Bet on convergence.{ou_label}"
             ),
             total_cost=total_cost,
             markets=[market_a, market_b],
@@ -568,12 +735,20 @@ class CorrelationArbStrategy(BaseStrategy):
             opp.risk_score = risk_score
             opp.risk_factors.insert(
                 0,
-                "STATISTICAL EDGE — not arbitrage. Convergence is not guaranteed; losses possible.",
+                "STATISTICAL EDGE -- not arbitrage. Convergence is not guaranteed; losses possible.",
             )
             opp.risk_factors.append(
                 f"Statistical edge (not risk-free): correlation r={correlation:.2f}, z-score={zscore:.2f}"
             )
             opp.risk_factors.append("Pair correlation may break down (regime change risk)")
+            if ou_theta > 0:
+                opp.risk_factors.append(
+                    f"OU model: theta={ou_theta:.3f}, half-life={ou_half_life:.1f} obs, sigma={ou_sigma:.4f}"
+                )
+                if ou_half_life > 30:
+                    opp.risk_factors.append(
+                        f"Slow mean reversion (half-life={ou_half_life:.1f}): convergence may take many observations"
+                    )
             if abs(zscore) > 3.0:
                 opp.risk_factors.append(
                     f"Extreme divergence (z={zscore:.2f}): may indicate structural break, not mean-reversion"
@@ -585,8 +760,35 @@ class CorrelationArbStrategy(BaseStrategy):
 
         return opp
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for correlation arbitrage."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Correlation arb: exit when spread mean-reverts or standard TP/SL."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

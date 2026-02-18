@@ -31,7 +31,44 @@ _LEGACY_SOURCE_MARKERS = (
 _STALE_SYSTEM_IMPORT_MARKERS = (
     "from ._evaluate_helpers import",
     "from services.strategies._evaluate_helpers import",
+    "ArbitrageOpportunity",
 )
+_SYSTEM_SOURCE_REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
+    "traders_confluence": (
+        'source_key = "traders"',
+        'subscriptions = ["trader_activity"]',
+        "def apply_firehose_filters",
+        "def build_opportunities_from_firehose",
+        "async def on_event",
+    ),
+    "weather_distribution": (
+        'source_key = "weather"',
+        'subscriptions = ["weather_update"]',
+        "async def on_event",
+        'weather_payload = normalized.get("weather")',
+        "StrategySDK.resolve_position_sizing(",
+    ),
+    "weather_ensemble_edge": (
+        'source_key = "weather"',
+        'subscriptions = ["weather_update"]',
+        "async def on_event",
+        'weather_payload = normalized.get("weather")',
+        "StrategySDK.resolve_position_sizing(",
+    ),
+    "weather_conservative_no": (
+        'source_key = "weather"',
+        'subscriptions = ["weather_update"]',
+        "async def on_event",
+        'weather_payload = normalized.get("weather")',
+        "StrategySDK.resolve_position_sizing(",
+    ),
+    "news_edge": (
+        'source_key = "news"',
+        'subscriptions = ["news_update"]',
+        "async def on_event",
+        "StrategySDK.resolve_position_sizing(",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -100,6 +137,17 @@ def _is_legacy_system_source(source_code: str) -> bool:
     return any(marker in source_code for marker in _LEGACY_SOURCE_MARKERS)
 
 
+def _is_stale_system_source(slug: str, source_code: str) -> bool:
+    if _is_legacy_system_source(source_code):
+        return True
+
+    required = _SYSTEM_SOURCE_REQUIRED_MARKERS.get(slug, ())
+    if not required:
+        return False
+
+    return any(marker not in source_code for marker in required)
+
+
 # ---------------------------------------------------------------------------
 # System strategy seeds — lightweight registry
 #
@@ -131,14 +179,6 @@ _SCANNER_SCHEMA_WITH_LIQUIDITY = {
     "param_fields": [
         *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
         {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
-        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
-    ]
-}
-
-_SCANNER_SCHEMA_WITH_HOLD = {
-    "param_fields": [
-        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
-        {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 1},
         *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
     ]
 }
@@ -177,34 +217,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
     ),
     SystemOpportunityStrategySeed(
-        slug="mutually_exclusive",
-        source_key="scanner",
-        import_module="services.strategies.mutually_exclusive",
-        sort_order=30,
-        config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="contradiction",
-        source_key="scanner",
-        import_module="services.strategies.contradiction",
-        sort_order=40,
-        config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="must_happen",
-        source_key="scanner",
-        import_module="services.strategies.must_happen",
-        sort_order=50,
-        config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="miracle",
-        source_key="scanner",
-        import_module="services.strategies.miracle",
-        sort_order=60,
-        config_schema=_COMMON_SCANNER_SCHEMA,
-    ),
-    SystemOpportunityStrategySeed(
         slug="combinatorial",
         source_key="scanner",
         import_module="services.strategies.combinatorial",
@@ -238,20 +250,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.liquidity_vacuum",
         sort_order=110,
         config_schema=_COMMON_SCANNER_SCHEMA,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="entropy_arb",
-        source_key="scanner",
-        import_module="services.strategies.entropy_arb",
-        sort_order=120,
-        config_schema=_COMMON_SCANNER_SCHEMA,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="event_driven",
-        source_key="scanner",
-        import_module="services.strategies.event_driven",
-        sort_order=130,
-        config_schema=_SCANNER_SCHEMA_WITH_HOLD,
     ),
     SystemOpportunityStrategySeed(
         slug="temporal_decay",
@@ -358,25 +356,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             ]
         },
     ),
-    SystemOpportunityStrategySeed(
-        slug="spread_dislocation",
-        source_key="scanner",
-        import_module="services.strategies.spread_dislocation",
-        sort_order=177,
-        config_schema={
-            "param_fields": [
-                {"key": "min_spread", "label": "Min Spread", "type": "number", "min": 0.005, "max": 0.5},
-                {"key": "max_spread", "label": "Max Spread", "type": "number", "min": 0.01, "max": 0.6},
-                {"key": "min_mid_price", "label": "Min Mid Price", "type": "number", "min": 0.01, "max": 0.99},
-                {"key": "max_mid_price", "label": "Max Mid Price", "type": "number", "min": 0.01, "max": 0.99},
-                {"key": "capture_fraction", "label": "Capture Fraction", "type": "number", "min": 0.1, "max": 0.95},
-                {"key": "min_target_move", "label": "Min Target Move", "type": "number", "min": 0.002, "max": 0.15},
-                {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
-                {"key": "min_days_to_resolution", "label": "Min Days To Resolution", "type": "number", "min": 0},
-                {"key": "max_days_to_resolution", "label": "Max Days To Resolution", "type": "number", "min": 0},
-            ]
-        },
-    ),
     # ── News strategies ──────────────────────────────────────
     SystemOpportunityStrategySeed(
         slug="news_edge",
@@ -461,26 +440,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         },
     ),
     # ── Weather strategies ───────────────────────────────────
-    SystemOpportunityStrategySeed(
-        slug="weather_edge",
-        source_key="weather",
-        import_module="services.strategies.weather_edge",
-        sort_order=200,
-        config_schema={
-            "param_fields": [
-                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-                {"key": "min_model_agreement", "label": "Min Model Agreement", "type": "number", "min": 0, "max": 1},
-                {"key": "min_source_count", "label": "Min Forecast Sources", "type": "integer", "min": 1},
-                {"key": "max_source_spread_c", "label": "Max Source Spread (C)", "type": "number", "min": 0},
-                {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
-                {"key": "probability_scale_c", "label": "Sigmoid Scale (C)", "type": "number", "min": 0.5, "max": 5.0},
-                {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
-                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
-                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
-            ]
-        },
-    ),
     SystemOpportunityStrategySeed(
         slug="weather_ensemble_edge",
         source_key="weather",
@@ -656,7 +615,7 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
             inserted += 1
             continue
 
-        if bool(current.is_system) and _is_legacy_system_source(str(current.source_code or "")):
+        if bool(current.is_system) and _is_stale_system_source(slug, str(current.source_code or "")):
             current.source_key = row["source_key"]
             current.name = row["name"]
             current.description = row["description"]
@@ -694,6 +653,15 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
         "traders_flow",
         "weather_consensus",
         "weather_alerts",
+        # C/D tier strategies removed in consolidation
+        "entropy_arb",
+        "must_happen",
+        "mutually_exclusive",
+        "contradiction",
+        "event_driven",
+        "spread_dislocation",
+        "miracle",
+        "weather_edge",
     ]
     orphan_rows = {
         row.slug: row

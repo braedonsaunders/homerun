@@ -43,7 +43,9 @@ import httpx
 
 from models import Market, Event, Opportunity
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -731,6 +733,20 @@ class CrossPlatformStrategy(BaseStrategy):
     description = "Cross-platform arbitrage between Polymarket and Kalshi"
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "full_snapshot"
+
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=1.0,
+    )
+
+    default_config = {
+        "min_edge_percent": 5.0,
+        "min_confidence": 0.50,
+        "max_risk_score": 0.70,
+        "min_spread_after_fees": 0.03,
+        "base_size_usd": 20.0,
+        "max_size_usd": 200.0,
+    }
 
     pipeline_defaults = {
         "min_edge_percent": 4.0,
@@ -1177,6 +1193,17 @@ class CrossPlatformStrategy(BaseStrategy):
             score += 3.0
         return score
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for cross-platform arbitrage."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Cross-platform: hold guaranteed spreads to resolution, others TP/SL."""
         if market_state.get("is_resolved"):
@@ -1185,3 +1212,23 @@ class CrossPlatformStrategy(BaseStrategy):
         if config.get("resolve_only", True):
             return ExitDecision("hold", "Cross-platform spread — holding to resolution")
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Composable evaluate pipeline overrides
+    # ------------------------------------------------------------------
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

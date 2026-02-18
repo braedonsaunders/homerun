@@ -27,6 +27,8 @@ from models import Opportunity, Event, Market
 from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
+from services.quality_filter import QualityFilterOverrides
+from services.strategy_sdk import StrategySDK
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import weather_metadata
 from services.weather.signal_engine import (
@@ -56,6 +58,11 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
     worker_affinity = "weather"
     subscriptions = ["weather_update"]
 
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=0.5,
+    )
+
     DEFAULT_CONFIG = {
         "min_edge_percent": 5.0,
         "min_ensemble_members": 10,
@@ -80,6 +87,133 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
             for key in self.DEFAULT_CONFIG:
                 if key in config:
                     self._config[key] = config[key]
+
+    @staticmethod
+    def _normalize_intent(intent: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(intent)
+
+        weather_payload = normalized.get("weather")
+        if isinstance(weather_payload, dict):
+            for key in (
+                "source_count",
+                "source_spread_c",
+                "consensus_probability",
+                "consensus_value_c",
+                "model_agreement",
+                "target_time",
+                "location",
+                "metric",
+                "operator",
+                "ensemble_members",
+            ):
+                if normalized.get(key) is None and weather_payload.get(key) is not None:
+                    normalized[key] = weather_payload.get(key)
+            if normalized.get("bucket_low_c") is None and weather_payload.get("threshold_c_low") is not None:
+                normalized["bucket_low_c"] = weather_payload.get("threshold_c_low")
+            if normalized.get("bucket_high_c") is None and weather_payload.get("threshold_c_high") is not None:
+                normalized["bucket_high_c"] = weather_payload.get("threshold_c_high")
+
+        market_payload = normalized.get("market")
+        if isinstance(market_payload, dict):
+            if not str(normalized.get("market_id") or "").strip():
+                normalized["market_id"] = market_payload.get("condition_id") or market_payload.get("id")
+            if not str(normalized.get("market_slug") or "").strip() and market_payload.get("slug") is not None:
+                normalized["market_slug"] = market_payload.get("slug")
+            if not str(normalized.get("event_slug") or "").strip() and market_payload.get("event_slug") is not None:
+                normalized["event_slug"] = market_payload.get("event_slug")
+            if normalized.get("liquidity") is None and market_payload.get("liquidity") is not None:
+                normalized["liquidity"] = market_payload.get("liquidity")
+            if normalized.get("volume") is None and market_payload.get("volume") is not None:
+                normalized["volume"] = market_payload.get("volume")
+            if not normalized.get("clob_token_ids") and isinstance(market_payload.get("clob_token_ids"), list):
+                normalized["clob_token_ids"] = list(market_payload.get("clob_token_ids") or [])
+
+        direction = str(normalized.get("direction") or "").strip().lower()
+        entry_price = normalized.get("entry_price")
+        try:
+            entry = float(entry_price) if entry_price is not None else None
+        except Exception:
+            entry = None
+
+        yes_raw = normalized.get("yes_price")
+        no_raw = normalized.get("no_price")
+        try:
+            yes_price = float(yes_raw) if yes_raw is not None else None
+        except Exception:
+            yes_price = None
+        try:
+            no_price = float(no_raw) if no_raw is not None else None
+        except Exception:
+            no_price = None
+
+        if entry is not None:
+            if direction == "buy_yes" and yes_price is None:
+                yes_price = entry
+            if direction == "buy_no" and no_price is None:
+                no_price = entry
+
+        if yes_price is None and no_price is not None:
+            yes_price = 1.0 - no_price
+        if no_price is None and yes_price is not None:
+            no_price = 1.0 - yes_price
+
+        if yes_price is None:
+            yes_price = 0.5
+        if no_price is None:
+            no_price = 0.5
+
+        normalized["yes_price"] = max(0.0, min(1.0, float(yes_price)))
+        normalized["no_price"] = max(0.0, min(1.0, float(no_price)))
+        return normalized
+
+    @staticmethod
+    def _market_from_intent(intent: dict[str, Any]) -> Optional[Market]:
+        market_payload = intent.get("market")
+        if not isinstance(market_payload, dict):
+            market_payload = {}
+
+        condition_id = str(
+            intent.get("market_id")
+            or market_payload.get("condition_id")
+            or market_payload.get("id")
+            or ""
+        ).strip()
+        if not condition_id:
+            return None
+
+        question = str(intent.get("market_question") or market_payload.get("question") or condition_id).strip()
+        slug = str(market_payload.get("slug") or intent.get("market_slug") or condition_id).strip()
+        event_slug = str(market_payload.get("event_slug") or intent.get("event_slug") or "").strip()
+        platform = str(market_payload.get("platform") or intent.get("platform") or "polymarket").strip() or "polymarket"
+
+        raw_token_ids = market_payload.get("clob_token_ids")
+        if not isinstance(raw_token_ids, list):
+            raw_token_ids = []
+        clob_token_ids = [str(token_id).strip() for token_id in raw_token_ids if str(token_id).strip()]
+
+        try:
+            liquidity = float(market_payload.get("liquidity") or intent.get("liquidity") or 0.0)
+        except Exception:
+            liquidity = 0.0
+        try:
+            volume = float(market_payload.get("volume") or intent.get("volume") or 0.0)
+        except Exception:
+            volume = 0.0
+
+        yes_price = float(intent.get("yes_price", 0.5))
+        no_price = float(intent.get("no_price", 0.5))
+        return Market(
+            id=condition_id,
+            condition_id=condition_id,
+            question=question or condition_id,
+            slug=slug or condition_id,
+            event_slug=event_slug,
+            clob_token_ids=clob_token_ids,
+            outcome_prices=[yes_price, no_price],
+            liquidity=max(0.0, liquidity),
+            volume=max(0.0, volume),
+            platform=platform,
+        )
 
     # ------------------------------------------------------------------
     # detect  (sync – always returns []; weather uses detect_from_intents)
@@ -247,10 +381,16 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
         if roi < float(cfg.get("min_edge_percent", 0)) / 2:
             return None
 
-        min_liquidity = market.liquidity
-        max_position = min(min_liquidity * 0.05, 400.0)
-
-        if max_position < settings.MIN_POSITION_SIZE:
+        sizing = StrategySDK.resolve_position_sizing(
+            liquidity_usd=market.liquidity,
+            liquidity_fraction=0.05,
+            hard_cap_usd=400.0,
+            signal=intent,
+            default_min_size=float(settings.MIN_POSITION_SIZE),
+        )
+        min_liquidity = float(sizing.get("liquidity_usd", 0.0) or 0.0)
+        max_position = float(sizing.get("max_position_size", 0.0) or 0.0)
+        if not bool(sizing.get("is_tradeable", False)):
             return None
 
         # --- 7. Confidence ---
@@ -342,10 +482,23 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
     async def on_event(self, event: DataEvent) -> list[Opportunity]:
         if event.event_type != "weather_update":
             return []
-        intents = event.payload.get("intents") or []
+        raw_intents = event.payload.get("intents") or []
+        if not raw_intents:
+            return []
+        intents: list[dict[str, Any]] = []
+        markets: list[Market] = []
+        for raw in raw_intents:
+            if not isinstance(raw, dict):
+                continue
+            normalized = self._normalize_intent(raw)
+            market = self._market_from_intent(normalized)
+            if market is None:
+                continue
+            intents.append(normalized)
+            markets.append(market)
         if not intents:
             return []
-        return self.detect_from_intents(intents, [], [])
+        return self.detect_from_intents(intents, markets, [])
 
     # ------------------------------------------------------------------
     # evaluate()  (composable pipeline)
@@ -436,3 +589,13 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
         if config.get("resolve_only", True):
             return ExitDecision("hold", "Weather — holding to forecast resolution")
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)

@@ -16,12 +16,17 @@ NOT risk-free arbitrage - this is statistical edge trading.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 
 from models import Market, Event, Opportunity
 from config import settings
-from .base import BaseStrategy, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.quality_filter import QualityFilterOverrides
+from utils.kelly import kelly_fraction
+
+logger = logging.getLogger(__name__)
 
 
 class LiquidityVacuumStrategy(BaseStrategy):
@@ -41,13 +46,20 @@ class LiquidityVacuumStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_order_book = True
     subscriptions = ["market_data_refresh"]
+    realtime_processing_mode = "incremental"
 
-    pipeline_defaults = {
-        "min_edge_percent": 4.0,
-        "min_confidence": 0.45,
-        "max_risk_score": 0.78,
-        "base_size_usd": 16.0,
-        "max_size_usd": 130.0,
+    quality_filter_overrides = QualityFilterOverrides(
+        min_roi=2.0,
+        max_resolution_months=3.0,
+    )
+
+    default_config = {
+        "min_edge_percent": 3.0,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.80,
+        "min_imbalance_ratio": 1.5,
+        "base_size_usd": 15.0,
+        "max_size_usd": 120.0,
     }
 
     # Composable evaluate pipeline: score = edge*0.55 + conf*30 - risk*8
@@ -70,8 +82,6 @@ class LiquidityVacuumStrategy(BaseStrategy):
         super().__init__()
         self.min_imbalance_ratio = settings.LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO
         self.min_depth_usd = settings.LIQUIDITY_VACUUM_MIN_DEPTH_USD
-        # Track previous prices for velocity calculation
-        self._prev_prices: dict[str, dict[str, float]] = {}
 
     @staticmethod
     def _is_multileg_market(market: Market) -> bool:
@@ -415,7 +425,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
         large discrete jumps which represent completed event resolutions.
         """
         market_id = market.id
-        prev = self._prev_prices.get(market_id)
+        pressure_history = self.state.setdefault("pressure_history", {})
+        prev = pressure_history.get(market_id)
 
         if prev is None:
             return None
@@ -477,7 +488,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
             yes_price, no_price = self._resolve_prices(market, prices)
             if yes_price > 0 and no_price > 0:
                 new_prev[market.id] = {"yes": yes_price, "no": no_price}
-        self._prev_prices = new_prev
+        self.state["pressure_history"] = new_prev
 
     # ------------------------------------------------------------------
     # Vacuum-specific risk scoring
@@ -571,11 +582,38 @@ class LiquidityVacuumStrategy(BaseStrategy):
 
         return factors
 
+    def compute_size(
+        self, base_size: float, max_size: float, edge: float, confidence: float, risk_score: float, market_count: int
+    ) -> float:
+        """Kelly-informed sizing for liquidity vacuum."""
+        p_estimated = 0.5 + (edge / 200.0)
+        p_market = 0.5
+        kelly_f = kelly_fraction(p_estimated, p_market, fraction=0.25)
+        kelly_sz = base_size * (1.0 + kelly_f * 10.0)
+        size = kelly_sz * (0.7 + confidence * 0.6) * max(0.4, 1.0 - risk_score)
+        return max(1.0, min(max_size, size))
+
+    def custom_checks(self, signal, context, params, payload):
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        return [
+            DecisionCheck("source", "Signal source", source == "scanner", detail=f"got={source}"),
+        ]
+
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Liquidity vacuum: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Platform gate hooks
+    # ------------------------------------------------------------------
+
+    def on_blocked(self, signal, reason: str, context: dict) -> None:
+        logger.info("%s: signal blocked — %s (market=%s)", self.name, reason, getattr(signal, "market_id", "?"))
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)
 
 
 def market_liquidity_estimate(default: float = 0) -> float:
