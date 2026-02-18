@@ -62,8 +62,7 @@ class ExitDecision:
 class BaseStrategy(ABC):
     """Base class for arbitrage detection strategies.
 
-    Built-in strategies set strategy_type to a StrategyType enum value.
-    Plugin strategies set strategy_type to their unique slug string.
+    Strategies set strategy_type to their unique slug string.
 
     Subclasses must implement at least one of:
 
@@ -77,7 +76,7 @@ class BaseStrategy(ABC):
     ``detect()`` so existing sync strategies work without changes.
     """
 
-    strategy_type: str  # StrategyType value or plugin slug
+    strategy_type: str  # strategy slug identifier
     name: str
     description: str
     key: str = ""  # Set to strategy_type or slug; used by orchestrator for lookups
@@ -85,9 +84,44 @@ class BaseStrategy(ABC):
     # Default config (overridden by user settings in UI)
     default_config: dict = {}
 
+    # ── Strategy metadata (declare on your subclass) ────────────
+    # These let strategies declare their requirements and behavior so the
+    # infrastructure can route, filter, and manage them without hardcoding.
+
+    # Mispricing classification — how this strategy finds opportunities
+    mispricing_type: Optional[str] = None  # "within_market", "cross_market", "settlement_lag", "news_information"
+
+    # Source key — which data pipeline feeds this strategy
+    source_key: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders"
+
+    # Worker affinity — which worker should run this strategy's detect()
+    worker_affinity: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders"
+
+    # Opportunity TTL — how long detected opportunities stay valid (minutes)
+    # None means use the global SCANNER_STALE_OPPORTUNITY_MINUTES default.
+    opportunity_ttl_minutes: Optional[int] = None
+
+    # Deduplication control — if True, this strategy's opportunities can be
+    # deduplicated against other strategies finding the same markets.
+    # Set to False if this strategy provides a unique perspective even on
+    # the same markets (e.g., news_edge vs basic on same market).
+    allow_deduplication: bool = True
+
+    # Requirements declaration — what data this strategy needs
+    requires_order_book: bool = False
+    requires_news_data: bool = False
+    requires_historical_prices: bool = False
+
+    # Market type preferences — filter markets before passing to detect()
+    market_categories: Optional[list[str]] = None  # None means all categories
+    requires_resolution_date: bool = False
+    binary_only: bool = True  # Most strategies only work with 2-outcome markets
+
     def __init__(self):
         self.fee = settings.POLYMARKET_FEE
         self.min_profit = settings.MIN_PROFIT_THRESHOLD
+        # Strategy state — persisted across detect() cycles
+        self._state: dict = {}
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Detect arbitrage opportunities (sync).
@@ -125,6 +159,23 @@ class BaseStrategy(ABC):
         if config:
             merged.update(config)
         self.config = merged
+
+    @property
+    def state(self) -> dict:
+        """Persistent state dict — survives across detect() cycles.
+
+        Use this to track rolling averages, momentum signals, prior
+        detections, or any cross-cycle data your strategy needs.
+
+        Example:
+            self.state["last_prices"] = {market.id: price for ...}
+            prior = self.state.get("last_prices", {})
+        """
+        return self._state
+
+    @state.setter
+    def state(self, value: dict) -> None:
+        self._state = value
 
     # ── Execution phase (optional override) ──────────────────
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -46,9 +46,10 @@ class MustHappenStrategy(BaseStrategy):
     - Profit: $0.03 (IF assumptions hold)
     """
 
-    strategy_type = StrategyType.MUST_HAPPEN
+    strategy_type = "must_happen"
     name = "Must-Happen"
     description = "Buy YES on all outcomes - REQUIRES MANUAL VERIFICATION of exhaustiveness"
+    mispricing_type = "within_market"
 
     # Keywords indicating POTENTIALLY exhaustive outcome sets
     # WARNING: These are HEURISTICS, not guarantees!

@@ -26,6 +26,8 @@ class FlashCrashReversionStrategy(BaseStrategy):
     strategy_type = "flash_crash_reversion"
     name = "Flash Crash Reversion"
     description = "Short-horizon crash detector with liquidity/spread gating"
+    mispricing_type = "within_market"
+    requires_historical_prices = True
 
     default_config = {
         "lookback_seconds": 240.0,

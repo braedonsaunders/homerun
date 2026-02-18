@@ -691,7 +691,7 @@ export interface PluginValidation {
 }
 
 export const getPlugins = async (): Promise<StrategyPlugin[]> => {
-  const { data } = await api.get('/plugins')
+  const { data } = await api.get('/strategy-manager')
   return data
 }
 
@@ -704,7 +704,7 @@ export const createPlugin = async (plugin: {
   description?: string
   enabled?: boolean
 }): Promise<StrategyPlugin> => {
-  const { data } = await api.post('/plugins', plugin)
+  const { data } = await api.post('/strategy-manager', plugin)
   return data
 }
 
@@ -720,16 +720,16 @@ export const updatePlugin = async (
     description: string
   }>
 ): Promise<StrategyPlugin> => {
-  const { data } = await api.put(`/plugins/${id}`, updates)
+  const { data } = await api.put(`/strategy-manager/${id}`, updates)
   return data
 }
 
 export const deletePlugin = async (id: string): Promise<void> => {
-  await api.delete(`/plugins/${id}`)
+  await api.delete(`/strategy-manager/${id}`)
 }
 
 export const validatePlugin = async (source_code: string): Promise<PluginValidation> => {
-  const { data } = await api.post('/plugins/validate', { source_code })
+  const { data } = await api.post('/strategy-manager/validate', { source_code })
   return data
 }
 
@@ -738,7 +738,7 @@ export const getPluginTemplate = async (): Promise<{
   instructions: string
   available_imports: string[]
 }> => {
-  const { data } = await api.get('/plugins/template')
+  const { data } = await api.get('/strategy-manager/template')
   return data
 }
 
@@ -747,7 +747,7 @@ export const reloadPlugin = async (id: string): Promise<{
   message: string
   runtime: PluginRuntime | null
 }> => {
-  const { data } = await api.post(`/plugins/${id}/reload`)
+  const { data } = await api.post(`/strategy-manager/${id}/reload`)
   return data
 }
 

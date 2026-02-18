@@ -49,6 +49,9 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
     strategy_type = "weather_ensemble_edge"
     name = "Weather Ensemble Edge"
     description = "Ensemble Monte Carlo: count fraction of GFS ensemble members in each temperature bucket"
+    mispricing_type = "news_information"
+    source_key = "weather"
+    worker_affinity = "weather"
 
     DEFAULT_CONFIG = {
         "min_edge_percent": 5.0,

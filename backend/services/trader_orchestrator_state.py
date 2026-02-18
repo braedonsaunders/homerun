@@ -54,10 +54,7 @@ CLEANUP_ELIGIBLE_ORDER_STATUSES = {"submitted", "executed", "open"}
 RESOLVED_ORDER_STATUSES = {"resolved_win", "resolved_loss"}
 ACTIVE_POSITION_STATUS = "open"
 INACTIVE_POSITION_STATUS = "closed"
-_STRATEGY_KEY_ALIASES = {
-    "strategy.default": "btc_eth_highfreq",
-    "default": "btc_eth_highfreq",
-}
+_STRATEGY_KEY_ALIASES: dict[str, str] = {}
 _RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
 _TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
 _SOURCE_STRATEGY_MATRIX_FALLBACK: dict[str, set[str]] = {
@@ -66,13 +63,8 @@ _SOURCE_STRATEGY_MATRIX_FALLBACK: dict[str, set[str]] = {
 _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 5.0
 _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 15.0
 _SOURCE_DEFAULT_STRATEGY: dict[str, str] = default_strategy_by_source()
-_LEGACY_OMNI_STRATEGY_BY_SOURCE: dict[str, str] = {
-    "crypto": "btc_eth_highfreq",
-    "scanner": "basic",
-    "news": "news_edge",
-    "weather": "weather_edge",
-    "traders": "traders_confluence",
-}
+# Legacy alias removed — use _SOURCE_DEFAULT_STRATEGY from the unified catalog.
+_LEGACY_OMNI_STRATEGY_BY_SOURCE: dict[str, str] = _SOURCE_DEFAULT_STRATEGY
 
 
 def _now() -> datetime:
@@ -151,11 +143,7 @@ def _normalize_strategy_key(value: Any) -> str:
 
 
 def _normalize_strategy_for_source(source_key: str, strategy_key: str) -> str:
-    if strategy_key == "opportunity_weather":
-        if source_key == "weather":
-            return "weather_consensus"
-        if source_key == "scanner":
-            return "opportunity_general"
+    """Normalize strategy key for a given source. Returns the key unchanged."""
     return strategy_key
 
 

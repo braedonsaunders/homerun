@@ -1,4 +1,4 @@
-"""Tests for Pydantic models: Market, Event, Token, ArbitrageOpportunity, OpportunityFilter, StrategyType."""
+"""Tests for Pydantic models: Market, Event, Token, ArbitrageOpportunity, OpportunityFilter."""
 
 import sys
 from pathlib import Path
@@ -13,7 +13,6 @@ from datetime import datetime
 from models.market import Market, Event, Token
 from models.opportunity import (
     ArbitrageOpportunity,
-    StrategyType,
     MispricingType,
     OpportunityFilter,
 )
@@ -414,7 +413,7 @@ class TestArbitrageOpportunity:
     def test_id_generation_from_strategy_and_markets(self):
         """ID is auto-generated from strategy + market IDs + timestamp."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.BASIC,
+            strategy="basic",
             title="Test",
             description="Desc",
             total_cost=0.95,
@@ -432,7 +431,7 @@ class TestArbitrageOpportunity:
     def test_id_generation_empty_markets(self):
         """ID with no markets still generates without error."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.NEGRISK,
+            strategy="negrisk",
             title="Test",
             description="Desc",
             total_cost=0.9,
@@ -448,7 +447,7 @@ class TestArbitrageOpportunity:
         """If an explicit id is provided, it is kept."""
         opp = ArbitrageOpportunity(
             id="custom_id_123",
-            strategy=StrategyType.BASIC,
+            strategy="basic",
             title="Test",
             description="Desc",
             total_cost=0.95,
@@ -463,7 +462,7 @@ class TestArbitrageOpportunity:
     def test_all_fields_populated(self, sample_opportunity):
         """All fields of a fully-populated opportunity are accessible."""
         opp = sample_opportunity
-        assert opp.strategy == StrategyType.BASIC
+        assert opp.strategy == "basic"
         assert opp.title == "Basic Arb: Will BTC exceed $100k..."
         assert opp.total_cost == 0.96
         assert opp.expected_payout == 1.0
@@ -485,7 +484,7 @@ class TestArbitrageOpportunity:
     def test_default_values(self):
         """Default values for optional fields are sensible."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.BASIC,
+            strategy="basic",
             title="T",
             description="D",
             total_cost=0.9,
@@ -517,40 +516,6 @@ class TestArbitrageOpportunity:
 
 
 # ============================================================================
-# StrategyType enum
-# ============================================================================
-
-
-class TestStrategyType:
-    """Tests for StrategyType enum values."""
-
-    def test_all_strategy_types_present(self):
-        expected = {
-            "basic",
-            "mutually_exclusive",
-            "contradiction",
-            "negrisk",
-            "must_happen",
-            "miracle",
-            "combinatorial",
-            "settlement_lag",
-            "cross_platform",
-        }
-        actual = {s.value for s in StrategyType}
-        assert actual == expected
-
-    def test_string_enum_comparison(self):
-        assert StrategyType.BASIC == "basic"
-        assert StrategyType.NEGRISK == "negrisk"
-        assert StrategyType.COMBINATORIAL == "combinatorial"
-        assert StrategyType.SETTLEMENT_LAG == "settlement_lag"
-
-    def test_enum_from_value(self):
-        assert StrategyType("basic") == StrategyType.BASIC
-        assert StrategyType("miracle") == StrategyType.MIRACLE
-
-
-# ============================================================================
 # OpportunityFilter
 # ============================================================================
 
@@ -570,7 +535,7 @@ class TestOpportunityFilter:
         f = OpportunityFilter(
             min_profit=0.05,
             max_risk=0.5,
-            strategies=[StrategyType.BASIC, StrategyType.NEGRISK],
+            strategies=["basic", "negrisk"],
             min_liquidity=1000.0,
             category="Crypto",
         )
@@ -587,14 +552,14 @@ class TestOpportunityFilter:
         f = OpportunityFilter(
             min_profit=0.01,
             max_risk=0.9,
-            strategies=[StrategyType.MIRACLE],
+            strategies=["miracle"],
             min_liquidity=500.0,
             category="Science",
         )
         assert f.model_dump() == {
             "min_profit": 0.01,
             "max_risk": 0.9,
-            "strategies": [StrategyType.MIRACLE],
+            "strategies": ["miracle"],
             "min_liquidity": 500.0,
             "category": "Science",
         }

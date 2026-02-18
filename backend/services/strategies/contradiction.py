@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 
@@ -33,9 +33,10 @@ class ContradictionStrategy(BaseStrategy):
     - PROBLEM: "by March" vs "in March" are different timeframes!
     """
 
-    strategy_type = StrategyType.CONTRADICTION
+    strategy_type = "contradiction"
     name = "Contradiction"
     description = "Two markets say opposite things - REQUIRES MANUAL VERIFICATION"
+    mispricing_type = "within_market"
 
     # Contradiction patterns (word pairs that indicate opposite meanings)
     # WARNING: These are HEURISTICS that may produce false positives!

@@ -20,7 +20,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 from models.market import Market, Event, Token
-from models.opportunity import StrategyType, MispricingType
+from models.opportunity import MispricingType
 from services.strategies.mutually_exclusive import MutuallyExclusiveStrategy
 from services.strategies.contradiction import ContradictionStrategy
 from services.strategies.must_happen import MustHappenStrategy
@@ -131,7 +131,7 @@ class TestMutuallyExclusiveStrategy:
 
         assert len(opps) >= 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.MUTUALLY_EXCLUSIVE
+        assert opp.strategy == "mutually_exclusive"
         assert opp.total_cost == pytest.approx(0.93, abs=0.01)
         assert opp.net_profit > 0
         assert opp.roi_percent > 0
@@ -359,7 +359,7 @@ class TestContradictionStrategy:
 
         assert len(opps) >= 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.CONTRADICTION
+        assert opp.strategy == "contradiction"
         assert opp.total_cost < 1.0
         assert opp.net_profit > 0
         assert any("MANUAL VERIFICATION" in rf for rf in opp.risk_factors)
@@ -585,7 +585,7 @@ class TestMustHappenStrategy:
 
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.MUST_HAPPEN
+        assert opp.strategy == "must_happen"
         assert opp.total_cost == pytest.approx(0.92, abs=0.01)
         assert opp.net_profit > 0
         assert any("MANUAL VERIFICATION" in rf for rf in opp.risk_factors)
@@ -844,7 +844,7 @@ class TestMiracleStrategy:
         opps = strategy.detect(events=[], markets=[m], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.MIRACLE
+        assert opp.strategy == "miracle"
         assert "alien" in opp.description.lower() or "supernatural" in opp.description.lower()
         assert opp.positions_to_take[0]["outcome"] == "NO"
 
@@ -1117,7 +1117,7 @@ class TestSettlementLagStrategy:
         opps = strategy.detect(events=[], markets=[m], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.SETTLEMENT_LAG
+        assert opp.strategy == "settlement_lag"
         assert opp.mispricing_type == MispricingType.SETTLEMENT_LAG
         assert "past resolution date" in opp.description.lower() or "past resolution date" in str(opp.description)
         assert opp.total_cost == pytest.approx(0.60, abs=0.01)

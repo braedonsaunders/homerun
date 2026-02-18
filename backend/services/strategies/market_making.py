@@ -21,7 +21,7 @@ The strategy identifies ideal market-making candidates:
 from datetime import datetime
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -42,9 +42,11 @@ class MarketMakingStrategy(BaseStrategy):
     - Prices near 50/50 (balanced order flow, lower inventory risk)
     """
 
-    strategy_type = StrategyType.MARKET_MAKING
+    strategy_type = "market_making"
     name = "Market Making"
     description = "Provide liquidity on both sides to earn the bid-ask spread"
+    mispricing_type = "within_market"
+    requires_order_book = True
 
     def __init__(self):
         super().__init__()

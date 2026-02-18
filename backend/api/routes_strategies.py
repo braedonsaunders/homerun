@@ -185,7 +185,7 @@ async def get_unified_template():
             "both detect/detect_async and evaluate/should_exit."
         ),
         "available_imports": [
-            "models (Market, Event, ArbitrageOpportunity, StrategyType)",
+            "models (Market, Event, ArbitrageOpportunity)",
             "services.strategies.base (BaseStrategy)",
             "services.trader_orchestrator.strategies.base (BaseStrategy, StrategyDecision, DecisionCheck)",
             "services.strategies.* (built-in strategy modules)",

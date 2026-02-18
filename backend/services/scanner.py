@@ -9,7 +9,6 @@ from interfaces import MarketDataProvider
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
-from services.strategies.news_edge import NewsEdgeStrategy
 from services.strategy_loader import strategy_loader as plugin_loader, StrategyValidationError as PluginValidationError
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
@@ -53,34 +52,7 @@ class ArbitrageScanner:
 
     def __init__(self, data_provider: Optional[MarketDataProvider] = None):
         self.market_data = data_provider or market_data_provider
-        # News edge helper is still used by prefetch utilities; runtime execution
-        # should use DB-loaded strategy instances via plugin_loader.
-        self._news_edge_strategy_fallback = NewsEdgeStrategy()
 
-        # Mispricing type mapping for strategies that don't set it themselves
-        self._strategy_mispricing_map = {
-            "basic": MispricingType.WITHIN_MARKET,
-            "negrisk": MispricingType.WITHIN_MARKET,
-            "mutually_exclusive": MispricingType.WITHIN_MARKET,
-            "contradiction": MispricingType.WITHIN_MARKET,
-            "must_happen": MispricingType.WITHIN_MARKET,
-            "miracle": MispricingType.WITHIN_MARKET,
-            "combinatorial": MispricingType.CROSS_MARKET,
-            "settlement_lag": MispricingType.SETTLEMENT_LAG,
-            "news_edge": MispricingType.NEWS_INFORMATION,
-            "cross_platform": MispricingType.CROSS_MARKET,
-            "bayesian_cascade": MispricingType.CROSS_MARKET,
-            "liquidity_vacuum": MispricingType.WITHIN_MARKET,
-            "entropy_arb": MispricingType.WITHIN_MARKET,
-            "event_driven": MispricingType.CROSS_MARKET,
-            "temporal_decay": MispricingType.WITHIN_MARKET,
-            "correlation_arb": MispricingType.CROSS_MARKET,
-            "market_making": MispricingType.WITHIN_MARKET,
-            "stat_arb": MispricingType.WITHIN_MARKET,
-            "flash_crash_reversion": MispricingType.WITHIN_MARKET,
-            "tail_end_carry": MispricingType.WITHIN_MARKET,
-            "spread_dislocation": MispricingType.WITHIN_MARKET,
-        }
         self._running = False
         self._enabled = True
         self._interval_seconds = settings.SCAN_INTERVAL_SECONDS
@@ -753,17 +725,20 @@ class ArbitrageScanner:
         await self.load_plugins()
 
     def _get_all_strategies(self) -> list:
-        """Return DB-loaded strategy instances used for scanner execution."""
+        """Return DB-loaded strategy instances whose worker_affinity is 'scanner'.
+
+        Strategies with other worker affinities (e.g. 'crypto') are handled
+        by their respective workers and should not run in the scanner loop.
+        """
         plugin_strategies = plugin_loader.get_all_strategy_instances()
-        # BTC 15-minute high-frequency logic is isolated to crypto-worker.
-        # Scanner strategy set must not run btc_eth_highfreq.
-        return [s for s in plugin_strategies if self._strategy_key(s) != "btc_eth_highfreq"]
+        return [s for s in plugin_strategies if getattr(s, "worker_affinity", "scanner") == "scanner"]
 
     def _get_news_edge_helper(self):
+        """Return the news_edge strategy instance for prefetch utilities."""
         loaded = plugin_loader.get_plugin("news_edge")
         if loaded and hasattr(loaded.instance, "_build_market_infos"):
             return loaded.instance
-        return self._news_edge_strategy_fallback
+        return None
 
     @staticmethod
     def _strategy_key(strategy) -> str:
@@ -1039,9 +1014,11 @@ class ArbitrageScanner:
                 # Classify mispricing type if not already set by strategy
                 for opp in opps:
                     if opp.mispricing_type is None:
-                        opp.mispricing_type = self._strategy_mispricing_map.get(
-                            opp.strategy, MispricingType.WITHIN_MARKET
-                        )
+                        raw = getattr(strategy, "mispricing_type", None)
+                        try:
+                            opp.mispricing_type = MispricingType(raw) if raw else MispricingType.WITHIN_MARKET
+                        except ValueError:
+                            opp.mispricing_type = MispricingType.WITHIN_MARKET
                 all_opportunities.extend(opps)
                 print(f"  {strategy.name}: found {len(opps)} opportunities")
                 # Record plugin run stats
@@ -1276,9 +1253,11 @@ class ArbitrageScanner:
                 strategy, opps = result
                 for opp in opps:
                     if opp.mispricing_type is None:
-                        opp.mispricing_type = self._strategy_mispricing_map.get(
-                            opp.strategy, MispricingType.WITHIN_MARKET
-                        )
+                        raw = getattr(strategy, "mispricing_type", None)
+                        try:
+                            opp.mispricing_type = MispricingType(raw) if raw else MispricingType.WITHIN_MARKET
+                        except ValueError:
+                            opp.mispricing_type = MispricingType.WITHIN_MARKET
                 fast_opportunities.extend(opps)
                 # Record plugin run stats
                 strategy_type = getattr(strategy, "strategy_type", "")
@@ -1358,7 +1337,10 @@ class ArbitrageScanner:
                 return
 
             # Step 2: Build market index
-            market_infos = self._get_news_edge_helper()._build_market_infos(events, markets, prices)
+            news_edge = self._get_news_edge_helper()
+            if news_edge is None:
+                return
+            market_infos = news_edge._build_market_infos(events, markets, prices)
             if not market_infos:
                 return
 
@@ -1392,28 +1374,31 @@ class ArbitrageScanner:
     def _deduplicate_cross_strategy(self, opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
         """Remove duplicate opportunities that cover the same underlying markets.
 
-        When multiple strategies detect the same set of markets (e.g., NegRisk
-        and settlement_lag both find MI-07 House Election), keep only the one
-        with the highest ROI. This prevents the same trade from appearing
-        multiple times in the output.
-
-        Uses a market-ID fingerprint: sorted set of market IDs involved.
+        When multiple strategies detect the same set of markets, keep only the one
+        with the highest ROI — unless a strategy has set allow_deduplication=False,
+        in which case its opportunities are always preserved.
         """
-        seen: dict[str, ArbitrageOpportunity] = {}  # fingerprint -> best opp
-
+        # Separate protected opportunities (allow_deduplication=False)
+        protected = []
+        candidates = []
         for opp in opportunities:
-            # Build a fingerprint from the sorted market IDs
+            strategy_instance = plugin_loader.get_instance(opp.strategy)
+            if strategy_instance and not getattr(strategy_instance, "allow_deduplication", True):
+                protected.append(opp)
+            else:
+                candidates.append(opp)
+
+        seen: dict[str, ArbitrageOpportunity] = {}
+        for opp in candidates:
             market_ids = sorted(m.get("id", "") for m in opp.markets)
             fingerprint = "|".join(market_ids)
-
             if fingerprint in seen:
-                # Keep the opportunity with higher ROI
                 if opp.roi_percent > seen[fingerprint].roi_percent:
                     seen[fingerprint] = opp
             else:
                 seen[fingerprint] = opp
 
-        deduped = list(seen.values())
+        deduped = list(seen.values()) + protected
         removed = len(opportunities) - len(deduped)
         if removed > 0:
             print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
@@ -1479,22 +1464,24 @@ class ArbitrageScanner:
                 new_count += 1
             existing_map[new_opp.stable_id] = new_opp
 
-        # Remove expired opportunities and keep BTC/ETH high-frequency
-        # opportunities isolated to the dedicated Crypto surface.
-        stale_minutes = max(
-            5,
-            int(getattr(settings, "SCANNER_STALE_OPPORTUNITY_MINUTES", 45) or 45),
-        )
-        stale_cutoff = now - timedelta(minutes=stale_minutes)
+        # Remove expired/stale opportunities
+        def _is_stale(opp: ArbitrageOpportunity) -> bool:
+            if opp.last_seen_at is None:
+                return False
+            strategy_instance = plugin_loader.get_instance(opp.strategy)
+            ttl = None
+            if strategy_instance:
+                ttl = getattr(strategy_instance, "opportunity_ttl_minutes", None)
+            if ttl is None:
+                ttl = max(5, int(getattr(settings, "SCANNER_STALE_OPPORTUNITY_MINUTES", 45) or 45))
+            cutoff = now - timedelta(minutes=ttl)
+            return _make_aware(opp.last_seen_at) < cutoff
+
         merged = [
             opp
             for opp in existing_map.values()
             if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now)
-            and (
-                opp.last_seen_at is None
-                or _make_aware(opp.last_seen_at) >= stale_cutoff
-            )
-            and opp.strategy != "btc_eth_highfreq"
+            and not _is_stale(opp)
         ]
 
         expired_count = len(existing_map) - len(merged)

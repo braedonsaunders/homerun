@@ -28,6 +28,10 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     """Spike-reversion execution using live 5m/30m/2h movement context."""
 
     key = "crypto_spike_reversion"
+    mispricing_type = "within_market"
+    source_key = "crypto"
+    worker_affinity = "crypto"
+    market_categories = ["crypto"]
 
     def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
         params = context.get("params") or {}

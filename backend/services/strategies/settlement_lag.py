@@ -23,7 +23,7 @@ Detection approach:
 """
 
 from typing import Any, Optional
-from models import Market, Event, ArbitrageOpportunity, StrategyType, MispricingType
+from models import Market, Event, ArbitrageOpportunity, MispricingType
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -48,9 +48,10 @@ class SettlementLagStrategy(BaseStrategy):
     snap to 0/1 when outcomes resolve.
     """
 
-    strategy_type = StrategyType.SETTLEMENT_LAG
+    strategy_type = "settlement_lag"
     name = "Settlement Lag"
     description = "Exploit delayed price updates after outcome determination"
+    mispricing_type = "settlement_lag"
 
     # Thresholds — read from config (persisted in DB via Settings UI)
     # Default NEAR_ZERO lowered from 0.05 to 0.02: many active markets trade at

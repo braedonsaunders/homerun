@@ -16,7 +16,7 @@ This exploits the information propagation delay across markets.
 import time
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -140,9 +140,10 @@ class EventDrivenStrategy(BaseStrategy):
     This is a statistical edge strategy, not risk-free arbitrage.
     """
 
-    strategy_type = StrategyType.EVENT_DRIVEN
+    strategy_type = "event_driven"
     name = "Event-Driven"
     description = "Exploit price lag after significant market moves"
+    mispricing_type = "cross_market"
 
     def __init__(self):
         super().__init__()

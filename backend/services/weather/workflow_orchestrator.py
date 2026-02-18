@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings as app_settings
-from models import ArbitrageOpportunity, StrategyType
+from models import ArbitrageOpportunity
 from models.opportunity import ROIType
 from services.polymarket import polymarket_client
 from utils.logger import get_logger
@@ -776,7 +776,7 @@ class WeatherWorkflowOrchestrator:
         risk_factors.extend(signal.notes or [])
 
         return ArbitrageOpportunity(
-            strategy=StrategyType.WEATHER_EDGE,
+            strategy="weather_edge",
             title=title,
             description=description,
             total_cost=total_cost,

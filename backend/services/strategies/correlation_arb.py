@@ -17,7 +17,7 @@ import time
 from collections import deque
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -180,9 +180,10 @@ class CorrelationArbStrategy(BaseStrategy):
     This is a statistical edge strategy, not risk-free arbitrage.
     """
 
-    strategy_type = StrategyType.CORRELATION_ARB
+    strategy_type = "correlation_arb"
     name = "Correlation Arbitrage"
     description = "Mean-reversion on correlated market pair spreads"
+    mispricing_type = "cross_market"
 
     def __init__(self):
         super().__init__()

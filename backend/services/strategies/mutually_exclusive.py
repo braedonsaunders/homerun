@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -41,9 +41,10 @@ class MutuallyExclusiveStrategy(BaseStrategy):
     - Profit: $0.03
     """
 
-    strategy_type = StrategyType.MUTUALLY_EXCLUSIVE
+    strategy_type = "mutually_exclusive"
     name = "Mutually Exclusive"
     description = "Two-market events - REQUIRES MANUAL VERIFICATION of exhaustiveness"
+    mispricing_type = "within_market"
 
     # Pairs of mutually exclusive patterns to look for
     # WARNING: These are HEURISTICS that may produce false positives!

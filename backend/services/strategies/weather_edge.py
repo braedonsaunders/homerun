@@ -48,6 +48,10 @@ class WeatherEdgeStrategy(BaseStrategy):
     strategy_type = "weather_edge"
     name = "Weather Edge"
     description = "Detect weather-driven mispricings via multi-source forecast consensus"
+    mispricing_type = "news_information"
+    source_key = "weather"
+    worker_affinity = "weather"
+    allow_deduplication = False
 
     DEFAULT_CONFIG = {
         "min_edge_percent": 6.0,

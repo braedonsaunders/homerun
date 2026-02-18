@@ -8,7 +8,7 @@ from utils.utcnow import utcnow, utcfromtimestamp
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
-from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
+from models import ArbitrageOpportunity, OpportunityFilter
 from models.database import (
     AsyncSessionLocal,
     Strategy,
@@ -43,32 +43,32 @@ DEFAULT_STRATEGY_META = {
 }
 
 STRATEGY_META_BY_TYPE: dict[str, dict[str, object]] = {
-    StrategyType.BTC_ETH_HIGHFREQ.value: {
+    "btc_eth_highfreq": {
         "domain": "crypto",
         "timeframe": "5m/15m",
         "sources": ["crypto"],
     },
-    StrategyType.NEWS_EDGE.value: {
+    "news_edge": {
         "domain": "event_markets",
         "timeframe": "event",
         "sources": ["news"],
     },
-    StrategyType.WEATHER_EDGE.value: {
+    "weather_edge": {
         "domain": "event_markets",
         "timeframe": "forecast",
         "sources": ["weather"],
     },
-    StrategyType.EVENT_DRIVEN.value: {
+    "event_driven": {
         "domain": "event_markets",
         "timeframe": "event",
         "sources": ["scanner", "world_intelligence"],
     },
-    StrategyType.BAYESIAN_CASCADE.value: {
+    "bayesian_cascade": {
         "domain": "event_markets",
         "timeframe": "event",
         "sources": ["scanner", "world_intelligence"],
     },
-    StrategyType.STAT_ARB.value: {
+    "stat_arb": {
         "domain": "event_markets",
         "timeframe": "event",
         "sources": ["scanner", "world_intelligence"],
@@ -106,14 +106,14 @@ def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
     positions_raw = _field("positions_to_take", [])
     positions = [p for p in positions_raw if isinstance(p, Mapping)] if isinstance(positions_raw, list) else []
 
-    if strategy == StrategyType.TEMPORAL_DECAY.value:
+    if strategy == "temporal_decay":
         if title.startswith("certainty shock:"):
             return "certainty_shock"
         if title.startswith("temporal decay:"):
             return "decay_curve"
         return None
 
-    if strategy == StrategyType.BTC_ETH_HIGHFREQ.value:
+    if strategy == "btc_eth_highfreq":
         for pos in positions:
             if pos.get("_highfreq_metadata"):
                 sub = _normalize_sub_strategy(str(pos.get("sub_strategy") or ""))
@@ -121,7 +121,7 @@ def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
                     return sub
         return None
 
-    if strategy == StrategyType.NEWS_EDGE.value:
+    if strategy == "news_edge":
         for pos in positions:
             payload = pos.get("_news_edge")
             if isinstance(payload, Mapping):
@@ -130,7 +130,7 @@ def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
                     return direction
         return None
 
-    if strategy == StrategyType.CROSS_PLATFORM.value:
+    if strategy == "cross_platform":
         pm = next(
             (pos for pos in positions if str(pos.get("platform") or "").strip().lower() == "polymarket"),
             None,
@@ -146,14 +146,14 @@ def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
                 return f"poly_{pm_outcome}_kalshi_{kalshi_outcome}"
         return None
 
-    if strategy == StrategyType.SETTLEMENT_LAG.value:
+    if strategy == "settlement_lag":
         if title.startswith("settlement lag (negrisk):"):
             return "negrisk_bundle"
         if title.startswith("settlement lag:"):
             return "binary_market"
         return None
 
-    if strategy == StrategyType.NEGRISK.value:
+    if strategy == "negrisk":
         if title.startswith("negrisk short:"):
             return "binary_short"
         if title.startswith("negrisk:"):
@@ -164,7 +164,7 @@ def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
             return "multi_outcome_long"
         return None
 
-    if strategy == StrategyType.MIRACLE.value:
+    if strategy == "miracle":
         if title.startswith("stale market:"):
             return "stale_market"
         if title.startswith("miracle:"):
@@ -195,28 +195,8 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
     if strategy_param.startswith("plugin_"):
         strategy_param = strategy_param[7:]  # len("plugin_")
 
-    # Built-in strategy type
-    try:
-        return [StrategyType(strategy_param).value]
-    except ValueError:
-        pass
-
-    # DB strategy slug used directly (system or custom row).
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Strategy.id).where(
-                Strategy.slug == strategy_param,
-                Strategy.enabled.is_(True),
-            )
-        )
-        plugin_id = result.scalar_one_or_none()
-    if plugin_id is not None:
-        return [strategy_param]
-
-    # Runtime fallback.
-    if plugin_loader.get_plugin(strategy_param):
-        return [strategy_param]
-    return []
+    # Strategy slug used directly — no enum validation needed.
+    return [strategy_param]
 
 
 # ==================== OPPORTUNITIES ====================

@@ -335,3 +335,225 @@ class StrategySDK:
                 if getattr(m, "id", None) == market_id:
                     return event
         return None
+
+    # ── Order book depth ───────────────────────────────────────
+
+    @staticmethod
+    def get_order_book_depth(
+        market: Any,
+        side: str = "YES",
+        size_usd: float = 100.0,
+    ) -> Optional[dict]:
+        """Get order book depth analysis for a market side.
+
+        Uses the internal VWAP calculator to estimate execution cost,
+        slippage, and fill probability for a given position size.
+
+        Args:
+            market: A Market object.
+            side: 'YES' or 'NO'.
+            size_usd: Position size in USD to estimate execution for.
+
+        Returns:
+            Dict with depth analysis, or None if unavailable:
+            {
+                "vwap_price": float,       # Volume-weighted avg price
+                "slippage_bps": float,     # Slippage in basis points
+                "fill_probability": float, # Estimated fill probability (0-1)
+                "available_liquidity": float,  # Liquidity at this level
+            }
+        """
+        try:
+            from services.optimization.vwap import vwap_calculator
+
+            if not vwap_calculator:
+                return None
+
+            token_idx = 0 if side.upper() == "YES" else 1
+            token_ids = getattr(market, "clob_token_ids", None) or []
+            if len(token_ids) <= token_idx:
+                return None
+
+            result = vwap_calculator.estimate_execution(
+                token_id=token_ids[token_idx],
+                size_usd=size_usd,
+            )
+            if result is None:
+                return None
+
+            return {
+                "vwap_price": result.get("vwap_price", 0),
+                "slippage_bps": result.get("slippage_bps", 0),
+                "fill_probability": result.get("fill_probability", 1.0),
+                "available_liquidity": result.get("available_liquidity", 0),
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_book_levels(
+        market: Any,
+        side: str = "YES",
+        max_levels: int = 10,
+    ) -> Optional[list[dict]]:
+        """Get raw order book levels (bids or asks) for a market side.
+
+        Args:
+            market: A Market object.
+            side: 'YES' or 'NO'.
+            max_levels: Maximum number of price levels to return.
+
+        Returns:
+            List of {price, size} dicts sorted by best price, or None.
+        """
+        try:
+            from services.optimization.vwap import vwap_calculator
+
+            if not vwap_calculator:
+                return None
+
+            token_idx = 0 if side.upper() == "YES" else 1
+            token_ids = getattr(market, "clob_token_ids", None) or []
+            if len(token_ids) <= token_idx:
+                return None
+
+            return vwap_calculator.get_book_levels(
+                token_id=token_ids[token_idx],
+                max_levels=max_levels,
+            )
+        except Exception:
+            return None
+
+    # ── Historical price access ────────────────────────────────
+
+    @staticmethod
+    def get_price_history(
+        token_id: str,
+        max_snapshots: int = 60,
+    ) -> list[dict]:
+        """Get recent price snapshots for a token.
+
+        Returns the most recent snapshots from the WebSocket feed cache.
+        Each snapshot includes timestamp, mid, bid, ask.
+
+        Args:
+            token_id: The CLOB token ID.
+            max_snapshots: Maximum number of snapshots to return.
+
+        Returns:
+            List of price snapshots (newest first), each:
+            {"timestamp": str, "mid": float, "bid": float, "ask": float}
+            Empty list if no history available.
+        """
+        try:
+            from services.ws_feeds import get_feed_manager
+
+            fm = get_feed_manager()
+            if fm and hasattr(fm.cache, "get_price_history"):
+                return fm.cache.get_price_history(token_id, max_snapshots=max_snapshots)
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def get_price_change(
+        token_id: str,
+        lookback_seconds: int = 300,
+    ) -> Optional[dict]:
+        """Get price change over a lookback period.
+
+        Args:
+            token_id: The CLOB token ID.
+            lookback_seconds: How far back to look (default 5 minutes).
+
+        Returns:
+            Dict with price change info, or None:
+            {
+                "current_mid": float,
+                "prior_mid": float,
+                "change_abs": float,
+                "change_pct": float,
+                "snapshots_in_window": int,
+            }
+        """
+        try:
+            from services.ws_feeds import get_feed_manager
+
+            fm = get_feed_manager()
+            if fm and hasattr(fm.cache, "get_price_change"):
+                return fm.cache.get_price_change(token_id, lookback_seconds=lookback_seconds)
+        except Exception:
+            pass
+        return None
+
+    # ── News data access ───────────────────────────────────────
+
+    @staticmethod
+    def get_recent_news(
+        query: str = "",
+        max_articles: int = 20,
+    ) -> list[dict]:
+        """Get recent news articles, optionally filtered by query.
+
+        Args:
+            query: Optional search query to filter articles.
+            max_articles: Maximum number of articles to return.
+
+        Returns:
+            List of article dicts with title, source, published_at, summary.
+        """
+        try:
+            from services.news.feed_service import news_feed_service
+
+            articles = news_feed_service.search_articles(
+                query=query, limit=max_articles
+            )
+            return [
+                {
+                    "title": getattr(a, "title", ""),
+                    "source": getattr(a, "source", ""),
+                    "published_at": str(getattr(a, "published_at", "")),
+                    "summary": getattr(a, "summary", getattr(a, "description", "")),
+                    "url": getattr(a, "url", getattr(a, "link", "")),
+                }
+                for a in (articles or [])
+            ]
+        except Exception:
+            return []
+
+    @staticmethod
+    def get_news_for_market(
+        market: Any,
+        max_articles: int = 10,
+    ) -> list[dict]:
+        """Get news articles semantically matched to a specific market.
+
+        Args:
+            market: A Market object.
+            max_articles: Maximum number of articles to return.
+
+        Returns:
+            List of article dicts with relevance_score.
+        """
+        try:
+            from services.news.semantic_matcher import semantic_matcher
+
+            question = getattr(market, "question", "")
+            if not question:
+                return []
+
+            matches = semantic_matcher.find_matches(
+                question, top_k=max_articles
+            )
+            return [
+                {
+                    "title": m.get("title", ""),
+                    "source": m.get("source", ""),
+                    "relevance_score": m.get("score", 0),
+                    "published_at": str(m.get("published_at", "")),
+                    "summary": m.get("summary", ""),
+                }
+                for m in (matches or [])
+            ]
+        except Exception:
+            return []

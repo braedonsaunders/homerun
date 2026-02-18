@@ -6,29 +6,6 @@ from datetime import datetime, timezone
 from enum import Enum
 
 
-class StrategyType(str, Enum):
-    BASIC = "basic"
-    MUTUALLY_EXCLUSIVE = "mutually_exclusive"
-    CONTRADICTION = "contradiction"
-    NEGRISK = "negrisk"
-    MUST_HAPPEN = "must_happen"
-    MIRACLE = "miracle"  # Bet against impossible/absurd events
-    COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
-    SETTLEMENT_LAG = "settlement_lag"  # Exploit delayed price updates after outcome determined
-    CROSS_PLATFORM = "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
-    BTC_ETH_HIGHFREQ = "btc_eth_highfreq"  # High-frequency BTC/ETH/SOL/XRP 5m/15m/1hr binary market arbitrage
-    NEWS_EDGE = "news_edge"  # News-driven informational edge via LLM probability estimation
-    WEATHER_EDGE = "weather_edge"  # Weather-driven informational edge via forecast model consensus
-    BAYESIAN_CASCADE = "bayesian_cascade"
-    LIQUIDITY_VACUUM = "liquidity_vacuum"
-    ENTROPY_ARB = "entropy_arb"
-    EVENT_DRIVEN = "event_driven"
-    TEMPORAL_DECAY = "temporal_decay"
-    CORRELATION_ARB = "correlation_arb"
-    MARKET_MAKING = "market_making"
-    STAT_ARB = "stat_arb"
-
-
 class MispricingType(str, Enum):
     """Classification of mispricing source (from Kroer et al. Part 2, Section IV).
 
@@ -74,7 +51,7 @@ class ArbitrageOpportunity(BaseModel):
 
     id: str = Field(default_factory=lambda: "")
     stable_id: str = Field(default_factory=lambda: "")  # Persists across scans (no timestamp)
-    strategy: str  # StrategyType value for built-ins, plugin slug for plugins
+    strategy: str  # strategy slug identifier
     title: str
     description: str
 
@@ -145,6 +122,6 @@ class OpportunityFilter(BaseModel):
 
     min_profit: float = 0.0
     max_risk: float = 1.0
-    strategies: list[str] = []  # StrategyType values or plugin slugs
+    strategies: list[str] = []  # strategy slugs
     min_liquidity: float = 0.0
     category: Optional[str] = None

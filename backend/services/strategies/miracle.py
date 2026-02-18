@@ -30,7 +30,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -141,9 +141,10 @@ class MiracleStrategy(BaseStrategy):
     Risk: Black swan events (very rare)
     """
 
-    strategy_type = StrategyType.MIRACLE
+    strategy_type = "miracle"
     name = "Miracle Scanner"
     description = "Bet NO on impossible/absurd events (garbage collection)"
+    mispricing_type = "within_market"
 
     # Properties read from config (persisted in DB via Settings UI).
     # max_no_price default raised from 0.995 to 0.999: Swisstony reportedly

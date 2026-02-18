@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from models.market import Market
 from models.opportunity import (
     ArbitrageOpportunity,
-    StrategyType,
     MispricingType,
     OpportunityFilter,
 )
@@ -56,8 +55,8 @@ class TestScannerInit:
     def test_loads_all_enabled_sync_strategies(self):
         scanner = _build_scanner()
         # NewsEdge runs as a separate async/manual path and is not in
-        # scanner.strategies, so we expect all StrategyType members except NEWS_EDGE.
-        expected_count = len([st for st in StrategyType if st != StrategyType.NEWS_EDGE])
+        # scanner.strategies, so we expect all strategy types except news_edge.
+        expected_count = 8
         assert len(scanner.strategies) == expected_count
 
     def test_strategy_names(self):
@@ -69,7 +68,10 @@ class TestScannerInit:
         scanner = _build_scanner()
         types = {s.strategy_type for s in scanner.strategies}
         # NewsEdge is handled by a separate async/manual path, not in scanner.strategies.
-        expected = {st for st in StrategyType if st != StrategyType.NEWS_EDGE}
+        expected = {
+            "basic", "negrisk", "mutually_exclusive", "contradiction",
+            "must_happen", "miracle", "combinatorial", "settlement_lag",
+        }
         assert types == expected
 
     def test_initial_state(self):
@@ -112,13 +114,13 @@ class TestScanOnce:
         # Strategy 1 returns low + medium ROI opps
         strategy_a = MagicMock()
         strategy_a.name = "StratA"
-        strategy_a.strategy_type = StrategyType.BASIC
+        strategy_a.strategy_type = "basic"
         strategy_a.detect = MagicMock(return_value=[sample_opportunity_low_roi, sample_opportunity])
 
         # Strategy 2 returns high ROI opp
         strategy_b = MagicMock()
         strategy_b.name = "StratB"
-        strategy_b.strategy_type = StrategyType.NEGRISK
+        strategy_b.strategy_type = "negrisk"
         strategy_b.detect = MagicMock(return_value=[sample_opportunity_high_roi])
 
         scanner = _build_scanner(
@@ -142,12 +144,12 @@ class TestScanOnce:
         """A failing strategy does not prevent others from running."""
         bad_strategy = MagicMock()
         bad_strategy.name = "BadStrategy"
-        bad_strategy.strategy_type = StrategyType.CONTRADICTION
+        bad_strategy.strategy_type = "contradiction"
         bad_strategy.detect = MagicMock(side_effect=RuntimeError("boom"))
 
         good_strategy = MagicMock()
         good_strategy.name = "GoodStrategy"
-        good_strategy.strategy_type = StrategyType.BASIC
+        good_strategy.strategy_type = "basic"
         good_strategy.detect = MagicMock(return_value=[sample_opportunity])
 
         scanner = _build_scanner(
@@ -159,7 +161,7 @@ class TestScanOnce:
 
         # Only the good strategy's opportunity is returned
         assert len(results) == 1
-        assert results[0].strategy == StrategyType.BASIC
+        assert results[0].strategy == "basic"
 
     @pytest.mark.asyncio
     async def test_scan_once_sets_last_scan(self, mock_polymarket_client):
@@ -213,7 +215,7 @@ class TestMispricingClassification:
     async def test_mispricing_type_set_for_basic_strategy(self, mock_polymarket_client):
         """Opportunities from basic strategy get WITHIN_MARKET classification."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.BASIC,
+            strategy="basic",
             title="Test",
             description="D",
             total_cost=0.95,
@@ -227,7 +229,7 @@ class TestMispricingClassification:
 
         strategy = MagicMock()
         strategy.name = "Basic"
-        strategy.strategy_type = StrategyType.BASIC
+        strategy.strategy_type = "basic"
         strategy.detect = MagicMock(return_value=[opp])
 
         scanner = _build_scanner(
@@ -243,7 +245,7 @@ class TestMispricingClassification:
     async def test_mispricing_type_set_for_combinatorial(self, mock_polymarket_client):
         """Combinatorial strategy maps to CROSS_MARKET."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.COMBINATORIAL,
+            strategy="combinatorial",
             title="Test",
             description="D",
             total_cost=0.9,
@@ -257,7 +259,7 @@ class TestMispricingClassification:
 
         strategy = MagicMock()
         strategy.name = "Combinatorial"
-        strategy.strategy_type = StrategyType.COMBINATORIAL
+        strategy.strategy_type = "combinatorial"
         strategy.detect = MagicMock(return_value=[opp])
 
         scanner = _build_scanner(
@@ -273,7 +275,7 @@ class TestMispricingClassification:
     async def test_mispricing_type_set_for_settlement_lag(self, mock_polymarket_client):
         """Settlement-lag strategy maps to SETTLEMENT_LAG."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.SETTLEMENT_LAG,
+            strategy="settlement_lag",
             title="Test",
             description="D",
             total_cost=0.9,
@@ -287,7 +289,7 @@ class TestMispricingClassification:
 
         strategy = MagicMock()
         strategy.name = "SettlementLag"
-        strategy.strategy_type = StrategyType.SETTLEMENT_LAG
+        strategy.strategy_type = "settlement_lag"
         strategy.detect = MagicMock(return_value=[opp])
 
         scanner = _build_scanner(
@@ -303,7 +305,7 @@ class TestMispricingClassification:
     async def test_mispricing_type_not_overwritten_if_already_set(self, mock_polymarket_client):
         """If a strategy already set mispricing_type, the scanner does not overwrite it."""
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.BASIC,
+            strategy="basic",
             title="Test",
             description="D",
             total_cost=0.95,
@@ -317,7 +319,7 @@ class TestMispricingClassification:
 
         strategy = MagicMock()
         strategy.name = "Basic"
-        strategy.strategy_type = StrategyType.BASIC
+        strategy.strategy_type = "basic"
         strategy.detect = MagicMock(return_value=[opp])
 
         scanner = _build_scanner(
@@ -343,7 +345,7 @@ class TestSharedPriceHistoryAttach:
         yes_token = "123456789012345678901"
         no_token = "123456789012345678902"
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.WEATHER_EDGE,
+            strategy="weather_edge",
             title="Weather",
             description="D",
             total_cost=0.2,
@@ -376,7 +378,7 @@ class TestSharedPriceHistoryAttach:
         yes_token = "123456789012345678901"
         no_token = "123456789012345678902"
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.WEATHER_EDGE,
+            strategy="weather_edge",
             title="Weather",
             description="D",
             total_cost=0.2,
@@ -509,11 +511,11 @@ class TestGetOpportunities:
                 sample_opportunity_low_roi,
             ]
         )
-        f = OpportunityFilter(strategies=[StrategyType.NEGRISK])
+        f = OpportunityFilter(strategies=["negrisk"])
         result = scanner.get_opportunities(filter=f)
 
         assert len(result) == 1
-        assert result[0].strategy == StrategyType.NEGRISK
+        assert result[0].strategy == "negrisk"
 
     def test_category_filter(
         self,
@@ -555,14 +557,14 @@ class TestGetOpportunities:
                 sample_opportunity_low_roi,
             ]
         )
-        f = OpportunityFilter(max_risk=0.5, strategies=[StrategyType.BASIC])
+        f = OpportunityFilter(max_risk=0.5, strategies=["basic"])
         result = scanner.get_opportunities(filter=f)
 
         # sample_opportunity: risk=0.3, strategy=BASIC -> matches
         # sample_opportunity_high_roi: risk=0.2, strategy=NEGRISK -> strategy mismatch
         # sample_opportunity_low_roi: risk=0.8 -> risk too high
         assert len(result) == 1
-        assert result[0].strategy == StrategyType.BASIC
+        assert result[0].strategy == "basic"
 
     def test_min_liquidity_filter(self, sample_opportunity, sample_opportunity_low_roi):
         scanner = self._scanner_with_opportunities([sample_opportunity, sample_opportunity_low_roi])
@@ -767,7 +769,7 @@ class TestScannerCallbacks:
     async def test_scan_callback_invoked(self, mock_polymarket_client, sample_opportunity):
         strategy = MagicMock()
         strategy.name = "S"
-        strategy.strategy_type = StrategyType.BASIC
+        strategy.strategy_type = "basic"
         strategy.detect = MagicMock(return_value=[sample_opportunity])
 
         scanner = _build_scanner(
@@ -784,7 +786,7 @@ class TestScannerCallbacks:
         # Callback receives the list of opportunities
         call_args = callback.call_args[0][0]
         assert len(call_args) == 1
-        assert call_args[0].strategy == StrategyType.BASIC
+        assert call_args[0].strategy == "basic"
 
     @pytest.mark.asyncio
     async def test_multiple_scan_callbacks(self, mock_polymarket_client):
@@ -807,7 +809,7 @@ class TestScannerCallbacks:
     async def test_callback_exception_does_not_break_scan(self, mock_polymarket_client, sample_opportunity):
         strategy = MagicMock()
         strategy.name = "S"
-        strategy.strategy_type = StrategyType.BASIC
+        strategy.strategy_type = "basic"
         strategy.detect = MagicMock(return_value=[sample_opportunity])
 
         scanner = _build_scanner(

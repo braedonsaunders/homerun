@@ -17,7 +17,7 @@ NOT risk-free arbitrage - this is statistical edge trading.
 from typing import Any, Optional
 
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -34,9 +34,11 @@ class LiquidityVacuumStrategy(BaseStrategy):
        price velocity across consecutive scans.
     """
 
-    strategy_type = StrategyType.LIQUIDITY_VACUUM
+    strategy_type = "liquidity_vacuum"
     name = "Liquidity Vacuum"
     description = "Exploit order book imbalances for directional edge"
+    mispricing_type = "within_market"
+    requires_order_book = True
 
     def __init__(self):
         super().__init__()

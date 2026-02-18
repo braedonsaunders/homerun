@@ -61,6 +61,14 @@ class MyCustomStrategy(BaseStrategy):
     name = "My Custom Strategy"
     description = "Describe what this strategy detects and how it trades"
 
+    # Strategy metadata
+    mispricing_type = "within_market"  # or "cross_market", "settlement_lag", "news_information"
+    source_key = "scanner"
+    worker_affinity = "scanner"
+    opportunity_ttl_minutes = 45  # None = use global default
+    allow_deduplication = True
+    binary_only = True
+
     default_config = {
         # Detection params
         "example_threshold": 0.05,
@@ -77,7 +85,12 @@ class MyCustomStrategy(BaseStrategy):
     }
 
     def detect(self, events, markets, prices):
-        """Find opportunities. Runs every scan cycle."""
+        """Find opportunities. Runs every scan cycle.
+
+        Use self.state to persist data across cycles:
+            prior = self.state.get("last_prices", {})
+            self.state["last_prices"] = {m.id: m.yes_price for m in markets}
+        """
         opportunities = []
         for market in markets:
             if market.closed or not market.active:

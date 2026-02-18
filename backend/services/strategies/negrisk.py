@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -33,9 +33,10 @@ class NegRiskStrategy(BaseStrategy):
     - Profit: $0.03 (guaranteed)
     """
 
-    strategy_type = StrategyType.NEGRISK
+    strategy_type = "negrisk"
     name = "NegRisk / One-of-Many"
     description = "Buy YES on all outcomes in verified mutually-exclusive events"
+    mispricing_type = "within_market"
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []

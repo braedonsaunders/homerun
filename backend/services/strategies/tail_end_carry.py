@@ -25,6 +25,8 @@ class TailEndCarryStrategy(BaseStrategy):
     strategy_type = "tail_end_carry"
     name = "Tail-End Carry"
     description = "Near-expiry high-probability carry with liquidity and spread gates"
+    mispricing_type = "within_market"
+    requires_resolution_date = True
 
     default_config = {
         "min_probability": 0.88,

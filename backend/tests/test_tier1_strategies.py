@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 from utils.utcnow import utcnow
 
 from models.market import Market, Event, Token
-from models.opportunity import ArbitrageOpportunity, StrategyType
+from models.opportunity import ArbitrageOpportunity
 from services.strategies.basic import BasicArbStrategy
 from services.strategies.negrisk import NegRiskStrategy
 
@@ -144,7 +144,7 @@ class TestBasicArbStrategy:
         opps = self.strategy.detect(events=[], markets=[market], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.BASIC
+        assert opp.strategy == "basic"
         assert opp.total_cost == pytest.approx(0.90)
         assert opp.expected_payout == 1.0
         assert opp.net_profit == pytest.approx(0.08)
@@ -358,7 +358,7 @@ class TestNegRiskStrategy:
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.strategy == StrategyType.NEGRISK
+        assert opp.strategy == "negrisk"
         assert opp.total_cost == pytest.approx(0.90)
         assert opp.event_id == "e_nr"
         assert opp.event_title == "Who wins the election?"
@@ -582,7 +582,7 @@ class TestNegRiskStrategy:
         # total = 0.80, should get exactly 1 opportunity from negrisk path
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
-        assert opps[0].strategy == StrategyType.NEGRISK
+        assert opps[0].strategy == "negrisk"
 
     def test_negrisk_below_profit_threshold_no_opportunity(self):
         """NegRisk where total is close to 1.0 and profit below threshold after fees."""

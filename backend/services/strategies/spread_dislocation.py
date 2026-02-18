@@ -24,6 +24,8 @@ class SpreadDislocationStrategy(BaseStrategy):
     strategy_type = "spread_dislocation"
     name = "Spread Dislocation"
     description = "Wide-spread dislocation filter for passive/limit-style captures"
+    mispricing_type = "within_market"
+    requires_order_book = True
 
     default_config = {
         "min_spread": 0.03,

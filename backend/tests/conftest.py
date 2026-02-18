@@ -16,7 +16,6 @@ import json
 from models.market import Market, Event, Token
 from models.opportunity import (
     ArbitrageOpportunity,
-    StrategyType,
     MispricingType,
 )
 
@@ -115,7 +114,7 @@ def sample_token():
 def sample_opportunity():
     """A fully-populated ArbitrageOpportunity."""
     return ArbitrageOpportunity(
-        strategy=StrategyType.BASIC,
+        strategy="basic",
         title="Basic Arb: Will BTC exceed $100k...",
         description="Buy YES ($0.48) + NO ($0.48) = $0.96 for guaranteed $1 payout",
         total_cost=0.96,
@@ -148,7 +147,7 @@ def sample_opportunity():
 def sample_opportunity_high_roi():
     """An opportunity with high ROI for sorting tests."""
     return ArbitrageOpportunity(
-        strategy=StrategyType.NEGRISK,
+        strategy="negrisk",
         title="NegRisk Arb: Election market",
         description="NegRisk opportunity",
         total_cost=0.85,
@@ -180,7 +179,7 @@ def sample_opportunity_high_roi():
 def sample_opportunity_low_roi():
     """An opportunity with low ROI for sorting tests."""
     return ArbitrageOpportunity(
-        strategy=StrategyType.MIRACLE,
+        strategy="miracle",
         title="Miracle: Aliens land",
         description="Bet against impossible event",
         total_cost=0.97,
@@ -212,7 +211,7 @@ def sample_opportunity_low_roi():
 def expired_opportunity():
     """An opportunity whose resolution_date is in the past."""
     return ArbitrageOpportunity(
-        strategy=StrategyType.BASIC,
+        strategy="basic",
         title="Expired opp",
         description="Already resolved",
         total_cost=0.95,
@@ -231,7 +230,7 @@ def expired_opportunity():
 def old_opportunity():
     """An opportunity detected over 2 hours ago."""
     return ArbitrageOpportunity(
-        strategy=StrategyType.BASIC,
+        strategy="basic",
         title="Old opp",
         description="Old detection",
         total_cost=0.95,
@@ -269,6 +268,6 @@ def mock_strategy():
     """A mock strategy that returns configurable opportunities."""
     strategy = MagicMock()
     strategy.name = "MockStrategy"
-    strategy.strategy_type = StrategyType.BASIC
+    strategy.strategy_type = "basic"
     strategy.detect = MagicMock(return_value=[])
     return strategy

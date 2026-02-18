@@ -39,7 +39,7 @@ from collections import defaultdict
 
 import httpx
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -725,9 +725,10 @@ class CrossPlatformStrategy(BaseStrategy):
     fee structure.
     """
 
-    strategy_type = StrategyType.CROSS_PLATFORM
+    strategy_type = "cross_platform"
     name = "Cross-Platform Oracle"
     description = "Cross-platform arbitrage between Polymarket and Kalshi"
+    mispricing_type = "cross_market"
 
     def __init__(self):
         super().__init__()

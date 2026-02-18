@@ -44,6 +44,10 @@ class TradersConfluenceStrategy(BaseStrategy):
     strategy_type = "traders_confluence"
     name = "Traders Confluence"
     description = "Detect smart money convergence via tracked wallet confluence analysis"
+    mispricing_type = "cross_market"
+    source_key = "traders"
+    worker_affinity = "traders"
+    allow_deduplication = False
 
     # Default config thresholds (overridden by DB config column)
     DEFAULT_CONFIG = {

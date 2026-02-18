@@ -57,6 +57,9 @@ class WeatherDistributionStrategy(BaseStrategy):
     strategy_type = "weather_distribution"
     name = "Weather Distribution"
     description = "Full distribution comparison: build probability across all buckets, buy the most underpriced"
+    mispricing_type = "news_information"
+    source_key = "weather"
+    worker_affinity = "weather"
 
     DEFAULT_CONFIG = {
         "min_edge_percent": 5.0,

@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -133,9 +133,11 @@ class TemporalDecayStrategy(BaseStrategy):
     This is a statistical edge strategy, not risk-free arbitrage.
     """
 
-    strategy_type = StrategyType.TEMPORAL_DECAY
+    strategy_type = "temporal_decay"
     name = "Temporal Decay"
     description = "Exploit time-decay mispricing in deadline markets"
+    mispricing_type = "within_market"
+    requires_resolution_date = True
 
     def __init__(self):
         super().__init__()

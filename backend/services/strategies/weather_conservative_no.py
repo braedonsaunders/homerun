@@ -52,6 +52,9 @@ class WeatherConservativeNoStrategy(BaseStrategy):
     strategy_type = "weather_conservative_no"
     name = "Weather Conservative NO"
     description = "Conservative NO-betting: bet NO on buckets far from forecast consensus for high win rate"
+    mispricing_type = "news_information"
+    source_key = "weather"
+    worker_affinity = "weather"
 
     DEFAULT_CONFIG = {
         "min_safe_distance_c": 2.5,   # min degrees C away from consensus to bet NO

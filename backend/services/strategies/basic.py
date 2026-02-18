@@ -1,6 +1,6 @@
 from typing import Any
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 
@@ -20,9 +20,10 @@ class BasicArbStrategy(BaseStrategy):
     - Profit: $0.04 (before fees)
     """
 
-    strategy_type = StrategyType.BASIC
+    strategy_type = "basic"
     name = "Basic Arbitrage"
     description = "Buy YES and NO on same market when total < $1"
+    mispricing_type = "within_market"
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []

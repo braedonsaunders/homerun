@@ -29,7 +29,7 @@ import time
 from collections import OrderedDict, defaultdict
 from typing import Any, Optional
 from config import settings
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
 from utils.logger import get_logger
@@ -820,9 +820,10 @@ class CombinatorialStrategy(BaseStrategy):
     This is the strategy that extracted $95K+ in the research paper.
     """
 
-    strategy_type = StrategyType.COMBINATORIAL
+    strategy_type = "combinatorial"
     name = "Combinatorial Arbitrage"
     description = "Cross-market arbitrage via integer programming"
+    mispricing_type = "cross_market"
 
     # Maximum entries in the dependency cache before LRU eviction
     _MAX_DEPENDENCY_CACHE = 2000

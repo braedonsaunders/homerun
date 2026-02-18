@@ -35,7 +35,6 @@ from api.routes_ai import router as ai_router
 from api.routes_news import router as news_router
 from api.routes_discovery import discovery_router
 from api.routes_kalshi import router as kalshi_router
-from api.routes_plugins import router as plugins_router
 from api.routes_crypto import router as crypto_router
 from api.routes_news_workflow import router as news_workflow_router
 from api.routes_weather_workflow import router as weather_workflow_router
@@ -532,7 +531,6 @@ app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
 app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
-app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
 # Unified strategies router at /api/strategies/* (registered after legacy routers)
 app.include_router(strategies_router, prefix="/api", tags=["Strategies (Unified)"])
 app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])

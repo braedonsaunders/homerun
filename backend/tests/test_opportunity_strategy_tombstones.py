@@ -10,7 +10,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from api import routes_plugins
+from api import routes_strategies
 from models.database import Base, Strategy, StrategyTombstone
 from services.opportunity_strategy_catalog import (
     SYSTEM_OPPORTUNITY_STRATEGY_SEEDS,
@@ -61,7 +61,7 @@ async def test_seed_skips_tombstoned_system_slug(tmp_path):
 @pytest.mark.asyncio
 async def test_delete_system_strategy_creates_tombstone_and_blocks_reseed(tmp_path, monkeypatch):
     engine, session_factory = await _build_session_factory(tmp_path)
-    monkeypatch.setattr(routes_plugins, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(routes_strategies, "AsyncSessionLocal", session_factory)
 
     try:
         async with session_factory() as session:
@@ -77,7 +77,7 @@ async def test_delete_system_strategy_creates_tombstone_and_blocks_reseed(tmp_pa
             )
             basic_id = basic_row.id
 
-        result = await routes_plugins.delete_plugin(basic_id)
+        result = await routes_strategies.delete_strategy(basic_id)
         assert result["status"] == "success"
 
         async with session_factory() as session:

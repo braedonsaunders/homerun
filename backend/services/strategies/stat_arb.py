@@ -21,7 +21,7 @@ import re
 import statistics
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -93,9 +93,10 @@ class StatArbStrategy(BaseStrategy):
     with a statistical edge derived from combining independent signals.
     """
 
-    strategy_type = StrategyType.STAT_ARB
+    strategy_type = "stat_arb"
     name = "Statistical Arbitrage"
     description = "Trade deviations from estimated fair probability"
+    mispricing_type = "within_market"
 
     def __init__(self):
         super().__init__()

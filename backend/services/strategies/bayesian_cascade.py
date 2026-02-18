@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType, MispricingType
+from models import Market, Event, ArbitrageOpportunity, MispricingType
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -278,11 +278,12 @@ class BayesianCascadeStrategy(BaseStrategy):
     opportunities to trade before the target market adjusts.
     """
 
-    strategy_type = StrategyType.BAYESIAN_CASCADE
+    strategy_type = "bayesian_cascade"
     name = "Bayesian Cascade"
     description = (
         "Graph-based belief propagation to detect mispriced markets that haven't reacted to related market moves"
     )
+    mispricing_type = "cross_market"
 
     # Minimum price change (absolute, on 0-1 scale) to consider a market
     # as having "moved" and trigger propagation.

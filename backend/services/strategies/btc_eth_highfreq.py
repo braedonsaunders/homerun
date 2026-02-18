@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings as _cfg
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.strategies._evaluate_helpers import to_float, to_confidence, to_bool, signal_payload
@@ -805,9 +805,14 @@ class BtcEthHighFreqStrategy(BaseStrategy):
     Designed for Polymarket's 15-min and 1-hr BTC/ETH up-or-down markets.
     """
 
-    strategy_type = StrategyType.BTC_ETH_HIGHFREQ
+    strategy_type = "btc_eth_highfreq"
     name = "BTC/ETH High-Frequency"
     description = "Dynamic high-frequency arbitrage on BTC/ETH 15-min and 1-hr binary markets"
+    mispricing_type = "within_market"
+    source_key = "crypto"
+    worker_affinity = "crypto"
+    market_categories = ["crypto"]
+    requires_historical_prices = True
 
     def __init__(self) -> None:
         super().__init__()

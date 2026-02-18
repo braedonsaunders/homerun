@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware, utcnow
 from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
@@ -148,9 +148,10 @@ class EntropyArbStrategy(BaseStrategy):
     rather than reflecting stale order books.
     """
 
-    strategy_type = StrategyType.ENTROPY_ARB
+    strategy_type = "entropy_arb"
     name = "Entropy Signal"
     description = "NegRisk rebalancing ranked by entropy quality"
+    mispricing_type = "within_market"
 
     def __init__(self) -> None:
         super().__init__()

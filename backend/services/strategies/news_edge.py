@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from config import settings
-from models import ArbitrageOpportunity, Event, Market, StrategyType
+from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
 from services.news.edge_detector import NewsEdge
 from services.news.feed_service import news_feed_service
@@ -51,9 +51,14 @@ class NewsEdgeStrategy(BaseStrategy):
     markets and estimating probability shifts via LLM.
     """
 
-    strategy_type = StrategyType.NEWS_EDGE
+    strategy_type = "news_edge"
     name = "News Edge"
     description = "Detect news-driven mispricings via semantic matching + LLM probability estimation"
+    mispricing_type = "news_information"
+    source_key = "news"
+    worker_affinity = "news"
+    requires_news_data = True
+    allow_deduplication = False
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Sync detect — not used for this strategy.
@@ -295,7 +300,7 @@ class NewsEdgeStrategy(BaseStrategy):
         }
 
         opp = ArbitrageOpportunity(
-            strategy=StrategyType.NEWS_EDGE,
+            strategy="news_edge",
             title=f"News Edge: {market.question[:50]}...",
             description=(
                 f"News suggests {side} at ${entry_price:.2f} "
