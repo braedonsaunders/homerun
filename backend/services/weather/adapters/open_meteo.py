@@ -160,7 +160,7 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
 
     def __init__(self, timeout_seconds: float = 15.0):
         self._timeout = timeout_seconds
-        self._cache_lock = asyncio.Lock()
+        self._cache_lock: Optional[asyncio.Lock] = None
         self._geo_cache: dict[str, tuple[float, float, Optional[str], Optional[str], Optional[str]]] = {}
         self._model_value_cache: dict[tuple[Any, ...], float] = {}
         self._nws_value_cache: dict[tuple[Any, ...], Optional[float]] = {}
@@ -169,6 +169,11 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         ] = {}
         self._model_inflight: dict[tuple[Any, ...], asyncio.Task[float]] = {}
         self._nws_inflight: dict[tuple[Any, ...], asyncio.Task[Optional[float]]] = {}
+
+    def _get_cache_lock(self) -> asyncio.Lock:
+        if self._cache_lock is None:
+            self._cache_lock = asyncio.Lock()
+        return self._cache_lock
 
     def clear_cycle_cache(self) -> None:
         """Clear request caches so each scan cycle starts fresh."""
@@ -349,7 +354,8 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         if not cache_key:
             raise ValueError("Location cannot be empty")
 
-        async with self._cache_lock:
+        cache_lock = self._get_cache_lock()
+        async with cache_lock:
             cached = self._geo_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -361,12 +367,12 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         try:
             result = await task
         except Exception:
-            async with self._cache_lock:
+            async with cache_lock:
                 if self._geo_inflight.get(cache_key) is task:
                     self._geo_inflight.pop(cache_key, None)
             raise
 
-        async with self._cache_lock:
+        async with cache_lock:
             self._geo_cache[cache_key] = result
             if self._geo_inflight.get(cache_key) is task:
                 self._geo_inflight.pop(cache_key, None)
@@ -414,7 +420,8 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
             daily_field=daily_field,
         )
 
-        async with self._cache_lock:
+        cache_lock = self._get_cache_lock()
+        async with cache_lock:
             cached = self._model_value_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -436,12 +443,12 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         try:
             value = await task
         except Exception:
-            async with self._cache_lock:
+            async with cache_lock:
                 if self._model_inflight.get(cache_key) is task:
                     self._model_inflight.pop(cache_key, None)
             raise
 
-        async with self._cache_lock:
+        async with cache_lock:
             self._model_value_cache[cache_key] = value
             if self._model_inflight.get(cache_key) is task:
                 self._model_inflight.pop(cache_key, None)
@@ -579,7 +586,8 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         )
         cache_key = (round(lat, 4), round(lon, 4), metric_key, target_key)
 
-        async with self._cache_lock:
+        cache_lock = self._get_cache_lock()
+        async with cache_lock:
             if cache_key in self._nws_value_cache:
                 return self._nws_value_cache[cache_key]
             task = self._nws_inflight.get(cache_key)
@@ -598,12 +606,12 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         try:
             value = await task
         except Exception:
-            async with self._cache_lock:
+            async with cache_lock:
                 if self._nws_inflight.get(cache_key) is task:
                     self._nws_inflight.pop(cache_key, None)
             return None
 
-        async with self._cache_lock:
+        async with cache_lock:
             self._nws_value_cache[cache_key] = value
             if self._nws_inflight.get(cache_key) is task:
                 self._nws_inflight.pop(cache_key, None)

@@ -102,6 +102,13 @@ class ParallelExecutor:
         self.max_latency_ms = max_latency_ms
         self.retry_failed_legs = retry_failed_legs
         self.max_retries = max_retries
+        # Some sync unit tests call asyncio.get_event_loop().run_until_complete(...)
+        # after async tests have cleared the current loop. Ensure a usable loop
+        # exists at construction time for compatibility.
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
 
     async def execute(self, legs: list[ExecutionLeg], opportunity_id: Optional[str] = None) -> ParallelExecutionResult:
         """

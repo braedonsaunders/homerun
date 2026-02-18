@@ -290,9 +290,7 @@ class MiracleStrategy(BaseStrategy):
             total_cost = no_price
             expected_payout = 1.0
             gross_profit = expected_payout - total_cost
-            fee = expected_payout * self.fee
-            net_profit = gross_profit - fee
-            roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+            roi = (gross_profit / total_cost) * 100 if total_cost > 0 else 0
 
             # Skip if ROI too low after fees
             if roi < 0.5:  # At least 0.5% profit
@@ -337,8 +335,7 @@ class MiracleStrategy(BaseStrategy):
             )
             if opp is not None:
                 opp.risk_factors = risk_factors
-
-            opportunities.append(opp)
+                opportunities.append(opp)
 
         # Sort by ROI (higher profit opportunities first)
         opportunities.sort(key=lambda x: x.roi_percent, reverse=True)

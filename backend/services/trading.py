@@ -137,7 +137,7 @@ class TradingService:
         self._stats = TradingStats()
         self._daily_volume_reset = utcnow().date()
         self._market_positions: OrderedDict[str, Decimal] = OrderedDict()  # token_id -> USD exposure
-        self._stats_lock = asyncio.Lock()
+        self._stats_lock: Optional[asyncio.Lock] = None
         self._daily_volume = ZERO
         self._daily_pnl = ZERO
         self._total_volume = ZERO
@@ -151,6 +151,11 @@ class TradingService:
             100,
             int(getattr(settings, "TRADING_MARKET_POSITION_LIMIT", 5000)),
         )
+
+    def _get_stats_lock(self) -> asyncio.Lock:
+        if self._stats_lock is None:
+            self._stats_lock = asyncio.Lock()
+        return self._stats_lock
 
     async def initialize(self) -> bool:
         """
@@ -345,7 +350,8 @@ class TradingService:
         # across API and worker containers.
         await global_pause_state.refresh_from_db(force=True)
 
-        async with self._stats_lock:
+        stats_lock = self._get_stats_lock()
+        async with stats_lock:
             is_valid, error = self._validate_order(
                 size_usd=size_usd,
                 side=side,
@@ -368,7 +374,8 @@ class TradingService:
         side: OrderSide,
         token_id: Optional[str],
     ) -> None:
-        async with self._stats_lock:
+        stats_lock = self._get_stats_lock()
+        async with stats_lock:
             self._daily_volume = max(ZERO, self._daily_volume - size_usd)
             self._total_volume = max(ZERO, self._total_volume - size_usd)
             delta = -size_usd if side == OrderSide.BUY else size_usd
@@ -460,7 +467,8 @@ class TradingService:
             if response.get("success"):
                 order.status = OrderStatus.OPEN
                 order.clob_order_id = response.get("orderID")
-                async with self._stats_lock:
+                stats_lock = self._get_stats_lock()
+                async with stats_lock:
                     self._stats.total_trades += 1
                     self._stats.last_trade_at = utcnow()
                 logger.info(f"Order placed successfully: {order.clob_order_id}")

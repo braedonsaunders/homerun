@@ -5,8 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from datetime import timedelta
 from typing import Optional
-from unittest.mock import AsyncMock
-
 import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -26,14 +24,6 @@ from services.smart_wallet_pool import (  # noqa: E402
     POOL_FLAG_MANUAL_INCLUDE,
 )
 from services.wallet_intelligence import ConfluenceDetector  # noqa: E402
-
-
-class _RowsResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
 
 
 def _wallet(
@@ -188,6 +178,18 @@ class TestSmartWalletPoolScoring:
         assert "manual_include" in codes
         assert "churn_guard_retained" in codes
         assert "insider_alignment" in codes
+
+    def test_selection_score_clamps_components(self):
+        svc = SmartWalletPoolService()
+        score = svc._score_selection(
+            composite=1.4,
+            rank_score=-0.4,
+            insider_score=0.2,
+            source_confidence=2.0,
+            diversity_score=-1.0,
+            momentum_score=0.5,
+        )
+        assert score == pytest.approx(0.711, abs=1e-12)
 
 
 class TestSmartWalletPoolChurnGuard:
@@ -374,35 +376,3 @@ class TestConfluenceDetectorThresholds:
         assert 0.0 <= best_case <= 100.0
         assert 0.0 <= worst_case <= 100.0
         assert best_case > worst_case
-
-
-@pytest.mark.asyncio
-async def test_trader_opportunities_filter_excludes_discovered_only_signals():
-    svc = SmartWalletPoolService()
-    signals = [
-        SimpleNamespace(id="sig-pool", wallets=["0xpool", "0xother"]),
-        SimpleNamespace(id="sig-tracked", wallets=["0xtracked"]),
-        SimpleNamespace(id="sig-group", wallets=["0xgroup"]),
-        SimpleNamespace(id="sig-unqualified", wallets=["0xother"]),
-        SimpleNamespace(id="sig-empty", wallets=[]),
-    ]
-    session = SimpleNamespace(
-        execute=AsyncMock(
-            side_effect=[
-                _RowsResult([("0xpool",)]),
-                _RowsResult([("0xtracked",)]),
-                _RowsResult([("0xgroup",)]),
-            ]
-        )
-    )
-
-    filtered = await svc._filter_signals_to_known_trader_sources(
-        session=session,
-        signals=signals,
-    )
-
-    assert [signal.id for signal in filtered] == [
-        "sig-pool",
-        "sig-tracked",
-        "sig-group",
-    ]

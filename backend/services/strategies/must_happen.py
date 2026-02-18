@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from models import Market, Event, ArbitrageOpportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from utils.converters import to_float
 
@@ -265,9 +264,7 @@ class MustHappenStrategy(BaseStrategy):
         # Need to be under $1 for profit
         if total_yes >= 1.0:
             return None
-
-        # Reject if total YES is too low — non-exhaustive outcome list
-        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
+        if total_yes < 0.80:
             return None
 
         opp = self.create_opportunity(

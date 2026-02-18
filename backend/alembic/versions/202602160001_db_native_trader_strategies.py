@@ -252,6 +252,18 @@ def _seed_system_trader_strategies() -> None:
     now = datetime.utcnow()
     rows = build_system_opportunity_strategy_rows()
     for row in rows:
+        strategy_key = str(row.get("strategy_key") or row.get("slug") or "").strip()
+        if not strategy_key:
+            continue
+        label = row.get("label") if row.get("label") is not None else row.get("name")
+        default_params_json = (
+            row.get("default_params_json") if row.get("default_params_json") is not None else row.get("config")
+        )
+        param_schema_json = row.get("param_schema_json") if row.get("param_schema_json") is not None else row.get(
+            "config_schema"
+        )
+        aliases_json = row.get("aliases_json") if row.get("aliases_json") is not None else row.get("aliases")
+
         existing = (
             bind.execute(
                 sa.select(
@@ -259,7 +271,7 @@ def _seed_system_trader_strategies() -> None:
                     table.c.is_system,
                     table.c.source_code,
                     table.c.version,
-                ).where(table.c.strategy_key == row["strategy_key"])
+                ).where(table.c.strategy_key == strategy_key)
             )
             .mappings()
             .first()
@@ -269,15 +281,15 @@ def _seed_system_trader_strategies() -> None:
             bind.execute(
                 table.insert().values(
                     id=row["id"],
-                    strategy_key=row["strategy_key"],
+                    strategy_key=strategy_key,
                     source_key=row["source_key"],
-                    label=row["label"],
+                    label=label,
                     description=row["description"],
                     class_name=row["class_name"],
                     source_code=row["source_code"],
-                    default_params_json=row["default_params_json"],
-                    param_schema_json=row["param_schema_json"],
-                    aliases_json=row["aliases_json"],
+                    default_params_json=default_params_json,
+                    param_schema_json=param_schema_json,
+                    aliases_json=aliases_json,
                     is_system=True,
                     enabled=True,
                     status="unloaded",
@@ -292,16 +304,16 @@ def _seed_system_trader_strategies() -> None:
         if bool(existing.get("is_system")):
             bind.execute(
                 table.update()
-                .where(table.c.strategy_key == row["strategy_key"])
+                .where(table.c.strategy_key == strategy_key)
                 .values(
                     source_key=row["source_key"],
-                    label=row["label"],
+                    label=label,
                     description=row["description"],
                     class_name=row["class_name"],
                     source_code=row["source_code"] or existing.get("source_code"),
-                    default_params_json=row["default_params_json"],
-                    param_schema_json=row["param_schema_json"],
-                    aliases_json=row["aliases_json"],
+                    default_params_json=default_params_json,
+                    param_schema_json=param_schema_json,
+                    aliases_json=aliases_json,
                     updated_at=now,
                 )
             )

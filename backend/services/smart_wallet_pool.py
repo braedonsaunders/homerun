@@ -178,7 +178,7 @@ class SmartWalletPoolService:
     def __init__(self):
         self.client = polymarket_client
         self._running = False
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         self._activity_cache: dict[str, datetime] = {}
         self._callback_registered = False
         self._ws_broadcast_callback = None
@@ -210,6 +210,11 @@ class SmartWalletPoolService:
             "quality_only_auto_enforced": False,
         }
         self.configure_runtime(None)
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @staticmethod
     def _coerce_int(value: Any, default: int, lo: int, hi: int) -> int:
@@ -445,7 +450,8 @@ class SmartWalletPoolService:
 
     async def run_full_sweep(self):
         """Collect candidates from all configured sources."""
-        async with self._lock:
+        lock = self._get_lock()
+        async with lock:
             logger.info("Starting smart wallet full candidate sweep")
 
             candidate_sources: dict[str, dict[str, bool]] = defaultdict(dict)
@@ -507,7 +513,8 @@ class SmartWalletPoolService:
 
     async def run_incremental_refresh(self):
         """Lightweight candidate refresh intended for frequent runs."""
-        async with self._lock:
+        lock = self._get_lock()
+        async with lock:
             candidate_sources: dict[str, dict[str, bool]] = defaultdict(dict)
             candidate_usernames: dict[str, str] = {}
             events: list[dict] = []
@@ -552,7 +559,8 @@ class SmartWalletPoolService:
 
     async def reconcile_activity(self):
         """Use activity endpoint to backfill missed trades."""
-        async with self._lock:
+        lock = self._get_lock()
+        async with lock:
             candidate_sources: dict[str, dict[str, bool]] = defaultdict(dict)
             candidate_usernames: dict[str, str] = {}
             events: list[dict] = []
@@ -579,7 +587,8 @@ class SmartWalletPoolService:
 
     async def recompute_pool(self, mode: Optional[str] = None):
         """Recompute scoring, apply churn guard, and update pool membership."""
-        async with self._lock:
+        lock = self._get_lock()
+        async with lock:
             if mode is not None:
                 self.set_recompute_mode(mode)
             now = utcnow()
@@ -683,158 +692,6 @@ class SmartWalletPoolService:
                 "profitable_pool_pct_min": SLO_MIN_PROFITABLE_PCT,
             },
         }
-
-    async def get_tracked_trader_opportunities(
-        self,
-        limit: int = 50,
-        min_tier: str = "WATCH",
-        include_filtered: bool = False,
-    ) -> list[dict]:
-        """Get signal-first opportunities for the Tracked Traders surface."""
-        tier_rank = {"WATCH": 1, "HIGH": 2, "EXTREME": 3}
-        min_rank = tier_rank.get(min_tier.upper(), 1)
-
-        async with AsyncSessionLocal() as session:
-            if include_filtered:
-                # Show Filtered mode should include recently deactivated signals so
-                # users can inspect what was filtered out of execution.
-                filtered_cutoff = utcnow() - timedelta(hours=24)
-                result = await session.execute(
-                    select(MarketConfluenceSignal)
-                    .where(
-                        func.coalesce(
-                            MarketConfluenceSignal.last_seen_at,
-                            MarketConfluenceSignal.detected_at,
-                        )
-                        >= filtered_cutoff
-                    )
-                    .order_by(
-                        MarketConfluenceSignal.conviction_score.desc(),
-                        MarketConfluenceSignal.last_seen_at.desc(),
-                    )
-                    .limit(max(limit * 6, limit + 50))
-                )
-            else:
-                result = await session.execute(
-                    select(MarketConfluenceSignal)
-                    .where(MarketConfluenceSignal.is_active == True)  # noqa: E712
-                    .order_by(
-                        MarketConfluenceSignal.conviction_score.desc(),
-                        MarketConfluenceSignal.last_seen_at.desc(),
-                    )
-                    .limit(limit * 2)
-                )
-            raw = list(result.scalars().all())
-
-            signals = [s for s in raw if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank]
-
-            if not include_filtered:
-                signals = await self._prune_non_tradable_signals(
-                    session=session,
-                    signals=signals,
-                )
-            signals = await self._filter_signals_to_known_trader_sources(
-                session=session,
-                signals=signals,
-            )
-            before_crypto_filter = len(signals)
-            signals = [
-                signal
-                for signal in signals
-                if not _looks_like_crypto_market(
-                    signal.market_question,
-                    signal.market_slug,
-                    signal.market_id,
-                )
-            ]
-            if len(signals) != before_crypto_filter:
-                logger.info(
-                    "Excluded crypto confluence signals from traders opportunities",
-                    removed=before_crypto_filter - len(signals),
-                    include_filtered=include_filtered,
-                )
-            signals = signals[:limit]
-
-            await self._refresh_signal_market_metadata(session=session, signals=signals)
-
-            addresses = {addr.lower() for s in signals for addr in (s.wallets or []) if isinstance(addr, str)}
-
-            profile_rows = await session.execute(
-                select(DiscoveredWallet).where(DiscoveredWallet.address.in_(list(addresses)))
-            )
-            profiles = {
-                w.address: {
-                    "address": w.address,
-                    "username": w.username,
-                    "rank_score": w.rank_score or 0.0,
-                    "composite_score": w.composite_score or 0.0,
-                    "quality_score": w.quality_score or 0.0,
-                    "activity_score": w.activity_score or 0.0,
-                }
-                for w in profile_rows.scalars().all()
-            }
-
-            question_market_ids: dict[str, set[str]] = {}
-            for s in signals:
-                question_norm = str(s.market_question or "").strip().lower()
-                market_id_norm = str(s.market_id or "").strip().lower()
-                if question_norm and market_id_norm:
-                    question_market_ids.setdefault(question_norm, set()).add(market_id_norm)
-
-            output = []
-            for s in signals:
-                top_wallets = []
-                for address in (s.wallets or [])[:8]:
-                    profile = profiles.get(address.lower())
-                    if profile:
-                        top_wallets.append(profile)
-
-                market_question = str(s.market_question or "").strip()
-                question_norm = market_question.lower()
-                distinct_market_count = len(question_market_ids.get(question_norm, set()))
-                if market_question and distinct_market_count >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD:
-                    # Safety fallback: avoid displaying clearly poisoned duplicate metadata.
-                    market_question = f"Market {s.market_id}"
-                if not market_question:
-                    market_question = f"Market {s.market_id}"
-
-                output.append(
-                    {
-                        "id": s.id,
-                        "market_id": s.market_id,
-                        "market_question": market_question,
-                        "market_slug": s.market_slug,
-                        "signal_type": s.signal_type,
-                        "outcome": s.outcome,
-                        "tier": s.tier or "WATCH",
-                        "conviction_score": s.conviction_score or 0.0,
-                        "strength": s.strength or 0.0,
-                        "wallet_count": s.wallet_count or 0,
-                        "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count or 0,
-                        "unique_core_wallets": s.unique_core_wallets or 0,
-                        "weighted_wallet_score": s.weighted_wallet_score or 0.0,
-                        "window_minutes": s.window_minutes or 60,
-                        "avg_entry_price": s.avg_entry_price,
-                        "total_size": s.total_size,
-                        "net_notional": s.net_notional,
-                        "conflicting_notional": s.conflicting_notional,
-                        "market_liquidity": s.market_liquidity,
-                        "market_volume_24h": s.market_volume_24h,
-                        "first_seen_at": s.first_seen_at.isoformat() if s.first_seen_at else None,
-                        "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
-                        "detected_at": (
-                            s.detected_at.isoformat()
-                            if s.detected_at
-                            else (s.last_seen_at.isoformat() if s.last_seen_at else utcnow().isoformat())
-                        ),
-                        "is_active": bool(s.is_active),
-                        "is_tradeable": bool(s.is_active),
-                        "wallets": s.wallets or [],
-                        "top_wallets": top_wallets,
-                    }
-                )
-
-        return output
 
     async def get_tracked_trader_firehose_signals(
         self,
@@ -962,169 +819,6 @@ class SmartWalletPoolService:
                 )
 
         return output[:safe_limit]
-
-    async def _filter_signals_to_known_trader_sources(
-        self,
-        *,
-        session,
-        signals: list[MarketConfluenceSignal],
-    ) -> list[MarketConfluenceSignal]:
-        """
-        Keep only confluence rows sourced from:
-        - pool wallets
-        - tracked wallets
-        - active trader-group members
-        """
-        if not signals:
-            return []
-
-        addresses = {
-            str(raw).strip().lower()
-            for signal in signals
-            for raw in (signal.wallets or [])
-            if isinstance(raw, str) and str(raw).strip()
-        }
-        if not addresses:
-            return []
-
-        address_list = list(addresses)
-
-        pool_result = await session.execute(
-            select(func.lower(DiscoveredWallet.address)).where(
-                DiscoveredWallet.in_top_pool == True,  # noqa: E712
-                func.lower(DiscoveredWallet.address).in_(address_list),
-            )
-        )
-        pool_addresses = {str(address).strip().lower() for (address,) in pool_result.all() if address}
-
-        tracked_result = await session.execute(
-            select(func.lower(TrackedWallet.address)).where(func.lower(TrackedWallet.address).in_(address_list))
-        )
-        tracked_addresses = {str(address).strip().lower() for (address,) in tracked_result.all() if address}
-
-        group_result = await session.execute(
-            select(func.lower(TraderGroupMember.wallet_address))
-            .join(TraderGroup, TraderGroupMember.group_id == TraderGroup.id)
-            .where(
-                TraderGroup.is_active == True,  # noqa: E712
-                func.lower(TraderGroupMember.wallet_address).in_(address_list),
-            )
-        )
-        group_addresses = {str(address).strip().lower() for (address,) in group_result.all() if address}
-
-        qualified_addresses = pool_addresses | tracked_addresses | group_addresses
-        if not qualified_addresses:
-            return []
-
-        kept: list[MarketConfluenceSignal] = []
-        dropped = 0
-        for signal in signals:
-            signal_wallets = {
-                str(raw).strip().lower() for raw in (signal.wallets or []) if isinstance(raw, str) and str(raw).strip()
-            }
-            if signal_wallets and signal_wallets.intersection(qualified_addresses):
-                kept.append(signal)
-            else:
-                dropped += 1
-
-        if dropped:
-            logger.info(
-                "Filtered confluence rows without pool/tracked/group wallets",
-                dropped=dropped,
-                kept=len(kept),
-            )
-
-        return kept
-
-    async def _prune_non_tradable_signals(
-        self,
-        *,
-        session,
-        signals: list[MarketConfluenceSignal],
-    ) -> list[MarketConfluenceSignal]:
-        """Deactivate and remove signals whose markets are no longer tradable.
-
-        Also excludes crypto-tagged markets — those are handled by the
-        dedicated crypto system.
-        """
-        if not signals:
-            return []
-
-        now = utcnow()
-        kept: list[MarketConfluenceSignal] = []
-        deactivated = 0
-        crypto_excluded = 0
-        metadata_updates = 0
-        market_info_by_id: dict[str, Optional[dict[str, Any]]] = {}
-
-        for signal in signals:
-            market_id = str(signal.market_id or "").strip()
-            if not market_id:
-                continue
-
-            cache_key = market_id.lower()
-            if cache_key in market_info_by_id:
-                info = market_info_by_id[cache_key]
-            else:
-                try:
-                    if market_id.startswith("0x"):
-                        info = await self.client.get_market_by_condition_id(market_id)
-                    else:
-                        info = await self.client.get_market_by_token_id(market_id)
-                except Exception:
-                    info = None
-                market_info_by_id[cache_key] = info
-
-            # Exclude crypto markets — handled by the dedicated crypto system.
-            info_tags = (info.get("tags") if isinstance(info, dict) else []) or []
-            info_category = info.get("category") if isinstance(info, dict) else None
-            if _looks_like_crypto_market(
-                signal.market_question,
-                signal.market_slug,
-                info.get("question") if isinstance(info, dict) else None,
-                info.get("slug") if isinstance(info, dict) else None,
-                info.get("event_slug") if isinstance(info, dict) else None,
-                tags=info_tags if isinstance(info_tags, list) else [info_tags],
-                category=info_category,
-            ):
-                signal.is_active = False
-                signal.expired_at = now
-                crypto_excluded += 1
-                continue
-
-            tradable = self.client.is_market_tradable(info, now=now) if info else True
-            if tradable:
-                if info:
-                    changed = False
-                    new_question = str(info.get("question") or "").strip()
-                    new_slug = str(info.get("event_slug") or info.get("slug") or "").strip()
-                    if new_question and new_question != str(signal.market_question or "").strip():
-                        signal.market_question = new_question
-                        changed = True
-                    if new_slug and new_slug != str(signal.market_slug or "").strip():
-                        signal.market_slug = new_slug
-                        changed = True
-                    if changed:
-                        metadata_updates += 1
-                kept.append(signal)
-                continue
-
-            signal.is_active = False
-            signal.expired_at = now
-            deactivated += 1
-
-        if deactivated or metadata_updates or crypto_excluded:
-            await session.commit()
-            logger.info(
-                "Pruned non-tradable confluence signals",
-                checked=len(signals),
-                deactivated=deactivated,
-                crypto_excluded=crypto_excluded,
-                metadata_updates=metadata_updates,
-                remaining=len(kept),
-            )
-
-        return kept
 
     async def _refresh_signal_market_metadata(
         self,
@@ -2243,12 +1937,12 @@ class SmartWalletPoolService:
         momentum_score: float,
     ) -> float:
         return clamp(
-            0.62 * clamp(composite)
-            + 0.16 * clamp(rank_score)
-            + 0.08 * clamp(insider_score)
-            + 0.06 * clamp(source_confidence)
-            + 0.05 * clamp(diversity_score)
-            + 0.03 * clamp(momentum_score),
+            0.62 * clamp(composite, 0.0, 1.0)
+            + 0.16 * clamp(rank_score, 0.0, 1.0)
+            + 0.08 * clamp(insider_score, 0.0, 1.0)
+            + 0.06 * clamp(source_confidence, 0.0, 1.0)
+            + 0.05 * clamp(diversity_score, 0.0, 1.0)
+            + 0.03 * clamp(momentum_score, 0.0, 1.0),
             0.0,
             1.0,
         )

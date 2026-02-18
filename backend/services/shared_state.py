@@ -132,6 +132,9 @@ async def write_scanner_snapshot(
             "last_scan": status.get("last_scan"),
             "opportunities_count": len(opportunities),
             "current_activity": status.get("current_activity"),
+            "strategies": status.get("strategies", []),
+            "tiered_scanning": status.get("tiered_scanning"),
+            "ws_feeds": status.get("ws_feeds"),
         }
         await event_bus.publish("scanner_status", scanner_status)
         await event_bus.publish(

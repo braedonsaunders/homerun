@@ -20,9 +20,6 @@ def get_strategy(strategy_key: str) -> BaseStrategy:
     """Return the BaseStrategy instance for *strategy_key*, or a default."""
     key = str(strategy_key or "").strip().lower()
     if key in {"strategy.default", "default"}:
-        legacy_default = strategy_loader.get_instance("btc_eth_highfreq")
-        if legacy_default is not None:
-            return legacy_default
         return BtcEthHighFreqStrategy()
 
     instance = strategy_loader.get_instance(key)

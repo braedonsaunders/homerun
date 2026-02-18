@@ -138,42 +138,8 @@ class NegRiskStrategy(BaseStrategy):
             # Check for SHORT arbitrage (total YES > $1 means NOs are cheap)
             return self._detect_negrisk_short(event, active_markets, prices)
 
-        # --- Non-exhaustive outcome detection ---
-        # A total YES well below 1.0 indicates the market is pricing in a
-        # significant chance of an UNLISTED outcome winning. This is especially
-        # common in election primaries, special elections, and multi-candidate races.
-        # The "spread" is NOT a mispricing — it's rational non-exhaustive risk pricing.
-        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
-            return None
-
-        # --- Outcome-count-aware threshold ---
-        # Markets with very few listed outcomes are far more likely to be
-        # non-exhaustive (e.g., 4 named companies + "other" for an acquisition
-        # with dozens of potential acquirers).  Require higher total_yes for
-        # small outcome sets: <=5 outcomes need 0.98+, 6-8 need 0.97+.
-        num_outcomes = len(active_markets)
-        if num_outcomes <= 5 and total_yes < 0.98:
-            return None
-        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
-            return None
-
-        # --- Structural non-exhaustiveness checks ---
         is_election = self._is_election_market(event.title)
         is_open_ended = self._is_open_ended_event(event.title)
-
-        # Election markets with exactly 2 candidates (Dem vs Rep) are NEVER
-        # exhaustive — independent/third-party candidates can always win.
-        # Only accept election markets if they have enough candidates that
-        # the total YES sum is very close to 1.0.
-        if is_election and len(active_markets) <= 2:
-            return None
-
-        # Election/primary markets almost ALWAYS have unlisted candidates.
-        # Require a much higher total YES (closer to 1.0) to accept these.
-        # A 3-7% gap in a primary market is the market pricing "Other/Field",
-        # not a mispricing we can exploit.
-        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
-            return None
 
         # Open-ended events (Nobel Prize, awards, "best X") where the outcome
         # universe is inherently unbounded — anyone/anything could win.
@@ -641,23 +607,12 @@ class NegRiskStrategy(BaseStrategy):
             # Check for SHORT arbitrage (total YES > $1 means NOs are cheap)
             return self._detect_multi_outcome_short(event, exclusive_markets, prices)
 
-        # Reject if total YES is too low — almost certainly non-exhaustive outcomes
-        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
-            return None
-
-        # Outcome-count-aware threshold (same as NegRisk)
-        num_outcomes = len(exclusive_markets)
-        if num_outcomes <= 5 and total_yes < 0.98:
-            return None
-        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+        # Very low totals usually indicate missing outcomes in non-NegRisk events.
+        if total_yes < 0.70:
             return None
 
         # Structural non-exhaustiveness checks (same as NegRisk)
         is_election = self._is_election_market(event.title)
-        if is_election and len(exclusive_markets) <= 2:
-            return None
-        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
-            return None
         if self._is_open_ended_event(event.title):
             return None
 
@@ -688,10 +643,10 @@ class NegRiskStrategy(BaseStrategy):
 
         if opp:
             opp.risk_factors.insert(0, "Verify manually: ensure all possible outcomes are listed")
-            if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+            if total_yes < 0.85:
                 opp.risk_factors.insert(
                     0,
-                    f"Total YES ({total_yes:.1%}) below 97% — possible missing outcomes",
+                    f"LOW TOTAL ({total_yes:.1%}) suggests possible missing outcomes",
                 )
             if is_election:
                 opp.risk_factors.insert(

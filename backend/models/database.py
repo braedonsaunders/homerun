@@ -1054,6 +1054,118 @@ class StrategyRuntimeRevision(Base):
     __table_args__ = (Index("idx_strategy_runtime_revisions_updated", "updated_at"),)
 
 
+# ==================== DATA SOURCES ====================
+
+
+class DataSourceTombstone(Base):
+    """Permanent suppression records for seeded system data sources."""
+
+    __tablename__ = "data_source_tombstones"
+
+    slug = Column(String, primary_key=True)
+    deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reason = Column(String, nullable=True)
+
+    __table_args__ = (Index("idx_data_source_tombstones_deleted_at", "deleted_at"),)
+
+
+class DataSource(Base):
+    """Unified data-source definition for pluggable ingestion/transform pipelines."""
+
+    __tablename__ = "data_sources"
+
+    id = Column(String, primary_key=True)
+    slug = Column(String, unique=True, nullable=False)
+    source_key = Column(String, nullable=False, default="custom")
+    source_kind = Column(String, nullable=False, default="python")  # python | rss | bridge
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    source_code = Column(Text, nullable=False, default="")
+    class_name = Column(String, nullable=True)
+    is_system = Column(Boolean, default=False, nullable=False)
+    enabled = Column(Boolean, default=True)
+    status = Column(String, default="unloaded")  # unloaded | loaded | error
+    error_message = Column(Text, nullable=True)
+    config = Column(JSON, default=dict)
+    config_schema = Column(JSON, default=dict)
+    version = Column(Integer, default=1)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_data_source_slug", "slug"),
+        Index("idx_data_source_source_key", "source_key"),
+        Index("idx_data_source_source_kind", "source_kind"),
+        Index("idx_data_source_enabled", "enabled"),
+        Index("idx_data_source_is_system", "is_system"),
+        Index("idx_data_source_status", "status"),
+    )
+
+
+class DataSourceRun(Base):
+    """Execution history for source runs."""
+
+    __tablename__ = "data_source_runs"
+
+    id = Column(String, primary_key=True)
+    data_source_id = Column(String, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False)
+    source_slug = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="success")  # success | error
+    fetched_count = Column(Integer, nullable=False, default=0)
+    transformed_count = Column(Integer, nullable=False, default=0)
+    upserted_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("idx_data_source_runs_source_slug", "source_slug"),
+        Index("idx_data_source_runs_started_at", "started_at"),
+        Index("idx_data_source_runs_status", "status"),
+        Index("ix_data_source_runs_data_source_id", "data_source_id"),
+    )
+
+
+class DataSourceRecord(Base):
+    """Normalized output rows produced by data-source runs."""
+
+    __tablename__ = "data_source_records"
+
+    id = Column(String, primary_key=True)
+    data_source_id = Column(String, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False)
+    source_slug = Column(String, nullable=False)
+    external_id = Column(String, nullable=True)
+    title = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    category = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    url = Column(Text, nullable=True)
+    geotagged = Column(Boolean, default=False, nullable=False)
+    country_iso3 = Column(String, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    observed_at = Column(DateTime, nullable=True)
+    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    payload_json = Column(JSON, nullable=True)
+    transformed_json = Column(JSON, nullable=True)
+    tags_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_data_source_records_source_slug", "source_slug"),
+        Index("idx_data_source_records_data_source_id", "data_source_id"),
+        Index("idx_data_source_records_observed_at", "observed_at"),
+        Index("idx_data_source_records_ingested_at", "ingested_at"),
+        Index("idx_data_source_records_geotagged", "geotagged"),
+        Index("idx_data_source_records_country", "country_iso3"),
+        Index("idx_data_source_records_external", "source_slug", "external_id"),
+        Index("ix_data_source_records_data_source_id", "data_source_id"),
+    )
+
+
 # ==================== LLM MODELS CACHE ====================
 
 

@@ -38,6 +38,7 @@ import {
   validateUnifiedStrategy,
   reloadUnifiedStrategy,
   getUnifiedStrategyTemplate,
+  getValidationOverview,
   UnifiedStrategy,
 } from '../services/api'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
@@ -254,6 +255,13 @@ export default function UnifiedStrategiesManager() {
     staleTime: Infinity,
   })
 
+  const strategyTrackerQuery = useQuery({
+    queryKey: ['validation-overview', 'strategy-tracker'],
+    queryFn: getValidationOverview,
+    staleTime: 60000,
+    refetchInterval: 60000,
+  })
+
   const catalog = strategiesQuery.data || []
 
   // ── Derived state ──
@@ -291,6 +299,48 @@ export default function UnifiedStrategiesManager() {
   }, [catalog, sourceFilter, searchQuery])
 
   const flatFiltered = useMemo(() => Object.values(grouped).flat(), [grouped])
+
+  const strategyPerformance = useMemo(() => {
+    const out: Record<string, { roi: number | null; winRate: number | null; sampleCount: number | null }> = {}
+    const strategyAccuracy = strategyTrackerQuery.data?.strategy_accuracy
+    if (strategyAccuracy && typeof strategyAccuracy === 'object' && !Array.isArray(strategyAccuracy)) {
+      for (const [strategyKey, raw] of Object.entries(strategyAccuracy as Record<string, unknown>)) {
+        const key = String(strategyKey || '').trim().toLowerCase()
+        if (!key) continue
+        const row = raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw as Record<string, unknown>
+          : {}
+        const winRate = Number(row.true_positive_rate)
+        const resolved = Number(row.resolved)
+        out[key] = {
+          roi: null,
+          winRate: Number.isFinite(winRate) ? winRate * 100 : null,
+          sampleCount: Number.isFinite(resolved) ? resolved : null,
+        }
+      }
+    }
+
+    const calibrationByStrategy = strategyTrackerQuery.data?.calibration_90d?.by_strategy
+    if (calibrationByStrategy && typeof calibrationByStrategy === 'object' && !Array.isArray(calibrationByStrategy)) {
+      for (const [strategyKey, raw] of Object.entries(calibrationByStrategy as Record<string, unknown>)) {
+        const key = String(strategyKey || '').trim().toLowerCase()
+        if (!key) continue
+        const row = raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw as Record<string, unknown>
+          : {}
+        const actualRoiMean = Number(row.actual_roi_mean)
+        const sampleSize = Number(row.sample_size)
+        const existing = out[key]
+        out[key] = {
+          roi: Number.isFinite(actualRoiMean) ? actualRoiMean : existing?.roi ?? null,
+          winRate: existing?.winRate ?? null,
+          sampleCount: Number.isFinite(sampleSize) ? sampleSize : existing?.sampleCount ?? null,
+        }
+      }
+    }
+
+    return out
+  }, [strategyTrackerQuery.data])
 
   const selectedStrategy = useMemo(
     () => catalog.find((s) => s.id === selectedStrategyId) || null,
@@ -611,6 +661,10 @@ export default function UnifiedStrategiesManager() {
                   {strategies.map((strategy) => {
                     const active = selectedStrategyId === strategy.id
                     const sColor = STATUS_COLORS[strategy.status] || STATUS_COLORS.draft
+                    const tracker = strategyPerformance[String(strategy.slug || '').trim().toLowerCase()]
+                    const roi = tracker?.roi ?? null
+                    const winRate = tracker?.winRate ?? null
+                    const sampleCount = tracker?.sampleCount ?? null
                     return (
                       <button
                         key={strategy.id}
@@ -640,6 +694,24 @@ export default function UnifiedStrategiesManager() {
                         <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
                           {strategy.slug}
                         </p>
+                        <div className="mt-1 flex items-center gap-2 text-[9px]">
+                          <span className={cn(
+                            'font-mono',
+                            roi == null
+                              ? 'text-muted-foreground/60'
+                              : roi >= 0
+                                ? 'text-emerald-400'
+                                : 'text-red-400'
+                          )}>
+                            ROI {roi == null ? '--' : `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`}
+                          </span>
+                          <span className="text-muted-foreground/75">
+                            Win {winRate == null ? '--' : `${winRate.toFixed(0)}%`}
+                          </span>
+                          <span className="text-muted-foreground/75">
+                            N {sampleCount == null ? '--' : Math.round(sampleCount)}
+                          </span>
+                        </div>
                         {strategy.capabilities && <CapabilityBadges capabilities={strategy.capabilities} />}
                       </button>
                     )

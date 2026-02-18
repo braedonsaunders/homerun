@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
@@ -676,6 +677,326 @@ def _direction_from_outcome(outcome: Optional[str]) -> Optional[str]:
     if val in {"no", "buy_no"}:
         return "buy_no"
     return None
+
+
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
+def _parse_iso_utc(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _crypto_timeframe_seconds(value: Any) -> int:
+    tf = str(value or "").strip().lower()
+    if tf in {"5m", "5min"}:
+        return 300
+    if tf in {"15m", "15min"}:
+        return 900
+    if tf in {"1h", "1hr", "60m"}:
+        return 3600
+    if tf in {"4h", "4hr", "240m"}:
+        return 14400
+    return 900
+
+
+def _crypto_regime(seconds_left: float, timeframe_seconds: int) -> str:
+    ratio = _clamp(seconds_left / float(max(1, timeframe_seconds)), 0.0, 1.0)
+    if ratio > 0.67:
+        return "opening"
+    if ratio < 0.33:
+        return "closing"
+    return "mid"
+
+
+def _crypto_strategy_type(value: Any) -> str:
+    tf = str(value or "").strip().lower()
+    if tf in {"5m", "5min"}:
+        return "crypto_5m"
+    if tf in {"1h", "1hr", "60m"}:
+        return "crypto_1h"
+    if tf in {"4h", "4hr", "240m"}:
+        return "crypto_4h"
+    return "crypto_15m"
+
+
+async def emit_crypto_market_signals(
+    session: AsyncSession,
+    markets: list[dict[str, Any]],
+) -> int:
+    emitted = 0
+    now = _utc_now()
+
+    for market in markets or []:
+        market_id = str(market.get("condition_id") or market.get("id") or "").strip()
+        if not market_id:
+            continue
+
+        up_price = _safe_float(market.get("up_price"))
+        down_price = _safe_float(market.get("down_price"))
+        if up_price is None or down_price is None:
+            continue
+        if not (0.0 <= up_price <= 1.0 and 0.0 <= down_price <= 1.0):
+            continue
+
+        price_to_beat = _safe_float(market.get("price_to_beat"))
+        oracle_price = _safe_float(market.get("oracle_price"))
+        has_oracle = bool(price_to_beat is not None and price_to_beat > 0 and oracle_price is not None)
+
+        timeframe_seconds = _crypto_timeframe_seconds(market.get("timeframe"))
+        seconds_left = _safe_float(market.get("seconds_left"))
+        if seconds_left is None:
+            end_dt = _parse_iso_utc(market.get("end_time"))
+            if end_dt is not None:
+                seconds_left = max(0.0, (end_dt - now).total_seconds())
+            else:
+                seconds_left = float(timeframe_seconds)
+        regime = _crypto_regime(seconds_left, timeframe_seconds)
+
+        if has_oracle and price_to_beat is not None and oracle_price is not None:
+            diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
+            time_ratio = _clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
+            directional_scale = max(0.08, 0.50 * time_ratio)
+            directional_z = _clamp(diff_pct / directional_scale, -60.0, 60.0)
+            model_prob_yes = _clamp(1.0 / (1.0 + math.exp(-directional_z)), 0.03, 0.97)
+            model_prob_no = 1.0 - model_prob_yes
+            directional_yes = max(0.0, (model_prob_yes - up_price) * 100.0)
+            directional_no = max(0.0, (model_prob_no - down_price) * 100.0)
+        else:
+            diff_pct = 0.0
+            directional_yes = 0.0
+            directional_no = 0.0
+
+        combined = up_price + down_price
+        underround = max(0.0, 1.0 - combined)
+        pure_arb_yes = underround * 100.0
+        pure_arb_no = underround * 100.0
+
+        neutrality = _clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
+        rebalance_yes = max(0.0, (0.5 - up_price) * 100.0) * neutrality
+        rebalance_no = max(0.0, (0.5 - down_price) * 100.0) * neutrality
+
+        if has_oracle:
+            if regime == "opening":
+                weights = {"directional": 0.65, "pure_arb": 0.25, "rebalance": 0.10}
+            elif regime == "closing":
+                weights = {"directional": 0.35, "pure_arb": 0.20, "rebalance": 0.45}
+            else:
+                weights = {"directional": 0.50, "pure_arb": 0.25, "rebalance": 0.25}
+        else:
+            if regime == "opening":
+                weights = {"directional": 0.0, "pure_arb": 0.60, "rebalance": 0.40}
+            elif regime == "closing":
+                weights = {"directional": 0.0, "pure_arb": 0.45, "rebalance": 0.55}
+            else:
+                weights = {"directional": 0.0, "pure_arb": 0.55, "rebalance": 0.45}
+
+        gross_yes = (
+            (directional_yes * weights["directional"])
+            + (pure_arb_yes * weights["pure_arb"])
+            + (rebalance_yes * weights["rebalance"])
+        )
+        gross_no = (
+            (directional_no * weights["directional"])
+            + (pure_arb_no * weights["pure_arb"])
+            + (rebalance_no * weights["rebalance"])
+        )
+
+        spread = _clamp(_safe_float(market.get("spread"), 0.0), 0.0, 0.10)
+        liquidity = max(0.0, _safe_float(market.get("liquidity"), 0.0) or 0.0)
+        fees_enabled = bool(market.get("fees_enabled", False))
+
+        fee_penalty = 0.45 if fees_enabled else 0.25
+        spread_penalty = spread * 100.0 * 0.35
+        liquidity_scale = _clamp(liquidity / 250000.0, 0.0, 1.0)
+        regime_slippage_factor = 1.1 if regime == "closing" else 1.0
+        slippage_penalty = (1.35 - (0.95 * liquidity_scale)) * regime_slippage_factor
+        execution_penalty = fee_penalty + spread_penalty + slippage_penalty
+
+        net_yes = gross_yes - execution_penalty
+        net_no = gross_no - execution_penalty
+        direction = "buy_yes" if net_yes >= net_no else "buy_no"
+        entry_price = up_price if direction == "buy_yes" else down_price
+        edge_percent = net_yes if direction == "buy_yes" else net_no
+
+        if edge_percent < 1.0:
+            continue
+
+        selected_components = (
+            {"directional": directional_yes, "pure_arb": pure_arb_yes, "rebalance": rebalance_yes}
+            if direction == "buy_yes"
+            else {"directional": directional_no, "pure_arb": pure_arb_no, "rebalance": rebalance_no}
+        )
+        weighted_components = {k: selected_components[k] * weights[k] for k in selected_components}
+        dominant_strategy = max(weighted_components, key=lambda k: weighted_components[k])
+        dominant_weighted_edge = weighted_components[dominant_strategy]
+        edge_gap = abs(net_yes - net_no)
+
+        confidence = _clamp(
+            0.32
+            + _clamp(edge_percent / 20.0, 0.0, 0.35)
+            + _clamp(edge_gap / 18.0, 0.0, 0.12)
+            + _clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
+            0.05,
+            0.97,
+        )
+        if not has_oracle:
+            confidence = _clamp(confidence * 0.75, 0.05, 0.85)
+
+        payload = {
+            "signal_version": "crypto_worker_v2",
+            "signal_family": "crypto_multistrategy",
+            "strategy_origin": "crypto_worker",
+            "regime": regime,
+            "oracle_available": has_oracle,
+            "dominant_strategy": dominant_strategy,
+            "component_edges": {
+                "directional": {"buy_yes": directional_yes, "buy_no": directional_no},
+                "pure_arb": {"buy_yes": pure_arb_yes, "buy_no": pure_arb_no},
+                "rebalance": {"buy_yes": rebalance_yes, "buy_no": rebalance_no},
+                "weights": dict(weights),
+            },
+            "net_edges": {"buy_yes": net_yes, "buy_no": net_no},
+            "execution_penalty_breakdown": {
+                "fee_penalty": fee_penalty,
+                "spread_penalty": spread_penalty,
+                "slippage_penalty": slippage_penalty,
+                "total_penalty": execution_penalty,
+            },
+            "price_inputs": {
+                "up_price": up_price,
+                "down_price": down_price,
+                "price_to_beat": price_to_beat,
+                "oracle_price": oracle_price,
+                "diff_percent": diff_pct,
+                "seconds_left": seconds_left,
+                "timeframe_seconds": timeframe_seconds,
+            },
+        }
+
+        expires_at = _parse_iso_utc(market.get("end_time")) or (now + timedelta(seconds=timeframe_seconds))
+        strategy_type = _crypto_strategy_type(market.get("timeframe"))
+        dedupe_key = make_dedupe_key(
+            market_id,
+            strategy_type,
+            direction,
+            int(_clamp(seconds_left, 0.0, 86400.0)),
+        )
+
+        await upsert_trade_signal(
+            session,
+            source="crypto",
+            source_item_id=market_id,
+            signal_type="crypto_worker_multistrat",
+            strategy_type=strategy_type,
+            market_id=market_id,
+            market_question=str(market.get("question") or market.get("slug") or market_id),
+            direction=direction,
+            entry_price=entry_price,
+            edge_percent=edge_percent,
+            confidence=confidence,
+            liquidity=liquidity,
+            expires_at=expires_at,
+            payload_json=payload,
+            strategy_context_json={"crypto_context": payload},
+            dedupe_key=dedupe_key,
+            commit=False,
+        )
+        emitted += 1
+
+    await session.commit()
+    await refresh_trade_signal_snapshots(session)
+    return emitted
+
+
+async def emit_news_intent_signals(
+    session: AsyncSession,
+    intents: list[Any],
+    *,
+    max_age_minutes: int = 120,
+) -> int:
+    emitted = 0
+    now = _utc_now()
+    min_created_at = now - timedelta(minutes=max(1, int(max_age_minutes)))
+
+    for intent in intents or []:
+        market_id = str(getattr(intent, "market_id", "") or "").strip()
+        if not market_id:
+            continue
+
+        created_at_raw = getattr(intent, "created_at", None)
+        created_at = None
+        if isinstance(created_at_raw, datetime):
+            if created_at_raw.tzinfo is None:
+                created_at = created_at_raw.replace(tzinfo=timezone.utc)
+            else:
+                created_at = created_at_raw.astimezone(timezone.utc)
+        if created_at is not None and created_at < min_created_at:
+            continue
+
+        metadata = getattr(intent, "metadata_json", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        market_meta = metadata.get("market") if isinstance(metadata.get("market"), dict) else {}
+        finding_meta = metadata.get("finding") if isinstance(metadata.get("finding"), dict) else {}
+        liquidity = _safe_float(market_meta.get("liquidity"), 0.0) or 0.0
+
+        payload = {
+            "signal_key": getattr(intent, "signal_key", None),
+            "finding_id": getattr(intent, "finding_id", None),
+            "reasoning": finding_meta.get("reasoning"),
+            "evidence": finding_meta.get("evidence"),
+            "metadata": metadata,
+        }
+
+        dedupe_key = make_dedupe_key(
+            getattr(intent, "signal_key", None) or getattr(intent, "id", None) or market_id,
+            market_id,
+            getattr(intent, "direction", None),
+        )
+        expires_at = now + timedelta(minutes=max(1, int(max_age_minutes)))
+
+        await upsert_trade_signal(
+            session,
+            source="news",
+            source_item_id=(str(getattr(intent, "id", "")).strip() or None),
+            signal_type="news_intent",
+            strategy_type="news_edge",
+            market_id=market_id,
+            market_question=str(getattr(intent, "market_question", "") or ""),
+            direction=str(getattr(intent, "direction", "") or "").strip().lower() or None,
+            entry_price=_safe_float(getattr(intent, "entry_price", None)),
+            edge_percent=_safe_float(getattr(intent, "edge_percent", None)),
+            confidence=_safe_float(getattr(intent, "confidence", None)),
+            liquidity=liquidity,
+            expires_at=expires_at,
+            payload_json=payload,
+            strategy_context_json={"news_context": payload},
+            dedupe_key=dedupe_key,
+            commit=False,
+        )
+        emitted += 1
+
+    await session.commit()
+    await refresh_trade_signal_snapshots(session)
+    return emitted
 
 
 async def emit_scanner_signals(

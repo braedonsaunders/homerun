@@ -66,6 +66,29 @@ GROUP_SOURCE_TYPES = {
 }
 
 
+def _resolve_query_default(value: Any) -> Any:
+    if value.__class__.__module__.startswith("fastapi."):
+        return getattr(value, "default", value)
+    return value
+
+
+def _resolve_query_bool(value: Any) -> bool:
+    return bool(_resolve_query_default(value))
+
+
+async def _load_tracked_trader_opportunities(
+    *,
+    limit: int,
+    min_tier: str,
+    include_filtered: bool,
+) -> list[dict[str, Any]]:
+    return await get_strategy_filtered_trader_opportunities(
+        limit=limit,
+        min_tier=min_tier,
+        include_filtered=include_filtered,
+    )
+
+
 async def _build_discovery_status(session: AsyncSession) -> dict:
     stats = await wallet_discovery.get_discovery_stats()
     worker_status = await discovery_shared_state.get_discovery_status_from_db(session)
@@ -426,8 +449,12 @@ def _build_signal_validation_payload(
 
 def _normalize_trader_confluence_source_filter(
     value: Optional[str],
-) -> Literal["all", "tracked", "pool"]:
+) -> Optional[Literal["all", "tracked", "pool"]]:
+    if value is None:
+        return None
     normalized = str(value or "all").strip().lower()
+    if not normalized:
+        return None
     # Legacy aliases kept for backward compatibility.
     if normalized == "confluence":
         return "all"
@@ -445,6 +472,8 @@ def _filter_trader_confluence_rows_by_source(
     source_filter: Optional[str],
 ) -> list[dict[str, Any]]:
     normalized = _normalize_trader_confluence_source_filter(source_filter)
+    if normalized is None:
+        return rows
     filtered: list[dict[str, Any]] = []
 
     for row in rows:
@@ -455,6 +484,10 @@ def _filter_trader_confluence_rows_by_source(
         from_tracked = bool(source_flags.get("from_tracked_traders") or source_flags.get("from_trader_groups"))
         from_pool = bool(source_flags.get("from_pool"))
 
+        if normalized == "all":
+            if from_tracked or from_pool:
+                filtered.append(row)
+            continue
         if normalized == "tracked":
             if from_tracked:
                 filtered.append(row)
@@ -463,11 +496,6 @@ def _filter_trader_confluence_rows_by_source(
             if from_pool:
                 filtered.append(row)
             continue
-
-        # "all" for this surface means the two confluence sources this page owns:
-        # tracked traders (individuals/groups) and pool members.
-        if from_tracked or from_pool:
-            filtered.append(row)
 
     return filtered
 
@@ -1632,6 +1660,10 @@ async def get_pool_members(
 ):
     """List smart-pool members with actionable flags for management workflows."""
     try:
+        pool_only = _resolve_query_bool(pool_only)
+        tracked_only = _resolve_query_bool(tracked_only)
+        include_blacklisted = _resolve_query_bool(include_blacklisted)
+
         valid_sort_fields = {
             "selection_score": lambda row: float(row.get("selection_score") or row.get("composite_score") or 0.0),
             "composite_score": lambda row: float(row.get("composite_score") or 0.0),
@@ -1653,7 +1685,7 @@ async def get_pool_members(
         if sort_dir not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="sort_dir must be asc or desc")
 
-        min_win_rate_ratio = _normalize_win_rate_ratio(min_win_rate)
+        min_win_rate_ratio = _normalize_win_rate_ratio(_resolve_query_default(min_win_rate))
 
         wallets_result = await session.execute(select(DiscoveredWallet))
         wallets = list(wallets_result.scalars().all())
@@ -1814,7 +1846,7 @@ async def get_pool_members(
                 continue
             if not include_blacklisted and flags["blacklisted"]:
                 continue
-            if tier and (wallet.pool_tier or "").lower() != tier.lower():
+            if tier and (wallet.pool_tier or "").lower() != str(tier).lower():
                 continue
             normalized_win_rate = _normalize_win_rate_ratio(wallet.win_rate)
             if normalized_win_rate < min_win_rate_ratio:
@@ -2232,7 +2264,7 @@ async def get_traders_overview(
             reverse=True,
         )
 
-        confluence_signals = await get_strategy_filtered_trader_opportunities(
+        confluence_signals = await _load_tracked_trader_opportunities(
             limit=confluence_limit,
             min_tier=min_tier,
             include_filtered=False,
@@ -2285,7 +2317,16 @@ async def get_tracked_trader_opportunities(
 ):
     """Legacy alias for confluence signals powering the Traders surface."""
     try:
-        opportunities = await get_strategy_filtered_trader_opportunities(
+        min_tier = str(_resolve_query_default(min_tier) or "WATCH")
+        source_filter_raw = source_filter
+        resolved_source_filter = _resolve_query_default(source_filter)
+        if source_filter_raw.__class__.__module__.startswith("fastapi."):
+            source_filter = None
+        else:
+            source_filter = _normalize_trader_confluence_source_filter(resolved_source_filter)
+        include_filtered = _resolve_query_bool(include_filtered)
+
+        opportunities = await _load_tracked_trader_opportunities(
             limit=limit,
             min_tier=min_tier,
             include_filtered=include_filtered,
@@ -2295,7 +2336,7 @@ async def get_tracked_trader_opportunities(
             # recover quickly after stale/expired signal windows.
             try:
                 await wallet_intelligence.confluence.scan_for_confluence()
-                opportunities = await get_strategy_filtered_trader_opportunities(
+                opportunities = await _load_tracked_trader_opportunities(
                     limit=limit,
                     min_tier=min_tier,
                     include_filtered=include_filtered,
@@ -2309,10 +2350,7 @@ async def get_tracked_trader_opportunities(
         await _attach_activity_history_fallback(session, opportunities)
         await _attach_live_mid_prices_to_signal_rows(opportunities)
         await _annotate_trader_signal_rows(session, opportunities)
-        opportunities = _filter_trader_confluence_rows_by_source(
-            opportunities,
-            source_filter,
-        )
+        opportunities = _filter_trader_confluence_rows_by_source(opportunities, source_filter)
         return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

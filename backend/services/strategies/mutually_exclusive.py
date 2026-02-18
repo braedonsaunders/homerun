@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from models import Market, Event, ArbitrageOpportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from utils.converters import to_float
 
@@ -229,10 +228,6 @@ class MutuallyExclusiveStrategy(BaseStrategy):
     ) -> ArbitrageOpportunity | None:
         """Check if a pair offers arbitrage opportunity"""
 
-        # Reject election markets outright — two candidates are never exhaustive
-        if self._is_election_pair(market_a, market_b):
-            return None
-
         # Get YES prices
         yes_a = market_a.yes_price
         yes_b = market_b.yes_price
@@ -250,12 +245,9 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
         total_cost = yes_a + yes_b
 
-        # Require total very close to 1.0 — wider spreads indicate
-        # non-exhaustive outcomes rather than mispricing
-        if total_cost < settings.NEGRISK_MIN_TOTAL_YES:
-            return None
-
         if total_cost >= 1.0:
+            return None
+        if total_cost < 0.80:
             return None
 
         positions = [
@@ -286,6 +278,11 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
         if opp:
             opp.risk_factors.insert(0, "REQUIRES MANUAL VERIFICATION - check for third-party outcomes")
+            if self._is_election_pair(market_a, market_b):
+                opp.risk_factors.insert(
+                    1,
+                    "Political market: Independent/third-party outcomes may invalidate exhaustiveness",
+                )
             q_combined = (market_a.question + market_b.question).lower()
             if any(p in q_combined for p in ["win", "lose", "victory", "defeat"]):
                 opp.risk_factors.insert(1, "Win/lose market: Draw/tie outcome possible")

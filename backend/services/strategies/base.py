@@ -773,19 +773,6 @@ class BaseStrategy(ABC):
             score += 0.1
             factors.append(f"Multiple positions ({len(markets)} markets)")
 
-        # Multi-leg execution risk
-        num_legs = len(markets)
-        if num_legs > 1:
-            # Each additional leg adds ~5% probability of partial fill
-            partial_fill_risk = 1 - (0.95 ** (num_legs - 1))
-            score += partial_fill_risk * 0.3  # Weight execution risk
-            if partial_fill_risk > 0.2:
-                factors.append(
-                    f"Multi-leg execution risk ({num_legs} legs, {partial_fill_risk:.0%} partial fill chance)"
-                )
-            elif num_legs > 1:
-                factors.append(f"Multi-leg trade ({num_legs} legs)")
-
         return min(score, 1.0), factors
 
     def _calculate_annualized_roi(self, roi_percent: float, resolution_date: Optional[datetime]) -> Optional[float]:
@@ -910,15 +897,6 @@ class BaseStrategy(ABC):
     ) -> Optional[ArbitrageOpportunity]:
         """Create an ArbitrageOpportunity with fee/risk enrichment.
 
-        Hard rejection filters have been moved to QualityFilterPipeline
-        (services.quality_filter) which is applied in the scanner after
-        deduplication. This method now always returns an opportunity if
-        inputs are valid, allowing the external pipeline to provide a
-        full audit trail of which filters passed/failed.
-
-        Confidence is no longer auto-derived from risk_score. Strategies may
-        pass an explicit confidence value; otherwise a neutral baseline is used.
-
         Args:
             skip_fee_model: When True, uses a zero fee_breakdown. Use for
                 directional NO-bet strategies (e.g. Miracle) where the fee
@@ -931,10 +909,13 @@ class BaseStrategy(ABC):
                 unless you set them on the returned opportunity afterward.
         """
 
+        if total_cost <= 0:
+            return None
+
         gross_profit = expected_payout - total_cost
         fee = expected_payout * self.fee
         net_profit = gross_profit - fee
-        roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+        roi = (net_profit / total_cost) * 100
 
         # --- Comprehensive fee model (gas, spread, multi-leg slippage) ---
         is_negrisk = any(getattr(m, "neg_risk", False) for m in markets)
@@ -974,6 +955,13 @@ class BaseStrategy(ABC):
         # Apply custom_roi_percent override (pre-computed by strategy from model)
         if custom_roi_percent is not None:
             roi = float(custom_roi_percent)
+
+        min_roi_percent = float(self.min_profit or 0.0) * 100.0
+        if roi < min_roi_percent:
+            return None
+
+        if not is_guaranteed and roi > 120.0:
+            return None
 
         # Calculate max position size based on liquidity
         min_liquidity = min((m.liquidity for m in markets), default=0)

@@ -57,6 +57,7 @@ import Sparkline from './Sparkline'
 import OpportunityEmptyState from './OpportunityEmptyState'
 
 type SubView = 'workflow' | 'feed'
+type NewsPanelMode = 'all' | 'workflow' | 'feed'
 
 const ISO_HAS_TIMEZONE_RE = /(Z|[+-]\d{2}:\d{2})$/i
 
@@ -977,11 +978,18 @@ function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; on
 
 interface NewsIntelligencePanelProps {
   initialSearchQuery?: string
+  mode?: NewsPanelMode
 }
 
-export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntelligencePanelProps = {}) {
+function initialSubView(mode: NewsPanelMode, initialSearchQuery?: string): SubView {
+  if (mode === 'workflow') return 'workflow'
+  if (mode === 'feed') return 'feed'
+  return initialSearchQuery ? 'feed' : 'workflow'
+}
+
+export default function NewsIntelligencePanel({ initialSearchQuery, mode = 'all' }: NewsIntelligencePanelProps = {}) {
   const queryClient = useQueryClient()
-  const [subView, setSubView] = useState<SubView>(initialSearchQuery ? 'feed' : 'workflow')
+  const [subView, setSubView] = useState<SubView>(initialSubView(mode, initialSearchQuery))
   const [searchFilter, setSearchFilter] = useState(initialSearchQuery || '')
   const [feedSourceFilter, setFeedSourceFilter] = useState<string | null>(null)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
@@ -990,9 +998,14 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   useEffect(() => {
     if (initialSearchQuery !== undefined) {
       setSearchFilter(initialSearchQuery)
-      if (initialSearchQuery) setSubView('feed')
+      if (initialSearchQuery && mode === 'all') setSubView('feed')
     }
-  }, [initialSearchQuery])
+  }, [initialSearchQuery, mode])
+
+  useEffect(() => {
+    if (mode === 'workflow') setSubView('workflow')
+    if (mode === 'feed') setSubView('feed')
+  }, [mode])
 
   const { data: workflowStatus } = useQuery({
     queryKey: ['news-workflow-status'],
@@ -1009,14 +1022,14 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
       limit: 150,
     }),
     refetchInterval: 30000,
-    enabled: subView === 'workflow',
+    enabled: mode !== 'feed' && subView === 'workflow',
   })
 
   const { data: workflowIntentsData } = useQuery({
     queryKey: ['news-workflow-intents'],
     queryFn: () => getNewsWorkflowIntents({ limit: 50 }),
     refetchInterval: 15000,
-    enabled: subView === 'workflow',
+    enabled: mode !== 'feed' && subView === 'workflow',
   })
 
   const refreshMutation = useMutation({
@@ -1161,41 +1174,43 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
 
   return (
     <div className="max-w-[1600px] mx-auto">
-      <div className="mb-2 flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setSubView('workflow')}
-          className={cn(
-            "gap-1.5 text-xs h-8",
-            subView === 'workflow'
-              ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
-              : "bg-card text-muted-foreground hover:text-foreground border-border"
-          )}
-        >
-          <Target className="w-3.5 h-3.5" />
-          Opportunities
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setSubView('feed')}
-          className={cn(
-            "gap-1.5 text-xs h-8",
-            subView === 'feed'
-              ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
-              : "bg-card text-muted-foreground hover:text-foreground border-border"
-          )}
-        >
-          <Newspaper className="w-3.5 h-3.5" />
-          Feed
-          {articlesTotalCount > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">
-              {articlesLoadedCount < articlesTotalCount ? `${articlesLoadedCount}/${articlesTotalCount}` : articlesTotalCount}
-            </span>
-          )}
-        </Button>
-      </div>
+      {mode === 'all' && (
+        <div className="mb-2 flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubView('workflow')}
+            className={cn(
+              "gap-1.5 text-xs h-8",
+              subView === 'workflow'
+                ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
+                : "bg-card text-muted-foreground hover:text-foreground border-border"
+            )}
+          >
+            <Target className="w-3.5 h-3.5" />
+            Opportunities
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubView('feed')}
+            className={cn(
+              "gap-1.5 text-xs h-8",
+              subView === 'feed'
+                ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
+                : "bg-card text-muted-foreground hover:text-foreground border-border"
+            )}
+          >
+            <Newspaper className="w-3.5 h-3.5" />
+            Feed
+            {articlesTotalCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">
+                {articlesLoadedCount < articlesTotalCount ? `${articlesLoadedCount}/${articlesTotalCount}` : articlesTotalCount}
+              </span>
+            )}
+          </Button>
+        </div>
+      )}
 
       <div className="mb-4 rounded-xl border border-border/40 bg-card/40 p-3">
         <div className="flex flex-wrap items-center gap-2">

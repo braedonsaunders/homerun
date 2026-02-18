@@ -253,11 +253,13 @@ class ArticleClusterer:
         token_score = _jaccard(feature.tokens, cluster.token_set)
 
         score = (0.55 * focus_score) + (0.30 * entity_score) + (0.15 * token_score)
+        if feature.entities.intersection(cluster.entity_set):
+            score += 0.04
 
         # Penalize clusters with no entity agreement unless lexical overlap is strong.
         if feature.entities and cluster.entity_set and entity_score == 0.0 and focus_score < 0.35:
             score *= 0.65
-        return score
+        return min(score, 1.0)
 
     def _build_features(self, article: NewsArticle) -> _ArticleFeatures:
         title = (article.title or "").strip()

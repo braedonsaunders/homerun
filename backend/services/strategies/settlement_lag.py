@@ -286,9 +286,11 @@ class SettlementLagStrategy(BaseStrategy):
         max_days = settings.SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION
         any_near_resolution = False
         any_overdue = False
+        has_resolution_dates = False
 
         for m in active_markets:
             if m.end_date:
+                has_resolution_dates = True
                 end_aware = make_aware(m.end_date)
                 days_until = (end_aware - now).days
                 if days_until <= max_days:
@@ -296,7 +298,7 @@ class SettlementLagStrategy(BaseStrategy):
                 if days_until <= 0:
                     any_overdue = True
 
-        if not any_near_resolution:
+        if has_resolution_dates and not any_near_resolution:
             return []  # Event is too far from resolution to be settlement lag
 
         # Get live prices for all outcomes
@@ -315,7 +317,7 @@ class SettlementLagStrategy(BaseStrategy):
             market_prices.append((m, yes_price))
             total_yes += yes_price
 
-            if yes_price < self.NEAR_ZERO_THRESHOLD:
+            if yes_price <= self.NEAR_ZERO_THRESHOLD:
                 near_zero_count += 1
             elif yes_price > self.NEAR_ONE_THRESHOLD:
                 near_one_count += 1
@@ -340,7 +342,7 @@ class SettlementLagStrategy(BaseStrategy):
         #
         # Near-zero prices alone are NOT evidence of settlement — they're just
         # unpopular outcomes in a multi-candidate race.
-        has_settlement_signal = near_one_count > 0 or any_overdue
+        has_settlement_signal = near_one_count > 0 or any_overdue or (near_zero_count >= 2 and total_yes >= 0.80)
         if not has_settlement_signal:
             return []
 

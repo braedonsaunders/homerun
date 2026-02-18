@@ -29,6 +29,7 @@ import {
   Sparkles,
   Command,
   Globe,
+  Database,
   LayoutGrid,
   List,
   Newspaper,
@@ -100,10 +101,10 @@ import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
-import WorldIntelligencePanel from './components/WorldIntelligencePanel'
 import OpportunityEmptyState from './components/OpportunityEmptyState'
+import DataPanel, { DataView } from './components/DataPanel'
 
-type Tab = 'opportunities' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
+type Tab = 'opportunities' | 'data' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
 type OpportunitiesView = string
 
@@ -111,6 +112,7 @@ const ITEMS_PER_PAGE = 20
 
 const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: string }[] = [
   { id: 'opportunities', icon: Zap, label: 'Opportunities', shortcut: '1' },
+  { id: 'data', icon: Database, label: 'Data', shortcut: 'D' },
   { id: 'trading', icon: Bot, label: 'Trader', shortcut: '2' },
   { id: 'strategies', icon: Layers3, label: 'Strategies', shortcut: '3' },
   { id: 'accounts', icon: Wallet, label: 'Accounts', shortcut: '4' },
@@ -238,12 +240,6 @@ const OPPORTUNITY_TAB_CONFIG: Record<string, OpportunityTabConfig> = {
     icon: ArrowUpDown,
     hasViewModeSwitcher: false,
   },
-  world_intelligence: {
-    label: 'World Intel',
-    color: 'blue',
-    icon: Globe,
-    hasViewModeSwitcher: false,
-  },
 }
 
 // Tailwind active-state classes per color token (kept static so Tailwind purge finds them)
@@ -264,7 +260,7 @@ const TAB_COUNT_CLASSES: Record<OpportunityTabConfig['color'], string> = {
 }
 
 // Tab order — known domains appear in this order; unknown source_keys are appended after.
-const TAB_ORDER = ['scanner', 'traders', 'news', 'weather', 'crypto', 'world_intelligence']
+const TAB_ORDER = ['scanner', 'traders', 'news', 'weather', 'crypto'] as const
 
 const WORKER_TONE_CLASS: Record<WorkerHealthTone, string> = {
   green: 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.7)]',
@@ -331,6 +327,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<OpportunitiesView>('scanner')
+  const [dataView, setDataView] = useState<DataView>('map')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -438,6 +435,7 @@ function App() {
   useRealtimeInvalidation(lastMessage, queryClient, setScannerActivity, {
     activeTab,
     opportunitiesView,
+    dataView,
   })
   useDisplayedOpportunityRefresh({
     activeTab,
@@ -499,6 +497,21 @@ function App() {
     queryFn: getScannerStatus,
     refetchInterval: isConnected ? false : 5000,
   })
+
+  const scannerStrategyLoadErrors = useMemo(() => {
+    const strategies = Array.isArray(status?.strategies) ? status.strategies : []
+    return strategies
+      .filter((strategy) => String(strategy?.status || '').toLowerCase() === 'error')
+      .map((strategy) => {
+        const rawError = String(strategy?.error_message || '').trim()
+        return {
+          type: String(strategy?.type || ''),
+          name: String(strategy?.name || strategy?.type || 'Unknown strategy'),
+          error: rawError ? rawError.split('\n')[0] : 'Unknown strategy load error',
+        }
+      })
+      .filter((item) => item.type.length > 0)
+  }, [status?.strategies])
 
   const { data: workersData } = useQuery({
     queryKey: ['workers-status'],
@@ -664,13 +677,10 @@ function App() {
     crypto: cryptoCount,
   }), [totalOpportunities, tradersCount, newsCount, weatherCount, cryptoCount])
 
-  // Build the ordered tab list from the strategies the API reports.
-  // Known source_keys appear in TAB_ORDER; unknown ones are appended.
+  // Build opportunities subtabs from the fixed supported source keys.
   const opportunityTabs = useMemo(() => {
-    const knownKeys = new Set(TAB_ORDER)
-    const strategySourceKeys = [...new Set(strategies.map((s) => s.source_key || 'scanner'))]
-    const extraKeys = strategySourceKeys.filter((k) => !knownKeys.has(k))
-    const allKeys = [...TAB_ORDER.filter((k) => strategySourceKeys.includes(k) || k === 'scanner'), ...extraKeys]
+    const strategySourceKeys = new Set(strategies.map((s) => s.source_key || 'scanner'))
+    const allKeys = TAB_ORDER.filter((key) => strategySourceKeys.has(key) || key === 'scanner')
     return allKeys.map((key) => ({
       key,
       config: OPPORTUNITY_TAB_CONFIG[key] ?? {
@@ -845,6 +855,7 @@ function App() {
   // Keyboard shortcuts
   const shortcuts: Shortcut[] = useMemo(() => [
     { key: '1', description: 'Go to Opportunities', category: 'Navigation', action: () => setActiveTab('opportunities') },
+    { key: 'd', description: 'Go to Data', category: 'Navigation', action: () => setActiveTab('data') },
     { key: '2', description: 'Go to Trading', category: 'Navigation', action: () => setActiveTab('trading') },
     { key: '3', description: 'Go to Strategies', category: 'Navigation', action: () => setActiveTab('strategies') },
     { key: '4', description: 'Go to Accounts', category: 'Navigation', action: () => setActiveTab('accounts') },
@@ -1196,18 +1207,10 @@ function App() {
           <main className="flex-1 overflow-hidden flex flex-col dot-grid-bg">
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
-              <div className={cn("flex-1 section-enter", opportunitiesView === 'world_intelligence' ? 'overflow-hidden' : 'overflow-y-auto')}>
-                <div
-                  className={cn(
-                    "mx-auto",
-                    opportunitiesView === 'world_intelligence'
-                      ? 'h-full min-h-0 px-6 py-4 flex flex-col overflow-hidden max-w-[1600px]'
-                      : "px-6 py-5 max-w-[1600px]",
-                    'max-w-[1600px]'
-                  )}
-                >
+              <div className="flex-1 section-enter overflow-y-auto">
+                <div className="mx-auto px-6 py-5 max-w-[1600px]">
                   {/* View Toggle + View Mode */}
-                  <div className={cn("flex items-center gap-2", opportunitiesView === 'world_intelligence' ? 'mb-3 shrink-0' : 'mb-4')}>
+                  <div className="flex items-center gap-2 mb-4">
                     {/* Dynamic tab buttons derived from registered strategy source_keys */}
                     {opportunityTabs.map(({ key, config, count }) => {
                       const Icon = config.icon
@@ -1341,6 +1344,37 @@ function App() {
                           <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
                           <span className="text-xs text-blue-400 font-data truncate">{scannerActivity}</span>
                         </>
+                      )}
+                      {scannerStrategyLoadErrors.length > 0 && (
+                        <Tooltip delayDuration={0}>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="ml-auto inline-flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-300"
+                              aria-label="View strategy load errors"
+                            >
+                              <AlertCircle className="w-3 h-3 shrink-0 text-red-400" />
+                              <span className="font-data">
+                                {scannerStrategyLoadErrors.length} strategy load error{scannerStrategyLoadErrors.length === 1 ? '' : 's'}
+                              </span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" align="end" className="w-[420px] p-2.5">
+                            <div className="space-y-1.5">
+                              {scannerStrategyLoadErrors.slice(0, 5).map((item) => (
+                                <div key={item.type} className="rounded border border-border/40 bg-background/80 px-2 py-1.5">
+                                  <div className="text-[11px] font-medium text-red-300">{item.name}</div>
+                                  <div className="text-[10px] text-muted-foreground">{item.error}</div>
+                                </div>
+                              ))}
+                              {scannerStrategyLoadErrors.length > 5 && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  +{scannerStrategyLoadErrors.length - 5} more strategy load errors
+                                </div>
+                              )}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
                       )}
                     </div>
                   )}
@@ -1535,16 +1569,12 @@ function App() {
                       onOpenCryptoSettings={() => setCryptoSettingsOpen(true)}
                     />
                   ) : opportunitiesView === 'news' ? (
-                    <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} />
+                    <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} mode="workflow" />
                   ) : opportunitiesView === 'weather' ? (
                     <WeatherOpportunitiesPanel
                       onExecute={setExecutingOpportunity}
                       viewMode={oppsViewMode}
                     />
-                  ) : opportunitiesView === 'world_intelligence' ? (
-                    <div className="flex-1 min-h-0 overflow-hidden">
-                      <WorldIntelligencePanel isConnected={isConnected} />
-                    </div>
                   ) : opportunitiesView === 'traders' ? (
                     <RecentTradesPanel
                       mode="opportunities"
@@ -1863,6 +1893,15 @@ function App() {
               </div>
             )}
 
+            {/* ==================== Data ==================== */}
+            {activeTab === 'data' && (
+              <DataPanel
+                isConnected={isConnected}
+                view={dataView}
+                onViewChange={setDataView}
+              />
+            )}
+
             {/* ==================== Trading ==================== */}
             {activeTab === 'trading' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
@@ -2030,7 +2069,7 @@ function App() {
         )}
 
         {/* Floating AI FAB — bottom-right */}
-        {!copilotOpen && !(activeTab === 'opportunities' && opportunitiesView === 'world_intelligence') && (
+        {!copilotOpen && !(activeTab === 'data' && dataView === 'map') && (
           <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">
             <Tooltip>
               <TooltipTrigger asChild>

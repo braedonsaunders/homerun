@@ -1322,29 +1322,6 @@ class WorkflowOrchestrator:
                 penalized.append(rc)
                 continue
 
-            # LLM was requested but this candidate has used_llm=False.
-            # Distinguish between:
-            #   (a) LLM was actually called and actively excluded this candidate
-            #       -> real verification failure, reject.
-            #   (b) LLM was unavailable/budget-exhausted despite being requested
-            #       -> treat like a budget-skip (penalize, don't reject).
-            rationale_lower = (getattr(rc, "rationale", "") or "").lower()
-            is_budget_skip = any(
-                hint in rationale_lower for hint in ("unavailable", "budget", "fallback", "retrieval score")
-            )
-
-            if is_budget_skip:
-                # LLM couldn't run (budget exhausted or provider down).
-                # Penalize but let through -- same treatment as !llm_was_requested.
-                if hasattr(rc, "rerank_score"):
-                    rc.rerank_score = rc.rerank_score * 0.7
-                if hasattr(rc, "relevance"):
-                    rc.relevance = rc.relevance * 0.7
-                original_rationale = getattr(rc, "rationale", "") or ""
-                rc.rationale = f"[verifier_budget_exhausted] {original_rationale}".strip()
-                penalized.append(rc)
-                continue
-
             # LLM was called and actively excluded this candidate.
             finding = self._build_rejected_finding(
                 article=article,

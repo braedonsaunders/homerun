@@ -27,6 +27,10 @@ _LEGACY_SOURCE_MARKERS = (
     "StrategyType",
     "BaseTraderStrategy",
 )
+_STALE_SYSTEM_IMPORT_MARKERS = (
+    "from ._evaluate_helpers import",
+    "from services.strategies._evaluate_helpers import",
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,8 @@ def _is_legacy_system_source(source_code: str) -> bool:
     if not source_code.strip():
         return True
     if any(marker in source_code for marker in _LEGACY_WRAPPER_MARKERS):
+        return True
+    if any(marker in source_code for marker in _STALE_SYSTEM_IMPORT_MARKERS):
         return True
     return any(marker in source_code for marker in _LEGACY_SOURCE_MARKERS)
 
@@ -677,6 +683,7 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
             current.is_system = True
             current.status = "unloaded"
             current.error_message = None
+            current.version = int(current.version or 1) + 1
             current.sort_order = row["sort_order"]
             current.updated_at = row["updated_at"]
             rewritten += 1

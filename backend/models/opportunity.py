@@ -152,16 +152,16 @@ class ArbitrageOpportunity(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        # Build a canonical fingerprint from ALL market IDs (sorted) to avoid
-        # collisions where different opportunities share the same stable_id.
-        all_market_ids = sorted(m.get("id", "") for m in self.markets)
+        all_market_ids = sorted(str(m.get("id", "")).strip() for m in self.markets if str(m.get("id", "")).strip())
         market_fingerprint = "|".join(all_market_ids)
-        market_hash = hashlib.sha256(market_fingerprint.encode()).hexdigest()[:16]
+        market_hash = hashlib.sha256(market_fingerprint.encode()).hexdigest()[:8] if market_fingerprint else "no_market"
+        market_snippets = "_".join(mid[:8] for mid in all_market_ids[:3]) if all_market_ids else "unknown"
+        stable_suffix = f"{market_snippets}_{market_hash}"
         strategy_name = self.strategy
         if not self.stable_id:
-            self.stable_id = f"{strategy_name}_{market_hash}"
+            self.stable_id = f"{strategy_name}_{stable_suffix}"
         if not self.id:
-            self.id = f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
+            self.id = f"{strategy_name}_{stable_suffix}_{int(self.detected_at.timestamp())}"
 
 
 class OpportunityFilter(BaseModel):

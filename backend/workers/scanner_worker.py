@@ -33,7 +33,7 @@ os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 from utils.utcnow import utcnow
 from config import settings
 from models.database import AsyncSessionLocal, init_database
-from services import scanner
+from services.scanner import scanner
 from services.signal_bus import emit_scanner_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.shared_state import (

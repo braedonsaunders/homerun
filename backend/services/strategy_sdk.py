@@ -553,3 +553,58 @@ class StrategySDK:
             ]
         except Exception:
             return []
+
+    # ── Data source access ───────────────────────────────
+
+    @staticmethod
+    async def get_data_records(
+        source_slug: str | None = None,
+        source_slugs: list[str] | None = None,
+        limit: int = 200,
+        geotagged: bool | None = None,
+        category: str | None = None,
+        since: str | None = None,
+    ) -> list[dict]:
+        """Read normalized records from the data source store."""
+        try:
+            from services.data_source_sdk import DataSourceSDK
+
+            return await DataSourceSDK.get_records(
+                source_slug=source_slug,
+                source_slugs=source_slugs,
+                limit=limit,
+                geotagged=geotagged,
+                category=category,
+                since=since,
+            )
+        except Exception as e:
+            logger.warning("StrategySDK.get_data_records failed: %s", e)
+            return []
+
+    @staticmethod
+    async def get_latest_data_record(
+        source_slug: str,
+        external_id: str | None = None,
+    ) -> dict | None:
+        """Read the newest normalized record for a source (optionally by external_id)."""
+        try:
+            from services.data_source_sdk import DataSourceSDK
+
+            return await DataSourceSDK.get_latest_record(
+                source_slug=source_slug,
+                external_id=external_id,
+            )
+        except Exception as e:
+            logger.warning("StrategySDK.get_latest_data_record failed: %s", e)
+            return None
+
+    @staticmethod
+    async def run_data_source(source_slug: str, max_records: int = 500) -> dict:
+        """Trigger a source run and return ingestion summary."""
+        try:
+            from services.data_source_sdk import DataSourceSDK
+
+            return await DataSourceSDK.run_source(source_slug=source_slug, max_records=max_records)
+        except Exception as e:
+            logger.warning("StrategySDK.run_data_source failed: %s", e)
+            return {}

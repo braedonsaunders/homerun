@@ -32,6 +32,30 @@ from services.weather.workflow_orchestrator import weather_workflow_orchestrator
 router = APIRouter()
 
 
+def _resolve_query_default(value):
+    if value.__class__.__module__.startswith("fastapi."):
+        return getattr(value, "default", value)
+    return value
+
+
+def _resolve_query_bool(value) -> bool:
+    return bool(_resolve_query_default(value))
+
+
+async def emit_weather_intent_signals(session: AsyncSession, opportunities: list) -> int:
+    return await bridge_opportunities_to_signals(
+        session,
+        opportunities,
+        source="weather",
+    )
+
+
+def _read_row_value(row: object, key: str):
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
 def _extract_binary_market_tokens(market: dict) -> tuple[Optional[str], Optional[str]]:
     token_ids = market.get("clob_token_ids") or market.get("token_ids") or market.get("market_token_ids")
     if not isinstance(token_ids, list):
@@ -177,22 +201,23 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
         intent_dicts = []
         for row in pending_rows:
             intent_dict = {
-                "id": row.id,
-                "market_id": row.market_id,
-                "market_question": row.market_question,
-                "direction": row.direction,
-                "entry_price": row.entry_price,
-                "take_profit_price": row.take_profit_price,
-                "stop_loss_pct": row.stop_loss_pct,
-                "model_probability": row.model_probability,
-                "edge_percent": row.edge_percent,
-                "confidence": row.confidence,
-                "model_agreement": row.model_agreement,
-                "suggested_size_usd": row.suggested_size_usd,
-                "status": row.status,
-                "created_at": row.created_at,
+                "id": _read_row_value(row, "id"),
+                "market_id": _read_row_value(row, "market_id"),
+                "market_question": _read_row_value(row, "market_question"),
+                "direction": _read_row_value(row, "direction"),
+                "entry_price": _read_row_value(row, "entry_price"),
+                "take_profit_price": _read_row_value(row, "take_profit_price"),
+                "stop_loss_pct": _read_row_value(row, "stop_loss_pct"),
+                "model_probability": _read_row_value(row, "model_probability"),
+                "edge_percent": _read_row_value(row, "edge_percent"),
+                "confidence": _read_row_value(row, "confidence"),
+                "model_agreement": _read_row_value(row, "model_agreement"),
+                "suggested_size_usd": _read_row_value(row, "suggested_size_usd"),
+                "status": _read_row_value(row, "status"),
+                "created_at": _read_row_value(row, "created_at"),
             }
-            metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+            metadata = _read_row_value(row, "metadata_json")
+            metadata = metadata if isinstance(metadata, dict) else {}
             intent_dict.update(metadata)
             intent_dicts.append(intent_dict)
         weather_event = DataEvent(
@@ -202,11 +227,7 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
             payload={"intents": intent_dicts},
         )
         opportunities = await event_dispatcher.dispatch(weather_event)
-        emitted = await bridge_opportunities_to_signals(
-            session,
-            opportunities,
-            source="weather",
-        )
+        emitted = await emit_weather_intent_signals(session, opportunities)
         # Clear any previously queued manual run requests to avoid duplicate
         # immediate reruns by the background weather worker loop.
         await shared_state.clear_weather_scan_request(session)
@@ -273,6 +294,12 @@ async def get_weather_opportunities(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    min_edge = _resolve_query_default(min_edge)
+    direction = _resolve_query_default(direction)
+    max_entry = _resolve_query_default(max_entry)
+    location = _resolve_query_default(location)
+    include_report_only = _resolve_query_bool(include_report_only)
+
     opps = await shared_state.get_weather_opportunities_from_db(
         session,
         min_edge_percent=min_edge,
@@ -306,6 +333,12 @@ async def get_weather_opportunity_dates(
     location: Optional[str] = Query(None),
     include_report_only: bool = Query(False),
 ):
+    min_edge = _resolve_query_default(min_edge)
+    direction = _resolve_query_default(direction)
+    max_entry = _resolve_query_default(max_entry)
+    location = _resolve_query_default(location)
+    include_report_only = _resolve_query_bool(include_report_only)
+
     date_counts = await shared_state.get_weather_target_date_counts_from_db(
         session,
         min_edge_percent=min_edge,

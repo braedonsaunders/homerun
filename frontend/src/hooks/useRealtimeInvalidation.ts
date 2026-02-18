@@ -9,6 +9,7 @@ type WSMessage = {
 type RealtimeContext = {
   activeTab?: string
   opportunitiesView?: string
+  dataView?: string
 }
 
 const INVALIDATION_DEBOUNCE_MS = 120
@@ -72,11 +73,15 @@ export function useRealtimeInvalidation(
 
     const activeTab = String(context.activeTab || '')
     const opportunitiesView = String(context.opportunitiesView || '')
+    const dataView = String(context.dataView || '')
     const viewingOpportunities = activeTab === 'opportunities'
+    const viewingData = activeTab === 'data'
     const viewingArbitrage = viewingOpportunities && opportunitiesView === 'scanner'
-    const viewingNews = viewingOpportunities && opportunitiesView === 'news'
+    const viewingNews =
+      (viewingOpportunities && opportunitiesView === 'news')
+      || (viewingData && dataView === 'feed')
     const viewingWeather = viewingOpportunities && opportunitiesView === 'weather'
-    const viewingWorld = viewingOpportunities && opportunitiesView === 'world_intelligence'
+    const viewingWorld = viewingData && dataView === 'map'
     const viewingTrading = activeTab === 'trading'
 
     if (messageType === 'scanner_status' && lastMessage.data) {

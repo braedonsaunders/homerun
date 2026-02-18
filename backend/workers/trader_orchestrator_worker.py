@@ -46,6 +46,7 @@ from services.trader_orchestrator_state import (
     create_trader_decision,
     create_trader_decision_checks,
     create_trader_event,
+    create_trader_order,
     get_consecutive_loss_count,
     get_daily_realized_pnl,
     get_gross_exposure,

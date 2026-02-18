@@ -146,6 +146,7 @@ ALLOWED_IMPORT_PREFIXES = {
     "services.fee_model",
     "services.ai",
     "services.strategy_sdk",
+    "services.data_source_sdk",
     "services.weather",
     "services.data_events",
     "services.event_dispatcher",
@@ -876,6 +877,21 @@ class StrategyLoader:
                 "loaded": sorted(self._loaded.keys()),
                 "errors": dict(self._errors),
             }
+
+    async def refresh_from_db(
+        self,
+        *,
+        session: "AsyncSession",
+        strategy_keys: Optional[list[str]] = None,
+        source_keys: Optional[list[str]] = None,
+        prune_unlisted: bool = False,
+    ) -> dict[str, Any]:
+        return await self.refresh_all_from_db(
+            session=session,
+            strategy_keys=strategy_keys,
+            source_keys=source_keys,
+            prune_unlisted=prune_unlisted,
+        )
 
     # ── Accessors ────────────────────────────────────────────
 

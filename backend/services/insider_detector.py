@@ -591,7 +591,7 @@ class InsiderDetectorService:
         avg_prob = sum(probs) / len(probs)
         # Proxy brier against aggregate hit-rate in absence of per-market outcomes.
         brier = (avg_prob - win_rate) ** 2 + (win_rate * (1.0 - win_rate))
-        return clamp(1.0 - clamp(brier / 0.35), 0.0, 1.0)
+        return clamp(1.0 - clamp(brier / 0.35, 0.0, 1.0), 0.0, 1.0)
 
     def _drawdown_behavior_component(
         self,
@@ -602,7 +602,7 @@ class InsiderDetectorService:
         dd_inv = clamp(1.0 - clamp(max_drawdown, 0.0, 1.0), 0.0, 1.0)
         if timing_component is None:
             return dd_inv
-        return clamp((0.60 * dd_inv) + (0.40 * clamp(timing_component)), 0.0, 1.0)
+        return clamp((0.60 * dd_inv) + (0.40 * clamp(timing_component, 0.0, 1.0)), 0.0, 1.0)
 
     @staticmethod
     def _find_first_future_price(

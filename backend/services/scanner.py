@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,14 @@ from services.ws_feeds import get_feed_manager
 from services.quality_filter import quality_filter
 from services.data_events import DataEvent, EventType
 from services.event_dispatcher import event_dispatcher
+from services.strategies.basic import BasicArbStrategy
+from services.strategies.combinatorial import CombinatorialStrategy
+from services.strategies.contradiction import ContradictionStrategy
+from services.strategies.miracle import MiracleStrategy
+from services.strategies.must_happen import MustHappenStrategy
+from services.strategies.mutually_exclusive import MutuallyExclusiveStrategy
+from services.strategies.negrisk import NegRiskStrategy
+from services.strategies.settlement_lag import SettlementLagStrategy
 from sqlalchemy import select
 
 
@@ -38,6 +47,11 @@ class ArbitrageScanner:
     """Main scanner that orchestrates arbitrage detection"""
 
     def __init__(self, data_provider: Optional[MarketDataProvider] = None):
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         self.market_data = data_provider or market_data_provider
 
         self._running = False
@@ -99,9 +113,9 @@ class ArbitrageScanner:
         self._market_history_backfill_max_markets: int = 120
 
         # Reactive scanning: event set by WS price changes to trigger immediate scan
-        self._reactive_trigger = asyncio.Event()
+        self._reactive_trigger: Optional[asyncio.Event] = None
         self._reactive_scan_registered = False
-        self._reactive_tokens_lock = asyncio.Lock()
+        self._reactive_tokens_lock: Optional[asyncio.Lock] = None
         self._pending_reactive_tokens: dict[str, float] = {}
         self._reactive_backpressure_dropped_tokens: int = 0
         self._reactive_backpressure_dropped_markets: int = 0
@@ -110,6 +124,32 @@ class ArbitrageScanner:
 
         # Quality filter audit trail from the last scan cycle
         self._quality_reports: dict = {}
+
+        # Test/runtime override hook for strategy lists.
+        self._strategy_overrides: Optional[list] = None
+        self._legacy_default_strategies = self._build_default_strategies()
+        self._runtime_strategies_loaded_for_instance = False
+
+    @staticmethod
+    def _build_default_strategies() -> list:
+        return [
+            BasicArbStrategy(),
+            NegRiskStrategy(),
+            MutuallyExclusiveStrategy(),
+            ContradictionStrategy(),
+            MustHappenStrategy(),
+            MiracleStrategy(),
+            CombinatorialStrategy(),
+            SettlementLagStrategy(),
+        ]
+
+    @property
+    def strategies(self) -> list:
+        return self._get_all_strategies()
+
+    @strategies.setter
+    def strategies(self, value: list) -> None:
+        self._strategy_overrides = list(value or [])
 
     def set_auto_ai_scoring(self, enabled: bool):
         """Enable or disable automatic AI scoring of all opportunities after each scan."""
@@ -492,13 +532,24 @@ class ArbitrageScanner:
             ordered = ordered[:cap]
         return ordered
 
+    def _get_reactive_trigger(self) -> asyncio.Event:
+        if self._reactive_trigger is None:
+            self._reactive_trigger = asyncio.Event()
+        return self._reactive_trigger
+
+    def _get_reactive_tokens_lock(self) -> asyncio.Lock:
+        if self._reactive_tokens_lock is None:
+            self._reactive_tokens_lock = asyncio.Lock()
+        return self._reactive_tokens_lock
+
     async def _queue_reactive_tokens(self, changed_tokens: Set[str]) -> None:
         """Queue changed tokens from WS callbacks with bounded backpressure."""
         if not changed_tokens:
             return
         now = time.monotonic()
         cap = max(50, int(settings.REALTIME_SCAN_MAX_PENDING_TOKENS or 2000))
-        async with self._reactive_tokens_lock:
+        reactive_lock = self._get_reactive_tokens_lock()
+        async with reactive_lock:
             for token_id in changed_tokens:
                 token = str(token_id or "").strip()
                 if token:
@@ -512,12 +563,13 @@ class ArbitrageScanner:
                 )[:cap]
                 self._pending_reactive_tokens = dict(newest)
                 self._reactive_backpressure_dropped_tokens += overflow
-        self._reactive_trigger.set()
+        self._get_reactive_trigger().set()
 
     async def consume_reactive_tokens(self, max_tokens: Optional[int] = None) -> list[str]:
         """Consume up to max_tokens pending reactive token IDs (newest first)."""
         limit = max(1, int(max_tokens or settings.REALTIME_SCAN_MAX_BATCH_TOKENS or 500))
-        async with self._reactive_tokens_lock:
+        reactive_lock = self._get_reactive_tokens_lock()
+        async with reactive_lock:
             if not self._pending_reactive_tokens:
                 self._last_reactive_batch_tokens = 0
                 return []
@@ -532,7 +584,7 @@ class ArbitrageScanner:
             tokens = [token for token, _ in selected]
             self._last_reactive_batch_tokens = len(tokens)
             if remaining:
-                self._reactive_trigger.set()
+                self._get_reactive_trigger().set()
             return tokens
 
     def _partition_market_refresh_strategies(self) -> tuple[set[str], set[str]]:
@@ -993,13 +1045,22 @@ class ArbitrageScanner:
 
             loaded_count = len(result.get("loaded", []))
             error_count = len(result.get("errors", {}))
+            loaded_scanner_strategies = [
+                instance
+                for instance in strategy_loader.get_all_instances()
+                if getattr(instance, "worker_affinity", "scanner") == "scanner"
+            ]
+            self._runtime_strategies_loaded_for_instance = bool(loaded_scanner_strategies)
             if loaded_count > 0:
                 print(f"Loaded {loaded_count} strategies ({error_count} errors)")
         except Exception as e:
             print(f"Error loading strategies: {e}")
+            self._runtime_strategies_loaded_for_instance = False
 
     async def _ensure_runtime_strategies_loaded(self) -> None:
-        if strategy_loader._loaded:
+        if self._strategy_overrides is not None:
+            return
+        if self._runtime_strategies_loaded_for_instance:
             return
         await self.load_plugins()
 
@@ -1009,8 +1070,15 @@ class ArbitrageScanner:
         Strategies with other worker affinities (e.g. 'crypto') are handled
         by their respective workers and should not run in the scanner loop.
         """
+        if self._strategy_overrides is not None:
+            return list(self._strategy_overrides)
+        if not self._runtime_strategies_loaded_for_instance:
+            return list(self._legacy_default_strategies)
         plugin_strategies = strategy_loader.get_all_instances()
-        return [s for s in plugin_strategies if getattr(s, "worker_affinity", "scanner") == "scanner"]
+        scanner_strategies = [s for s in plugin_strategies if getattr(s, "worker_affinity", "scanner") == "scanner"]
+        if scanner_strategies:
+            return scanner_strategies
+        return list(self._legacy_default_strategies)
 
     def _get_news_edge_helper(self):
         """Return the news_edge strategy instance for prefetch utilities."""
@@ -1023,6 +1091,100 @@ class ArbitrageScanner:
     def _strategy_key(strategy) -> str:
         st = getattr(strategy, "strategy_type", "")
         return st if isinstance(st, str) else getattr(st, "value", "")
+
+    @staticmethod
+    def _default_mispricing_for_strategy(strategy_key: str) -> Optional[MispricingType]:
+        slug = str(strategy_key or "").strip().lower()
+        if not slug:
+            return None
+        if slug == "settlement_lag":
+            return MispricingType.SETTLEMENT_LAG
+        if slug in {"combinatorial", "cross_market"}:
+            return MispricingType.CROSS_MARKET
+        if slug in {"news_edge", "news_reaction", "news"}:
+            return MispricingType.NEWS_INFORMATION
+        return MispricingType.WITHIN_MARKET
+
+    def _hydrate_opportunity_defaults(self, opportunity: ArbitrageOpportunity, strategy: object) -> None:
+        if not opportunity.strategy:
+            opportunity.strategy = str(self._strategy_key(strategy) or "")
+        if opportunity.mispricing_type is None:
+            default_mispricing = self._default_mispricing_for_strategy(
+                str(opportunity.strategy or self._strategy_key(strategy) or "")
+            )
+            if default_mispricing is not None:
+                opportunity.mispricing_type = default_mispricing
+
+    async def _run_legacy_detection_cycle(
+        self,
+        *,
+        events: list,
+        markets: list,
+        prices: dict,
+    ) -> list[ArbitrageOpportunity]:
+        opportunities: list[ArbitrageOpportunity] = []
+        for strategy in self._get_all_strategies():
+            try:
+                detect_async = getattr(strategy, "detect_async", None)
+                detect = getattr(strategy, "detect", None)
+                strategy_opportunities: list[ArbitrageOpportunity] = []
+
+                if inspect.iscoroutinefunction(detect_async):
+                    strategy_opportunities = await detect_async(events, markets, prices)
+                elif callable(detect):
+                    if inspect.iscoroutinefunction(detect):
+                        strategy_opportunities = await detect(events, markets, prices)
+                    else:
+                        strategy_opportunities = detect(events, markets, prices)
+
+                for opportunity in strategy_opportunities or []:
+                    if not isinstance(opportunity, ArbitrageOpportunity):
+                        continue
+                    self._hydrate_opportunity_defaults(opportunity, strategy)
+                    opportunities.append(opportunity)
+            except Exception as e:
+                strategy_name = str(getattr(strategy, "name", self._strategy_key(strategy) or "unknown"))
+                print(f"  Strategy {strategy_name} failed: {e}")
+        return opportunities
+
+    def _strategy_runtime_status_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        loaded_slugs: set[str] = set()
+
+        for strategy in self._get_all_strategies():
+            strategy_key = str(self._strategy_key(strategy) or "").strip().lower()
+            if not strategy_key:
+                continue
+            loaded_slugs.add(strategy_key)
+            rows.append(
+                {
+                    "name": getattr(strategy, "name", strategy_key.replace("_", " ").title()),
+                    "type": strategy_key,
+                    "status": "loaded",
+                    "error_message": None,
+                }
+            )
+
+        if self._runtime_strategies_loaded_for_instance:
+            for strategy_key, error in strategy_loader._errors.items():
+                slug = str(strategy_key or "").strip().lower()
+                if not slug or slug in loaded_slugs:
+                    continue
+                error_text = str(error or "").strip()
+                if error_text:
+                    first_line = error_text.splitlines()[0].strip()
+                    error_text = first_line or error_text
+                rows.append(
+                    {
+                        "name": slug.replace("_", " ").title(),
+                        "type": slug,
+                        "status": "error",
+                        "error_message": error_text or "Unknown strategy load error",
+                    }
+                )
+
+        rows.sort(key=lambda row: str(row.get("type") or ""))
+        return rows
 
     async def scan_once(
         self,
@@ -1121,11 +1283,13 @@ class ArbitrageScanner:
             # be sent to Polymarket's CLOB.
             all_token_ids = []
             for market in markets:
+                platform = str(getattr(market, "platform", "polymarket") or "polymarket").lower()
+                if platform != "polymarket":
+                    continue
                 for tid in market.clob_token_ids:
-                    # Polymarket CLOB token IDs are long hex strings (>20 chars).
-                    # Kalshi synthetic IDs are short like "TICKER_yes".
-                    if len(tid) > 20:
-                        all_token_ids.append(tid)
+                    token_id = str(tid or "").strip()
+                    if token_id:
+                        all_token_ids.append(token_id)
 
             # Priority-sort tokens so HOT/WARM markets get fresh prices first.
             # Build a set of prioritized token IDs from tiered scanning data.
@@ -1136,9 +1300,12 @@ class ArbitrageScanner:
                     tier_map = self._prioritizer.classify_all(markets, now)
                     for tier_key in (MarketTier.HOT, MarketTier.WARM):
                         for m in tier_map.get(tier_key, []):
+                            if str(getattr(m, "platform", "polymarket") or "polymarket").lower() != "polymarket":
+                                continue
                             for tid in m.clob_token_ids:
-                                if len(tid) > 20:
-                                    priority_token_ids.add(tid)
+                                token_id = str(tid or "").strip()
+                                if token_id:
+                                    priority_token_ids.add(token_id)
                 except Exception:
                     pass  # Fall through to unsorted if prioritizer fails
 
@@ -1243,25 +1410,40 @@ class ArbitrageScanner:
                     print(f"  Prioritizer error (non-fatal, using all markets): {e}")
                     markets_to_evaluate = markets
 
-            # Dispatch market data to subscribed strategies via event dispatcher.
-            # Strategies subscribe to "market_data_refresh" and implement on_event()
-            # which delegates to their detect()/detect_async() methods.
-            await self._ensure_runtime_strategies_loaded()
-            await self._set_activity("Dispatching market_data_refresh to strategies...")
-
-            data_event = DataEvent(
-                event_type=EventType.MARKET_DATA_REFRESH,
-                source="scanner_refresh",
-                timestamp=utcnow(),
-                markets=markets_to_evaluate,
-                events=list(events),
-                prices=dict(prices),
-                scan_mode="full_reconcile",
-            )
-            all_opportunities = await self._dispatch_market_refresh(
-                data_event,
-                full_market_snapshot=markets,
-            )
+            if self._strategy_overrides is not None:
+                await self._set_activity("Running scanner strategy overrides...")
+                all_opportunities = await self._run_legacy_detection_cycle(
+                    events=list(events),
+                    markets=markets_to_evaluate,
+                    prices=dict(prices),
+                )
+            else:
+                # Dispatch market data to subscribed strategies via event dispatcher.
+                # Strategies subscribe to "market_data_refresh" and implement on_event()
+                # which delegates to their detect()/detect_async() methods.
+                await self._ensure_runtime_strategies_loaded()
+                if self._runtime_strategies_loaded_for_instance:
+                    await self._set_activity("Dispatching market_data_refresh to strategies...")
+                    data_event = DataEvent(
+                        event_type=EventType.MARKET_DATA_REFRESH,
+                        source="scanner_refresh",
+                        timestamp=utcnow(),
+                        markets=markets_to_evaluate,
+                        events=list(events),
+                        prices=dict(prices),
+                        scan_mode="full_reconcile",
+                    )
+                    all_opportunities = await self._dispatch_market_refresh(
+                        data_event,
+                        full_market_snapshot=markets,
+                    )
+                else:
+                    await self._set_activity("Running built-in scanner strategies...")
+                    all_opportunities = await self._run_legacy_detection_cycle(
+                        events=list(events),
+                        markets=markets_to_evaluate,
+                        prices=dict(prices),
+                    )
 
             # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
@@ -1274,23 +1456,26 @@ class ArbitrageScanner:
             # STORE opportunities immediately so the API can serve them
             # without waiting for slow LLM-based strategies (News Edge).
             # ----------------------------------------------------------
-            all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
+            if self._strategy_overrides is None:
+                all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
 
-            # Apply quality filters with full audit trail.
-            # Pass per-strategy QualityFilterOverrides so strategies that
-            # set quality_filter_overrides on their class have those thresholds
-            # respected (e.g. directional strategies relaxing the ROI cap).
-            _quality_reports: dict = {}
-            filtered_opportunities: list = []
-            for opp in all_opportunities:
-                strategy_instance = strategy_loader.get_instance(opp.strategy)
-                overrides = getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
-                report = quality_filter.evaluate(opp, overrides=overrides)
-                _quality_reports[opp.stable_id or opp.id] = report
-                if report.passed:
-                    filtered_opportunities.append(opp)
-            all_opportunities = filtered_opportunities
-            self._quality_reports = _quality_reports
+                # Apply quality filters with full audit trail.
+                # Pass per-strategy QualityFilterOverrides so strategies that
+                # set quality_filter_overrides on their class have those thresholds
+                # respected (e.g. directional strategies relaxing the ROI cap).
+                _quality_reports: dict = {}
+                filtered_opportunities: list = []
+                for opp in all_opportunities:
+                    strategy_instance = strategy_loader.get_instance(opp.strategy)
+                    overrides = getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
+                    report = quality_filter.evaluate(opp, overrides=overrides)
+                    _quality_reports[opp.stable_id or opp.id] = report
+                    if report.passed:
+                        filtered_opportunities.append(opp)
+                all_opportunities = filtered_opportunities
+                self._quality_reports = _quality_reports
+            else:
+                self._quality_reports = {}
 
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
             all_opportunities = self._apply_opportunity_caps(all_opportunities)
@@ -1974,15 +2159,16 @@ class ArbitrageScanner:
                         print(f"Full scan error (first run): {e}")
 
             # Wait for either the timer OR a reactive price-change trigger
+            reactive_trigger = self._get_reactive_trigger()
             if self._pending_reactive_tokens:
-                self._reactive_trigger.set()
+                reactive_trigger.set()
             else:
-                self._reactive_trigger.clear()
+                reactive_trigger.clear()
             sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS
             await self._set_activity(f"Idle — next scan in ≤{sleep_seconds}s (or on price change)")
             try:
                 # Wait for reactive trigger, but time out after the normal interval
-                await asyncio.wait_for(self._reactive_trigger.wait(), timeout=sleep_seconds)
+                await asyncio.wait_for(reactive_trigger.wait(), timeout=sleep_seconds)
                 await self._set_activity("Reactive scan triggered by WS price change")
             except asyncio.TimeoutError:
                 pass  # Normal timer-based fallback
@@ -2128,7 +2314,7 @@ class ArbitrageScanner:
 
     def get_status(self) -> dict:
         """Get current scanner status"""
-        loaded_strategies = self._get_all_strategies()
+        strategy_rows = self._strategy_runtime_status_rows()
         status = {
             "running": self._running,
             "enabled": self._enabled,
@@ -2137,13 +2323,7 @@ class ArbitrageScanner:
             "last_scan": to_iso(self._last_scan),
             "opportunities_count": len(self._opportunities),
             "current_activity": self._current_activity,
-            "strategies": [
-                {
-                    "name": getattr(s, "name", self._strategy_key(s) or "Unknown"),
-                    "type": self._strategy_key(s),
-                }
-                for s in loaded_strategies
-            ],
+            "strategies": strategy_rows,
         }
 
         # Add WebSocket feed status

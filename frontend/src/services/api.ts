@@ -176,7 +176,7 @@ export interface ScannerStatus {
   interval_seconds: number
   last_scan: string | null
   opportunities_count: number
-  current_activity?: string
+  current_activity?: string | null
   strategies: Strategy[]
 }
 
@@ -191,6 +191,7 @@ export interface Strategy {
   source_key?: string
   enabled?: boolean
   status?: string  // For plugins: loaded, error, unloaded
+  error_message?: string | null
   domain?: 'event_markets' | 'crypto' | string
   timeframe?: string
   sources?: string[]
@@ -3775,5 +3776,199 @@ export const getUnifiedStrategyTemplate = async (): Promise<{
 
 export const getUnifiedStrategyDocs = async (): Promise<Record<string, any>> => {
   const { data } = await api.get('/strategy-manager/docs')
+  return unwrapApiData(data)
+}
+
+// ==================== UNIFIED DATA SOURCE API ====================
+
+export interface UnifiedDataSource {
+  id: string
+  slug: string
+  source_key: string
+  source_kind: string
+  name: string
+  description: string | null
+  source_code: string
+  class_name: string | null
+  is_system: boolean
+  enabled: boolean
+  status: string
+  error_message: string | null
+  version: number
+  config: Record<string, unknown>
+  config_schema: Record<string, unknown> | null
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+  capabilities: {
+    has_fetch: boolean
+    has_fetch_async: boolean
+    has_transform: boolean
+  }
+  runtime: Record<string, any> | null
+}
+
+export interface UnifiedDataSourceRun {
+  id: string
+  status: string
+  fetched_count: number
+  transformed_count: number
+  upserted_count: number
+  skipped_count: number
+  error_message: string | null
+  metadata: Record<string, unknown>
+  started_at: string | null
+  completed_at: string | null
+  duration_ms: number | null
+}
+
+export interface UnifiedDataSourceRecord {
+  id: string
+  external_id: string | null
+  title: string | null
+  summary: string | null
+  category: string | null
+  source: string | null
+  url: string | null
+  geotagged: boolean
+  country_iso3: string | null
+  latitude: number | null
+  longitude: number | null
+  observed_at: string | null
+  ingested_at: string | null
+  payload: Record<string, unknown>
+  transformed: Record<string, unknown>
+  tags: string[]
+}
+
+export const getUnifiedDataSources = async (params?: {
+  source_key?: string
+  enabled?: boolean
+}): Promise<UnifiedDataSource[]> => {
+  const { data } = await api.get('/data-sources', { params })
+  return data.items || []
+}
+
+export const getUnifiedDataSource = async (id: string): Promise<UnifiedDataSource> => {
+  const { data } = await api.get(`/data-sources/${id}`)
+  return unwrapApiData(data)
+}
+
+export const createUnifiedDataSource = async (payload: {
+  slug: string
+  source_key?: string
+  source_kind?: string
+  name?: string
+  description?: string
+  source_code: string
+  config?: Record<string, unknown>
+  config_schema?: Record<string, unknown>
+  enabled?: boolean
+}): Promise<UnifiedDataSource> => {
+  const { data } = await api.post('/data-sources', payload)
+  return unwrapApiData(data)
+}
+
+export const updateUnifiedDataSource = async (
+  id: string,
+  payload: Partial<{
+    slug: string
+    source_key: string
+    source_kind: string
+    name: string
+    description: string
+    source_code: string
+    config: Record<string, unknown>
+    config_schema: Record<string, unknown>
+    enabled: boolean
+    unlock_system: boolean
+  }>
+): Promise<UnifiedDataSource> => {
+  const { data } = await api.put(`/data-sources/${id}`, payload)
+  return unwrapApiData(data)
+}
+
+export const deleteUnifiedDataSource = async (id: string): Promise<void> => {
+  await api.delete(`/data-sources/${id}`)
+}
+
+export const validateUnifiedDataSource = async (source_code: string, class_name?: string): Promise<{
+  valid: boolean
+  class_name: string | null
+  source_name: string | null
+  source_description: string | null
+  capabilities: Record<string, boolean>
+  errors: string[]
+  warnings: string[]
+}> => {
+  const { data } = await api.post('/data-sources/validate', { source_code, class_name })
+  return unwrapApiData(data)
+}
+
+export const reloadUnifiedDataSource = async (id: string): Promise<{
+  status: string
+  message?: string
+  runtime?: Record<string, any> | null
+}> => {
+  const { data } = await api.post(`/data-sources/${id}/reload`)
+  return unwrapApiData(data)
+}
+
+export const runUnifiedDataSource = async (
+  id: string,
+  payload?: { max_records?: number }
+): Promise<{
+  run_id: string
+  source_slug: string
+  status: string
+  fetched_count: number
+  transformed_count: number
+  upserted_count: number
+  skipped_count: number
+  error_message: string | null
+  duration_ms: number | null
+}> => {
+  const { data } = await api.post(`/data-sources/${id}/run`, payload || {})
+  return unwrapApiData(data)
+}
+
+export const getUnifiedDataSourceRuns = async (
+  id: string,
+  params?: { limit?: number }
+): Promise<{
+  source_id: string
+  source_slug: string
+  runs: UnifiedDataSourceRun[]
+}> => {
+  const { data } = await api.get(`/data-sources/${id}/runs`, { params })
+  return unwrapApiData(data)
+}
+
+export const getUnifiedDataSourceRecords = async (
+  id: string,
+  params?: { limit?: number; offset?: number; geotagged?: boolean }
+): Promise<{
+  source_id: string
+  source_slug: string
+  total: number
+  offset: number
+  limit: number
+  records: UnifiedDataSourceRecord[]
+}> => {
+  const { data } = await api.get(`/data-sources/${id}/records`, { params })
+  return unwrapApiData(data)
+}
+
+export const getUnifiedDataSourceTemplate = async (): Promise<{
+  template: string
+  instructions: string
+  available_imports: string[]
+}> => {
+  const { data } = await api.get('/data-sources/template')
+  return unwrapApiData(data)
+}
+
+export const getUnifiedDataSourceDocs = async (): Promise<Record<string, any>> => {
+  const { data } = await api.get('/data-sources/docs')
   return unwrapApiData(data)
 }

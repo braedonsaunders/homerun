@@ -60,7 +60,14 @@ ACTIVE_POSITION_STATUS = "open"
 INACTIVE_POSITION_STATUS = "closed"
 ACTIVE_EXECUTION_SESSION_STATUSES = {"pending", "placing", "working", "partial", "hedging", "paused"}
 TERMINAL_EXECUTION_SESSION_STATUSES = {"completed", "failed", "cancelled", "expired"}
-_STRATEGY_KEY_ALIASES: dict[str, str] = {}
+_STRATEGY_KEY_ALIASES: dict[str, str] = {
+    "strategy.default": "btc_eth_highfreq",
+    "default": "btc_eth_highfreq",
+    "crypto_5m": "btc_eth_highfreq",
+    "crypto_15m": "btc_eth_highfreq",
+    "crypto_1h": "btc_eth_highfreq",
+    "crypto_4h": "btc_eth_highfreq",
+}
 _RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
 _TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
 _SOURCE_STRATEGY_MATRIX_FALLBACK: dict[str, set[str]] = {
@@ -407,9 +414,9 @@ def _derive_legacy_fields_from_source_configs(
     source_configs: list[dict[str, Any]],
 ) -> tuple[str, list[str], dict[str, Any]]:
     if not source_configs:
-        return "crypto_15m", [], {}
+        return "btc_eth_highfreq", [], {}
     first = source_configs[0]
-    strategy_key = str(first.get("strategy_key") or "crypto_15m")
+    strategy_key = str(first.get("strategy_key") or "btc_eth_highfreq")
     sources = [str(item.get("source_key") or "").strip().lower() for item in source_configs if item.get("source_key")]
     params = dict(first.get("strategy_params") or {})
     return strategy_key, sources, params

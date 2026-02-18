@@ -45,6 +45,7 @@ from api.routes_validation import router as validation_router
 from api.routes_trader_orchestrator import router as trader_orchestrator_router
 from api.routes_trader_sources import router as trader_sources_router
 from api.routes_strategies import router as strategies_router
+from api.routes_data_sources import router as data_sources_router
 from api.routes_traders import router as traders_router
 from services import wallet_tracker
 from services.copy_trader import copy_trader
@@ -119,6 +120,23 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             logger.warning(f"Failed to preload strategy registries: {e}")
+
+        # Warm unified data source loader at process startup.
+        try:
+            from services.data_source_catalog import ensure_all_data_sources_seeded
+            from services.data_source_loader import data_source_loader
+
+            async with AsyncSessionLocal() as session:
+                seeded = await ensure_all_data_sources_seeded(session)
+                loaded = await data_source_loader.refresh_all_from_db(session=session)
+            logger.info(
+                "Data source registries loaded",
+                seeded=seeded.get("seeded", 0),
+                loaded=len(loaded.get("loaded", [])),
+                errors=len(loaded.get("errors", {})),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to preload data source registries: {e}")
 
         # Load persisted world-intelligence runtime config before any world
         # source modules are imported (they snapshot some settings on import).
@@ -533,6 +551,7 @@ app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Disc
 app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 # Unified strategies router at /api/strategies/* (registered after legacy routers)
 app.include_router(strategies_router, prefix="/api", tags=["Strategies (Unified)"])
+app.include_router(data_sources_router, prefix="/api", tags=["Data Sources"])
 app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])
 app.include_router(news_workflow_router, prefix="/api", tags=["News Workflow"])
 app.include_router(weather_workflow_router, prefix="/api", tags=["Weather Workflow"])

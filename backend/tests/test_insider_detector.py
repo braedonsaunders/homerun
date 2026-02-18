@@ -91,3 +91,12 @@ def test_funding_overlap_proxy_component_uses_sync_and_cluster():
     assert weak is not None
     assert strong is not None
     assert strong > weak
+
+
+def test_drawdown_behavior_component_clamps_timing_input():
+    svc = InsiderDetectorService()
+    score = svc._drawdown_behavior_component(
+        max_drawdown=0.2,
+        timing_component=1.6,
+    )
+    assert score == 0.88

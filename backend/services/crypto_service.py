@@ -304,7 +304,6 @@ class CryptoService:
             resp = client.get(
                 f"{_cfg.CLOB_API_URL}/midpoint",
                 params={"token_id": token},
-                timeout=_CLOB_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code != 200:
                 return None
@@ -325,7 +324,6 @@ class CryptoService:
             resp = client.get(
                 f"{_cfg.CLOB_API_URL}/price",
                 params={"token_id": token, "side": side_norm},
-                timeout=_CLOB_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code != 200:
                 return None
@@ -362,7 +360,6 @@ class CryptoService:
                         "ascending": "true",
                         "limit": 8,
                     },
-                    timeout=_GAMMA_FETCH_TIMEOUT_SECONDS,
                 )
                 if resp.status_code != 200:
                     logger.debug(

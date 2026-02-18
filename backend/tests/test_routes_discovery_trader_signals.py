@@ -59,8 +59,8 @@ async def test_tracked_trader_opportunities_include_source_and_validation_metada
     )
 
     monkeypatch.setattr(
-        routes_discovery.smart_wallet_pool,
-        "get_tracked_trader_opportunities",
+        routes_discovery,
+        "get_strategy_filtered_trader_opportunities",
         AsyncMock(return_value=opportunities),
     )
     monkeypatch.setattr(
@@ -136,8 +136,8 @@ async def test_tracked_trader_opportunities_include_filtered_passthrough(monkeyp
 
     get_opps_mock = AsyncMock(return_value=opportunities)
     monkeypatch.setattr(
-        routes_discovery.smart_wallet_pool,
-        "get_tracked_trader_opportunities",
+        routes_discovery,
+        "get_strategy_filtered_trader_opportunities",
         get_opps_mock,
     )
     monkeypatch.setattr(
@@ -219,8 +219,8 @@ async def test_tracked_trader_opportunities_source_filter_scopes_confluence(monk
         )
 
     monkeypatch.setattr(
-        routes_discovery.smart_wallet_pool,
-        "get_tracked_trader_opportunities",
+        routes_discovery,
+        "get_strategy_filtered_trader_opportunities",
         AsyncMock(return_value=opportunities),
     )
     monkeypatch.setattr(
