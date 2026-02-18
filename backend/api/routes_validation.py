@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from services.opportunity_recorder import opportunity_recorder
 from services.param_optimizer import param_optimizer
-from services.strategy_loader import strategy_loader as plugin_loader
+from services.strategy_loader import strategy_loader
 from services.validation_service import validation_service
 from utils.logger import get_logger
 
@@ -69,7 +69,7 @@ class CodeBacktestRequest(BaseModel):
 
 
 def _get_combinatorial_validation_stats() -> dict[str, Any]:
-    for strategy in plugin_loader.get_all_strategy_instances():
+    for strategy in strategy_loader.get_all_instances():
         st = getattr(strategy, "strategy_type", None)
         st_value = getattr(st, "value", st)
         if st_value == "combinatorial" and hasattr(strategy, "get_validation_stats"):

@@ -30,7 +30,7 @@ from services.event_bus import event_bus
 from services.simulation import simulation_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.opportunity_strategy_catalog import (
-    build_system_strategy_rows,
+    build_system_opportunity_strategy_rows,
     default_strategy_by_source,
     list_system_strategy_keys,
     source_to_strategy_keys,
@@ -161,7 +161,7 @@ async def _fetch_enabled_strategy_catalog(
         ).all()
     )
     if not rows:
-        fallback_rows = build_system_strategy_rows()
+        fallback_rows = build_system_opportunity_strategy_rows()
         valid_keys: set[str] = set()
         by_source: dict[str, set[str]] = {}
         for row in fallback_rows:

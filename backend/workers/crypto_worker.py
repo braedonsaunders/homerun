@@ -25,7 +25,9 @@ from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services.chainlink_feed import get_chainlink_feed
 from services.crypto_service import get_crypto_service
-from services.signal_bus import emit_crypto_market_signals
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
+from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.event_bus import event_bus
 from services.worker_state import (
     clear_worker_run_request,
@@ -470,17 +472,21 @@ async def _run_loop() -> None:
                 ws_prices=ws_prices,
             )
             elapsed = round(time.monotonic() - started_at, 3)
-            async with AsyncSessionLocal() as session:
-                try:
-                    emitted = await emit_crypto_market_signals(session, markets_payload)
-                except Exception as exc:
-                    # Signal persistence should not stop market-data publishing.
-                    emitted = 0
-                    try:
-                        await session.rollback()
-                    except Exception:
-                        pass
-                    logger.warning("Crypto signal emission failed; continuing cycle: %s", exc)
+            try:
+                crypto_event = DataEvent(
+                    event_type="crypto_update",
+                    source="crypto_worker",
+                    timestamp=run_at,
+                    payload={"markets": markets_payload},
+                )
+                opportunities = await event_dispatcher.dispatch(crypto_event)
+                async with AsyncSessionLocal() as session:
+                    emitted = await bridge_opportunities_to_signals(
+                        session, opportunities, source="crypto",
+                    )
+            except Exception as exc:
+                emitted = 0
+                logger.warning("Crypto signal emission failed; continuing cycle: %s", exc)
 
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(

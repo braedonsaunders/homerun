@@ -13,8 +13,7 @@ from services.trader_orchestrator.sources.registry import (
     list_source_aliases,
 )
 from services.opportunity_strategy_catalog import (
-    build_system_strategy_rows,
-    ensure_system_trader_strategies_seeded,
+    build_system_opportunity_strategy_rows,
 )
 from services.trader_orchestrator.templates import TRADER_TEMPLATES
 
@@ -177,7 +176,6 @@ def _strategy_param_fields(row: Any) -> list[dict[str, Any]]:
 
 
 async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
-    await ensure_system_trader_strategies_seeded(session)
     rows = list(
         (
             await session.execute(
@@ -195,7 +193,7 @@ async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
     if rows:
         return rows
     # Cold-start fallback for environments that have not migrated/seeded yet.
-    return build_system_strategy_rows()
+    return build_system_opportunity_strategy_rows()
 
 
 def _detection_plugin_has_evaluate(source_code: str, class_name: str | None = None) -> bool:

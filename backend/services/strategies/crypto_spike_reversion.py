@@ -14,13 +14,9 @@ from __future__ import annotations
 from typing import Any
 
 from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import (
-    to_float,
-    to_confidence,
-    signal_payload,
-    live_move,
-    selected_probability,
-)
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload, live_move, selected_probability
 from services.trader_orchestrator.strategies.sizing import compute_position_size
 
 
@@ -32,6 +28,11 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     source_key = "crypto"
     worker_affinity = "crypto"
     market_categories = ["crypto"]
+    subscriptions = ["crypto_update"]
+
+    async def on_event(self, event: DataEvent) -> list:
+        # Evaluate-only strategy: detection is handled by btc_eth_highfreq.
+        return []
 
     def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
         params = context.get("params") or {}

@@ -26,6 +26,21 @@ const api = axios.create({ baseURL: '/api', timeout: 120000 })
 
 // ==================== TYPES ====================
 
+interface QualityFilter {
+  filter_name: string
+  passed: boolean
+  reason: string
+  threshold: number | string | null
+  actual_value: number | string | null
+}
+
+interface QualityReportData {
+  opportunity_id: string
+  passed: boolean
+  rejection_reasons: string[]
+  filters: QualityFilter[]
+}
+
 interface BacktestResult {
   success: boolean
   strategy_slug: string
@@ -37,6 +52,7 @@ interface BacktestResult {
   data_source: string
   opportunities: Array<Record<string, any>>
   num_opportunities: number
+  quality_reports: QualityReportData[]
   load_time_ms: number
   data_fetch_time_ms: number
   detect_time_ms: number
@@ -60,7 +76,71 @@ function fmtMs(ms: number): string {
 
 // ==================== OPPORTUNITY CARD ====================
 
-function OpportunityCard({ opp, index }: { opp: Record<string, any>; index: number }) {
+function QualityReportSection({ report }: { report: QualityReportData }) {
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const failedCount = report.filters.filter(f => !f.passed).length
+  const passedCount = report.filters.filter(f => f.passed).length
+
+  return (
+    <div className="border border-border/20 rounded-md overflow-hidden mt-1.5">
+      <button
+        className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-card/30 transition-colors"
+        onClick={() => setFiltersOpen(!filtersOpen)}
+      >
+        {filtersOpen ? (
+          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronRight className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
+        )}
+        <span className="text-[9px] uppercase tracking-wider text-muted-foreground">Quality Filters</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {passedCount > 0 && (
+            <span className="text-[9px] text-emerald-400 font-mono">{passedCount} pass</span>
+          )}
+          {failedCount > 0 && (
+            <span className="text-[9px] text-red-400 font-mono">{failedCount} fail</span>
+          )}
+          <Badge
+            variant="outline"
+            className={cn(
+              'text-[8px] h-3.5',
+              report.passed ? 'border-emerald-500/30 text-emerald-400' : 'border-red-500/30 text-red-400'
+            )}
+          >
+            {report.passed ? 'PASS' : 'FAIL'}
+          </Badge>
+        </div>
+      </button>
+      {filtersOpen && (
+        <div className="px-2 pb-2 space-y-0.5 border-t border-border/10">
+          {report.filters.map((f, i) => (
+            <div key={i} className="flex items-start gap-1.5 py-0.5">
+              {f.passed ? (
+                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 mt-0.5 shrink-0" />
+              ) : (
+                <XCircle className="w-2.5 h-2.5 text-red-400 mt-0.5 shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-mono text-muted-foreground">{f.filter_name}</span>
+                </div>
+                <p className="text-[9px] text-muted-foreground/80 leading-tight">{f.reason}</p>
+                {f.threshold != null && f.actual_value != null && (
+                  <div className="flex gap-2 text-[8px] font-mono mt-0.5">
+                    <span className="text-amber-400/70">threshold: {String(typeof f.threshold === 'number' ? f.threshold.toFixed(2) : f.threshold)}</span>
+                    <span className={f.passed ? 'text-emerald-400/70' : 'text-red-400/70'}>actual: {String(typeof f.actual_value === 'number' ? f.actual_value.toFixed(2) : f.actual_value)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OpportunityCard({ opp, index, qualityReport }: { opp: Record<string, any>; index: number; qualityReport?: QualityReportData }) {
   const [expanded, setExpanded] = useState(false)
   const roi = opp.roi_percent ?? opp.roi ?? 0
   const cost = opp.total_cost ?? 0
@@ -81,6 +161,17 @@ function OpportunityCard({ opp, index }: { opp: Record<string, any>; index: numb
           <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
         )}
         <span className="text-[11px] font-medium truncate flex-1">{title}</span>
+        {qualityReport && (
+          <Badge
+            variant="outline"
+            className={cn(
+              'text-[8px] h-3.5 shrink-0 mr-1',
+              qualityReport.passed ? 'border-emerald-500/20 text-emerald-400/70' : 'border-red-500/20 text-red-400/70'
+            )}
+          >
+            {qualityReport.passed ? 'QF' : 'QF FAIL'}
+          </Badge>
+        )}
         <Badge
           variant="outline"
           className={cn(
@@ -125,6 +216,9 @@ function OpportunityCard({ opp, index }: { opp: Record<string, any>; index: numb
                 </div>
               ))}
             </div>
+          )}
+          {qualityReport && (
+            <QualityReportSection report={qualityReport} />
           )}
         </div>
       )}
@@ -426,9 +520,10 @@ export default function StrategyBacktestFlyout({
                       Detected Opportunities ({result.num_opportunities})
                     </div>
                     <div className="space-y-1.5">
-                      {(result.opportunities || []).map((opp, i) => (
-                        <OpportunityCard key={opp.id || i} opp={opp} index={i} />
-                      ))}
+                      {(result.opportunities || []).map((opp, i) => {
+                        const qr = (result.quality_reports || [])[i] || undefined
+                        return <OpportunityCard key={opp.id || i} opp={opp} index={i} qualityReport={qr} />
+                      })}
                     </div>
                   </div>
                 )}

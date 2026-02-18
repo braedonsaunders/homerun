@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Strategy 8: Settlement Lag Arbitrage
 
@@ -25,8 +27,10 @@ Detection approach:
 from typing import Any, Optional
 from models import Market, Event, ArbitrageOpportunity, MispricingType
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,6 +56,36 @@ class SettlementLagStrategy(BaseStrategy):
     name = "Settlement Lag"
     description = "Exploit delayed price updates after outcome determination"
     mispricing_type = "settlement_lag"
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
+
+    scoring_weights = ScoringWeights(
+        edge_weight=0.55,
+        confidence_weight=30.0,
+        risk_penalty=8.0,
+        liquidity_weight=8.0,
+        liquidity_divisor=5000.0,
+        structural_bonus=2.0,
+    )
+    sizing_config = SizingConfig(
+        base_divisor=100.0,
+        confidence_offset=0.75,
+        risk_scale_factor=0.35,
+        risk_floor=0.55,
+        market_scale_factor=0.0,
+    )
+    default_config = {
+        "min_edge_percent": 4.0,
+        "min_confidence": 0.45,
+        "max_risk_score": 0.78,
+        "min_liquidity": 25.0,
+        "base_size_usd": 18.0,
+        "max_size_usd": 150.0,
+    }
 
     # Thresholds — read from config (persisted in DB via Settings UI)
     # Default NEAR_ZERO lowered from 0.05 to 0.02: many active markets trade at
@@ -379,43 +413,27 @@ class SettlementLagStrategy(BaseStrategy):
 
         return opportunities
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
-
-        min_edge = to_float(params.get("min_edge_percent", 4.0), 4.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.45), 0.45)
-        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 25.0), 25.0))
-        base_size = max(1.0, to_float(params.get("base_size_usd", 18.0), 18.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 150.0), 150.0))
-
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-        market_count = len(payload.get("markets") or [])
-        is_guaranteed = bool(payload.get("is_guaranteed", True))
-
-        checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity, score=liquidity, detail=f"min={min_liquidity:.0f}"),
+        payload["_signal_liquidity"] = liquidity
+        return [
+            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
+                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
         ]
 
-        score = (edge * 0.55) + (confidence * 30.0) + (min(1.0, liquidity / 5000.0) * 8.0) - (risk_score * 8.0)
-        if is_guaranteed:
-            score += 2.0
-
-        if not all(c.passed for c in checks):
-            return StrategyDecision("skipped", "Evaluation filters not met", score=score, checks=checks)
-
-        risk_scale = max(0.55, 1.0 - (risk_score * 0.35))
-        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * risk_scale
-        size = max(1.0, min(max_size, size))
-
-        return StrategyDecision("selected", "Signal selected", score=score, size_usd=size, checks=checks)
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        liquidity = float(payload.get("_signal_liquidity", 0) or 0)
+        is_guaranteed = bool(payload.get("is_guaranteed", True))
+        return (
+            (edge * 0.55)
+            + (confidence * 30.0)
+            + (min(1.0, liquidity / 5000.0) * 8.0)
+            - (risk_score * 8.0)
+            + (2.0 if is_guaranteed else 0.0)
+        )
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Guaranteed-spread: hold to resolution for maximum value."""

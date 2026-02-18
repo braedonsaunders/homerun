@@ -27,8 +27,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, weather_metadata, hours_to_target
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload, weather_metadata, hours_to_target
 from services.weather.signal_engine import (
     ensemble_bucket_probability,
     compute_confidence,
@@ -60,6 +62,7 @@ class WeatherDistributionStrategy(BaseStrategy):
     mispricing_type = "news_information"
     source_key = "weather"
     worker_affinity = "weather"
+    subscriptions = ["weather_update"]
 
     DEFAULT_CONFIG = {
         "min_edge_percent": 5.0,
@@ -413,28 +416,38 @@ class WeatherDistributionStrategy(BaseStrategy):
         )
 
     # ------------------------------------------------------------------
-    # evaluate()  (unified strategy interface)
+    # on_event()  (event-driven detection from weather worker)
     # ------------------------------------------------------------------
 
-    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
-        """Weather distribution evaluation with dislocation and source gating."""
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type != "weather_update":
+            return []
+        intents = event.payload.get("intents") or []
+        if not intents:
+            return []
+        return self.detect_from_intents(intents, [], [])
+
+    # ------------------------------------------------------------------
+    # evaluate()  (composable pipeline)
+    # ------------------------------------------------------------------
+
+    scoring_weights = ScoringWeights()
+    sizing_config = SizingConfig()
+
+    _dist_temp_dislocation: float = 0.0
+    _dist_source_count: int = 0
+    _dist_source_spread_c: float = 0.0
+
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         weather = weather_metadata(payload)
 
-        min_edge = to_float(params.get("min_edge_percent", 8.0), 8.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.46), 0.46)
+        source = str(getattr(signal, "source", "") or "").strip().lower()
+        source_ok = source in {"weather"}
         min_temp_dislocation = max(0.0, to_float(params.get("min_temp_dislocation_c", 1.5), 1.5))
         min_source_count = max(1, int(to_float(params.get("min_source_count", 1), 1)))
         max_target_hours = max(1.0, to_float(params.get("max_target_hours", 96.0), 96.0))
         max_source_spread = max(0.0, to_float(params.get("max_source_spread_c", 6.0), 6.0))
-        base_size = max(1.0, to_float(params.get("base_size_usd", 12.0), 12.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 80.0), 80.0))
 
-        source = str(getattr(signal, "source", "") or "").strip().lower()
-        source_ok = source in {"weather"}
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
         source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
         source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
         consensus_temp = to_float(weather.get("consensus_temp_c"), 0.0)
@@ -443,94 +456,33 @@ class WeatherDistributionStrategy(BaseStrategy):
         htt = hours_to_target(weather.get("target_time"))
         target_window_ok = htt is None or (0.0 <= htt <= max_target_hours)
 
-        checks = [
+        self._dist_temp_dislocation = temp_dislocation
+        self._dist_source_count = source_count
+        self._dist_source_spread_c = source_spread_c
+
+        return [
             DecisionCheck("source", "Weather source", source_ok, detail="Requires source=weather."),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck(
-                "confidence",
-                "Confidence threshold",
-                confidence >= min_conf,
-                score=confidence,
-                detail=f"min={min_conf:.2f}",
-            ),
-            DecisionCheck(
-                "temp_dislocation",
-                "Temperature dislocation (C)",
-                temp_dislocation >= min_temp_dislocation,
-                score=temp_dislocation,
-                detail=f"min={min_temp_dislocation:.2f}",
-            ),
-            DecisionCheck(
-                "source_count",
-                "Forecast source depth",
-                source_count >= min_source_count,
-                score=float(source_count),
-                detail=f"min={min_source_count}",
-            ),
-            DecisionCheck(
-                "source_spread",
-                "Model spread ceiling (C)",
-                source_spread_c <= max_source_spread,
-                score=source_spread_c,
-                detail=f"max={max_source_spread:.2f}",
-            ),
-            DecisionCheck(
-                "target_window",
-                "Target window horizon",
-                target_window_ok,
-                score=htt,
-                detail=f"max={max_target_hours:.0f}h",
-            ),
+            DecisionCheck("temp_dislocation", "Temperature dislocation (C)", temp_dislocation >= min_temp_dislocation, score=temp_dislocation, detail=f"min={min_temp_dislocation:.2f}"),
+            DecisionCheck("source_count", "Forecast source depth", source_count >= min_source_count, score=float(source_count), detail=f"min={min_source_count}"),
+            DecisionCheck("source_spread", "Model spread ceiling (C)", source_spread_c <= max_source_spread, score=source_spread_c, detail=f"max={max_source_spread:.2f}"),
+            DecisionCheck("target_window", "Target window horizon", target_window_ok, score=htt, detail=f"max={max_target_hours:.0f}h"),
         ]
 
-        score = (
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        return (
             (edge * 0.58)
             + (confidence * 28.0)
-            + (temp_dislocation * 2.5)
-            + (min(3, source_count) * 1.5)
-            - (source_spread_c * 1.1)
+            + (self._dist_temp_dislocation * 2.5)
+            + (min(3, self._dist_source_count) * 1.5)
+            - (self._dist_source_spread_c * 1.1)
         )
-        if not all(check.passed for check in checks):
-            return StrategyDecision(
-                decision="skipped",
-                reason="Weather alerts filters not met",
-                score=score,
-                checks=checks,
-                payload={
-                    "source": source,
-                    "edge": edge,
-                    "confidence": confidence,
-                    "source_count": source_count,
-                    "source_spread_c": source_spread_c,
-                    "consensus_temp_c": consensus_temp,
-                    "market_implied_temp_c": implied_temp,
-                    "temp_dislocation_c": temp_dislocation,
-                    "hours_to_target": htt,
-                },
-            )
 
-        dislocation_scale = 1.0 + min(0.45, temp_dislocation / 8.0)
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float, market_count: int) -> float:
+        dislocation_scale = 1.0 + min(0.45, self._dist_temp_dislocation / 8.0)
         size = base_size * (1.0 + (edge / 100.0)) * (0.7 + confidence) * dislocation_scale
-        size = max(1.0, min(max_size, size))
-        return StrategyDecision(
-            decision="selected",
-            reason="Weather alerts signal selected",
-            score=score,
-            size_usd=size,
-            checks=checks,
-            payload={
-                "source": source,
-                "edge": edge,
-                "confidence": confidence,
-                "source_count": source_count,
-                "source_spread_c": source_spread_c,
-                "consensus_temp_c": consensus_temp,
-                "market_implied_temp_c": implied_temp,
-                "temp_dislocation_c": temp_dislocation,
-                "hours_to_target": htt,
-                "size_usd": size,
-            },
-        )
+        return max(1.0, min(max_size, size))
 
     # ------------------------------------------------------------------
     # should_exit()  (weather markets resolve at fixed time)

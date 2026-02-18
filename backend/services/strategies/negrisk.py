@@ -4,8 +4,10 @@ from typing import Any
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, make_aware
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 
 
 class NegRiskStrategy(BaseStrategy):
@@ -37,6 +39,33 @@ class NegRiskStrategy(BaseStrategy):
     name = "NegRisk / One-of-Many"
     description = "Buy YES on all outcomes in verified mutually-exclusive events"
     mispricing_type = "within_market"
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
+
+    scoring_weights = ScoringWeights(
+        edge_weight=0.65,
+        confidence_weight=35.0,
+        risk_penalty=10.0,
+        market_count_bonus=1.2,
+    )
+    sizing_config = SizingConfig(
+        base_divisor=120.0,
+        confidence_offset=0.8,
+        risk_scale_factor=0.0,
+        risk_floor=1.0,
+    )
+    default_config = {
+        "min_edge_percent": 3.0,
+        "min_confidence": 0.42,
+        "max_risk_score": 0.68,
+        "min_markets": 2,
+        "base_size_usd": 20.0,
+        "max_size_usd": 180.0,
+    }
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
@@ -756,49 +785,25 @@ class NegRiskStrategy(BaseStrategy):
     SOURCES = {"scanner"}
     STRUCTURAL_TYPES = {"within_market", "cross_market", "settlement_lag"}
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
-
-        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.42), 0.42)
-        max_risk = to_confidence(params.get("max_risk_score", 0.68), 0.68)
-        min_markets = max(1, int(to_float(params.get("min_markets", 2), 2)))
-        base_size = max(1.0, to_float(params.get("base_size_usd", 20.0), 20.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 180.0), 180.0))
-
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
         source = str(getattr(signal, "source", "") or "").strip().lower()
         source_ok = source in self.SOURCES
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-        market_count = len(payload.get("markets") or [])
         mispricing_type = str(payload.get("mispricing_type", "") or "").strip().lower()
         guaranteed = bool(payload.get("is_guaranteed", False))
         structural_ok = guaranteed or mispricing_type in self.STRUCTURAL_TYPES
+        payload["_structural_ok"] = structural_ok
 
-        checks = [
+        min_markets = max(1, int(to_float(params.get("min_markets", 2), 2)))
+        market_count = len(payload.get("markets") or [])
+
+        return [
             DecisionCheck("source", "Scanner source", source_ok, detail="Requires source=scanner."),
             DecisionCheck(
                 "structural",
                 "Structural opportunity type",
                 structural_ok,
                 detail="is_guaranteed or structural mispricing type",
-            ),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck(
-                "confidence",
-                "Confidence threshold",
-                confidence >= min_conf,
-                score=confidence,
-                detail=f"min={min_conf:.2f}",
-            ),
-            DecisionCheck(
-                "risk_score",
-                "Risk score ceiling",
-                risk_score <= max_risk,
-                score=risk_score,
-                detail=f"max={max_risk:.2f}",
             ),
             DecisionCheck(
                 "markets",
@@ -809,46 +814,23 @@ class NegRiskStrategy(BaseStrategy):
             ),
         ]
 
-        score = (edge * 0.65) + (confidence * 35.0) - (risk_score * 10.0) + (min(6, market_count) * 1.2)
-        if structural_ok:
-            score += 4.0
-
-        if not all(check.passed for check in checks):
-            return StrategyDecision(
-                decision="skipped",
-                reason="Structural opportunity filters not met",
-                score=score,
-                checks=checks,
-                payload={
-                    "source": source,
-                    "edge": edge,
-                    "confidence": confidence,
-                    "risk_score": risk_score,
-                    "market_count": market_count,
-                    "mispricing_type": mispricing_type,
-                    "is_guaranteed": guaranteed,
-                },
-            )
-
-        size = base_size * (1.0 + (edge / 120.0)) * (0.8 + confidence) * (1.0 + min(0.45, market_count * 0.06))
-        size = max(1.0, min(max_size, size))
-        return StrategyDecision(
-            decision="selected",
-            reason="Structural opportunity selected",
-            score=score,
-            size_usd=size,
-            checks=checks,
-            payload={
-                "source": source,
-                "edge": edge,
-                "confidence": confidence,
-                "risk_score": risk_score,
-                "market_count": market_count,
-                "mispricing_type": mispricing_type,
-                "is_guaranteed": guaranteed,
-                "size_usd": size,
-            },
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        structural_ok = bool(payload.get("_structural_ok", False))
+        return (
+            (edge * 0.65)
+            + (confidence * 35.0)
+            - (risk_score * 10.0)
+            + (min(6, market_count) * 1.2)
+            + (4.0 if structural_ok else 0.0)
         )
+
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float,
+                     market_count: int) -> float:
+        market_scale = 1.0 + min(0.45, market_count * 0.06)
+        size = base_size * (1.0 + (edge / 120.0)) * (0.8 + confidence) * market_scale
+        return max(1.0, min(max_size, size))
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Guaranteed-spread: hold to resolution for maximum value."""

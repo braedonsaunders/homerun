@@ -41,6 +41,7 @@ class BacktestResult:
     # Results
     opportunities: list[dict[str, Any]] = field(default_factory=list)
     num_opportunities: int = 0
+    quality_reports: list[dict[str, Any]] = field(default_factory=list)
     # Timing
     load_time_ms: float = 0
     data_fetch_time_ms: float = 0
@@ -203,6 +204,32 @@ async def run_strategy_backtest(
         result.opportunities = opp_dicts
         result.num_opportunities = len(opp_dicts)
         result.success = True
+
+        # Run QualityFilterPipeline on raw opportunities for audit trail
+        try:
+            from services.quality_filter import quality_filter as qf_pipeline
+            for opp in opps or []:
+                try:
+                    report = qf_pipeline.evaluate(opp)
+                    result.quality_reports.append({
+                        "opportunity_id": report.opportunity_id,
+                        "passed": report.passed,
+                        "rejection_reasons": report.rejection_reasons,
+                        "filters": [
+                            {
+                                "filter_name": f.filter_name,
+                                "passed": f.passed,
+                                "reason": f.reason,
+                                "threshold": f.threshold,
+                                "actual_value": f.actual_value,
+                            }
+                            for f in report.filters
+                        ],
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     except asyncio.TimeoutError:
         result.runtime_error = "Strategy detection timed out after 60 seconds"

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -19,7 +21,7 @@ from services import wallet_tracker, polymarket_client
 from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client
-from services.strategy_loader import strategy_loader as plugin_loader
+from services.strategy_loader import strategy_loader
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services import shared_state
 from services.pause_state import global_pause_state

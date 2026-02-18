@@ -24,13 +24,12 @@ from models.database import (
 )
 from services.opportunity_strategy_catalog import (
     ensure_system_opportunity_strategies_seeded,
-    ensure_system_trader_strategies_seeded,
 )
 from services.strategy_loader import (
-    STRATEGY_TEMPLATE as PLUGIN_TEMPLATE,
-    StrategyValidationError as PluginValidationError,
-    strategy_loader as plugin_loader,
-    validate_strategy_source as validate_plugin_source,
+    STRATEGY_TEMPLATE,
+    StrategyValidationError,
+    strategy_loader,
+    validate_strategy_source,
 )
 from utils.logger import get_logger
 
@@ -177,7 +176,7 @@ def _strategy_to_dict(row: Strategy) -> dict:
 async def get_unified_template():
     """Return the unified strategy template."""
     return {
-        "template": PLUGIN_TEMPLATE,
+        "template": STRATEGY_TEMPLATE,
         "instructions": (
             "Create a class that extends BaseStrategy and implements detect() or "
             "detect_async() for opportunity detection. For execution strategies, "
@@ -480,6 +479,225 @@ async def get_unified_docs():
                     "Call self.default_exit_check(position, market_state) as a fallback "
                     "after your custom checks. It handles TP/SL/trailing/max-hold/resolution."
                 ),
+            },
+        },
+
+        # ── Section 5b: Composable Evaluate Pipeline ────────────────
+        "composable_evaluate": {
+            "description": (
+                "Strategies can opt into a declarative scoring/sizing pipeline "
+                "by setting scoring_weights on the class. When set, evaluate() "
+                "uses custom_checks() + compute_score() + compute_size() hooks "
+                "instead of the base passthrough."
+            ),
+            "scoring_weights": {
+                "type": "ScoringWeights dataclass",
+                "import": "from services.strategies.base import ScoringWeights",
+                "formula": (
+                    "(edge * edge_weight) + (confidence * confidence_weight) "
+                    "- (risk_score * risk_penalty) + (market_count * market_count_bonus) "
+                    "+ (liquidity_score * liquidity_weight) + structural_bonus (if guaranteed)"
+                ),
+                "fields": {
+                    "edge_weight": "float = 0.55 — Weight for edge percentage",
+                    "confidence_weight": "float = 30.0 — Weight for confidence score",
+                    "risk_penalty": "float = 8.0 — Penalty per risk score unit",
+                    "liquidity_weight": "float = 0.0 — Weight for liquidity (0 = disabled)",
+                    "liquidity_divisor": "float = 5000.0 — Liquidity normalization divisor",
+                    "market_count_bonus": "float = 0.0 — Bonus per additional market",
+                    "structural_bonus": "float = 0.0 — Bonus for guaranteed (structural) arb",
+                },
+            },
+            "sizing_config": {
+                "type": "SizingConfig dataclass",
+                "import": "from services.strategies.base import SizingConfig",
+                "formula": (
+                    "base_size * (1 + edge/base_divisor) "
+                    "* (confidence_offset + confidence) "
+                    "* market_scale * risk_scale"
+                ),
+                "fields": {
+                    "base_divisor": "float = 100.0 — Edge normalization divisor",
+                    "confidence_offset": "float = 0.75 — Minimum confidence multiplier",
+                    "risk_scale_factor": "float = 0.35 — How much risk reduces size",
+                    "risk_floor": "float = 0.55 — Minimum risk scale (never below this)",
+                    "market_scale_factor": "float = 0.08 — Size bump per additional market",
+                    "market_scale_cap": "int = 4 — Max markets for scaling bonus",
+                },
+            },
+            "custom_checks_override": {
+                "signature": (
+                    "custom_checks(self, signal, context, params, payload) -> list[DecisionCheck]"
+                ),
+                "description": (
+                    "Override to add strategy-specific checks beyond the standard pipeline. "
+                    "Called after the standard edge/confidence/risk checks. Return additional "
+                    "DecisionCheck objects that must all pass for the signal to be selected."
+                ),
+                "example": (
+                    "def custom_checks(self, signal, context, params, payload):\n"
+                    "    liquidity = float(payload.get('liquidity', 0) or 0)\n"
+                    "    return [\n"
+                    "        DecisionCheck('liquidity', 'Min liquidity', liquidity >= 1000,\n"
+                    "                      score=liquidity, detail=f'min=1000'),\n"
+                    "    ]"
+                ),
+            },
+            "how_to_opt_in": (
+                "Set scoring_weights = ScoringWeights() on your class to use defaults, "
+                "or ScoringWeights(edge_weight=0.8, ...) for custom weights. "
+                "Optionally set sizing_config = SizingConfig(...) for custom sizing. "
+                "Override compute_score() or compute_size() for fully custom logic."
+            ),
+        },
+
+        # ── Section 5c: Event Subscriptions ─────────────────────────
+        "event_subscriptions": {
+            "description": (
+                "Strategies can subscribe to real-time data events for event-driven "
+                "detection. Instead of (or in addition to) polling via detect(), "
+                "strategies react to events as they arrive."
+            ),
+            "how_to_subscribe": (
+                "Set subscriptions = ['price_change', 'market_data_refresh'] on your class. "
+                "Then implement on_event(self, event: DataEvent) -> list[ArbitrageOpportunity] "
+                "to react to those events."
+            ),
+            "data_event_types": {
+                "price_change": {
+                    "description": "A market's price changed (from WS feed)",
+                    "payload_fields": "market_id, token_id, old_price, new_price",
+                },
+                "market_data_refresh": {
+                    "description": "Periodic batch of all market data (replaces scanner poll)",
+                    "payload_fields": "markets, events, prices (full snapshot)",
+                },
+                "market_resolved": {
+                    "description": "A market outcome was determined",
+                    "payload_fields": "market_id, winning_outcome",
+                },
+                "crypto_update": {
+                    "description": "Crypto market data from crypto worker",
+                    "payload_fields": "payload (crypto-specific data)",
+                },
+                "weather_update": {
+                    "description": "Weather forecast data from weather worker",
+                    "payload_fields": "payload (forecast data)",
+                },
+                "trader_activity": {
+                    "description": "Smart wallet / copy trading signal from traders worker",
+                    "payload_fields": "payload (wallet activity data)",
+                },
+                "news_event": {
+                    "description": "Breaking news signal from news worker",
+                    "payload_fields": "payload (news data)",
+                },
+            },
+            "data_event_structure": {
+                "type": "DataEvent (frozen dataclass)",
+                "import": "from services.data_events import DataEvent",
+                "fields": {
+                    "event_type": "str — One of the event type keys above",
+                    "source": "str — Which worker/service emitted the event",
+                    "timestamp": "datetime — When the event occurred",
+                    "market_id": "str | None — Market this event relates to",
+                    "token_id": "str | None — Token this event relates to",
+                    "payload": "dict — Event-type-specific data",
+                    "old_price": "float | None — Previous price (for price_change)",
+                    "new_price": "float | None — New price (for price_change)",
+                    "markets": "list | None — Full market list (for market_data_refresh)",
+                    "events": "list | None — Full event list (for market_data_refresh)",
+                    "prices": "dict | None — Full price dict (for market_data_refresh)",
+                },
+            },
+            "on_event_method": {
+                "signature": "async on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]",
+                "description": (
+                    "Called by the event dispatcher when a subscribed event fires. "
+                    "Return a list of detected opportunities (may be empty). "
+                    "Default: no-op (returns empty list)."
+                ),
+            },
+        },
+
+        # ── Section 5d: Quality Filter Pipeline ─────────────────────
+        "quality_filter": {
+            "description": (
+                "After strategies detect opportunities and deduplication runs, "
+                "the QualityFilterPipeline evaluates every opportunity with a "
+                "full audit trail. Each filter produces a FilterResult with "
+                "threshold vs actual value, so you can see exactly why an "
+                "opportunity was accepted or rejected."
+            ),
+            "import": "from services.quality_filter import QualityFilterPipeline, QualityReport, FilterResult",
+            "pipeline_class": {
+                "method": "evaluate(opp) -> QualityReport",
+                "description": (
+                    "Runs all quality filters on an ArbitrageOpportunity. "
+                    "Returns a QualityReport with pass/fail and full filter breakdown."
+                ),
+            },
+            "quality_report": {
+                "fields": {
+                    "opportunity_id": "str — stable_id or id of the opportunity",
+                    "passed": "bool — True if all filters passed",
+                    "filters": "list[FilterResult] — Individual filter results",
+                    "rejection_reasons": "list[str] — Human-readable reasons for failed filters (property)",
+                },
+            },
+            "filter_result": {
+                "fields": {
+                    "filter_name": "str — Machine-readable filter identifier",
+                    "passed": "bool — Whether this filter passed",
+                    "reason": "str — Human-readable explanation",
+                    "threshold": "Any — The threshold value used for comparison",
+                    "actual_value": "Any — The actual value from the opportunity",
+                },
+            },
+            "filters_applied": [
+                "min_roi — ROI >= MIN_PROFIT_THRESHOLD",
+                "directional_roi_cap — Directional ROI <= 120%",
+                "plausible_roi — Guaranteed ROI <= MAX_PLAUSIBLE_ROI",
+                "max_legs — Number of markets <= MAX_TRADE_LEGS",
+                "leg_liquidity — Total liquidity >= MIN_LIQUIDITY_PER_LEG * num_legs",
+                "min_liquidity — Min market liquidity >= MIN_LIQUIDITY_HARD",
+                "min_position_size — Max position >= MIN_POSITION_SIZE",
+                "min_absolute_profit — Absolute profit >= MIN_ABSOLUTE_PROFIT",
+                "resolution_timeframe — Days to resolution <= MAX_RESOLUTION_MONTHS * 30",
+                "annualized_roi — Annualized ROI >= MIN_ANNUALIZED_ROI",
+            ],
+        },
+
+        # ── Section 5e: Platform Hooks ──────────────────────────────
+        "platform_hooks": {
+            "description": (
+                "The platform may override strategy decisions for safety reasons "
+                "(trading window restrictions, risk limits, stacking guards, size caps). "
+                "Strategies can override these hooks to observe when overrides happen."
+            ),
+            "on_blocked": {
+                "signature": "on_blocked(self, signal, reason: str, context: dict) -> None",
+                "description": (
+                    "Called when the platform blocks a signal from this strategy. "
+                    "Override to log, alert, or adjust strategy behavior when blocked. "
+                    "Default: no-op."
+                ),
+                "called_when": [
+                    "Trading window — signal arrives outside configured UTC trading hours",
+                    "Risk manager veto — daily loss, exposure, or position limits exceeded",
+                    "Stacking guard — market already has an open position (allow_averaging=false)",
+                ],
+            },
+            "on_size_capped": {
+                "signature": "on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None",
+                "description": (
+                    "Called when the platform caps this strategy's position size. "
+                    "Override to track how often sizing gets overridden. "
+                    "Default: no-op."
+                ),
+                "called_when": [
+                    "Size exceeds max_trade_notional_usd — capped to the limit before risk evaluation",
+                ],
             },
         },
 
@@ -852,7 +1070,7 @@ async def get_unified_docs():
 @router.post("/validate")
 async def validate_unified_source(req: UnifiedValidateRequest):
     """Validate strategy source code without saving."""
-    plugin_result = validate_plugin_source(req.source_code)
+    plugin_result = validate_strategy_source(req.source_code)
     capabilities = _detect_capabilities(req.source_code)
     inferred_type = _infer_strategy_type(capabilities)
 
@@ -881,7 +1099,6 @@ async def list_strategies(
     async with AsyncSessionLocal() as session:
         # Seed system strategies to ensure they exist
         await ensure_system_opportunity_strategies_seeded(session)
-        await ensure_system_trader_strategies_seeded(session)
 
         query = select(Strategy).order_by(
             Strategy.is_system.desc(),
@@ -907,7 +1124,6 @@ async def list_strategies(
 async def get_strategy(strategy_id: str, session: AsyncSession = Depends(get_db_session)):
     """Get a single strategy by ID."""
     await ensure_system_opportunity_strategies_seeded(session)
-    await ensure_system_trader_strategies_seeded(session)
 
     row = await session.get(Strategy, strategy_id)
     if row is None:
@@ -923,7 +1139,7 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
     source_key = str(req.source_key or "scanner").strip().lower()
 
     # Validate source code
-    validation = validate_plugin_source(req.source_code)
+    validation = validate_strategy_source(req.source_code)
     if not validation["valid"]:
         raise HTTPException(
             status_code=400,
@@ -945,9 +1161,9 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
 
         if req.enabled:
             try:
-                plugin_loader.load_plugin(slug, req.source_code, req.config or None)
+                strategy_loader.load(slug, req.source_code, req.config or None)
                 status = "loaded"
-            except PluginValidationError as e:
+            except StrategyValidationError as e:
                 status = "error"
                 error_message = str(e)
 
@@ -1008,7 +1224,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
                 slug_changed = True
 
         if req.source_code is not None and req.source_code != row.source_code:
-            validation = validate_plugin_source(req.source_code)
+            validation = validate_strategy_source(req.source_code)
             if not validation["valid"]:
                 raise HTTPException(
                     status_code=400,
@@ -1043,17 +1259,17 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
 
         if enabled_changed or code_changed or slug_changed:
             if slug_changed:
-                plugin_loader.unload_plugin(original_slug)
+                strategy_loader.unload(original_slug)
             if row.enabled:
                 try:
-                    plugin_loader.load_plugin(row.slug, row.source_code, row.config or None)
+                    strategy_loader.load(row.slug, row.source_code, row.config or None)
                     row.status = "loaded"
                     row.error_message = None
-                except PluginValidationError as e:
+                except StrategyValidationError as e:
                     row.status = "error"
                     row.error_message = str(e)
             else:
-                plugin_loader.unload_plugin(row.slug)
+                strategy_loader.unload(row.slug)
                 row.status = "unloaded"
                 row.error_message = None
 
@@ -1084,7 +1300,7 @@ async def delete_strategy(strategy_id: str):
                 tombstone.deleted_at = datetime.utcnow()
                 tombstone.reason = "user_deleted_system_strategy"
 
-        plugin_loader.unload_plugin(row.slug)
+        strategy_loader.unload(row.slug)
         await session.delete(row)
         await session.commit()
 
@@ -1106,16 +1322,16 @@ async def reload_strategy(strategy_id: str):
             )
 
         try:
-            plugin_loader.load_plugin(row.slug, row.source_code, row.config or None)
+            strategy_loader.load(row.slug, row.source_code, row.config or None)
             row.status = "loaded"
             row.error_message = None
             await session.commit()
             return {
                 "status": "success",
                 "message": f"Strategy '{row.slug}' reloaded",
-                "runtime": plugin_loader.get_status(row.slug),
+                "runtime": strategy_loader.get_status(row.slug),
             }
-        except PluginValidationError as e:
+        except StrategyValidationError as e:
             row.status = "error"
             row.error_message = str(e)
             await session.commit()
@@ -1150,7 +1366,7 @@ async def reset_strategy_to_factory_endpoint(strategy_id: str):
         # Reload into the unified loader after reset
         if result.get("status") in ("reset", "created"):
             try:
-                plugin_loader.load_plugin(row.slug, row.source_code, row.config or None)
+                strategy_loader.load(row.slug, row.source_code, row.config or None)
             except Exception:
                 pass
 

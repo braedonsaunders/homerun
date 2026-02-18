@@ -22,8 +22,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 from functools import partial
 from utils.converters import safe_float
 
@@ -48,6 +50,7 @@ class TradersConfluenceStrategy(BaseStrategy):
     source_key = "traders"
     worker_affinity = "traders"
     allow_deduplication = False
+    subscriptions = ["trader_activity"]
 
     # Default config thresholds (overridden by DB config column)
     DEFAULT_CONFIG = {
@@ -494,17 +497,29 @@ class TradersConfluenceStrategy(BaseStrategy):
         )
 
     # ------------------------------------------------------------------
+    # on_event()  (event-driven detection from tracked_traders_worker)
+    # ------------------------------------------------------------------
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type != "trader_activity":
+            return []
+        signals = event.payload.get("signals") or []
+        if not signals:
+            return []
+        return self.detect_from_signals(signals, [], [])
+
+    # ------------------------------------------------------------------
     # Evaluate / Should-Exit  (unified strategy interface)
     # ------------------------------------------------------------------
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        """Evaluate traders confluence signal with channel strength gating."""
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
+    scoring_weights = ScoringWeights()
+    sizing_config = SizingConfig()
 
+    _confluence_strength: float = 0.0
+
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         source = str(getattr(signal, "source", "") or "").strip().lower()
 
-        # Channel derivation: payload.traders_channel -> signal_type fallback
         payload_channel = str(payload.get("traders_channel") or "").strip().lower()
         if payload_channel:
             channel = payload_channel
@@ -515,91 +530,29 @@ class TradersConfluenceStrategy(BaseStrategy):
             else:
                 channel = signal_type or "unknown"
 
-        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.48), 0.48)
-        min_confluence_strength = to_confidence(
-            params.get("min_confluence_strength", 0.55),
-            0.55,
-        )
-        base_size = to_float(params.get("base_size_usd", 18.0), 18.0)
-        max_size = max(1.0, to_float(params.get("max_size_usd", 120.0), 120.0))
+        min_confluence_strength = to_confidence(params.get("min_confluence_strength", 0.55), 0.55)
+        confluence_strength = to_confidence(payload.get("strength", payload.get("conviction_score", 0.0)), 0.0)
 
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
-        confluence_strength = to_confidence(
-            payload.get("strength", payload.get("conviction_score", 0.0)),
-            0.0,
-        )
+        self._confluence_strength = confluence_strength
 
         source_ok = source == "traders"
         channel_ok = channel == "confluence"
         channel_threshold_ok = channel == "confluence" and confluence_strength >= min_confluence_strength
 
-        checks = [
-            DecisionCheck(
-                "source",
-                "Unified traders source",
-                source_ok,
-                detail="Requires source=traders.",
-            ),
-            DecisionCheck(
-                "channel",
-                "Supported traders channel",
-                channel_ok,
-                detail="Requires confluence channel.",
-            ),
-            DecisionCheck(
-                "channel_threshold",
-                "Channel strength threshold",
-                channel_threshold_ok,
-                score=confluence_strength,
-                detail=f"confluence>={min_confluence_strength:.2f}",
-            ),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck(
-                "confidence",
-                "Confidence threshold",
-                confidence >= min_conf,
-                score=confidence,
-                detail=f"min={min_conf:.2f}",
-            ),
+        return [
+            DecisionCheck("source", "Unified traders source", source_ok, detail="Requires source=traders."),
+            DecisionCheck("channel", "Supported traders channel", channel_ok, detail="Requires confluence channel."),
+            DecisionCheck("channel_threshold", "Channel strength threshold", channel_threshold_ok, score=confluence_strength, detail=f"confluence>={min_confluence_strength:.2f}"),
         ]
 
-        if not all(check.passed for check in checks):
-            return StrategyDecision(
-                decision="skipped",
-                reason="Traders flow filters not met",
-                score=(edge * 0.6) + (confidence * 40.0),
-                checks=checks,
-                payload={
-                    "channel": channel,
-                    "edge": edge,
-                    "confidence": confidence,
-                    "confluence_strength": confluence_strength,
-                    "min_edge_percent": min_edge,
-                    "min_confidence": min_conf,
-                    "min_confluence_strength": min_confluence_strength,
-                },
-            )
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        return (edge * 0.55) + (confidence * 35.0) + (self._confluence_strength * 10.0)
 
-        channel_score = confluence_strength
-        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.9 + channel_score)
-        size = max(1.0, min(max_size, size))
-
-        return StrategyDecision(
-            decision="selected",
-            reason=f"Traders flow {channel} signal selected",
-            score=(edge * 0.55) + (confidence * 35.0) + (channel_score * 10.0),
-            size_usd=size,
-            checks=checks,
-            payload={
-                "channel": channel,
-                "edge": edge,
-                "confidence": confidence,
-                "confluence_strength": confluence_strength,
-                "size_usd": size,
-            },
-        )
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float, market_count: int) -> float:
+        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.9 + self._confluence_strength)
+        return max(1.0, min(max_size, size))
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Traders confluence: standard TP/SL exit."""

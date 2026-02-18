@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Strategy: Temporal Decay Arbitrage
 
@@ -19,8 +21,10 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -138,6 +142,36 @@ class TemporalDecayStrategy(BaseStrategy):
     description = "Exploit time-decay mispricing in deadline markets"
     mispricing_type = "within_market"
     requires_resolution_date = True
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
+
+    pipeline_defaults = {
+        "min_edge_percent": 2.5,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.78,
+        "base_size_usd": 16.0,
+        "max_size_usd": 140.0,
+    }
+
+    # Composable evaluate pipeline: score = edge*0.60 + conf*30 - risk*8
+    scoring_weights = ScoringWeights(
+        edge_weight=0.60,
+        confidence_weight=30.0,
+        risk_penalty=8.0,
+    )
+    # size = base*(1+edge/100)*(0.70+conf), no risk/market scaling
+    sizing_config = SizingConfig(
+        base_divisor=100.0,
+        confidence_offset=0.70,
+        risk_scale_factor=0.0,
+        risk_floor=1.0,
+        market_scale_factor=0.0,
+        market_scale_cap=0,
+    )
 
     def __init__(self):
         super().__init__()
@@ -782,41 +816,6 @@ class TemporalDecayStrategy(BaseStrategy):
                 opp.risk_factors.append("Near-deadline: steep decay but higher event uncertainty")
 
         return opp
-
-    # ------------------------------------------------------------------
-    # Evaluate / Should-Exit  (unified strategy interface)
-    # ------------------------------------------------------------------
-
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        """Temporal decay evaluation — deadline-proximity mispricing."""
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
-
-        min_edge = to_float(params.get("min_edge_percent", 2.5), 2.5)
-        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
-        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
-        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 140.0), 140.0))
-
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-
-        checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
-        ]
-
-        score = (edge * 0.60) + (confidence * 30.0) - (risk_score * 8.0)
-
-        if not all(c.passed for c in checks):
-            return StrategyDecision("skipped", "Temporal decay filters not met", score=score, checks=checks)
-
-        size = base_size * (1.0 + (edge / 100.0)) * (0.70 + confidence)
-        size = max(1.0, min(max_size, size))
-
-        return StrategyDecision("selected", "Temporal decay signal selected", score=score, size_usd=size, checks=checks)
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Temporal decay: exit when time target passes or standard TP/SL."""

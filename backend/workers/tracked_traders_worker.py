@@ -23,7 +23,9 @@ if os.getcwd() != _BACKEND:
 from utils.utcnow import utcnow
 from models.database import AsyncSessionLocal, AppSettings, init_database
 from services.insider_detector import insider_detector
-from services.signal_bus import emit_tracked_trader_signals
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
+from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.market_cache import market_cache_service
 from services.smart_wallet_pool import smart_wallet_pool
 from services.traders_firehose_pipeline import apply_traders_firehose_strategy
@@ -444,8 +446,17 @@ async def _run_loop() -> None:
 
             confluence_count = len(executable_confluence)
 
+            trader_event = DataEvent(
+                event_type="trader_activity",
+                source="tracked_traders_worker",
+                timestamp=utcnow(),
+                payload={"signals": executable_confluence},
+            )
+            opportunities = await event_dispatcher.dispatch(trader_event)
             async with AsyncSessionLocal() as session:
-                emitted = await emit_tracked_trader_signals(session, executable_confluence)
+                emitted = await bridge_opportunities_to_signals(
+                    session, opportunities, source="traders",
+                )
                 if requested:
                     await clear_worker_run_request(session, worker_name)
 

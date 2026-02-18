@@ -28,10 +28,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Optional
 
+import math
+
 from models import Market, Event, ArbitrageOpportunity
 from config import settings as _cfg
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, to_bool, signal_payload
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence, to_bool, clamp
+from utils.signal_helpers import signal_payload
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -813,6 +817,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
     worker_affinity = "crypto"
     market_categories = ["crypto"]
     requires_historical_prices = True
+    subscriptions = ["crypto_update"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -2179,3 +2184,247 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         config.setdefault("max_hold_minutes", 60)
         position.config = config
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Event-driven detection (crypto_update from crypto worker)
+    # ------------------------------------------------------------------
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type != "crypto_update":
+            return []
+
+        markets = event.payload.get("markets") or []
+        if not markets:
+            return []
+
+        return self._detect_from_crypto_markets(markets)
+
+    def _detect_from_crypto_markets(self, markets: list[dict]) -> list[ArbitrageOpportunity]:
+        """Replicate the multi-strategy signal logic from the former emit_crypto_market_signals.
+
+        For each crypto market dict, compute regime-weighted edge across
+        directional / pure_arb / rebalance sub-strategies and return
+        ArbitrageOpportunity objects for markets with positive net edge.
+        """
+        opportunities: list[ArbitrageOpportunity] = []
+
+        for market in markets:
+            market_id = str(market.get("condition_id") or market.get("id") or "")
+            if not market_id:
+                continue
+
+            up_price = self._float(market.get("up_price"))
+            down_price = self._float(market.get("down_price"))
+            if up_price is None or down_price is None:
+                continue
+            if not (0.0 <= up_price <= 1.0 and 0.0 <= down_price <= 1.0):
+                continue
+
+            price_to_beat = self._float(market.get("price_to_beat"))
+            oracle_price = self._float(market.get("oracle_price"))
+            has_oracle = price_to_beat is not None and price_to_beat > 0 and oracle_price is not None
+
+            timeframe_seconds = self._timeframe_seconds(market.get("timeframe"))
+            seconds_left = self._float(market.get("seconds_left"))
+            if seconds_left is None:
+                end_time = market.get("end_time")
+                if isinstance(end_time, str) and end_time.strip():
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz
+                        parsed = _dt.fromisoformat(end_time.replace("Z", "+00:00"))
+                        seconds_left = max(0.0, (parsed - _dt.now(_tz.utc)).total_seconds())
+                    except Exception:
+                        seconds_left = float(timeframe_seconds)
+                else:
+                    seconds_left = float(timeframe_seconds)
+
+            regime = self._crypto_regime(seconds_left, timeframe_seconds)
+
+            # Directional edge (oracle-based)
+            if has_oracle and price_to_beat is not None and oracle_price is not None:
+                diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
+                time_ratio = clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
+                directional_scale = max(0.08, 0.50 * time_ratio)
+                directional_z = clamp(diff_pct / directional_scale, -60.0, 60.0)
+                model_prob_yes = clamp(1.0 / (1.0 + math.exp(-directional_z)), 0.03, 0.97)
+                model_prob_no = 1.0 - model_prob_yes
+                directional_yes = max(0.0, (model_prob_yes - up_price) * 100.0)
+                directional_no = max(0.0, (model_prob_no - down_price) * 100.0)
+            else:
+                diff_pct = 0.0
+                directional_yes = 0.0
+                directional_no = 0.0
+
+            # Pure arb edge
+            combined = up_price + down_price
+            underround = max(0.0, 1.0 - combined)
+            pure_arb_yes = underround * 100.0
+            pure_arb_no = underround * 100.0
+
+            # Rebalance edge
+            neutrality = clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
+            rebalance_yes = max(0.0, (0.5 - up_price) * 100.0) * neutrality
+            rebalance_no = max(0.0, (0.5 - down_price) * 100.0) * neutrality
+
+            # Regime weights
+            if has_oracle:
+                weights = self._regime_weights(regime)
+            else:
+                weights = self._regime_weights_without_oracle(regime)
+
+            gross_yes = (
+                (directional_yes * weights["directional"])
+                + (pure_arb_yes * weights["pure_arb"])
+                + (rebalance_yes * weights["rebalance"])
+            )
+            gross_no = (
+                (directional_no * weights["directional"])
+                + (pure_arb_no * weights["pure_arb"])
+                + (rebalance_no * weights["rebalance"])
+            )
+
+            # Execution penalties
+            spread = clamp(self._float(market.get("spread")) or 0.0, 0.0, 0.10)
+            liquidity = max(0.0, self._float(market.get("liquidity")) or 0.0)
+            fees_enabled = bool(market.get("fees_enabled", False))
+
+            fee_penalty = 0.45 if fees_enabled else 0.25
+            spread_penalty = spread * 100.0 * 0.35
+            liquidity_scale = clamp(liquidity / 250000.0, 0.0, 1.0)
+            regime_slippage_factor = 1.1 if regime == "closing" else 1.0
+            slippage_penalty = (1.35 - (0.95 * liquidity_scale)) * regime_slippage_factor
+            execution_penalty = fee_penalty + spread_penalty + slippage_penalty
+
+            net_yes = gross_yes - execution_penalty
+            net_no = gross_no - execution_penalty
+            direction = "buy_yes" if net_yes >= net_no else "buy_no"
+            entry_price = up_price if direction == "buy_yes" else down_price
+            edge_percent = net_yes if direction == "buy_yes" else net_no
+
+            if edge_percent < 1.0:
+                continue
+
+            # Confidence
+            edge_gap = abs(net_yes - net_no)
+            selected_components = (
+                {"directional": directional_yes, "pure_arb": pure_arb_yes, "rebalance": rebalance_yes}
+                if direction == "buy_yes"
+                else {"directional": directional_no, "pure_arb": pure_arb_no, "rebalance": rebalance_no}
+            )
+            weighted_components = {k: selected_components[k] * weights[k] for k in selected_components}
+            dominant_strategy = max(weighted_components, key=lambda k: weighted_components[k])
+            dominant_weighted_edge = weighted_components[dominant_strategy]
+
+            confidence = clamp(
+                0.32
+                + clamp(edge_percent / 20.0, 0.0, 0.35)
+                + clamp(edge_gap / 18.0, 0.0, 0.12)
+                + clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
+                0.05,
+                0.97,
+            )
+            if not has_oracle:
+                confidence = clamp(confidence * 0.75, 0.05, 0.85)
+
+            side = "YES" if direction == "buy_yes" else "NO"
+            question = market.get("question") or market.get("slug") or market_id
+            slug = market.get("slug") or market_id
+
+            opp = ArbitrageOpportunity(
+                strategy=self.strategy_type,
+                title=f"Crypto HF: {slug} {side}",
+                description=(
+                    f"{regime} regime, {dominant_strategy} dominant | "
+                    f"edge={edge_percent:.1f}%, conf={confidence:.0%}"
+                ),
+                total_cost=entry_price,
+                expected_payout=entry_price + (edge_percent / 100.0),
+                gross_profit=edge_percent / 100.0,
+                fee=entry_price * (0.0156 if fees_enabled else 0.0),
+                net_profit=(edge_percent / 100.0) - entry_price * (0.0156 if fees_enabled else 0.0),
+                roi_percent=edge_percent,
+                is_guaranteed=False,
+                roi_type="directional_payout",
+                risk_score=max(0.0, min(1.0, 1.0 - confidence)),
+                risk_factors=[
+                    f"Crypto {regime} regime",
+                    f"Dominant: {dominant_strategy} ({dominant_weighted_edge:.1f}%)",
+                    f"Oracle: {'available' if has_oracle else 'unavailable'}",
+                ],
+                confidence=confidence,
+                markets=[{
+                    "id": market_id,
+                    "slug": slug,
+                    "question": question,
+                    "yes_price": up_price,
+                    "no_price": down_price,
+                    "liquidity": liquidity,
+                }],
+                min_liquidity=liquidity,
+                max_position_size=min(liquidity * 0.1, 500.0),
+                positions_to_take=[{
+                    "action": "BUY",
+                    "outcome": side,
+                    "price": entry_price,
+                }],
+                strategy_context={
+                    "signal_version": "crypto_worker_v2",
+                    "signal_family": "crypto_multistrategy",
+                    "strategy_origin": "crypto_worker",
+                    "selected_direction": direction,
+                    "regime": regime,
+                    "oracle_available": has_oracle,
+                    "dominant_strategy": dominant_strategy,
+                    "execution_penalty_percent": round(execution_penalty, 6),
+                },
+            )
+            opportunities.append(opp)
+
+        return opportunities
+
+    @staticmethod
+    def _float(value: object) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @staticmethod
+    def _timeframe_seconds(value: object) -> int:
+        tf = str(value or "").strip().lower()
+        if tf in {"5m", "5min"}:
+            return 300
+        if tf in {"15m", "15min"}:
+            return 900
+        if tf in {"1h", "1hr", "60m"}:
+            return 3600
+        if tf in {"4h", "4hr", "240m"}:
+            return 14400
+        return 900
+
+    @staticmethod
+    def _crypto_regime(seconds_left: float, timeframe_seconds: int) -> str:
+        denom = float(max(1, timeframe_seconds))
+        ratio = clamp(seconds_left / denom, 0.0, 1.0)
+        if ratio > 0.67:
+            return "opening"
+        if ratio < 0.33:
+            return "closing"
+        return "mid"
+
+    @staticmethod
+    def _regime_weights(regime: str) -> dict[str, float]:
+        if regime == "opening":
+            return {"directional": 0.65, "pure_arb": 0.25, "rebalance": 0.10}
+        if regime == "closing":
+            return {"directional": 0.35, "pure_arb": 0.20, "rebalance": 0.45}
+        return {"directional": 0.50, "pure_arb": 0.25, "rebalance": 0.25}
+
+    @staticmethod
+    def _regime_weights_without_oracle(regime: str) -> dict[str, float]:
+        if regime == "opening":
+            return {"directional": 0.0, "pure_arb": 0.60, "rebalance": 0.40}
+        if regime == "closing":
+            return {"directional": 0.0, "pure_arb": 0.45, "rebalance": 0.55}
+        return {"directional": 0.0, "pure_arb": 0.55, "rebalance": 0.45}

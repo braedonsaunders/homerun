@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
@@ -9,13 +11,16 @@ from interfaces import MarketDataProvider
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
-from services.strategy_loader import strategy_loader as plugin_loader, StrategyValidationError as PluginValidationError
+from services.strategy_loader import strategy_loader, StrategyValidationError
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
 from services.pause_state import global_pause_state
 from utils.converters import to_iso
 from services.market_prioritizer import market_prioritizer, MarketTier
 from services.ws_feeds import get_feed_manager
+from services.quality_filter import quality_filter
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
 from sqlalchemy import select
 
 
@@ -111,6 +116,9 @@ class ArbitrageScanner:
         self._reactive_trigger = asyncio.Event()
         self._reactive_scan_registered = False
 
+        # Quality filter audit trail from the last scan cycle
+        self._quality_reports: dict = {}
+
     def set_auto_ai_scoring(self, enabled: bool):
         """Enable or disable automatic AI scoring of all opportunities after each scan."""
         self._auto_ai_scoring = enabled
@@ -119,6 +127,11 @@ class ArbitrageScanner:
     @property
     def auto_ai_scoring(self) -> bool:
         return self._auto_ai_scoring
+
+    @property
+    def quality_reports(self) -> dict:
+        """Quality filter audit trails from the last scan cycle."""
+        return self._quality_reports
 
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new opportunities"""
@@ -710,7 +723,7 @@ class ArbitrageScanner:
         try:
             async with AsyncSessionLocal() as session:
                 await ensure_system_opportunity_strategies_seeded(session)
-                result = await plugin_loader.refresh_all_from_db(session=session)
+                result = await strategy_loader.refresh_all_from_db(session=session)
 
             loaded_count = len(result.get("loaded", []))
             error_count = len(result.get("errors", {}))
@@ -720,7 +733,7 @@ class ArbitrageScanner:
             print(f"Error loading strategies: {e}")
 
     async def _ensure_runtime_strategies_loaded(self) -> None:
-        if plugin_loader.loaded_plugins:
+        if strategy_loader._loaded:
             return
         await self.load_plugins()
 
@@ -730,12 +743,12 @@ class ArbitrageScanner:
         Strategies with other worker affinities (e.g. 'crypto') are handled
         by their respective workers and should not run in the scanner loop.
         """
-        plugin_strategies = plugin_loader.get_all_strategy_instances()
+        plugin_strategies = strategy_loader.get_all_instances()
         return [s for s in plugin_strategies if getattr(s, "worker_affinity", "scanner") == "scanner"]
 
     def _get_news_edge_helper(self):
         """Return the news_edge strategy instance for prefetch utilities."""
-        loaded = plugin_loader.get_plugin("news_edge")
+        loaded = strategy_loader.get_strategy("news_edge")
         if loaded and hasattr(loaded.instance, "_build_market_infos"):
             return loaded.instance
         return None
@@ -978,53 +991,21 @@ class ArbitrageScanner:
                     print(f"  Prioritizer error (non-fatal, using all markets): {e}")
                     markets_to_evaluate = markets
 
-            # Run all strategies concurrently.  Strategies implementing
-            # detect_async() (I/O-bound: LLM calls, HTTP, etc.) are awaited
-            # directly on the event loop.  Sync-only strategies are dispatched
-            # to the default thread-pool executor so they don't block the loop.
-            all_opportunities = []
+            # Dispatch market data to subscribed strategies via event dispatcher.
+            # Strategies subscribe to "market_data_refresh" and implement on_event()
+            # which delegates to their detect()/detect_async() methods.
             await self._ensure_runtime_strategies_loaded()
-            loop = asyncio.get_running_loop()
-            all_strategies = await self._get_effective_strategies()
-            await self._set_activity(f"Running {len(all_strategies)} strategies...")
+            await self._set_activity(f"Dispatching market_data_refresh to strategies...")
 
-            async def _run_strategy(strategy):
-                """Run a single strategy, preferring async detect if available.
-
-                Strategies that override detect_async() (e.g. those needing
-                I/O like LLM calls or HTTP requests) are awaited directly on
-                the event loop.  Strategies with only sync detect() are
-                dispatched to the default thread-pool executor so they don't
-                block the loop.
-                """
-                if _has_custom_detect_async(strategy):
-                    return strategy, await strategy.detect_async(events, markets_to_evaluate, prices)
-                return strategy, await loop.run_in_executor(None, strategy.detect, events, markets_to_evaluate, prices)
-
-            results = await asyncio.gather(
-                *[_run_strategy(s) for s in all_strategies],
-                return_exceptions=True,
+            data_event = DataEvent(
+                event_type="market_data_refresh",
+                source="scanner_refresh",
+                timestamp=utcnow(),
+                markets=markets_to_evaluate,
+                events=list(events),
+                prices=dict(prices),
             )
-
-            for result in results:
-                if isinstance(result, Exception):
-                    print(f"  Strategy error: {result}")
-                    continue
-                strategy, opps = result
-                # Classify mispricing type if not already set by strategy
-                for opp in opps:
-                    if opp.mispricing_type is None:
-                        raw = getattr(strategy, "mispricing_type", None)
-                        try:
-                            opp.mispricing_type = MispricingType(raw) if raw else MispricingType.WITHIN_MARKET
-                        except ValueError:
-                            opp.mispricing_type = MispricingType.WITHIN_MARKET
-                all_opportunities.extend(opps)
-                print(f"  {strategy.name}: found {len(opps)} opportunities")
-                # Record plugin run stats
-                strategy_type = getattr(strategy, "strategy_type", "")
-                if isinstance(strategy_type, str) and plugin_loader.get_plugin(strategy_type):
-                    plugin_loader.record_run(strategy_type, len(opps))
+            all_opportunities = await event_dispatcher.dispatch(data_event)
 
             # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
@@ -1038,6 +1019,18 @@ class ArbitrageScanner:
             # without waiting for slow LLM-based strategies (News Edge).
             # ----------------------------------------------------------
             all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
+
+            # Apply quality filters with full audit trail
+            _quality_reports: dict = {}
+            filtered_opportunities: list = []
+            for opp in all_opportunities:
+                report = quality_filter.evaluate(opp)
+                _quality_reports[opp.stable_id or opp.id] = report
+                if report.passed:
+                    filtered_opportunities.append(opp)
+            all_opportunities = filtered_opportunities
+            self._quality_reports = _quality_reports
+
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
             all_opportunities = self._apply_opportunity_caps(all_opportunities)
 
@@ -1222,47 +1215,17 @@ class ArbitrageScanner:
             ]
             events_for_strategies = self._cached_events
 
-            loop = asyncio.get_running_loop()
-            fast_opportunities = []
-
-            async def _run_strategy(strategy):
-                if _has_custom_detect_async(strategy):
-                    return strategy, await strategy.detect_async(
-                        events_for_strategies,
-                        all_markets_for_strategies,
-                        merged_prices,
-                    )
-                return strategy, await loop.run_in_executor(
-                    None,
-                    strategy.detect,
-                    events_for_strategies,
-                    all_markets_for_strategies,
-                    merged_prices,
-                )
-
             await self._ensure_runtime_strategies_loaded()
-            all_strategies = await self._get_effective_strategies()
-            results = await asyncio.gather(
-                *[_run_strategy(s) for s in all_strategies],
-                return_exceptions=True,
-            )
 
-            for result in results:
-                if isinstance(result, Exception):
-                    continue
-                strategy, opps = result
-                for opp in opps:
-                    if opp.mispricing_type is None:
-                        raw = getattr(strategy, "mispricing_type", None)
-                        try:
-                            opp.mispricing_type = MispricingType(raw) if raw else MispricingType.WITHIN_MARKET
-                        except ValueError:
-                            opp.mispricing_type = MispricingType.WITHIN_MARKET
-                fast_opportunities.extend(opps)
-                # Record plugin run stats
-                strategy_type = getattr(strategy, "strategy_type", "")
-                if isinstance(strategy_type, str) and plugin_loader.get_plugin(strategy_type):
-                    plugin_loader.record_run(strategy_type, len(opps))
+            fast_data_event = DataEvent(
+                event_type="market_data_refresh",
+                source="scanner_fast",
+                timestamp=utcnow(),
+                markets=all_markets_for_strategies,
+                events=list(events_for_strategies),
+                prices=dict(merged_prices),
+            )
+            fast_opportunities = await event_dispatcher.dispatch(fast_data_event)
 
             fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
             fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
@@ -1382,7 +1345,7 @@ class ArbitrageScanner:
         protected = []
         candidates = []
         for opp in opportunities:
-            strategy_instance = plugin_loader.get_instance(opp.strategy)
+            strategy_instance = strategy_loader.get_instance(opp.strategy)
             if strategy_instance and not getattr(strategy_instance, "allow_deduplication", True):
                 protected.append(opp)
             else:
@@ -1468,7 +1431,7 @@ class ArbitrageScanner:
         def _is_stale(opp: ArbitrageOpportunity) -> bool:
             if opp.last_seen_at is None:
                 return False
-            strategy_instance = plugin_loader.get_instance(opp.strategy)
+            strategy_instance = strategy_loader.get_instance(opp.strategy)
             ttl = None
             if strategy_instance:
                 ttl = getattr(strategy_instance, "opportunity_ttl_minutes", None)

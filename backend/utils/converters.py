@@ -71,6 +71,26 @@ def to_iso(value: datetime | None) -> str | None:
     return value.replace(tzinfo=None).isoformat() + "Z"
 
 
+def to_float(value: Any, default: float = 0.0) -> float:
+    """Parse any value to float, returning *default* on failure."""
+    result = safe_float(value, default=default)
+    return default if result is None else result
+
+
+def to_bool(value: Any, default: bool = False) -> bool:
+    """Parse any value to bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def normalize_market_id(value: object) -> str:
     """Strip and lowercase a market identifier."""
     return str(value or "").strip().lower()

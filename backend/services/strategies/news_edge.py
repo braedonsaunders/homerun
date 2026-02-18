@@ -32,8 +32,10 @@ from models.opportunity import MispricingType
 from services.news.edge_detector import NewsEdge
 from services.news.feed_service import news_feed_service
 from services.news.semantic_matcher import MarketInfo, semantic_matcher
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence, clamp
+from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +61,71 @@ class NewsEdgeStrategy(BaseStrategy):
     worker_affinity = "news"
     requires_news_data = True
     allow_deduplication = False
+    subscriptions = ["news_update"]
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
-        """Sync detect — not used for this strategy.
+        """Sync detect -- not used for this strategy.
 
         NewsEdgeStrategy requires async I/O (news fetching, LLM calls).
         The scanner calls detect_async() instead.
         """
         return []
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        """Convert news intents dispatched by the news worker into opportunities."""
+        if event.event_type != "news_update":
+            return []
+        intents = event.payload.get("intents") or []
+        if not intents:
+            return []
+
+        opportunities: list[ArbitrageOpportunity] = []
+        for intent in intents:
+            market_id = str(intent.get("market_id") or "")
+            if not market_id:
+                continue
+            direction = intent.get("direction")
+            entry_price = float(intent.get("entry_price") or 0.0)
+            edge_percent = float(intent.get("edge_percent") or 0.0)
+            confidence = float(intent.get("confidence") or 0.0)
+            question = intent.get("market_question") or ""
+            metadata = {k: v for k, v in intent.items() if k not in {
+                "id", "market_id", "market_question", "direction",
+                "entry_price", "edge_percent", "confidence", "status", "created_at",
+            }}
+
+            side = "YES" if direction == "buy_yes" else "NO"
+            target_price = entry_price + (edge_percent / 100.0) if entry_price > 0 else 0.0
+            net_profit = (target_price - entry_price) - (target_price * self.fee) if target_price > entry_price else 0.0
+
+            opp = ArbitrageOpportunity(
+                strategy=self.strategy_type,
+                title=f"News Edge: {question[:50]}",
+                description=f"News-driven {side} at ${entry_price:.2f} (edge: {edge_percent:.1f}%)",
+                total_cost=entry_price,
+                expected_payout=target_price,
+                gross_profit=target_price - entry_price,
+                fee=target_price * self.fee,
+                net_profit=net_profit,
+                roi_percent=edge_percent,
+                is_guaranteed=False,
+                roi_type="directional_payout",
+                risk_score=max(0.0, min(1.0, 1.0 - confidence)),
+                risk_factors=["News-driven informational edge"],
+                confidence=confidence,
+                markets=[{"id": market_id, "question": question}],
+                min_liquidity=0.0,
+                max_position_size=500.0,
+                positions_to_take=[{
+                    "action": "BUY",
+                    "outcome": side,
+                    "price": entry_price,
+                }],
+                mispricing_type=MispricingType.NEWS_INFORMATION,
+                strategy_context={"news_metadata": metadata},
+            )
+            opportunities.append(opp)
+        return opportunities
 
     async def detect_async(
         self,
@@ -331,48 +390,23 @@ class NewsEdgeStrategy(BaseStrategy):
 
         return opp
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        params = context.get("params") or {}
-        min_edge = to_float(params.get("min_edge_percent", 8.0), 8.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.55), 0.55)
-        base_size = max(1.0, to_float(params.get("base_size_usd", 20.0), 20.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 200.0), 200.0))
+    scoring_weights = ScoringWeights()
+    sizing_config = SizingConfig()
 
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         source = str(getattr(signal, "source", "") or "").strip().lower()
         source_ok = source in {"news"}
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
-
-        checks = [
+        return [
             DecisionCheck("source", "News-capable source", source_ok, detail="news"),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.1f}"),
-            DecisionCheck(
-                "confidence",
-                "Confidence threshold",
-                confidence >= min_conf,
-                score=confidence,
-                detail=f"min={min_conf:.2f}",
-            ),
         ]
 
-        if not all(c.passed for c in checks):
-            return StrategyDecision(
-                decision="skipped",
-                reason="News reaction filters not met",
-                score=(edge + confidence) / 2.0,
-                checks=checks,
-                payload={"source": source, "edge": edge, "confidence": confidence},
-            )
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        return (edge * 0.55) + (confidence * 45.0)
 
-        size = max(1.0, min(max_size, base_size * (1.0 + confidence)))
-        return StrategyDecision(
-            decision="selected",
-            reason="News reaction signal selected",
-            score=(edge * 0.55) + (confidence * 45.0),
-            size_usd=size,
-            checks=checks,
-            payload={"source": source, "edge": edge, "confidence": confidence},
-        )
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float, market_count: int) -> float:
+        return max(1.0, min(max_size, base_size * (1.0 + confidence)))
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """News edge decays quickly -- exit on time or standard TP/SL."""

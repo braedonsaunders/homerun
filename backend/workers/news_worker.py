@@ -22,7 +22,9 @@ if os.getcwd() != _BACKEND:
 from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services.news import shared_state
-from services.signal_bus import emit_news_intent_signals
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
+from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.news.workflow_orchestrator import workflow_orchestrator
 from services.worker_state import write_worker_snapshot
 
@@ -280,15 +282,36 @@ async def _run_loop() -> None:
                     stats=cycle_stats,
                 )
                 pending_rows = await shared_state.list_news_intents(session, status_filter="pending", limit=2000)
-                emitted = await emit_news_intent_signals(
-                    session,
-                    pending_rows,
-                    max_age_minutes=int(
-                        max(
-                            1,
-                            wf_settings.get("orchestrator_max_age_minutes", 120) or 120,
-                        )
-                    ),
+
+            # Serialize news intents to dicts for strategy consumption
+            intent_dicts = []
+            for row in pending_rows:
+                intent_dict = {
+                    "id": row.id,
+                    "market_id": row.market_id,
+                    "market_question": row.market_question,
+                    "direction": getattr(row, "direction", None),
+                    "entry_price": getattr(row, "entry_price", None),
+                    "edge_percent": getattr(row, "edge_percent", None),
+                    "confidence": getattr(row, "confidence", None),
+                    "status": row.status,
+                    "created_at": row.created_at,
+                }
+                metadata = getattr(row, "metadata_json", None) or {}
+                if isinstance(metadata, dict):
+                    intent_dict.update(metadata)
+                intent_dicts.append(intent_dict)
+
+            news_event = DataEvent(
+                event_type="news_update",
+                source="news_worker",
+                timestamp=datetime.now(timezone.utc),
+                payload={"intents": intent_dicts},
+            )
+            opportunities = await event_dispatcher.dispatch(news_event)
+            async with AsyncSessionLocal() as session:
+                emitted = await bridge_opportunities_to_signals(
+                    session, opportunities, source="news",
                 )
                 await write_worker_snapshot(
                     session,

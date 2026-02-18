@@ -14,8 +14,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence, clamp
+from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
 from utils.converters import safe_float
 
 
@@ -27,7 +29,32 @@ class FlashCrashReversionStrategy(BaseStrategy):
     name = "Flash Crash Reversion"
     description = "Short-horizon crash detector with liquidity/spread gating"
     mispricing_type = "within_market"
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
     requires_historical_prices = True
+
+    pipeline_defaults = {
+        "min_edge_percent": 3.0,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.80,
+        "base_size_usd": 16.0,
+        "max_size_usd": 130.0,
+    }
+
+    # Composable evaluate pipeline: score = edge*0.65 + conf*30 + liq_score*8 - risk*10
+    scoring_weights = ScoringWeights(
+        edge_weight=0.65,
+        confidence_weight=30.0,
+        risk_penalty=10.0,
+        liquidity_weight=8.0,
+        liquidity_divisor=10000.0,
+    )
+    # Sizing uses Kelly criterion -- override compute_size
+    sizing_config = SizingConfig()
 
     default_config = {
         "lookback_seconds": 240.0,
@@ -268,35 +295,26 @@ class FlashCrashReversionStrategy(BaseStrategy):
                 break
         return out
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
-        live_market = context.get("live_market") or {}
+    # ------------------------------------------------------------------
+    # Composable evaluate pipeline overrides
+    # ------------------------------------------------------------------
 
-        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
-        max_risk = to_confidence(params.get("max_risk_score", 0.80), 0.80)
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
+        """Flash crash reversion: source, strategy type, liquidity, crash alignment checks."""
+        live_market = context.get("live_market") or {}
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 1500.0), 1500.0))
         min_abs_move_5m = max(0.1, to_float(params.get("min_abs_move_5m", 1.5), 1.5))
         require_alignment = bool(params.get("require_crash_alignment", True))
 
-        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 130.0), 130.0))
-        sizing_policy = str(params.get("sizing_policy", "kelly") or "kelly")
-        kelly_fractional_scale = to_float(params.get("kelly_fractional_scale", 0.5), 0.5)
-
         source = str(getattr(signal, "source", "") or "").strip().lower()
         direction = str(getattr(signal, "direction", "") or "").strip().lower()
-
         strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
         strategy_ok = strategy_type == "flash_crash_reversion"
 
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-
         move_5m_pct = live_move(live_market, "move_5m")
+
         alignment_ok = True
         if require_alignment:
             if move_5m_pct is None:
@@ -308,13 +326,17 @@ class FlashCrashReversionStrategy(BaseStrategy):
             else:
                 alignment_ok = False
 
-        checks = [
+        # Stash for compute_score / evaluate
+        payload["_signal_liquidity"] = liquidity
+        payload["_move_5m_pct"] = move_5m_pct
+        payload["_direction"] = direction
+        payload["_strategy_type"] = strategy_type
+
+        return [
             DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
             DecisionCheck("strategy", "Flash reversion strategy type", strategy_ok, detail="strategy=flash_crash_reversion"),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity, score=liquidity, detail=f"min={min_liquidity:.0f}"),
+            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
+                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
             DecisionCheck(
                 "alignment_5m",
                 "Crash alignment (5m move)",
@@ -324,7 +346,54 @@ class FlashCrashReversionStrategy(BaseStrategy):
             ),
         ]
 
-        score = (edge * 0.65) + (confidence * 30.0) + (min(1.0, liquidity / 10000.0) * 8.0) - (risk_score * 10.0)
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        """Flash crash: edge*0.65 + conf*30 + liq_score*8 - risk*10."""
+        liquidity = float(payload.get("_signal_liquidity", 0) or 0)
+        return (
+            (edge * 0.65)
+            + (confidence * 30.0)
+            + (min(1.0, liquidity / 10000.0) * 8.0)
+            - (risk_score * 10.0)
+        )
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Flash crash reversion: composable pipeline with Kelly sizing and custom payload."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 3.0), 3.0)
+        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
+        max_risk = to_confidence(params.get("max_risk_score", 0.80), 0.80)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 16.0), 16.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 130.0), 130.0))
+        sizing_policy = str(params.get("sizing_policy", "kelly") or "kelly")
+        kelly_fractional_scale = to_float(params.get("kelly_fractional_scale", 0.5), 0.5)
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+        market_count = len(payload.get("markets") or [])
+
+        # Standard checks
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
+                          score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
+                          score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk,
+                          score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        # Strategy-specific checks (also stashes liquidity/direction/etc in payload)
+        checks.extend(self.custom_checks(signal, context, params, payload))
+
+        score = self.compute_score(edge, confidence, risk_score, market_count, payload)
+
+        liquidity = float(payload.get("_signal_liquidity", 0) or 0)
+        move_5m_pct = payload.get("_move_5m_pct")
+        direction = str(payload.get("_direction", "") or "")
+        strategy_type = str(payload.get("_strategy_type", "") or "")
 
         if not all(c.passed for c in checks):
             return StrategyDecision(

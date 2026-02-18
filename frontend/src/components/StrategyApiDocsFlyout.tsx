@@ -16,6 +16,10 @@ import {
   Rocket,
   Shield,
   ListChecks,
+  Radio,
+  Filter,
+  ShieldAlert,
+  Sliders,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
@@ -125,6 +129,10 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
   const detectPhase = docs.detect_phase as Record<string, unknown> | undefined
   const evaluatePhase = docs.evaluate_phase as Record<string, unknown> | undefined
   const exitPhase = docs.exit_phase as Record<string, unknown> | undefined
+  const composableEvaluate = docs.composable_evaluate as Record<string, unknown> | undefined
+  const eventSubscriptions = docs.event_subscriptions as Record<string, unknown> | undefined
+  const qualityFilter = docs.quality_filter as Record<string, unknown> | undefined
+  const platformHooks = docs.platform_hooks as Record<string, unknown> | undefined
   const configSchema = docs.config_schema as Record<string, unknown> | undefined
   const imports = docs.imports as Record<string, unknown> | undefined
   const examples = docs.examples as Record<string, Record<string, string>> | undefined
@@ -363,6 +371,202 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
                 <p className="text-[10px] text-amber-400/80 mt-1">
                   {(exitPhase.return_value as Record<string, string>).tip}
                 </p>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Composable Evaluate Pipeline */}
+      {composableEvaluate && (
+        <Section title="Composable Evaluate Pipeline" icon={Sliders} iconColor="text-violet-400">
+          <div className="space-y-3 pt-2">
+            <p className="text-[11px] text-muted-foreground">{composableEvaluate.description as string}</p>
+
+            {composableEvaluate.scoring_weights && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">ScoringWeights</div>
+                <code className="text-[9px] text-cyan-400/70 font-mono block mb-1">
+                  {(composableEvaluate.scoring_weights as Record<string, string>).import}
+                </code>
+                <p className="text-[10px] text-muted-foreground mb-1">
+                  {(composableEvaluate.scoring_weights as Record<string, string>).formula}
+                </p>
+                {(composableEvaluate.scoring_weights as Record<string, Record<string, string>>).fields && (
+                  <FieldTable fields={(composableEvaluate.scoring_weights as Record<string, Record<string, string>>).fields} />
+                )}
+              </div>
+            )}
+
+            {composableEvaluate.sizing_config && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">SizingConfig</div>
+                <code className="text-[9px] text-cyan-400/70 font-mono block mb-1">
+                  {(composableEvaluate.sizing_config as Record<string, string>).import}
+                </code>
+                <p className="text-[10px] text-muted-foreground mb-1">
+                  {(composableEvaluate.sizing_config as Record<string, string>).formula}
+                </p>
+                {(composableEvaluate.sizing_config as Record<string, Record<string, string>>).fields && (
+                  <FieldTable fields={(composableEvaluate.sizing_config as Record<string, Record<string, string>>).fields} />
+                )}
+              </div>
+            )}
+
+            {composableEvaluate.custom_checks_override && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">custom_checks() Override</div>
+                <code className="text-[10px] text-cyan-400 font-mono block mb-1">
+                  {(composableEvaluate.custom_checks_override as Record<string, string>).signature}
+                </code>
+                <p className="text-[10px] text-muted-foreground mb-1">
+                  {(composableEvaluate.custom_checks_override as Record<string, string>).description}
+                </p>
+                {(composableEvaluate.custom_checks_override as Record<string, string>).example && (
+                  <CodeBlock code={(composableEvaluate.custom_checks_override as Record<string, string>).example} />
+                )}
+              </div>
+            )}
+
+            {composableEvaluate.how_to_opt_in && (
+              <p className="text-[10px] text-amber-400/80 mt-1">{composableEvaluate.how_to_opt_in as string}</p>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Event Subscriptions */}
+      {eventSubscriptions && (
+        <Section title="Event Subscriptions" icon={Radio} iconColor="text-pink-400">
+          <div className="space-y-3 pt-2">
+            <p className="text-[11px] text-muted-foreground">{eventSubscriptions.description as string}</p>
+            <p className="text-[10px] text-amber-400/80">{eventSubscriptions.how_to_subscribe as string}</p>
+
+            {eventSubscriptions.data_event_types && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Event Types</div>
+                {Object.entries(eventSubscriptions.data_event_types as Record<string, Record<string, string>>).map(([key, info]) => (
+                  <div key={key} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-0.5">
+                    <code className="text-[10px] text-cyan-400 font-mono">{key}</code>
+                    <p className="text-[10px] text-muted-foreground">{info.description}</p>
+                    <p className="text-[9px] text-muted-foreground/60 font-mono">{info.payload_fields}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {eventSubscriptions.data_event_structure && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">DataEvent Structure</div>
+                <code className="text-[9px] text-cyan-400/70 font-mono block mb-1">
+                  {(eventSubscriptions.data_event_structure as Record<string, string>).import}
+                </code>
+                {(eventSubscriptions.data_event_structure as Record<string, Record<string, string>>).fields && (
+                  <FieldTable fields={(eventSubscriptions.data_event_structure as Record<string, Record<string, string>>).fields} />
+                )}
+              </div>
+            )}
+
+            {eventSubscriptions.on_event_method && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">on_event() Method</div>
+                <code className="text-[10px] text-cyan-400 font-mono block">
+                  {(eventSubscriptions.on_event_method as Record<string, string>).signature}
+                </code>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {(eventSubscriptions.on_event_method as Record<string, string>).description}
+                </p>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Quality Filters */}
+      {qualityFilter && (
+        <Section title="Quality Filter Pipeline" icon={Filter} iconColor="text-orange-400">
+          <div className="space-y-3 pt-2">
+            <p className="text-[11px] text-muted-foreground">{qualityFilter.description as string}</p>
+            <code className="text-[9px] text-cyan-400/70 font-mono block">{qualityFilter.import as string}</code>
+
+            {qualityFilter.quality_report && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">QualityReport</div>
+                <FieldTable fields={(qualityFilter.quality_report as Record<string, Record<string, string>>).fields} />
+              </div>
+            )}
+
+            {qualityFilter.filter_result && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">FilterResult</div>
+                <FieldTable fields={(qualityFilter.filter_result as Record<string, Record<string, string>>).fields} />
+              </div>
+            )}
+
+            {qualityFilter.filters_applied && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Filters Applied</div>
+                <div className="space-y-0.5">
+                  {(qualityFilter.filters_applied as string[]).map((filter, i) => (
+                    <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                      <span className="text-emerald-400 shrink-0 font-mono">{i + 1}.</span>
+                      <span className="text-muted-foreground">{filter}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Platform Hooks */}
+      {platformHooks && (
+        <Section title="Platform Hooks" icon={ShieldAlert} iconColor="text-red-400">
+          <div className="space-y-3 pt-2">
+            <p className="text-[11px] text-muted-foreground">{platformHooks.description as string}</p>
+
+            {platformHooks.on_blocked && (
+              <div className="border border-border/20 rounded-md p-2 space-y-1">
+                <code className="text-[10px] text-cyan-400 font-mono block">
+                  {(platformHooks.on_blocked as Record<string, string>).signature}
+                </code>
+                <p className="text-[10px] text-muted-foreground">
+                  {(platformHooks.on_blocked as Record<string, string>).description}
+                </p>
+                {(platformHooks.on_blocked as Record<string, string[]>).called_when && (
+                  <div className="mt-1">
+                    <div className="text-[9px] font-medium text-muted-foreground/80 mb-0.5">Called when:</div>
+                    {(platformHooks.on_blocked as Record<string, string[]>).called_when.map((reason, i) => (
+                      <div key={i} className="flex items-start gap-1 text-[9px] text-muted-foreground/70">
+                        <span className="text-red-400/60 shrink-0">-</span>
+                        <span>{reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {platformHooks.on_size_capped && (
+              <div className="border border-border/20 rounded-md p-2 space-y-1">
+                <code className="text-[10px] text-cyan-400 font-mono block">
+                  {(platformHooks.on_size_capped as Record<string, string>).signature}
+                </code>
+                <p className="text-[10px] text-muted-foreground">
+                  {(platformHooks.on_size_capped as Record<string, string>).description}
+                </p>
+                {(platformHooks.on_size_capped as Record<string, string[]>).called_when && (
+                  <div className="mt-1">
+                    <div className="text-[9px] font-medium text-muted-foreground/80 mb-0.5">Called when:</div>
+                    {(platformHooks.on_size_capped as Record<string, string[]>).called_when.map((reason, i) => (
+                      <div key={i} className="flex items-start gap-1 text-[9px] text-muted-foreground/70">
+                        <span className="text-amber-400/60 shrink-0">-</span>
+                        <span>{reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -19,7 +19,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.opportunity_strategy_catalog import build_system_strategy_rows  # noqa: E402
+from services.opportunity_strategy_catalog import build_system_opportunity_strategy_rows  # noqa: E402
 
 
 # revision identifiers, used by Alembic.
@@ -67,7 +67,7 @@ def upgrade() -> None:
     )
 
     now = datetime.utcnow()
-    rows = build_system_strategy_rows()
+    rows = build_system_opportunity_strategy_rows()
     for row in rows:
         existing = (
             bind.execute(

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Strategy: Market Making - Provide Liquidity for Profit
 
@@ -23,8 +25,10 @@ from typing import Any, Optional
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
-from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, utcnow, make_aware
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload
+from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 
 
 class MarketMakingStrategy(BaseStrategy):
@@ -47,6 +51,38 @@ class MarketMakingStrategy(BaseStrategy):
     description = "Provide liquidity on both sides to earn the bid-ask spread"
     mispricing_type = "within_market"
     requires_order_book = True
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
+
+    pipeline_defaults = {
+        "min_edge_percent": 2.5,
+        "min_confidence": 0.40,
+        "max_risk_score": 0.78,
+        "base_size_usd": 14.0,
+        "max_size_usd": 100.0,
+    }
+
+    # Composable evaluate pipeline: score = edge*0.50 + conf*28 + liq_score*6 - risk*8
+    scoring_weights = ScoringWeights(
+        edge_weight=0.50,
+        confidence_weight=28.0,
+        risk_penalty=8.0,
+        liquidity_weight=6.0,
+        liquidity_divisor=5000.0,
+    )
+    # size = base*(1+edge/100)*(0.70+conf), no risk/market scaling
+    sizing_config = SizingConfig(
+        base_divisor=100.0,
+        confidence_offset=0.70,
+        risk_scale_factor=0.0,
+        risk_floor=1.0,
+        market_scale_factor=0.0,
+        market_scale_cap=0,
+    )
 
     def __init__(self):
         super().__init__()
@@ -387,42 +423,31 @@ class MarketMakingStrategy(BaseStrategy):
         return opportunities
 
     # ------------------------------------------------------------------
-    # Unified evaluate / should_exit
+    # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        """Market making evaluation — spread width and volume check."""
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
-
-        min_edge = to_float(params.get("min_edge_percent", 2.5), 2.5)
-        min_conf = to_confidence(params.get("min_confidence", 0.40), 0.40)
-        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
+        """Market making: extra liquidity floor check."""
         min_liquidity = max(0.0, to_float(params.get("min_liquidity", 500.0), 500.0))
-        base_size = max(1.0, to_float(params.get("base_size_usd", 14.0), 14.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 100.0), 100.0))
-
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-
-        checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
-            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity, score=liquidity, detail=f"min={min_liquidity:.0f}"),
+        # Stash for compute_score
+        payload["_signal_liquidity"] = liquidity
+        return [
+            DecisionCheck("liquidity", "Liquidity floor", liquidity >= min_liquidity,
+                          score=liquidity, detail=f"min={min_liquidity:.0f}"),
         ]
 
-        score = (edge * 0.50) + (confidence * 28.0) + (min(1.0, liquidity / 5000.0) * 6.0) - (risk_score * 8.0)
-
-        if not all(c.passed for c in checks):
-            return StrategyDecision("skipped", "Market making filters not met", score=score, checks=checks)
-
-        size = base_size * (1.0 + (edge / 100.0)) * (0.70 + confidence)
-        size = max(1.0, min(max_size, size))
-
-        return StrategyDecision("selected", "Market making signal selected", score=score, size_usd=size, checks=checks)
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        """Market making: edge*0.50 + conf*28 + liq_score*6 - risk*8."""
+        liquidity = float(payload.get("_signal_liquidity", 0) or 0)
+        return (
+            (edge * 0.50)
+            + (confidence * 28.0)
+            + (min(1.0, liquidity / 5000.0) * 6.0)
+            - (risk_score * 8.0)
+        )
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
         """Market making: exit when spread closes or time decay."""

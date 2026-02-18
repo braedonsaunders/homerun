@@ -22,7 +22,9 @@ from services.live_price_snapshot import (
     normalize_binary_price_history,
 )
 from services.pause_state import global_pause_state
-from services.signal_bus import emit_weather_intent_signals
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
+from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.weather import shared_state
 from utils.market_urls import serialize_opportunity_with_links
 from services.weather.workflow_orchestrator import weather_workflow_orchestrator
@@ -173,15 +175,36 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
         wf_settings = await shared_state.get_weather_settings(session)
         result = await weather_workflow_orchestrator.run_cycle(session)
         pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
-        emitted = await emit_weather_intent_signals(
-            session,
-            pending_rows,
-            max_age_minutes=int(
-                max(
-                    1,
-                    wf_settings.get("orchestrator_max_age_minutes", 240) or 240,
-                )
-            ),
+        intent_dicts = []
+        for row in pending_rows:
+            intent_dict = {
+                "id": row.id,
+                "market_id": row.market_id,
+                "market_question": row.market_question,
+                "direction": row.direction,
+                "entry_price": row.entry_price,
+                "take_profit_price": row.take_profit_price,
+                "stop_loss_pct": row.stop_loss_pct,
+                "model_probability": row.model_probability,
+                "edge_percent": row.edge_percent,
+                "confidence": row.confidence,
+                "model_agreement": row.model_agreement,
+                "suggested_size_usd": row.suggested_size_usd,
+                "status": row.status,
+                "created_at": row.created_at,
+            }
+            metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+            intent_dict.update(metadata)
+            intent_dicts.append(intent_dict)
+        weather_event = DataEvent(
+            event_type="weather_update",
+            source="weather_api",
+            timestamp=datetime.now(timezone.utc),
+            payload={"intents": intent_dicts},
+        )
+        opportunities = await event_dispatcher.dispatch(weather_event)
+        emitted = await bridge_opportunities_to_signals(
+            session, opportunities, source="weather",
         )
         # Clear any previously queued manual run requests to avoid duplicate
         # immediate reruns by the background weather worker loop.

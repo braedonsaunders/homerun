@@ -33,9 +33,6 @@ from services.trader_orchestrator.sources.registry import (
     list_source_aliases,
     normalize_source_key,
 )
-from services.opportunity_strategy_catalog import (
-    ensure_system_trader_strategies_seeded,
-)
 from services.strategy_loader import strategy_loader
 from services.trader_orchestrator_state import (
     cleanup_trader_open_orders,
@@ -1087,6 +1084,19 @@ async def _run_trader_once(
                     if final_decision == "selected" and not trading_window_ok:
                         final_decision = "blocked"
                         final_reason = "Outside configured trading window (UTC)"
+                        if strategy is not None:
+                            strategy.on_blocked(runtime_signal, final_reason, {"trading_window": metadata.get("trading_window_utc")})
+
+                    # ── Size cap: clamp to max_trade_notional before risk eval ──
+                    if final_decision == "selected":
+                        _gross_cap = safe_float(global_limits.get("max_gross_exposure_usd"), 5000.0)
+                        _notional_default = max(50.0, _gross_cap * 0.10)
+                        max_trade_notional = max(1.0, safe_float(effective_risk_limits.get("max_trade_notional_usd"), _notional_default))
+                        if size_usd > max_trade_notional:
+                            original_size = size_usd
+                            size_usd = max_trade_notional
+                            if strategy is not None:
+                                strategy.on_size_capped(original_size, size_usd, "Max position size exceeded")
 
                     if final_decision == "selected":
                         gross_exposure = await get_gross_exposure(session, mode=run_mode)
@@ -1150,6 +1160,8 @@ async def _run_trader_once(
                         if not risk_result.allowed:
                             final_decision = "blocked"
                             final_reason = risk_result.reason
+                            if strategy is not None:
+                                strategy.on_blocked(runtime_signal, f"Risk: {risk_result.reason}", {"risk_snapshot": risk_snapshot})
 
                     if final_decision == "selected" and not allow_averaging:
                         signal_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
@@ -1174,6 +1186,8 @@ async def _run_trader_once(
                         if stacking_blocked:
                             final_decision = "blocked"
                             final_reason = "Stacking guard: market already open while allow_averaging=false"
+                            if strategy is not None:
+                                strategy.on_blocked(runtime_signal, final_reason, {"market_id": signal_market_id})
 
                     decision_row = await create_trader_decision(
                         session,
@@ -1611,14 +1625,6 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
 
 async def run_worker_loop() -> None:
     logger.info("Starting trader orchestrator worker loop")
-
-    try:
-        async with AsyncSessionLocal() as session:
-            seeded = await ensure_system_trader_strategies_seeded(session)
-        if seeded > 0:
-            logger.info("Seeded/updated %s trader strategy definitions", seeded)
-    except Exception as exc:
-        logger.warning("Failed to ensure trader strategy definitions: %s", exc)
 
     try:
         while True:

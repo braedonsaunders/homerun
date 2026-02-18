@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 
 from pydantic import BaseModel, Field
@@ -68,6 +70,7 @@ class ArbitrageOpportunity(BaseModel):
     # Risk assessment
     risk_score: float = Field(ge=0.0, le=1.0, default=0.5)
     risk_factors: list[str] = []
+    confidence: float = 0.5
 
     # Market details
     markets: list[dict] = []  # List of markets involved

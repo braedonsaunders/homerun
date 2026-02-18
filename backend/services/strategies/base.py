@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from services.fee_model import fee_model
+from services.data_events import DataEvent
+
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload
 
 
 def utcnow() -> datetime:
@@ -57,6 +61,44 @@ class ExitDecision:
     close_price: float = None
     reduce_fraction: float = None  # For partial exits (0-1)
     payload: dict = field(default_factory=dict)
+
+
+@dataclass
+class ScoringWeights:
+    """Declarative scoring formula for the composable evaluate pipeline.
+
+    Strategies set this as a class attribute to opt into the pipeline.
+    The composite score is:
+        (edge * edge_weight) + (confidence * confidence_weight)
+        - (risk_score * risk_penalty) + (market_count * market_count_bonus)
+        + (liquidity_score * liquidity_weight) + structural_bonus (if guaranteed)
+    """
+    edge_weight: float = 0.55
+    confidence_weight: float = 30.0
+    risk_penalty: float = 8.0
+    liquidity_weight: float = 0.0
+    liquidity_divisor: float = 5000.0
+    market_count_bonus: float = 0.0
+    structural_bonus: float = 0.0
+
+
+@dataclass
+class SizingConfig:
+    """Declarative sizing formula for the composable evaluate pipeline.
+
+    Position size = base_size * (1 + edge/base_divisor)
+                    * (confidence_offset + confidence)
+                    * market_scale * risk_scale
+
+    risk_scale = max(risk_floor, 1.0 - risk_score * risk_scale_factor)
+    market_scale = 1.0 + min(market_scale_cap, max(0, markets-1)) * market_scale_factor
+    """
+    base_divisor: float = 100.0
+    confidence_offset: float = 0.75
+    risk_scale_factor: float = 0.35
+    risk_floor: float = 0.55
+    market_scale_factor: float = 0.08
+    market_scale_cap: int = 4
 
 
 class BaseStrategy(ABC):
@@ -117,6 +159,23 @@ class BaseStrategy(ABC):
     requires_resolution_date: bool = False
     binary_only: bool = True  # Most strategies only work with 2-outcome markets
 
+    # Event subscriptions — strategies declare what data events they react to.
+    # Possible values: "price_change", "market_data_refresh", "market_resolved",
+    # "crypto_update", "weather_update", "trader_activity", "news_event"
+    subscriptions: list[str] = []
+
+    # Composable evaluate pipeline — set scoring_weights to opt in.
+    # When scoring_weights is None, evaluate() uses the base passthrough.
+    # When set, evaluate() uses the composable pipeline with custom_checks(),
+    # compute_score(), and compute_size() hooks.
+    scoring_weights: ScoringWeights | None = None
+    sizing_config: SizingConfig | None = None
+
+    # Strategy-specific fallback defaults for pipeline params.
+    # These are used when the param is not provided by the orchestrator.
+    # Override on each strategy to preserve its original default behavior.
+    pipeline_defaults: dict = {}
+
     def __init__(self):
         self.fee = settings.POLYMARKET_FEE
         self.min_profit = settings.MIN_PROFIT_THRESHOLD
@@ -153,6 +212,32 @@ class BaseStrategy(ABC):
         """
         return self.detect(events, markets, prices)
 
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        """React to a data event. Override for event-driven detection.
+
+        Called by the event dispatcher when a subscribed event fires.
+        Return a list of detected opportunities (may be empty).
+
+        Default: no-op (returns empty list).
+        """
+        return []
+
+    def on_blocked(self, signal: Any, reason: str, context: dict) -> None:
+        """Called when the platform blocks a signal from this strategy.
+
+        Override to log, alert, or adjust strategy behavior when blocked.
+        Default: no-op.
+        """
+        pass
+
+    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
+        """Called when the platform caps this strategy's position size.
+
+        Override to track how often sizing gets overridden.
+        Default: no-op.
+        """
+        pass
+
     def configure(self, config: dict) -> None:
         """Apply user config overrides. Called by the loader after instantiation."""
         merged = dict(self.default_config)
@@ -182,11 +267,19 @@ class BaseStrategy(ABC):
     def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
         """Decide whether to trade a signal RIGHT NOW.
 
+        If scoring_weights is set, uses the composable pipeline
+        (custom_checks + compute_score + compute_size). Otherwise
+        falls back to the base passthrough implementation.
+        """
+        if self.scoring_weights is None:
+            return self._base_evaluate(signal, context)
+        return self._pipeline_evaluate(signal, context)
+
+    def _base_evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Base passthrough evaluate — trusts detection layer's edge/confidence.
+
         Called by the orchestrator when a pending signal from this strategy
         is ready for execution. Override to add custom gating logic.
-
-        Default: passthrough — trusts the detection layer's edge/confidence
-        and returns 'selected' with base sizing from config.
 
         Args:
             signal: TradeSignal object with .edge_percent, .confidence,
@@ -240,6 +333,111 @@ class BaseStrategy(ABC):
             decision="selected",
             reason="Passthrough: detection thresholds met",
             score=edge * confidence,
+            size_usd=size,
+            checks=checks,
+        )
+
+    # ── Composable evaluate pipeline ─────────────────────────
+
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
+        """Override to add strategy-specific checks beyond the standard pipeline.
+
+        Called during the composable evaluate pipeline after the standard
+        edge/confidence/risk checks. Return additional DecisionCheck objects
+        that must all pass for the signal to be selected.
+        """
+        return []
+
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        """Compute composite score using scoring_weights.
+
+        Override for fully custom scoring logic. Default uses the
+        declarative ScoringWeights formula.
+        """
+        w = self.scoring_weights or ScoringWeights()
+        score = (
+            (edge * w.edge_weight)
+            + (confidence * w.confidence_weight)
+            - (risk_score * w.risk_penalty)
+            + (min(6, market_count) * w.market_count_bonus)
+        )
+        if w.liquidity_weight > 0:
+            liquidity = float(payload.get("liquidity", 0) or 0)
+            score += min(1.0, liquidity / w.liquidity_divisor) * w.liquidity_weight
+        if w.structural_bonus > 0 and payload.get("is_guaranteed"):
+            score += w.structural_bonus
+        return score
+
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float,
+                     market_count: int) -> float:
+        """Compute position size using sizing_config.
+
+        Override for fully custom sizing logic (e.g. Kelly criterion).
+        Default uses the declarative SizingConfig formula.
+        """
+        cfg = self.sizing_config or SizingConfig()
+        risk_scale = max(cfg.risk_floor, 1.0 - (risk_score * cfg.risk_scale_factor))
+        market_scale = 1.0 + (min(cfg.market_scale_cap, max(0, market_count - 1)) * cfg.market_scale_factor)
+        size = base_size * (1.0 + (edge / cfg.base_divisor)) * (cfg.confidence_offset + confidence) * market_scale * risk_scale
+        return max(1.0, min(max_size, size))
+
+    def _pipeline_evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Composable evaluate pipeline implementation."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        # Merge strategy-specific defaults (pipeline_defaults) with caller params.
+        # Caller params take precedence; pipeline_defaults provide fallbacks.
+        d = self.pipeline_defaults
+        min_edge = to_float(params.get("min_edge_percent", d.get("min_edge_percent", 3.0)),
+                            d.get("min_edge_percent", 3.0))
+        min_conf = to_confidence(params.get("min_confidence", d.get("min_confidence", 0.42)),
+                                 d.get("min_confidence", 0.42))
+        max_risk = to_confidence(params.get("max_risk_score", d.get("max_risk_score", 0.68)),
+                                 d.get("max_risk_score", 0.68))
+        base_size = max(1.0, to_float(params.get("base_size_usd", d.get("base_size_usd", 20.0)),
+                                      d.get("base_size_usd", 20.0)))
+        max_size = max(base_size, to_float(params.get("max_size_usd", d.get("max_size_usd", 180.0)),
+                                           d.get("max_size_usd", 180.0)))
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+        market_count = len(payload.get("markets") or [])
+
+        # Standard checks
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
+                          score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
+                          score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk_score", "Risk score ceiling", risk_score <= max_risk,
+                          score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        # Strategy-specific checks
+        checks.extend(self.custom_checks(signal, context, params, payload))
+
+        score = self.compute_score(edge, confidence, risk_score, market_count, payload)
+
+        if not all(c.passed for c in checks):
+            failed = [c for c in checks if not c.passed]
+            return StrategyDecision(
+                "skipped",
+                f"{self.name}: {', '.join(c.key for c in failed)}",
+                score=score,
+                checks=checks,
+            )
+
+        size = self.compute_size(base_size, max_size, edge, confidence, risk_score, market_count)
+
+        return StrategyDecision(
+            "selected",
+            f"{self.name}: signal selected (edge={edge:.2f}%, conf={confidence:.2f})",
+            score=score,
             size_usd=size,
             checks=checks,
         )
@@ -436,15 +634,13 @@ class BaseStrategy(ABC):
         min_position_size: Optional[float] = None,
         min_absolute_profit: Optional[float] = None,
     ) -> Optional[ArbitrageOpportunity]:
-        """Create an ArbitrageOpportunity if profitable.
+        """Create an ArbitrageOpportunity with fee/risk enrichment.
 
-        Applies hard rejection filters:
-        1. ROI must exceed MIN_PROFIT_THRESHOLD
-        2. Min liquidity must exceed MIN_LIQUIDITY_HARD (or min_liquidity_hard override)
-        3. Max position size must exceed MIN_POSITION_SIZE (or min_position_size override)
-        4. Absolute profit on max position must exceed MIN_ABSOLUTE_PROFIT (or override)
-        5. Annualized ROI must exceed MIN_ANNUALIZED_ROI (if resolution date known)
-        6. Resolution must be within MAX_RESOLUTION_MONTHS
+        Hard rejection filters have been moved to QualityFilterPipeline
+        (services.quality_filter) which is applied in the scanner after
+        deduplication. This method now always returns an opportunity if
+        inputs are valid, allowing the external pipeline to provide a
+        full audit trail of which filters passed/failed.
         """
 
         gross_profit = expected_payout - total_cost
@@ -472,90 +668,17 @@ class BaseStrategy(ABC):
         realistic_roi = (realistic_net / realistic_cost) * 100 if realistic_cost > 0 else 0
 
         # Use realistic profit for filtering when VWAP data is available
+        # (kept for enrichment metadata; hard filters are now in QualityFilterPipeline)
         effective_roi = realistic_roi if vwap_total_cost is not None else roi
-
-        # Check if profitable after fees
-        if effective_roi < self.min_profit * 100:
-            return None
-
-        # --- Hard filter: implausible directional ROI ---
-        # Directional strategies are not guaranteed spreads. Extremely high
-        # ROI readings here are usually payout-model artifacts (e.g. buying a
-        # $0.05 leg and treating it like guaranteed $1 settlement).
-        if not is_guaranteed:
-            # Keep directional ROI guard fixed and conservative. Tying this
-            # directly to configurable arbitrage ROI caps can let clearly
-            # implausible directional opportunities leak through.
-            directional_roi_cap = 120.0
-            if effective_roi > directional_roi_cap:
-                return None
-
-        # --- Hard filter: suspiciously high ROI ---
-        # In efficient prediction markets, genuine arbitrage is 1-5%.
-        # ROI > 30% almost always indicates non-exhaustive outcomes, stale
-        # order books, or missing data — not a real mispricing.
-        # Skip this check for directional/statistical strategies where
-        # "ROI" represents potential return, not guaranteed profit.
-        if is_guaranteed and effective_roi > settings.MAX_PLAUSIBLE_ROI:
-            return None
-
-        # --- Hard filter: too many legs ---
-        # Slippage compounds per leg. An 8-leg trade where each leg has
-        # even 0.5% slippage loses 4% of margin before execution completes.
-        if len(markets) > settings.MAX_TRADE_LEGS:
-            return None
-
-        # --- Hard filter: minimum liquidity per leg ---
-        # Multi-leg trades need proportionally more liquidity to avoid
-        # slippage cascading across legs.
-        min_liq_per_leg = getattr(settings, "MIN_LIQUIDITY_PER_LEG", 500.0)
-        if len(markets) > 1:
-            required_liquidity = min_liq_per_leg * len(markets)
-            if total_liquidity < required_liquidity:
-                return None
 
         # Calculate max position size based on liquidity
         min_liquidity = min((m.liquidity for m in markets), default=0)
         max_position = min_liquidity * 0.1  # Don't exceed 10% of liquidity
 
-        # Resolve thresholds (allow strategy-specific overrides for thin-book markets)
-        eff_min_liquidity = min_liquidity_hard if min_liquidity_hard is not None else settings.MIN_LIQUIDITY_HARD
-        eff_min_position = min_position_size if min_position_size is not None else settings.MIN_POSITION_SIZE
-        eff_min_absolute = min_absolute_profit if min_absolute_profit is not None else settings.MIN_ABSOLUTE_PROFIT
-
-        # --- Hard filter: minimum liquidity ---
-        if min_liquidity < eff_min_liquidity:
-            return None
-
-        # --- Hard filter: minimum position size ---
-        if max_position < eff_min_position:
-            return None
-
-        # --- Hard filter: minimum absolute profit ---
-        # Use realistic net profit for the absolute profit check when available
-        effective_net = realistic_net if vwap_total_cost is not None else net_profit
-        effective_cost = realistic_cost if vwap_total_cost is not None else total_cost
-        absolute_profit = max_position * (effective_net / effective_cost) if effective_cost > 0 else 0
-        if absolute_profit < eff_min_absolute:
-            return None
-
         # Calculate risk
         resolution_date = None
         if markets and markets[0].end_date:
             resolution_date = markets[0].end_date
-
-        # --- Hard filter: maximum resolution timeframe ---
-        if resolution_date:
-            resolution_aware = make_aware(resolution_date)
-            days_until = (resolution_aware - utcnow()).total_seconds() / 86400.0
-            max_days = settings.MAX_RESOLUTION_MONTHS * 30
-            if days_until > max_days:
-                return None
-
-            # --- Hard filter: minimum annualized ROI ---
-            annualized_roi = self._calculate_annualized_roi(effective_roi, resolution_date)
-            if annualized_roi is not None and annualized_roi < settings.MIN_ANNUALIZED_ROI:
-                return None
 
         risk_score, risk_factors = self.calculate_risk_score(markets, resolution_date)
 
@@ -622,6 +745,7 @@ class BaseStrategy(ABC):
             roi_type=roi_type,
             risk_score=risk_score,
             risk_factors=risk_factors,
+            confidence=1.0 - risk_score,
             markets=market_dicts,
             event_id=event.id if event else None,
             event_slug=event.slug if event else None,

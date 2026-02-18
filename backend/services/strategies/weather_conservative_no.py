@@ -27,8 +27,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, weather_metadata
+from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, StrategyDecision, ExitDecision
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence
+from utils.signal_helpers import signal_payload, weather_metadata
 from services.weather.signal_engine import (
     compute_confidence,
     ensemble_bucket_probability,
@@ -55,6 +57,7 @@ class WeatherConservativeNoStrategy(BaseStrategy):
     mispricing_type = "news_information"
     source_key = "weather"
     worker_affinity = "weather"
+    subscriptions = ["weather_update"]
 
     DEFAULT_CONFIG = {
         "min_safe_distance_c": 2.5,   # min degrees C away from consensus to bet NO
@@ -358,50 +361,67 @@ class WeatherConservativeNoStrategy(BaseStrategy):
         )
 
     # ------------------------------------------------------------------
-    # evaluate()  (unified strategy interface)
+    # on_event()  (event-driven detection from weather worker)
     # ------------------------------------------------------------------
 
-    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
-        """Weather consensus evaluation with agreement and source gating."""
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type != "weather_update":
+            return []
+        intents = event.payload.get("intents") or []
+        if not intents:
+            return []
+        return self.detect_from_intents(intents, [], [])
+
+    # ------------------------------------------------------------------
+    # evaluate()  (composable pipeline)
+    # ------------------------------------------------------------------
+
+    scoring_weights = ScoringWeights()
+    sizing_config = SizingConfig()
+
+    _weather_agreement: float = 0.0
+    _weather_source_count: int = 0
+    _weather_source_spread_c: float = 0.0
+
+    def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         weather = weather_metadata(payload)
 
-        min_edge = to_float(params.get("min_edge_percent", 6.0), 6.0)
-        min_conf = to_confidence(params.get("min_confidence", 0.58), 0.58)
         min_agreement = to_confidence(params.get("min_model_agreement", 0.62), 0.62)
         min_source_count = max(1, int(to_float(params.get("min_source_count", 2), 2)))
         max_source_spread = max(0.0, to_float(params.get("max_source_spread_c", 4.0), 4.0))
         max_entry_price = max(0.05, min(0.98, to_float(params.get("max_entry_price", 0.8), 0.8)))
-        base_size = max(1.0, to_float(params.get("base_size_usd", 14.0), 14.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 90.0), 90.0))
 
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)
         agreement = to_confidence(weather.get("agreement", payload.get("model_agreement", 0.0)), 0.0)
         source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
         source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
 
-        checks = [
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
+        self._weather_agreement = agreement
+        self._weather_source_count = source_count
+        self._weather_source_spread_c = source_spread_c
+
+        return [
             DecisionCheck("agreement", "Model agreement", agreement >= min_agreement, score=agreement, detail=f"min={min_agreement:.2f}"),
             DecisionCheck("source_count", "Forecast source depth", source_count >= min_source_count, score=float(source_count), detail=f"min={min_source_count}"),
             DecisionCheck("source_spread", "Model spread ceiling (C)", source_spread_c <= max_source_spread, score=source_spread_c, detail=f"max={max_source_spread:.2f}"),
             DecisionCheck("entry_price", "Entry price ceiling", 0.0 < entry_price <= max_entry_price, score=entry_price, detail=f"max={max_entry_price:.2f}"),
         ]
 
-        score = (edge * 0.6) + (confidence * 30.0) + (agreement * 12.0) + (min(4, source_count) * 1.5) - (source_spread_c * 1.2)
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        return (
+            (edge * 0.6)
+            + (confidence * 30.0)
+            + (self._weather_agreement * 12.0)
+            + (min(4, self._weather_source_count) * 1.5)
+            - (self._weather_source_spread_c * 1.2)
+        )
 
-        if not all(c.passed for c in checks):
-            return StrategyDecision("skipped", "Weather filters not met", score=score, checks=checks)
-
-        spread_scale = max(0.55, 1.0 - min(0.4, source_spread_c / 10.0))
-        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.8 + agreement) * spread_scale
-        size = max(1.0, min(max_size, size))
-
-        return StrategyDecision("selected", "Weather signal selected", score=score, size_usd=size, checks=checks)
+    def compute_size(self, base_size: float, max_size: float, edge: float,
+                     confidence: float, risk_score: float, market_count: int) -> float:
+        spread_scale = max(0.55, 1.0 - min(0.4, self._weather_source_spread_c / 10.0))
+        size = base_size * (1.0 + (edge / 100.0)) * (0.75 + confidence) * (0.8 + self._weather_agreement) * spread_scale
+        return max(1.0, min(max_size, size))
 
     # ------------------------------------------------------------------
     # should_exit()  (weather markets resolve at fixed time)

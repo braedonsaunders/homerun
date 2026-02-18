@@ -31,14 +31,6 @@ fi
 NODE_VERSION=$(node -v)
 echo "Found Node.js $NODE_VERSION"
 
-# Create .env if it doesn't exist
-if [ ! -f .env ]; then
-    echo ""
-    echo "Creating .env file from template..."
-    cp .env.example .env
-    echo "Created .env - edit this file to configure settings"
-fi
-
 # Setup backend
 echo ""
 echo "Setting up backend..."

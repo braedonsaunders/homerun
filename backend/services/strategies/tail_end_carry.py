@@ -13,8 +13,10 @@ from typing import Any, Optional
 from config import settings
 from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
-from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, make_aware, utcnow
-from services.strategies._evaluate_helpers import to_float, to_confidence, signal_payload, clamp, days_to_resolution, selected_probability, live_move
+from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
+from services.data_events import DataEvent
+from utils.converters import to_float, to_confidence, clamp
+from utils.signal_helpers import signal_payload, days_to_resolution, selected_probability, live_move
 from utils.converters import safe_float
 
 
@@ -27,6 +29,29 @@ class TailEndCarryStrategy(BaseStrategy):
     description = "Near-expiry high-probability carry with liquidity and spread gates"
     mispricing_type = "within_market"
     requires_resolution_date = True
+    subscriptions = ["market_data_refresh"]
+
+    async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+        if event.event_type == "market_data_refresh":
+            return self.detect(event.events or [], event.markets or [], event.prices or {})
+        return []
+
+    pipeline_defaults = {
+        "min_edge_percent": 1.6,
+        "min_confidence": 0.35,
+        "max_risk_score": 0.78,
+        "base_size_usd": 14.0,
+        "max_size_usd": 90.0,
+    }
+
+    # Composable evaluate pipeline: score = edge*0.55 + conf*28 + entry*6 - risk*9 + time_bonus
+    scoring_weights = ScoringWeights(
+        edge_weight=0.55,
+        confidence_weight=28.0,
+        risk_penalty=9.0,
+    )
+    # Sizing uses adaptive policy -- override compute_size in evaluate
+    sizing_config = SizingConfig()
 
     default_config = {
         "min_probability": 0.88,
@@ -213,28 +238,19 @@ class TailEndCarryStrategy(BaseStrategy):
                 break
         return out
 
-    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
-        params = context.get("params") or {}
-        payload = signal_payload(signal)
+    # ------------------------------------------------------------------
+    # Composable evaluate pipeline overrides
+    # ------------------------------------------------------------------
 
-        min_edge = to_float(params.get("min_edge_percent", 1.6), 1.6)
-        min_conf = to_confidence(params.get("min_confidence", 0.35), 0.35)
-        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+    def custom_checks(self, signal: Any, context: dict, params: dict,
+                      payload: dict) -> list[DecisionCheck]:
+        """Tail carry: source, strategy type, entry band, resolution window checks."""
         min_entry = clamp(to_float(params.get("min_entry_price", 0.85), 0.85), 0.01, 0.99)
         max_entry = clamp(to_float(params.get("max_entry_price", 0.985), 0.985), min_entry, 0.999)
         min_days = max(0.0, to_float(params.get("min_days_to_resolution", 0.03), 0.03))
         max_days = max(min_days + 0.01, to_float(params.get("max_days_to_resolution", 7.0), 7.0))
 
-        base_size = max(1.0, to_float(params.get("base_size_usd", 14.0), 14.0))
-        max_size = max(base_size, to_float(params.get("max_size_usd", 90.0), 90.0))
-        sizing_policy = str(params.get("sizing_policy", "adaptive") or "adaptive")
-
         source = str(getattr(signal, "source", "") or "").strip().lower()
-        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
-        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
-        liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
-        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
-
         strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
         strategy_ok = strategy_type == "tail_end_carry"
 
@@ -247,13 +263,17 @@ class TailEndCarryStrategy(BaseStrategy):
         dtr = days_to_resolution(payload)
         days_ok = dtr is not None and min_days <= dtr <= max_days
 
-        checks = [
+        # Stash for compute_score / evaluate
+        payload["_entry_price"] = entry_price
+        payload["_dtr"] = dtr
+        payload["_max_days"] = max_days
+        payload["_strategy_type"] = strategy_type
+
+        return [
             DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
             DecisionCheck("strategy", "Tail carry strategy type", strategy_ok, detail="strategy=tail_end_carry"),
-            DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge:.2f}"),
-            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf, score=confidence, detail=f"min={min_conf:.2f}"),
-            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk, score=risk_score, detail=f"max={max_risk:.2f}"),
-            DecisionCheck("entry", "Entry probability band", min_entry <= entry_price <= max_entry, score=entry_price, detail=f"[{min_entry:.3f}, {max_entry:.3f}]"),
+            DecisionCheck("entry", "Entry probability band", min_entry <= entry_price <= max_entry,
+                          score=entry_price, detail=f"[{min_entry:.3f}, {max_entry:.3f}]"),
             DecisionCheck(
                 "resolution_window",
                 "Resolution window",
@@ -263,9 +283,54 @@ class TailEndCarryStrategy(BaseStrategy):
             ),
         ]
 
+    def compute_score(self, edge: float, confidence: float, risk_score: float,
+                      market_count: int, payload: dict) -> float:
+        """Tail carry: edge*0.55 + conf*28 + entry*6 - risk*9 + time_bonus."""
+        entry_price = float(payload.get("_entry_price", 0) or 0)
+        dtr = payload.get("_dtr")
+        max_days = float(payload.get("_max_days", 7.0) or 7.0)
+
         score = (edge * 0.55) + (confidence * 28.0) + (entry_price * 6.0) - (risk_score * 9.0)
         if dtr is not None:
             score += max(0.0, (max_days - dtr) * 0.4)
+        return score
+
+    def evaluate(self, signal: Any, context: dict) -> StrategyDecision:
+        """Tail carry: composable pipeline with adaptive sizing and custom payload."""
+        params = context.get("params") or {}
+        payload = signal_payload(signal)
+
+        min_edge = to_float(params.get("min_edge_percent", 1.6), 1.6)
+        min_conf = to_confidence(params.get("min_confidence", 0.35), 0.35)
+        max_risk = to_confidence(params.get("max_risk_score", 0.78), 0.78)
+        base_size = max(1.0, to_float(params.get("base_size_usd", 14.0), 14.0))
+        max_size = max(base_size, to_float(params.get("max_size_usd", 90.0), 90.0))
+        sizing_policy = str(params.get("sizing_policy", "adaptive") or "adaptive")
+
+        edge = max(0.0, to_float(getattr(signal, "edge_percent", 0.0), 0.0))
+        confidence = to_confidence(getattr(signal, "confidence", 0.0), 0.0)
+        liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
+        risk_score = to_confidence(payload.get("risk_score", 0.5), 0.5)
+        market_count = len(payload.get("markets") or [])
+
+        # Standard checks
+        checks = [
+            DecisionCheck("edge", "Edge threshold", edge >= min_edge,
+                          score=edge, detail=f"min={min_edge:.2f}"),
+            DecisionCheck("confidence", "Confidence threshold", confidence >= min_conf,
+                          score=confidence, detail=f"min={min_conf:.2f}"),
+            DecisionCheck("risk", "Risk ceiling", risk_score <= max_risk,
+                          score=risk_score, detail=f"max={max_risk:.2f}"),
+        ]
+
+        # Strategy-specific checks (also stashes entry_price/dtr/etc in payload)
+        checks.extend(self.custom_checks(signal, context, params, payload))
+
+        score = self.compute_score(edge, confidence, risk_score, market_count, payload)
+
+        entry_price = float(payload.get("_entry_price", 0) or 0)
+        dtr = payload.get("_dtr")
+        strategy_type = str(payload.get("_strategy_type", "") or "")
 
         if not all(c.passed for c in checks):
             return StrategyDecision(

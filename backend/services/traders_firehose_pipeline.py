@@ -23,7 +23,7 @@ from models.database import (
 )
 from services.market_tradability import get_market_tradability_map
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
-from services.strategy_loader import StrategyLoader as PluginLoader, StrategyValidationError as PluginValidationError
+from services.strategy_loader import StrategyLoader, StrategyValidationError
 from services.smart_wallet_pool import _looks_like_crypto_market, smart_wallet_pool
 from services.strategies.traders_confluence import TradersConfluenceStrategy
 from utils.logger import get_logger
@@ -150,15 +150,15 @@ async def _resolve_traders_strategy(session: AsyncSession) -> Optional[Any]:
             return _strategy_cache_instance
 
         config = _strip_internal_schema(row.config)
-        loader = PluginLoader()
+        loader = StrategyLoader()
         try:
-            loaded = loader.load_plugin(
+            loaded = loader.load(
                 slug=str(row.slug or _STRATEGY_SLUG),
                 source_code=str(row.source_code or ""),
                 config=config,
             )
             instance = loaded.instance
-        except PluginValidationError as exc:
+        except StrategyValidationError as exc:
             logger.error("Failed to load traders strategy plugin source; using fallback: %s", exc)
             instance = TradersConfluenceStrategy()
         except Exception as exc:

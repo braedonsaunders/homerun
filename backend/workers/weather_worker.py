@@ -20,7 +20,9 @@ if os.getcwd() != _BACKEND:
 
 from config import settings
 from models.database import AsyncSessionLocal, init_database
-from services.signal_bus import emit_weather_intent_signals
+from services.data_events import DataEvent
+from services.event_dispatcher import event_dispatcher
+from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.weather.workflow_orchestrator import weather_workflow_orchestrator
 from services.weather import shared_state
 from services.worker_state import write_worker_snapshot
@@ -121,15 +123,40 @@ async def _run_loop() -> None:
                 result = await weather_workflow_orchestrator.run_cycle(session)
                 await shared_state.clear_weather_scan_request(session)
                 pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
-                emitted = await emit_weather_intent_signals(
-                    session,
-                    pending_rows,
-                    max_age_minutes=int(
-                        max(
-                            1,
-                            wf_settings.get("orchestrator_max_age_minutes", 240) or 240,
-                        )
-                    ),
+
+            # Serialize intents to dicts for strategy consumption
+            intent_dicts = []
+            for row in pending_rows:
+                intent_dict = {
+                    "id": row.id,
+                    "market_id": row.market_id,
+                    "market_question": row.market_question,
+                    "direction": row.direction,
+                    "entry_price": row.entry_price,
+                    "take_profit_price": row.take_profit_price,
+                    "stop_loss_pct": row.stop_loss_pct,
+                    "model_probability": row.model_probability,
+                    "edge_percent": row.edge_percent,
+                    "confidence": row.confidence,
+                    "model_agreement": row.model_agreement,
+                    "suggested_size_usd": row.suggested_size_usd,
+                    "status": row.status,
+                    "created_at": row.created_at,
+                }
+                metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+                intent_dict.update(metadata)
+                intent_dicts.append(intent_dict)
+
+            weather_event = DataEvent(
+                event_type="weather_update",
+                source="weather_worker",
+                timestamp=datetime.now(timezone.utc),
+                payload={"intents": intent_dicts},
+            )
+            opportunities = await event_dispatcher.dispatch(weather_event)
+            async with AsyncSessionLocal() as session:
+                emitted = await bridge_opportunities_to_signals(
+                    session, opportunities, source="weather",
                 )
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:

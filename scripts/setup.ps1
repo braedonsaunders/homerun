@@ -38,14 +38,6 @@ try {
     exit 1
 }
 
-# Create .env if missing
-if (-not (Test-Path ".env")) {
-    Write-Host ""
-    Write-Host "Creating .env file from template..."
-    Copy-Item ".env.example" ".env"
-    Write-Host "Created .env - edit this file to configure settings"
-}
-
 # Setup backend
 Write-Host ""
 Write-Host "Setting up backend..." -ForegroundColor Cyan

@@ -1094,16 +1094,33 @@ class FeedManager:
 
     def _on_price_change(self, token_id: str, old_mid: float, new_mid: float) -> None:
         """Called by PriceCache when a significant price change occurs."""
-        if not self._reactive_scan_callback:
-            return
-        self._changed_tokens.add(token_id)
-        # Schedule a debounced trigger on the event loop
+        if self._reactive_scan_callback:
+            self._changed_tokens.add(token_id)
+            # Schedule a debounced trigger on the event loop
+            try:
+                loop = asyncio.get_running_loop()
+                if self._debounce_task is None or self._debounce_task.done():
+                    self._debounce_task = loop.create_task(self._debounced_trigger())
+            except RuntimeError:
+                pass  # no running event loop (e.g. during shutdown)
+
+        # Dispatch DataEvent for event-driven strategies
         try:
+            from services.data_events import DataEvent
+            from services.event_dispatcher import event_dispatcher
+            from utils.utcnow import utcnow
+            event = DataEvent(
+                event_type="price_change",
+                source="polymarket_ws",
+                timestamp=utcnow(),
+                token_id=token_id,
+                old_price=old_mid,
+                new_price=new_mid,
+            )
             loop = asyncio.get_running_loop()
-            if self._debounce_task is None or self._debounce_task.done():
-                self._debounce_task = loop.create_task(self._debounced_trigger())
+            loop.create_task(event_dispatcher.dispatch(event))
         except RuntimeError:
-            pass  # no running event loop (e.g. during shutdown)
+            pass  # No running event loop
 
     async def _debounced_trigger(self) -> None:
         """Wait for the debounce window, then fire the reactive scan callback."""

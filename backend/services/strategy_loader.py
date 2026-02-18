@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from utils.logger import get_logger
+from services.event_dispatcher import event_dispatcher
 
 logger = get_logger(__name__)
 
@@ -144,6 +145,8 @@ ALLOWED_IMPORT_PREFIXES = {
     "services.ai",
     "services.strategy_sdk",
     "services.weather",
+    "services.data_events",
+    "services.event_dispatcher",
     "config",
     "utils",
     # Standard library (safe subset)
@@ -522,13 +525,6 @@ class StrategyLoader:
             self._refresh_lock = asyncio.Lock()
         return self._refresh_lock
 
-    # ── Compatibility shims (ease migration from plugin_loader) ──
-
-    @property
-    def loaded_plugins(self) -> dict[str, LoadedStrategy]:
-        """Backward-compat alias for scanner code that checks ``loaded_plugins``."""
-        return dict(self._loaded)
-
     # ── Load / Unload ────────────────────────────────────────
 
     def load(
@@ -634,6 +630,13 @@ class StrategyLoader:
             )
             self._loaded[slug] = loaded
 
+            # Register event subscriptions
+            subs = getattr(instance, "subscriptions", [])
+            if subs:
+                event_dispatcher.unsubscribe_all(slug)  # Clear stale subscriptions
+                for event_type in subs:
+                    event_dispatcher.subscribe(slug, event_type, instance.on_event)
+
             caps = validation.get("capabilities") or {}
             cap_parts = [k.replace("has_", "") for k, v in caps.items() if v]
             logger.info(
@@ -657,6 +660,7 @@ class StrategyLoader:
 
     def unload(self, slug: str) -> None:
         """Unload a strategy by slug."""
+        event_dispatcher.unsubscribe_all(slug)
         loaded = self._loaded.pop(slug, None)
         if loaded:
             # Clean up module from sys.modules
@@ -819,10 +823,6 @@ class StrategyLoader:
         """Return the LoadedStrategy for *slug*, or None."""
         return self._loaded.get(slug)
 
-    def get_plugin(self, slug: str) -> Optional[LoadedStrategy]:
-        """Backward-compat alias for ``get_strategy()``."""
-        return self._loaded.get(slug)
-
     def get_instance(self, slug: str) -> Any:
         """Return the BaseStrategy instance for *slug*, or None."""
         loaded = self._loaded.get(slug)
@@ -831,9 +831,6 @@ class StrategyLoader:
     def get_all_instances(self) -> list:
         """Return all loaded strategy instances (e.g. for the scanner)."""
         return [ls.instance for ls in self._loaded.values()]
-
-    # Alias used by scanner
-    get_all_strategy_instances = get_all_instances
 
     def is_loaded(self, slug: str) -> bool:
         """Check whether a strategy is currently loaded."""
@@ -924,57 +921,12 @@ class StrategyLoader:
         ]
 
 
-    async def reload_strategy(
-        self,
-        strategy_key: str,
-        *,
-        session: "AsyncSession",
-    ) -> dict:
-        """Reload a single strategy from DB (compat with old strategy_db_loader)."""
-        return await self.reload_from_db(strategy_key, session)
-
-    # ── Compat shims for plugin_loader API ─────────────────────
-
-    def load_plugin(
-        self,
-        slug: str,
-        source_code: str,
-        config: Optional[dict] = None,
-    ) -> LoadedStrategy:
-        """Backward-compat alias for ``load()``."""
-        return self.load(slug, source_code, config)
-
-    def unload_plugin(self, slug: str) -> bool:
-        """Backward-compat alias for ``unload()``."""
-        was_loaded = slug in self._loaded
-        self.unload(slug)
-        return was_loaded
-
-    def reload_plugin(
-        self,
-        slug: str,
-        source_code: str,
-        config: Optional[dict] = None,
-    ) -> LoadedStrategy:
-        """Backward-compat alias for ``load()``."""
-        return self.load(slug, source_code, config)
-
 
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
 strategy_loader = StrategyLoader()
-
-# Backward-compat aliases so existing imports keep working during migration.
-# ``from services.strategy_loader import plugin_loader`` etc.
-plugin_loader = strategy_loader
-
-# Re-export exception as PluginValidationError for backward compat
-PluginValidationError = StrategyValidationError
-
-# Re-export the template under the old name
-PLUGIN_TEMPLATE = STRATEGY_TEMPLATE
 
 
 # ---------------------------------------------------------------------------

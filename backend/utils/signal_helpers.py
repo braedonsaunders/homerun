@@ -1,42 +1,19 @@
 """Shared helpers for strategy evaluate() and should_exit() methods.
 
-These utilities are used across all unified strategies to parse signal
-data, normalize values, and compute position sizes.
-
-Generic converters (to_float, clamp, to_confidence) are delegated to
-:mod:`utils.converters` and re-exported here for backward compatibility.
+These utilities parse signal data, extract nested payloads, and compute
+time-based metrics used across all unified strategies.
 """
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-from utils.converters import (
-    clamp,  # noqa: F401 – re-exported
-    safe_float,
-    to_confidence,  # noqa: F401 – re-exported
-)
+from utils.converters import safe_float
 
 
-def to_float(value: Any, default: float = 0.0) -> float:
-    """Parse any value to float, returning *default* on failure."""
+def _to_float(value: Any, default: float = 0.0) -> float:
     result = safe_float(value, default=default)
     return default if result is None else result
-
-
-def to_bool(value: Any, default: bool = False) -> bool:
-    """Parse any value to bool."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
 
 
 def signal_payload(signal: Any) -> dict[str, Any]:
@@ -72,7 +49,7 @@ def selected_probability(
     signal: Any, payload: dict[str, Any], direction: str,
 ) -> float | None:
     """Extract the best probability estimate for the selected side."""
-    entry = to_float(getattr(signal, "entry_price", None), -1.0)
+    entry = _to_float(getattr(signal, "entry_price", None), -1.0)
     if 0.0 < entry < 1.0:
         return entry
 
@@ -80,15 +57,15 @@ def selected_probability(
         payload.get("positions_to_take"), list,
     ) else []
     if positions:
-        candidate = to_float((positions[0] or {}).get("price"), -1.0)
+        candidate = _to_float((positions[0] or {}).get("price"), -1.0)
         if 0.0 < candidate < 1.0:
             return candidate
 
-    model_prob = to_float(payload.get("model_probability"), -1.0)
+    model_prob = _to_float(payload.get("model_probability"), -1.0)
     if 0.0 <= model_prob <= 1.0:
         return model_prob
 
-    edge = to_float(getattr(signal, "edge_percent", 0.0), 0.0)
+    edge = _to_float(getattr(signal, "edge_percent", 0.0), 0.0)
     if 0.0 < entry < 1.0:
         implied = entry + (edge / 100.0)
         if 0.0 <= implied <= 1.0:
@@ -108,7 +85,7 @@ def live_move(context: dict[str, Any], key: str) -> float | None:
     raw = move.get("percent")
     if raw is None:
         return None
-    return to_float(raw, 0.0)
+    return _to_float(raw, 0.0)
 
 
 def weather_metadata(payload: dict[str, Any]) -> dict[str, Any]:

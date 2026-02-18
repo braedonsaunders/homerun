@@ -23,6 +23,10 @@ _LEGACY_WRAPPER_MARKERS = (
     "delegates runtime behavior to the shipped strategy class",
     "as _SeedStrategy",
 )
+_LEGACY_SOURCE_MARKERS = (
+    "StrategyType",
+    "BaseTraderStrategy",
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,14 @@ def _seed_source_code(seed: SystemOpportunityStrategySeed) -> str:
     # relative imports must be rewritten to absolute imports.
     source = _RELATIVE_IMPORT_RE.sub(r"\1from services.strategies.\2 import ", source)
     return source
+
+
+def _is_legacy_system_source(source_code: str) -> bool:
+    if not source_code.strip():
+        return True
+    if any(marker in source_code for marker in _LEGACY_WRAPPER_MARKERS):
+        return True
+    return any(marker in source_code for marker in _LEGACY_SOURCE_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +515,21 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
             inserted += 1
             continue
 
+        if bool(current.is_system) and _is_legacy_system_source(str(current.source_code or "")):
+            current.source_key = row["source_key"]
+            current.name = row["name"]
+            current.description = row["description"]
+            current.source_code = row["source_code"]
+            current.class_name = row["class_name"]
+            current.config_schema = row["config_schema"]
+            current.is_system = True
+            current.status = "unloaded"
+            current.error_message = None
+            current.sort_order = row["sort_order"]
+            current.updated_at = row["updated_at"]
+            rewritten += 1
+            continue
+
         # Seed-once: if the strategy already exists in the DB, DO NOT overwrite.
         # User may have customized source_code, config, or description.
         # A separate "reset to factory" API endpoint can restore the original.
@@ -571,19 +598,10 @@ def default_strategy_by_source() -> dict[str, str]:
     return defaults
 
 
-# Backward-compat alias — old callers that used `build_system_strategy_rows`
-build_system_strategy_rows = build_system_opportunity_strategy_rows
-
-
 async def ensure_all_strategies_seeded(session: AsyncSession) -> dict:
     """Seed all strategies from the single unified catalog."""
     result = await ensure_system_opportunity_strategies_seeded(session)
     return {"seeded": result}
-
-
-async def ensure_system_trader_strategies_seeded(session: AsyncSession) -> int:
-    """No-op — everything is seeded from the unified catalog."""
-    return 0
 
 
 async def reset_strategy_to_factory(session: AsyncSession, slug: str) -> dict:
