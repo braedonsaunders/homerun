@@ -52,7 +52,7 @@ export function useDisplayedOpportunityRefresh({
 
       if (opportunitiesView === 'traders') {
         invalidateQueryKeys(queryClient, [
-          ['tracked-trader-opportunities'],
+          ['opportunities', 'traders'],
           ['workers-status'],
         ])
         return

@@ -1,7 +1,7 @@
 """Tracked-traders worker: smart pool + confluence lifecycle owner.
 
 Moves smart wallet pool and confluence loops out of the API process.
-Emits normalized executable intents based on trader opportunity settings.
+Builds strategy-owned trader opportunities and writes them to shared snapshot state.
 """
 
 from __future__ import annotations
@@ -23,14 +23,15 @@ if os.getcwd() != _BACKEND:
 from utils.utcnow import utcnow
 from models.database import AsyncSessionLocal, AppSettings, init_database
 from services.insider_detector import insider_detector
-from services.data_events import DataEvent
-from services.event_dispatcher import event_dispatcher
 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
-from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.market_cache import market_cache_service
 from services.smart_wallet_pool import smart_wallet_pool
-from services.traders_firehose_pipeline import apply_traders_firehose_strategy
+from services import shared_state
+from services.traders_firehose_pipeline import (
+    apply_traders_firehose_strategy,
+    build_strategy_trader_opportunities_from_rows,
+)
 from services.wallet_intelligence import wallet_intelligence
 from services.worker_state import (
     clear_worker_run_request,
@@ -52,15 +53,6 @@ ACTIVITY_RECONCILE_INTERVAL = timedelta(minutes=2)
 POOL_RECOMPUTE_INTERVAL = timedelta(minutes=1)
 FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=20)
 INSIDER_RESCORING_INTERVAL = timedelta(minutes=10)
-# Legacy values are kept for compatibility so worker telemetry reflects
-# canonical UI filters without introducing separate insider channels.
-TRADER_OPP_SOURCE_MAP = {
-    "all": "all",
-    "confluence": "all",
-    "insider": "pool",
-    "tracked": "tracked",
-    "pool": "pool",
-}
 POOL_RECOMPUTE_MODE_MAP = {"quality_only": "quality_only", "balanced": "balanced"}
 
 
@@ -82,7 +74,6 @@ def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> 
 
 async def _trader_opportunity_intent_settings() -> dict[str, Any]:
     config = {
-        "source_filter": "all",
         "confluence_limit": 50,
     }
     try:
@@ -91,8 +82,6 @@ async def _trader_opportunity_intent_settings() -> dict[str, Any]:
             if not row:
                 return config
 
-            source_filter = str(row.discovery_trader_opps_source_filter or "all").strip().lower()
-            config["source_filter"] = TRADER_OPP_SOURCE_MAP.get(source_filter, "all")
             config["confluence_limit"] = _clamp_int(
                 row.discovery_trader_opps_confluence_limit,
                 default=50,
@@ -330,6 +319,18 @@ async def _run_loop() -> None:
 
         if (not enabled or paused) and not requested:
             async with AsyncSessionLocal() as session:
+                await shared_state.write_traders_snapshot(
+                    session,
+                    [],
+                    {
+                        "running": True,
+                        "enabled": enabled and not paused,
+                        "interval_seconds": interval,
+                        "last_scan": utcnow().isoformat(),
+                        "current_activity": "Paused" if paused else "Disabled",
+                        "strategies": [],
+                    },
+                )
                 await write_worker_snapshot(
                     session,
                     worker_name,
@@ -452,32 +453,54 @@ async def _run_loop() -> None:
             confluence_limit = int(trader_intent_settings["confluence_limit"])
 
             confluence_scan_limit = max(250, confluence_limit * 6)
-            opportunities = await smart_wallet_pool.get_tracked_trader_firehose_signals(
+            firehose_rows = await smart_wallet_pool.get_tracked_trader_firehose_signals(
                 limit=confluence_scan_limit,
-                min_tier="WATCH",
             )
-            confluence_scanned = len(opportunities)
+            confluence_scanned = len(firehose_rows)
 
-            executable_confluence = await apply_traders_firehose_strategy(
-                opportunities,
+            filtered_rows = await apply_traders_firehose_strategy(
+                firehose_rows,
                 include_filtered=False,
+                limit=confluence_scan_limit,
+            )
+            confluence_count = len(filtered_rows)
+
+            opportunities = await build_strategy_trader_opportunities_from_rows(
+                filtered_rows,
                 limit=confluence_limit,
             )
-
-            confluence_count = len(executable_confluence)
-
-            trader_event = DataEvent(
-                event_type="trader_activity",
-                source="tracked_traders_worker",
-                timestamp=utcnow(),
-                payload={"signals": executable_confluence},
+            deduped_by_stable_id: dict[str, Any] = {}
+            for opp in opportunities:
+                stable_id = str(getattr(opp, "stable_id", "") or getattr(opp, "id", "")).strip()
+                if not stable_id:
+                    continue
+                existing = deduped_by_stable_id.get(stable_id)
+                if existing is None or float(getattr(opp, "confidence", 0.0) or 0.0) > float(
+                    getattr(existing, "confidence", 0.0) or 0.0
+                ):
+                    deduped_by_stable_id[stable_id] = opp
+            deduped_opportunities = list(deduped_by_stable_id.values())
+            strategies_used = sorted(
+                {
+                    str(getattr(opp, "strategy", "") or "").strip()
+                    for opp in deduped_opportunities
+                    if str(getattr(opp, "strategy", "") or "").strip()
+                }
             )
-            opportunities = await event_dispatcher.dispatch(trader_event)
+            emitted = len(deduped_opportunities)
+
             async with AsyncSessionLocal() as session:
-                emitted = await bridge_opportunities_to_signals(
+                await shared_state.write_traders_snapshot(
                     session,
-                    opportunities,
-                    source="traders",
+                    deduped_opportunities,
+                    {
+                        "running": True,
+                        "enabled": True,
+                        "interval_seconds": interval,
+                        "last_scan": cycle_started.isoformat(),
+                        "current_activity": "Tracked traders strategy cycle complete.",
+                        "strategies": strategies_used,
+                    },
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)
@@ -502,7 +525,7 @@ async def _run_loop() -> None:
                         "pool_size": int(pool_stats.get("pool_size") or 0),
                         "active_signals": confluence_count,
                         "signals_emitted_last_run": int(emitted),
-                        "confluence_high_extreme": confluence_count,
+                        "confluence_high_extreme": int(emitted),
                         "confluence_scanned": int(confluence_scanned),
                         "confluence_executable": int(confluence_count),
                         "insider_wallets_flagged": int(insider_flagged),
@@ -512,7 +535,8 @@ async def _run_loop() -> None:
                 )
 
             logger.info(
-                "Tracked-traders cycle complete: signals=%s emitted=%s",
+                "Tracked-traders cycle complete: raw=%s filtered=%s opportunities=%s",
+                confluence_scanned,
                 confluence_count,
                 emitted,
             )

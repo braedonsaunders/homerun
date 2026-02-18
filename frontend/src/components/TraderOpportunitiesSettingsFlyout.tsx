@@ -17,9 +17,6 @@ import { Label } from './ui/label'
 import StrategyConfigSections from './StrategyConfigSections'
 
 export type TraderOpportunitiesSettingsForm = {
-  source_filter: 'all' | 'tracked' | 'pool'
-  min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
-  side_filter: 'all' | 'BUY' | 'SELL'
   confluence_limit: number
   individual_trade_limit: number
   individual_trade_min_confidence: number
@@ -90,9 +87,6 @@ export default function TraderOpportunitiesSettingsFlyout({
 
   const handleSave = () => {
     onSave({
-      source_filter: form.source_filter,
-      min_tier: form.min_tier,
-      side_filter: form.side_filter,
       confluence_limit: Math.round(clamp(form.confluence_limit, 1, 200)),
       individual_trade_limit: Math.round(clamp(form.individual_trade_limit, 1, 500)),
       individual_trade_min_confidence: clamp(form.individual_trade_min_confidence, 0, 1),
@@ -150,8 +144,8 @@ export default function TraderOpportunitiesSettingsFlyout({
 
         <div className="p-3 space-y-3 pb-6">
           <p className="text-[11px] text-muted-foreground/70">
-            These settings control which signals are displayed in the Traders opportunities feed.
-            Firehose eligibility filters are strategy-owned in the Traders Confluence Python strategy.
+            Traders opportunities are fully strategy-owned. Firehose eligibility filters are defined
+            in the Traders Confluence strategy config below.
             Auto-trader and copy trading settings are configured in the Auto Trader flyout.
           </p>
 
@@ -159,63 +153,9 @@ export default function TraderOpportunitiesSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-1.5">
               <Filter className="w-3.5 h-3.5 text-orange-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Signal Filters</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Display Limits</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <Label className="text-[11px] text-muted-foreground leading-tight">Source Filter</Label>
-                <select
-                  value={form.source_filter}
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      source_filter: e.target.value as TraderOpportunitiesSettingsForm['source_filter'],
-                    }))
-                  }
-                  className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
-                >
-                  <option value="all">All sources</option>
-                  <option value="tracked">Tracked Traders (Individuals + Groups)</option>
-                  <option value="pool">Pool Traders</option>
-                </select>
-              </div>
-
-              <div>
-                <Label className="text-[11px] text-muted-foreground leading-tight">Min Confluence Tier</Label>
-                <select
-                  value={form.min_tier}
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      min_tier: e.target.value as TraderOpportunitiesSettingsForm['min_tier'],
-                    }))
-                  }
-                  className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
-                >
-                  <option value="WATCH">Watch (5+ wallets)</option>
-                  <option value="HIGH">High (10+ wallets)</option>
-                  <option value="EXTREME">Extreme (15+ wallets)</option>
-                </select>
-              </div>
-
-              <div>
-                <Label className="text-[11px] text-muted-foreground leading-tight">Side Filter</Label>
-                <select
-                  value={form.side_filter}
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      side_filter: e.target.value as TraderOpportunitiesSettingsForm['side_filter'],
-                    }))
-                  }
-                  className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
-                >
-                  <option value="all">All sides</option>
-                  <option value="BUY">Buy clusters</option>
-                  <option value="SELL">Sell clusters</option>
-                </select>
-              </div>
-
               <NumericField
                 label="Confluence Fetch Limit"
                 help="1-200"

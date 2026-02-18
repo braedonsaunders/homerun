@@ -333,7 +333,7 @@ export default function WalletTracker({
     queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
     queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
     queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
-    queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+    queryClient.invalidateQueries({ queryKey: ['opportunities', 'traders'] })
     queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
   }
 

@@ -58,6 +58,21 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
+def _normalize_strategy_config_for_source(source_key: str, config: Optional[dict]) -> dict:
+    normalized_source_key = str(source_key or "scanner").strip().lower()
+    payload = dict(config or {})
+    if normalized_source_key == "traders":
+        return StrategySDK.validate_trader_filter_config(payload)
+    return payload
+
+
+def _default_config_schema_for_source(source_key: str) -> dict:
+    normalized_source_key = str(source_key or "scanner").strip().lower()
+    if normalized_source_key == "traders":
+        return StrategySDK.trader_filter_config_schema()
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Pydantic request / response models
 # ---------------------------------------------------------------------------
@@ -1292,6 +1307,8 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
     """Create a new strategy."""
     slug = _validate_slug(req.slug)
     source_key = str(req.source_key or "scanner").strip().lower()
+    normalized_config = _normalize_strategy_config_for_source(source_key, req.config)
+    normalized_schema = req.config_schema or _default_config_schema_for_source(source_key)
 
     # Validate source code
     validation = validate_strategy_source(req.source_code)
@@ -1314,12 +1331,12 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=409, detail=f"A strategy with slug '{slug}' already exists.")
 
-        if not StrategySDK.write_strategy_config_file(slug, req.config or {}):
+        if not StrategySDK.write_strategy_config_file(slug, normalized_config):
             raise HTTPException(status_code=500, detail=f"Failed to persist strategy config file for '{slug}'.")
 
         if req.enabled:
             try:
-                strategy_loader.load(slug, req.source_code, req.config or None)
+                strategy_loader.load(slug, req.source_code, normalized_config or None)
                 status = "loaded"
             except StrategyValidationError as e:
                 status = "error"
@@ -1337,8 +1354,8 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
             enabled=req.enabled,
             status=status,
             error_message=error_message,
-            config=req.config or {},
-            config_schema=req.config_schema or {},
+            config=normalized_config,
+            config_schema=normalized_schema,
             aliases=[],
             version=1,
             sort_order=0,
@@ -1372,6 +1389,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
         original_slug = row.slug
         code_changed = False
         slug_changed = False
+        next_source_key = str(req.source_key or row.source_key or "scanner").strip().lower()
 
         if req.slug is not None:
             next_slug = _validate_slug(req.slug)
@@ -1404,13 +1422,20 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
             code_changed = True
 
         if req.config is not None:
-            row.config = req.config
+            row.config = _normalize_strategy_config_for_source(next_source_key, req.config)
             code_changed = True
         if req.config_schema is not None:
             row.config_schema = req.config_schema
 
         if req.source_key is not None:
-            row.source_key = str(req.source_key or "scanner").strip().lower()
+            row.source_key = next_source_key
+            if req.config is None:
+                normalized_existing_config = _normalize_strategy_config_for_source(next_source_key, row.config)
+                if normalized_existing_config != (row.config or {}):
+                    row.config = normalized_existing_config
+                    code_changed = True
+            if not row.config_schema:
+                row.config_schema = _default_config_schema_for_source(next_source_key)
         if req.name is not None:
             row.name = req.name
         if req.description is not None:

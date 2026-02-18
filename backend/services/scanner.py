@@ -1878,19 +1878,60 @@ class ArbitrageScanner:
             print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
         return deduped
 
+    @staticmethod
+    def _coerce_cap_value(raw_value: object) -> Optional[int]:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, bool):
+            return None
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _strategy_cap_from_instance(instance: object, fallback: int) -> int:
+        if instance is None:
+            return fallback
+
+        config = getattr(instance, "config", None)
+        candidates = []
+        if isinstance(config, dict):
+            candidates.append(config.get("max_opportunities_per_strategy"))
+            candidates.append(config.get("max_opportunities"))
+        candidates.append(getattr(instance, "max_opportunities_per_strategy", None))
+        candidates.append(getattr(instance, "max_opportunities", None))
+
+        for candidate in candidates:
+            cap_value = ArbitrageScanner._coerce_cap_value(candidate)
+            if cap_value is not None:
+                return cap_value
+        return fallback
+
+    def _strategy_cap_for_key(self, strategy_key: str, fallback: int) -> int:
+        key = str(strategy_key or "").strip().lower()
+        if not key:
+            return fallback
+        return self._strategy_cap_from_instance(strategy_loader.get_instance(key), fallback)
+
     def _apply_opportunity_caps(self, opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
         """Limit pool size globally and per strategy to prevent strategy flood."""
         total_cap = int(getattr(settings, "SCANNER_MAX_OPPORTUNITIES_TOTAL", 0) or 0)
         per_strategy_cap = int(getattr(settings, "SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY", 0) or 0)
-        if total_cap <= 0 and per_strategy_cap <= 0:
-            return opportunities
-
         kept: list[ArbitrageOpportunity] = []
         by_strategy: dict[str, int] = {}
+        resolved_caps: dict[str, int] = {}
 
         for opp in opportunities:
             strategy = str(getattr(opp, "strategy", "") or "unknown")
-            if per_strategy_cap > 0 and by_strategy.get(strategy, 0) >= per_strategy_cap:
+            strategy_cap = resolved_caps.get(strategy)
+            if strategy_cap is None:
+                strategy_cap = self._strategy_cap_for_key(strategy, per_strategy_cap)
+                resolved_caps[strategy] = strategy_cap
+            if strategy_cap > 0 and by_strategy.get(strategy, 0) >= strategy_cap:
                 continue
             by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
             kept.append(opp)

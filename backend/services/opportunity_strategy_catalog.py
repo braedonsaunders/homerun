@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import Strategy, StrategyTombstone
+from services.strategy_sdk import StrategySDK
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -570,7 +571,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         config_schema={
             "param_fields": [
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
                 {
                     "key": "min_confluence_strength",
                     "label": "Min Confluence Strength",
@@ -578,27 +578,10 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "min": 0,
                     "max": 1,
                 },
-                {
-                    "key": "min_tier",
-                    "label": "Min Tier",
-                    "type": "enum",
-                    "options": ["low", "medium", "high", "extreme"],
-                },
-                {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1},
-                {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
-                {"key": "firehose_require_tradable_market", "label": "Require Tradable Market", "type": "boolean"},
-                {"key": "firehose_exclude_crypto_markets", "label": "Exclude Crypto Markets", "type": "boolean"},
-                {"key": "firehose_require_qualified_source", "label": "Require Qualified Source", "type": "boolean"},
-                {
-                    "key": "firehose_max_age_minutes",
-                    "label": "Firehose Max Age (min)",
-                    "type": "integer",
-                    "min": 1,
-                    "max": 1440,
-                },
                 {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
                 {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
+                *StrategySDK.trader_filter_config_schema().get("param_fields", []),
             ]
         },
     ),

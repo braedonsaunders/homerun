@@ -40,6 +40,56 @@ class StrategySDK:
     """
 
     _CONFIG_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{1,48}[a-z0-9]$")
+    TRADER_TIER_CANONICAL = ("low", "medium", "high", "extreme")
+    TRADER_SIDE_CANONICAL = ("all", "buy", "sell")
+    TRADER_SOURCE_SCOPE_CANONICAL = ("all", "tracked", "pool")
+    TRADER_FILTER_DEFAULTS: dict[str, Any] = {
+        "min_confidence": 0.45,
+        "min_tier": "high",
+        "min_wallet_count": 2,
+        "max_entry_price": 0.85,
+        "firehose_require_tradable_market": True,
+        "firehose_exclude_crypto_markets": True,
+        "firehose_require_qualified_source": True,
+        "firehose_max_age_minutes": 180,
+        "firehose_source_scope": "all",
+        "firehose_side_filter": "all",
+    }
+    TRADER_FILTER_CONFIG_SCHEMA: dict[str, Any] = {
+        "param_fields": [
+            {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+            {
+                "key": "min_tier",
+                "label": "Min Tier",
+                "type": "enum",
+                "options": ["low", "medium", "high", "extreme"],
+            },
+            {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1},
+            {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
+            {"key": "firehose_require_tradable_market", "label": "Require Tradable Market", "type": "boolean"},
+            {"key": "firehose_exclude_crypto_markets", "label": "Exclude Crypto Markets", "type": "boolean"},
+            {"key": "firehose_require_qualified_source", "label": "Require Qualified Source", "type": "boolean"},
+            {
+                "key": "firehose_max_age_minutes",
+                "label": "Firehose Max Age (min)",
+                "type": "integer",
+                "min": 1,
+                "max": 1440,
+            },
+            {
+                "key": "firehose_source_scope",
+                "label": "Source Scope",
+                "type": "enum",
+                "options": ["all", "tracked", "pool"],
+            },
+            {
+                "key": "firehose_side_filter",
+                "label": "Side Filter",
+                "type": "enum",
+                "options": ["all", "buy", "sell"],
+            },
+        ]
+    }
 
     @staticmethod
     def _normalize_strategy_slug(slug: str) -> str:
@@ -61,6 +111,179 @@ class StrategySDK:
         if StrategySDK._CONFIG_SLUG_RE.match(value):
             return value
         return ""
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = default
+        if parsed != parsed or parsed in (float("inf"), float("-inf")):
+            parsed = default
+        return max(lo, min(hi, parsed))
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int, lo: int, hi: int) -> int:
+        try:
+            parsed = int(float(value))
+        except Exception:
+            parsed = default
+        return max(lo, min(hi, parsed))
+
+    @staticmethod
+    def normalize_trader_tier(value: Any, default: str = "low") -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "watch": "low",
+            "low": "low",
+            "medium": "medium",
+            "mid": "medium",
+            "high": "high",
+            "extreme": "extreme",
+        }
+        tier = aliases.get(normalized, "")
+        if tier in StrategySDK.TRADER_TIER_CANONICAL:
+            return tier
+        fallback = str(default or "low").strip().lower()
+        if fallback in StrategySDK.TRADER_TIER_CANONICAL:
+            return fallback
+        return "low"
+
+    @staticmethod
+    def normalize_trader_side(value: Any, default: str = "all") -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "all": "all",
+            "buy": "buy",
+            "buy_yes": "buy",
+            "yes": "buy",
+            "long": "buy",
+            "sell": "sell",
+            "buy_no": "sell",
+            "no": "sell",
+            "short": "sell",
+        }
+        side = aliases.get(normalized, "")
+        if side in StrategySDK.TRADER_SIDE_CANONICAL:
+            return side
+        fallback = str(default or "all").strip().lower()
+        if fallback in StrategySDK.TRADER_SIDE_CANONICAL:
+            return fallback
+        return "all"
+
+    @staticmethod
+    def normalize_trader_source_scope(value: Any, default: str = "all") -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "all": "all",
+            "confluence": "all",
+            "tracked": "tracked",
+            "pool": "pool",
+            "insider": "pool",
+        }
+        scope = aliases.get(normalized, "")
+        if scope in StrategySDK.TRADER_SOURCE_SCOPE_CANONICAL:
+            return scope
+        fallback = str(default or "all").strip().lower()
+        if fallback in StrategySDK.TRADER_SOURCE_SCOPE_CANONICAL:
+            return fallback
+        return "all"
+
+    @staticmethod
+    def normalize_trader_source_flags(value: Any) -> dict[str, bool]:
+        flags = value if isinstance(value, dict) else {}
+        from_pool = bool(flags.get("from_pool"))
+        from_tracked = bool(flags.get("from_tracked_traders"))
+        from_groups = bool(flags.get("from_trader_groups"))
+        qualified = bool(flags.get("qualified", from_pool or from_tracked or from_groups))
+        return {
+            "from_pool": from_pool,
+            "from_tracked_traders": from_tracked,
+            "from_trader_groups": from_groups,
+            "qualified": qualified,
+        }
+
+    @staticmethod
+    def infer_trader_side(signal: dict[str, Any]) -> str:
+        raw_direction = StrategySDK.normalize_trader_side(signal.get("direction"), default="")
+        if raw_direction:
+            return raw_direction
+        raw_outcome = StrategySDK.normalize_trader_side(signal.get("outcome"), default="")
+        if raw_outcome:
+            return raw_outcome
+        raw_signal_type = StrategySDK.normalize_trader_side(signal.get("signal_type"), default="")
+        if raw_signal_type:
+            return raw_signal_type
+        return "all"
+
+    @staticmethod
+    def normalize_trader_signal(signal: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(signal or {})
+        raw_tier = normalized.get("tier")
+        normalized["tier_raw"] = raw_tier
+        normalized["tier"] = StrategySDK.normalize_trader_tier(raw_tier)
+        normalized["side"] = StrategySDK.infer_trader_side(normalized)
+        normalized["source_flags"] = StrategySDK.normalize_trader_source_flags(normalized.get("source_flags"))
+        return normalized
+
+    @staticmethod
+    def trader_filter_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_FILTER_DEFAULTS)
+
+    @staticmethod
+    def trader_filter_config_schema() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_FILTER_CONFIG_SCHEMA)
+
+    @staticmethod
+    def validate_trader_filter_config(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.TRADER_FILTER_DEFAULTS)
+        if isinstance(config, dict):
+            cfg.update({str(k): v for k, v in config.items() if str(k) != "_schema"})
+
+        cfg["min_confidence"] = StrategySDK._coerce_float(cfg.get("min_confidence"), 0.45, 0.0, 1.0)
+        cfg["min_tier"] = StrategySDK.normalize_trader_tier(cfg.get("min_tier"), default="high")
+        cfg["min_wallet_count"] = StrategySDK._coerce_int(cfg.get("min_wallet_count"), 2, 1, 1000)
+        cfg["max_entry_price"] = StrategySDK._coerce_float(cfg.get("max_entry_price"), 0.85, 0.0, 1.0)
+        cfg["firehose_require_tradable_market"] = StrategySDK._coerce_bool(
+            cfg.get("firehose_require_tradable_market"),
+            True,
+        )
+        cfg["firehose_exclude_crypto_markets"] = StrategySDK._coerce_bool(
+            cfg.get("firehose_exclude_crypto_markets"),
+            True,
+        )
+        cfg["firehose_require_qualified_source"] = StrategySDK._coerce_bool(
+            cfg.get("firehose_require_qualified_source"),
+            True,
+        )
+        cfg["firehose_max_age_minutes"] = StrategySDK._coerce_int(
+            cfg.get("firehose_max_age_minutes"),
+            180,
+            0,
+            1440,
+        )
+        cfg["firehose_source_scope"] = StrategySDK.normalize_trader_source_scope(
+            cfg.get("firehose_source_scope"),
+            default="all",
+        )
+        cfg["firehose_side_filter"] = StrategySDK.normalize_trader_side(
+            cfg.get("firehose_side_filter"),
+            default="all",
+        )
+        return cfg
 
     @staticmethod
     def _strategy_config_dir() -> Path:

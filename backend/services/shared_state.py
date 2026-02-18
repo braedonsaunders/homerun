@@ -28,6 +28,7 @@ from utils.utcnow import utcnow
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_ID = "latest"
+TRADERS_SNAPSHOT_ID = "traders_latest"
 CONTROL_ID = "default"
 
 # In-memory targeted condition IDs for the next scan request.
@@ -146,6 +147,71 @@ async def write_scanner_snapshot(
         )
     except Exception:
         pass  # fire-and-forget
+
+
+async def write_traders_snapshot(
+    session: AsyncSession,
+    opportunities: list[ArbitrageOpportunity],
+    status: dict[str, Any],
+) -> None:
+    """Write trader opportunities into dedicated snapshot storage."""
+    last_scan = status.get("last_scan")
+    if isinstance(last_scan, str):
+        try:
+            last_scan = _parse_iso_datetime(last_scan)
+        except Exception:
+            last_scan = utcnow()
+    elif last_scan is None:
+        last_scan = utcnow()
+
+    payload: list[dict[str, Any]] = []
+    skipped = 0
+    for o in opportunities:
+        try:
+            item = o.model_dump(mode="json") if hasattr(o, "model_dump") else ArbitrageOpportunity.model_validate(o).model_dump(mode="json")
+            if isinstance(item.get("strategy_context"), dict):
+                item["strategy_context"]["source_key"] = "traders"
+            else:
+                item["strategy_context"] = {"source_key": "traders"}
+            payload.append(item)
+        except Exception:
+            skipped += 1
+
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == TRADERS_SNAPSHOT_ID))
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = ScannerSnapshot(id=TRADERS_SNAPSHOT_ID)
+        session.add(row)
+
+    row.updated_at = utcnow()
+    row.last_scan_at = last_scan
+    row.opportunities_json = payload
+    row.running = status.get("running", True)
+    row.enabled = status.get("enabled", True)
+    row.current_activity = status.get("current_activity")
+    row.interval_seconds = status.get("interval_seconds", 60)
+    row.strategies_json = status.get("strategies", [])
+    row.tiered_scanning_json = status.get("tiered_scanning")
+    row.ws_feeds_json = status.get("ws_feeds")
+    await session.commit()
+
+    logger.info(
+        "Wrote traders snapshot: opportunities=%s skipped=%s running=%s enabled=%s",
+        len(payload),
+        skipped,
+        bool(row.running),
+        bool(row.enabled),
+    )
+    try:
+        await event_bus.publish(
+            "opportunities_update",
+            {
+                "count": len(payload),
+                "source": "traders_snapshot_write",
+            },
+        )
+    except Exception:
+        pass
 
 
 async def _persist_incremental_state(
@@ -347,6 +413,41 @@ async def read_scanner_snapshot(
     return opportunities, status
 
 
+async def read_traders_snapshot(
+    session: AsyncSession,
+) -> tuple[list[ArbitrageOpportunity], dict[str, Any]]:
+    """Read latest trader opportunities and status from dedicated snapshot row."""
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == TRADERS_SNAPSHOT_ID))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return [], _default_status()
+
+    opportunities: list[ArbitrageOpportunity] = []
+    for d in row.opportunities_json or []:
+        try:
+            opp = ArbitrageOpportunity.model_validate(d)
+            if isinstance(opp.strategy_context, dict):
+                opp.strategy_context["source_key"] = "traders"
+            else:
+                opp.strategy_context = {"source_key": "traders"}
+            opportunities.append(opp)
+        except Exception as e:
+            logger.debug("Skip invalid trader opportunity row: %s", e)
+
+    status = {
+        "running": row.running,
+        "enabled": row.enabled,
+        "interval_seconds": row.interval_seconds,
+        "last_scan": _format_iso_utc_z(row.last_scan_at),
+        "opportunities_count": len(opportunities),
+        "current_activity": row.current_activity,
+        "strategies": row.strategies_json or [],
+        "tiered_scanning": row.tiered_scanning_json,
+        "ws_feeds": row.ws_feeds_json,
+    }
+    return opportunities, status
+
+
 def _default_status() -> dict[str, Any]:
     return {
         "running": False,
@@ -372,6 +473,11 @@ def _stable_id_from_opportunity_id(opportunity_id: Optional[str]) -> Optional[st
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]
     return text
+
+
+def _is_traders_opportunity(opp: ArbitrageOpportunity) -> bool:
+    context = opp.strategy_context if isinstance(opp.strategy_context, dict) else {}
+    return str(context.get("source_key") or "").strip().lower() == "traders"
 
 
 def _market_ids_from_opportunity(opp: ArbitrageOpportunity) -> list[str]:
@@ -451,16 +557,30 @@ async def update_opportunity_ai_analysis_in_snapshot(
 async def get_opportunities_from_db(
     session: AsyncSession,
     filter: Optional[OpportunityFilter] = None,
+    source: str = "markets",
 ) -> list[ArbitrageOpportunity]:
     """Get current opportunities from DB with optional filter (API use)."""
-    opportunities, _ = await read_scanner_snapshot(session)
+    source_key = str(source or "markets").strip().lower()
+    if source_key == "traders":
+        opportunities, _ = await read_traders_snapshot(session)
+    elif source_key == "all":
+        market_opps, _ = await read_scanner_snapshot(session)
+        trader_opps, _ = await read_traders_snapshot(session)
+        opportunities = list(market_opps) + list(trader_opps)
+    else:
+        opportunities, _ = await read_scanner_snapshot(session)
+
     for opp in opportunities:
         opp.title = _normalize_weather_edge_title(opp.title)
 
-    if opportunities:
+    apply_tradability_filter = source_key in {"markets", "all"}
+    if opportunities and apply_tradability_filter:
         by_index: dict[int, list[str]] = {}
         all_market_ids: set[str] = set()
         for idx, opp in enumerate(opportunities):
+            if _is_traders_opportunity(opp):
+                by_index[idx] = []
+                continue
             market_ids = _market_ids_from_opportunity(opp)
             by_index[idx] = market_ids
             all_market_ids.update(market_ids)
@@ -470,7 +590,7 @@ async def get_opportunities_from_db(
             opportunities = [
                 opp
                 for idx, opp in enumerate(opportunities)
-                if all(tradability.get(mid, True) for mid in by_index.get(idx, []))
+                if _is_traders_opportunity(opp) or all(tradability.get(mid, True) for mid in by_index.get(idx, []))
             ]
 
     if not filter:

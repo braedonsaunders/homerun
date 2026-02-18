@@ -131,7 +131,7 @@ export function useRealtimeInvalidation(
     }
     if (messageType === 'tracked_trader_signal') {
       queueInvalidations([
-        ['tracked-trader-opportunities'],
+        ['opportunities', 'traders'],
         ['discovery-confluence'],
         ['discovery-active-signal-count'],
       ])

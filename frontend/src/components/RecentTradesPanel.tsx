@@ -26,14 +26,16 @@ import {
 } from '../services/discoveryApi'
 import {
   getRecentTradesFromWallets,
+  getOpportunities,
   getDiscoverySettings,
   updateDiscoverySettings,
   type DiscoverySettings,
+  type Opportunity,
 } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import {
   type UnifiedTraderSignal,
-  normalizeConfluenceSignal,
+  normalizeTraderOpportunity,
   TraderSignalCards,
   TraderSignalTable,
   TraderSignalTerminal,
@@ -58,16 +60,10 @@ interface Props {
 }
 
 type TierFilter = 'WATCH' | 'HIGH' | 'EXTREME'
-type SignalSideFilter = 'all' | 'BUY' | 'SELL'
-type SourceFilter = 'all' | 'tracked' | 'pool'
-
 const CONFLUENCE_FETCH_LIMIT_MAX = 200
 const ITEMS_PER_PAGE = 20
 
 const DEFAULT_TRADER_OPPORTUNITY_SETTINGS: TraderOpportunitiesSettingsForm = {
-  source_filter: 'all',
-  min_tier: 'WATCH',
-  side_filter: 'all',
   confluence_limit: 50,
   individual_trade_limit: 40,
   individual_trade_min_confidence: 0.62,
@@ -76,28 +72,6 @@ const DEFAULT_TRADER_OPPORTUNITY_SETTINGS: TraderOpportunitiesSettingsForm = {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
-}
-
-function asSourceFilter(value: unknown): SourceFilter {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'confluence') return 'all'
-  if (normalized === 'tracked') return 'tracked'
-  if (normalized === 'pool' || normalized === 'insider') return 'pool'
-  return 'all'
-}
-
-function asTierFilter(value: unknown): TierFilter {
-  const normalized = String(value || '').trim().toUpperCase()
-  if (normalized === 'HIGH') return 'HIGH'
-  if (normalized === 'EXTREME') return 'EXTREME'
-  return 'WATCH'
-}
-
-function asSideFilter(value: unknown): SignalSideFilter {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'buy' || normalized === 'yes') return 'BUY'
-  if (normalized === 'sell' || normalized === 'no') return 'SELL'
-  return 'all'
 }
 
 type LiveSignalAlert = {
@@ -182,7 +156,7 @@ function toTier(value: string | null | undefined): TierFilter {
 }
 
 function isQualifiedTraderSignal(signal: UnifiedTraderSignal): boolean {
-  return signal.is_tradeable && signal.is_valid && signal.source_coverage_score > 0
+  return signal.is_tradeable && signal.is_valid
 }
 
 function signalDetectedTimestamp(signal: UnifiedTraderSignal): number {
@@ -221,8 +195,6 @@ export default function RecentTradesPanel({
   const groupsOnlyManagement = showManagement && !showOpportunities && managementVariant === 'groups'
 
   const [hoursFilter] = useState(24)
-  const [minTier, setMinTier] = useState<TierFilter>(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.min_tier)
-  const [sideFilter, setSideFilter] = useState<SignalSideFilter>(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.side_filter)
   const [signalLimit, setSignalLimit] = useState(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.confluence_limit)
   const [individualTradeLimit, setIndividualTradeLimit] = useState(
     DEFAULT_TRADER_OPPORTUNITY_SETTINGS.individual_trade_limit,
@@ -234,9 +206,6 @@ export default function RecentTradesPanel({
     DEFAULT_TRADER_OPPORTUNITY_SETTINGS.individual_trade_max_age_minutes,
   )
   const [liveAlerts, setLiveAlerts] = useState<LiveSignalAlert[]>([])
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>(
-    DEFAULT_TRADER_OPPORTUNITY_SETTINGS.source_filter,
-  )
   const [groupName, setGroupName] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
   const [groupWalletInput, setGroupWalletInput] = useState('')
@@ -265,7 +234,7 @@ export default function RecentTradesPanel({
     queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
     queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
     queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
-    queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+    queryClient.invalidateQueries({ queryKey: ['opportunities', 'traders'] })
     queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
   }
 
@@ -291,7 +260,6 @@ export default function RecentTradesPanel({
   const confluenceFetchLimit = showFilteredSignals
     ? CONFLUENCE_FETCH_LIMIT_MAX
     : Math.min(CONFLUENCE_FETCH_LIMIT_MAX, signalLimit)
-  const confluenceFetchMinTier: TierFilter = showFilteredSignals ? 'WATCH' : minTier
 
   const {
     data: confluenceOpportunities = [],
@@ -300,20 +268,19 @@ export default function RecentTradesPanel({
     isRefetching: isRefetchingSignals,
   } = useQuery({
     queryKey: [
-      'tracked-trader-opportunities',
-      'scan',
+      'opportunities',
+      'traders',
       confluenceFetchLimit,
-      confluenceFetchMinTier,
       showFilteredSignals,
-      sourceFilter,
     ],
-    queryFn: () =>
-      discoveryApi.getTrackedTraderOpportunities(
-        confluenceFetchLimit,
-        confluenceFetchMinTier,
-        showFilteredSignals,
-        sourceFilter,
-      ),
+    queryFn: async (): Promise<Opportunity[]> => {
+      const result = await getOpportunities({
+        source: 'traders',
+        limit: confluenceFetchLimit,
+        offset: 0,
+      })
+      return result.opportunities
+    },
     refetchInterval: 30000,
     enabled: showOpportunities,
   })
@@ -439,9 +406,6 @@ export default function RecentTradesPanel({
   useEffect(() => {
     if (!showOpportunities || !discoverySettings) return
 
-    setSourceFilter(asSourceFilter(discoverySettings.trader_opps_source_filter))
-    setMinTier(asTierFilter(discoverySettings.trader_opps_min_tier))
-    setSideFilter(asSideFilter(discoverySettings.trader_opps_side_filter))
     setSignalLimit(
       Math.round(clampNumber(discoverySettings.trader_opps_confluence_limit || 50, 1, 200)),
     )
@@ -459,64 +423,50 @@ export default function RecentTradesPanel({
   useEffect(() => {
     if (!showOpportunities) return
     setCurrentPage(0)
-  }, [showOpportunities, sourceFilter, minTier, sideFilter, signalLimit, showFilteredSignals])
+  }, [showOpportunities, signalLimit, showFilteredSignals])
 
   const rawTrades = rawTradesData?.trades || []
   const opportunities = confluenceOpportunities
-  const trackedWalletsFromSignals = useMemo(() => {
-    const addresses = new Set<string>()
-    for (const signal of opportunities) {
-      for (const raw of signal.wallets || []) {
-        const address = String(raw || '').trim().toLowerCase()
-        if (address.startsWith('0x')) addresses.add(address)
-      }
-    }
-    return addresses.size
-  }, [opportunities])
-  const trackedWallets = rawTradesData?.tracked_wallets || trackedWalletsFromSignals
   const isLoading = opportunitiesLoading || (showManagement && rawTradesLoading)
   const isRefetching =
     isRefetchingSignals
     || (showManagement && isRefetchingRawTrades)
 
   const sortedConfluenceSignals = useMemo(() => {
-    return [...opportunities].sort((a, b) => {
-      const convictionDiff = (b.conviction_score || 0) - (a.conviction_score || 0)
+    return opportunities.map(normalizeTraderOpportunity).sort((a, b) => {
+      const convictionDiff = (b.confidence || 0) - (a.confidence || 0)
       if (convictionDiff !== 0) return convictionDiff
       const bTime = safeParseTime(b.last_seen_at || b.detected_at)?.getTime() || 0
       const aTime = safeParseTime(a.last_seen_at || a.detected_at)?.getTime() || 0
       return bTime - aTime
     })
   }, [opportunities])
-
-  const signalView = useMemo(() => {
-    const confluenceNormalized = sortedConfluenceSignals.map(normalizeConfluenceSignal)
-    const scannedSignals = confluenceNormalized
-      .sort((a, b) => signalPriority(b) - signalPriority(a))
-
-    const confluenceIntentPool = scannedSignals
-      .filter((signal) => tierRank(signal.tier) >= tierRank(minTier))
-      .filter((signal) => sideFilter === 'all' || signal.direction === sideFilter)
-      .sort((a, b) => signalPriority(b) - signalPriority(a))
-      .slice(0, signalLimit)
-
-    const executableCandidates = confluenceIntentPool
-      .filter(isQualifiedTraderSignal)
-      .sort((a, b) => signalPriority(b) - signalPriority(a))
-
-    const executableByMarket = new Map<string, UnifiedTraderSignal>()
-    for (const signal of executableCandidates) {
-      const marketKey = String(signal.market_id || '').trim().toLowerCase()
-      if (!marketKey) continue
-      const existing = executableByMarket.get(marketKey)
-      if (!existing || signalPriority(signal) > signalPriority(existing)) {
-        executableByMarket.set(marketKey, signal)
+  const trackedWalletsFromSignals = useMemo(() => {
+    const addresses = new Set<string>()
+    for (const signal of sortedConfluenceSignals) {
+      const wallets = Array.isArray(signal.wallets) ? signal.wallets : []
+      for (const rawWallet of wallets) {
+        const rawAddress =
+          rawWallet && typeof rawWallet === 'object'
+            ? String((rawWallet as { address?: string }).address || '')
+            : String(rawWallet || '')
+        const address = rawAddress.trim().toLowerCase()
+        if (address.startsWith('0x')) addresses.add(address)
       }
     }
+    return addresses.size
+  }, [sortedConfluenceSignals])
+  const trackedWallets = rawTradesData?.tracked_wallets || trackedWalletsFromSignals
 
-    const executableSignals = Array.from(executableByMarket.values()).sort(
-      (a, b) => signalPriority(b) - signalPriority(a),
-    )
+  const signalView = useMemo(() => {
+    const scannedSignals = sortedConfluenceSignals
+      .sort((a, b) => signalPriority(b) - signalPriority(a))
+
+    const executableCandidates = scannedSignals
+      .filter(isQualifiedTraderSignal)
+      .sort((a, b) => signalPriority(b) - signalPriority(a))
+      .slice(0, signalLimit)
+    const executableSignals = executableCandidates
     const visibleSignals = showFilteredSignals ? scannedSignals : executableSignals
 
     return {
@@ -531,8 +481,6 @@ export default function RecentTradesPanel({
     }
   }, [
     sortedConfluenceSignals,
-    minTier,
-    sideFilter,
     signalLimit,
     showFilteredSignals,
   ])
@@ -680,10 +628,6 @@ export default function RecentTradesPanel({
       return
     }
 
-    // Save signal filter settings (existing behavior)
-    setSourceFilter(next.source_filter)
-    setMinTier(next.min_tier)
-    setSideFilter(next.side_filter)
     setSignalLimit(next.confluence_limit)
     setIndividualTradeLimit(next.individual_trade_limit)
     setIndividualTradeMinConfidence(next.individual_trade_min_confidence)
@@ -691,10 +635,6 @@ export default function RecentTradesPanel({
 
     saveTraderSettingsMutation.mutate({
       ...discoverySettings,
-      trader_opps_source_filter: next.source_filter,
-      trader_opps_min_tier: next.min_tier,
-      trader_opps_side_filter:
-        next.side_filter === 'BUY' ? 'buy' : next.side_filter === 'SELL' ? 'sell' : 'all',
       trader_opps_confluence_limit: next.confluence_limit,
       trader_opps_insider_limit: next.individual_trade_limit,
       trader_opps_insider_min_confidence: next.individual_trade_min_confidence,
@@ -1066,15 +1006,6 @@ export default function RecentTradesPanel({
             <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-border/40 bg-card/40">
               <Filter className="w-4 h-4 text-muted-foreground/70" />
               <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
-                Source {sourceFilter === 'all' ? 'All' : sourceFilter === 'tracked' ? 'Tracked' : 'Pool'}
-              </span>
-              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
-                Tier {minTier}
-              </span>
-              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
-                Side {sideFilter}
-              </span>
-              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
                 Confluence limit {signalLimit}
               </span>
 
@@ -1139,45 +1070,6 @@ export default function RecentTradesPanel({
               {/* Filters */}
               <div className="flex flex-wrap items-center gap-4 p-3 rounded-xl border border-border/40 bg-card/40">
                 <Filter className="w-4 h-4 text-muted-foreground/70" />
-
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground/70">Source:</span>
-                  <select
-                    value={sourceFilter}
-                    onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
-                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
-                  >
-                    <option value="all">All ({displayedSignalCount}/{rawSignalCount})</option>
-                    <option value="tracked">Tracked ({displayedTrackedCount}/{rawTrackedCount})</option>
-                    <option value="pool">Pool ({displayedPoolCount}/{rawPoolCount})</option>
-                  </select>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground/70">Min tier:</span>
-                  <select
-                    value={minTier}
-                    onChange={(e) => setMinTier(e.target.value as TierFilter)}
-                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
-                  >
-                    <option value="WATCH">Watch (5+)</option>
-                    <option value="HIGH">High (10+)</option>
-                    <option value="EXTREME">Extreme (15+)</option>
-                  </select>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground/70">Side:</span>
-                  <select
-                    value={sideFilter}
-                    onChange={(e) => setSideFilter(e.target.value as SignalSideFilter)}
-                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
-                  >
-                    <option value="all">All</option>
-                    <option value="BUY">Buy clusters</option>
-                    <option value="SELL">Sell clusters</option>
-                  </select>
-                </div>
 
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground/70">Max signals:</span>
@@ -1265,7 +1157,7 @@ export default function RecentTradesPanel({
                   ? 'No pooled confluence or tracked/group individual trade signals are currently available'
                   : filteredOutSignals > 0
                     ? `${filteredOutSignals} scanned signals are currently filtered from execution`
-                    : 'Try lowering tier/side/source filters or wait for new signals'}
+                    : 'No strategy-qualified trader opportunities are currently available'}
               </p>
             </div>
           ) : viewMode === 'terminal' ? (
@@ -1332,9 +1224,6 @@ export default function RecentTradesPanel({
           isOpen={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           initial={{
-            source_filter: sourceFilter,
-            min_tier: minTier,
-            side_filter: sideFilter,
             confluence_limit: signalLimit,
             individual_trade_limit: individualTradeLimit,
             individual_trade_min_confidence: individualTradeMinConfidence,

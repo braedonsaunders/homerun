@@ -760,7 +760,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wallets'] })
       queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
-      queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunities', 'traders'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-pool-members'] })
     },
   })

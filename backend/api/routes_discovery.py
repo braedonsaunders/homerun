@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, delete
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from functools import partial
 from utils.converters import normalize_market_id, safe_float
@@ -79,12 +79,10 @@ def _resolve_query_bool(value: Any) -> bool:
 async def _load_tracked_trader_opportunities(
     *,
     limit: int,
-    min_tier: str,
     include_filtered: bool,
 ) -> list[dict[str, Any]]:
     return await get_strategy_filtered_trader_opportunities(
         limit=limit,
-        min_tier=min_tier,
         include_filtered=include_filtered,
     )
 
@@ -445,59 +443,6 @@ def _build_signal_validation_payload(
         },
         "reasons": reasons,
     }
-
-
-def _normalize_trader_confluence_source_filter(
-    value: Optional[str],
-) -> Optional[Literal["all", "tracked", "pool"]]:
-    if value is None:
-        return None
-    normalized = str(value or "all").strip().lower()
-    if not normalized:
-        return None
-    # Legacy aliases kept for backward compatibility.
-    if normalized == "confluence":
-        return "all"
-    if normalized == "insider":
-        return "pool"
-    if normalized == "tracked":
-        return "tracked"
-    if normalized == "pool":
-        return "pool"
-    return "all"
-
-
-def _filter_trader_confluence_rows_by_source(
-    rows: list[dict[str, Any]],
-    source_filter: Optional[str],
-) -> list[dict[str, Any]]:
-    normalized = _normalize_trader_confluence_source_filter(source_filter)
-    if normalized is None:
-        return rows
-    filtered: list[dict[str, Any]] = []
-
-    for row in rows:
-        source_flags = row.get("source_flags")
-        if not isinstance(source_flags, dict):
-            source_flags = {}
-
-        from_tracked = bool(source_flags.get("from_tracked_traders") or source_flags.get("from_trader_groups"))
-        from_pool = bool(source_flags.get("from_pool"))
-
-        if normalized == "all":
-            if from_tracked or from_pool:
-                filtered.append(row)
-            continue
-        if normalized == "tracked":
-            if from_tracked:
-                filtered.append(row)
-            continue
-        if normalized == "pool":
-            if from_pool:
-                filtered.append(row)
-            continue
-
-    return filtered
 
 
 def _extract_outcome_labels_from_market_info(
@@ -2216,7 +2161,6 @@ async def promote_tracked_wallets_to_pool(
 async def get_traders_overview(
     tracked_limit: int = Query(default=200, ge=1, le=500),
     confluence_limit: int = Query(default=50, ge=1, le=200),
-    min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
     hours: int = Query(
         default=24,
         ge=1,
@@ -2266,7 +2210,6 @@ async def get_traders_overview(
 
         confluence_signals = await _load_tracked_trader_opportunities(
             limit=confluence_limit,
-            min_tier=min_tier,
             include_filtered=False,
         )
         market_history = await _load_scanner_market_history(session)
@@ -2294,64 +2237,8 @@ async def get_traders_overview(
             "confluence": {
                 "signals": confluence_signals,
                 "total_signals": len(confluence_signals),
-                "min_tier": min_tier.upper(),
             },
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@discovery_router.get("/opportunities/tracked-traders")
-async def get_tracked_trader_opportunities(
-    limit: int = Query(default=50, ge=1, le=200),
-    min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
-    source_filter: Literal["all", "tracked", "pool", "confluence"] = Query(
-        default="all",
-        description="Confluence source scope: tracked traders, pool traders, or both.",
-    ),
-    include_filtered: bool = Query(
-        default=False,
-        description="Include recently inactive/filtered confluence rows for review mode.",
-    ),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """Legacy alias for confluence signals powering the Traders surface."""
-    try:
-        min_tier = str(_resolve_query_default(min_tier) or "WATCH")
-        source_filter_raw = source_filter
-        resolved_source_filter = _resolve_query_default(source_filter)
-        if source_filter_raw.__class__.__module__.startswith("fastapi."):
-            source_filter = None
-        else:
-            source_filter = _normalize_trader_confluence_source_filter(resolved_source_filter)
-        include_filtered = _resolve_query_bool(include_filtered)
-
-        opportunities = await _load_tracked_trader_opportunities(
-            limit=limit,
-            min_tier=min_tier,
-            include_filtered=include_filtered,
-        )
-        if not opportunities:
-            # Self-heal path: run an on-demand confluence scan so the UI can
-            # recover quickly after stale/expired signal windows.
-            try:
-                await wallet_intelligence.confluence.scan_for_confluence()
-                opportunities = await _load_tracked_trader_opportunities(
-                    limit=limit,
-                    min_tier=min_tier,
-                    include_filtered=include_filtered,
-                )
-            except Exception:
-                pass
-        market_history = await _load_scanner_market_history(session)
-        _attach_market_history_to_signal_rows(opportunities, market_history)
-        await _attach_signal_market_metadata(opportunities)
-        _attach_history_from_aliases(opportunities, market_history)
-        await _attach_activity_history_fallback(session, opportunities)
-        await _attach_live_mid_prices_to_signal_rows(opportunities)
-        await _annotate_trader_signal_rows(session, opportunities)
-        opportunities = _filter_trader_confluence_rows_by_source(opportunities, source_filter)
-        return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

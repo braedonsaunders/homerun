@@ -558,61 +558,57 @@ async def _build_context_pack(
                     opportunity = o
                     break
     elif context_type == "trader_signal" and context_id:
-        # Context_id format: "<source>:<id>" where source is "confluence".
-        # Legacy "insider" prefixes are normalized to "confluence".
         source_hint: Optional[str] = None
         signal_id = str(context_id)
         if ":" in signal_id:
             maybe_source, maybe_id = signal_id.split(":", 1)
             source_hint = (maybe_source or "").strip().lower() or None
             signal_id = maybe_id
-        if source_hint == "insider":
-            source_hint = "confluence"
-
-        trader_signal: Optional[dict[str, Any]] = None
-
-        if source_hint in {None, "confluence"}:
-            from services.traders_firehose_pipeline import (
-                get_strategy_filtered_trader_opportunities,
-            )
-
-            confluence_rows = await get_strategy_filtered_trader_opportunities(
-                limit=250,
-                min_tier="WATCH",
-                include_filtered=True,
+        if source_hint in {None, "traders", "confluence"}:
+            trader_opps = await shared_state.get_opportunities_from_db(
+                session,
+                None,
+                source="traders",
             )
             match = next(
-                (row for row in confluence_rows if str(row.get("id") or "") == signal_id),
+                (
+                    opp
+                    for opp in trader_opps
+                    if str(opp.id or "") == signal_id or str(opp.stable_id or "") == signal_id
+                ),
                 None,
             )
-            if match:
-                trader_signal = {"source": "confluence", **match}
+        else:
+            match = None
 
-        if trader_signal:
-            market_id = str(trader_signal.get("market_id") or "").strip()
+        if match:
+            market = match.markets[0] if match.markets else {}
+            strategy_context = match.strategy_context if isinstance(match.strategy_context, dict) else {}
+            firehose = strategy_context.get("firehose") if isinstance(strategy_context.get("firehose"), dict) else {}
+            market_id = str(market.get("id") or "").strip()
             if market_id:
                 market_ids = [market_id]
 
             pack["trader_signal"] = {
-                "id": trader_signal.get("id"),
-                "source": trader_signal.get("source"),
+                "id": match.id,
+                "source": "traders",
                 "market_id": market_id,
-                "market_question": trader_signal.get("market_question"),
-                "market_slug": trader_signal.get("market_slug"),
-                "direction": trader_signal.get("direction"),
-                "tier": trader_signal.get("tier"),
-                "confidence": trader_signal.get("confidence") or trader_signal.get("conviction_score"),
-                "wallet_count": trader_signal.get("wallet_count"),
-                "edge_percent": trader_signal.get("edge_percent"),
-                "cluster_count": trader_signal.get("cluster_count"),
-                "signal_type": trader_signal.get("signal_type"),
-                "detected_at": trader_signal.get("detected_at"),
-                "last_seen_at": trader_signal.get("last_seen_at"),
-                "yes_price": trader_signal.get("yes_price"),
-                "no_price": trader_signal.get("no_price"),
+                "market_question": market.get("question"),
+                "market_slug": market.get("slug"),
+                "direction": strategy_context.get("side"),
+                "tier": strategy_context.get("tier"),
+                "confidence": strategy_context.get("confidence") or match.confidence,
+                "wallet_count": strategy_context.get("wallet_count"),
+                "edge_percent": strategy_context.get("edge_percent") or match.roi_percent,
+                "cluster_count": strategy_context.get("wallet_count"),
+                "signal_type": firehose.get("signal_type"),
+                "detected_at": match.detected_at.isoformat() if match.detected_at else None,
+                "last_seen_at": match.last_seen_at.isoformat() if match.last_seen_at else None,
+                "yes_price": market.get("yes_price"),
+                "no_price": market.get("no_price"),
                 "price_history": (
-                    trader_signal.get("price_history", [])[-20:]
-                    if isinstance(trader_signal.get("price_history"), list)
+                    market.get("price_history", [])[-20:]
+                    if isinstance(market.get("price_history"), list)
                     else []
                 ),
             }

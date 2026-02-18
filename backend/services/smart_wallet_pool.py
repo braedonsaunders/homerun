@@ -31,6 +31,7 @@ from models.database import (
 )
 from services.pause_state import global_pause_state
 from services.polymarket import polymarket_client
+from services.strategy_sdk import StrategySDK
 from utils.converters import clamp
 from utils.logger import get_logger
 
@@ -696,7 +697,6 @@ class SmartWalletPoolService:
     async def get_tracked_trader_firehose_signals(
         self,
         limit: int = 250,
-        min_tier: str = "WATCH",
         include_filtered: bool = False,
     ) -> list[dict]:
         """Return the raw trader-signal firehose for strategy-owned filtering.
@@ -706,8 +706,6 @@ class SmartWalletPoolService:
         traders_confluence opportunity strategy.
         """
         safe_limit = max(1, int(limit))
-        tier_rank = {"WATCH": 1, "HIGH": 2, "EXTREME": 3}
-        min_rank = tier_rank.get(min_tier.upper(), 1)
 
         async with AsyncSessionLocal() as session:
             if include_filtered:
@@ -739,7 +737,7 @@ class SmartWalletPoolService:
                 )
             raw = list(result.scalars().all())
 
-            signals = [s for s in raw if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank]
+            signals = list(raw)
             if signals:
                 await self._refresh_signal_market_metadata(session=session, signals=signals)
 
@@ -767,6 +765,8 @@ class SmartWalletPoolService:
                     question_market_ids.setdefault(question_norm, set()).add(market_id_norm)
 
             output: list[dict] = []
+            unknown_tier_rows = 0
+            known_tiers = {"watch", "low", "medium", "mid", "high", "extreme"}
             for s in signals:
                 top_wallets = []
                 for address in (s.wallets or [])[:8]:
@@ -782,6 +782,11 @@ class SmartWalletPoolService:
                 if not market_question:
                     market_question = f"Market {s.market_id}"
 
+                tier_raw = str(s.tier or "").strip().lower()
+                if tier_raw and tier_raw not in known_tiers:
+                    unknown_tier_rows += 1
+                tier = StrategySDK.normalize_trader_tier(s.tier, default="low")
+
                 output.append(
                     {
                         "id": s.id,
@@ -790,7 +795,8 @@ class SmartWalletPoolService:
                         "market_slug": s.market_slug,
                         "signal_type": s.signal_type,
                         "outcome": s.outcome,
-                        "tier": s.tier or "WATCH",
+                        "tier": tier,
+                        "tier_raw": s.tier,
                         "conviction_score": s.conviction_score or 0.0,
                         "strength": s.strength or 0.0,
                         "wallet_count": s.wallet_count or 0,
@@ -817,6 +823,12 @@ class SmartWalletPoolService:
                         "top_wallets": top_wallets,
                     }
                 )
+            for row in output:
+                row["side"] = StrategySDK.infer_trader_side(row)
+
+            self._stats["firehose_rows_raw"] = len(raw)
+            self._stats["firehose_rows_normalized"] = len(output)
+            self._stats["firehose_rows_unknown_tier"] = int(unknown_tier_rows)
 
         return output[:safe_limit]
 

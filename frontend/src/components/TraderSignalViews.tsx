@@ -26,6 +26,7 @@ import {
 import { Badge } from './ui/badge'
 import Sparkline from './Sparkline'
 import type { TrackedTraderOpportunity } from '../services/discoveryApi'
+import type { Opportunity } from '../services/api'
 
 // ─── Unified Type ──────────────────────────────────────────
 
@@ -135,9 +136,10 @@ function getConfluenceDirection(signal: TrackedTraderOpportunity): 'BUY' | 'SELL
 }
 
 function toTier(value: string | null | undefined): 'WATCH' | 'HIGH' | 'EXTREME' {
-  const normalized = (value || 'WATCH').toUpperCase()
+  const normalized = (value || 'WATCH').toString().trim().toUpperCase()
   if (normalized === 'EXTREME') return 'EXTREME'
   if (normalized === 'HIGH') return 'HIGH'
+  if (normalized === 'LOW' || normalized === 'MEDIUM' || normalized === 'WATCH') return 'WATCH'
   return 'WATCH'
 }
 
@@ -251,6 +253,87 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     is_tradeable: quality.isTradeable,
     validation_reasons: quality.reasons,
     source_coverage_score: quality.sourceCoverageScore,
+  }
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  return {}
+}
+
+export function normalizeTraderOpportunity(opportunity: Opportunity): UnifiedTraderSignal {
+  const market = opportunity.markets?.[0] || {}
+  const strategyContext = asObject(opportunity.strategy_context)
+  const firehose = asObject(strategyContext.firehose)
+  const sourceFlags = asObject(strategyContext.source_flags)
+  const validation = asObject(strategyContext.validation)
+
+  const side = String(strategyContext.side || firehose.side || '').trim().toLowerCase()
+  const direction: 'BUY' | 'SELL' | null = side === 'buy' ? 'BUY' : side === 'sell' ? 'SELL' : null
+
+  const confidenceRatio = Number(strategyContext.confidence ?? opportunity.confidence ?? 0)
+  const confidence = Number.isFinite(confidenceRatio) ? Math.max(0, Math.min(100, Math.round(confidenceRatio * 100))) : 0
+  const tier = toTier(String(strategyContext.tier || firehose.tier || 'HIGH'))
+  const marketSlug = String(market.event_slug || opportunity.event_slug || market.slug || '')
+  const validationReasons = Array.isArray(validation.reasons)
+    ? validation.reasons.map((reason) => String(reason))
+    : []
+
+  const normalizedSourceFlags: UnifiedTraderSignal['source_flags'] = {
+    from_pool: Boolean(sourceFlags.from_pool),
+    from_tracked_traders: Boolean(sourceFlags.from_tracked_traders),
+    from_trader_groups: Boolean(sourceFlags.from_trader_groups),
+    qualified: Boolean(sourceFlags.qualified),
+  }
+
+  const normalizedValidation: UnifiedTraderSignal['validation'] = {
+    is_valid: validation.is_valid === undefined ? true : Boolean(validation.is_valid),
+    is_actionable: validation.is_actionable === undefined ? true : Boolean(validation.is_actionable),
+    is_tradeable: validation.is_tradeable === undefined ? true : Boolean(validation.is_tradeable),
+    checks: asObject(validation.checks) as Record<string, boolean>,
+    reasons: validationReasons,
+  }
+
+  return {
+    id: opportunity.id,
+    source: 'confluence',
+    market_id: String(market.id || ''),
+    market_question: String(market.question || opportunity.title || ''),
+    market_slug: String(market.slug || '') || null,
+    yes_price: typeof market.yes_price === 'number' ? market.yes_price : null,
+    no_price: typeof market.no_price === 'number' ? market.no_price : null,
+    current_yes_price: typeof market.current_yes_price === 'number' ? market.current_yes_price : (typeof market.yes_price === 'number' ? market.yes_price : null),
+    current_no_price: typeof market.current_no_price === 'number' ? market.current_no_price : (typeof market.no_price === 'number' ? market.no_price : null),
+    outcome_labels: Array.isArray(market.outcome_labels) ? market.outcome_labels.map((v) => String(v)) : undefined,
+    outcome_prices: Array.isArray(market.outcome_prices) ? market.outcome_prices : undefined,
+    yes_label: Array.isArray(market.outcome_labels) && market.outcome_labels[0] ? String(market.outcome_labels[0]) : null,
+    no_label: Array.isArray(market.outcome_labels) && market.outcome_labels[1] ? String(market.outcome_labels[1]) : null,
+    price_history: Array.isArray(market.price_history) ? market.price_history : undefined,
+    direction,
+    confidence,
+    wallet_count: Number(strategyContext.wallet_count ?? firehose.wallet_count ?? 0) || 0,
+    tier,
+    signal_type: String(firehose.signal_type || ''),
+    conviction_score: confidence,
+    window_minutes: Number(firehose.window_minutes || 60),
+    cluster_adjusted_wallet_count: Number(firehose.cluster_adjusted_wallet_count || firehose.wallet_count || 0),
+    unique_core_wallets: Number(firehose.unique_core_wallets || 0),
+    net_notional: typeof firehose.net_notional === 'number' ? firehose.net_notional : undefined,
+    top_wallets: Array.isArray(firehose.top_wallets) ? (firehose.top_wallets as UnifiedTraderSignal['top_wallets']) : undefined,
+    outcome: String(strategyContext.outcome || firehose.outcome || '') || null,
+    detected_at: opportunity.detected_at,
+    last_seen_at: opportunity.last_seen_at ?? null,
+    first_seen_at: firehose.first_seen_at ? String(firehose.first_seen_at) : null,
+    market_url: buildPolymarketMarketUrl({ eventSlug: marketSlug }) || '',
+    source_flags: normalizedSourceFlags,
+    source_breakdown: asObject(strategyContext.source_breakdown) as UnifiedTraderSignal['source_breakdown'],
+    validation: normalizedValidation,
+    is_valid: normalizedValidation.is_valid ?? true,
+    is_actionable: normalizedValidation.is_actionable ?? true,
+    is_tradeable: normalizedValidation.is_tradeable ?? true,
+    validation_reasons: validationReasons,
+    source_coverage_score: normalizeSourceCoverageScore(normalizedSourceFlags),
+    wallets: Array.isArray(firehose.wallets) ? (firehose.wallets as UnifiedTraderSignal['wallets']) : undefined,
   }
 }
 

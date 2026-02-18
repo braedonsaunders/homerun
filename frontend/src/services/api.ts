@@ -69,6 +69,7 @@ export interface Opportunity {
   roi_percent: number
   risk_score: number
   risk_factors: string[]
+  confidence?: number
   markets: Market[]
   polymarket_url?: string | null
   kalshi_url?: string | null
@@ -80,8 +81,10 @@ export interface Opportunity {
   volume?: number
   max_position_size: number
   detected_at: string
+  last_seen_at?: string | null
   resolution_date?: string
   positions_to_take: Position[]
+  strategy_context?: Record<string, unknown> | null
   ai_analysis: AIAnalysis | null
 }
 
@@ -492,6 +495,7 @@ export interface OpportunitiesResponse {
 }
 
 export const getOpportunities = async (params?: {
+  source?: 'markets' | 'traders' | 'all'
   min_profit?: number
   max_risk?: number
   strategy?: string
@@ -587,6 +591,7 @@ export interface OpportunityCounts {
 }
 
 export const getOpportunityCounts = async (params?: {
+  source?: 'markets' | 'traders' | 'all'
   min_profit?: number
   max_risk?: number
   min_liquidity?: number
@@ -879,57 +884,11 @@ export interface RecentTradesResponse {
   hours_window: number
 }
 
-export interface TrackedTraderOpportunityDTO {
-  id: string
-  market_id: string
-  market_question: string | null
-  market_slug: string | null
-  signal_type: string
-  strength: number
-  conviction_score: number
-  tier: 'WATCH' | 'HIGH' | 'EXTREME' | string
-  window_minutes: number
-  wallet_count: number
-  cluster_adjusted_wallet_count: number
-  unique_core_wallets: number
-  weighted_wallet_score: number
-  wallets: string[]
-  outcome: string | null
-  avg_entry_price: number | null
-  total_size: number | null
-  net_notional: number | null
-  conflicting_notional: number | null
-  market_liquidity: number | null
-  market_volume_24h: number | null
-  first_seen_at: string | null
-  last_seen_at: string | null
-  detected_at: string | null
-  is_active: boolean
-  top_wallets?: Array<{
-    address: string
-    username: string | null
-    rank_score: number
-    composite_score: number
-    quality_score: number
-    activity_score: number
-  }>
-}
-
 export const getRecentTradesFromWallets = async (params?: {
   limit?: number
   hours?: number
 }): Promise<RecentTradesResponse> => {
   const { data } = await api.get('/wallets/recent-trades/all', { params })
-  return unwrapApiData(data)
-}
-
-export const getTrackedTraderOpportunities = async (params?: {
-  limit?: number
-  min_tier?: 'WATCH' | 'HIGH' | 'EXTREME'
-}): Promise<{ opportunities: TrackedTraderOpportunityDTO[]; total: number }> => {
-  const { data } = await api.get('/discovery/opportunities/tracked-traders', {
-    params,
-  })
   return unwrapApiData(data)
 }
 

@@ -264,7 +264,6 @@ export interface TradersOverview {
   confluence: {
     signals: TrackedTraderOpportunity[]
     total_signals: number
-    min_tier: string
   }
 }
 
@@ -456,27 +455,9 @@ export const discoveryApi = {
     return data
   },
 
-  getTrackedTraderOpportunities: async (
-    limit = 50,
-    minTier: 'WATCH' | 'HIGH' | 'EXTREME' = 'WATCH',
-    includeFiltered = false,
-    sourceFilter: 'all' | 'tracked' | 'pool' = 'all',
-  ): Promise<TrackedTraderOpportunity[]> => {
-    const { data } = await discoveryHttp.get(`${API_BASE}/opportunities/tracked-traders`, {
-      params: {
-        limit,
-        min_tier: minTier,
-        include_filtered: includeFiltered,
-        source_filter: sourceFilter,
-      },
-    })
-    return data.opportunities || []
-  },
-
   getTradersOverview: async (params: {
     tracked_limit?: number
     confluence_limit?: number
-    min_tier?: 'WATCH' | 'HIGH' | 'EXTREME'
     hours?: number
   } = {}): Promise<TradersOverview> => {
     const { data } = await discoveryHttp.get(`${API_BASE}/traders`, { params })

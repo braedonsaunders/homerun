@@ -17,13 +17,14 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from config import settings
-from models import ArbitrageOpportunity, Event, Market
+from models import ArbitrageOpportunity, Event, Market, Token
 from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.data_events import DataEvent
+from services.strategy_sdk import StrategySDK
 from utils.converters import to_confidence
 from functools import partial
 from utils.converters import safe_float
@@ -64,6 +65,8 @@ class TradersConfluenceStrategy(BaseStrategy):
         "firehose_exclude_crypto_markets": True,
         "firehose_require_qualified_source": True,
         "firehose_max_age_minutes": 180,
+        "firehose_source_scope": "all",
+        "firehose_side_filter": "all",
     }
     default_config = dict(DEFAULT_CONFIG)
 
@@ -87,6 +90,7 @@ class TradersConfluenceStrategy(BaseStrategy):
         runtime_cfg = getattr(self, "config", None)
         if isinstance(runtime_cfg, dict):
             cfg.update(runtime_cfg)
+        cfg.update(StrategySDK.validate_trader_filter_config(cfg))
         return cfg
 
     @staticmethod
@@ -143,8 +147,28 @@ class TradersConfluenceStrategy(BaseStrategy):
 
     @staticmethod
     def _tier_value(tier: object) -> int:
-        normalized = str(tier or "watch").strip().lower()
+        normalized = StrategySDK.normalize_trader_tier(tier, default="low")
         return TradersConfluenceStrategy.TIER_ORDER.get(normalized, 0)
+
+    @staticmethod
+    def _parse_dt(value: object) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            try:
+                return datetime.fromtimestamp(float(text), tz=timezone.utc)
+            except Exception:
+                return None
 
     def evaluate_firehose_signal(
         self,
@@ -157,6 +181,7 @@ class TradersConfluenceStrategy(BaseStrategy):
         This gate is the source of truth for Traders opportunities filtering.
         """
         config = cfg or self._effective_config()
+        signal = StrategySDK.normalize_trader_signal(signal if isinstance(signal, dict) else {})
         checks: dict[str, bool] = {}
         reasons: list[str] = []
 
@@ -189,6 +214,19 @@ class TradersConfluenceStrategy(BaseStrategy):
         if require_qualified and not qualified:
             reasons.append("unqualified_wallet_source")
 
+        scope = StrategySDK.normalize_trader_source_scope(config.get("firehose_source_scope"), default="all")
+        from_tracked = bool(source_flags.get("from_tracked_traders") or source_flags.get("from_trader_groups"))
+        from_pool = bool(source_flags.get("from_pool"))
+        if scope == "tracked":
+            source_scope_ok = from_tracked
+        elif scope == "pool":
+            source_scope_ok = from_pool
+        else:
+            source_scope_ok = from_tracked or from_pool
+        checks["matches_source_scope"] = source_scope_ok
+        if not source_scope_ok:
+            reasons.append("source_scope_mismatch")
+
         upstream_tradable = bool(signal.get("firehose_market_tradable", signal.get("is_tradeable", True)))
         require_tradable = self._to_bool(config.get("firehose_require_tradable_market"), True)
         checks["upstream_tradable"] = upstream_tradable or (not require_tradable)
@@ -214,10 +252,16 @@ class TradersConfluenceStrategy(BaseStrategy):
             reasons.append("confidence_below_threshold")
 
         min_tier = self._tier_value(config.get("min_tier", "high"))
-        signal_tier = self._tier_value(signal.get("tier", "watch"))
+        signal_tier = self._tier_value(signal.get("tier", "low"))
         checks["meets_min_tier"] = signal_tier >= min_tier
         if signal_tier < min_tier:
             reasons.append("tier_below_threshold")
+
+        side_filter = StrategySDK.normalize_trader_side(config.get("firehose_side_filter"), default="all")
+        signal_side = StrategySDK.normalize_trader_side(signal.get("side"), default="all")
+        checks["matches_side_filter"] = side_filter == "all" or side_filter == signal_side
+        if side_filter != "all" and side_filter != signal_side:
+            reasons.append("side_filtered")
 
         min_wallet_count = max(1, int(_safe_float_nan(config.get("min_wallet_count"), 2)))
         wallet_count = int(_safe_float_nan(signal.get("cluster_adjusted_wallet_count"), 0))
@@ -253,7 +297,7 @@ class TradersConfluenceStrategy(BaseStrategy):
         for signal in signals:
             if not isinstance(signal, dict):
                 continue
-            row = dict(signal)
+            row = StrategySDK.normalize_trader_signal(dict(signal))
             passed, reasons, checks = self.evaluate_firehose_signal(row, cfg=cfg)
             row["validation"] = {
                 "is_valid": passed,
@@ -289,6 +333,198 @@ class TradersConfluenceStrategy(BaseStrategy):
                 safe_limit = 50
             return output[:safe_limit]
         return output
+
+    def _build_signal_market(self, signal: dict) -> Market:
+        market_id = str(signal.get("market_id") or "").strip()
+        question = str(signal.get("market_question") or market_id or "Unknown market").strip()
+        slug = str(signal.get("market_slug") or market_id).strip()
+
+        side = StrategySDK.normalize_trader_side(signal.get("side"), default="all")
+        entry = _safe_float_nan(signal.get("avg_entry_price"), 0.5)
+        yes_price = _safe_float_nan(signal.get("yes_price"), -1.0)
+        no_price = _safe_float_nan(signal.get("no_price"), -1.0)
+        if yes_price < 0.0 or no_price < 0.0:
+            if side == "buy":
+                yes_price = entry
+                no_price = max(0.0, min(1.0, 1.0 - entry))
+            elif side == "sell":
+                no_price = entry
+                yes_price = max(0.0, min(1.0, 1.0 - entry))
+            else:
+                yes_price = entry
+                no_price = max(0.0, min(1.0, 1.0 - entry))
+        yes_price = max(0.0, min(1.0, yes_price))
+        no_price = max(0.0, min(1.0, no_price))
+
+        yes_token = str(signal.get("yes_token_id") or signal.get("yes_token") or "").strip()
+        no_token = str(signal.get("no_token_id") or signal.get("no_token") or "").strip()
+        tokens = []
+        if yes_token:
+            tokens.append(Token(token_id=yes_token, outcome="Yes", price=yes_price))
+        if no_token:
+            tokens.append(Token(token_id=no_token, outcome="No", price=no_price))
+
+        return Market(
+            id=market_id,
+            condition_id=market_id,
+            question=question,
+            slug=slug,
+            event_slug=str(signal.get("event_slug") or "").strip(),
+            tokens=tokens,
+            clob_token_ids=[t.token_id for t in tokens],
+            outcome_prices=[yes_price, no_price],
+            active=bool(signal.get("is_active", True)),
+            closed=False,
+            volume=max(0.0, _safe_float_nan(signal.get("market_volume_24h"), 0.0)),
+            liquidity=max(0.0, _safe_float_nan(signal.get("market_liquidity"), 0.0)),
+            tags=list(signal.get("market_tags") or []),
+            platform=str(signal.get("platform") or "polymarket"),
+        )
+
+    def _infer_entry_price(self, signal: dict, side: str) -> float:
+        direct = _safe_float_nan(signal.get("avg_entry_price"), -1.0)
+        if direct >= 0.0:
+            return max(0.0, min(1.0, direct))
+        if side == "YES":
+            return max(0.0, min(1.0, _safe_float_nan(signal.get("yes_price"), 0.5)))
+        return max(0.0, min(1.0, _safe_float_nan(signal.get("no_price"), 0.5)))
+
+    def build_opportunities_from_firehose(
+        self,
+        rows: list[dict],
+        *,
+        limit: Optional[int] = None,
+    ) -> list[ArbitrageOpportunity]:
+        if not rows:
+            return []
+
+        cfg = self._effective_config()
+        opportunities: list[ArbitrageOpportunity] = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            signal = StrategySDK.normalize_trader_signal(dict(raw))
+            passed, reasons, checks = self.evaluate_firehose_signal(signal, cfg=cfg)
+            if not passed:
+                continue
+
+            side_label = "YES" if signal.get("side") == "buy" else "NO"
+            direction = "buy_yes" if side_label == "YES" else "buy_no"
+            market = self._build_signal_market(signal)
+            confidence = self._confidence(signal)
+            strength = max(0.0, min(1.0, _safe_float_nan(signal.get("strength"), confidence)))
+            wallet_count = int(
+                _safe_float_nan(signal.get("cluster_adjusted_wallet_count"), _safe_float_nan(signal.get("wallet_count"), 0))
+            )
+            tier = StrategySDK.normalize_trader_tier(signal.get("tier"), default="low")
+            edge_percent = _safe_float_nan(signal.get("edge_percent"), 0.0)
+            if edge_percent <= 0.0:
+                edge_percent = max(float(cfg.get("min_edge_percent", 3.0)), confidence * 100.0 * 0.12)
+            entry_price = self._infer_entry_price(signal, side_label)
+            expected_delta = min(0.4, max(0.05, (edge_percent / 100.0) + 0.03))
+            expected_payout = min(1.0, entry_price + expected_delta)
+            if expected_payout <= entry_price:
+                expected_payout = min(1.0, entry_price + 0.05)
+
+            risk_score = float(cfg.get("risk_base_score", 0.4))
+            if confidence < 0.6:
+                risk_score = min(1.0, risk_score + 0.15)
+            if wallet_count <= 2:
+                risk_score = min(1.0, risk_score + 0.1)
+            if tier == "high":
+                risk_score = max(0.0, risk_score - 0.05)
+            elif tier == "extreme":
+                risk_score = max(0.0, risk_score - 0.1)
+
+            token_id = None
+            if market.clob_token_ids:
+                idx = 0 if side_label == "YES" else (1 if len(market.clob_token_ids) > 1 else 0)
+                token_id = market.clob_token_ids[idx]
+
+            opportunity = self.create_opportunity(
+                title=f"Trader Flow: {wallet_count} wallets -> {market.question[:56]}",
+                description=(
+                    f"{wallet_count} tracked wallets ({tier} tier, {strength:.0%} confluence) "
+                    f"converging on {side_label} at ${entry_price:.2f}."
+                ),
+                total_cost=entry_price,
+                expected_payout=expected_payout,
+                markets=[market],
+                positions=[
+                    {
+                        "action": "BUY",
+                        "outcome": side_label,
+                        "price": entry_price,
+                        "token_id": token_id,
+                        "direction": direction,
+                    }
+                ],
+                event=Event(
+                    id=str(signal.get("event_id") or ""),
+                    slug=str(signal.get("event_slug") or ""),
+                    title=str(signal.get("event_title") or market.question),
+                    category=str(signal.get("category") or "") or None,
+                    markets=[market],
+                ),
+                is_guaranteed=False,
+                custom_roi_percent=edge_percent,
+                custom_risk_score=risk_score,
+                confidence=confidence,
+            )
+            if opportunity is None:
+                continue
+
+            detected_at = self._parse_dt(signal.get("detected_at"))
+            last_seen_at = self._parse_dt(signal.get("last_seen_at"))
+            if detected_at is not None:
+                opportunity.detected_at = detected_at
+            if last_seen_at is not None:
+                opportunity.last_seen_at = last_seen_at
+
+            opportunity.strategy_context = {
+                "source_key": "traders",
+                "strategy_slug": self.strategy_type,
+                "signal_id": str(signal.get("id") or ""),
+                "tier": tier,
+                "side": signal.get("side"),
+                "outcome": str(signal.get("outcome") or "").strip().upper(),
+                "wallet_count": wallet_count,
+                "confidence": confidence,
+                "confluence_strength": strength,
+                "edge_percent": edge_percent,
+                "source_flags": signal.get("source_flags") or {},
+                "source_breakdown": signal.get("source_breakdown") or {},
+                "validation": {
+                    "is_valid": True,
+                    "is_actionable": True,
+                    "is_tradeable": True,
+                    "checks": checks,
+                    "reasons": reasons,
+                },
+                "firehose": signal,
+            }
+            opportunity.risk_factors = [
+                "Smart money convergence bet (behavioral edge)",
+                f"Confluence: {strength:.0%} strength, {wallet_count} wallets, tier {tier}",
+            ]
+            opportunity.mispricing_type = MispricingType.NEWS_INFORMATION
+            opportunities.append(opportunity)
+
+        opportunities.sort(
+            key=lambda opp: (
+                float(opp.confidence or 0.0),
+                float(opp.roi_percent or 0.0),
+                str(opp.detected_at or ""),
+            ),
+            reverse=True,
+        )
+        if limit is not None:
+            try:
+                safe_limit = max(1, int(limit))
+            except Exception:
+                safe_limit = 50
+            return opportunities[:safe_limit]
+        return opportunities
 
     def detect(
         self,
@@ -327,155 +563,8 @@ class TradersConfluenceStrategy(BaseStrategy):
         """
         if not signals:
             return []
-
-        cfg = self._config
-        opportunities: list[ArbitrageOpportunity] = []
-        market_map = {m.id: m for m in markets}
-        event_map: dict[str, Event] = {}
-        for event in events:
-            for m in event.markets:
-                event_map[m.id] = event
-
-        for signal in signals:
-            try:
-                opp = self._evaluate_signal(signal, market_map, event_map, cfg)
-                if opp:
-                    opportunities.append(opp)
-            except Exception as e:
-                logger.debug("Traders Confluence: skipped signal: %s", e)
-
-        if opportunities:
-            logger.info(
-                "Traders Confluence: %d opportunities from %d signals",
-                len(opportunities),
-                len(signals),
-            )
-        return opportunities
-
-    def _evaluate_signal(
-        self,
-        signal: dict,
-        market_map: dict[str, Market],
-        event_map: dict[str, Event],
-        cfg: dict,
-    ) -> Optional[ArbitrageOpportunity]:
-        """Evaluate a single confluence signal against config thresholds."""
-        edge = float(signal.get("edge_percent", 0))
-        confidence = float(signal.get("confidence", 0))
-        strength = float(signal.get("confluence_strength", 0))
-        tier = str(signal.get("tier", "low")).lower()
-        wallet_count = int(signal.get("wallet_count", 0))
-        entry_price = float(signal.get("entry_price", 1))
-
-        # Quality gates
-        if edge < cfg["min_edge_percent"]:
-            return None
-        if confidence < cfg["min_confidence"]:
-            return None
-        if strength < cfg["min_confluence_strength"]:
-            return None
-        min_tier_val = self.TIER_ORDER.get(cfg["min_tier"], 2)
-        signal_tier_val = self.TIER_ORDER.get(tier, 0)
-        if signal_tier_val < min_tier_val:
-            return None
-        if wallet_count < cfg.get("min_wallet_count", 2):
-            return None
-        if entry_price > cfg["max_entry_price"]:
-            return None
-
-        market_id = signal.get("market_id")
-        market = market_map.get(market_id) if market_id else None
-        if not market:
-            return None
-
-        event = event_map.get(market_id)
-        direction = signal.get("direction", "buy_yes")
-        target_price = float(signal.get("target_price", entry_price))
-        total_volume = float(signal.get("total_volume_usd", 0))
-        wallets = signal.get("wallets", [])
-
-        # Position details
-        side = "YES" if direction == "buy_yes" else "NO"
-        token_id = None
-        if market.clob_token_ids:
-            idx = 0 if direction == "buy_yes" else (1 if len(market.clob_token_ids) > 1 else 0)
-            token_id = market.clob_token_ids[idx]
-
-        expected_payout = target_price
-        total_cost = entry_price
-        gross_profit = expected_payout - total_cost
-        fee_amount = expected_payout * self.fee
-        net_profit = gross_profit - fee_amount
-        roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
-
-        if roi < cfg["min_edge_percent"] / 2:
-            return None
-
-        min_liquidity = market.liquidity
-        max_position = min(min_liquidity * 0.05, 500.0)
-
-        if max_position < settings.MIN_POSITION_SIZE:
-            return None
-
-        # Risk scoring
-        risk_score = float(cfg["risk_base_score"])
-        risk_factors = [
-            "Smart money convergence bet (behavioral edge)",
-            f"Confluence: {strength:.0%} strength, {wallet_count} wallets, tier {tier}",
-            f"Total tracked volume: ${total_volume:,.0f}",
-        ]
-        if confidence < 0.6:
-            risk_score += 0.15
-            risk_factors.append("Moderate confidence")
-        if wallet_count <= 2:
-            risk_score += 0.1
-            risk_factors.append("Minimal wallet convergence")
-        if tier == "high":
-            risk_score -= 0.05
-        elif tier == "extreme":
-            risk_score -= 0.1
-        risk_score = max(min(risk_score, 1.0), 0.0)
-
-        positions = [
-            {
-                "action": "BUY",
-                "outcome": side,
-                "price": entry_price,
-                "token_id": token_id,
-                "_traders_confluence": {
-                    "confluence_strength": strength,
-                    "tier": tier,
-                    "wallet_count": wallet_count,
-                    "total_volume_usd": total_volume,
-                    "wallets": wallets[:10],  # Cap for payload size
-                    "edge_percent": edge,
-                    "confidence": confidence,
-                    "direction": direction,
-                },
-            }
-        ]
-
-        opp = self.create_opportunity(
-            title=f"Trader Flow: {wallet_count} wallets → {market.question[:40]}",
-            description=(
-                f"{wallet_count} tracked wallets ({tier} tier, {strength:.0%} confluence) "
-                f"converging on {side} at ${entry_price:.2f} "
-                f"(edge: {edge:.1f}%, volume: ${total_volume:,.0f})"
-            ),
-            total_cost=total_cost,
-            expected_payout=expected_payout,
-            markets=[market],
-            positions=positions,
-            event=event,
-            is_guaranteed=False,
-            custom_roi_percent=roi,
-            custom_risk_score=risk_score,
-            confidence=confidence,
-        )
-        if opp is not None:
-            opp.risk_factors = risk_factors
-            opp.mispricing_type = MispricingType.NEWS_INFORMATION
-        return opp
+        filtered = self.apply_firehose_filters(signals, include_filtered=False, limit=None)
+        return self.build_opportunities_from_firehose(filtered, limit=None)
 
     # ------------------------------------------------------------------
     # on_event()  (event-driven detection from tracked_traders_worker)
@@ -487,7 +576,8 @@ class TradersConfluenceStrategy(BaseStrategy):
         signals = event.payload.get("signals") or []
         if not signals:
             return []
-        return self.detect_from_signals(signals, [], [])
+        filtered = self.apply_firehose_filters(signals, include_filtered=False, limit=None)
+        return self.build_opportunities_from_firehose(filtered, limit=None)
 
     # ------------------------------------------------------------------
     # Evaluate / Should-Exit  (unified strategy interface)

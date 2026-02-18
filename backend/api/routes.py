@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from typing import Optional
+from typing import Literal, Optional
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from utils.utcnow import utcnow, utcfromtimestamp
@@ -231,6 +231,10 @@ async def get_opportunities(
     ),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip"),
+    source: Literal["markets", "traders", "all"] = Query(
+        "markets",
+        description="Opportunity source: markets, traders, all",
+    ),
 ):
     """Get current arbitrage opportunities (from DB snapshot)."""
     strategies = await _resolve_strategy_to_filter(strategy)
@@ -242,7 +246,7 @@ async def get_opportunities(
         category=category,
     )
 
-    opportunities = await shared_state.get_opportunities_from_db(session, filter)
+    opportunities = await shared_state.get_opportunities_from_db(session, filter, source=source)
 
     # Exclude a specific strategy if requested
     if exclude_strategy:
@@ -490,6 +494,10 @@ async def get_opportunity_counts(
         description="Optional strategy subtype filter (e.g. certainty_shock, pure_arb)",
     ),
     category: Optional[str] = Query(None, description="Optional category filter for subfilter lookups"),
+    source: Literal["markets", "traders", "all"] = Query(
+        "markets",
+        description="Opportunity source: markets, traders, all",
+    ),
 ):
     """Get counts of opportunities grouped by strategy and category.
 
@@ -504,7 +512,7 @@ async def get_opportunity_counts(
         category=category,
     )
 
-    opportunities = await shared_state.get_opportunities_from_db(session, filter)
+    opportunities = await shared_state.get_opportunities_from_db(session, filter, source=source)
 
     # Apply search filter if provided
     if search:
@@ -544,10 +552,14 @@ async def get_opportunity_counts(
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
 async def get_opportunity(
     opportunity_id: str,
+    source: Literal["markets", "traders", "all"] = Query(
+        "markets",
+        description="Opportunity source: markets, traders, all",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get a specific opportunity by ID"""
-    opportunities = await shared_state.get_opportunities_from_db(session, None)
+    opportunities = await shared_state.get_opportunities_from_db(session, None, source=source)
     for opp in opportunities:
         if opp.id == opportunity_id:
             return _serialize_with_sub_strategy(opp)

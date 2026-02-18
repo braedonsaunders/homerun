@@ -1,13 +1,14 @@
 """Strategy-owned traders firehose filtering pipeline.
 
-This module keeps firehose gating for Traders opportunities in the
-user-configurable ``traders_confluence`` opportunity strategy code.
+This module keeps trader firehose normalization, enrichment, filtering,
+and opportunity conversion inside DB-loaded traders strategies.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -21,25 +22,22 @@ from models.database import (
     TraderGroup,
     TraderGroupMember,
 )
+from models.opportunity import ArbitrageOpportunity
 from services.market_tradability import get_market_tradability_map
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
-from services.strategy_loader import StrategyLoader, StrategyValidationError
 from services.smart_wallet_pool import _looks_like_crypto_market, smart_wallet_pool
-from services.strategies.traders_confluence import TradersConfluenceStrategy
-from utils.logger import get_logger
+from services.strategy_loader import strategy_loader
+from services.strategy_runtime import refresh_strategy_runtime_if_needed
+from services.strategy_sdk import StrategySDK
 from utils.converters import normalize_market_id, safe_float
+from utils.logger import get_logger
 from utils.utcnow import utcnow
-
-from functools import partial
 
 _safe_float = partial(safe_float, reject_nan_inf=True)
 
 logger = get_logger("traders_firehose_pipeline")
 
 _STRATEGY_SLUG = "traders_confluence"
-_strategy_cache_lock = asyncio.Lock()
-_strategy_cache_key: Optional[tuple[str, int, str]] = None
-_strategy_cache_instance: Optional[Any] = None
 
 
 def _normalize_wallet_address(value: object) -> Optional[str]:
@@ -82,36 +80,24 @@ def _strip_internal_schema(config: object) -> dict[str, Any]:
 
 def _apply_strategy_config(instance: Any, config: dict[str, Any]) -> None:
     if hasattr(instance, "configure") and callable(getattr(instance, "configure")):
-        try:
-            instance.configure(config)
-        except Exception as exc:
-            logger.warning("Failed to apply configure() on traders strategy: %s", exc)
+        instance.configure(config)
 
     default_config = getattr(instance, "default_config", None)
     current_config = getattr(instance, "config", None)
     if isinstance(default_config, dict):
         merged = dict(default_config)
         merged.update(config)
-        try:
-            setattr(instance, "config", merged)
-        except Exception:
-            pass
+        setattr(instance, "config", merged)
     elif isinstance(current_config, dict):
         merged = dict(current_config)
         merged.update(config)
-        try:
-            setattr(instance, "config", merged)
-        except Exception:
-            pass
+        setattr(instance, "config", merged)
 
     internal_cfg = getattr(instance, "_config", None)
     if isinstance(internal_cfg, dict):
         merged = dict(internal_cfg)
         merged.update(config)
-        try:
-            setattr(instance, "_config", merged)
-        except Exception:
-            pass
+        setattr(instance, "_config", merged)
 
 
 async def _load_strategy_row(session: AsyncSession) -> Optional[Strategy]:
@@ -120,48 +106,24 @@ async def _load_strategy_row(session: AsyncSession) -> Optional[Strategy]:
 
 
 async def _resolve_traders_strategy(session: AsyncSession) -> Optional[Any]:
-    global _strategy_cache_key, _strategy_cache_instance
-
     row = await _load_strategy_row(session)
     if row is None:
-        fallback = TradersConfluenceStrategy()
-        _apply_strategy_config(fallback, {})
-        return fallback
-
+        logger.error("Traders strategy row missing: %s", _STRATEGY_SLUG)
+        return None
     if row.enabled is False:
-        logger.info("Traders strategy is disabled; opportunities firehose suppressed")
+        logger.info("Traders strategy disabled", slug=_STRATEGY_SLUG)
         return None
 
-    cache_key = (
-        str(row.id),
-        int(row.version or 0),
-        (row.updated_at.isoformat() if row.updated_at else ""),
-    )
+    await refresh_strategy_runtime_if_needed(session, source_keys=["traders"], force=False)
+    loaded = strategy_loader._loaded.get(_STRATEGY_SLUG)
+    if loaded is None:
+        logger.error("Traders strategy runtime not loaded", slug=_STRATEGY_SLUG)
+        return None
 
-    async with _strategy_cache_lock:
-        if _strategy_cache_key == cache_key and _strategy_cache_instance is not None:
-            return _strategy_cache_instance
-
-        config = _strip_internal_schema(row.config)
-        loader = StrategyLoader()
-        try:
-            loaded = loader.load(
-                slug=str(row.slug or _STRATEGY_SLUG),
-                source_code=str(row.source_code or ""),
-                config=config,
-            )
-            instance = loaded.instance
-        except StrategyValidationError as exc:
-            logger.error("Failed to load traders strategy plugin source; using fallback: %s", exc)
-            instance = TradersConfluenceStrategy()
-        except Exception as exc:
-            logger.error("Unexpected traders strategy load failure; using fallback: %s", exc)
-            instance = TradersConfluenceStrategy()
-
-        _apply_strategy_config(instance, config)
-        _strategy_cache_key = cache_key
-        _strategy_cache_instance = instance
-        return instance
+    config = StrategySDK.validate_trader_filter_config(_strip_internal_schema(row.config))
+    instance = loaded.instance
+    _apply_strategy_config(instance, config)
+    return instance
 
 
 async def _annotate_source_flags(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
@@ -226,14 +188,15 @@ async def _annotate_source_flags(session: AsyncSession, rows: list[dict[str, Any
         tracked_wallets = sum(1 for addr in wallets if addr in tracked_addresses)
         group_wallets = sum(1 for addr in wallets if group_ids_by_address.get(addr))
         matched_group_ids = sorted({gid for addr in wallets for gid in group_ids_by_address.get(addr, set())})
-        has_qualified_source = bool(pool_wallets or tracked_wallets or group_wallets)
 
-        row["source_flags"] = {
-            "from_pool": pool_wallets > 0,
-            "from_tracked_traders": tracked_wallets > 0,
-            "from_trader_groups": group_wallets > 0,
-            "qualified": has_qualified_source,
-        }
+        row["source_flags"] = StrategySDK.normalize_trader_source_flags(
+            {
+                "from_pool": pool_wallets > 0,
+                "from_tracked_traders": tracked_wallets > 0,
+                "from_trader_groups": group_wallets > 0,
+                "qualified": bool(pool_wallets or tracked_wallets or group_wallets),
+            }
+        )
         row["source_breakdown"] = {
             "wallets_considered": len(wallets),
             "pool_wallets": pool_wallets,
@@ -279,45 +242,7 @@ async def _annotate_firehose_context(rows: list[dict[str, Any]]) -> None:
                 else (_safe_float(row.get("conviction_score")) or 0.0)
             )
         )
-
-
-def _fallback_filter(
-    rows: list[dict[str, Any]],
-    *,
-    include_filtered: bool,
-    limit: Optional[int],
-) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        tradable = bool(row.get("firehose_market_tradable", True))
-        is_crypto = bool(row.get("firehose_is_crypto", False))
-        passed = tradable and not is_crypto
-        reasons: list[str] = []
-        if not tradable:
-            reasons.append("market_not_tradable")
-        if is_crypto:
-            reasons.append("crypto_market_excluded")
-
-        row["is_valid"] = passed
-        row["is_actionable"] = passed
-        row["is_tradeable"] = passed
-        row["validation_reasons"] = reasons
-        row["validation"] = {
-            "is_valid": passed,
-            "is_actionable": passed,
-            "is_tradeable": passed,
-            "checks": {
-                "has_market_id": bool(normalize_market_id(row.get("market_id"))),
-                "upstream_tradable": tradable,
-            },
-            "reasons": reasons,
-        }
-        if passed or include_filtered:
-            out.append(row)
-
-    if limit and limit > 0:
-        return out[:limit]
-    return out
+        row.update(StrategySDK.normalize_trader_signal(row))
 
 
 def _apply_strategy_filter(
@@ -329,24 +254,52 @@ def _apply_strategy_filter(
 ) -> list[dict[str, Any]]:
     method = getattr(strategy, "apply_firehose_filters", None)
     if not callable(method):
-        return _fallback_filter(rows, include_filtered=include_filtered, limit=limit)
+        logger.error("Traders strategy missing apply_firehose_filters", strategy=getattr(strategy, "strategy_type", ""))
+        return []
 
     try:
-        filtered = method(rows, include_filtered=include_filtered, limit=limit)
-    except TypeError:
-        filtered = method(rows)
+        annotated = method(rows, include_filtered=True, limit=None)
     except Exception as exc:
-        logger.error("Traders strategy firehose filter failed; using fallback: %s", exc)
-        return _fallback_filter(rows, include_filtered=include_filtered, limit=limit)
+        logger.error("Traders strategy firehose filter failed: %s", exc)
+        return []
 
-    if not isinstance(filtered, list):
-        logger.warning("Traders strategy returned non-list firehose payload; using fallback")
-        return _fallback_filter(rows, include_filtered=include_filtered, limit=limit)
+    if not isinstance(annotated, list):
+        logger.error("Traders strategy returned non-list firehose payload")
+        return []
 
-    cleaned = [row for row in filtered if isinstance(row, dict)]
+    normalized_rows = [StrategySDK.normalize_trader_signal(dict(row)) for row in annotated if isinstance(row, dict)]
+    passed_rows = [
+        row
+        for row in normalized_rows
+        if bool(row.get("is_tradeable", row.get("is_actionable", row.get("is_valid", False))))
+    ]
+    filtered_out_rows = [
+        row
+        for row in normalized_rows
+        if not bool(row.get("is_tradeable", row.get("is_actionable", row.get("is_valid", False))))
+    ]
+
+    output_rows = normalized_rows if include_filtered else passed_rows
     if limit and limit > 0:
-        return cleaned[:limit]
-    return cleaned
+        output_rows = output_rows[:limit]
+
+    reason_counts: dict[str, int] = {}
+    for row in filtered_out_rows:
+        for reason in row.get("validation_reasons") or row.get("validation", {}).get("reasons", []):
+            reason_key = str(reason)
+            reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
+
+    logger.info(
+        "Traders firehose filtered",
+        strategy=getattr(strategy, "strategy_type", _STRATEGY_SLUG),
+        raw_rows=len(rows),
+        filtered_rows=len(output_rows),
+        passed_rows=len(passed_rows),
+        filtered_out_rows=len(filtered_out_rows),
+        include_filtered=bool(include_filtered),
+        reason_counts=reason_counts,
+    )
+    return output_rows
 
 
 async def apply_traders_firehose_strategy(
@@ -358,7 +311,7 @@ async def apply_traders_firehose_strategy(
     if not rows:
         return []
 
-    cloned_rows: list[dict[str, Any]] = [dict(row) for row in rows if isinstance(row, dict)]
+    cloned_rows: list[dict[str, Any]] = [StrategySDK.normalize_trader_signal(dict(row)) for row in rows if isinstance(row, dict)]
     if not cloned_rows:
         return []
 
@@ -381,14 +334,12 @@ async def apply_traders_firehose_strategy(
 async def get_strategy_filtered_trader_opportunities(
     *,
     limit: int = 50,
-    min_tier: str = "WATCH",
     include_filtered: bool = False,
 ) -> list[dict[str, Any]]:
     safe_limit = max(1, int(limit))
     firehose_scan_limit = max(250, safe_limit * 6)
     firehose_rows = await smart_wallet_pool.get_tracked_trader_firehose_signals(
         limit=firehose_scan_limit,
-        min_tier=min_tier,
         include_filtered=include_filtered,
     )
     return await apply_traders_firehose_strategy(
@@ -396,3 +347,64 @@ async def get_strategy_filtered_trader_opportunities(
         include_filtered=include_filtered,
         limit=safe_limit,
     )
+
+
+async def get_strategy_trader_opportunities(
+    *,
+    limit: int = 50,
+    include_filtered: bool = False,
+) -> list[ArbitrageOpportunity]:
+    safe_limit = max(1, int(limit))
+    filtered_rows = await get_strategy_filtered_trader_opportunities(
+        limit=max(250, safe_limit * 6),
+        include_filtered=include_filtered,
+    )
+    return await build_strategy_trader_opportunities_from_rows(filtered_rows, limit=safe_limit)
+
+
+async def build_strategy_trader_opportunities_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int = 50,
+) -> list[ArbitrageOpportunity]:
+    safe_limit = max(1, int(limit))
+    filtered_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    if not filtered_rows:
+        return []
+
+    async with AsyncSessionLocal() as session:
+        strategy = await _resolve_traders_strategy(session)
+    if strategy is None:
+        return []
+
+    builder = getattr(strategy, "build_opportunities_from_firehose", None)
+    if not callable(builder):
+        logger.error("Traders strategy missing build_opportunities_from_firehose", slug=_STRATEGY_SLUG)
+        return []
+
+    built = builder(filtered_rows, limit=safe_limit)
+    if asyncio.iscoroutine(built):
+        built = await built
+
+    if not isinstance(built, list):
+        logger.error("Traders strategy returned non-list opportunities", slug=_STRATEGY_SLUG)
+        return []
+
+    opportunities: list[ArbitrageOpportunity] = []
+    for item in built:
+        if isinstance(item, ArbitrageOpportunity):
+            opportunities.append(item)
+            continue
+        if isinstance(item, dict):
+            try:
+                opportunities.append(ArbitrageOpportunity.model_validate(item))
+            except Exception:
+                continue
+
+    logger.info(
+        "Traders opportunities built",
+        strategy=getattr(strategy, "strategy_type", _STRATEGY_SLUG),
+        filtered_rows=len(filtered_rows),
+        opportunities=len(opportunities),
+    )
+    return opportunities[:safe_limit]
