@@ -98,6 +98,8 @@ class NewsEdgeStrategy(BaseStrategy):
             target_price = entry_price + (edge_percent / 100.0) if entry_price > 0 else 0.0
             net_profit = (target_price - entry_price) - (target_price * self.fee) if target_price > entry_price else 0.0
 
+            # NOTE: markets are pre-enriched dicts (only market_id/question from intent payload);
+            # no ORM Market object is available here, so cannot route through create_opportunity().
             opp = ArbitrageOpportunity(
                 strategy=self.strategy_type,
                 title=f"News Edge: {question[:50]}",
@@ -358,8 +360,7 @@ class NewsEdgeStrategy(BaseStrategy):
             "liquidity": market.liquidity,
         }
 
-        opp = ArbitrageOpportunity(
-            strategy="news_edge",
+        opp = self.create_opportunity(
             title=f"News Edge: {market.question[:50]}...",
             description=(
                 f"News suggests {side} at ${entry_price:.2f} "
@@ -370,23 +371,19 @@ class NewsEdgeStrategy(BaseStrategy):
             ),
             total_cost=total_cost,
             expected_payout=expected_payout,
-            gross_profit=gross_profit,
-            fee=fee,
-            net_profit=net_profit,
-            roi_percent=roi,
-            risk_score=risk_score,
-            risk_factors=risk_factors,
-            markets=[market_dict],
-            event_id=event.id if event else None,
-            event_slug=event.slug if event else None,
-            event_title=event.title if event else None,
-            category=event.category if event else None,
-            min_liquidity=min_liquidity,
-            max_position_size=max_position,
-            resolution_date=resolution_date,
-            mispricing_type=MispricingType.NEWS_INFORMATION,
-            positions_to_take=positions,
+            markets=[market],
+            positions=positions,
+            event=event,
+            is_guaranteed=False,
+            custom_roi_percent=roi,
+            custom_risk_score=risk_score,
+            confidence=edge.confidence,
         )
+        if opp is not None:
+            opp.risk_factors = risk_factors
+            opp.min_liquidity = min_liquidity
+            opp.max_position_size = max_position
+            opp.mispricing_type = MispricingType.NEWS_INFORMATION
 
         return opp
 

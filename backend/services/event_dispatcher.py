@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Any, Awaitable, Callable, Set
 
 from utils.logger import get_logger
-from services.data_events import DataEvent
+from services.data_events import DataEvent, EventType
 
 logger = get_logger("event_dispatcher")
 
@@ -22,6 +22,10 @@ class EventDispatcher:
     Dispatch is concurrent -- all handlers for an event type run
     via asyncio.gather with error isolation (one handler failing
     doesn't affect others).
+
+    Subscriptions are validated against ``EventType._ALL`` at registration
+    time so typos in event type strings raise a ``ValueError`` immediately
+    rather than silently routing to zero handlers.
     """
 
     def __init__(self):
@@ -31,6 +35,23 @@ class EventDispatcher:
         self._subscriptions: dict[str, set[str]] = defaultdict(set)
 
     def subscribe(self, strategy_slug: str, event_type: str, handler: EventHandler) -> None:
+        """Register a handler for an event type.
+
+        Args:
+            strategy_slug: Unique strategy identifier (used for unsubscribe).
+            event_type: One of the ``EventType.*`` constants, or ``"*"`` for all events.
+            handler: Async callable that receives a DataEvent and returns a list.
+
+        Raises:
+            ValueError: If ``event_type`` is not in ``EventType._ALL`` and is not ``"*"``.
+        """
+        if event_type != "*" and event_type not in EventType._ALL:
+            raise ValueError(
+                f"Unknown event_type '{event_type}' for strategy '{strategy_slug}'. "
+                f"Valid types: {sorted(EventType._ALL)}. "
+                f"Use EventType.* constants from services.data_events — "
+                f"e.g. EventType.MARKET_DATA_REFRESH instead of 'market_data_refresh'."
+            )
         self._handlers[event_type].append((strategy_slug, handler))
         self._subscriptions[strategy_slug].add(event_type)
 

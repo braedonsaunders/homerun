@@ -604,9 +604,7 @@ class StatArbStrategy(BaseStrategy):
                 }
             ]
 
-            opp = ArbitrageOpportunity(
-                strategy=self.strategy_type,
-                is_guaranteed=False,
+            opp = self.create_opportunity(
                 title=f"Stat Arb: {market.question[:60]}",
                 description=(
                     f"Buy {outcome} @ ${buy_price:.3f} | "
@@ -615,31 +613,15 @@ class StatArbStrategy(BaseStrategy):
                 ),
                 total_cost=total_cost,
                 expected_payout=expected_payout,
-                gross_profit=gross_profit,
-                fee=fee,
-                net_profit=net_profit,
-                roi_percent=roi,
-                risk_score=risk_score,
-                risk_factors=risk_factors,
-                markets=[
-                    {
-                        "id": market.id,
-                        "slug": market.slug,
-                        "question": market.question,
-                        "yes_price": yes_price,
-                        "no_price": no_price,
-                        "liquidity": market.liquidity,
-                    }
-                ],
-                event_id=event.id if event else None,
-                event_slug=event.slug if event else None,
-                event_title=event.title if event else None,
-                category=category,
-                min_liquidity=min_liquidity,
-                max_position_size=max_position,
-                resolution_date=market.end_date,
-                positions_to_take=positions,
+                markets=[market],
+                positions=positions,
+                event=event,
+                is_guaranteed=False,
+                custom_roi_percent=roi,
+                custom_risk_score=risk_score,
             )
+            if opp is not None:
+                opp.risk_factors = risk_factors
 
             opportunities.append(opp)
 

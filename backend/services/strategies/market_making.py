@@ -373,10 +373,8 @@ class MarketMakingStrategy(BaseStrategy):
             if market_platform not in {"polymarket", "kalshi"}:
                 market_platform = "kalshi" if str(getattr(market, "id", "")).upper().startswith("KX") else "polymarket"
 
-            # --- Build the opportunity directly (like Miracle strategy) ---
-            opp = ArbitrageOpportunity(
-                strategy=self.strategy_type,
-                is_guaranteed=False,
+            # --- Build the opportunity via create_opportunity() ---
+            opp = self.create_opportunity(
                 title=f"MM: {market.question[:60]}",
                 description=(
                     f"Market make YES @ bid ${buy_price:.3f} / ask ${sell_price:.3f} | "
@@ -384,35 +382,18 @@ class MarketMakingStrategy(BaseStrategy):
                 ),
                 total_cost=total_cost,
                 expected_payout=expected_payout,
-                gross_profit=gross_profit,
-                fee=fee,
-                net_profit=net_profit,
-                roi_percent=roi,
-                risk_score=risk_score,
-                risk_factors=risk_factors,
-                markets=[
-                    {
-                        "id": market.id,
-                        "condition_id": market.condition_id,
-                        "slug": market.slug,
-                        "event_slug": market.event_slug,
-                        "platform": market_platform,
-                        "question": market.question,
-                        "yes_price": yes_price,
-                        "no_price": no_price,
-                        "liquidity": market.liquidity,
-                        "volume": market.volume,
-                    }
-                ],
-                event_id=event.id if event else None,
-                event_slug=event.slug if event else None,
-                event_title=event.title if event else None,
-                category=event.category if event else None,
-                min_liquidity=market.liquidity,
-                max_position_size=max_position,
-                resolution_date=resolution_date,
-                positions_to_take=positions,
+                markets=[market],
+                positions=positions,
+                event=event,
+                is_guaranteed=False,
+                custom_roi_percent=roi,
+                custom_risk_score=risk_score,
             )
+            if opp is not None:
+                opp.risk_factors = risk_factors
+                # Inject condition_id into the market dict (not included by create_opportunity base enrichment)
+                if opp.markets:
+                    opp.markets[0]["condition_id"] = market.condition_id
 
             opportunities.append(opp)
 

@@ -333,32 +333,21 @@ class MiracleStrategy(BaseStrategy):
                 }
             ]
 
-            opp = ArbitrageOpportunity(
-                strategy=self.strategy_type,
+            opp = self.create_opportunity(
                 title=f"Miracle: {market.question[:60]}...",
                 description=f"Buy NO @ ${no_price:.3f} | {category} | Impossibility: {impossibility_score:.0%}",
                 total_cost=total_cost,
                 expected_payout=expected_payout,
-                gross_profit=gross_profit,
-                fee=fee,
-                net_profit=net_profit,
-                roi_percent=roi,
-                risk_score=risk_score,
-                risk_factors=risk_factors,
-                markets=[
-                    {
-                        "id": market.id,
-                        "question": market.question,
-                        "yes_price": yes_price,
-                        "no_price": no_price,
-                        "liquidity": market.liquidity,
-                    }
-                ],
-                min_liquidity=min_liquidity,
-                max_position_size=max_position,
-                resolution_date=market.end_date,
-                positions_to_take=positions,
+                markets=[market],
+                positions=positions,
+                is_guaranteed=False,
+                skip_fee_model=True,
+                custom_roi_percent=roi,
+                custom_risk_score=risk_score,
+                confidence=impossibility_score,
             )
+            if opp is not None:
+                opp.risk_factors = risk_factors
 
             opportunities.append(opp)
 
@@ -501,34 +490,13 @@ class MiracleStrategy(BaseStrategy):
                         roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
 
                         if roi > 0.5:
-                            opp = ArbitrageOpportunity(
-                                strategy=self.strategy_type,
+                            opp = self.create_opportunity(
                                 title=f"Stale Market: {market.question[:60]}...",
                                 description=f"Logically impossible: {reason}",
                                 total_cost=total_cost,
                                 expected_payout=expected_payout,
-                                gross_profit=gross_profit,
-                                fee=fee,
-                                net_profit=net_profit,
-                                roi_percent=roi,
-                                risk_score=0.10,  # Low risk - logically impossible
-                                risk_factors=[
-                                    f"Stale market: {reason}",
-                                    "Verify resolution of related event before trading",
-                                ],
-                                markets=[
-                                    {
-                                        "id": market.id,
-                                        "question": market.question,
-                                        "yes_price": yes_price,
-                                        "no_price": no_price,
-                                        "liquidity": market.liquidity,
-                                    }
-                                ],
-                                min_liquidity=market.liquidity,
-                                max_position_size=market.liquidity * 0.05,
-                                resolution_date=market.end_date,
-                                positions_to_take=[
+                                markets=[market],
+                                positions=[
                                     {
                                         "action": "BUY",
                                         "outcome": "NO",
@@ -539,8 +507,17 @@ class MiracleStrategy(BaseStrategy):
                                         else None,
                                     }
                                 ],
+                                is_guaranteed=False,
+                                skip_fee_model=True,
+                                custom_roi_percent=roi,
+                                custom_risk_score=0.10,
                             )
-                            opportunities.append(opp)
+                            if opp is not None:
+                                opp.risk_factors = [
+                                    f"Stale market: {reason}",
+                                    "Verify resolution of related event before trading",
+                                ]
+                                opportunities.append(opp)
                     break  # Only match first resolved entity per market
 
         return opportunities

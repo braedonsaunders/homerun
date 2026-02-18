@@ -466,8 +466,7 @@ class TradersConfluenceStrategy(BaseStrategy):
             "liquidity": market.liquidity,
         }
 
-        return ArbitrageOpportunity(
-            strategy=self.strategy_type,
+        opp = self.create_opportunity(
             title=f"Trader Flow: {wallet_count} wallets → {market.question[:40]}",
             description=(
                 f"{wallet_count} tracked wallets ({tier} tier, {strength:.0%} confluence) "
@@ -476,25 +475,18 @@ class TradersConfluenceStrategy(BaseStrategy):
             ),
             total_cost=total_cost,
             expected_payout=expected_payout,
-            gross_profit=gross_profit,
-            fee=fee_amount,
-            net_profit=net_profit,
-            roi_percent=roi,
+            markets=[market],
+            positions=positions,
+            event=event,
             is_guaranteed=False,
-            roi_type="directional_payout",
-            risk_score=risk_score,
-            risk_factors=risk_factors,
-            markets=[market_dict],
-            event_id=event.id if event else None,
-            event_slug=event.slug if event else None,
-            event_title=event.title if event else None,
-            category=event.category if event else None,
-            min_liquidity=min_liquidity,
-            max_position_size=max_position,
-            resolution_date=market.end_date,
-            mispricing_type=MispricingType.NEWS_INFORMATION,
-            positions_to_take=positions,
+            custom_roi_percent=roi,
+            custom_risk_score=risk_score,
+            confidence=confidence,
         )
+        if opp is not None:
+            opp.risk_factors = risk_factors
+            opp.mispricing_type = MispricingType.NEWS_INFORMATION
+        return opp
 
     # ------------------------------------------------------------------
     # on_event()  (event-driven detection from tracked_traders_worker)

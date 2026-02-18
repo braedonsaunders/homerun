@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 from datetime import datetime, timezone
 
 from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from services.fee_model import fee_model
-from services.data_events import DataEvent
+from services.data_events import DataEvent, EventType
 
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import signal_payload
@@ -101,12 +101,45 @@ class SizingConfig:
     market_scale_cap: int = 4
 
 
+class StrategyContext(TypedDict, total=False):
+    """Typed structure for strategy context stored alongside every TradeSignal.
+
+    Passed as ``strategy_context_json`` through the signal bridge and available
+    in ``evaluate()`` via ``signal.strategy_context_json``. Provides a typed
+    contract so strategy authors know exactly what context is available at
+    evaluation time.
+
+    All fields are optional (``total=False``). Strategies populate what they
+    know and consumers access what they need. Strategy-specific extras go in
+    the ``extra`` key to avoid namespace collisions.
+    """
+    source: str                  # Data source ("scanner", "crypto", "weather", ...)
+    strategy_type: str           # Strategy slug (mirrors signal.strategy_type)
+    roi_percent: float           # Raw theoretical ROI from detect()
+    realistic_roi: float         # VWAP-adjusted ROI (when order book data available)
+    confidence: float            # Detection-time confidence [0, 1]
+    risk_score: float            # Risk score [0, 1] from calculate_risk_score()
+    risk_factors: list           # Human-readable list of risk factor strings
+    liquidity: float             # Min liquidity across all legs
+    edge_percent: float          # Edge in percent (same as roi_percent for arb)
+    num_legs: int                # Number of markets / trade legs
+    resolution_date: str         # ISO 8601 UTC resolution date string
+    days_to_resolution: float    # Fractional days until resolution
+    annualized_roi: float        # ROI annualized over days_to_resolution
+    is_guaranteed: bool          # True for guaranteed-spread arb
+    extra: dict                  # Strategy-specific extras (namespaced per strategy)
+
+
 class BaseStrategy(ABC):
     """Base class for arbitrage detection strategies.
 
     Strategies set strategy_type to their unique slug string.
 
-    Subclasses must implement at least one of:
+    Subclasses must implement:
+
+    * ``on_event()`` -- required entry point for event-driven detection.
+
+    And at least one of:
 
     * ``detect()`` -- synchronous detection, run in a thread-pool executor.
     * ``detect_async()`` -- async detection (preferred for I/O-bound work
@@ -160,8 +193,8 @@ class BaseStrategy(ABC):
     binary_only: bool = True  # Most strategies only work with 2-outcome markets
 
     # Event subscriptions — strategies declare what data events they react to.
-    # Possible values: "price_change", "market_data_refresh", "market_resolved",
-    # "crypto_update", "weather_update", "trader_activity", "news_event"
+    # Use EventType.* constants (e.g. EventType.MARKET_DATA_REFRESH).
+    # Unknown values are rejected at registration time by the EventDispatcher.
     subscriptions: list[str] = []
 
     # Composable evaluate pipeline — set scoring_weights to opt in.
@@ -175,6 +208,53 @@ class BaseStrategy(ABC):
     # These are used when the param is not provided by the orchestrator.
     # Override on each strategy to preserve its original default behavior.
     pipeline_defaults: dict = {}
+
+    # Per-strategy quality filter overrides. Set any field to override the
+    # global platform default for opportunities from this strategy.
+    # Example: directional strategies can relax the 120% ROI cap:
+    #
+    #   from services.quality_filter import QualityFilterOverrides
+    #   quality_filter_overrides = QualityFilterOverrides(max_roi_cap=200.0)
+    quality_filter_overrides: Any = None  # Optional[QualityFilterOverrides]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Validate strategy metadata at class definition time.
+
+        Catches configuration errors immediately at import — not at runtime
+        when a signal fires. Validates:
+        - All declared subscriptions are known EventType values
+        - strategy_type is defined on concrete (non-abstract) subclasses
+
+        NOTE: ``__init_subclass__`` is called before the ABC metaclass sets
+        ``cls.__abstractmethods__``, so we cannot rely on that attribute to
+        detect intermediate base classes. Instead we check whether
+        ``strategy_type`` is declared in the class's own ``__dict__`` — if
+        it's not, the class is either abstract or an intermediate base, and
+        we skip validation. Concrete strategies must explicitly declare
+        ``strategy_type = "my_strategy"`` in their class body.
+        """
+        super().__init_subclass__(**kwargs)
+        # Only validate subscriptions if this class itself declares them
+        own_subs = cls.__dict__.get("subscriptions")
+        if own_subs is not None:
+            for et in own_subs:
+                if et not in EventType._ALL:
+                    raise ValueError(
+                        f"{cls.__name__}.subscriptions contains unknown event type '{et}'. "
+                        f"Valid types: {sorted(EventType._ALL)}. "
+                        f"Use EventType.* constants from services.data_events."
+                    )
+        # Only validate strategy_type if this class explicitly declares it.
+        # Intermediate base classes (e.g. BaseWeatherStrategy) do not declare
+        # strategy_type in their own __dict__ — their concrete subclasses do.
+        if "strategy_type" not in cls.__dict__:
+            return
+        st = cls.__dict__["strategy_type"]
+        if not isinstance(st, str) or not st.strip():
+            raise TypeError(
+                f"{cls.__name__}.strategy_type must be a non-empty string. "
+                f"Example: strategy_type = 'my_strategy'"
+            )
 
     def __init__(self):
         self.fee = settings.POLYMARKET_FEE
@@ -212,31 +292,84 @@ class BaseStrategy(ABC):
         """
         return self.detect(events, markets, prices)
 
+    @abstractmethod
     async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
-        """React to a data event. Override for event-driven detection.
+        """React to a subscribed DataEvent. **Must be implemented by every strategy.**
 
-        Called by the event dispatcher when a subscribed event fires.
-        Return a list of detected opportunities (may be empty).
+        Called by the EventDispatcher when an event matching one of your
+        ``subscriptions`` fires. Return a list of detected opportunities (may be
+        empty). The EventDispatcher collects all results and routes them through
+        the signal bridge.
 
-        Default: no-op (returns empty list).
+        Strategies that only implement ``detect()`` (scanner strategies) should
+        delegate here::
+
+            async def on_event(self, event: DataEvent) -> list[ArbitrageOpportunity]:
+                if event.event_type == EventType.MARKET_DATA_REFRESH:
+                    return self.detect(event.events or [], event.markets or [], event.prices or {})
+                return []
+
+        Args:
+            event: Immutable DataEvent with event_type, source, payload, and
+                   type-specific fields (markets, prices, old_price, etc.)
+
+        Returns:
+            list of ArbitrageOpportunity objects (empty list if no opportunities).
         """
-        return []
 
-    def on_blocked(self, signal: Any, reason: str, context: dict) -> None:
-        """Called when the platform blocks a signal from this strategy.
+    def on_blocked(
+        self,
+        signal: Any,
+        reason: str,
+        context: dict[str, Any],
+    ) -> Optional[StrategyDecision]:
+        """Control hook called when the platform blocks a signal from this strategy.
 
-        Override to log, alert, or adjust strategy behavior when blocked.
-        Default: no-op.
+        This is a **control hook** — return a new ``StrategyDecision`` to override
+        the block and substitute a different decision. Return ``None`` to accept
+        the block (default behavior).
+
+        Common overrides:
+        - Retry with a smaller size: ``return StrategyDecision("selected", "retry_smaller", size_usd=10.0)``
+        - Force skip instead of block: ``return StrategyDecision("skipped", "downgraded_from_block")``
+        - Accept the block: ``return None`` (default)
+
+        Args:
+            signal: The TradeSignal that was blocked.
+            reason: Human-readable reason the platform blocked this signal.
+            context: Full orchestrator context dict (params, trader, mode, etc.)
+
+        Returns:
+            A replacement ``StrategyDecision``, or ``None`` to accept the block.
         """
-        pass
+        return None
 
-    def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
-        """Called when the platform caps this strategy's position size.
+    def on_size_capped(
+        self,
+        original_size: float,
+        capped_size: float,
+        reason: str,
+    ) -> Optional[float]:
+        """Control hook called when the platform caps this strategy's position size.
 
-        Override to track how often sizing gets overridden.
-        Default: no-op.
+        This is a **control hook** — return a float to override the cap with
+        your own accepted size. Return ``None`` to accept the platform's cap
+        (default behavior).
+
+        Common overrides:
+        - Accept a different size: ``return max(capped_size, 5.0)``
+        - Accept the cap: ``return None`` (default)
+
+        Args:
+            original_size: The size the strategy computed in ``evaluate()``.
+            capped_size: The size the platform is allowing (after risk/notional cap).
+            reason: Human-readable reason for the cap.
+
+        Returns:
+            An accepted size (float) to use instead of ``capped_size``, or
+            ``None`` to accept the platform's cap.
         """
-        pass
+        return None
 
     def configure(self, config: dict) -> None:
         """Apply user config overrides. Called by the loader after instantiation."""
@@ -633,6 +766,16 @@ class BaseStrategy(ABC):
         min_liquidity_hard: Optional[float] = None,
         min_position_size: Optional[float] = None,
         min_absolute_profit: Optional[float] = None,
+        confidence: Optional[float] = None,
+        # ── Escape hatches for non-standard payout models ────────────────────
+        # Use these when the default fee/ROI calculations don't apply to your
+        # strategy's economics. Only set what you need; defaults are fine otherwise.
+        skip_fee_model: bool = False,
+        # Pass a pre-computed ROI percent (e.g. 12.5 for 12.5%) to override the
+        # standard (net_profit / total_cost) ROI calculation.
+        custom_roi_percent: Optional[float] = None,
+        # Pass a pre-computed risk score [0, 1] to bypass calculate_risk_score().
+        custom_risk_score: Optional[float] = None,
     ) -> Optional[ArbitrageOpportunity]:
         """Create an ArbitrageOpportunity with fee/risk enrichment.
 
@@ -641,6 +784,20 @@ class BaseStrategy(ABC):
         deduplication. This method now always returns an opportunity if
         inputs are valid, allowing the external pipeline to provide a
         full audit trail of which filters passed/failed.
+
+        Confidence is no longer auto-derived from risk_score. Strategies may
+        pass an explicit confidence value; otherwise a neutral baseline is used.
+
+        Args:
+            skip_fee_model: When True, uses a zero fee_breakdown. Use for
+                directional NO-bet strategies (e.g. Miracle) where the fee
+                structure is fundamentally different from the standard
+                guaranteed-spread model.
+            custom_roi_percent: Pre-computed ROI in percent. When provided,
+                overrides the standard (net_profit / total_cost) calculation.
+            custom_risk_score: Pre-computed risk score [0, 1]. When provided,
+                bypasses calculate_risk_score(). risk_factors will be empty
+                unless you set them on the returned opportunity afterward.
         """
 
         gross_profit = expected_payout - total_cost
@@ -651,15 +808,27 @@ class BaseStrategy(ABC):
         # --- Comprehensive fee model (gas, spread, multi-leg slippage) ---
         is_negrisk = any(getattr(m, "neg_risk", False) for m in markets)
         total_liquidity = sum(m.liquidity for m in markets)
-        fee_breakdown = fee_model.calculate_fees(
-            expected_payout=expected_payout,
-            num_legs=len(markets),
-            is_negrisk=is_negrisk,
-            spread_bps=spread_bps,
-            total_cost=total_cost,
-            maker_mode=settings.FEE_MODEL_MAKER_MODE,
-            total_liquidity=total_liquidity,
-        )
+        if skip_fee_model:
+            # Directional/non-standard payout — zero-fee breakdown preserves the
+            # _fee_breakdown metadata key without polluting the ROI calculation.
+            class _ZeroFees:
+                winner_fee = 0.0
+                gas_cost_usd = 0.0
+                spread_cost = 0.0
+                multi_leg_slippage = 0.0
+                total_fees = 0.0
+                fee_as_pct_of_payout = 0.0
+            fee_breakdown = _ZeroFees()
+        else:
+            fee_breakdown = fee_model.calculate_fees(
+                expected_payout=expected_payout,
+                num_legs=len(markets),
+                is_negrisk=is_negrisk,
+                spread_bps=spread_bps,
+                total_cost=total_cost,
+                maker_mode=settings.FEE_MODEL_MAKER_MODE,
+                total_liquidity=total_liquidity,
+            )
 
         # --- VWAP-adjusted realistic profit ---
         realistic_cost = vwap_total_cost if vwap_total_cost is not None else total_cost
@@ -671,16 +840,27 @@ class BaseStrategy(ABC):
         # (kept for enrichment metadata; hard filters are now in QualityFilterPipeline)
         effective_roi = realistic_roi if vwap_total_cost is not None else roi
 
+        # Apply custom_roi_percent override (pre-computed by strategy from model)
+        if custom_roi_percent is not None:
+            roi = float(custom_roi_percent)
+            effective_roi = roi
+
         # Calculate max position size based on liquidity
         min_liquidity = min((m.liquidity for m in markets), default=0)
         max_position = min_liquidity * 0.1  # Don't exceed 10% of liquidity
 
-        # Calculate risk
+        # Calculate risk — use custom_risk_score if provided, otherwise compute
         resolution_date = None
         if markets and markets[0].end_date:
             resolution_date = markets[0].end_date
 
-        risk_score, risk_factors = self.calculate_risk_score(markets, resolution_date)
+        if custom_risk_score is not None:
+            risk_score = float(max(0.0, min(1.0, custom_risk_score)))
+            risk_factors: list[str] = []
+        else:
+            risk_score, risk_factors = self.calculate_risk_score(markets, resolution_date)
+
+        confidence_score = to_confidence(confidence if confidence is not None else 0.5, 0.5)
 
         # Build enriched market dicts with VWAP metadata
         market_dicts = []
@@ -745,7 +925,7 @@ class BaseStrategy(ABC):
             roi_type=roi_type,
             risk_score=risk_score,
             risk_factors=risk_factors,
-            confidence=1.0 - risk_score,
+            confidence=confidence_score,
             markets=market_dicts,
             event_id=event.id if event else None,
             event_slug=event.slug if event else None,

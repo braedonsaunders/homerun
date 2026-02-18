@@ -5,18 +5,70 @@ from datetime import datetime
 from typing import Any, Optional
 
 
+class EventType:
+    """Canonical event type string constants.
+
+    Use these constants everywhere instead of bare string literals so that
+    typos are caught at import time rather than silently failing at runtime::
+
+        # Bad — typo silently fires to zero handlers:
+        subscriptions = ["market_data_refesh"]
+
+        # Good — typo raises ValueError when the class is defined:
+        subscriptions = [EventType.MARKET_DATA_REFRESH]
+
+    All values in ``_ALL`` are accepted by ``EventDispatcher.subscribe()``.
+    """
+
+    PRICE_CHANGE: str = "price_change"
+    """A market's price changed (from WebSocket feed)."""
+
+    MARKET_DATA_REFRESH: str = "market_data_refresh"
+    """Periodic batch of all market data (replaces scanner poll)."""
+
+    MARKET_RESOLVED: str = "market_resolved"
+    """A market outcome was determined."""
+
+    CRYPTO_UPDATE: str = "crypto_update"
+    """Crypto market data from the crypto worker."""
+
+    WEATHER_UPDATE: str = "weather_update"
+    """Weather forecast data from the weather worker."""
+
+    TRADER_ACTIVITY: str = "trader_activity"
+    """Smart wallet / copy trading signal from the tracked traders worker."""
+
+    NEWS_UPDATE: str = "news_update"
+    """News intent signal from the news worker."""
+
+    NEWS_EVENT: str = "news_event"
+    """Breaking news signal from the news worker (alias for compatibility)."""
+
+    _ALL: frozenset[str] = frozenset({
+        "price_change",
+        "market_data_refresh",
+        "market_resolved",
+        "crypto_update",
+        "weather_update",
+        "trader_activity",
+        "news_update",
+        "news_event",
+    })
+
+
 @dataclass(frozen=True)
 class DataEvent:
     """A single data event that strategies can subscribe to.
 
-    Event types:
-        price_change       - A market's price changed (from WS feed)
-        market_data_refresh - Periodic batch of all market data (replaces scanner poll)
-        market_resolved    - A market outcome was determined
-        crypto_update      - Crypto market data from crypto worker
-        weather_update     - Weather forecast data from weather worker
-        trader_activity    - Smart wallet / copy trading signal from traders worker
-        news_event         - Breaking news signal from news worker
+    Event types (use ``EventType.*`` constants):
+        EventType.PRICE_CHANGE          - A market's price changed (from WS feed)
+        EventType.MARKET_DATA_REFRESH   - Periodic batch of all market data
+        EventType.MARKET_RESOLVED       - A market outcome was determined
+        EventType.CRYPTO_UPDATE         - Crypto market data from crypto worker
+        EventType.WEATHER_UPDATE        - Weather forecast data from weather worker
+        EventType.TRADER_ACTIVITY       - Smart wallet / copy trading signal
+        EventType.NEWS_UPDATE           - News intent signal from news worker
+        EventType.NEWS_EVENT            - Breaking news signal from news worker
     """
     event_type: str
     source: str

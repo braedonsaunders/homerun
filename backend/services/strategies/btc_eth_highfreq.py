@@ -2330,6 +2330,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             question = market.get("question") or market.get("slug") or market_id
             slug = market.get("slug") or market_id
 
+            # NOTE: ``markets`` here are raw dicts from the crypto worker, not ORM
+            # Market objects. create_opportunity() requires ORM Market objects for fee
+            # model and risk scoring, so we construct directly and inline those calcs.
+            # This is the same pattern as news_edge.py's on_event() path.
             opp = ArbitrageOpportunity(
                 strategy=self.strategy_type,
                 title=f"Crypto HF: {slug} {side}",

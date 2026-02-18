@@ -23,7 +23,10 @@ from services.trader_orchestrator.strategies.sizing import compute_position_size
 class CryptoSpikeReversionStrategy(BaseStrategy):
     """Spike-reversion execution using live 5m/30m/2h movement context."""
 
+    strategy_type = "crypto_spike_reversion"
     key = "crypto_spike_reversion"
+    name = "Crypto Spike Reversion"
+    description = "Spike-reversion execution using live 5m/30m/2h movement context"
     mispricing_type = "within_market"
     source_key = "crypto"
     worker_affinity = "crypto"
