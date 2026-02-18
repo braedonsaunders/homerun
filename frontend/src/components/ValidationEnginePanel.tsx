@@ -442,7 +442,8 @@ export default function ValidationEnginePanel() {
   const executionSample = toNumber(overview?.trader_orchestrator_execution_30d?.sample_size)
 
   const executionBySource = useMemo(() => {
-    const rows = overview?.trader_orchestrator_execution_30d?.by_source || []
+    const raw = overview?.trader_orchestrator_execution_30d?.by_source
+    const rows = Array.isArray(raw) ? raw : []
     return rows
       .map((entry) => {
         const record = entry as Record<string, unknown>
