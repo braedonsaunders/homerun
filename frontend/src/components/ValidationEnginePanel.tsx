@@ -430,6 +430,14 @@ export default function ValidationEnginePanel() {
 
   const demotedCount = strategyHealth.filter((row) => row.status === 'demoted').length
 
+  const strategyNameMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const s of traderStrategies || []) {
+      if (s.strategy_key && s.label) map[s.strategy_key] = s.label
+    }
+    return map
+  }, [traderStrategies])
+
   const jobs = useMemo(() => jobsData?.jobs || [], [jobsData?.jobs])
   const runningJobs = jobs.filter((job) => job.status === 'running').length
   const queuedJobs = jobs.filter((job) => job.status === 'queued').length
@@ -1202,7 +1210,8 @@ export default function ValidationEnginePanel() {
                     {strategyHealth.slice(0, 40).map((strategy) => (
                       <TableRow key={strategy.strategy_type} className="border-border/45">
                         <TableCell className="py-2">
-                          <p className="text-sm font-medium">{strategy.strategy_type}</p>
+                          <p className="text-sm font-medium">{strategyNameMap[strategy.strategy_type] || strategy.strategy_type}</p>
+                          <p className="text-[10px] text-muted-foreground font-mono">{strategy.strategy_type}</p>
                           {strategy.last_reason && (
                             <p className="text-[11px] text-muted-foreground">{strategy.last_reason}</p>
                           )}
