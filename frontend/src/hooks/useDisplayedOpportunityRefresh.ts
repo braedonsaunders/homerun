@@ -40,7 +40,7 @@ export function useDisplayedOpportunityRefresh({
     if (activeTab !== 'opportunities' || !isVisible) return
 
     const refreshDisplayedView = () => {
-      if (opportunitiesView === 'arbitrage') {
+      if (opportunitiesView === 'scanner') {
         invalidateQueryKeys(queryClient, [
           ['opportunities'],
           ['opportunity-counts'],
@@ -50,7 +50,7 @@ export function useDisplayedOpportunityRefresh({
         return
       }
 
-      if (opportunitiesView === 'recent_trades') {
+      if (opportunitiesView === 'traders') {
         invalidateQueryKeys(queryClient, [
           ['tracked-trader-opportunities'],
           ['workers-status'],

@@ -105,6 +105,7 @@ import OpportunityEmptyState from './components/OpportunityEmptyState'
 
 type Tab = 'opportunities' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
+type OpportunitiesView = string
 
 const ITEMS_PER_PAGE = 20
 
@@ -189,6 +190,82 @@ function formatStrategySubtypeLabel(strategyType: string, subtypeKey: string): s
     .join(' ')
 }
 
+// ---------------------------------------------------------------------------
+// Opportunity tab registry — drives both the subtab buttons and the panel
+// rendered for each domain. The `source_key` on Strategy objects is the join
+// key. Entries here are for known domains with specialised panels. Any
+// strategy whose source_key is NOT listed gets the generic card/list/terminal
+// panel via the PANEL_REGISTRY fallback.
+// ---------------------------------------------------------------------------
+
+interface OpportunityTabConfig {
+  label: string
+  // Tailwind color token used for active state. Must match active/count classNames below.
+  color: 'green' | 'orange' | 'amber' | 'cyan' | 'blue'
+  icon: React.ElementType
+  // Which view-mode switcher to show (card/list/terminal). Set false to hide switcher.
+  hasViewModeSwitcher: boolean
+}
+
+const OPPORTUNITY_TAB_CONFIG: Record<string, OpportunityTabConfig> = {
+  scanner: {
+    label: 'Markets',
+    color: 'green',
+    icon: Zap,
+    hasViewModeSwitcher: true,
+  },
+  traders: {
+    label: 'Traders',
+    color: 'orange',
+    icon: Activity,
+    hasViewModeSwitcher: true,
+  },
+  news: {
+    label: 'News',
+    color: 'amber',
+    icon: Newspaper,
+    hasViewModeSwitcher: false,
+  },
+  weather: {
+    label: 'Weather',
+    color: 'cyan',
+    icon: CloudRain,
+    hasViewModeSwitcher: true,
+  },
+  crypto: {
+    label: 'Crypto',
+    color: 'orange',
+    icon: ArrowUpDown,
+    hasViewModeSwitcher: false,
+  },
+  world_intelligence: {
+    label: 'World Intel',
+    color: 'blue',
+    icon: Globe,
+    hasViewModeSwitcher: false,
+  },
+}
+
+// Tailwind active-state classes per color token (kept static so Tailwind purge finds them)
+const TAB_ACTIVE_CLASSES: Record<OpportunityTabConfig['color'], string> = {
+  green: 'bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400',
+  orange: 'bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400',
+  amber: 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-400',
+  cyan: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400',
+  blue: 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400',
+}
+
+const TAB_COUNT_CLASSES: Record<OpportunityTabConfig['color'], string> = {
+  green: 'bg-green-500/20 text-green-400',
+  orange: 'bg-orange-500/20 text-orange-400',
+  amber: 'bg-amber-500/20 text-amber-400',
+  cyan: 'bg-cyan-500/20 text-cyan-400',
+  blue: 'bg-blue-500/20 text-blue-400',
+}
+
+// Tab order — known domains appear in this order; unknown source_keys are appended after.
+const TAB_ORDER = ['scanner', 'traders', 'news', 'weather', 'crypto', 'world_intelligence']
+
 const WORKER_TONE_CLASS: Record<WorkerHealthTone, string> = {
   green: 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.7)]',
   amber: 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.65)]',
@@ -253,7 +330,7 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'world' | 'search'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<OpportunitiesView>('scanner')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -385,7 +462,7 @@ function App() {
   }, [opportunitiesView])
 
   useEffect(() => {
-    if (opportunitiesView !== 'crypto_markets') {
+    if (opportunitiesView !== 'crypto') {
       setCryptoSettingsOpen(false)
     }
   }, [opportunitiesView])
@@ -539,7 +616,7 @@ function App() {
       max_risk: maxRisk,
       search: searchQuery || undefined,
     }),
-    enabled: opportunitiesView === 'arbitrage' && !!selectedStrategy,
+    enabled: opportunitiesView === 'scanner' && !!selectedStrategy,
     refetchInterval: isConnected ? false : 15000,
   })
 
@@ -577,6 +654,34 @@ function App() {
   const newsCount = newsWorkflowFindingsCount?.total || 0
   const weatherCount = weatherWorkflowExecutableCount?.total || 0
   const cryptoCount = cryptoMarketCounts?.length || 0
+
+  // Counts indexed by source_key — consumed by the dynamic tab renderer
+  const tabCounts: Record<string, number> = useMemo(() => ({
+    scanner: totalOpportunities,
+    traders: tradersCount,
+    news: newsCount,
+    weather: weatherCount,
+    crypto: cryptoCount,
+  }), [totalOpportunities, tradersCount, newsCount, weatherCount, cryptoCount])
+
+  // Build the ordered tab list from the strategies the API reports.
+  // Known source_keys appear in TAB_ORDER; unknown ones are appended.
+  const opportunityTabs = useMemo(() => {
+    const knownKeys = new Set(TAB_ORDER)
+    const strategySourceKeys = [...new Set(strategies.map((s) => s.source_key || 'scanner'))]
+    const extraKeys = strategySourceKeys.filter((k) => !knownKeys.has(k))
+    const allKeys = [...TAB_ORDER.filter((k) => strategySourceKeys.includes(k) || k === 'scanner'), ...extraKeys]
+    return allKeys.map((key) => ({
+      key,
+      config: OPPORTUNITY_TAB_CONFIG[key] ?? {
+        label: key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        color: 'blue' as const,
+        icon: Globe,
+        hasViewModeSwitcher: true,
+      },
+      count: tabCounts[key] ?? null,
+    }))
+  }, [strategies, tabCounts])
 
   // Polymarket search query (only runs when user submits a search)
   const { data: polymarketSearchData, isLoading: polySearchLoading } = useQuery({
@@ -926,7 +1031,7 @@ function App() {
                     onClick={() => {
                       setSearchQuery(headerSearchQuery.trim())
                       setActiveTab('opportunities')
-                      setOpportunitiesView('arbitrage')
+                      setOpportunitiesView('scanner')
                       setHeaderSearchQuery('')
                       setHeaderSearchOpen(false)
                     }}
@@ -1091,117 +1196,48 @@ function App() {
           <main className="flex-1 overflow-hidden flex flex-col dot-grid-bg">
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
-              <div className={cn("flex-1 section-enter", opportunitiesView === 'world' ? 'overflow-hidden' : 'overflow-y-auto')}>
+              <div className={cn("flex-1 section-enter", opportunitiesView === 'world_intelligence' ? 'overflow-hidden' : 'overflow-y-auto')}>
                 <div
                   className={cn(
                     "mx-auto",
-                    opportunitiesView === 'world'
+                    opportunitiesView === 'world_intelligence'
                       ? 'h-full min-h-0 px-6 py-4 flex flex-col overflow-hidden max-w-[1600px]'
                       : "px-6 py-5 max-w-[1600px]",
-                    oppsViewMode === 'terminal' ? 'max-w-[1600px]' : 'max-w-[1600px]'
+                    'max-w-[1600px]'
                   )}
                 >
                   {/* View Toggle + View Mode */}
-                  <div className={cn("flex items-center gap-2", opportunitiesView === 'world' ? 'mb-3 shrink-0' : 'mb-4')}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => { setOpportunitiesView('arbitrage'); setNewsSearchQuery('') }}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'arbitrage'
-                          ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <Zap className="w-3.5 h-3.5" />
-                      Markets
-                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-green-500/20 text-green-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={totalOpportunities} decimals={0} className="" />
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOpportunitiesView('recent_trades')}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'recent_trades'
-                          ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <Activity className="w-3.5 h-3.5" />
-                      Traders
-                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={tradersCount} decimals={0} className="" />
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOpportunitiesView('news')}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'news'
-                          ? "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <Newspaper className="w-3.5 h-3.5" />
-                      News
-                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={newsCount} decimals={0} className="" />
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOpportunitiesView('weather')}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'weather'
-                          ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <CloudRain className="w-3.5 h-3.5" />
-                      Weather
-                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={weatherCount} decimals={0} className="" />
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOpportunitiesView('crypto_markets')}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'crypto_markets'
-                          ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <ArrowUpDown className="w-3.5 h-3.5" />
-                      Crypto
-                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={cryptoCount} decimals={0} className="" />
-                      </span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOpportunitiesView('world')}
-                      className={cn(
-                        "gap-1.5 text-xs h-8",
-                        opportunitiesView === 'world'
-                          ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                          : "bg-card text-muted-foreground hover:text-foreground border-border"
-                      )}
-                    >
-                      <Globe className="w-3.5 h-3.5" />
-                      World Intel
-                    </Button>
+                  <div className={cn("flex items-center gap-2", opportunitiesView === 'world_intelligence' ? 'mb-3 shrink-0' : 'mb-4')}>
+                    {/* Dynamic tab buttons derived from registered strategy source_keys */}
+                    {opportunityTabs.map(({ key, config, count }) => {
+                      const Icon = config.icon
+                      const isActive = opportunitiesView === key
+                      return (
+                        <Button
+                          key={key}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setOpportunitiesView(key)
+                            if (key !== 'news') setNewsSearchQuery('')
+                          }}
+                          className={cn(
+                            "gap-1.5 text-xs h-8",
+                            isActive
+                              ? TAB_ACTIVE_CLASSES[config.color]
+                              : "bg-card text-muted-foreground hover:text-foreground border-border"
+                          )}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          {config.label}
+                          {count != null && (
+                            <span className={cn("ml-0.5 inline-flex items-center justify-center rounded-full text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5", TAB_COUNT_CLASSES[config.color])}>
+                              <AnimatedNumber value={count} decimals={0} className="" />
+                            </span>
+                          )}
+                        </Button>
+                      )
+                    })}
 
                     {/* Search results subtab — only visible when a search is active */}
                     {polymarketSearchSubmitted && (
@@ -1225,14 +1261,14 @@ function App() {
                           onClick={(e) => {
                             e.stopPropagation()
                             setPolymarketSearchSubmitted('')
-                            setOpportunitiesView('arbitrage')
+                            setOpportunitiesView('scanner')
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault()
                               e.stopPropagation()
                               setPolymarketSearchSubmitted('')
-                              setOpportunitiesView('arbitrage')
+                              setOpportunitiesView('scanner')
                             }
                           }}
                           className="ml-1 hover:text-red-400 transition-colors cursor-pointer"
@@ -1242,8 +1278,8 @@ function App() {
                       </Button>
                     )}
 
-                    {/* View Mode Switcher */}
-                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search' || opportunitiesView === 'recent_trades' || opportunitiesView === 'weather') && (
+                    {/* View Mode Switcher — shown for tabs that support card/list/terminal */}
+                    {(opportunityTabs.find((t) => t.key === opportunitiesView)?.config.hasViewModeSwitcher || opportunitiesView === 'search') && (
                       <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
                         {([
                           { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
@@ -1270,7 +1306,7 @@ function App() {
                       </div>
                     )}
 
-                    {opportunitiesView === 'arbitrage' && (
+                    {opportunitiesView === 'scanner' && (
                       <div className="ml-auto">
                         <Button
                           variant="outline"
@@ -1286,7 +1322,7 @@ function App() {
                   </div>
 
                   {/* Live Scanning Status Line */}
-                  {status?.enabled && opportunitiesView === 'arbitrage' && (
+                  {status?.enabled && opportunitiesView === 'scanner' && (
                     <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-card/60 border border-border/30">
                       {scannerIsSettled ? (
                         <>
@@ -1492,7 +1528,7 @@ function App() {
                         </>
                       )}
                     </>
-                  ) : opportunitiesView === 'crypto_markets' ? (
+                  ) : opportunitiesView === 'crypto' ? (
                     <CryptoMarketsPanel
                       onExecute={setExecutingOpportunity}
                       onOpenCopilot={handleOpenCopilotForOpportunity}
@@ -1505,11 +1541,11 @@ function App() {
                       onExecute={setExecutingOpportunity}
                       viewMode={oppsViewMode}
                     />
-                  ) : opportunitiesView === 'world' ? (
+                  ) : opportunitiesView === 'world_intelligence' ? (
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <WorldIntelligencePanel isConnected={isConnected} />
                     </div>
-                  ) : opportunitiesView === 'recent_trades' ? (
+                  ) : opportunitiesView === 'traders' ? (
                     <RecentTradesPanel
                       mode="opportunities"
                       viewMode={oppsViewMode}
@@ -1520,6 +1556,37 @@ function App() {
                         setTradersSubTab('analysis')
                       }}
                     />
+                  ) : opportunitiesView !== 'scanner' ? (
+                    // Generic fallback panel for unknown source_keys introduced by new strategies
+                    <>
+                      {oppsViewMode === 'terminal' ? (
+                        <OpportunityTerminal
+                          opportunities={displayOpportunities}
+                          onExecute={setExecutingOpportunity}
+                          onOpenCopilot={handleOpenCopilotForOpportunity}
+                          isConnected={isConnected}
+                          totalCount={totalOpportunities}
+                        />
+                      ) : oppsViewMode === 'list' ? (
+                        <OpportunityTable
+                          opportunities={displayOpportunities}
+                          onExecute={setExecutingOpportunity}
+                          onOpenCopilot={handleOpenCopilotForOpportunity}
+                        />
+                      ) : (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
+                          {displayOpportunities.map((opp) => (
+                            <OpportunityCard
+                              key={opp.stable_id || opp.id}
+                              opportunity={opp}
+                              onExecute={setExecutingOpportunity}
+                              onOpenCopilot={handleOpenCopilotForOpportunity}
+                              onSearchNews={handleSearchNewsForOpportunity}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <>
                       {/* Markets Controls */}
@@ -1963,7 +2030,7 @@ function App() {
         )}
 
         {/* Floating AI FAB — bottom-right */}
-        {!copilotOpen && !(activeTab === 'opportunities' && opportunitiesView === 'world') && (
+        {!copilotOpen && !(activeTab === 'opportunities' && opportunitiesView === 'world_intelligence') && (
           <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">
             <Tooltip>
               <TooltipTrigger asChild>

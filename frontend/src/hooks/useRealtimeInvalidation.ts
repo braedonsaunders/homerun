@@ -73,10 +73,10 @@ export function useRealtimeInvalidation(
     const activeTab = String(context.activeTab || '')
     const opportunitiesView = String(context.opportunitiesView || '')
     const viewingOpportunities = activeTab === 'opportunities'
-    const viewingArbitrage = viewingOpportunities && opportunitiesView === 'arbitrage'
+    const viewingArbitrage = viewingOpportunities && opportunitiesView === 'scanner'
     const viewingNews = viewingOpportunities && opportunitiesView === 'news'
     const viewingWeather = viewingOpportunities && opportunitiesView === 'weather'
-    const viewingWorld = viewingOpportunities && opportunitiesView === 'world'
+    const viewingWorld = viewingOpportunities && opportunitiesView === 'world_intelligence'
     const viewingTrading = activeTab === 'trading'
 
     if (messageType === 'scanner_status' && lastMessage.data) {
