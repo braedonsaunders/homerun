@@ -50,6 +50,11 @@ interface BacktestResult {
   num_markets: number
   num_prices: number
   data_source: string
+  replay_mode: string
+  replay_steps: number
+  replay_markets: number
+  replay_window_hours: number
+  replay_timeframe: string
   opportunities: Array<Record<string, any>>
   num_opportunities: number
   quality_reports: QualityReportData[]
@@ -267,6 +272,14 @@ const MODE_LABELS: Record<BacktestMode, { label: string; desc: string; running: 
   exit: { label: 'Exit', desc: 'Test exit logic against current open positions', running: 'Testing exit logic...' },
 }
 
+const DETECT_REPLAY_OPTIONS = {
+  use_ohlc_replay: true,
+  replay_lookback_hours: 24,
+  replay_timeframe: '30m',
+  replay_max_markets: 80,
+  replay_max_steps: 72,
+}
+
 export default function StrategyBacktestFlyout({
   open,
   onOpenChange,
@@ -288,11 +301,13 @@ export default function StrategyBacktestFlyout({
   const backtestMutation = useMutation({
     mutationFn: async () => {
       const endpoint = MODE_ENDPOINTS[mode]
-      const { data } = await api.post(endpoint, {
+      const payload = {
         source_code: sourceCode,
         slug,
         config: config || {},
-      })
+        ...(mode === 'detect' ? DETECT_REPLAY_OPTIONS : { use_ohlc_replay: false }),
+      }
+      const { data } = await api.post(endpoint, payload)
       return data as BacktestResult
     },
     onSuccess: (data) => setResult(data),
@@ -311,7 +326,9 @@ export default function StrategyBacktestFlyout({
               <SheetTitle className="text-base flex items-center gap-2">
                 <FlaskConical className="w-4 h-4" />
                 Strategy Backtest
-                <Badge variant="outline" className="text-[9px] h-4 font-normal">Live</Badge>
+                <Badge variant="outline" className="text-[9px] h-4 font-normal">
+                  {mode === 'detect' ? 'Live+Replay' : 'Live'}
+                </Badge>
               </SheetTitle>
               <SheetDescription>
                 {MODE_LABELS[mode].desc}
@@ -376,7 +393,7 @@ export default function StrategyBacktestFlyout({
               <div className="text-center py-12 space-y-2">
                 <FlaskConical className="w-8 h-8 mx-auto text-muted-foreground/30" />
                 <p className="text-xs text-muted-foreground">
-                  Click "Run Backtest" to test your strategy against {variant === 'opportunity' ? 'live market data' : 'current signals'}.
+                  Click "Run Backtest" to test your strategy against {variant === 'opportunity' ? 'live market data with OHLC replay' : 'current signals'}.
                 </p>
                 <p className="text-[10px] text-muted-foreground/60">
                   Your code will be compiled, loaded, and run against the current market snapshot.

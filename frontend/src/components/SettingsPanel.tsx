@@ -40,7 +40,7 @@ import {
   type DiscoverySettings,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'notifications' | 'vpn' | 'discovery' | 'maintenance'
+type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'vpn' | 'discovery' | 'maintenance'
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   max_discovered_wallets: 20_000,
@@ -187,6 +187,18 @@ export default function SettingsPanel({
 
   const [discoveryForm, setDiscoveryForm] = useState<DiscoverySettings>(DEFAULT_DISCOVERY_SETTINGS)
 
+  const [scannerForm, setScannerForm] = useState({
+    scan_interval_seconds: 60,
+    min_profit_threshold: 2.5,
+    max_markets_to_scan: 5000,
+    max_events_to_scan: 3000,
+    market_fetch_page_size: 200,
+    market_fetch_order: 'volume',
+    min_liquidity: 1000.0,
+    max_opportunities_total: 500,
+    max_opportunities_per_strategy: 120,
+  })
+
   const [maintenanceForm, setMaintenanceForm] = useState({
     auto_cleanup_enabled: false,
     cleanup_interval_hours: 24,
@@ -249,6 +261,18 @@ export default function SettingsPanel({
 
       const discoverySettings = getDiscoverySettings(settings.discovery)
       setDiscoveryForm(discoverySettings)
+
+      setScannerForm({
+        scan_interval_seconds: settings.scanner?.scan_interval_seconds ?? 60,
+        min_profit_threshold: settings.scanner?.min_profit_threshold ?? 2.5,
+        max_markets_to_scan: settings.scanner?.max_markets_to_scan ?? 5000,
+        max_events_to_scan: settings.scanner?.max_events_to_scan ?? 3000,
+        market_fetch_page_size: settings.scanner?.market_fetch_page_size ?? 200,
+        market_fetch_order: settings.scanner?.market_fetch_order ?? 'volume',
+        min_liquidity: settings.scanner?.min_liquidity ?? 1000.0,
+        max_opportunities_total: settings.scanner?.max_opportunities_total ?? 500,
+        max_opportunities_per_strategy: settings.scanner?.max_opportunities_per_strategy ?? 120,
+      })
 
       setMaintenanceForm({
         auto_cleanup_enabled: settings.maintenance?.auto_cleanup_enabled ?? false,
@@ -402,6 +426,9 @@ export default function SettingsPanel({
       case 'discovery':
         updates.discovery = discoveryForm
         break
+      case 'scanner':
+        updates.scanner = scannerForm
+        break
       case 'vpn':
         updates.trading_proxy = {
           enabled: vpnForm.enabled,
@@ -472,6 +499,8 @@ export default function SettingsPanel({
         return llmForm.provider !== 'none' ? `${llmForm.provider}` : 'Disabled'
       case 'notifications':
         return notificationsForm.enabled ? 'Enabled' : 'Disabled'
+      case 'scanner':
+        return `caps ${scannerForm.max_opportunities_total}/${scannerForm.max_opportunities_per_strategy}`
       case 'discovery':
         return discoveryForm.maintenance_enabled
           ? `${discoveryForm.max_discovered_wallets.toLocaleString()} cap`
@@ -491,6 +520,8 @@ export default function SettingsPanel({
         return llmForm.provider !== 'none' ? 'text-purple-400 bg-purple-500/10' : 'text-muted-foreground bg-muted'
       case 'notifications':
         return notificationsForm.enabled ? 'text-blue-400 bg-blue-500/10' : 'text-muted-foreground bg-muted'
+      case 'scanner':
+        return 'text-amber-400 bg-amber-500/10'
       case 'discovery':
         return discoveryForm.maintenance_enabled
           ? 'text-green-400 bg-green-500/10'
@@ -506,6 +537,7 @@ export default function SettingsPanel({
 
   const sections: { id: SettingsSection; icon: any; label: string; description: string }[] = [
     { id: 'llm', icon: Bot, label: 'AI / LLM Services', description: 'Configure AI providers' },
+    { id: 'scanner', icon: Database, label: 'Scanner', description: 'Scan limits, thresholds, and pool caps' },
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
@@ -779,6 +811,122 @@ export default function SettingsPanel({
 
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('llm')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Scanner Settings */}
+                  {section.id === 'scanner' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Scan Interval (seconds)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.scan_interval_seconds}
+                            onChange={(e) => setScannerForm(p => ({ ...p, scan_interval_seconds: Math.max(10, parseInt(e.target.value) || 60) }))}
+                            min={10}
+                            max={3600}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Min Profit Threshold (%)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.min_profit_threshold}
+                            onChange={(e) => setScannerForm(p => ({ ...p, min_profit_threshold: Math.max(0, parseFloat(e.target.value) || 0) }))}
+                            min={0}
+                            step={0.1}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Min Liquidity (USD)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.min_liquidity}
+                            onChange={(e) => setScannerForm(p => ({ ...p, min_liquidity: Math.max(0, parseFloat(e.target.value) || 0) }))}
+                            min={0}
+                            step={100}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Markets / Scan</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.max_markets_to_scan}
+                            onChange={(e) => setScannerForm(p => ({ ...p, max_markets_to_scan: Math.max(10, parseInt(e.target.value) || 10) }))}
+                            min={10}
+                            max={10000}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Events / Scan</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.max_events_to_scan}
+                            onChange={(e) => setScannerForm(p => ({ ...p, max_events_to_scan: Math.max(10, parseInt(e.target.value) || 10) }))}
+                            min={10}
+                            max={10000}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Market Fetch Page Size</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.market_fetch_page_size}
+                            onChange={(e) => setScannerForm(p => ({ ...p, market_fetch_page_size: Math.max(50, parseInt(e.target.value) || 50) }))}
+                            min={50}
+                            max={500}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Market Fetch Order</Label>
+                          <Input
+                            type="text"
+                            value={scannerForm.market_fetch_order}
+                            onChange={(e) => setScannerForm(p => ({ ...p, market_fetch_order: e.target.value }))}
+                            placeholder="volume"
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">`volume`, `updatedAt`, `createdAt`, or empty</p>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Opportunities (Total)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.max_opportunities_total}
+                            onChange={(e) => setScannerForm(p => ({ ...p, max_opportunities_total: Math.max(0, parseInt(e.target.value) || 0) }))}
+                            min={0}
+                            max={50000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` to disable</p>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Opportunities / Strategy</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.max_opportunities_per_strategy}
+                            onChange={(e) => setScannerForm(p => ({ ...p, max_opportunities_per_strategy: Math.max(0, parseInt(e.target.value) || 0) }))}
+                            min={0}
+                            max={10000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` to disable</p>
+                        </div>
+                      </div>
+                      <Separator className="opacity-30" />
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
                           Save
                         </Button>

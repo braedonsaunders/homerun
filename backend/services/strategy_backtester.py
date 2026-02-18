@@ -2,11 +2,9 @@
 Strategy Backtester
 
 Provides code-level backtesting for all three strategy phases:
-  - DETECT: What opportunities would this code find on the current market snapshot?
+  - DETECT: What opportunities would this code find on current and replayed snapshots?
   - EVALUATE: Given recent trade signals, which would this strategy accept/reject?
   - EXIT: Given current open positions, which would this strategy close?
-
-Uses live/cached data — not historical replay.
 """
 
 from __future__ import annotations
@@ -14,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import time
 import traceback
+from copy import deepcopy
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from services.strategy_loader import StrategyLoader, validate_strategy_source
@@ -22,6 +22,11 @@ from services.scanner import scanner
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_DEFAULT_REPLAY_LOOKBACK_HOURS = 24
+_DEFAULT_REPLAY_TIMEFRAME = "30m"
+_DEFAULT_REPLAY_MAX_MARKETS = 80
+_DEFAULT_REPLAY_MAX_STEPS = 72
 
 
 @dataclass
@@ -38,6 +43,11 @@ class BacktestResult:
     num_markets: int = 0
     num_prices: int = 0
     data_source: str = ""  # "cache" or "fresh"
+    replay_mode: str = "live_snapshot"
+    replay_steps: int = 0
+    replay_markets: int = 0
+    replay_window_hours: int = 0
+    replay_timeframe: str = ""
     # Results
     opportunities: list[dict[str, Any]] = field(default_factory=list)
     num_opportunities: int = 0
@@ -57,6 +67,14 @@ class BacktestResult:
         return asdict(self)
 
 
+@dataclass
+class ReplayDetectRun:
+    opportunities: list[Any] = field(default_factory=list)
+    steps_run: int = 0
+    markets_replayed: int = 0
+    step_errors: int = 0
+
+
 def _has_custom_detect_async(strategy) -> bool:
     """Check if strategy implements its own detect_async (not just inherited)."""
     method = getattr(type(strategy), "detect_async", None)
@@ -68,26 +86,498 @@ def _has_custom_detect_async(strategy) -> bool:
     return method is not base_method
 
 
+def _has_custom_detect_sync(strategy) -> bool:
+    """Check if strategy implements its own detect_sync (not just inherited)."""
+    method = getattr(type(strategy), "detect_sync", None)
+    if method is None:
+        return False
+    from services.strategies.base import BaseStrategy
+
+    base_method = getattr(BaseStrategy, "detect_sync", None)
+    return method is not base_method
+
+
+def _timeframe_to_seconds(value: str | int | None, *, default_seconds: int = 1800) -> int:
+    if isinstance(value, int):
+        return max(60, int(value))
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return default_seconds
+    try:
+        if raw.endswith("m"):
+            return max(60, int(raw[:-1]) * 60)
+        if raw.endswith("h"):
+            return max(60, int(raw[:-1]) * 3600)
+        if raw.endswith("d"):
+            return max(60, int(raw[:-1]) * 86400)
+        return max(60, int(raw))
+    except Exception:
+        return default_seconds
+
+
+def _clamp_probability(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    if parsed < 0.0 or parsed > 1.01:
+        return None
+    return max(0.0, min(1.0, parsed))
+
+
+def _bucket_ms(ts_ms: int, start_ms: int, step_ms: int) -> int:
+    return start_ms + ((ts_ms - start_ms) // step_ms) * step_ms
+
+
+def _serialize_opportunities(opportunities: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for opp in opportunities or []:
+        try:
+            if hasattr(opp, "model_dump"):
+                out.append(opp.model_dump())
+            elif hasattr(opp, "dict"):
+                out.append(opp.dict())
+            elif hasattr(opp, "__dict__"):
+                out.append({k: v for k, v in opp.__dict__.items() if not k.startswith("_")})
+            elif isinstance(opp, dict):
+                out.append(dict(opp))
+            else:
+                out.append({"value": str(opp)})
+        except Exception:
+            out.append({"error": "Failed to serialize opportunity"})
+    return out
+
+
+def _build_quality_reports(opportunities: list[Any]) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    try:
+        from services.quality_filter import quality_filter as qf_pipeline
+    except Exception:
+        return reports
+
+    for opp in opportunities or []:
+        try:
+            report = qf_pipeline.evaluate_opportunity(opp)
+            reports.append(
+                {
+                    "opportunity_id": report.opportunity_id,
+                    "passed": report.passed,
+                    "rejection_reasons": report.rejection_reasons,
+                    "filters": [
+                        {
+                            "filter_name": f.filter_name,
+                            "passed": f.passed,
+                            "reason": f.reason,
+                            "threshold": f.threshold,
+                            "actual_value": f.actual_value,
+                        }
+                        for f in report.filters
+                    ],
+                }
+            )
+        except Exception:
+            continue
+    return reports
+
+
+async def _run_detect_once(
+    strategy: Any,
+    events: list[Any],
+    markets: list[Any],
+    prices: dict[str, dict[str, Any]],
+    *,
+    timeout_seconds: float,
+) -> list[Any]:
+    loop = asyncio.get_running_loop()
+    if _has_custom_detect_async(strategy):
+        return await asyncio.wait_for(
+            strategy.detect_async(events, markets, prices),
+            timeout=timeout_seconds,
+        )
+    if _has_custom_detect_sync(strategy):
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, strategy.detect_sync, events, markets, prices),
+            timeout=timeout_seconds,
+        )
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, strategy.detect, events, markets, prices),
+        timeout=timeout_seconds,
+    )
+
+
+async def _fetch_prices_for_markets(markets: list[Any], *, token_cap: int = 2000, batch_size: int = 250) -> dict[str, dict]:
+    token_ids: list[str] = []
+    seen: set[str] = set()
+    for market in markets:
+        for token_id in getattr(market, "clob_token_ids", None) or []:
+            token = str(token_id or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            token_ids.append(token)
+            if len(token_ids) >= token_cap:
+                break
+        if len(token_ids) >= token_cap:
+            break
+    if not token_ids:
+        return {}
+
+    from services.polymarket import polymarket_client
+
+    prices: dict[str, dict] = {}
+    for idx in range(0, len(token_ids), batch_size):
+        chunk = token_ids[idx : idx + batch_size]
+        try:
+            batch = await polymarket_client.get_prices_batch(chunk)
+            if isinstance(batch, dict):
+                prices.update(batch)
+        except Exception:
+            continue
+    return prices
+
+
+def _select_replay_markets(markets: list[Any], max_markets: int) -> list[Any]:
+    candidates: list[Any] = []
+    for market in markets:
+        if bool(getattr(market, "closed", False)) or not bool(getattr(market, "active", True)):
+            continue
+        token_ids = list(getattr(market, "clob_token_ids", None) or [])
+        if len(token_ids) < 2:
+            continue
+        candidates.append(market)
+    candidates.sort(
+        key=lambda row: (
+            float(getattr(row, "liquidity", 0.0) or 0.0),
+            float(getattr(row, "volume", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    return candidates[: max(1, int(max_markets))]
+
+
+def _history_from_scanner_cache(
+    market_id: str,
+    *,
+    start_ms: int,
+    end_ms: int,
+    step_ms: int,
+) -> dict[int, tuple[float, float]]:
+    out: dict[int, tuple[float, float]] = {}
+    raw_history = getattr(scanner, "_market_price_history", {})
+    points = raw_history.get(market_id, []) if isinstance(raw_history, dict) else []
+    for row in points:
+        if not isinstance(row, dict):
+            continue
+        try:
+            ts_ms = int(float(row.get("t", 0)))
+        except Exception:
+            continue
+        if ts_ms < start_ms or ts_ms > end_ms:
+            continue
+        yes = _clamp_probability(row.get("yes"))
+        no = _clamp_probability(row.get("no"))
+        if yes is None or no is None:
+            continue
+        out[_bucket_ms(ts_ms, start_ms, step_ms)] = (yes, no)
+    return out
+
+
+async def _history_from_polymarket_api(
+    market: Any,
+    *,
+    start_ms: int,
+    end_ms: int,
+    step_ms: int,
+) -> dict[int, tuple[float, float]]:
+    token_ids = [str(token or "").strip() for token in (getattr(market, "clob_token_ids", None) or [])]
+    token_ids = [token for token in token_ids if token]
+    if len(token_ids) < 2:
+        return {}
+    yes_token = token_ids[0]
+    no_token = token_ids[1]
+
+    from services.polymarket import polymarket_client
+
+    yes_result, no_result = await asyncio.gather(
+        polymarket_client.get_prices_history(yes_token, start_ts=start_ms, end_ts=end_ms),
+        polymarket_client.get_prices_history(no_token, start_ts=start_ms, end_ts=end_ms),
+        return_exceptions=True,
+    )
+    yes_history = yes_result if isinstance(yes_result, list) else []
+    no_history = no_result if isinstance(no_result, list) else []
+    if not yes_history and not no_history:
+        return {}
+
+    yes_by_bucket: dict[int, float] = {}
+    no_by_bucket: dict[int, float] = {}
+
+    for row in yes_history:
+        if not isinstance(row, dict):
+            continue
+        try:
+            ts_ms = int(float(row.get("t", 0)))
+        except Exception:
+            continue
+        if ts_ms < start_ms or ts_ms > end_ms:
+            continue
+        price = _clamp_probability(row.get("p"))
+        if price is None:
+            continue
+        yes_by_bucket[_bucket_ms(ts_ms, start_ms, step_ms)] = price
+
+    for row in no_history:
+        if not isinstance(row, dict):
+            continue
+        try:
+            ts_ms = int(float(row.get("t", 0)))
+        except Exception:
+            continue
+        if ts_ms < start_ms or ts_ms > end_ms:
+            continue
+        price = _clamp_probability(row.get("p"))
+        if price is None:
+            continue
+        no_by_bucket[_bucket_ms(ts_ms, start_ms, step_ms)] = price
+
+    out: dict[int, tuple[float, float]] = {}
+    for bucket in sorted(set(yes_by_bucket.keys()) | set(no_by_bucket.keys())):
+        yes = yes_by_bucket.get(bucket)
+        no = no_by_bucket.get(bucket)
+        if yes is None and no is not None and 0.0 <= no <= 1.0:
+            yes = 1.0 - no
+        if no is None and yes is not None and 0.0 <= yes <= 1.0:
+            no = 1.0 - yes
+        if yes is None or no is None:
+            continue
+        out[bucket] = (yes, no)
+    return out
+
+
+def _opportunity_key(opp: Any, fallback: str) -> str:
+    if isinstance(opp, dict):
+        stable = str(opp.get("stable_id") or opp.get("id") or "").strip()
+        return stable or fallback
+    stable = str(getattr(opp, "stable_id", "") or getattr(opp, "id", "") or "").strip()
+    return stable or fallback
+
+
+def _opportunity_roi(opp: Any) -> float:
+    if isinstance(opp, dict):
+        try:
+            return float(opp.get("roi_percent") or 0.0)
+        except Exception:
+            return 0.0
+    try:
+        return float(getattr(opp, "roi_percent", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _annotate_replay_ts(opp: Any, ts_ms: int) -> None:
+    if isinstance(opp, dict):
+        ctx = opp.get("strategy_context")
+        if not isinstance(ctx, dict):
+            ctx = {}
+            opp["strategy_context"] = ctx
+        ctx["backtest_replay_ts_ms"] = int(ts_ms)
+        return
+    ctx = getattr(opp, "strategy_context", None)
+    if not isinstance(ctx, dict):
+        ctx = {}
+        try:
+            setattr(opp, "strategy_context", ctx)
+        except Exception:
+            return
+    ctx["backtest_replay_ts_ms"] = int(ts_ms)
+
+
+async def _run_ohlc_replay_detection(
+    strategy: Any,
+    events: list[Any],
+    markets: list[Any],
+    *,
+    base_prices: dict[str, dict],
+    lookback_hours: int,
+    timeframe: str,
+    max_markets: int,
+    max_steps: int,
+) -> ReplayDetectRun:
+    replay_markets = _select_replay_markets(markets, max_markets=max_markets)
+    if not replay_markets:
+        return ReplayDetectRun()
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    step_ms = _timeframe_to_seconds(timeframe) * 1000
+    start_ms = now_ms - (max(1, int(lookback_hours)) * 3600 * 1000)
+
+    history_by_market: dict[str, dict[int, tuple[float, float]]] = {}
+    to_fetch: list[Any] = []
+    for market in replay_markets:
+        market_id = str(getattr(market, "id", "") or "")
+        if not market_id:
+            continue
+        cached = _history_from_scanner_cache(
+            market_id,
+            start_ms=start_ms,
+            end_ms=now_ms,
+            step_ms=step_ms,
+        )
+        if len(cached) >= 2:
+            history_by_market[market_id] = cached
+            continue
+        to_fetch.append(market)
+
+    if to_fetch:
+        semaphore = asyncio.Semaphore(8)
+
+        async def _fetch_one(market_row: Any) -> tuple[str, dict[int, tuple[float, float]]]:
+            market_id = str(getattr(market_row, "id", "") or "")
+            async with semaphore:
+                try:
+                    points = await _history_from_polymarket_api(
+                        market_row,
+                        start_ms=start_ms,
+                        end_ms=now_ms,
+                        step_ms=step_ms,
+                    )
+                except Exception:
+                    points = {}
+            return market_id, points
+
+        fetched = await asyncio.gather(*[_fetch_one(market) for market in to_fetch])
+        for market_id, points in fetched:
+            if market_id and len(points) >= 2:
+                history_by_market[market_id] = points
+
+    if not history_by_market:
+        return ReplayDetectRun()
+
+    timeline = sorted({ts for points in history_by_market.values() for ts in points.keys()})
+    if not timeline:
+        return ReplayDetectRun(markets_replayed=len(history_by_market))
+    if len(timeline) > max_steps:
+        timeline = timeline[-max_steps:]
+
+    selected_market_ids = set(history_by_market.keys())
+    cloned_markets: list[Any] = []
+    market_views: dict[str, Any] = {}
+    market_state: dict[str, dict[str, Any]] = {}
+    market_tokens: dict[str, tuple[str, str]] = {}
+
+    for market in markets:
+        if hasattr(market, "model_copy"):
+            market_copy = market.model_copy(deep=True)
+        else:
+            market_copy = deepcopy(market)
+        cloned_markets.append(market_copy)
+
+        market_id = str(getattr(market_copy, "id", "") or "")
+        if market_id not in selected_market_ids:
+            continue
+
+        market_views[market_id] = market_copy
+        token_ids = [str(token or "").strip() for token in (getattr(market_copy, "clob_token_ids", None) or [])]
+        yes_token = token_ids[0] if len(token_ids) > 0 else ""
+        no_token = token_ids[1] if len(token_ids) > 1 else ""
+        market_tokens[market_id] = (yes_token, no_token)
+
+        try:
+            default_yes = float(getattr(market_copy, "yes_price", 0.5) or 0.5)
+        except Exception:
+            default_yes = 0.5
+        try:
+            default_no = float(getattr(market_copy, "no_price", 1.0 - default_yes) or (1.0 - default_yes))
+        except Exception:
+            default_no = 1.0 - default_yes
+
+        points = sorted(history_by_market[market_id].items(), key=lambda row: row[0])
+        market_state[market_id] = {
+            "points": points,
+            "idx": 0,
+            "yes": default_yes,
+            "no": default_no,
+        }
+
+    if not market_state:
+        return ReplayDetectRun()
+
+    deduped: dict[str, Any] = {}
+    step_errors = 0
+    steps_run = 0
+
+    for ts_ms in timeline:
+        prices_for_step = dict(base_prices or {})
+
+        for market_id, state in market_state.items():
+            points = state["points"]
+            idx = int(state["idx"])
+            while idx < len(points) and points[idx][0] <= ts_ms:
+                yes_val, no_val = points[idx][1]
+                state["yes"] = yes_val
+                state["no"] = no_val
+                idx += 1
+            state["idx"] = idx
+
+            yes_val = float(state["yes"])
+            no_val = float(state["no"])
+
+            market_view = market_views[market_id]
+            market_view.outcome_prices = [yes_val, no_val]
+            tokens = getattr(market_view, "tokens", None)
+            if isinstance(tokens, list):
+                if len(tokens) > 0 and hasattr(tokens[0], "price"):
+                    tokens[0].price = yes_val
+                if len(tokens) > 1 and hasattr(tokens[1], "price"):
+                    tokens[1].price = no_val
+
+            yes_token, no_token = market_tokens.get(market_id, ("", ""))
+            if yes_token:
+                prices_for_step[yes_token] = {"mid": yes_val}
+            if no_token:
+                prices_for_step[no_token] = {"mid": no_val}
+
+        try:
+            step_opps = await _run_detect_once(
+                strategy,
+                events,
+                cloned_markets,
+                prices_for_step,
+                timeout_seconds=12.0,
+            )
+        except Exception:
+            step_errors += 1
+            continue
+
+        steps_run += 1
+        for index, opp in enumerate(step_opps or []):
+            _annotate_replay_ts(opp, ts_ms)
+            key = _opportunity_key(opp, fallback=f"{ts_ms}:{index}")
+            existing = deduped.get(key)
+            if existing is None or _opportunity_roi(opp) > _opportunity_roi(existing):
+                deduped[key] = opp
+
+    return ReplayDetectRun(
+        opportunities=list(deduped.values()),
+        steps_run=steps_run,
+        markets_replayed=len(market_state),
+        step_errors=step_errors,
+    )
+
+
 async def run_strategy_backtest(
     source_code: str,
     slug: str = "_backtest_preview",
     config: Optional[dict[str, Any]] = None,
+    use_ohlc_replay: bool = True,
+    replay_lookback_hours: int = _DEFAULT_REPLAY_LOOKBACK_HOURS,
+    replay_timeframe: str = _DEFAULT_REPLAY_TIMEFRAME,
+    replay_max_markets: int = _DEFAULT_REPLAY_MAX_MARKETS,
+    replay_max_steps: int = _DEFAULT_REPLAY_MAX_STEPS,
 ) -> BacktestResult:
-    """Run a strategy's detection code against current market data.
-
-    This compiles the strategy source code, loads it into a sandboxed
-    plugin instance, fetches the current market snapshot, and runs
-    detect()/detect_async() to see what opportunities it would find.
-
-    Args:
-        source_code: Python source code of the strategy
-        slug: Identifier for the backtest run (used internally by plugin loader)
-        config: Optional config overrides for the strategy
-
-    Returns:
-        BacktestResult with opportunities found, timing, and any errors
-    """
+    """Run a strategy's detection code against current and replayed market data."""
     result = BacktestResult(strategy_slug=slug)
+    result.replay_window_hours = max(1, int(replay_lookback_hours))
+    result.replay_timeframe = str(replay_timeframe or _DEFAULT_REPLAY_TIMEFRAME)
     total_start = time.monotonic()
 
     # ---- 1. Validate source code ----
@@ -147,16 +637,7 @@ async def run_strategy_backtest(
             )
             events = events_raw
             markets = markets_raw
-
-            # Get prices for first batch of tokens
-            all_token_ids = []
-            for m in markets:
-                for tid in m.clob_token_ids:
-                    if len(tid) > 20:
-                        all_token_ids.append(tid)
-            prices = {}
-            if all_token_ids:
-                prices = await polymarket_client.get_prices_batch(all_token_ids[:500])
+            prices = await _fetch_prices_for_markets(markets, token_cap=2000, batch_size=250)
             result.data_source = "fresh"
 
         result.num_events = len(events)
@@ -174,65 +655,46 @@ async def run_strategy_backtest(
     # ---- 4. Run detection ----
     detect_start = time.monotonic()
     try:
-        loop = asyncio.get_running_loop()
-        if _has_custom_detect_async(strategy):
-            opps = await asyncio.wait_for(
-                strategy.detect_async(events, markets, prices),
-                timeout=60.0,
+        opportunities = await _run_detect_once(
+            strategy,
+            events,
+            markets,
+            prices,
+            timeout_seconds=60.0,
+        )
+
+        replay_run = ReplayDetectRun()
+        should_run_replay = bool(use_ohlc_replay) and len(opportunities or []) == 0 and not _has_custom_detect_async(strategy)
+        if should_run_replay:
+            replay_run = await _run_ohlc_replay_detection(
+                strategy,
+                events,
+                markets,
+                base_prices=prices or {},
+                lookback_hours=max(1, int(replay_lookback_hours)),
+                timeframe=str(replay_timeframe or _DEFAULT_REPLAY_TIMEFRAME),
+                max_markets=max(1, int(replay_max_markets)),
+                max_steps=max(1, int(replay_max_steps)),
             )
-        else:
-            opps = await asyncio.wait_for(
-                loop.run_in_executor(None, strategy.detect, events, markets, prices),
-                timeout=60.0,
+            result.replay_steps = replay_run.steps_run
+            result.replay_markets = replay_run.markets_replayed
+            if replay_run.step_errors > 0:
+                result.validation_warnings.append(
+                    f"OHLC replay skipped {replay_run.step_errors} snapshots due to strategy/runtime errors."
+                )
+            if replay_run.opportunities:
+                opportunities = replay_run.opportunities
+                result.replay_mode = "ohlc_replay"
+                result.data_source = f"{result.data_source}+ohlc_replay"
+        elif bool(use_ohlc_replay) and _has_custom_detect_async(strategy) and len(opportunities or []) == 0:
+            result.validation_warnings.append(
+                "OHLC replay is disabled for async detect_async() strategies in code backtest mode."
             )
 
-        # Serialize opportunities
-        opp_dicts = []
-        for opp in opps or []:
-            try:
-                if hasattr(opp, "model_dump"):
-                    opp_dicts.append(opp.model_dump())
-                elif hasattr(opp, "dict"):
-                    opp_dicts.append(opp.dict())
-                elif hasattr(opp, "__dict__"):
-                    opp_dicts.append({k: v for k, v in opp.__dict__.items() if not k.startswith("_")})
-                else:
-                    opp_dicts.append(str(opp))
-            except Exception:
-                opp_dicts.append({"error": "Failed to serialize opportunity"})
-
-        result.opportunities = opp_dicts
-        result.num_opportunities = len(opp_dicts)
+        result.opportunities = _serialize_opportunities(opportunities or [])
+        result.num_opportunities = len(result.opportunities)
+        result.quality_reports = _build_quality_reports(opportunities or [])
         result.success = True
-
-        # Run QualityFilterPipeline on raw opportunities for audit trail
-        try:
-            from services.quality_filter import quality_filter as qf_pipeline
-
-            for opp in opps or []:
-                try:
-                    report = qf_pipeline.evaluate_opportunity(opp)
-                    result.quality_reports.append(
-                        {
-                            "opportunity_id": report.opportunity_id,
-                            "passed": report.passed,
-                            "rejection_reasons": report.rejection_reasons,
-                            "filters": [
-                                {
-                                    "filter_name": f.filter_name,
-                                    "passed": f.passed,
-                                    "reason": f.reason,
-                                    "threshold": f.threshold,
-                                    "actual_value": f.actual_value,
-                                }
-                                for f in report.filters
-                            ],
-                        }
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
     except asyncio.TimeoutError:
         result.runtime_error = "Strategy detection timed out after 60 seconds"

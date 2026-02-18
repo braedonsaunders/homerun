@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import AsyncSessionLocal, StrategyRuntimeRevision
+from models.database import AsyncSessionLocal, Strategy, StrategyRuntimeRevision
 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
+from services.strategy_sdk import StrategySDK
 from services.strategy_loader import strategy_loader
 from utils.utcnow import utcnow
 
@@ -55,6 +56,32 @@ async def read_strategy_revision_stamp(
     return "|".join(f"{source}:{int(revisions.get(source, 0))}" for source in normalized)
 
 
+async def read_strategy_file_override_stamp(
+    session: AsyncSession,
+    *,
+    source_keys: list[str] | None = None,
+) -> str:
+    normalized = _normalize_source_keys(source_keys)
+
+    query = select(Strategy.slug).order_by(Strategy.slug.asc())
+    if normalized:
+        query = query.where(
+            func.lower(func.coalesce(Strategy.source_key, "")).in_(tuple(normalized))
+        )
+
+    rows = (await session.execute(query)).all()
+    parts: list[str] = []
+    for row in rows:
+        slug = str(row[0] or "").strip().lower()
+        if not slug:
+            continue
+        mtime_ns = StrategySDK.get_strategy_config_mtime_ns(slug)
+        if mtime_ns <= 0:
+            continue
+        parts.append(f"{slug}:{mtime_ns}")
+    return "|".join(parts)
+
+
 async def bump_strategy_runtime_revisions(
     session: AsyncSession,
     *,
@@ -98,12 +125,18 @@ async def refresh_strategy_runtime_if_needed(
         session,
         source_keys=source_keys,
     )
+    file_override_stamp = await read_strategy_file_override_stamp(
+        session,
+        source_keys=source_keys,
+    )
+    effective_stamp = f"{revision_stamp}::{file_override_stamp}"
     previous_stamp = _last_loaded_revision_stamps.get(cache_key)
 
-    if not force and previous_stamp == revision_stamp:
+    if not force and previous_stamp == effective_stamp:
         return {
             "refreshed": False,
             "revision_stamp": revision_stamp,
+            "file_override_stamp": file_override_stamp,
             "loaded": sorted(strategy_loader._loaded.keys()),
             "errors": dict(strategy_loader._errors),
         }
@@ -114,11 +147,12 @@ async def refresh_strategy_runtime_if_needed(
         source_keys=normalized_sources or None,
         prune_unlisted=True,
     )
-    _last_loaded_revision_stamps[cache_key] = revision_stamp
+    _last_loaded_revision_stamps[cache_key] = effective_stamp
 
     return {
         "refreshed": True,
         "revision_stamp": revision_stamp,
+        "file_override_stamp": file_override_stamp,
         "loaded": loaded.get("loaded", []),
         "errors": loaded.get("errors", {}),
     }

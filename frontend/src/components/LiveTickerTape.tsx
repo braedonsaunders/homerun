@@ -1,24 +1,82 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { cn } from '../lib/utils'
-import { Opportunity } from '../services/api'
 import {
+  AlertTriangle,
+  BarChart3,
+  Bot,
   TrendingUp,
   TrendingDown,
   Zap,
   Radio,
   DollarSign,
   Shield,
-  Brain,
   Clock,
   Activity,
   Target,
 } from 'lucide-react'
 
+type WorkerHealthTone = 'green' | 'amber' | 'red'
+
+interface WorkerHealthSummary {
+  overallTone: WorkerHealthTone
+  counts: {
+    green: number
+    amber: number
+    red: number
+    total: number
+  }
+}
+
+interface SourceCounts {
+  scanner: number
+  traders: number
+  news: number
+  weather: number
+  crypto: number
+}
+
+interface SignalTotals {
+  pending: number
+  selected: number
+  submitted: number
+  executed: number
+  skipped: number
+  expired: number
+  failed: number
+}
+
+interface RealtimeMessage {
+  type?: string
+  data?: Record<string, unknown> | null
+}
+
+interface OrchestratorControl {
+  mode?: string
+  is_enabled?: boolean
+  is_paused?: boolean
+  kill_switch?: boolean
+}
+
+interface OrchestratorSnapshot {
+  running: boolean
+  enabled: boolean
+  decisions_count: number
+  orders_count: number
+  open_orders: number
+  gross_exposure_usd: number
+  daily_pnl: number
+  last_error: string | null
+}
+
 interface TickerTapeProps {
-  opportunities: Opportunity[]
   isConnected: boolean
-  totalOpportunities: number
+  globallyPaused: boolean
   lastScan?: string | null
+  workerHealth: WorkerHealthSummary
+  sourceCounts: SourceCounts
+  signalTotals?: SignalTotals | null
+  orchestratorControl?: OrchestratorControl | null
+  lastMessage?: RealtimeMessage | null
   activeStrategies?: number
   className?: string
 }
@@ -29,10 +87,22 @@ interface TickerItem {
   value: string
   secondaryValue?: string
   change?: number
-  icon?: 'up' | 'down' | 'zap' | 'dollar' | 'shield' | 'brain' | 'clock' | 'activity' | 'target'
+  icon?: 'up' | 'down' | 'zap' | 'dollar' | 'shield' | 'clock' | 'activity' | 'target' | 'alert' | 'bot' | 'chart'
   badge?: string
   badgeColor?: string
 }
+
+interface EventRollup {
+  total: number
+  scans: number
+  decisions: number
+  orders: number
+  signals: number
+  alerts: number
+}
+
+const ROLLUP_TTL_SECONDS = 180
+const COMPACT_INT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 
 const ICON_MAP = {
   up: TrendingUp,
@@ -40,10 +110,12 @@ const ICON_MAP = {
   zap: Zap,
   dollar: DollarSign,
   shield: Shield,
-  brain: Brain,
   clock: Clock,
   activity: Activity,
   target: Target,
+  alert: AlertTriangle,
+  bot: Bot,
+  chart: BarChart3,
 }
 
 const ICON_COLOR_MAP: Record<string, string> = {
@@ -52,16 +124,40 @@ const ICON_COLOR_MAP: Record<string, string> = {
   zap: 'text-blue-400',
   dollar: 'text-yellow-400',
   shield: 'text-cyan-400',
-  brain: 'text-purple-400',
   clock: 'text-orange-400',
   activity: 'text-emerald-400',
   target: 'text-blue-400',
+  alert: 'text-red-400',
+  bot: 'text-violet-400',
+  chart: 'text-sky-400',
 }
 
-function riskLabel(score: number): { text: string; color: string } {
-  if (score <= 0.3) return { text: 'LOW', color: 'text-green-400 bg-green-400/10' }
-  if (score <= 0.6) return { text: 'MED', color: 'text-yellow-400 bg-yellow-400/10' }
-  return { text: 'HIGH', color: 'text-red-400 bg-red-400/10' }
+function zeroRollup(): EventRollup {
+  return { total: 0, scans: 0, decisions: 0, orders: 0, signals: 0, alerts: 0 }
+}
+
+function normalizeCount(value: unknown): number {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return 0
+  return Math.max(0, Math.round(num))
+}
+
+function normalizeNumber(value: unknown): number {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return 0
+  return num
+}
+
+function compactCount(value: number): string {
+  if (Math.abs(value) >= 1000) return COMPACT_INT.format(value)
+  return `${value}`
+}
+
+function formatUsd(value: number): string {
+  const sign = value > 0 ? '+' : value < 0 ? '-' : ''
+  const abs = Math.abs(value)
+  if (abs >= 1000) return `${sign}$${COMPACT_INT.format(abs)}`
+  return `${sign}$${abs.toFixed(2)}`
 }
 
 function truncate(str: string, len: number): string {
@@ -77,128 +173,489 @@ function formatTimeSince(iso: string): string {
   return `${Math.floor(secs / 3600)}h ago`
 }
 
+function formatSinceTimestamp(epochMs: number): string {
+  const secs = Math.max(0, Math.floor((Date.now() - epochMs) / 1000))
+  if (secs < 5) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  return `${Math.floor(secs / 3600)}h ago`
+}
+
+function coerceRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') return {}
+  return value as Record<string, unknown>
+}
+
+function normalizeOrchestratorSnapshot(value: unknown): OrchestratorSnapshot | null {
+  const raw = coerceRecord(value)
+  if (Object.keys(raw).length < 1) return null
+  return {
+    running: Boolean(raw.running),
+    enabled: Boolean(raw.enabled),
+    decisions_count: normalizeCount(raw.decisions_count),
+    orders_count: normalizeCount(raw.orders_count),
+    open_orders: normalizeCount(raw.open_orders),
+    gross_exposure_usd: normalizeNumber(raw.gross_exposure_usd),
+    daily_pnl: normalizeNumber(raw.daily_pnl),
+    last_error: String(raw.last_error || '').trim() || null,
+  }
+}
+
+function appendPatch(target: EventRollup, patch: Partial<EventRollup>): void {
+  target.total += patch.total || 0
+  target.scans += patch.scans || 0
+  target.decisions += patch.decisions || 0
+  target.orders += patch.orders || 0
+  target.signals += patch.signals || 0
+  target.alerts += patch.alerts || 0
+}
+
+function mergeRollup(
+  buckets: Map<number, EventRollup>,
+  timestampMs: number,
+  patch: Partial<EventRollup>,
+): void {
+  const second = Math.floor(timestampMs / 1000)
+  const bucket = buckets.get(second) || zeroRollup()
+  appendPatch(bucket, patch)
+  buckets.set(second, bucket)
+}
+
+function pruneBuckets(
+  buckets: Map<number, EventRollup>,
+  nowMs: number,
+): void {
+  const minSecond = Math.floor(nowMs / 1000) - ROLLUP_TTL_SECONDS
+  for (const second of buckets.keys()) {
+    if (second < minSecond) buckets.delete(second)
+  }
+}
+
+function summarizeBuckets(
+  buckets: Map<number, EventRollup>,
+  nowMs: number,
+  windowSeconds: number,
+): EventRollup {
+  const out = zeroRollup()
+  const minSecond = Math.floor(nowMs / 1000) - windowSeconds + 1
+  for (const [second, bucket] of buckets.entries()) {
+    if (second < minSecond) continue
+    appendPatch(out, bucket)
+  }
+  return out
+}
+
+function eventLabel(type: string): string | null {
+  if (type === 'scanner_status') return 'Scanner status'
+  if (type === 'opportunities_update') return 'Opportunity snapshot'
+  if (type === 'opportunity_events') return 'Opportunity delta'
+  if (type === 'worker_status_update') return 'Worker heartbeat'
+  if (type === 'signals_update') return 'Signal snapshot'
+  if (type === 'trader_orchestrator_status') return 'Orchestrator snapshot'
+  if (type === 'trader_decision') return 'Trader decision'
+  if (type === 'trader_order') return 'Trader order'
+  if (type === 'trader_event') return 'Trader event'
+  if (type === 'weather_update' || type === 'weather_status') return 'Weather update'
+  if (type === 'news_workflow_update' || type === 'news_workflow_status' || type === 'news_update') return 'News update'
+  if (type === 'crypto_markets_update') return 'Crypto update'
+  return null
+}
+
+function rollupPatchFromMessage(
+  type: string,
+  data: Record<string, unknown>,
+  scannerLastSeenRef: { current: string | null },
+): Partial<EventRollup> | null {
+  if (
+    type === 'ping'
+    || type === 'pong'
+    || type === 'subscribed'
+    || type === 'init'
+    || type === 'scan_requested'
+  ) {
+    return null
+  }
+
+  if (type === 'scanner_status') {
+    const patch: Partial<EventRollup> = { total: 1 }
+    const nextScan = typeof data.last_scan === 'string' ? data.last_scan : null
+    if (nextScan && nextScan !== scannerLastSeenRef.current) {
+      scannerLastSeenRef.current = nextScan
+      patch.scans = 1
+    }
+    const activity = String(data.current_activity || '').toLowerCase()
+    if (activity.includes('error')) {
+      patch.alerts = 1
+    }
+    return patch
+  }
+
+  if (type === 'scanner_activity') {
+    const activity = String(data.activity || '').toLowerCase()
+    return {
+      total: 1,
+      alerts: activity.includes('error') ? 1 : 0,
+    }
+  }
+
+  if (type === 'worker_status_update') {
+    const workers = Array.isArray(data.workers) ? data.workers : []
+    let alerts = 0
+    for (const worker of workers) {
+      const row = coerceRecord(worker)
+      if (String(row.last_error || '').trim()) alerts += 1
+    }
+    return {
+      total: 1,
+      alerts,
+    }
+  }
+
+  if (type === 'trader_decision') return { total: 1, decisions: 1 }
+  if (type === 'trader_order') return { total: 1, orders: 1 }
+  if (type === 'signals_update') return { total: 1, signals: 1 }
+
+  if (type === 'trader_event') {
+    const severity = String(data.severity || '').toLowerCase()
+    return {
+      total: 1,
+      alerts: severity === 'warn' || severity === 'warning' || severity === 'error' ? 1 : 0,
+    }
+  }
+
+  if (type === 'trader_orchestrator_status') {
+    return {
+      total: 1,
+      alerts: String(data.last_error || '').trim() ? 1 : 0,
+    }
+  }
+
+  if (
+    type === 'opportunities_update'
+    || type === 'opportunity_events'
+    || type === 'weather_update'
+    || type === 'weather_status'
+    || type === 'news_workflow_update'
+    || type === 'news_workflow_status'
+    || type === 'news_update'
+    || type === 'crypto_markets_update'
+  ) {
+    return { total: 1 }
+  }
+
+  return null
+}
+
 export default function LiveTickerTape({
-  opportunities,
   isConnected,
-  totalOpportunities,
+  globallyPaused,
   lastScan,
+  workerHealth,
+  sourceCounts,
+  signalTotals,
+  orchestratorControl,
+  lastMessage,
   activeStrategies,
   className,
 }: TickerTapeProps) {
-  const tickerItems = useMemo<TickerItem[]>(() => {
-    const items: TickerItem[] = []
+  const [tick, setTick] = useState(0)
+  const [orchestratorSnapshot, setOrchestratorSnapshot] = useState<OrchestratorSnapshot | null>(null)
+  const rollupBucketsRef = useRef<Map<number, EventRollup>>(new Map())
+  const lastEventRef = useRef<{ label: string; at: number } | null>(null)
+  const scannerLastSeenRef = useRef<string | null>(lastScan || null)
+  const orchestratorSigRef = useRef<string>('')
 
-    // --- Aggregate stats ---
-    if (opportunities.length > 0) {
-      const avgRoi = opportunities.reduce((s, o) => s + o.roi_percent, 0) / opportunities.length
-      items.push({
-        id: 'avg-roi',
-        label: 'AVG ROI',
-        value: `${avgRoi.toFixed(2)}%`,
-        change: avgRoi,
-        icon: avgRoi >= 0 ? 'up' : 'down',
-      })
+  useEffect(() => {
+    if (!lastScan || isNaN(new Date(lastScan).getTime())) return
+    scannerLastSeenRef.current = lastScan
+  }, [lastScan])
 
-      const bestOpp = opportunities.reduce((best, o) => o.roi_percent > best.roi_percent ? o : best, opportunities[0])
-      items.push({
-        id: 'best-roi',
-        label: 'BEST',
-        value: `${bestOpp.roi_percent >= 0 ? '+' : ''}${bestOpp.roi_percent.toFixed(2)}%`,
-        secondaryValue: `$${bestOpp.net_profit.toFixed(2)}`,
-        change: bestOpp.roi_percent,
-        icon: 'target',
-      })
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      pruneBuckets(rollupBucketsRef.current, Date.now())
+      setTick((prev) => prev + 1)
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [])
 
-      const totalProfit = opportunities.reduce((s, o) => s + o.net_profit, 0)
-      items.push({
-        id: 'total-profit',
-        label: 'TOTAL PROFIT',
-        value: `$${totalProfit.toFixed(2)}`,
-        change: totalProfit,
-        icon: totalProfit >= 0 ? 'up' : 'down',
-      })
+  useEffect(() => {
+    if (!lastMessage?.type) return
+    const type = String(lastMessage.type)
+    const data = coerceRecord(lastMessage.data)
+    const now = Date.now()
 
-      const totalCost = opportunities.reduce((s, o) => s + o.total_cost, 0)
-      items.push({
-        id: 'capital-needed',
-        label: 'CAPITAL',
-        value: `$${totalCost >= 1000 ? (totalCost / 1000).toFixed(1) + 'k' : totalCost.toFixed(0)}`,
-        icon: 'dollar',
-      })
+    if (type === 'init') {
+      const scannerStatus = coerceRecord(data.scanner_status)
+      const initLastScan = typeof scannerStatus.last_scan === 'string' ? scannerStatus.last_scan : null
+      if (initLastScan) {
+        scannerLastSeenRef.current = initLastScan
+      }
+      const initSnapshot = normalizeOrchestratorSnapshot(data.trader_orchestrator_status)
+      if (initSnapshot) {
+        const sig = JSON.stringify(initSnapshot)
+        if (sig !== orchestratorSigRef.current) {
+          orchestratorSigRef.current = sig
+          setOrchestratorSnapshot(initSnapshot)
+        }
+      }
+      lastEventRef.current = { label: 'Session init', at: now }
+      return
+    }
 
-      // High-confidence count (AI score >= 70)
-      const highConf = opportunities.filter(o => o.ai_analysis && o.ai_analysis.overall_score >= 70).length
-      if (highConf > 0) {
-        items.push({
-          id: 'high-conf',
-          label: 'AI PICKS',
-          value: highConf.toString(),
-          icon: 'brain',
-          badge: '\u226570',
-          badgeColor: 'text-purple-400 bg-purple-400/10',
-        })
+    if (type === 'trader_orchestrator_status') {
+      const snapshot = normalizeOrchestratorSnapshot(data)
+      if (snapshot) {
+        const sig = JSON.stringify(snapshot)
+        if (sig !== orchestratorSigRef.current) {
+          orchestratorSigRef.current = sig
+          setOrchestratorSnapshot(snapshot)
+        }
       }
     }
 
-    items.push({
-      id: 'markets',
-      label: 'MARKETS',
-      value: totalOpportunities.toString(),
-      icon: 'zap',
-    })
+    const patch = rollupPatchFromMessage(type, data, scannerLastSeenRef)
+    if (!patch) return
+    mergeRollup(rollupBucketsRef.current, now, patch)
+    pruneBuckets(rollupBucketsRef.current, now)
 
-    if (activeStrategies !== undefined) {
-      items.push({
-        id: 'strategies',
-        label: 'STRATEGIES',
-        value: activeStrategies.toString(),
-        icon: 'activity',
-      })
+    const label = eventLabel(type)
+    if (label) {
+      lastEventRef.current = { label, at: now }
     }
+  }, [lastMessage])
+
+  const rollup1m = useMemo(
+    () => summarizeBuckets(rollupBucketsRef.current, Date.now(), 60),
+    [tick],
+  )
+
+  const lastEvent = lastEventRef.current
+  const workers = workerHealth.counts
+  const signalPending = normalizeCount(signalTotals?.pending)
+  const signalSelected = normalizeCount(signalTotals?.selected)
+  const signalExecuted = normalizeCount(signalTotals?.executed)
+  const signalFailed = normalizeCount(signalTotals?.failed)
+
+  const mode = String(orchestratorControl?.mode || 'paper').toUpperCase()
+  const killSwitch = Boolean(orchestratorControl?.kill_switch)
+  const orchestratorEnabled = Boolean(orchestratorControl?.is_enabled)
+  const orchestratorPaused = Boolean(orchestratorControl?.is_paused)
+  const orchestratorActive = orchestratorEnabled && !orchestratorPaused && !killSwitch
+  const orchestratorDecisions = normalizeCount(orchestratorSnapshot?.decisions_count)
+  const orchestratorOrders = normalizeCount(orchestratorSnapshot?.orders_count)
+  const orchestratorOpenOrders = normalizeCount(orchestratorSnapshot?.open_orders)
+  const orchestratorExposure = normalizeNumber(orchestratorSnapshot?.gross_exposure_usd)
+  const orchestratorDailyPnl = normalizeNumber(orchestratorSnapshot?.daily_pnl)
+  const orchestratorConversion = orchestratorDecisions > 0
+    ? (orchestratorOrders / orchestratorDecisions) * 100
+    : 0
+
+  const tickerItems = useMemo<TickerItem[]>(() => {
+    const items: TickerItem[] = []
+
+    items.push({
+      id: 'system',
+      label: 'SYSTEM',
+      value: isConnected ? 'LIVE' : 'OFFLINE',
+      icon: 'activity',
+      change: isConnected && !globallyPaused ? 1 : -1,
+      badge: globallyPaused ? 'PAUSED' : undefined,
+      badgeColor: globallyPaused ? 'text-yellow-400 bg-yellow-400/10' : undefined,
+    })
 
     if (lastScan && !isNaN(new Date(lastScan).getTime())) {
       items.push({
-        id: 'last-scan',
+        id: 'scan',
         label: 'SCAN',
         value: formatTimeSince(lastScan),
         icon: 'clock',
       })
     }
 
-    // --- Top opportunities with context ---
-    const topOpps = [...opportunities]
-      .sort((a, b) => b.roi_percent - a.roi_percent)
-      .slice(0, 10)
+    const workerBadge = workers.red > 0
+      ? `${workers.red} ERR`
+      : workers.amber > 0
+        ? `${workers.amber} WARN`
+        : 'HEALTHY'
+    const workerBadgeColor = workers.red > 0
+      ? 'text-red-400 bg-red-400/10'
+      : workers.amber > 0
+        ? 'text-amber-400 bg-amber-400/10'
+        : 'text-emerald-400 bg-emerald-400/10'
 
-    topOpps.forEach((opp) => {
-      const roi = opp.roi_percent
-      const risk = riskLabel(opp.risk_score)
-      // Prefer event_title, fall back to title, then strategy name
-      const displayName = opp.event_title
-        ? truncate(opp.event_title, 32)
-        : opp.title
-          ? truncate(opp.title, 32)
-          : opp.strategy.replace(/_/g, ' ').toUpperCase()
+    items.push({
+      id: 'workers',
+      label: 'WORKERS',
+      value: `${workers.green}/${workers.total}`,
+      icon: 'shield',
+      badge: workerBadge,
+      badgeColor: workerBadgeColor,
+    })
 
-      const aiScore = opp.ai_analysis?.overall_score
-      const aiStr = aiScore !== undefined && aiScore !== null ? `AI:${Math.round(aiScore)}` : undefined
+    items.push({
+      id: 'source-scanner',
+      label: 'MARKETS',
+      value: compactCount(sourceCounts.scanner),
+      icon: 'zap',
+    })
+    items.push({
+      id: 'source-traders',
+      label: 'TRADERS',
+      value: compactCount(sourceCounts.traders),
+      icon: 'target',
+    })
+    items.push({
+      id: 'source-news',
+      label: 'NEWS',
+      value: compactCount(sourceCounts.news),
+      icon: 'activity',
+    })
+    items.push({
+      id: 'source-weather',
+      label: 'WEATHER',
+      value: compactCount(sourceCounts.weather),
+      icon: 'activity',
+    })
+    items.push({
+      id: 'source-crypto',
+      label: 'CRYPTO',
+      value: compactCount(sourceCounts.crypto),
+      icon: 'chart',
+    })
 
+    items.push({
+      id: 'signals',
+      label: 'SIGNALS',
+      value: `P:${compactCount(signalPending)} S:${compactCount(signalSelected)} X:${compactCount(signalExecuted)}`,
+      icon: 'activity',
+      badge: `F:${compactCount(signalFailed)}`,
+      badgeColor: signalFailed > 0 ? 'text-red-400 bg-red-400/10' : 'text-muted-foreground bg-muted/50',
+    })
+
+    if (activeStrategies !== undefined) {
       items.push({
-        id: opp.id,
-        label: displayName,
-        value: `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`,
-        secondaryValue: `$${opp.net_profit.toFixed(2)}`,
-        change: roi,
-        icon: roi >= 0 ? 'up' : 'down',
-        badge: aiStr || risk.text,
-        badgeColor: aiStr
-          ? (aiScore! >= 70 ? 'text-purple-400 bg-purple-400/10' : aiScore! >= 40 ? 'text-blue-400 bg-blue-400/10' : 'text-muted-foreground bg-muted/50')
-          : risk.color,
+        id: 'strategies',
+        label: 'STRATEGIES',
+        value: compactCount(activeStrategies),
+        icon: 'activity',
       })
+    }
+
+    items.push({
+      id: 'orchestrator-mode',
+      label: 'ORCH',
+      value: `${mode} ${orchestratorActive ? 'ACTIVE' : 'PAUSED'}`,
+      icon: 'bot',
+      change: orchestratorActive ? 1 : -1,
+      badge: killSwitch ? 'KILL SWITCH' : undefined,
+      badgeColor: killSwitch ? 'text-red-400 bg-red-400/10' : undefined,
+    })
+
+    items.push({
+      id: 'orchestrator-funnel',
+      label: 'FUNNEL',
+      value: `${compactCount(orchestratorDecisions)}\u2192${compactCount(orchestratorOrders)}`,
+      secondaryValue: `${orchestratorConversion.toFixed(1)}%`,
+      icon: 'target',
+    })
+
+    items.push({
+      id: 'orchestrator-pnl',
+      label: 'DAY PNL',
+      value: formatUsd(orchestratorDailyPnl),
+      icon: orchestratorDailyPnl >= 0 ? 'up' : 'down',
+      change: orchestratorDailyPnl,
+    })
+
+    items.push({
+      id: 'orchestrator-exposure',
+      label: 'EXPOSURE',
+      value: formatUsd(orchestratorExposure),
+      icon: 'dollar',
+    })
+
+    items.push({
+      id: 'orchestrator-open-orders',
+      label: 'OPEN ORD',
+      value: compactCount(orchestratorOpenOrders),
+      icon: 'chart',
+    })
+
+    items.push({
+      id: 'events-total',
+      label: 'EVENTS 1M',
+      value: compactCount(rollup1m.total),
+      icon: 'activity',
+    })
+
+    items.push({
+      id: 'events-flow',
+      label: 'FLOW 1M',
+      value: `D:${compactCount(rollup1m.decisions)} O:${compactCount(rollup1m.orders)} S:${compactCount(rollup1m.signals)}`,
+      icon: 'chart',
+    })
+
+    items.push({
+      id: 'events-scans',
+      label: 'SCANS 1M',
+      value: compactCount(rollup1m.scans),
+      icon: 'clock',
+    })
+
+    items.push({
+      id: 'events-alerts',
+      label: 'ALERTS 1M',
+      value: compactCount(rollup1m.alerts),
+      icon: rollup1m.alerts > 0 ? 'alert' : 'shield',
+      change: rollup1m.alerts > 0 ? -rollup1m.alerts : 0,
+      badge: rollup1m.alerts > 0 ? 'ATTN' : undefined,
+      badgeColor: rollup1m.alerts > 0 ? 'text-red-400 bg-red-400/10' : undefined,
+    })
+
+    items.push({
+      id: 'last-event',
+      label: 'LAST EVT',
+      value: lastEvent ? truncate(lastEvent.label, 24) : 'No recent events',
+      secondaryValue: lastEvent ? formatSinceTimestamp(lastEvent.at) : undefined,
+      icon: 'activity',
     })
 
     return items
-  }, [opportunities, totalOpportunities, lastScan, activeStrategies])
+  }, [
+    activeStrategies,
+    globallyPaused,
+    isConnected,
+    killSwitch,
+    lastEvent,
+    lastScan,
+    mode,
+    orchestratorActive,
+    orchestratorConversion,
+    orchestratorDailyPnl,
+    orchestratorDecisions,
+    orchestratorExposure,
+    orchestratorOpenOrders,
+    orchestratorOrders,
+    rollup1m.alerts,
+    rollup1m.decisions,
+    rollup1m.orders,
+    rollup1m.scans,
+    rollup1m.signals,
+    rollup1m.total,
+    signalExecuted,
+    signalFailed,
+    signalPending,
+    signalSelected,
+    sourceCounts.crypto,
+    sourceCounts.news,
+    sourceCounts.scanner,
+    sourceCounts.traders,
+    sourceCounts.weather,
+    workers.amber,
+    workers.green,
+    workers.red,
+    workers.total,
+  ])
 
   if (tickerItems.length === 0) return null
 
@@ -226,7 +683,7 @@ export default function LiveTickerTape({
       {/* Scrolling content */}
       <div
         className="ticker-animate flex items-center h-full whitespace-nowrap pl-8"
-        style={{ '--ticker-duration': `${Math.max(30, tickerItems.length * 4)}s` } as React.CSSProperties}
+        style={{ '--ticker-duration': `${Math.max(30, tickerItems.length * 3.6)}s` } as CSSProperties}
       >
         {allItems.map((item, i) => {
           const IconComponent = item.icon ? ICON_MAP[item.icon] : null

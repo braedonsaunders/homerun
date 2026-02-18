@@ -315,6 +315,11 @@ def scanner_payload(settings: AppSettings) -> dict[str, Any]:
         "market_fetch_page_size": getattr(settings, "market_fetch_page_size", None) or 200,
         "market_fetch_order": getattr(settings, "market_fetch_order", None) or "volume",
         "min_liquidity": settings.min_liquidity,
+        "max_opportunities_total": _with_default(getattr(settings, "scanner_max_opportunities_total", None), 500),
+        "max_opportunities_per_strategy": _with_default(
+            getattr(settings, "scanner_max_opportunities_per_strategy", None),
+            120,
+        ),
     }
 
 
@@ -681,6 +686,10 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.market_fetch_page_size = getattr(scan, "market_fetch_page_size", 200)
         settings.market_fetch_order = getattr(scan, "market_fetch_order", "volume")
         settings.min_liquidity = scan.min_liquidity
+        settings.scanner_max_opportunities_total = int(getattr(scan, "max_opportunities_total", 500))
+        settings.scanner_max_opportunities_per_strategy = int(
+            getattr(scan, "max_opportunities_per_strategy", 120)
+        )
 
     if trading:
         trade = trading
@@ -854,6 +863,6 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
     return {
         "needs_llm_reinit": bool(llm),
         "needs_proxy_reinit": bool(trading_proxy),
-        "needs_filter_reload": bool(search_filters),
+        "needs_filter_reload": bool(search_filters) or bool(scanner),
         "needs_world_intel_reload": world_intelligence is not None,
     }

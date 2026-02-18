@@ -855,6 +855,110 @@ async def get_unified_docs():
                 "process": "multiprocessing, signal — no process control",
             },
         },
+        # ── Section 7b: Data Source SDK ─────────────────────────────
+        "data_source_sdk": {
+            "description": (
+                "Strategies can consume and operate on DB-backed data sources during detect/evaluate/exit. "
+                "Use DataSourceSDK directly, or StrategySDK wrappers when you want soft-failure handling."
+            ),
+            "imports": {
+                "direct": "from services.data_source_sdk import DataSourceSDK",
+                "wrapped": "from services.strategy_sdk import StrategySDK",
+            },
+            "when_to_use": {
+                "detect": "Pull supplemental signals (news/events/weather/crypto) before creating opportunities.",
+                "evaluate": "Re-check latest data before selecting or blocking a signal.",
+                "exit": "Close/reduce positions when external sources indicate regime change.",
+            },
+            "read_methods": {
+                "DataSourceSDK.get_records": {
+                    "signature": (
+                        "await DataSourceSDK.get_records(source_slug=None, source_slugs=None, "
+                        "limit=200, geotagged=None, category=None, since=None)"
+                    ),
+                    "description": "Read normalized records with source/category/time filters.",
+                },
+                "DataSourceSDK.get_latest_record": {
+                    "signature": "await DataSourceSDK.get_latest_record(source_slug, external_id=None)",
+                    "description": "Read newest record for a source (optionally one upstream id).",
+                },
+                "DataSourceSDK.get_recent_runs": {
+                    "signature": "await DataSourceSDK.get_recent_runs(source_slug, limit=20)",
+                    "description": "Read run history for source-health aware gating.",
+                },
+            },
+            "management_methods": {
+                "DataSourceSDK.run_source": {
+                    "signature": "await DataSourceSDK.run_source(source_slug, max_records=500)",
+                    "description": "Trigger on-demand ingestion during strategy execution.",
+                },
+                "DataSourceSDK.list_sources": {
+                    "signature": "await DataSourceSDK.list_sources(enabled_only=True, source_key=None, include_code=False)",
+                    "description": "Discover available sources and runtime state.",
+                },
+                "DataSourceSDK.get_source": {
+                    "signature": "await DataSourceSDK.get_source(source_slug, include_code=True)",
+                    "description": "Inspect one source definition by slug.",
+                },
+                "DataSourceSDK.validate_source": {
+                    "signature": "DataSourceSDK.validate_source(source_code, class_name=None)",
+                    "description": "Validate generated source code before create/update.",
+                },
+                "DataSourceSDK.create_source": {
+                    "signature": "await DataSourceSDK.create_source(slug=..., source_code=..., ...)",
+                    "description": "Create new source definitions programmatically.",
+                },
+                "DataSourceSDK.update_source": {
+                    "signature": "await DataSourceSDK.update_source(source_slug, ...)",
+                    "description": "Update metadata/code/config and reload runtime.",
+                },
+                "DataSourceSDK.delete_source": {
+                    "signature": "await DataSourceSDK.delete_source(source_slug, unlock_system=False, ...)",
+                    "description": "Delete a source (system sources require unlock_system=True).",
+                },
+                "DataSourceSDK.reload_source": {
+                    "signature": "await DataSourceSDK.reload_source(source_slug)",
+                    "description": "Recompile/reload runtime without changing source code.",
+                },
+            },
+            "strategy_sdk_wrappers": {
+                "StrategySDK.get_data_records": "Wrapper for DataSourceSDK.get_records()",
+                "StrategySDK.get_latest_data_record": "Wrapper for DataSourceSDK.get_latest_record()",
+                "StrategySDK.run_data_source": "Wrapper for DataSourceSDK.run_source()",
+                "StrategySDK.list_data_sources": "Wrapper for DataSourceSDK.list_sources()",
+                "StrategySDK.get_data_source": "Wrapper for DataSourceSDK.get_source()",
+                "StrategySDK.validate_data_source": "Wrapper for DataSourceSDK.validate_source()",
+                "StrategySDK.create_data_source": "Wrapper for DataSourceSDK.create_source()",
+                "StrategySDK.update_data_source": "Wrapper for DataSourceSDK.update_source()",
+                "StrategySDK.delete_data_source": "Wrapper for DataSourceSDK.delete_source()",
+                "StrategySDK.reload_data_source": "Wrapper for DataSourceSDK.reload_source()",
+                "StrategySDK.get_data_source_runs": "Wrapper for DataSourceSDK.get_recent_runs()",
+            },
+            "examples": {
+                "read_records": (
+                    "records = await DataSourceSDK.get_records(\n"
+                    "    source_slug='events_gdelt_tensions',\n"
+                    "    category='conflict',\n"
+                    "    geotagged=True,\n"
+                    "    limit=100,\n"
+                    ")\n"
+                    "if not records:\n"
+                    "    return StrategyDecision('skipped', 'No recent conflict records')"
+                ),
+                "run_then_read": (
+                    "await StrategySDK.run_data_source('events_gdelt_tensions', max_records=200)\n"
+                    "latest = await StrategySDK.get_latest_data_record('events_gdelt_tensions')\n"
+                    "if latest and latest.get('category') == 'conflict':\n"
+                    "    ...  # feed into detect/evaluate logic"
+                ),
+            },
+            "guidance": [
+                "Prefer source_slug constants; avoid hard-coding IDs.",
+                "Filter records by category/since/geotagged to keep evaluation deterministic.",
+                "Use run_source sparingly inside hot loops; it performs real ingestion work.",
+                "Use StrategySDK wrappers when failures should degrade gracefully.",
+            ],
+        },
         # ── Section 8: Complete Examples ──────────────────────────────
         "examples": {
             "minimal_detect_only": {

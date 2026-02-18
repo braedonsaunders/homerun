@@ -2370,6 +2370,8 @@ export interface ScannerSettings {
   market_fetch_page_size: number
   market_fetch_order: string
   min_liquidity: number
+  max_opportunities_total: number
+  max_opportunities_per_strategy: number
 }
 
 export interface DiscoverySettings {
@@ -3677,6 +3679,8 @@ export interface UnifiedStrategy {
   config: Record<string, unknown>
   config_schema: Record<string, unknown> | null
   aliases: string[]
+  config_file_path?: string | null
+  config_file_exists?: boolean
   sort_order: number
   created_at: string | null
   updated_at: string | null
@@ -3841,6 +3845,27 @@ export interface UnifiedDataSourceRecord {
   tags: string[]
 }
 
+export interface UnifiedDataSourceTemplatePreset {
+  id: string
+  slug_prefix?: string
+  name: string
+  description: string
+  source_key: string
+  source_kind: string
+  source_code: string
+  config: Record<string, unknown>
+  config_schema: Record<string, unknown>
+  is_system_seed?: boolean
+}
+
+export interface UnifiedDataSourceTemplateResponse {
+  template: string
+  default_preset?: string
+  presets?: UnifiedDataSourceTemplatePreset[]
+  instructions: string
+  available_imports: string[]
+}
+
 export const getUnifiedDataSources = async (params?: {
   source_key?: string
   enabled?: boolean
@@ -3959,11 +3984,7 @@ export const getUnifiedDataSourceRecords = async (
   return unwrapApiData(data)
 }
 
-export const getUnifiedDataSourceTemplate = async (): Promise<{
-  template: string
-  instructions: string
-  available_imports: string[]
-}> => {
+export const getUnifiedDataSourceTemplate = async (): Promise<UnifiedDataSourceTemplateResponse> => {
   const { data } = await api.get('/data-sources/template')
   return unwrapApiData(data)
 }

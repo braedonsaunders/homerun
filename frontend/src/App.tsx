@@ -54,6 +54,7 @@ import {
   getNewsWorkflowFindings,
   getWeatherWorkflowOpportunities,
   getCryptoMarkets,
+  getSignalStats,
   Opportunity,
   WorkerStatus,
 } from './services/api'
@@ -327,7 +328,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<OpportunitiesView>('scanner')
-  const [dataView, setDataView] = useState<DataView>('map')
+  const [dataView, setDataView] = useState<DataView>('events')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -520,10 +521,19 @@ function App() {
   })
 
   const workers = workersData?.workers || []
+  const traderOrchestratorWorker = useMemo(
+    () => workers.find((worker) => worker.worker_name === 'trader_orchestrator'),
+    [workers],
+  )
   const trackedTradersWorker = useMemo(
     () => workers.find((worker) => worker.worker_name === 'tracked_traders'),
     [workers],
   )
+  const { data: signalStats } = useQuery({
+    queryKey: ['signals-stats'],
+    queryFn: getSignalStats,
+    refetchInterval: isConnected ? false : 10000,
+  })
   const trackedTradersExecutableCount = useMemo<number | null>(() => {
     const stats = trackedTradersWorker?.stats
     if (!stats || typeof stats !== 'object') return null
@@ -667,6 +677,15 @@ function App() {
   const newsCount = newsWorkflowFindingsCount?.total || 0
   const weatherCount = weatherWorkflowExecutableCount?.total || 0
   const cryptoCount = cryptoMarketCounts?.length || 0
+  const signalTotals = useMemo(() => ({
+    pending: Number(signalStats?.totals?.pending || 0),
+    selected: Number(signalStats?.totals?.selected || 0),
+    submitted: Number(signalStats?.totals?.submitted || 0),
+    executed: Number(signalStats?.totals?.executed || 0),
+    skipped: Number(signalStats?.totals?.skipped || 0),
+    expired: Number(signalStats?.totals?.expired || 0),
+    failed: Number(signalStats?.totals?.failed || 0),
+  }), [signalStats?.totals])
 
   // Counts indexed by source_key — consumed by the dynamic tab renderer
   const tabCounts: Record<string, number> = useMemo(() => ({
@@ -1161,10 +1180,20 @@ function App() {
 
         {/* ==================== Live Ticker Tape ==================== */}
         <LiveTickerTape
-          opportunities={displayOpportunities}
           isConnected={isConnected}
-          totalOpportunities={totalOpportunities}
+          globallyPaused={globallyPaused}
           lastScan={status?.last_scan}
+          workerHealth={workerHealth}
+          sourceCounts={{
+            scanner: totalOpportunities,
+            traders: tradersCount,
+            news: newsCount,
+            weather: weatherCount,
+            crypto: cryptoCount,
+          }}
+          signalTotals={signalTotals}
+          orchestratorControl={traderOrchestratorWorker?.control || null}
+          lastMessage={lastMessage}
           activeStrategies={strategies.length}
         />
 
@@ -1614,6 +1643,42 @@ function App() {
                               onSearchNews={handleSearchNewsForOpportunity}
                             />
                           ))}
+                        </div>
+                      )}
+
+                      {displayOpportunities.length > 0 && (
+                        <div className="mt-5">
+                          <Separator />
+                          <div className="flex items-center justify-between pt-4">
+                            <div className="text-xs text-muted-foreground">
+                              {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities)} of {totalOpportunities}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                                disabled={currentPage === 0}
+                              >
+                                <ChevronLeft className="w-3.5 h-3.5" />
+                                Prev
+                              </Button>
+                              <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
+                                {currentPage + 1}/{totalPages || 1}
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setCurrentPage(p => p + 1)}
+                                disabled={currentPage >= totalPages - 1}
+                              >
+                                Next
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </>

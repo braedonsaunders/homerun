@@ -121,6 +121,18 @@ class ScannerSettingsModel(BaseModel):
         default="volume", description="Sort order for market fetches (volume, updatedAt, createdAt, or empty)"
     )
     min_liquidity: float = Field(default=1000.0, ge=0, description="Minimum liquidity in USD")
+    max_opportunities_total: int = Field(
+        default=500,
+        ge=0,
+        le=50000,
+        description="Global cap for opportunities retained in scanner pool (0 disables)",
+    )
+    max_opportunities_per_strategy: int = Field(
+        default=120,
+        ge=0,
+        le=10000,
+        description="Per-strategy cap for opportunities retained in scanner pool (0 disables)",
+    )
 
 
 class TradingSettings(BaseModel):

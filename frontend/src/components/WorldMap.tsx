@@ -544,6 +544,11 @@ function signalsToGeoJSON(
             is_fresh: isFresh,
             detected_at: signal.detected_at || null,
             metadata_json: metadataJson,
+            related_market_count: Array.isArray(signal.related_market_ids) ? signal.related_market_ids.length : 0,
+            related_market_ids: Array.isArray(signal.related_market_ids)
+              ? signal.related_market_ids.slice(0, 5).join(', ')
+              : '',
+            market_relevance_score: Number(signal.market_relevance_score || 0),
           },
         } as PointFeature
       })
@@ -2117,6 +2122,19 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         metaDetails,
         ageLabel,
       ].filter(Boolean)
+
+      const relatedMarketCount = Number(props.related_market_count || 0)
+      const relatedMarketsRaw = String(props.related_market_ids || '').trim()
+      const marketRelevance = Number(props.market_relevance_score || 0)
+      if (relatedMarketCount > 0) {
+        const relatedMarkets = relatedMarketsRaw
+          ? relatedMarketsRaw.split(',').map((value) => value.trim()).filter(Boolean)
+          : []
+        const relatedMarketsLabel = `${relatedMarketCount} related market${relatedMarketCount === 1 ? '' : 's'}`
+        const relevanceLabel = marketRelevance > 0 ? `relevance ${Math.round(marketRelevance * 100)}%` : ''
+        const previewLabel = relatedMarkets.length > 0 ? `top: ${relatedMarkets.slice(0, 3).join(', ')}` : ''
+        bodyParts.push([relatedMarketsLabel, relevanceLabel, previewLabel].filter(Boolean).join(' · '))
+      }
 
       openPopup(
         coords,

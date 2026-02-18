@@ -807,6 +807,8 @@ async def apply_search_filters():
         ("MARKET_FETCH_PAGE_SIZE", "market_fetch_page_size", 200),
         ("MARKET_FETCH_ORDER", "market_fetch_order", "volume"),
         ("MIN_LIQUIDITY", "min_liquidity", 1000.0),
+        ("SCANNER_MAX_OPPORTUNITIES_TOTAL", "scanner_max_opportunities_total", 500),
+        ("SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY", "scanner_max_opportunities_per_strategy", 120),
     ]
 
     for config_attr, db_attr, default in _apply:

@@ -19,7 +19,7 @@ from models.database import (
     DataSourceTombstone,
     get_db_session,
 )
-from services.data_source_catalog import ensure_all_data_sources_seeded
+from services.data_source_catalog import ensure_all_data_sources_seeded, list_prebuilt_data_source_presets
 from services.data_source_loader import (
     DATA_SOURCE_TEMPLATE,
     DataSourceValidationError,
@@ -126,8 +126,25 @@ def _source_to_dict(row: DataSource) -> dict:
 
 @router.get("/template")
 async def get_data_source_template():
+    presets = [
+        {
+            "id": "python_custom",
+            "slug_prefix": "custom_source",
+            "name": "Custom Python Source",
+            "description": "Full custom Python source with BaseDataSource",
+            "source_key": "custom",
+            "source_kind": "python",
+            "source_code": DATA_SOURCE_TEMPLATE,
+            "config": {},
+            "config_schema": {"param_fields": []},
+            "is_system_seed": False,
+        },
+        *list_prebuilt_data_source_presets(),
+    ]
     return {
         "template": DATA_SOURCE_TEMPLATE,
+        "default_preset": "python_custom",
+        "presets": presets,
         "instructions": (
             "Create a class extending BaseDataSource and implement fetch() or fetch_async(). "
             "Return normalized dict records and optionally transform each record."
@@ -150,53 +167,376 @@ async def get_data_source_template():
 async def get_data_source_docs():
     return {
         "title": "Data Source Developer Reference",
-        "version": "1.0",
+        "version": "2.0",
         "overview": {
             "summary": (
-                "Data Sources are DB-managed Python classes that fetch/transform raw data into "
-                "normalized records. Strategies can read these records through DataSourceSDK."
+                "Data Sources are DB-managed Python classes that ingest external signals, normalize them "
+                "into a shared record contract, and persist them for strategy consumption. They are designed "
+                "for deterministic ingestion and repeatable strategy access."
             ),
-            "lifecycle": [
-                "1. Source runs fetch()/fetch_async() and returns list[dict].",
-                "2. Optional transform(item) normalizes each record.",
-                "3. Runner upserts into data_source_records and writes data_source_runs history.",
-                "4. Strategies query records via DataSourceSDK.get_records().",
+            "concepts": {
+                "source": "A Python class extending BaseDataSource, stored in data_sources.",
+                "run": "One execution of a source (fetch -> transform -> upsert), stored in data_source_runs.",
+                "record": "A normalized output row from a source, stored in data_source_records.",
+                "source_key": (
+                    "Domain bucket for UI and strategy routing (events, stories, weather, crypto, traders, custom)."
+                ),
+                "source_kind": "Implementation kind (python, rss, gdelt, events, stories, bridge).",
+            },
+            "three_stage_lifecycle": {
+                "description": (
+                    "Each source execution has three stages. The runner always records run metrics, even if "
+                    "no rows are produced."
+                ),
+                "stages": [
+                    {
+                        "stage": "FETCH",
+                        "method": "fetch() or fetch_async()",
+                        "purpose": "Collect raw upstream payloads and return list[dict].",
+                        "output": "Unnormalized records.",
+                    },
+                    {
+                        "stage": "TRANSFORM",
+                        "method": "transform(item)",
+                        "purpose": "Normalize each fetched item into canonical record shape.",
+                        "output": "Normalized record dict per item.",
+                    },
+                    {
+                        "stage": "UPSERT",
+                        "method": "runner-managed",
+                        "purpose": "Write rows into data_source_records and update run counters/history.",
+                        "output": "fetched/transformed/upserted/skipped counters + status.",
+                    },
+                ],
+            },
+        },
+        "quick_start": [
+            "1. GET /data-sources/template and choose a preset.",
+            "2. Implement class attributes (name, description, default_config).",
+            "3. Implement fetch() or fetch_async() returning list[dict].",
+            "4. Optional: implement transform(item) to normalize each row.",
+            "5. POST /data-sources/validate with source_code.",
+            "6. POST /data-sources to save with enabled=true.",
+            "7. POST /data-sources/{id}/run to ingest records immediately.",
+            "8. GET /data-sources/{id}/records to verify normalized output.",
+        ],
+        "base_data_source": {
+            "import": "from services.data_source_sdk import BaseDataSource",
+            "class_attributes": {
+                "name": {
+                    "type": "str",
+                    "required": True,
+                    "description": "Human-readable source label shown in the Data -> Sources UI.",
+                },
+                "description": {
+                    "type": "str",
+                    "required": False,
+                    "description": "Short description of the upstream feed and normalization intent.",
+                },
+                "default_config": {
+                    "type": "dict",
+                    "required": False,
+                    "description": (
+                        "Default runtime config merged with user overrides. Access merged values via self.config."
+                    ),
+                },
+            },
+            "methods": {
+                "configure": {
+                    "signature": "configure(self, config: dict | None) -> None",
+                    "required": False,
+                    "description": (
+                        "Called by loader after instantiation. Default behavior merges default_config with config."
+                    ),
+                },
+                "fetch": {
+                    "signature": "fetch(self) -> list[dict[str, Any]]",
+                    "required": False,
+                    "description": "Sync ingestion path for CPU-bound or simple local parsing.",
+                },
+                "fetch_async": {
+                    "signature": "async fetch_async(self) -> list[dict[str, Any]]",
+                    "required": False,
+                    "description": (
+                        "Async ingestion path for network I/O. If not overridden, default calls fetch() in a thread."
+                    ),
+                },
+                "transform": {
+                    "signature": "transform(self, item: dict[str, Any]) -> dict[str, Any]",
+                    "required": False,
+                    "description": "Normalize one fetched item. Default returns item unchanged.",
+                },
+            },
+            "method_selection": {
+                "note": "Implement at least one of fetch() or fetch_async().",
+                "runner_behavior": (
+                    "Runner prefers fetch_async() when available; otherwise it executes fetch()."
+                ),
+            },
+        },
+        "record_contract": {
+            "description": (
+                "Transformed records are stored as data_source_records. Any field can be omitted, but using the "
+                "canonical keys below enables UI rendering, geo filters, and strategy-side filtering."
+            ),
+            "fields": {
+                "external_id": "str | optional stable upstream identifier for dedupe and updates",
+                "title": "str | optional headline/title shown in previews",
+                "summary": "str | optional short text summary",
+                "category": "str | optional lowercase category (conflict, macro, weather, crypto, etc.)",
+                "source": "str | optional upstream provider name",
+                "url": "str | optional canonical source URL",
+                "observed_at": "datetime | ISO8601 string | optional event timestamp",
+                "payload": "dict | optional raw or lightly-normalized payload",
+                "tags": "list[str] | optional keyword tags for downstream filtering",
+                "geotagged": "bool | optional defaults false",
+                "latitude": "float | optional if geotagged",
+                "longitude": "float | optional if geotagged",
+                "country_iso3": "str | optional ISO3 country code",
+            },
+            "normalization_rules": [
+                "Use UTC timestamps for observed_at.",
+                "Use lowercase categories for stable filtering.",
+                "Set geotagged=true only when latitude and longitude are both valid.",
+                "Keep payload JSON-serializable (dict/list/scalars only).",
             ],
         },
-        "required_methods": {
-            "fetch": "fetch(self) -> list[dict]",
-            "fetch_async": "async fetch_async(self) -> list[dict]",
-            "note": "Implement one of fetch/fetch_async.",
+        "runner_and_storage": {
+            "run_status_values": {
+                "success": "Source run completed and persisted records (or produced zero valid records).",
+                "error": "Source run failed due to validation, runtime, or upstream error.",
+                "skipped": "Run intentionally skipped by scheduler/guard logic.",
+            },
+            "run_metrics": {
+                "fetched_count": "Rows returned by fetch/fetch_async before transform filtering.",
+                "transformed_count": "Rows produced after transform() normalization.",
+                "upserted_count": "Rows inserted/updated in data_source_records.",
+                "skipped_count": "Rows dropped due to invalid shape or dedupe guards.",
+                "duration_ms": "Total runtime in milliseconds.",
+            },
+            "storage_tables": {
+                "data_sources": "Source registry metadata and Python source code.",
+                "data_source_runs": "Execution history for every run.",
+                "data_source_records": "Latest normalized records for strategy/UI consumption.",
+            },
         },
-        "optional_methods": {
-            "transform": "transform(self, item: dict) -> dict",
-            "configure": "configure(self, config: dict) -> None",
+        "sdk_reference": {
+            "import": "from services.data_source_sdk import DataSourceSDK",
+            "read_methods": {
+                "get_records": {
+                    "signature": (
+                        "await DataSourceSDK.get_records(source_slug=None, source_slugs=None, limit=200, "
+                        "geotagged=None, category=None, since=None)"
+                    ),
+                    "description": "Read normalized records with optional source/category/time filters.",
+                },
+                "get_latest_record": {
+                    "signature": "await DataSourceSDK.get_latest_record(source_slug, external_id=None)",
+                    "description": "Read most recent record for one source (optionally one external_id).",
+                },
+                "get_recent_runs": {
+                    "signature": "await DataSourceSDK.get_recent_runs(source_slug, limit=20)",
+                    "description": "Read recent run history for observability/health checks.",
+                },
+            },
+            "management_methods": {
+                "list_sources": {
+                    "signature": "await DataSourceSDK.list_sources(enabled_only=True, source_key=None, include_code=False)",
+                    "description": "Enumerate registered sources and runtime metadata.",
+                },
+                "get_source": {
+                    "signature": "await DataSourceSDK.get_source(source_slug, include_code=True)",
+                    "description": "Read one source definition by slug.",
+                },
+                "validate_source": {
+                    "signature": "DataSourceSDK.validate_source(source_code, class_name=None)",
+                    "description": "Static validation before create/update.",
+                },
+                "create_source": {
+                    "signature": "await DataSourceSDK.create_source(slug=..., source_code=..., ...)",
+                    "description": "Create and optionally load a new source.",
+                },
+                "update_source": {
+                    "signature": "await DataSourceSDK.update_source(source_slug, ...)",
+                    "description": "Patch source metadata/code/config and reload runtime.",
+                },
+                "delete_source": {
+                    "signature": "await DataSourceSDK.delete_source(source_slug, unlock_system=False, ...)",
+                    "description": "Delete source by slug (system sources require unlock_system=True).",
+                },
+                "reload_source": {
+                    "signature": "await DataSourceSDK.reload_source(source_slug)",
+                    "description": "Recompile/reload source code into runtime loader.",
+                },
+                "run_source": {
+                    "signature": "await DataSourceSDK.run_source(source_slug, max_records=500)",
+                    "description": "Execute ingestion immediately and return run summary.",
+                },
+            },
+            "strategy_sdk_bridge": {
+                "description": (
+                    "Strategy code can call StrategySDK wrappers instead of importing DataSourceSDK directly."
+                ),
+                "methods": {
+                    "StrategySDK.get_data_records": "Wrapper around DataSourceSDK.get_records()",
+                    "StrategySDK.get_latest_data_record": "Wrapper around DataSourceSDK.get_latest_record()",
+                    "StrategySDK.run_data_source": "Wrapper around DataSourceSDK.run_source()",
+                    "StrategySDK.list_data_sources": "Wrapper around DataSourceSDK.list_sources()",
+                    "StrategySDK.get_data_source": "Wrapper around DataSourceSDK.get_source()",
+                    "StrategySDK.get_data_source_runs": "Wrapper around DataSourceSDK.get_recent_runs()",
+                },
+            },
         },
-        "record_shape": {
-            "external_id": "str | optional",
-            "title": "str | optional",
-            "summary": "str | optional",
-            "category": "str | optional",
-            "source": "str | optional",
-            "url": "str | optional",
-            "observed_at": "datetime|ISO string | optional",
-            "payload": "dict | optional",
-            "tags": "list[str] | optional",
-            "geotagged": "bool | optional",
-            "latitude": "float | optional",
-            "longitude": "float | optional",
-            "country_iso3": "ISO3 code | optional",
+        "imports": {
+            "app_modules": {
+                "services.data_source_sdk": "BaseDataSource and DataSourceSDK",
+                "services.strategy_sdk": "Read/use data sources from strategy runtime",
+                "services.news.*": "News ingestion helpers",
+                "services.world_intelligence.*": "World intelligence helpers",
+                "models.*": "Core ORM/Pydantic models",
+                "config": "Application settings",
+            },
+            "standard_library": [
+                "math",
+                "statistics",
+                "collections",
+                "datetime",
+                "time",
+                "re",
+                "json",
+                "random",
+                "asyncio",
+                "pathlib",
+                "itertools",
+                "functools",
+                "typing",
+            ],
+            "third_party": {
+                "httpx": "Async-friendly HTTP client for upstream APIs",
+                "numpy": "Numerical transformations",
+                "scipy": "Scientific/statistical transforms",
+                "pandas": "Tabular parsing/cleanup (when installed)",
+            },
+        },
+        "validation": {
+            "endpoint": "POST /data-sources/validate",
+            "description": "Validates source code without saving.",
+            "checks_performed": [
+                "1. Python syntax and AST parse.",
+                "2. Import allow/block checks.",
+                "3. BaseDataSource subclass detection.",
+                "4. fetch/fetch_async capability detection.",
+                "5. Metadata extraction (name/description/class_name).",
+            ],
+            "response": {
+                "valid": "bool",
+                "class_name": "str | null",
+                "source_name": "str | null",
+                "source_description": "str | null",
+                "capabilities": {
+                    "has_fetch": "bool",
+                    "has_fetch_async": "bool",
+                    "has_transform": "bool",
+                },
+                "errors": "list[str]",
+                "warnings": "list[str]",
+            },
         },
         "api_endpoints": {
-            "GET /data-sources": "List sources",
-            "POST /data-sources": "Create source",
-            "PUT /data-sources/{id}": "Update source",
-            "DELETE /data-sources/{id}": "Delete source",
-            "POST /data-sources/validate": "Validate source code",
-            "POST /data-sources/{id}/reload": "Compile/reload source runtime",
-            "POST /data-sources/{id}/run": "Run source and ingest records",
-            "GET /data-sources/{id}/runs": "Run history",
-            "GET /data-sources/{id}/records": "Ingested records",
+            "sources": {
+                "GET /data-sources": "List all sources (?source_key, ?enabled filters)",
+                "GET /data-sources/{id}": "Get one source by ID",
+                "POST /data-sources": "Create a source",
+                "PUT /data-sources/{id}": "Update a source",
+                "DELETE /data-sources/{id}": "Delete a source",
+            },
+            "runtime": {
+                "POST /data-sources/validate": "Validate source code",
+                "POST /data-sources/{id}/reload": "Compile/reload source runtime",
+                "POST /data-sources/{id}/run": "Execute source ingestion now",
+            },
+            "observability": {
+                "GET /data-sources/{id}/runs": "Read run history",
+                "GET /data-sources/{id}/records": "Read ingested records",
+                "GET /data-sources/template": "Starter template + presets",
+                "GET /data-sources/docs": "This documentation",
+            },
+        },
+        "examples": {
+            "minimal_sync_source": {
+                "description": "Minimal synchronous source with static output.",
+                "source_code": (
+                    "from services.data_source_sdk import BaseDataSource\n\n"
+                    "class MinimalSource(BaseDataSource):\n"
+                    "    name = 'Minimal Source'\n"
+                    "    description = 'Returns one normalized row'\n\n"
+                    "    def fetch(self):\n"
+                    "        return [\n"
+                    "            {\n"
+                    "                'external_id': 'sample-1',\n"
+                    "                'title': 'Sample headline',\n"
+                    "                'summary': 'Normalized sample payload',\n"
+                    "                'category': 'custom',\n"
+                    "                'source': 'local',\n"
+                    "                'payload': {'raw': True},\n"
+                    "                'tags': ['sample'],\n"
+                    "            }\n"
+                    "        ]\n"
+                ),
+            },
+            "async_http_source": {
+                "description": "Async fetch with transform normalization and geotagging.",
+                "source_code": (
+                    "import httpx\n"
+                    "from services.data_source_sdk import BaseDataSource\n\n"
+                    "class ApiFeedSource(BaseDataSource):\n"
+                    "    name = 'API Feed Source'\n"
+                    "    description = 'Fetches upstream feed and normalizes rows'\n"
+                    "    default_config = {'url': 'https://example.com/feed', 'limit': 100}\n\n"
+                    "    async def fetch_async(self):\n"
+                    "        async with httpx.AsyncClient(timeout=15.0) as client:\n"
+                    "            response = await client.get(self.config['url'])\n"
+                    "            response.raise_for_status()\n"
+                    "            data = response.json()\n"
+                    "        return list(data.get('items', []))[: int(self.config.get('limit', 100))]\n\n"
+                    "    def transform(self, item):\n"
+                    "        lat = item.get('lat')\n"
+                    "        lon = item.get('lon')\n"
+                    "        has_geo = lat is not None and lon is not None\n"
+                    "        return {\n"
+                    "            'external_id': str(item.get('id') or ''),\n"
+                    "            'title': item.get('title'),\n"
+                    "            'summary': item.get('summary'),\n"
+                    "            'category': 'events',\n"
+                    "            'source': item.get('provider') or 'api',\n"
+                    "            'url': item.get('url'),\n"
+                    "            'observed_at': item.get('timestamp'),\n"
+                    "            'payload': item,\n"
+                    "            'tags': item.get('tags') or [],\n"
+                    "            'geotagged': has_geo,\n"
+                    "            'latitude': lat,\n"
+                    "            'longitude': lon,\n"
+                    "            'country_iso3': item.get('iso3'),\n"
+                    "        }\n"
+                ),
+            },
+            "strategy_consumer": {
+                "description": "Strategy-side usage: read records and trigger source run.",
+                "source_code": (
+                    "from services.strategy_sdk import StrategySDK\n\n"
+                    "async def load_recent_conflict_records():\n"
+                    "    records = await StrategySDK.get_data_records(\n"
+                    "        source_slug='events_gdelt_tensions',\n"
+                    "        category='conflict',\n"
+                    "        geotagged=True,\n"
+                    "        limit=50,\n"
+                    "    )\n"
+                    "    return records\n\n"
+                    "async def refresh_and_read():\n"
+                    "    await StrategySDK.run_data_source('events_gdelt_tensions', max_records=100)\n"
+                    "    return await StrategySDK.get_latest_data_record('events_gdelt_tensions')\n"
+                ),
+            },
         },
     }
 

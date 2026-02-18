@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -27,7 +28,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import CodeEditor from './CodeEditor'
+import DataSourceApiDocsFlyout from './DataSourceApiDocsFlyout'
 import StrategyConfigForm from './StrategyConfigForm'
+import { getWorldSourceStatus } from '../services/worldIntelligenceApi'
 import {
   createUnifiedDataSource,
   deleteUnifiedDataSource,
@@ -95,6 +98,59 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+function classifySourceTone(details: any): 'ok' | 'degraded' | 'error' {
+  if (details?.degraded) return 'degraded'
+  const hardError = details?.ok === false
+  if (!hardError) return 'ok'
+  const rawError = String(details?.error || details?.last_error || '').toLowerCase()
+  const degradedMarkers = [
+    'credentials_missing',
+    'missing_api_key',
+    'missing_api_token',
+    'disabled',
+    'rate-limited',
+    'rate limited',
+    'http 429',
+    "client error '429",
+    'status code 429',
+    "client error '403",
+    'status code 403',
+    '403 forbidden',
+    'soft rate-limit',
+    'soft rate-limited',
+    'nodename nor servname provided',
+    'name or service not known',
+    'temporary failure in name resolution',
+  ]
+  if (degradedMarkers.some((marker) => rawError.includes(marker))) {
+    return 'degraded'
+  }
+  return 'error'
+}
+
+function sourceToneClasses(tone: 'ok' | 'degraded' | 'error'): string {
+  if (tone === 'ok') return 'text-emerald-400'
+  if (tone === 'degraded') return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+function sourceToneLabel(tone: 'ok' | 'degraded' | 'error', count: number): string {
+  if (tone === 'ok') return `ok (${count})`
+  if (tone === 'degraded') return `degraded (${count})`
+  return 'error'
+}
+
+function resolveLiveHealthSourceName(source: UnifiedDataSource): string | null {
+  const slug = String(source.slug || '').trim().toLowerCase()
+  if (!slug) return null
+  const mapped = EVENT_SOURCE_HEALTH_KEY_BY_SLUG[slug]
+  if (mapped) return mapped
+  if (String(source.source_key || '').trim().toLowerCase() !== 'events') return null
+  if (!slug.startsWith('events_')) return null
+  const suffix = slug.slice('events_'.length).trim().toLowerCase()
+  return suffix || null
+}
+
 const STATUS_COLORS: Record<string, string> = {
   loaded: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   error: 'bg-red-500/15 text-red-400 border-red-500/30',
@@ -104,8 +160,8 @@ const STATUS_COLORS: Record<string, string> = {
 
 const SOURCE_LABELS: Record<string, string> = {
   custom: 'Custom',
-  news: 'News',
-  world_intelligence: 'World',
+  stories: 'Stories',
+  events: 'Events',
   weather: 'Weather',
   crypto: 'Crypto',
   traders: 'Traders',
@@ -114,7 +170,24 @@ const SOURCE_LABELS: Record<string, string> = {
 const SOURCE_KIND_LABELS: Record<string, string> = {
   python: 'Python',
   rss: 'RSS',
+  gdelt: 'GDELT',
+  events: 'Events',
+  stories: 'Stories',
   bridge: 'Bridge',
+}
+
+const EVENT_SOURCE_HEALTH_KEY_BY_SLUG: Record<string, string> = {
+  events_acled: 'acled',
+  events_gdelt_tensions: 'gdelt_tensions',
+  events_military: 'military',
+  events_infrastructure: 'infrastructure',
+  events_gdelt_news: 'gdelt_news',
+  events_usgs: 'usgs',
+  events_rss_news: 'rss_news',
+  events_chokepoints: 'chokepoints',
+  events_convergence: 'convergence',
+  events_instability: 'instability',
+  events_anomaly: 'anomaly',
 }
 
 const FALLBACK_TEMPLATE = [
@@ -136,12 +209,14 @@ const FALLBACK_TEMPLATE = [
 export default function DataSourcesManager() {
   const queryClient = useQueryClient()
 
+  const [showApiDocs, setShowApiDocs] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState<string>('all')
+  const [newPresetId, setNewPresetId] = useState<string>('')
 
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
   const [draftToken, setDraftToken] = useState<string | null>(null)
@@ -177,10 +252,23 @@ export default function DataSourcesManager() {
     staleTime: Infinity,
   })
 
+  const worldSourceStatusQuery = useQuery({
+    queryKey: ['world-intelligence-sources'],
+    queryFn: getWorldSourceStatus,
+    staleTime: 10000,
+    refetchInterval: 15000,
+  })
+
   const catalog = sourcesQuery.data || []
+  const templatePresets = useMemo(() => templateQuery.data?.presets || [], [templateQuery.data?.presets])
+
+  const selectedPreset = useMemo(
+    () => templatePresets.find((preset) => preset.id === newPresetId) || templatePresets[0] || null,
+    [templatePresets, newPresetId]
+  )
 
   const sourceKeys = useMemo(() => {
-    const known = ['custom', 'news', 'world_intelligence', 'weather', 'crypto', 'traders']
+    const known = ['custom', 'stories', 'events', 'weather', 'crypto', 'traders']
     const dynamic = [...new Set(catalog.map((s) => String(s.source_key || '').toLowerCase()).filter(Boolean))]
     return [...new Set([...known, ...dynamic])]
   }, [catalog])
@@ -241,6 +329,19 @@ export default function DataSourcesManager() {
       setSelectedSourceId(catalog[0].id)
     }
   }, [catalog, selectedSourceId, draftToken])
+
+  useEffect(() => {
+    const defaultPresetId = String(templateQuery.data?.default_preset || '').trim()
+    const hasCurrent = templatePresets.some((preset) => preset.id === newPresetId)
+    if (!hasCurrent) {
+      const fallbackId = templatePresets.some((preset) => preset.id === defaultPresetId)
+        ? defaultPresetId
+        : templatePresets[0]?.id || ''
+      if (newPresetId !== fallbackId) {
+        setNewPresetId(fallbackId)
+      }
+    }
+  }, [templateQuery.data?.default_preset, templatePresets, newPresetId])
 
   useEffect(() => {
     if (!selectedSourceId) return
@@ -385,19 +486,31 @@ export default function DataSourcesManager() {
     || runMutation.isPending
     || deleteMutation.isPending
 
-  const startNewDraft = () => {
+  const startNewDraft = (presetId?: string) => {
+    const preset = templatePresets.find((item) => item.id === (presetId || newPresetId)) || selectedPreset
+    if (!preset) {
+      setEditorError('Template presets are unavailable from backend. Reload sources and retry.')
+      return
+    }
+    const suffix = Date.now().toString().slice(-6)
+    const slugPrefix = normalizeSlug(String(preset.slug_prefix || preset.id || 'source'))
+    const nextSlug = normalizeSlug(`${slugPrefix}_${suffix}`)
+    const nextConfig = preset.config || {}
+    const nextSchema = preset.config_schema || { param_fields: [] }
+    const nextLimit = Number((nextConfig as Record<string, unknown>).limit)
+
     setSelectedSourceId(null)
     setDraftToken(`draft_${Date.now()}`)
-    setEditorSlug(`source_${Date.now().toString().slice(-6)}`)
-    setEditorSourceKey('custom')
-    setEditorSourceKind('python')
-    setEditorName('Custom Data Source')
-    setEditorDescription('')
+    setEditorSlug(nextSlug)
+    setEditorSourceKey(String(preset.source_key || 'custom').trim().toLowerCase())
+    setEditorSourceKind(String(preset.source_kind || 'python').trim().toLowerCase())
+    setEditorName(preset.name || 'Custom Data Source')
+    setEditorDescription(preset.description || '')
     setEditorEnabled(true)
-    setEditorCode(templateQuery.data?.template || FALLBACK_TEMPLATE)
-    setEditorConfigJson('{}')
-    setEditorSchemaJson('{"param_fields": []}')
-    setRunLimit(500)
+    setEditorCode(preset.source_code || templateQuery.data?.template || FALLBACK_TEMPLATE)
+    setEditorConfigJson(JSON.stringify(nextConfig, null, 2))
+    setEditorSchemaJson(JSON.stringify(nextSchema, null, 2))
+    setRunLimit(Number.isFinite(nextLimit) ? Math.max(1, Math.min(5000, Math.round(nextLimit))) : 500)
     setEditorError(null)
     setValidation(null)
   }
@@ -416,32 +529,54 @@ export default function DataSourcesManager() {
   }, [editorSchemaJson])
 
   const latestRun = runsQuery.data?.runs?.[0] || null
+  const sourceHealthStatus = worldSourceStatusQuery.data?.sources || {}
+  const sourceHealthError = worldSourceStatusQuery.data?.errors?.[0] || null
 
   return (
     <div className="h-full min-h-0 flex gap-3">
       <div className="w-[300px] shrink-0 min-h-0 flex flex-col rounded-lg border border-border/70 bg-card/50">
         <div className="shrink-0 p-3 space-y-3 border-b border-border/50">
-          <div className="flex items-center gap-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              {selectedPreset ? (
+                <Select value={selectedPreset.id} onValueChange={setNewPresetId}>
+                  <SelectTrigger className="h-7 text-[11px] flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templatePresets.map((preset) => (
+                      <SelectItem key={preset.id} value={preset.id}>
+                        {preset.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-7 flex-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 text-[10px] text-red-300 flex items-center">
+                  No backend presets available
+                </div>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => refreshCatalog()}
+                disabled={busy}
+                title="Refresh sources"
+              >
+                <RefreshCw className={cn('w-3 h-3', sourcesQuery.isFetching && 'animate-spin')} />
+              </Button>
+            </div>
             <Button
               type="button"
               size="sm"
-              className="h-7 gap-1.5 px-2.5 text-[11px] flex-1"
-              onClick={startNewDraft}
-              disabled={busy}
+              className="h-7 gap-1.5 px-2.5 text-[11px] w-full"
+              onClick={() => startNewDraft(selectedPreset?.id)}
+              disabled={busy || !selectedPreset}
             >
               <Plus className="w-3 h-3" />
-              New Source
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-[11px]"
-              onClick={() => refreshCatalog()}
-              disabled={busy}
-              title="Refresh sources"
-            >
-              <RefreshCw className={cn('w-3 h-3', sourcesQuery.isFetching && 'animate-spin')} />
+              {selectedPreset ? `New ${selectedPreset.name}` : 'New Source'}
             </Button>
           </div>
 
@@ -498,6 +633,10 @@ export default function DataSourcesManager() {
                   {sources.map((source) => {
                     const active = selectedSourceId === source.id
                     const badgeColor = STATUS_COLORS[source.status] || STATUS_COLORS.draft
+                    const healthSourceName = resolveLiveHealthSourceName(source)
+                    const healthDetails = healthSourceName ? sourceHealthStatus[healthSourceName] : null
+                    const healthTone = healthDetails ? classifySourceTone(healthDetails) : null
+                    const healthCount = Number(healthDetails?.count ?? 0)
                     return (
                       <button
                         key={source.id}
@@ -525,6 +664,16 @@ export default function DataSourcesManager() {
                         <p className="text-[10px] text-muted-foreground mt-0.5">
                           {SOURCE_KIND_LABELS[source.source_kind] || source.source_kind}
                         </p>
+                        {healthDetails && healthTone && (
+                          <div className="mt-1 flex items-center justify-between rounded bg-background/50 px-1.5 py-1">
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              {healthSourceName}
+                            </span>
+                            <span className={cn('text-[10px] font-mono', sourceToneClasses(healthTone))}>
+                              {sourceToneLabel(healthTone, healthCount)}
+                            </span>
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -534,9 +683,14 @@ export default function DataSourcesManager() {
           </div>
         </ScrollArea>
 
-        <div className="shrink-0 px-3 py-2 border-t border-border/50 text-[10px] text-muted-foreground flex justify-between">
-          <span>{flatFiltered.length} sources</span>
-          <span>{catalog.filter((source) => source.enabled).length} enabled</span>
+        <div className="shrink-0 px-3 py-2 border-t border-border/50 text-[10px] text-muted-foreground space-y-1">
+          {sourceHealthError && (
+            <div className="text-red-400 truncate" title={sourceHealthError}>{sourceHealthError}</div>
+          )}
+          <div className="flex justify-between">
+            <span>{flatFiltered.length} sources</span>
+            <span>{catalog.filter((source) => source.enabled).length} enabled</span>
+          </div>
         </div>
       </div>
 
@@ -585,6 +739,16 @@ export default function DataSourcesManager() {
                   />
                 </div>
 
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowApiDocs(true)}
+                >
+                  <BookOpen className="w-3 h-3" />
+                  API Docs
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -909,6 +1073,8 @@ export default function DataSourcesManager() {
           </>
         )}
       </div>
+
+      <DataSourceApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} />
     </div>
   )
 }

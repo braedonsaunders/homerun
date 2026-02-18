@@ -5,6 +5,8 @@ import {
   AlertCircle,
   Bell,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Filter,
   FolderPlus,
   Layers,
@@ -39,6 +41,8 @@ import {
 import TraderOpportunitiesSettingsFlyout, {
   type TraderOpportunitiesSettingsForm,
 } from './TraderOpportunitiesSettingsFlyout'
+import { Button } from './ui/button'
+import { Separator } from './ui/separator'
 
 interface Props {
   onNavigateToWallet?: (address: string) => void
@@ -58,6 +62,7 @@ type SignalSideFilter = 'all' | 'BUY' | 'SELL'
 type SourceFilter = 'all' | 'tracked' | 'pool'
 
 const CONFLUENCE_FETCH_LIMIT_MAX = 200
+const ITEMS_PER_PAGE = 20
 
 const DEFAULT_TRADER_OPPORTUNITY_SETTINGS: TraderOpportunitiesSettingsForm = {
   source_filter: 'all',
@@ -239,6 +244,7 @@ export default function RecentTradesPanel({
   const [showGroupForm, setShowGroupForm] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showFilteredSignals, setShowFilteredSignals] = useState(false)
+  const [currentPage, setCurrentPage] = useState(0)
   const [settingsSaveMessage, setSettingsSaveMessage] = useState<{
     type: 'success' | 'error'
     text: string
@@ -450,6 +456,11 @@ export default function RecentTradesPanel({
     )
   }, [showOpportunities, discoverySettings])
 
+  useEffect(() => {
+    if (!showOpportunities) return
+    setCurrentPage(0)
+  }, [showOpportunities, sourceFilter, minTier, sideFilter, signalLimit, showFilteredSignals])
+
   const rawTrades = rawTradesData?.trades || []
   const opportunities = confluenceOpportunities
   const trackedWalletsFromSignals = useMemo(() => {
@@ -543,6 +554,11 @@ export default function RecentTradesPanel({
   const displayedPoolCount = signalView.visiblePoolCount
   const displayedSignalCount = unifiedSignals.length
   const executableSignalCount = executableSignals.length
+  const totalPages = Math.ceil(unifiedSignals.length / ITEMS_PER_PAGE)
+  const paginatedSignals = useMemo(() => {
+    const start = currentPage * ITEMS_PER_PAGE
+    return unifiedSignals.slice(start, start + ITEMS_PER_PAGE)
+  }, [unifiedSignals, currentPage])
   const uniqueSignalMarkets = useMemo(() => {
     const keys = new Set<string>()
     for (const signal of unifiedSignals) {
@@ -560,6 +576,14 @@ export default function RecentTradesPanel({
     ? unifiedSignals.reduce((sum, signal) => sum + signal.confidence, 0) /
       unifiedSignals.length
     : 0
+
+  useEffect(() => {
+    if (!showOpportunities) return
+    const maxPage = Math.max(totalPages - 1, 0)
+    if (currentPage > maxPage) {
+      setCurrentPage(maxPage)
+    }
+  }, [showOpportunities, currentPage, totalPages])
 
   useEffect(() => {
     if (!showOpportunities) return
@@ -1246,23 +1270,59 @@ export default function RecentTradesPanel({
             </div>
           ) : viewMode === 'terminal' ? (
             <TraderSignalTerminal
-              signals={unifiedSignals}
+              signals={paginatedSignals}
               onNavigateToWallet={onNavigateToWallet}
               onOpenCopilot={handleOpenSignalCopilot}
               totalCount={unifiedSignals.length}
             />
           ) : viewMode === 'list' ? (
             <TraderSignalTable
-              signals={unifiedSignals}
+              signals={paginatedSignals}
               onNavigateToWallet={onNavigateToWallet}
               onOpenCopilot={handleOpenSignalCopilot}
             />
           ) : (
             <TraderSignalCards
-              signals={unifiedSignals}
+              signals={paginatedSignals}
               onNavigateToWallet={onNavigateToWallet}
               onOpenCopilot={handleOpenSignalCopilot}
             />
+          )}
+
+          {unifiedSignals.length > 0 && (
+            <div className="mt-5">
+              <Separator />
+              <div className="flex items-center justify-between pt-4">
+                <div className="text-xs text-muted-foreground">
+                  {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, unifiedSignals.length)} of {unifiedSignals.length}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+                    disabled={currentPage === 0}
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    Prev
+                  </Button>
+                  <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
+                    {currentPage + 1}/{totalPages || 1}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setCurrentPage((p) => p + 1)}
+                    disabled={currentPage >= totalPages - 1}
+                  >
+                    Next
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}

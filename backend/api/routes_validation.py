@@ -66,6 +66,11 @@ class CodeBacktestRequest(BaseModel):
     source_code: str = Field(min_length=10)
     slug: str = Field(default="_backtest_preview", min_length=1, max_length=128)
     config: Optional[dict[str, Any]] = None
+    use_ohlc_replay: bool = True
+    replay_lookback_hours: int = Field(default=24, ge=1, le=720)
+    replay_timeframe: str = Field(default="30m", min_length=2, max_length=8)
+    replay_max_markets: int = Field(default=80, ge=1, le=300)
+    replay_max_steps: int = Field(default=72, ge=1, le=500)
 
 
 def _get_combinatorial_validation_stats() -> dict[str, Any]:
@@ -230,6 +235,11 @@ async def run_code_backtest(req: CodeBacktestRequest):
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,
+        use_ohlc_replay=req.use_ohlc_replay,
+        replay_lookback_hours=req.replay_lookback_hours,
+        replay_timeframe=req.replay_timeframe,
+        replay_max_markets=req.replay_max_markets,
+        replay_max_steps=req.replay_max_steps,
     )
     return result.to_dict()
 

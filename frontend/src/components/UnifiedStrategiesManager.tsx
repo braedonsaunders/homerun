@@ -1056,6 +1056,11 @@ export default function UnifiedStrategiesManager() {
                 </button>
                 {showConfig && (
                   <div className="px-3 pb-3 animate-in fade-in duration-200 space-y-3">
+                    {selectedStrategy?.config_file_path && (
+                      <div className="text-[10px] text-muted-foreground px-1">
+                        Config file: <span className="font-mono">{selectedStrategy.config_file_path}</span>
+                      </div>
+                    )}
                     {/* Dynamic config form when schema has param_fields */}
                     {configSchemaFields.length > 0 && !showRawJson && (
                       <>

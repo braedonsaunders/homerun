@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   Sliders,
   LayoutGrid,
+  Database,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
@@ -135,6 +136,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, any> }) {
   const platformHooks = docs.platform_hooks as Record<string, any> | undefined
   const configSchema = docs.config_schema as Record<string, any> | undefined
   const imports = docs.imports as Record<string, any> | undefined
+  const dataSourceSdk = docs.data_source_sdk as Record<string, any> | undefined
   const examples = docs.examples as Record<string, Record<string, string>> | undefined
   const backtesting = docs.backtesting as Record<string, any> | undefined
   const validation = docs.validation as Record<string, any> | undefined
@@ -680,6 +682,88 @@ class MyStrategy(BaseStrategy):
               <div>
                 <div className="text-[10px] font-medium text-red-400/80 uppercase tracking-wider mb-1">Blocked (Security)</div>
                 <FieldTable fields={(imports.blocked as Record<string, string>)} />
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Data Source SDK */}
+      {dataSourceSdk && (
+        <Section title="Data Source SDK" icon={Database} iconColor="text-cyan-400">
+          <div className="space-y-3 pt-2">
+            <p className="text-[11px] text-muted-foreground">{dataSourceSdk.description as string}</p>
+
+            {dataSourceSdk.imports && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Imports</div>
+                <FieldTable fields={dataSourceSdk.imports as Record<string, string>} />
+              </div>
+            )}
+
+            {dataSourceSdk.when_to_use && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">When to Use</div>
+                <FieldTable fields={dataSourceSdk.when_to_use as Record<string, string>} />
+              </div>
+            )}
+
+            {dataSourceSdk.read_methods && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Read Methods</div>
+                {Object.entries(dataSourceSdk.read_methods as Record<string, Record<string, string>>).map(([method, info]) => (
+                  <div key={method} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
+                    <code className="text-[10px] text-emerald-400 font-mono">{method}</code>
+                    <code className="text-[9px] text-cyan-400/70 font-mono block break-all">{info.signature}</code>
+                    <p className="text-[10px] text-muted-foreground">{info.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {dataSourceSdk.management_methods && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Management Methods</div>
+                {Object.entries(dataSourceSdk.management_methods as Record<string, Record<string, string>>).map(([method, info]) => (
+                  <div key={method} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
+                    <code className="text-[10px] text-emerald-400 font-mono">{method}</code>
+                    <code className="text-[9px] text-cyan-400/70 font-mono block break-all">{info.signature}</code>
+                    <p className="text-[10px] text-muted-foreground">{info.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {dataSourceSdk.strategy_sdk_wrappers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">StrategySDK Wrappers</div>
+                <FieldTable fields={dataSourceSdk.strategy_sdk_wrappers as Record<string, string>} />
+              </div>
+            )}
+
+            {dataSourceSdk.examples && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Examples</div>
+                {Object.entries(dataSourceSdk.examples as Record<string, string>).map(([key, sourceCode]) => (
+                  <div key={key} className="mb-1.5">
+                    <div className="text-[10px] font-medium text-muted-foreground mb-1">{key.replace(/_/g, ' ')}</div>
+                    <CodeBlock code={sourceCode} />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {Array.isArray(dataSourceSdk.guidance) && dataSourceSdk.guidance.length > 0 && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Guidance</div>
+                <ol className="space-y-0.5">
+                  {(dataSourceSdk.guidance as string[]).map((item, i) => (
+                    <li key={i} className="text-[10px] text-muted-foreground flex items-start gap-1">
+                      <span className="text-amber-400 shrink-0">{i + 1}.</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ol>
               </div>
             )}
           </div>

@@ -110,7 +110,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
   const sdk = docs.sdk_reference as Record<string, any> | undefined
   const imports = docs.imports as Record<string, any> | undefined
   const validation = docs.validation as Record<string, any> | undefined
-  const endpoints = docs.api_endpoints as Record<string, Record<string, string>> | undefined
+  const endpoints = docs.api_endpoints as Record<string, Record<string, string> | string> | undefined
   const examples = docs.examples as Record<string, Record<string, string>> | undefined
 
   return (
@@ -363,21 +363,25 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       {endpoints && (
         <Section title="API Endpoints" icon={ListChecks} iconColor="text-teal-400">
           <div className="space-y-3 pt-2">
-            {Object.entries(endpoints).map(([group, groupEndpoints]) => (
-              <div key={group}>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
-                  {group.replace(/_/g, ' ')}
+            {Object.entries(endpoints).map(([group, groupEndpoints]) => {
+              const endpointMap = typeof groupEndpoints === 'string' ? { [group]: groupEndpoints } : groupEndpoints
+              const label = typeof groupEndpoints === 'string' ? 'endpoints' : group.replace(/_/g, ' ')
+              return (
+                <div key={group}>
+                  <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                    {label}
+                  </div>
+                  <div className="space-y-0.5">
+                    {Object.entries(endpointMap).map(([endpoint, desc]) => (
+                      <div key={endpoint} className="flex gap-2 text-[11px] py-0.5">
+                        <code className="text-cyan-400 font-mono shrink-0 text-[10px]">{endpoint}</code>
+                        <span className="text-muted-foreground">{String(desc)}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-0.5">
-                  {Object.entries(groupEndpoints).map(([endpoint, desc]) => (
-                    <div key={endpoint} className="flex gap-2 text-[11px] py-0.5">
-                      <code className="text-cyan-400 font-mono shrink-0 text-[10px]">{endpoint}</code>
-                      <span className="text-muted-foreground">{desc}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </Section>
       )}
@@ -410,7 +414,8 @@ export default function DataSourceApiDocsFlyout({
   const docsQuery = useQuery({
     queryKey: ['data-source-docs'],
     queryFn: getUnifiedDataSourceDocs,
-    staleTime: Infinity,
+    staleTime: 60000,
+    refetchOnMount: 'always',
     enabled: open,
   })
 
