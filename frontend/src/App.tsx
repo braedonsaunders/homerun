@@ -1923,7 +1923,7 @@ function App() {
             {/* ==================== Positions ==================== */}
             {activeTab === 'positions' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
-                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                <div className="flex-1 overflow-hidden px-6 py-4 min-h-0">
                   <PositionsPanel />
                 </div>
               </div>
@@ -1932,7 +1932,7 @@ function App() {
             {/* ==================== Performance ==================== */}
             {activeTab === 'performance' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
-                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                <div className="flex-1 overflow-hidden px-6 py-4 min-h-0">
                   <PerformancePanel />
                 </div>
               </div>

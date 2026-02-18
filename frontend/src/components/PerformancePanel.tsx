@@ -425,40 +425,42 @@ export default function PerformancePanel() {
       : 'Live stream'
 
   return (
-    <div className="space-y-5">
-      <Card className="overflow-hidden border-border/80 bg-card/80">
-        <CardContent className="p-5">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <div className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300 bg-cyan-100 px-2.5 py-1 text-[10px] uppercase tracking-wider text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
-                <Sparkles className="h-3 w-3" />
-                Performance Command Center
+    <Tabs value={activeSubTab} onValueChange={(value) => setActiveSubTab(value as PerformanceSubTab)} className="flex flex-col h-full min-h-0">
+      {/* Fixed header: title + badges */}
+      <div className="shrink-0 space-y-3 pb-3">
+        <Card className="overflow-hidden border-border/80 bg-card/80">
+          <CardContent className="p-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300 bg-cyan-100 px-2.5 py-1 text-[10px] uppercase tracking-wider text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
+                  <Sparkles className="h-3 w-3" />
+                  Performance Command Center
+                </div>
+                <h2 className="mt-2 flex items-center gap-2 text-xl font-semibold">
+                  <BarChart3 className="h-5 w-5 text-cyan-700 dark:text-cyan-300" />
+                  Performance Intelligence
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Data-dense execution telemetry, trade quality diagnostics, and validation controls in one surface.
+                </p>
               </div>
-              <h2 className="mt-2 flex items-center gap-2 text-xl font-semibold">
-                <BarChart3 className="h-5 w-5 text-cyan-700 dark:text-cyan-300" />
-                Performance Intelligence
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Data-dense execution telemetry, trade quality diagnostics, and validation controls in one surface.
-              </p>
-            </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              <Badge variant="outline" className="border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
-                {viewModeLabel}
-              </Badge>
-              <Badge variant="outline" className="border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-200">
-                {summary.totalTrades} trades in scope
-              </Badge>
-              <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
-                Range: {RANGE_OPTIONS.find((option) => option.id === timeRange)?.label}
-              </Badge>
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <Badge variant="outline" className="border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
+                  {viewModeLabel}
+                </Badge>
+                <Badge variant="outline" className="border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-200">
+                  {summary.totalTrades} trades in scope
+                </Badge>
+                <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
+                  Range: {RANGE_OPTIONS.find((option) => option.id === timeRange)?.label}
+                </Badge>
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
 
-      <Tabs value={activeSubTab} onValueChange={(value) => setActiveSubTab(value as PerformanceSubTab)} className="space-y-4">
+        {/* Tab navigation - pinned */}
         <TabsList className="h-auto w-full justify-start gap-2 rounded-xl border border-border/60 bg-card/70 p-1.5">
           <TabsTrigger
             value="overview"
@@ -485,7 +487,10 @@ export default function PerformancePanel() {
             </div>
           </TabsTrigger>
         </TabsList>
+      </div>
 
+      {/* Scrollable content area */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <TabsContent value="overview" className="mt-0 space-y-4">
           <Card className="border-border/60 bg-card/75">
             <CardContent className="p-4">
@@ -765,8 +770,8 @@ export default function PerformancePanel() {
         <TabsContent value="validation" className="mt-0 space-y-4">
           <ValidationEnginePanel />
         </TabsContent>
-      </Tabs>
-    </div>
+      </div>
+    </Tabs>
   )
 }
 
