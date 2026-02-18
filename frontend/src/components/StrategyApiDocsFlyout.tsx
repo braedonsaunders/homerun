@@ -20,6 +20,7 @@ import {
   Filter,
   ShieldAlert,
   Sliders,
+  LayoutGrid,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
@@ -591,6 +592,59 @@ function UnifiedDocs({ docs }: { docs: Record<string, unknown> }) {
           </div>
         </Section>
       )}
+
+      {/* Opportunity Tab Routing */}
+      <Section title="Opportunity Tab Routing" icon={LayoutGrid} iconColor="text-violet-400">
+        <div className="space-y-3 pt-2">
+          <p className="text-[11px] text-muted-foreground">
+            The <code className="text-amber-400 font-mono">source_key</code> class attribute controls which subtab your strategy's opportunities appear under in the Opportunities view. The frontend derives its tab list dynamically from the <code className="text-amber-400 font-mono">source_key</code> values reported by the strategies API — no frontend code changes are needed when you add a new strategy.
+          </p>
+
+          <div>
+            <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Setting source_key</div>
+            <CodeBlock code={`from services.strategies.base import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    strategy_type = "my_strategy"
+    name = "My Strategy"
+    description = "..."
+    source_key = "scanner"   # controls which tab this appears under`} />
+          </div>
+
+          <div>
+            <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Built-in source_keys</div>
+            <div className="space-y-0.5">
+              {([
+                ['scanner', 'green', 'Markets tab — default for market arbitrage strategies'],
+                ['news', 'amber', 'News tab — strategies driven by news/event signals'],
+                ['weather', 'cyan', 'Weather tab — strategies driven by weather data'],
+                ['crypto', 'orange', 'Crypto tab — crypto market strategies'],
+                ['traders', 'orange', 'Traders tab — copy-trading / tracked-trader strategies'],
+                ['world_intelligence', 'blue', 'World Intel tab — macro / geopolitical intelligence'],
+              ] as const).map(([key, color, desc]) => (
+                <div key={key} className="flex gap-2 text-[11px] py-0.5">
+                  <code className={`font-mono shrink-0 text-${color}-400`}>{key}</code>
+                  <span className="text-muted-foreground">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="border border-violet-500/20 rounded-md p-2 bg-violet-500/5">
+            <div className="text-[10px] font-medium text-violet-400 mb-1">Unknown source_key → automatic generic panel</div>
+            <p className="text-[10px] text-muted-foreground">
+              If you set a <code className="text-amber-400 font-mono">source_key</code> that isn't in the list above, the UI automatically creates a new tab for it with an auto-capitalised label and renders your opportunities using the standard card / list / terminal views. No frontend changes required.
+            </p>
+          </div>
+
+          <div>
+            <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Default</div>
+            <p className="text-[10px] text-muted-foreground">
+              If <code className="text-amber-400 font-mono">source_key</code> is omitted it defaults to <code className="text-amber-400 font-mono">"scanner"</code> (Markets tab).
+            </p>
+          </div>
+        </div>
+      </Section>
 
       {/* Imports */}
       {imports && (
