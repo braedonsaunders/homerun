@@ -278,8 +278,15 @@ function asObject(value: unknown): Record<string, unknown> {
   return {}
 }
 
+function resolveYesPrice(mkt: Record<string, unknown>): number {
+  const raw = Number(mkt.current_yes_price ?? mkt.yes_price)
+  return Number.isFinite(raw) ? raw : 0
+}
+
 export function normalizeTraderOpportunity(opportunity: Opportunity): UnifiedTraderSignal {
-  const market = opportunity.markets?.[0] || {}
+  const markets = opportunity.markets || []
+  const market = markets[0] || ({} as Record<string, unknown>)
+  const isMultiMarket = markets.length > 1
   const strategyContext = asObject(opportunity.strategy_context)
   const firehose = asObject(strategyContext.firehose)
   const sourceFlags = asObject(strategyContext.source_flags)
@@ -317,6 +324,46 @@ export function normalizeTraderOpportunity(opportunity: Opportunity): UnifiedTra
     reasons: validationReasons,
   }
 
+  // For multi-market opportunities, build outcome labels/prices from all sub-markets
+  let outcomeLabels: string[] | undefined
+  let outcomePrices: number[] | undefined
+  let mergedPriceHistory: Array<Record<string, unknown>> | undefined
+  if (isMultiMarket) {
+    outcomeLabels = markets.map((mkt, i) => {
+      const raw = String((mkt as any).group_item_title || mkt.question || '')
+      const label = raw.replace(/^(Will |What will |Which |Who will )/i, '').split('?')[0].trim()
+      return label || `Market ${i + 1}`
+    })
+    outcomePrices = markets.map((mkt) => resolveYesPrice(mkt as unknown as Record<string, unknown>))
+    // Merge price histories from all sub-markets
+    const maxLen = Math.max(
+      ...markets.map((m) => Array.isArray(m.price_history) ? m.price_history.length : 0),
+      0,
+    )
+    if (maxLen >= 2) {
+      const merged: Record<string, unknown>[] = []
+      for (let j = 0; j < maxLen; j++) {
+        const point: Record<string, unknown> = {}
+        markets.forEach((m, i) => {
+          const hist = Array.isArray(m.price_history) ? m.price_history : []
+          const entry = hist[j] as Record<string, unknown> | undefined
+          if (entry) {
+            const yesVal = entry.yes ?? entry.y ?? entry.p ?? entry.price
+            if (yesVal != null) point[`idx_${i}`] = yesVal
+            if (i === 0 && entry.t != null) point.t = entry.t
+          }
+        })
+        if (Object.keys(point).length > 1 || (Object.keys(point).length === 1 && !('t' in point))) {
+          merged.push(point)
+        }
+      }
+      if (merged.length >= 2) mergedPriceHistory = merged
+    }
+  } else {
+    outcomeLabels = Array.isArray(market.outcome_labels) ? market.outcome_labels.map((v: unknown) => String(v)) : undefined
+    outcomePrices = Array.isArray(market.outcome_prices) ? market.outcome_prices as number[] : undefined
+  }
+
   return {
     id: opportunity.id,
     source: 'confluence',
@@ -328,11 +375,11 @@ export function normalizeTraderOpportunity(opportunity: Opportunity): UnifiedTra
     no_price: typeof market.no_price === 'number' ? market.no_price : null,
     current_yes_price: typeof market.current_yes_price === 'number' ? market.current_yes_price : (typeof market.yes_price === 'number' ? market.yes_price : null),
     current_no_price: typeof market.current_no_price === 'number' ? market.current_no_price : (typeof market.no_price === 'number' ? market.no_price : null),
-    outcome_labels: Array.isArray(market.outcome_labels) ? market.outcome_labels.map((v) => String(v)) : undefined,
-    outcome_prices: Array.isArray(market.outcome_prices) ? market.outcome_prices : undefined,
-    yes_label: Array.isArray(market.outcome_labels) && market.outcome_labels[0] ? String(market.outcome_labels[0]) : null,
-    no_label: Array.isArray(market.outcome_labels) && market.outcome_labels[1] ? String(market.outcome_labels[1]) : null,
-    price_history: Array.isArray(market.price_history) ? market.price_history : undefined,
+    outcome_labels: outcomeLabels,
+    outcome_prices: outcomePrices,
+    yes_label: outcomeLabels?.[0] ?? null,
+    no_label: outcomeLabels?.[1] ?? null,
+    price_history: mergedPriceHistory ?? (Array.isArray(market.price_history) ? market.price_history : undefined),
     direction,
     confidence,
     wallet_count: Number(strategyContext.wallet_count ?? firehose.wallet_count ?? 0) || 0,
@@ -409,6 +456,17 @@ const SPARKLINE_TEXT_CLASSES = [
   'text-teal-300',
   'text-orange-300',
   'text-pink-300',
+]
+
+const OUTCOME_BOX_CLASSES = [
+  'border-green-500/20 bg-green-500/10 text-green-300',
+  'border-red-500/20 bg-red-500/10 text-red-300',
+  'border-sky-500/20 bg-sky-500/10 text-sky-300',
+  'border-amber-500/20 bg-amber-500/10 text-amber-300',
+  'border-violet-500/20 bg-violet-500/10 text-violet-300',
+  'border-teal-500/20 bg-teal-500/10 text-teal-300',
+  'border-orange-500/20 bg-orange-500/10 text-orange-300',
+  'border-pink-500/20 bg-pink-500/10 text-pink-300',
 ]
 
 function timeAgo(dateStr?: string | null): string {
@@ -583,11 +641,7 @@ function TraderSignalCard({
     ),
     [signal, currentYes, currentNo],
   )
-  const hasBackfilledHistory = (
-    Array.isArray(signal.price_history)
-    && signal.price_history.length >= 2
-  )
-  const hasSparkline = hasBackfilledHistory && sparkSeries.length > 0
+  const hasSparkline = sparkSeries.length > 0
   const sparklineSeries = useMemo(
     () => sparkSeries.map((row, index) => ({
       data: row.data,
@@ -783,20 +837,40 @@ function TraderSignalCard({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-2 mb-3">
-          <div className="rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1.5">
-            <p className="text-sm font-bold text-green-300 truncate">{yesLabel}</p>
-            <p className="text-xs font-semibold text-green-300 font-data">
-              {formatPriceCents(currentYes)}
-            </p>
+        {sparkSeries.length > 0 ? (
+          <div className={cn('grid gap-2 mb-3', sparkSeries.length <= 2 ? 'grid-cols-2' : sparkSeries.length <= 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3 sm:grid-cols-4')}>
+            {sparkSeries.slice(0, 8).map((row, index) => (
+              <div
+                key={`${signal.id}-outcome-${row.key}`}
+                className={cn(
+                  'rounded-md border px-2 py-1.5',
+                  OUTCOME_BOX_CLASSES[index % OUTCOME_BOX_CLASSES.length],
+                )}
+              >
+                <p className="text-sm font-bold truncate">{compactOutcomeLabel(row.label, 14)}</p>
+                <p className="text-xs font-semibold font-data">
+                  {row.latest != null && Number.isFinite(row.latest) ? formatPriceCents(row.latest) : '\u2014'}
+                </p>
+              </div>
+            ))}
+            {sparkSeries.length > 8 && (
+              <div className="flex items-center justify-center text-xs text-muted-foreground/60">
+                +{sparkSeries.length - 8}
+              </div>
+            )}
           </div>
-          <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5">
-            <p className="text-sm font-bold text-red-300 truncate">{noLabel}</p>
-            <p className="text-xs font-semibold text-red-300 font-data">
-              {formatPriceCents(currentNo)}
-            </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div className="rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1.5">
+              <p className="text-sm font-bold text-green-300 truncate">{yesLabel}</p>
+              <p className="text-xs font-semibold text-green-300 font-data">{formatPriceCents(currentYes)}</p>
+            </div>
+            <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5">
+              <p className="text-sm font-bold text-red-300 truncate">{noLabel}</p>
+              <p className="text-xs font-semibold text-red-300 font-data">{formatPriceCents(currentNo)}</p>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Row 5: Metrics grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">

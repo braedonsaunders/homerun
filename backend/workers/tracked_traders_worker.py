@@ -22,6 +22,7 @@ from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.market_cache import market_cache_service
+from services.scanner import scanner as market_scanner
 from services.smart_wallet_pool import smart_wallet_pool
 from services import shared_state
 from services.traders_firehose_pipeline import (
@@ -445,6 +446,15 @@ async def _run_loop() -> None:
                         deduped_opportunities = list(deduped_by_stable_id.values())
                 except Exception as exc:
                     logger.warning("trader_activity DataEvent dispatch failed: %s", exc)
+
+            # Attach shared sparkline price history from the scanner cache
+            if deduped_opportunities:
+                try:
+                    await market_scanner.attach_price_history_to_opportunities(
+                        deduped_opportunities, timeout_seconds=8.0,
+                    )
+                except Exception as exc:
+                    logger.warning("Sparkline backfill for trader opps failed: %s", exc)
 
             async with AsyncSessionLocal() as session:
                 await shared_state.write_traders_snapshot(

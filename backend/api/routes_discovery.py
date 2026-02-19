@@ -250,7 +250,7 @@ def _extract_outcome_labels(raw: object) -> list[str]:
         text = str(item or "").strip()
         if text:
             labels.append(text)
-    return labels[:2]
+    return labels
 
 
 def _extract_outcome_prices(raw: object) -> tuple[Optional[float], Optional[float]]:
@@ -471,8 +471,6 @@ def _extract_outcome_labels_from_market_info(
                 label = str(token.get("outcome") or token.get("name") or "").strip()
                 if label:
                     from_tokens.append(label)
-                if len(from_tokens) >= 2:
-                    break
             labels = from_tokens
 
     if not labels:
@@ -498,7 +496,7 @@ def _extract_outcome_labels_from_market_info(
         return ["Yes", "No"]
     if len(labels) == 1:
         return [labels[0], "No"]
-    return labels[:2]
+    return labels
 
 
 def _extract_outcome_prices_from_market_info(
@@ -585,8 +583,21 @@ async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
 
         row["outcome_labels"] = labels
         row["yes_label"] = labels[0]
-        row["no_label"] = labels[1]
+        row["no_label"] = labels[1] if len(labels) >= 2 else "No"
         row["market_token_ids"] = token_ids
+
+        # For multi-outcome markets, extract per-outcome prices from tokens
+        if len(labels) > 2 and isinstance(info, dict):
+            tokens = info.get("tokens")
+            if isinstance(tokens, list):
+                token_prices: list[float] = []
+                for token in tokens:
+                    if isinstance(token, dict):
+                        price = _safe_float(token.get("price"))
+                        if price is not None:
+                            token_prices.append(price)
+                if len(token_prices) >= len(labels):
+                    row["outcome_prices"] = token_prices
 
     return rows
 
