@@ -52,7 +52,6 @@ logs/
 
 # Test / debug artifacts
 output/
-screenshots/
 .playwright-cli/
 
 # Claude Code local settings
