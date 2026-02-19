@@ -14,6 +14,8 @@ REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_CONTAINER_NAME="${REDIS_CONTAINER_NAME:-homerun-redis}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
+REDIS_STARTED_BY_SCRIPT=0
+REDIS_START_MODE=""
 
 redis_ping() {
     python3 - "$REDIS_HOST" "$REDIS_PORT" <<'PY'
@@ -35,6 +37,23 @@ except Exception:
     pass
 
 raise SystemExit(1)
+PY
+}
+
+redis_shutdown() {
+    python3 - "$REDIS_HOST" "$REDIS_PORT" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+payload = b"*2\r\n$8\r\nSHUTDOWN\r\n$6\r\nNOSAVE\r\n"
+
+try:
+    with socket.create_connection((host, port), timeout=0.5) as sock:
+        sock.sendall(payload)
+except Exception:
+    pass
 PY
 }
 
@@ -96,6 +115,26 @@ bootstrap_redis_runtime() {
     ./scripts/setup.sh --redis-only
 }
 
+cleanup_started_redis() {
+    if [ "$REDIS_STARTED_BY_SCRIPT" -ne 1 ]; then
+        return 0
+    fi
+
+    if [ "$REDIS_START_MODE" = "docker" ]; then
+        if command -v docker >/dev/null 2>&1; then
+            docker stop "$REDIS_CONTAINER_NAME" >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
+
+    if [ "$REDIS_START_MODE" = "local" ]; then
+        if redis_ping; then
+            redis_shutdown >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
+}
+
 ensure_redis() {
     if redis_ping; then
         echo -e "${GREEN}Redis already running on ${REDIS_HOST}:${REDIS_PORT}${NC}"
@@ -106,11 +145,15 @@ ensure_redis() {
 
     echo -e "${CYAN}Starting Redis...${NC}"
     if try_start_redis_docker && wait_for_redis; then
+        REDIS_STARTED_BY_SCRIPT=1
+        REDIS_START_MODE="docker"
         echo -e "${GREEN}Redis started via Docker on ${REDIS_HOST}:${REDIS_PORT}${NC}"
         return 0
     fi
 
     if try_start_redis_local && wait_for_redis; then
+        REDIS_STARTED_BY_SCRIPT=1
+        REDIS_START_MODE="local"
         echo -e "${GREEN}Redis started via redis-server on ${REDIS_HOST}:${REDIS_PORT}${NC}"
         return 0
     fi
@@ -177,6 +220,8 @@ if needs_setup; then
     ./scripts/setup.sh
 fi
 
+trap cleanup_started_redis EXIT
+
 ensure_redis
 
 # Ensure TUI dependencies are installed
@@ -187,4 +232,4 @@ python -c "import textual" 2>/dev/null || {
 }
 
 # Launch the TUI
-exec python tui.py "$@"
+python tui.py "$@"

@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from services.shared_state import _commit_with_retry
 from models.database import LLMUsageLog, NewsTradeIntent, NewsWorkflowFinding, Strategy
 from services.news import shared_state
 from services.strategy_sdk import StrategySDK
@@ -1829,7 +1830,7 @@ class WorkflowOrchestrator:
             )
             await session.execute(stmt)
             count += 1
-        await session.commit()
+        await _commit_with_retry(session)
         return count
 
     async def _persist_intents(self, session: AsyncSession, intents: list[dict]) -> int:
@@ -1857,7 +1858,7 @@ class WorkflowOrchestrator:
                     setattr(existing, key, value)
                 count += 1
 
-        await session.commit()
+        await _commit_with_retry(session)
         return count
 
     def get_status(self) -> dict:

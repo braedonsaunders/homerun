@@ -18,6 +18,7 @@ from models.database import (
     NewsWorkflowSnapshot,
 )
 from services.event_bus import event_bus
+from services.shared_state import _commit_with_retry
 from services.market_tradability import get_market_tradability_map
 
 NEWS_SNAPSHOT_ID = "latest"
@@ -106,7 +107,7 @@ async def write_news_snapshot(
     if has_budget_remaining:
         row.budget_remaining_usd = status.get("budget_remaining")
     row.stats_json = stats if stats is not None else (status.get("stats") or {})
-    await session.commit()
+    await _commit_with_retry(session)
 
     # Publish news events so the broadcaster can relay immediately.
     try:
@@ -173,7 +174,7 @@ async def ensure_news_control(session: AsyncSession) -> NewsWorkflowControl:
     if row is None:
         row = NewsWorkflowControl(id=NEWS_CONTROL_ID)
         session.add(row)
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     return row
 
@@ -204,28 +205,28 @@ async def set_news_paused(session: AsyncSession, paused: bool) -> None:
     row = await ensure_news_control(session)
     row.is_paused = paused
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def set_news_interval(session: AsyncSession, interval_seconds: int) -> None:
     row = await ensure_news_control(session)
     row.scan_interval_seconds = max(30, min(3600, int(interval_seconds)))
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def request_one_news_scan(session: AsyncSession) -> None:
     row = await ensure_news_control(session)
     row.requested_scan_at = utcnow()
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def clear_news_scan_request(session: AsyncSession) -> None:
     row = await ensure_news_control(session)
     row.requested_scan_at = None
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def try_acquire_news_lease(
@@ -254,7 +255,7 @@ async def try_acquire_news_lease(
         )
     )
     result = await session.execute(stmt)
-    await session.commit()
+    await _commit_with_retry(session)
     return (result.rowcount or 0) > 0
 
 
@@ -269,7 +270,7 @@ async def release_news_lease(session: AsyncSession, owner: str) -> None:
             updated_at=utcnow(),
         )
     )
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def count_pending_news_intents(session: AsyncSession) -> int:
@@ -301,7 +302,7 @@ async def list_news_intents(
             row.consumed_at = now
             changed += 1
         if changed:
-            await session.commit()
+            await _commit_with_retry(session)
             if status_filter in {"pending", "submitted"}:
                 rows = [r for r in rows if r.status == status_filter]
 
@@ -324,7 +325,7 @@ async def mark_news_intent(
         finding_row = finding.scalar_one_or_none()
         if finding_row is not None:
             finding_row.consumed_by_orchestrator = True
-    await session.commit()
+    await _commit_with_retry(session)
     return True
 
 
@@ -342,7 +343,7 @@ async def expire_stale_news_intents(
             consumed_at=datetime.now(timezone.utc),
         )
     )
-    await session.commit()
+    await _commit_with_retry(session)
     return int(result.rowcount or 0)
 
 
@@ -388,7 +389,7 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
             db.news_workflow_min_confidence = 0.45
             mutated = True
     if mutated:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(db)
     return db
 
@@ -471,5 +472,5 @@ async def update_news_settings(
         setattr(db, col, value)
 
     db.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
     return await get_news_settings(session)

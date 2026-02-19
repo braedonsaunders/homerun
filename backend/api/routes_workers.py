@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +10,10 @@ from services import discovery_shared_state, shared_state
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
+    ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
+    read_orchestrator_snapshot,
     read_orchestrator_control,
+    write_orchestrator_snapshot,
     update_orchestrator_control,
 )
 from services.weather import shared_state as weather_shared_state
@@ -24,6 +25,7 @@ from services.worker_state import (
     set_worker_interval,
     set_worker_paused,
 )
+from utils.utcnow import utcnow
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
 ALLOWED_WORKERS = {
@@ -65,6 +67,25 @@ def _assert_supported_worker(name: str) -> None:
 
 
 async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
+    if worker_name == "trader_orchestrator":
+        snapshot = await read_orchestrator_snapshot(session)
+        control = await read_orchestrator_control(session)
+        return {
+            "worker_name": worker_name,
+            "running": bool(snapshot.get("running")),
+            "enabled": bool(snapshot.get("enabled")),
+            "current_activity": snapshot.get("current_activity"),
+            "interval_seconds": int(
+                snapshot.get("interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+            ),
+            "last_run_at": snapshot.get("last_run_at"),
+            "lag_seconds": None,
+            "last_error": snapshot.get("last_error"),
+            "stats": snapshot.get("stats", {}),
+            "updated_at": snapshot.get("updated_at"),
+            "control": control,
+        }
+
     snapshot = await read_worker_snapshot(session, worker_name)
 
     if worker_name == "scanner":
@@ -197,7 +218,21 @@ async def start_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
     elif name == "discovery":
         await discovery_shared_state.set_discovery_paused(session, False)
     elif name == "trader_orchestrator":
-        await update_orchestrator_control(session, is_paused=False, is_enabled=True)
+        control = await update_orchestrator_control(
+            session,
+            is_paused=False,
+            is_enabled=True,
+            requested_run_at=utcnow(),
+        )
+        await write_orchestrator_snapshot(
+            session,
+            running=False,
+            enabled=True,
+            current_activity="Start command queued",
+            interval_seconds=int(
+                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+            ),
+        )
     else:
         await set_worker_paused(session, name, False)
 
@@ -218,7 +253,16 @@ async def pause_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
     elif name == "discovery":
         await discovery_shared_state.set_discovery_paused(session, True)
     elif name == "trader_orchestrator":
-        await update_orchestrator_control(session, is_paused=True)
+        control = await update_orchestrator_control(session, is_paused=True)
+        await write_orchestrator_snapshot(
+            session,
+            running=False,
+            enabled=False,
+            current_activity="Manual stop requested",
+            interval_seconds=int(
+                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+            ),
+        )
     else:
         await set_worker_paused(session, name, True)
 
@@ -245,7 +289,7 @@ async def run_worker_once(worker: str, session: AsyncSession = Depends(get_db_se
     elif name == "discovery":
         await discovery_shared_state.request_one_discovery_run(session)
     elif name == "trader_orchestrator":
-        await update_orchestrator_control(session, requested_run_at=datetime.utcnow())
+        await update_orchestrator_control(session, requested_run_at=utcnow())
     else:
         await request_worker_run(session, name)
 

@@ -28,6 +28,7 @@ from sqlalchemy import Column, String, Float, Integer, DateTime, Index
 
 from config import settings
 from models.database import Base, AsyncSessionLocal
+from services.shared_state import _commit_with_retry
 from utils.logger import get_logger
 
 logger = get_logger("wallet_ws_monitor")
@@ -835,7 +836,7 @@ class WalletWebSocketMonitor:
                     detected_at=event.detected_at,
                 )
                 session.add(db_event)
-                await session.commit()
+                await _commit_with_retry(session)
         except Exception as e:
             logger.error(
                 "Failed to persist wallet monitor event",

@@ -44,10 +44,18 @@ _SEED_GUARD_LOCK = asyncio.Lock()
 _DATA_SOURCES_SEEDED = False
 _ALLOWED_SOURCE_KINDS = {"python", "rss", "rest_api"}
 _TEMPLATED_SOURCE_KINDS = {"rss", "rest_api"}
+_HAS_FETCH_RE = re.compile(r"\bdef\s+fetch\s*\(")
+_HAS_FETCH_ASYNC_RE = re.compile(r"\basync\s+def\s+fetch_async\s*\(")
+_HAS_TRANSFORM_RE = re.compile(r"\bdef\s+transform\s*\(")
 _RETENTION_BOUNDS: dict[str, tuple[int, int]] = {
     "max_records": (1, 250_000),
     "max_age_days": (1, 3650),
 }
+
+
+async def _has_any_data_source(session: AsyncSession) -> bool:
+    row = await session.execute(select(DataSource.id).limit(1))
+    return row.scalar_one_or_none() is not None
 
 
 def _validate_slug(slug: str) -> str:
@@ -169,6 +177,15 @@ def _resolve_source_code_for_kind(
     )
 
 
+def _detect_capabilities_fast(source_code: str) -> dict[str, bool]:
+    code = str(source_code or "")
+    return {
+        "has_fetch": bool(_HAS_FETCH_RE.search(code)),
+        "has_fetch_async": bool(_HAS_FETCH_ASYNC_RE.search(code)),
+        "has_transform": bool(_HAS_TRANSFORM_RE.search(code)),
+    }
+
+
 class DataSourceCreateRequest(BaseModel):
     slug: str = Field(..., min_length=3, max_length=128)
     source_key: str = Field(default="custom", min_length=2, max_length=64)
@@ -209,11 +226,13 @@ async def _ensure_data_sources_seeded_once(session: AsyncSession) -> None:
     global _DATA_SOURCES_SEEDED
 
     if _DATA_SOURCES_SEEDED:
-        return
+        if await _has_any_data_source(session):
+            return
 
     async with _SEED_GUARD_LOCK:
         if _DATA_SOURCES_SEEDED:
-            return
+            if await _has_any_data_source(session):
+                return
         try:
             await ensure_all_data_sources_seeded(session)
             _DATA_SOURCES_SEEDED = True
@@ -229,16 +248,18 @@ async def _ensure_data_sources_seeded_once(session: AsyncSession) -> None:
 
 
 def _source_to_dict(row: DataSource, *, include_code: bool = True) -> dict:
-    capabilities = {"has_fetch": False, "has_fetch_async": False, "has_transform": False}
-    try:
-        validation = validate_data_source_source(str(row.source_code or ""), class_name=row.class_name)
-        capabilities = validation.get("capabilities") or capabilities
-    except Exception as exc:
-        logger.warning(
-            "Failed to validate source capabilities during source serialization",
-            source_slug=str(row.slug or "").strip().lower(),
-            error=exc,
-        )
+    source_code = str(row.source_code or "")
+    capabilities = _detect_capabilities_fast(source_code)
+    if include_code:
+        try:
+            validation = validate_data_source_source(source_code, class_name=row.class_name)
+            capabilities = validation.get("capabilities") or capabilities
+        except Exception as exc:
+            logger.warning(
+                "Failed to validate source capabilities during source serialization",
+                source_slug=str(row.slug or "").strip().lower(),
+                error=exc,
+            )
 
     runtime = data_source_loader.get_runtime(str(row.slug or "").strip().lower())
     runtime_payload = None
@@ -263,7 +284,7 @@ def _source_to_dict(row: DataSource, *, include_code: bool = True) -> dict:
         "source_kind": row.source_kind,
         "name": row.name,
         "description": row.description,
-        "source_code": row.source_code if include_code else "",
+        "source_code": source_code if include_code else "",
         "class_name": row.class_name,
         "is_system": bool(row.is_system),
         "enabled": bool(row.enabled),

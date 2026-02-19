@@ -68,8 +68,11 @@ from services import discovery_shared_state, shared_state
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
+    ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
+    update_orchestrator_control,
     read_orchestrator_control,
     read_orchestrator_snapshot,
+    write_orchestrator_snapshot,
 )
 from services.weather import shared_state as weather_shared_state
 from services.worker_state import list_worker_snapshots, read_worker_control
@@ -341,6 +344,23 @@ async def lifespan(app: FastAPI):
                 weather_control = await weather_shared_state.read_weather_control(session)
                 discovery_control = await discovery_shared_state.read_discovery_control(session)
                 orchestrator_control = await read_orchestrator_control(session)
+                orchestrator_interval_seconds = ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+                orchestrator_control = await update_orchestrator_control(
+                    session,
+                    is_enabled=False,
+                    is_paused=True,
+                    run_interval_seconds=orchestrator_interval_seconds,
+                )
+                try:
+                    await write_orchestrator_snapshot(
+                        session,
+                        running=False,
+                        enabled=False,
+                        current_activity="Stopped on startup; manual start required",
+                        interval_seconds=orchestrator_interval_seconds,
+                    )
+                except Exception:
+                    pass
                 crypto_control = await read_worker_control(session, "crypto")
                 tracked_control = await read_worker_control(session, "tracked_traders")
                 events_control = await read_worker_control(session, "events")

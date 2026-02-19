@@ -50,3 +50,12 @@ def test_strategy_retention_schema_contains_expected_fields():
     keys = {field.get("key") for field in schema.get("param_fields", []) if isinstance(field, dict)}
     assert "max_opportunities" in keys
     assert "retention_window" in keys
+
+
+def test_crypto_highfreq_scope_schema_contains_include_exclude_fields():
+    schema = StrategySDK.crypto_highfreq_scope_config_schema()
+    keys = {field.get("key") for field in schema.get("param_fields", []) if isinstance(field, dict)}
+    assert "include_assets" in keys
+    assert "exclude_assets" in keys
+    assert "include_timeframes" in keys
+    assert "exclude_timeframes" in keys

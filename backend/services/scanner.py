@@ -1375,7 +1375,6 @@ class ArbitrageScanner:
                 )
             else:
                 await self._ensure_runtime_strategies_loaded()
-                await self._set_activity("Dispatching market_data_refresh to strategies...")
                 data_event = DataEvent(
                     event_type=EventType.MARKET_DATA_REFRESH,
                     source="scanner_refresh",

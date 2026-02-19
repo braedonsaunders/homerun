@@ -108,8 +108,10 @@ const CRYPTO_STRATEGY_OPTIONS = [
 ] as const
 const CRYPTO_TIMEFRAME_OPTIONS = ['5m', '15m', '1h', '4h'] as const
 const CRYPTO_MODE_PARAM_KEYS = ['strategy_mode', 'mode'] as const
-const CRYPTO_ASSET_PARAM_KEYS = ['target_assets', 'allowed_assets', 'assets', 'coins'] as const
-const CRYPTO_TIMEFRAME_PARAM_KEYS = ['target_timeframes', 'allowed_timeframes', 'timeframes', 'cadence'] as const
+const CRYPTO_INCLUDE_ASSET_PARAM_KEYS = ['include_assets'] as const
+const CRYPTO_EXCLUDE_ASSET_PARAM_KEYS = ['exclude_assets'] as const
+const CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS = ['include_timeframes'] as const
+const CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS = ['exclude_timeframes'] as const
 const RESUME_POLICY_OPTIONS = ['resume_full', 'manage_only', 'flatten_then_start'] as const
 type ResumePolicy = (typeof RESUME_POLICY_OPTIONS)[number]
 type TradersScopeMode = 'tracked' | 'pool' | 'individual' | 'group'
@@ -124,7 +126,9 @@ type TraderAdvancedConfig = {
   cadenceProfile: string
   strategyMode: string
   cryptoAssetsCsv: string
-  cryptoTimeframesCsv: string
+  cryptoExcludedAssetsCsv: string
+  cryptoIncludedTimeframesCsv: string
+  cryptoExcludedTimeframesCsv: string
   minSignalScore: number
   minEdgePercent: number
   minConfidence: number
@@ -716,10 +720,17 @@ function cryptoModeOptionsForStrategy(strategy: StrategyOptionDetail | null | un
 }
 
 function cryptoAssetOptionsForStrategy(strategy: StrategyOptionDetail | null | undefined): string[] {
-  const paramKey = strategyParamKey(strategy, CRYPTO_ASSET_PARAM_KEYS)
+  const paramKey = strategyParamKey(strategy, CRYPTO_INCLUDE_ASSET_PARAM_KEYS)
   const fieldOptions = normalizeCryptoAssetList(strategyParamOptions(strategy, paramKey))
   if (fieldOptions.length > 0) return fieldOptions
-  return normalizeCryptoAssetList(strategyDefaultValuesForKeys(strategy, CRYPTO_ASSET_PARAM_KEYS))
+  return normalizeCryptoAssetList(strategyDefaultValuesForKeys(strategy, CRYPTO_INCLUDE_ASSET_PARAM_KEYS))
+}
+
+function cryptoTimeframeOptionsForStrategy(strategy: StrategyOptionDetail | null | undefined): string[] {
+  const paramKey = strategyParamKey(strategy, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS)
+  const fieldOptions = normalizeCryptoTimeframeList(strategyParamOptions(strategy, paramKey))
+  if (fieldOptions.length > 0) return fieldOptions
+  return normalizeCryptoTimeframeList(strategyDefaultValuesForKeys(strategy, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS))
 }
 
 function defaultStrategyForSource(sourceKey: string, sourceCatalog: TraderSource[]): string {
@@ -784,7 +795,9 @@ function defaultAdvancedConfig(): TraderAdvancedConfig {
     cadenceProfile: 'custom',
     strategyMode: 'auto',
     cryptoAssetsCsv: CRYPTO_ASSET_OPTIONS.join(', '),
-    cryptoTimeframesCsv: CRYPTO_TIMEFRAME_OPTIONS.join(', '),
+    cryptoExcludedAssetsCsv: '',
+    cryptoIncludedTimeframesCsv: CRYPTO_TIMEFRAME_OPTIONS.join(', '),
+    cryptoExcludedTimeframesCsv: '',
     minSignalScore: 0.1,
     minEdgePercent: 8,
     minConfidence: 60,
@@ -828,18 +841,18 @@ function computeAdvancedConfig(
 ): TraderAdvancedConfig {
   const defaults = defaultAdvancedConfig()
   const tradingWindow = isRecord(metadata.trading_window_utc) ? metadata.trading_window_utc : {}
-  const configuredCryptoAssets = normalizeCryptoAssetList(
-    params.target_assets ?? params.allowed_assets ?? params.assets ?? params.coins
-  )
-  const configuredCryptoTimeframes = normalizeCryptoTimeframeList(
-    params.target_timeframes ?? params.allowed_timeframes ?? params.timeframes ?? params.cadence
-  )
+  const configuredCryptoAssets = normalizeCryptoAssetList(params.include_assets)
+  const excludedCryptoAssets = normalizeCryptoAssetList(params.exclude_assets)
+  const configuredCryptoTimeframes = normalizeCryptoTimeframeList(params.include_timeframes)
+  const excludedCryptoTimeframes = normalizeCryptoTimeframeList(params.exclude_timeframes)
 
   return {
     cadenceProfile: String(metadata.cadence_profile || defaults.cadenceProfile),
     strategyMode: normalizeCryptoStrategyMode(params.strategy_mode ?? params.mode ?? defaults.strategyMode),
     cryptoAssetsCsv: (configuredCryptoAssets.length > 0 ? configuredCryptoAssets : [...CRYPTO_ASSET_OPTIONS]).join(', '),
-    cryptoTimeframesCsv: (configuredCryptoTimeframes.length > 0 ? configuredCryptoTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]).join(', '),
+    cryptoExcludedAssetsCsv: excludedCryptoAssets.join(', '),
+    cryptoIncludedTimeframesCsv: (configuredCryptoTimeframes.length > 0 ? configuredCryptoTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]).join(', '),
+    cryptoExcludedTimeframesCsv: excludedCryptoTimeframes.join(', '),
     minSignalScore: toNumber(params.min_signal_score ?? defaults.minSignalScore),
     minEdgePercent: toNumber(params.min_edge_percent ?? defaults.minEdgePercent),
     minConfidence: normalizeConfidencePercent(toNumber(params.min_confidence ?? defaults.minConfidence)),
@@ -907,8 +920,10 @@ function withConfiguredParams(
 
   if (normalizeSourceKey(sourceKey) !== 'crypto') {
     for (const key of CRYPTO_MODE_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_ASSET_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_TIMEFRAME_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_INCLUDE_ASSET_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_EXCLUDE_ASSET_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
     return next
   }
 
@@ -923,24 +938,51 @@ function withConfiguredParams(
     for (const key of CRYPTO_MODE_PARAM_KEYS) delete next[key]
   }
 
-  const assetParamKey = strategyParamKey(strategyDetail, CRYPTO_ASSET_PARAM_KEYS)
+  const includeAssetParamKey = strategyParamKey(strategyDetail, CRYPTO_INCLUDE_ASSET_PARAM_KEYS)
+  const excludeAssetParamKey = strategyParamKey(strategyDetail, CRYPTO_EXCLUDE_ASSET_PARAM_KEYS)
   const schemaAssets = cryptoAssetOptionsForStrategy(strategyDetail)
-  const allowedAssets = schemaAssets.length > 0 ? schemaAssets : supportsFixedTimeframe ? [...CRYPTO_ASSET_OPTIONS] : []
-  if (assetParamKey || allowedAssets.length > 0) {
-    const targetKey = assetParamKey || 'target_assets'
+  const allowedAssets = schemaAssets.length > 0 ? schemaAssets : [...CRYPTO_ASSET_OPTIONS]
+  if (includeAssetParamKey) {
+    const targetKey = includeAssetParamKey
     const targetAssets = normalizeCryptoAssetList(config.cryptoAssetsCsv, allowedAssets)
     next[targetKey] = targetAssets.length > 0 ? targetAssets : allowedAssets
   } else {
-    for (const key of CRYPTO_ASSET_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_INCLUDE_ASSET_PARAM_KEYS) delete next[key]
+  }
+  if (excludeAssetParamKey) {
+    const targetKey = excludeAssetParamKey
+    const excludedAssets = normalizeCryptoAssetList(config.cryptoExcludedAssetsCsv, allowedAssets)
+    next[targetKey] = excludedAssets
+  } else {
+    for (const key of CRYPTO_EXCLUDE_ASSET_PARAM_KEYS) delete next[key]
   }
 
-  const timeframeParamKey = strategyParamKey(strategyDetail, CRYPTO_TIMEFRAME_PARAM_KEYS)
+  const includeTimeframeParamKey = strategyParamKey(strategyDetail, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS)
+  const excludeTimeframeParamKey = strategyParamKey(strategyDetail, CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS)
+  const schemaTimeframes = cryptoTimeframeOptionsForStrategy(strategyDetail)
+  const allowedTimeframes = schemaTimeframes.length > 0 ? schemaTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]
   const fixedTimeframe = cryptoTimeframeForStrategyKey(strategyKey)
-  if (fixedTimeframe) {
-    const targetKey = timeframeParamKey || 'target_timeframes'
-    next[targetKey] = [fixedTimeframe]
+  if (includeTimeframeParamKey || fixedTimeframe) {
+    const targetKey = includeTimeframeParamKey || 'include_timeframes'
+    if (fixedTimeframe) {
+      next[targetKey] = [fixedTimeframe]
+    } else {
+      const targetTimeframes = normalizeCryptoTimeframeList(config.cryptoIncludedTimeframesCsv)
+      next[targetKey] = targetTimeframes.length > 0 ? targetTimeframes : allowedTimeframes
+    }
   } else {
-    for (const key of CRYPTO_TIMEFRAME_PARAM_KEYS) delete next[key]
+    for (const key of CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
+  }
+
+  if (excludeTimeframeParamKey) {
+    const targetKey = excludeTimeframeParamKey
+    if (fixedTimeframe) {
+      next[targetKey] = []
+    } else {
+      next[targetKey] = normalizeCryptoTimeframeList(config.cryptoExcludedTimeframesCsv)
+    }
+  } else {
+    for (const key of CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
   }
   return next
 }
@@ -1409,14 +1451,32 @@ export default function TradingPanel() {
     if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_STRATEGY_MODES]
     return []
   }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
-  const cryptoAssetParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_ASSET_PARAM_KEYS),
+  const cryptoIncludeAssetParamKey = useMemo(
+    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_INCLUDE_ASSET_PARAM_KEYS),
+    [selectedCryptoStrategyDetail]
+  )
+  const cryptoExcludeAssetParamKey = useMemo(
+    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_EXCLUDE_ASSET_PARAM_KEYS),
+    [selectedCryptoStrategyDetail]
+  )
+  const cryptoIncludeTimeframeParamKey = useMemo(
+    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS),
+    [selectedCryptoStrategyDetail]
+  )
+  const cryptoExcludeTimeframeParamKey = useMemo(
+    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS),
     [selectedCryptoStrategyDetail]
   )
   const cryptoAssetOptions = useMemo(() => {
     const options = cryptoAssetOptionsForStrategy(selectedCryptoStrategyDetail)
     if (options.length > 0) return options
     if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_ASSET_OPTIONS]
+    return []
+  }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
+  const cryptoTimeframeOptions = useMemo(() => {
+    const options = cryptoTimeframeOptionsForStrategy(selectedCryptoStrategyDetail)
+    if (options.length > 0) return options
+    if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_TIMEFRAME_OPTIONS]
     return []
   }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
   const cryptoTimeframeDraft = useMemo(
@@ -1432,6 +1492,30 @@ export default function TradingPanel() {
         )
       ),
     [advancedConfig.cryptoAssetsCsv, cryptoAssetOptions]
+  )
+  const selectedExcludedCryptoAssets = useMemo(
+    () =>
+      new Set(
+        normalizeCryptoAssetList(
+          advancedConfig.cryptoExcludedAssetsCsv,
+          cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
+        )
+      ),
+    [advancedConfig.cryptoExcludedAssetsCsv, cryptoAssetOptions]
+  )
+  const selectedCryptoIncludedTimeframes = useMemo(
+    () =>
+      new Set(
+        normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv)
+      ),
+    [advancedConfig.cryptoIncludedTimeframesCsv]
+  )
+  const selectedCryptoExcludedTimeframes = useMemo(
+    () =>
+      new Set(
+        normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv)
+      ),
+    [advancedConfig.cryptoExcludedTimeframesCsv]
   )
 
   const setSourceStrategy = (sourceKey: string, strategyKey: string) => {
@@ -1496,14 +1580,55 @@ export default function TradingPanel() {
     setAdvancedValue('cryptoAssetsCsv', availableAssets.filter((item) => next.has(item)).join(', '))
   }
 
+  const toggleExcludedCryptoAssetTarget = (asset: string) => {
+    const availableAssets = cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
+    const next = new Set(normalizeCryptoAssetList(advancedConfig.cryptoExcludedAssetsCsv, availableAssets))
+    if (next.has(asset)) {
+      next.delete(asset)
+    } else {
+      next.add(asset)
+    }
+    setAdvancedValue('cryptoExcludedAssetsCsv', availableAssets.filter((item) => next.has(item)).join(', '))
+  }
+
+  const toggleCryptoTimeframeTarget = (timeframe: string) => {
+    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
+    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv))
+    if (next.has(timeframe)) {
+      next.delete(timeframe)
+    } else {
+      next.add(timeframe)
+    }
+    setAdvancedValue('cryptoIncludedTimeframesCsv', availableTimeframes.filter((item) => next.has(item)).join(', '))
+  }
+
+  const toggleExcludedCryptoTimeframeTarget = (timeframe: string) => {
+    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
+    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv))
+    if (next.has(timeframe)) {
+      next.delete(timeframe)
+    } else {
+      next.add(timeframe)
+    }
+    setAdvancedValue('cryptoExcludedTimeframesCsv', availableTimeframes.filter((item) => next.has(item)).join(', '))
+  }
+
   const enableAllCryptoTargets = () => {
     const availableAssets = cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
+    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
     if (availableAssets.length > 0) {
       setAdvancedValue('cryptoAssetsCsv', availableAssets.join(', '))
     }
+    setAdvancedValue('cryptoExcludedAssetsCsv', '')
     if (cryptoTimeframeDraft) {
-      setAdvancedValue('cryptoTimeframesCsv', cryptoTimeframeDraft)
+      setAdvancedValue('cryptoIncludedTimeframesCsv', cryptoTimeframeDraft)
+      setAdvancedValue('cryptoExcludedTimeframesCsv', '')
+      return
     }
+    if (availableTimeframes.length > 0) {
+      setAdvancedValue('cryptoIncludedTimeframesCsv', availableTimeframes.join(', '))
+    }
+    setAdvancedValue('cryptoExcludedTimeframesCsv', '')
   }
 
   useEffect(() => {
@@ -1526,6 +1651,36 @@ export default function TradingPanel() {
     if (normalizedAssets === advancedConfig.cryptoAssetsCsv) return
     setAdvancedConfig((current) => ({ ...current, cryptoAssetsCsv: normalizedAssets }))
   }, [advancedConfig.cryptoAssetsCsv, cryptoAssetOptions, isCryptoStrategyDraft])
+
+  useEffect(() => {
+    if (!isCryptoStrategyDraft || cryptoAssetOptions.length === 0) return
+    const normalizedAssets = normalizeCryptoAssetList(
+      advancedConfig.cryptoExcludedAssetsCsv,
+      cryptoAssetOptions
+    ).join(', ')
+    if (normalizedAssets === advancedConfig.cryptoExcludedAssetsCsv) return
+    setAdvancedConfig((current) => ({ ...current, cryptoExcludedAssetsCsv: normalizedAssets }))
+  }, [advancedConfig.cryptoExcludedAssetsCsv, cryptoAssetOptions, isCryptoStrategyDraft])
+
+  useEffect(() => {
+    if (!isCryptoStrategyDraft || cryptoTimeframeOptions.length === 0) return
+    const allowed = new Set(cryptoTimeframeOptions)
+    const normalizedTimeframes = normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv)
+      .filter((item) => allowed.has(item))
+      .join(', ')
+    if (normalizedTimeframes === advancedConfig.cryptoIncludedTimeframesCsv) return
+    setAdvancedConfig((current) => ({ ...current, cryptoIncludedTimeframesCsv: normalizedTimeframes }))
+  }, [advancedConfig.cryptoIncludedTimeframesCsv, cryptoTimeframeOptions, isCryptoStrategyDraft])
+
+  useEffect(() => {
+    if (!isCryptoStrategyDraft || cryptoTimeframeOptions.length === 0) return
+    const allowed = new Set(cryptoTimeframeOptions)
+    const normalizedTimeframes = normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv)
+      .filter((item) => allowed.has(item))
+      .join(', ')
+    if (normalizedTimeframes === advancedConfig.cryptoExcludedTimeframesCsv) return
+    setAdvancedConfig((current) => ({ ...current, cryptoExcludedTimeframesCsv: normalizedTimeframes }))
+  }, [advancedConfig.cryptoExcludedTimeframesCsv, cryptoTimeframeOptions, isCryptoStrategyDraft])
 
   useEffect(() => {
     if (!selectedTraderId && traders.length > 0) {
@@ -2335,12 +2490,13 @@ export default function TradingPanel() {
     selectedAccountValid &&
     !(selectedAccountIsLive && killSwitchOn)
   const canStopOrchestrator = !controlBusy && orchestratorEnabled
-  const startStopIsRunning = orchestratorEnabled
-  const startStopDisabled = startStopIsRunning ? !canStopOrchestrator : !canStartOrchestrator
-  const startStopPending = startStopIsRunning ? stopByModeMutation.isPending : startBySelectedAccountMutation.isPending
+  const startStopIsConfigured = orchestratorEnabled
+  const startStopIsRunning = orchestratorRunning
+  const startStopDisabled = startStopIsConfigured ? !canStopOrchestrator : !canStartOrchestrator
+  const startStopPending = startStopIsConfigured ? stopByModeMutation.isPending : startBySelectedAccountMutation.isPending
 
   const runStartStopCommand = () => {
-    if (startStopIsRunning) {
+    if (startStopIsConfigured) {
       if (!canStopOrchestrator) return
       stopByModeMutation.mutate()
       return
@@ -2369,19 +2525,21 @@ export default function TradingPanel() {
             onClick={runStartStopCommand}
             disabled={startStopDisabled}
             className="h-7 min-w-[140px] text-[11px]"
-            variant={startStopIsRunning ? 'secondary' : 'default'}
+            variant={startStopIsConfigured ? 'secondary' : 'default'}
             size="sm"
           >
             {startStopPending ? (
               <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
-            ) : startStopIsRunning ? (
+            ) : startStopIsConfigured && startStopIsRunning ? (
               <Square className="w-3.5 h-3.5 mr-1" />
             ) : selectedAccountIsLive ? (
               <Zap className="w-3.5 h-3.5 mr-1" />
             ) : (
               <Play className="w-3.5 h-3.5 mr-1" />
             )}
-            {startStopIsRunning ? 'Stop' : selectedAccountMode.toUpperCase()}
+            {startStopIsConfigured
+              ? (startStopIsRunning ? 'Stop' : 'Start')
+              : selectedAccountMode.toUpperCase()}
           </Button>
           <div className="flex items-center gap-1.5 rounded border border-red-500/30 bg-red-500/5 px-1.5 py-0.5">
             <ShieldAlert className="w-3 h-3 text-red-400" />
@@ -3079,15 +3237,18 @@ export default function TradingPanel() {
                     <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-2.5 space-y-2 mt-2">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-400">Crypto Settings</p>
-                        {(Boolean(cryptoAssetParamKey) || cryptoAssetOptions.length > 0) && (
+                        {(Boolean(cryptoIncludeAssetParamKey) ||
+                          Boolean(cryptoIncludeTimeframeParamKey) ||
+                          cryptoAssetOptions.length > 0 ||
+                          cryptoTimeframeOptions.length > 0) && (
                           <Button type="button" size="sm" variant="outline" className="h-5 px-2 text-[10px]" onClick={enableAllCryptoTargets}>
                             Use all
                           </Button>
                         )}
                       </div>
-                      {(Boolean(cryptoAssetParamKey) || cryptoAssetOptions.length > 0) && (
+                      {(Boolean(cryptoIncludeAssetParamKey) || cryptoAssetOptions.length > 0) && (
                         <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">Assets</p>
+                          <p className="text-[11px] text-muted-foreground/80">Include Assets</p>
                           {cryptoAssetOptions.length > 0 ? (
                             <div className="flex flex-wrap gap-1.5">
                               {cryptoAssetOptions.map((asset) => (
@@ -3108,13 +3269,87 @@ export default function TradingPanel() {
                           )}
                         </div>
                       )}
-                      {cryptoTimeframeDraft && (
+
+                      {Boolean(cryptoExcludeAssetParamKey) && (
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] text-muted-foreground/80">Exclude Assets</p>
+                          {cryptoAssetOptions.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {cryptoAssetOptions.map((asset) => (
+                                <Button
+                                  key={`exclude-${asset}`}
+                                  type="button"
+                                  size="sm"
+                                  variant={selectedExcludedCryptoAssets.has(asset) ? 'destructive' : 'outline'}
+                                  className="h-6 px-2 text-[11px]"
+                                  onClick={() => toggleExcludedCryptoAssetTarget(asset)}
+                                >
+                                  {asset}
+                                </Button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-muted-foreground/75">No asset options exposed by this strategy schema.</p>
+                          )}
+                        </div>
+                      )}
+
+                      {cryptoTimeframeDraft ? (
                         <div className="space-y-1.5">
                           <p className="text-[11px] text-muted-foreground/80">
                             Timeframe is fixed by selected crypto strategy ({cryptoTimeframeDraft}).
                           </p>
                         </div>
+                      ) : null}
+
+                      {(Boolean(cryptoIncludeTimeframeParamKey) || cryptoTimeframeOptions.length > 0) && !cryptoTimeframeDraft && (
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] text-muted-foreground/80">Include Timeframes</p>
+                          {cryptoTimeframeOptions.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {cryptoTimeframeOptions.map((timeframe) => (
+                                <Button
+                                  key={timeframe}
+                                  type="button"
+                                  size="sm"
+                                  variant={selectedCryptoIncludedTimeframes.has(timeframe) ? 'default' : 'outline'}
+                                  className="h-6 px-2 text-[11px]"
+                                  onClick={() => toggleCryptoTimeframeTarget(timeframe)}
+                                >
+                                  {timeframe}
+                                </Button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-muted-foreground/75">No timeframe options exposed by this strategy schema.</p>
+                          )}
+                        </div>
                       )}
+
+                      {Boolean(cryptoExcludeTimeframeParamKey) && !cryptoTimeframeDraft && (
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] text-muted-foreground/80">Exclude Timeframes</p>
+                          {cryptoTimeframeOptions.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {cryptoTimeframeOptions.map((timeframe) => (
+                                <Button
+                                  key={`exclude-${timeframe}`}
+                                  type="button"
+                                  size="sm"
+                                  variant={selectedCryptoExcludedTimeframes.has(timeframe) ? 'destructive' : 'outline'}
+                                  className="h-6 px-2 text-[11px]"
+                                  onClick={() => toggleExcludedCryptoTimeframeTarget(timeframe)}
+                                >
+                                  {timeframe}
+                                </Button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-muted-foreground/75">No timeframe options exposed by this strategy schema.</p>
+                          )}
+                        </div>
+                      )}
+
                       {(Boolean(cryptoModeParamKey) || cryptoStrategyModeOptions.length > 0) && (
                         <div className="mt-1">
                           <Label className="text-[11px] text-muted-foreground">Strategy Mode</Label>
@@ -3146,7 +3381,12 @@ export default function TradingPanel() {
                           </Select>
                         </div>
                       )}
-                      {!cryptoTimeframeDraft && !(Boolean(cryptoAssetParamKey) || cryptoAssetOptions.length > 0) && !(Boolean(cryptoModeParamKey) || cryptoStrategyModeOptions.length > 0) && (
+                      {!cryptoTimeframeDraft &&
+                        !(Boolean(cryptoIncludeAssetParamKey) || cryptoAssetOptions.length > 0) &&
+                        !Boolean(cryptoExcludeAssetParamKey) &&
+                        !(Boolean(cryptoIncludeTimeframeParamKey) || cryptoTimeframeOptions.length > 0) &&
+                        !Boolean(cryptoExcludeTimeframeParamKey) &&
+                        !(Boolean(cryptoModeParamKey) || cryptoStrategyModeOptions.length > 0) && (
                         <p className="text-[10px] text-muted-foreground/75">
                           Selected strategy does not expose dedicated crypto controls in its schema.
                         </p>

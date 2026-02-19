@@ -19,12 +19,10 @@ NOT risk-free. These are statistical tendencies, not structural arbitrage.
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 from services.quality_filter import QualityFilterOverrides
 from utils.kelly import kelly_fraction

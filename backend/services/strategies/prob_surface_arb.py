@@ -21,17 +21,15 @@ have information justifying the deviation. Use with position limits.
 
 from __future__ import annotations
 
-import logging
 import re
 import time
 from collections import defaultdict
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
-from config import settings
-from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
+from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from services.quality_filter import QualityFilterOverrides
-from utils.kelly import kelly_fraction, fee_adjusted_edge, polymarket_taker_fee
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -299,7 +297,6 @@ class ProbSurfaceArbStrategy(BaseStrategy):
         cfg.update(getattr(self, "config", {}) or {})
 
         min_deviation = float(cfg.get("min_deviation_cents", 0.03))
-        min_liquidity = float(cfg.get("min_liquidity", 500.0))
         max_opportunities = int(cfg.get("max_opportunities", 20))
 
         # Use self.state to cache families; invalidate every 5 minutes

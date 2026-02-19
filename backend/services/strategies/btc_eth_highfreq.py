@@ -1954,32 +1954,38 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             payload.get("timeframe") or payload.get("cadence") or payload.get("interval")
         )
 
-        # --- Asset/timeframe scope filtering ---
-        target_assets = _normalize_scope(
+        # --- Asset/timeframe include+exclude filtering ---
+        include_assets = _normalize_scope(
+            params.get("include_assets"),
+            _normalize_asset,
+        )
+        exclude_assets = _normalize_scope(
             _first_present(
-                params.get("target_assets"),
-                params.get("allowed_assets"),
-                params.get("assets"),
-                params.get("coins"),
+                params.get("exclude_assets"),
             ),
             _normalize_asset,
         )
-        target_timeframes = _normalize_scope(
+        include_timeframes = _normalize_scope(
+            params.get("include_timeframes"),
+            _normalize_timeframe,
+        )
+        exclude_timeframes = _normalize_scope(
             _first_present(
-                params.get("target_timeframes"),
-                params.get("allowed_timeframes"),
-                params.get("timeframes"),
-                params.get("cadence"),
+                params.get("exclude_timeframes"),
             ),
             _normalize_timeframe,
         )
-        asset_scope_ok = (not target_assets) or (bool(signal_asset) and signal_asset in target_assets)
+        asset_in_scope = (not include_assets) or (bool(signal_asset) and signal_asset in include_assets)
+        asset_not_excluded = not (bool(signal_asset) and signal_asset in exclude_assets)
+        asset_scope_ok = asset_in_scope and asset_not_excluded
         # Unified strategy handles all timeframes — no fixed expected_timeframe.
         # The strategy_timeframe check passes when no single timeframe is enforced.
         strategy_timeframe_ok = True
-        timeframe_scope_ok = (not target_timeframes) or (
-            bool(signal_timeframe) and signal_timeframe in target_timeframes
+        timeframe_in_scope = (not include_timeframes) or (
+            bool(signal_timeframe) and signal_timeframe in include_timeframes
         )
+        timeframe_not_excluded = not (bool(signal_timeframe) and signal_timeframe in exclude_timeframes)
+        timeframe_scope_ok = timeframe_in_scope and timeframe_not_excluded
 
         # --- Active mode resolution ---
         dominant_mode = _normalize_mode(payload.get("dominant_strategy"))
@@ -2050,15 +2056,23 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             ),
             DecisionCheck(
                 "asset_scope",
-                "Asset target scope",
+                "Asset include/exclude scope",
                 asset_scope_ok,
-                detail=(f"asset={signal_asset or 'unknown'} targets={','.join(target_assets) or 'all'}"),
+                detail=(
+                    f"asset={signal_asset or 'unknown'} "
+                    f"include={','.join(include_assets) or 'all'} "
+                    f"exclude={','.join(exclude_assets) or 'none'}"
+                ),
             ),
             DecisionCheck(
                 "timeframe_scope",
-                "Cadence target scope",
+                "Cadence include/exclude scope",
                 timeframe_scope_ok,
-                detail=(f"timeframe={signal_timeframe or 'unknown'} targets={','.join(target_timeframes) or 'all'}"),
+                detail=(
+                    f"timeframe={signal_timeframe or 'unknown'} "
+                    f"include={','.join(include_timeframes) or 'all'} "
+                    f"exclude={','.join(exclude_timeframes) or 'none'}"
+                ),
             ),
             DecisionCheck(
                 "strategy_timeframe",
@@ -2133,8 +2147,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "up_price": up_price,
                 "down_price": down_price,
             },
-            "target_assets": target_assets,
-            "target_timeframes": target_timeframes,
+            "include_assets": include_assets,
+            "exclude_assets": exclude_assets,
+            "include_timeframes": include_timeframes,
+            "exclude_timeframes": exclude_timeframes,
         }
 
         score = (edge_for_gate * 0.7) + (confidence * 30.0)

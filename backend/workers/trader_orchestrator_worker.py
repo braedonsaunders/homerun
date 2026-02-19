@@ -32,6 +32,7 @@ from services.trader_orchestrator.decision_gates import (
     apply_platform_decision_gates,
     is_within_trading_window_utc,
 )
+from services.worker_state import _commit_with_retry
 from services.trader_orchestrator.sources.registry import (
     normalize_source_key,
 )
@@ -39,6 +40,7 @@ from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_loader import strategy_loader
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.trader_orchestrator_state import (
+    ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     cleanup_trader_open_orders,
     compute_orchestrator_metrics,
     create_trader_decision,
@@ -59,6 +61,7 @@ from services.trader_orchestrator_state import (
     read_orchestrator_control,
     record_signal_consumption,
     sync_trader_position_inventory,
+    update_orchestrator_control,
     upsert_trader_signal_cursor,
     write_orchestrator_snapshot,
 )
@@ -513,7 +516,7 @@ async def _run_trader_once(
                 paper_account_id=str((control.get("settings") or {}).get("paper_account_id") or "").strip() or None,
             )
             if backfill_result.get("backfilled"):
-                await session.commit()
+                await _commit_with_retry(session)
                 await create_trader_event(
                     session,
                     trader_id=trader_id,
@@ -823,7 +826,7 @@ async def _run_trader_once(
                             last_signal_id=signal_id,
                             commit=False,
                         )
-                        await session.commit()
+                        await _commit_with_retry(session)
                         cursor_created_at = signal.created_at
                         cursor_signal_id = signal_id
                         processed_signals += 1
@@ -942,7 +945,7 @@ async def _run_trader_once(
                             last_signal_id=signal_id,
                             commit=False,
                         )
-                        await session.commit()
+                        await _commit_with_retry(session)
                         cursor_created_at = signal.created_at
                         cursor_signal_id = signal_id
                         processed_signals += 1
@@ -1022,7 +1025,7 @@ async def _run_trader_once(
                                 last_signal_id=signal_id,
                                 commit=False,
                             )
-                            await session.commit()
+                            await _commit_with_retry(session)
                             cursor_created_at = signal.created_at
                             cursor_signal_id = signal_id
                             processed_signals += 1
@@ -1297,7 +1300,7 @@ async def _run_trader_once(
                         last_signal_id=signal_id,
                         commit=False,
                     )
-                    await session.commit()
+                    await _commit_with_retry(session)
                     cursor_created_at = signal.created_at
                     cursor_signal_id = signal_id
                     processed_signals += 1
@@ -1374,18 +1377,19 @@ async def _run_trader_once(
                         },
                         commit=False,
                     )
-                    await session.commit()
+                    await _commit_with_retry(session)
                     cursor_created_at = signal.created_at
                     cursor_signal_id = signal_id
                     processed_signals += 1
 
-        row = await session.get(Trader, trader_id)
-        if row is not None:
-            now = utcnow()
-            row.last_run_at = now
-            row.requested_run_at = None
-            row.updated_at = now
-            await session.commit()
+        if process_signals:
+            row = await session.get(Trader, trader_id)
+            if row is not None:
+                now = utcnow()
+                row.last_run_at = now
+                row.requested_run_at = None
+                row.updated_at = now
+                await _commit_with_retry(session)
 
     return decisions_written, orders_written
 
@@ -1491,6 +1495,13 @@ async def run_worker_loop() -> None:
 
     try:
         while True:
+            cycle_interval = ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+            sleep_seconds = 2
+            skip_cycle = False
+            force_cycle = False
+            mode = "paper"
+            control: dict[str, Any] = {}
+            traders: list[dict[str, Any]] = []
             try:
                 if not await _ensure_orchestrator_cycle_lock_owner():
                     logger.debug(
@@ -1517,7 +1528,12 @@ async def run_worker_loop() -> None:
                         logger.warning("Failed orphan-order reconciliation pass: %s", exc)
 
                     control = await read_orchestrator_control(session)
-                    interval = max(1, int(control.get("run_interval_seconds") or 2))
+                    cycle_interval = max(
+                        1,
+                        int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
+                    )
+                    sleep_seconds = cycle_interval
+                    force_cycle = _parse_iso(control.get("requested_run_at")) is not None
 
                     if not control.get("is_enabled") or control.get("is_paused"):
                         await write_orchestrator_snapshot(
@@ -1525,90 +1541,91 @@ async def run_worker_loop() -> None:
                             running=False,
                             enabled=bool(control.get("is_enabled", False)),
                             current_activity="Paused",
-                            interval_seconds=interval,
+                            interval_seconds=cycle_interval,
                             stats=await compute_orchestrator_metrics(session),
                         )
-                        await asyncio.sleep(interval)
-                        continue
+                        skip_cycle = True
 
                     # Kill switch is the highest-priority gate after enabled/paused.
                     # Short-circuit before ANY mode checks, trader iteration, or
                     # signal processing so no work is wasted while the switch is on.
-                    if bool(control.get("kill_switch")):
+                    if not skip_cycle and bool(control.get("kill_switch")):
                         logger.info("Kill switch active — skipping entire orchestrator cycle")
                         await write_orchestrator_snapshot(
                             session,
                             running=True,
                             enabled=True,
                             current_activity="Kill switch active — all signal processing blocked",
-                            interval_seconds=interval,
+                            interval_seconds=cycle_interval,
                             stats=await compute_orchestrator_metrics(session),
                         )
-                        await asyncio.sleep(interval)
-                        continue
+                        skip_cycle = True
 
-                    mode = str(control.get("mode") or "paper").strip().lower()
-                    control_settings = control.get("settings") or {}
+                    if not skip_cycle:
+                        mode = str(control.get("mode") or "paper").strip().lower()
+                        control_settings = control.get("settings") or {}
 
-                    if mode == "paper":
-                        paper_account_id = str(control_settings.get("paper_account_id") or "").strip()
-                        if not paper_account_id:
-                            await write_orchestrator_snapshot(
-                                session,
-                                running=False,
-                                enabled=True,
-                                current_activity="Blocked: select a sandbox account for paper mode",
-                                interval_seconds=interval,
-                                last_error=None,
-                                stats=await compute_orchestrator_metrics(session),
-                            )
-                            await asyncio.sleep(interval)
-                            continue
-                        paper_account = await session.get(SimulationAccount, paper_account_id)
-                        if paper_account is None:
-                            await write_orchestrator_snapshot(
-                                session,
-                                running=False,
-                                enabled=True,
-                                current_activity="Blocked: selected sandbox account no longer exists",
-                                interval_seconds=interval,
-                                last_error=None,
-                                stats=await compute_orchestrator_metrics(session),
-                            )
-                            await asyncio.sleep(interval)
-                            continue
+                        if mode == "paper":
+                            paper_account_id = str(control_settings.get("paper_account_id") or "").strip()
+                            if not paper_account_id:
+                                await write_orchestrator_snapshot(
+                                    session,
+                                    running=False,
+                                    enabled=True,
+                                    current_activity="Blocked: select a sandbox account for paper mode",
+                                    interval_seconds=cycle_interval,
+                                    last_error=None,
+                                    stats=await compute_orchestrator_metrics(session),
+                                )
+                                skip_cycle = True
+                            else:
+                                paper_account = await session.get(SimulationAccount, paper_account_id)
+                                if paper_account is None:
+                                    await write_orchestrator_snapshot(
+                                        session,
+                                        running=False,
+                                        enabled=True,
+                                        current_activity="Blocked: selected sandbox account no longer exists",
+                                        interval_seconds=cycle_interval,
+                                        last_error=None,
+                                        stats=await compute_orchestrator_metrics(session),
+                                    )
+                                    skip_cycle = True
 
-                    if mode == "live":
-                        app_settings = await session.get(AppSettings, "default")
-                        trading_enabled = bool(settings.TRADING_ENABLED) and bool(
-                            app_settings.trading_enabled if app_settings is not None else False
-                        )
-                        if not trading_enabled:
-                            await write_orchestrator_snapshot(
-                                session,
-                                running=False,
-                                enabled=True,
-                                current_activity="Blocked: live trading disabled in config/settings",
-                                interval_seconds=interval,
-                                last_error=None,
-                                stats=await compute_orchestrator_metrics(session),
+                        if not skip_cycle and mode == "live":
+                            app_settings = await session.get(AppSettings, "default")
+                            trading_enabled = bool(settings.TRADING_ENABLED) and bool(
+                                app_settings.trading_enabled if app_settings is not None else False
                             )
-                            await asyncio.sleep(interval)
-                            continue
-                        if not _is_live_credentials_configured(app_settings):
-                            await write_orchestrator_snapshot(
-                                session,
-                                running=False,
-                                enabled=True,
-                                current_activity="Blocked: live credentials missing",
-                                interval_seconds=interval,
-                                last_error=None,
-                                stats=await compute_orchestrator_metrics(session),
-                            )
-                            await asyncio.sleep(interval)
-                            continue
+                            if not trading_enabled:
+                                await write_orchestrator_snapshot(
+                                    session,
+                                    running=False,
+                                    enabled=True,
+                                    current_activity="Blocked: live trading disabled in config/settings",
+                                    interval_seconds=cycle_interval,
+                                    last_error=None,
+                                    stats=await compute_orchestrator_metrics(session),
+                                )
+                                skip_cycle = True
+                            elif not _is_live_credentials_configured(app_settings):
+                                await write_orchestrator_snapshot(
+                                    session,
+                                    running=False,
+                                    enabled=True,
+                                    current_activity="Blocked: live credentials missing",
+                                    interval_seconds=cycle_interval,
+                                    last_error=None,
+                                    stats=await compute_orchestrator_metrics(session),
+                                )
+                                skip_cycle = True
 
-                    traders = await list_traders(session)
+                        if not skip_cycle:
+                            traders = await list_traders(session)
+
+                if skip_cycle:
+                    await asyncio.sleep(sleep_seconds)
+                    continue
 
                 total_decisions = 0
                 total_orders = 0
@@ -1618,7 +1635,7 @@ async def run_worker_loop() -> None:
                         continue
 
                     is_paused = bool(trader.get("is_paused", False))
-                    due = _is_due(trader, now)
+                    due = force_cycle or _is_due(trader, now)
 
                     if is_paused:
                         if mode in ("paper", "live"):
@@ -1635,6 +1652,8 @@ async def run_worker_loop() -> None:
                     total_orders += orders
 
                 async with AsyncSessionLocal() as session:
+                    if force_cycle:
+                        await update_orchestrator_control(session, requested_run_at=None)
                     metrics = await compute_orchestrator_metrics(session)
                     metrics["decisions_last_cycle"] = total_decisions
                     metrics["orders_last_cycle"] = total_orders
@@ -1643,24 +1662,32 @@ async def run_worker_loop() -> None:
                         running=True,
                         enabled=True,
                         current_activity=f"Cycle decisions={total_decisions} orders={total_orders}",
-                        interval_seconds=interval,
+                        interval_seconds=cycle_interval,
                         last_run_at=utcnow(),
                         stats=metrics,
                     )
 
-                await asyncio.sleep(interval)
+                await asyncio.sleep(sleep_seconds)
             except Exception as exc:
                 logger.exception("Trader orchestrator worker cycle failed: %s", exc)
-                async with AsyncSessionLocal() as session:
-                    control = await read_orchestrator_control(session)
-                    await write_orchestrator_snapshot(
-                        session,
-                        running=False,
-                        enabled=bool(control.get("is_enabled", False)),
-                        current_activity="Worker error",
-                        interval_seconds=max(1, int(control.get("run_interval_seconds") or 2)),
-                        last_error=str(exc),
-                        stats=await compute_orchestrator_metrics(session),
+                try:
+                    async with AsyncSessionLocal() as session:
+                        control = await read_orchestrator_control(session)
+                        await write_orchestrator_snapshot(
+                            session,
+                            running=False,
+                            enabled=bool(control.get("is_enabled", False)),
+                            current_activity="Worker error",
+                            interval_seconds=max(
+                                1, int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)
+                            ),
+                            last_error=str(exc),
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                except Exception as snapshot_exc:
+                    logger.warning(
+                        "Failed to persist orchestrator worker error state",
+                        error=str(snapshot_exc),
                     )
                 await asyncio.sleep(2)
     finally:

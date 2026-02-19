@@ -404,7 +404,7 @@ async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
             return
         row.current_activity = activity
         row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
     # Publish activity change event.
     try:
@@ -610,7 +610,7 @@ async def update_opportunity_ai_analysis_in_snapshot(
             updated = True
 
     if updated:
-        await session.commit()
+        await _commit_with_retry(session)
     return updated
 
 
@@ -704,7 +704,7 @@ async def ensure_scanner_control(session: AsyncSession) -> ScannerControl:
     if row is None:
         row = ScannerControl(id=CONTROL_ID)
         session.add(row)
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     return row
 
@@ -714,7 +714,7 @@ async def set_scanner_paused(session: AsyncSession, paused: bool) -> None:
     row = await ensure_scanner_control(session)
     row.is_paused = paused
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def set_scanner_interval(session: AsyncSession, interval_seconds: int) -> None:
@@ -722,7 +722,7 @@ async def set_scanner_interval(session: AsyncSession, interval_seconds: int) -> 
     row = await ensure_scanner_control(session)
     row.scan_interval_seconds = max(10, min(3600, interval_seconds))
     row.updated_at = utcnow()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def request_one_scan(
@@ -739,7 +739,7 @@ async def request_one_scan(
     row.requested_scan_at = utcnow()
     if condition_ids:
         _pending_targeted_condition_ids = list(condition_ids)
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 def pop_targeted_condition_ids() -> list[str]:
@@ -756,7 +756,7 @@ async def clear_scan_request(session: AsyncSession) -> None:
     row = result.scalar_one_or_none()
     if row and row.requested_scan_at is not None:
         row.requested_scan_at = None
-        await session.commit()
+        await _commit_with_retry(session)
 
 
 async def clear_opportunities_in_snapshot(session: AsyncSession) -> int:

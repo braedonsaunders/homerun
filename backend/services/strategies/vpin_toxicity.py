@@ -20,19 +20,16 @@ import time
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
-from config import settings
 from .base import (
     BaseStrategy,
     DecisionCheck,
     ExitDecision,
     ScoringWeights,
     SizingConfig,
-    utcnow,
-    make_aware,
 )
 from services.data_events import DataEvent, EventType
 from services.quality_filter import QualityFilterOverrides
-from utils.kelly import kelly_fraction, fee_adjusted_edge, polymarket_taker_fee
+from utils.kelly import kelly_fraction
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

@@ -14,12 +14,14 @@ import asyncio
 import html
 import hashlib
 import logging
+import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import desc, select
+from services.shared_state import _commit_with_retry
 
 from config import settings
 from models.database import AsyncSessionLocal, DataSource, DataSourceRecord
@@ -252,7 +254,7 @@ class NewsFeedService:
         if not slug:
             return []
 
-        run_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        run_started_at = datetime.now(timezone.utc)
 
         async with AsyncSessionLocal() as session:
             row = await session.get(DataSource, source.id)
@@ -402,7 +404,7 @@ class NewsFeedService:
                     )
                     await session.execute(stmt)
                     persisted += 1
-                await session.commit()
+                await _commit_with_retry(session)
 
             logger.debug("Persisted %d articles to DB", persisted)
             return persisted
@@ -423,16 +425,18 @@ class NewsFeedService:
                 for row in rows:
                     if row.article_id in self._articles:
                         continue
+                    published = _parse_datetime(row.published)
+                    fetched_at = _parse_datetime(row.fetched_at)
                     self._articles[row.article_id] = NewsArticle(
                         article_id=row.article_id,
                         title=row.title,
                         url=row.url,
                         source=row.source or "",
-                        published=row.published,
+                        published=published,
                         summary=row.summary or "",
                         feed_source=row.feed_source or "",
                         category=row.category or "",
-                        fetched_at=row.fetched_at,
+                        fetched_at=fetched_at or datetime.now(timezone.utc),
                         embedding=row.embedding,
                     )
                     loaded += 1
@@ -450,7 +454,7 @@ class NewsFeedService:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(delete(NewsArticleCache).where(NewsArticleCache.fetched_at < cutoff))
-                await session.commit()
+                await _commit_with_retry(session)
                 count = result.rowcount
             if count:
                 logger.info("Pruned %d expired articles from DB", count)

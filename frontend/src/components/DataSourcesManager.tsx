@@ -299,6 +299,7 @@ export default function DataSourcesManager() {
     queryKey: ['unified-data-source-template'],
     queryFn: getUnifiedDataSourceTemplate,
     staleTime: Infinity,
+    enabled: showCreateModal,
   })
 
   const worldSourceStatusQuery = useQuery({

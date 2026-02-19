@@ -31,6 +31,7 @@ from models.database import (
     TraderSignalConsumption,
 )
 from services.event_bus import event_bus
+from services.worker_state import _commit_with_retry
 from services.simulation import simulation_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.opportunity_strategy_catalog import (
@@ -47,6 +48,7 @@ from utils.secrets import decrypt_secret
 from utils.converters import safe_float, safe_int, to_iso
 
 ORCHESTRATOR_CONTROL_ID = "default"
+ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS = 5
 _UNSET = object()  # Sentinel: distinguish "not provided" from explicit None
 ORCHESTRATOR_SNAPSHOT_ID = "latest"
 OPEN_ORDER_STATUSES = {"submitted", "executed", "open"}
@@ -354,7 +356,9 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
         "is_enabled": bool(row.is_enabled),
         "is_paused": bool(row.is_paused),
         "mode": str(row.mode or "paper"),
-        "run_interval_seconds": int(row.run_interval_seconds or 2),
+        "run_interval_seconds": int(
+            row.run_interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
         "requested_run_at": to_iso(row.requested_run_at),
         "kill_switch": bool(row.kill_switch),
         "settings": row.settings_json or {},
@@ -363,7 +367,7 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
 
 
 def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
-    interval_seconds = int(row.interval_seconds or 2)
+    interval_seconds = int(row.interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)
     lag_seconds: Optional[float] = None
     if row.last_run_at is not None:
         try:
@@ -593,18 +597,18 @@ async def ensure_orchestrator_control(session: AsyncSession) -> TraderOrchestrat
             is_enabled=False,
             is_paused=True,
             mode="paper",
-            run_interval_seconds=2,
+            run_interval_seconds=ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
             kill_switch=False,
             settings_json=_default_control_settings(),
             updated_at=_now(),
         )
         session.add(row)
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     elif not isinstance(row.settings_json, dict):
         row.settings_json = _default_control_settings()
         row.updated_at = _now()
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     return row
 
@@ -617,12 +621,12 @@ async def ensure_orchestrator_snapshot(session: AsyncSession) -> TraderOrchestra
             running=False,
             enabled=False,
             current_activity="Waiting for trader orchestrator worker.",
-            interval_seconds=2,
+            interval_seconds=ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
             stats_json={},
             updated_at=_now(),
         )
         session.add(row)
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     return row
 
@@ -649,7 +653,7 @@ async def update_orchestrator_control(session: AsyncSession, **updates: Any) -> 
         merged.update(updates["settings_json"])
         row.settings_json = merged
     row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     return _serialize_control(row)
 
@@ -684,7 +688,7 @@ async def write_orchestrator_snapshot(
         row.open_orders = int(stats.get("open_orders", row.open_orders or 0) or 0)
         row.gross_exposure_usd = float(stats.get("gross_exposure_usd", row.gross_exposure_usd or 0.0) or 0.0)
         row.daily_pnl = float(stats.get("daily_pnl", row.daily_pnl or 0.0) or 0.0)
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     snapshot_data = _serialize_snapshot(row)
 
@@ -786,7 +790,7 @@ async def seed_default_traders(session: AsyncSession) -> None:
                 updated_at=_now(),
             )
         )
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[str, Any]:
@@ -821,7 +825,7 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
         updated_at=_now(),
     )
     session.add(row)
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     return _serialize_trader(row)
 
@@ -882,7 +886,7 @@ async def update_trader(
         row.interval_seconds = normalized["interval_seconds"]
 
     row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     return _serialize_trader(row)
 
@@ -959,13 +963,13 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
                 active_row.status = "cancelled"
                 active_row.updated_at = now
                 active_row.payload_json = payload
-            await session.commit()
+            await _commit_with_retry(session)
             await sync_trader_position_inventory(session, trader_id=trader_id)
     elif force and open_positions > 0:
         await sync_trader_position_inventory(session, trader_id=trader_id)
 
     await session.delete(row)
-    await session.commit()
+    await _commit_with_retry(session)
     return True
 
 
@@ -975,7 +979,7 @@ async def set_trader_paused(session: AsyncSession, trader_id: str, paused: bool)
         return None
     row.is_paused = bool(paused)
     row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     return _serialize_trader(row)
 
@@ -986,7 +990,7 @@ async def request_trader_run(session: AsyncSession, trader_id: str) -> Optional[
         return None
     row.requested_run_at = _now()
     row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
     await session.refresh(row)
     return _serialize_trader(row)
 
@@ -997,7 +1001,7 @@ async def clear_trader_run_request(session: AsyncSession, trader_id: str) -> Non
         return
     row.requested_run_at = None
     row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def create_config_revision(
@@ -1024,7 +1028,7 @@ async def create_config_revision(
             created_at=_now(),
         )
     )
-    await session.commit()
+    await _commit_with_retry(session)
 
 
 async def create_trader_event(
@@ -1054,8 +1058,7 @@ async def create_trader_event(
     )
     session.add(row)
     if commit:
-        await session.commit()
-        await session.refresh(row)
+        await _commit_with_retry(session)
     else:
         await session.flush()
 
@@ -1208,7 +1211,7 @@ async def create_trader_decision(
     )
     session.add(row)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     else:
         await session.flush()
@@ -1246,7 +1249,7 @@ async def create_trader_decision_checks(
             )
         )
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
     else:
         await session.flush()
 
@@ -1301,7 +1304,7 @@ async def create_trader_order(
             commit=False,
         )
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
 
     # Publish trader order event.
@@ -1449,7 +1452,7 @@ async def create_execution_session(
     await session.flush()
     await _refresh_execution_session_rollups(session, session_id=row.id)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
 
     try:
@@ -1570,7 +1573,7 @@ async def update_execution_session_status(
     row.updated_at = now
     await _refresh_execution_session_rollups(session, session_id=session_id)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
 
     try:
@@ -1614,7 +1617,7 @@ async def update_execution_leg(
 
     session_row = await _refresh_execution_session_rollups(session, session_id=row.session_id)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
         if session_row is not None:
             await session.refresh(session_row)
@@ -1672,7 +1675,7 @@ async def create_execution_session_order(
     )
     session.add(row)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     else:
         await session.flush()
@@ -1708,7 +1711,7 @@ async def create_execution_session_event(
     )
     session.add(row)
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
         await session.refresh(row)
     else:
         await session.flush()
@@ -1760,7 +1763,7 @@ async def record_signal_consumption(
         )
     )
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
     else:
         await session.flush()
 
@@ -1853,7 +1856,7 @@ async def upsert_trader_signal_cursor(
         row.updated_at = _now()
 
     if commit:
-        await session.commit()
+        await _commit_with_retry(session)
     else:
         await session.flush()
 
@@ -1987,7 +1990,7 @@ async def sync_trader_position_inventory(
         closures += 1
 
     if commit and (inserts > 0 or updates > 0 or closures > 0):
-        await session.commit()
+        await _commit_with_retry(session)
 
     return {
         "trader_id": trader_id,
@@ -2234,7 +2237,7 @@ async def cleanup_trader_open_orders(
                 else:
                     row.reason = f"cleanup:{note_reason}"
             updated += 1
-        await session.commit()
+        await _commit_with_retry(session)
         await sync_trader_position_inventory(session, trader_id=trader_id)
 
     return {
@@ -2529,7 +2532,9 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
     return {
         "mode": control.get("mode", "paper"),
         "kill_switch": bool(control.get("kill_switch", False)),
-        "run_interval_seconds": int(control.get("run_interval_seconds") or 2),
+        "run_interval_seconds": int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
         "global_risk": {
             "max_gross_exposure_usd": safe_float(global_risk.get("max_gross_exposure_usd"), 5000.0),
             "max_daily_loss_usd": safe_float(global_risk.get("max_daily_loss_usd"), 500.0),
@@ -2633,7 +2638,7 @@ async def create_live_preflight(
     settings_json["live_preflight"] = preflight
     control_row.settings_json = settings_json
     control_row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
 
     await create_trader_event(
         session,
@@ -2675,7 +2680,7 @@ async def arm_live_start(
     settings_json["live_arm"] = arm_data
     control_row.settings_json = settings_json
     control_row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
 
     await create_trader_event(
         session,
@@ -2718,7 +2723,7 @@ async def consume_live_arm_token(session: AsyncSession, arm_token: str) -> bool:
     settings_json["live_arm"] = arm_data
     control_row.settings_json = settings_json
     control_row.updated_at = _now()
-    await session.commit()
+    await _commit_with_retry(session)
     return True
 
 

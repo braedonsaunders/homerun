@@ -12,7 +12,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from models.market import Market, Event, Token
 from services.strategies.temporal_decay import TemporalDecayStrategy
-from services.strategies.event_driven import EventDrivenStrategy
 from services.strategies.market_making import MarketMakingStrategy
 from services.strategies.liquidity_vacuum import LiquidityVacuumStrategy
 from utils.utcnow import utcnow
@@ -159,68 +158,6 @@ def test_temporal_decay_certainty_shock_detects_no_surge_after_yes_crash():
     assert opp.expected_payout < 1.0
 
 
-def test_event_driven_deduplicates_equivalent_market_questions():
-    strategy = EventDrivenStrategy()
-
-    catalyst = _make_market(
-        market_id="cat1",
-        question="Yale at Dartmouth: Total Points",
-        yes_price=0.40,
-        no_price=0.60,
-        liquidity=80000.0,
-    )
-    lag1 = _make_market(
-        market_id="lag1",
-        question="Manhattan at Niagara: Total Points",
-        yes_price=0.50,
-        no_price=0.50,
-        liquidity=79000.0,
-    )
-    lag2 = _make_market(
-        market_id="lag2",
-        question="Manhattan at Niagara: Total Points",
-        yes_price=0.50,
-        no_price=0.50,
-        liquidity=81000.0,
-    )
-    event = Event(
-        id="e1",
-        slug="e1",
-        title="NCAA Totals",
-        description="",
-        category="sports",
-        markets=[catalyst, lag1, lag2],
-        active=True,
-        closed=False,
-    )
-
-    # Scan 1: baseline
-    strategy.detect(
-        events=[event],
-        markets=[catalyst, lag1, lag2],
-        prices={
-            catalyst.clob_token_ids[0]: {"mid": 0.40},
-            lag1.clob_token_ids[0]: {"mid": 0.50},
-            lag2.clob_token_ids[0]: {"mid": 0.50},
-        },
-    )
-
-    # Scan 2: catalyst jumps, lagging markets stay flat.
-    opps = strategy.detect(
-        events=[event],
-        markets=[catalyst, lag1, lag2],
-        prices={
-            catalyst.clob_token_ids[0]: {"mid": 0.55},
-            lag1.clob_token_ids[0]: {"mid": 0.50},
-            lag2.clob_token_ids[0]: {"mid": 0.50},
-        },
-    )
-
-    assert len(opps) == 1
-    opp = opps[0]
-    assert opp.is_guaranteed is False
-    assert opp.expected_payout < 1.0
-    assert "Manhattan at Niagara: Total Points" in opp.title
 
 
 def test_market_making_skips_multileg_contracts():

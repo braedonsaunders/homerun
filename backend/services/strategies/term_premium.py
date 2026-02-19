@@ -23,17 +23,14 @@ represents our edge.
 
 from __future__ import annotations
 
-import logging
 import time
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
 from models.opportunity import MispricingType
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 from services.quality_filter import QualityFilterOverrides
-from utils.kelly import kelly_fraction, fee_adjusted_edge, polymarket_taker_fee
+from utils.kelly import kelly_fraction, polymarket_taker_fee
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -166,7 +163,6 @@ class TermPremiumStrategy(BaseStrategy):
         now = utcnow()
         opportunities: list[Opportunity] = []
         entry_prices = self.state.setdefault("entry_prices", {})
-        seen_ids = self.state.setdefault("seen_ids", set())
 
         for market in markets:
             if market.closed or not market.active:

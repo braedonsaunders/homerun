@@ -29,7 +29,7 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
     "weather": 14400,
     "crypto": 2,
     "tracked_traders": 60,
-    "trader_orchestrator": 2,
+    "trader_orchestrator": 5,
     "discovery": 3600,
     "events": 300,
 }

@@ -130,6 +130,40 @@ class StrategySDK:
             },
         ]
     }
+    CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
+        "include_assets": ["BTC", "ETH", "SOL", "XRP"],
+        "exclude_assets": [],
+        "include_timeframes": ["5m", "15m", "1h", "4h"],
+        "exclude_timeframes": [],
+    }
+    CRYPTO_HF_SCOPE_CONFIG_SCHEMA: dict[str, Any] = {
+        "param_fields": [
+            {
+                "key": "include_assets",
+                "label": "Include Assets",
+                "type": "list",
+                "options": ["BTC", "ETH", "SOL", "XRP"],
+            },
+            {
+                "key": "exclude_assets",
+                "label": "Exclude Assets",
+                "type": "list",
+                "options": ["BTC", "ETH", "SOL", "XRP"],
+            },
+            {
+                "key": "include_timeframes",
+                "label": "Include Timeframes",
+                "type": "list",
+                "options": ["5m", "15m", "1h", "4h"],
+            },
+            {
+                "key": "exclude_timeframes",
+                "label": "Exclude Timeframes",
+                "type": "list",
+                "options": ["5m", "15m", "1h", "4h"],
+            },
+        ]
+    }
     STRATEGY_RETENTION_CONFIG_SCHEMA: dict[str, Any] = {
         "param_fields": [
             {"key": "max_opportunities", "label": "Max Opportunities", "type": "integer", "min": 0, "max": 5000},
@@ -294,6 +328,14 @@ class StrategySDK:
     @staticmethod
     def news_filter_config_schema() -> dict[str, Any]:
         return dict(StrategySDK.NEWS_FILTER_CONFIG_SCHEMA)
+
+    @staticmethod
+    def crypto_highfreq_scope_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.CRYPTO_HF_SCOPE_DEFAULTS)
+
+    @staticmethod
+    def crypto_highfreq_scope_config_schema() -> dict[str, Any]:
+        return dict(StrategySDK.CRYPTO_HF_SCOPE_CONFIG_SCHEMA)
 
     @staticmethod
     def strategy_retention_config_schema() -> dict[str, Any]:

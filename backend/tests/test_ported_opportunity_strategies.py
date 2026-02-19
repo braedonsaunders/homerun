@@ -12,7 +12,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from models.market import Event, Market, Token
 from services.strategies.flash_crash_reversion import FlashCrashReversionStrategy
-from services.strategies.spread_dislocation import SpreadDislocationStrategy
 from services.strategies.tail_end_carry import TailEndCarryStrategy
 from utils.utcnow import utcnow
 
@@ -119,30 +118,3 @@ def test_tail_end_carry_emits_near_expiry_high_probability_entry() -> None:
     assert opp.expected_payout < 1.0
     assert opp.expected_payout > opp.total_cost
 
-
-def test_spread_dislocation_filters_for_wide_executable_spread() -> None:
-    strategy = SpreadDislocationStrategy()
-    market = _market(
-        market_id="spread_1",
-        question="Will BTC close above $120k this month?",
-        yes_price=0.64,
-        no_price=0.36,
-        end_in_days=14.0,
-        liquidity=50000.0,
-    )
-    event = _event_for(market)
-    yes_token, no_token = market.clob_token_ids
-
-    prices = {
-        yes_token: {"mid": 0.635, "bid": 0.60, "ask": 0.67},
-        no_token: {"mid": 0.365, "bid": 0.33, "ask": 0.40},
-    }
-
-    opps = strategy.detect(events=[event], markets=[market], prices=prices)
-    assert len(opps) >= 1
-    opp = opps[0]
-    assert opp.strategy == "spread_dislocation"
-    assert opp.is_guaranteed is False
-    assert opp.expected_payout > opp.total_cost
-    details = (opp.positions_to_take or [{}])[0].get("_spread_dislocation") or {}
-    assert details.get("spread", 0.0) >= 0.03

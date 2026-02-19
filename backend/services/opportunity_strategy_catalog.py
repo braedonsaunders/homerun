@@ -435,7 +435,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "type": "enum",
                     "options": ["auto", "5m", "15m", "1h", "4h"],
                 },
-                {"key": "target_assets", "label": "Target Assets", "type": "list"},
+                *StrategySDK.crypto_highfreq_scope_config_schema().get("param_fields", []),
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
                 {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
                 {"key": "direction_guardrail_enabled", "label": "Direction Guardrail Enabled", "type": "boolean"},

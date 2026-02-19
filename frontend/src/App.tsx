@@ -561,21 +561,6 @@ function App() {
     refetchInterval: isConnected ? false : 5000,
   })
 
-  const scannerStrategyLoadErrors = useMemo(() => {
-    const strategies = Array.isArray(status?.strategies) ? status.strategies : []
-    return strategies
-      .filter((strategy) => String(strategy?.status || '').toLowerCase() === 'error')
-      .map((strategy) => {
-        const rawError = String(strategy?.error_message || '').trim()
-        return {
-          type: String(strategy?.type || ''),
-          name: String(strategy?.name || strategy?.type || 'Unknown strategy'),
-          error: rawError ? rawError.split('\n')[0] : 'Unknown strategy load error',
-        }
-      })
-      .filter((item) => item.type.length > 0)
-  }, [status?.strategies])
-
   const { data: workersData } = useQuery({
     queryKey: ['workers-status'],
     queryFn: getWorkersStatus,
@@ -1667,61 +1652,6 @@ function App() {
                       </div>
                     )}
                   </div>
-
-                  {/* Live Scanning Status Line */}
-                  {status?.enabled && opportunitiesView === 'scanner' && (
-                    <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-card/60 border border-border/30">
-                      {scannerIsSettled ? (
-                        <>
-                          <div className="relative flex h-2 w-2 shrink-0">
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
-                          </div>
-                          <span className="text-xs text-muted-foreground font-data truncate">{scannerActivity}</span>
-                        </>
-                      ) : scannerHasError ? (
-                        <>
-                          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                          <span className="text-xs text-red-400 font-data truncate">{scannerActivity}</span>
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
-                          <span className="text-xs text-blue-400 font-data truncate">{scannerActivity}</span>
-                        </>
-                      )}
-                      {scannerStrategyLoadErrors.length > 0 && (
-                        <Tooltip delayDuration={0}>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              className="ml-auto inline-flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-300"
-                              aria-label="View strategy load errors"
-                            >
-                              <AlertCircle className="w-3 h-3 shrink-0 text-red-400" />
-                              <span className="font-data">
-                                {scannerStrategyLoadErrors.length} strategy load error{scannerStrategyLoadErrors.length === 1 ? '' : 's'}
-                              </span>
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom" align="end" className="w-[420px] p-2.5">
-                            <div className="space-y-1.5">
-                              {scannerStrategyLoadErrors.slice(0, 5).map((item) => (
-                                <div key={item.type} className="rounded border border-border/40 bg-background/80 px-2 py-1.5">
-                                  <div className="text-[11px] font-medium text-red-300">{item.name}</div>
-                                  <div className="text-[10px] text-muted-foreground">{item.error}</div>
-                                </div>
-                              ))}
-                              {scannerStrategyLoadErrors.length > 5 && (
-                                <div className="text-[10px] text-muted-foreground">
-                                  +{scannerStrategyLoadErrors.length - 5} more strategy load errors
-                                </div>
-                              )}
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                    </div>
-                  )}
 
                   {opportunitiesView === 'search' ? (
                     <>

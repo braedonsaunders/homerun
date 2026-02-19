@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -22,8 +21,11 @@ from services.trader_orchestrator_state import (
     get_orchestrator_overview,
     read_orchestrator_control,
     read_orchestrator_snapshot,
+    write_orchestrator_snapshot,
+    ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     update_orchestrator_control,
 )
+from utils.utcnow import utcnow
 
 router = APIRouter(prefix="/trader-orchestrator", tags=["Trader Orchestrator"])
 
@@ -157,8 +159,17 @@ async def start_orchestrator(
         is_enabled=True,
         is_paused=False,
         mode=mode,
-        requested_run_at=datetime.utcnow(),
+        requested_run_at=utcnow(),
         settings_json=settings_updates,
+    )
+    await write_orchestrator_snapshot(
+        session,
+        running=False,
+        enabled=True,
+        current_activity="Start command queued",
+        interval_seconds=int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
     )
     await create_trader_event(
         session,
@@ -181,6 +192,15 @@ async def stop_orchestrator(
         is_enabled=False,
         is_paused=True,
         requested_run_at=None,
+    )
+    await write_orchestrator_snapshot(
+        session,
+        running=False,
+        enabled=False,
+        current_activity="Manual stop requested",
+        interval_seconds=int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
     )
     await create_trader_event(
         session,
@@ -274,7 +294,16 @@ async def start_live(
         mode="live",
         is_enabled=True,
         is_paused=False,
-        requested_run_at=datetime.utcnow(),
+        requested_run_at=utcnow(),
+    )
+    await write_orchestrator_snapshot(
+        session,
+        running=False,
+        enabled=True,
+        current_activity="Live start command queued",
+        interval_seconds=int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
     )
     await create_trader_event(
         session,
@@ -298,6 +327,16 @@ async def stop_live(
         mode="paper",
         is_enabled=False,
         is_paused=True,
+        requested_run_at=None,
+    )
+    await write_orchestrator_snapshot(
+        session,
+        running=False,
+        enabled=False,
+        current_activity="Live stop requested",
+        interval_seconds=int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        ),
     )
     await create_trader_event(
         session,
