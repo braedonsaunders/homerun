@@ -203,22 +203,14 @@ class BiasFaderStrategy(BaseStrategy):
             edge = fair_estimate - yes_price
             outcome = "YES"
             buy_price = yes_price
-            token_id = (
-                market.clob_token_ids[0]
-                if market.clob_token_ids and len(market.clob_token_ids) > 0
-                else None
-            )
+            token_id = market.clob_token_ids[0] if market.clob_token_ids and len(market.clob_token_ids) > 0 else None
         else:
             # Fair value is lower than anchor -- buy NO
             fair_estimate = matched_anchor - 0.05 * time_pressure
             edge = yes_price - fair_estimate
             outcome = "NO"
             buy_price = no_price
-            token_id = (
-                market.clob_token_ids[1]
-                if market.clob_token_ids and len(market.clob_token_ids) > 1
-                else None
-            )
+            token_id = market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
 
         if edge <= 0.005:
             return None
@@ -325,20 +317,12 @@ class BiasFaderStrategy(BaseStrategy):
             # Price moved up then retraced -- it may continue down (buy NO)
             outcome = "NO"
             buy_price = no_price
-            token_id = (
-                market.clob_token_ids[1]
-                if market.clob_token_ids and len(market.clob_token_ids) > 1
-                else None
-            )
+            token_id = market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
         else:
             # Price moved down then retraced up -- it may continue up (buy YES)
             outcome = "YES"
             buy_price = yes_price
-            token_id = (
-                market.clob_token_ids[0]
-                if market.clob_token_ids and len(market.clob_token_ids) > 0
-                else None
-            )
+            token_id = market.clob_token_ids[0] if market.clob_token_ids and len(market.clob_token_ids) > 0 else None
 
         # Higher confidence for overreaction (stronger signal)
         confidence = min(0.80, 0.55 + (retrace_from_peak - min_retrace_pct) / 100.0 * 0.3)
@@ -409,11 +393,7 @@ class BiasFaderStrategy(BaseStrategy):
         # Dip from peak after gains -- likely disposition selling
         edge_pct = dip_pct  # the dip IS the edge (expect reversion)
 
-        token_id = (
-            market.clob_token_ids[0]
-            if market.clob_token_ids and len(market.clob_token_ids) > 0
-            else None
-        )
+        token_id = market.clob_token_ids[0] if market.clob_token_ids and len(market.clob_token_ids) > 0 else None
 
         # Moderate confidence
         confidence = min(0.75, 0.50 + (dip_pct - dip_threshold) / 12.0 * 0.2)
@@ -564,14 +544,10 @@ class BiasFaderStrategy(BaseStrategy):
             ]
 
             if bias_type == "anchoring":
-                risk_factors.append(
-                    f"Anchored at {candidate['anchor_value']:.2f} for "
-                    f"{candidate['scans_stuck']} scans"
-                )
+                risk_factors.append(f"Anchored at {candidate['anchor_value']:.2f} for {candidate['scans_stuck']} scans")
             elif bias_type == "overreaction":
                 risk_factors.append(
-                    f"Large move ({candidate['move_pct']:.1f}%) with "
-                    f"partial retrace ({candidate['retrace_pct']:.1f}%)"
+                    f"Large move ({candidate['move_pct']:.1f}%) with partial retrace ({candidate['retrace_pct']:.1f}%)"
                 )
             elif bias_type == "disposition":
                 risk_factors.append(
@@ -644,9 +620,7 @@ class BiasFaderStrategy(BaseStrategy):
         """Verify signal source is scanner."""
         source = str(getattr(signal, "source", "") or "").strip().lower()
         return [
-            DecisionCheck(
-                "source", "Scanner source", source == "scanner", detail=f"got={source}"
-            ),
+            DecisionCheck("source", "Scanner source", source == "scanner", detail=f"got={source}"),
         ]
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:

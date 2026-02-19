@@ -475,7 +475,8 @@ class ConfluenceDetector:
         now = utcnow()
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(MarketConfluenceSignal).where(
+                select(MarketConfluenceSignal)
+                .where(
                     MarketConfluenceSignal.market_id == market_id,
                     MarketConfluenceSignal.outcome == outcome,
                 )

@@ -94,9 +94,7 @@ class EventDispatcher:
 
     def unsubscribe_all(self, strategy_slug: str) -> None:
         for event_type in list(self._subscriptions.get(strategy_slug, [])):
-            self._handlers[event_type] = [
-                (slug, h) for slug, h in self._handlers[event_type] if slug != strategy_slug
-            ]
+            self._handlers[event_type] = [(slug, h) for slug, h in self._handlers[event_type] if slug != strategy_slug]
         self._subscriptions.pop(strategy_slug, None)
 
     def _ensure_listener_started(self) -> None:
@@ -245,7 +243,7 @@ class EventDispatcher:
         )
 
     async def _run_stream_listener(self) -> None:
-        own_marker = f"\"instance_id\":\"{self._instance_id}\""
+        own_marker = f'"instance_id":"{self._instance_id}"'
         while self._running:
             messages = await redis_streams.read_raw(
                 self._stream_key,

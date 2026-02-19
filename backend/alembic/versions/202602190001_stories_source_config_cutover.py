@@ -269,31 +269,29 @@ def upgrade() -> None:
     )
 
     bind.execute(
-        data_sources.update()
-        .where(sa.func.lower(data_sources.c.source_key) == "news")
-        .values(source_key="stories")
+        data_sources.update().where(sa.func.lower(data_sources.c.source_key) == "news").values(source_key="stories")
     )
     bind.execute(
-        data_sources.update()
-        .where(sa.func.lower(data_sources.c.source_kind) == "bridge")
-        .values(source_kind="python")
+        data_sources.update().where(sa.func.lower(data_sources.c.source_kind) == "bridge").values(source_kind="python")
     )
     bind.execute(
-        data_sources.update()
-        .where(sa.func.lower(data_sources.c.source_kind) == "gdelt")
-        .values(source_kind="rest_api")
+        data_sources.update().where(sa.func.lower(data_sources.c.source_kind) == "gdelt").values(source_kind="rest_api")
     )
 
-    rows = bind.execute(
-        sa.select(
-            data_sources.c.id,
-            data_sources.c.slug,
-            data_sources.c.source_key,
-            data_sources.c.source_kind,
-            data_sources.c.name,
-            data_sources.c.config,
+    rows = (
+        bind.execute(
+            sa.select(
+                data_sources.c.id,
+                data_sources.c.slug,
+                data_sources.c.source_key,
+                data_sources.c.source_kind,
+                data_sources.c.name,
+                data_sources.c.config,
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     used_slugs: set[str] = set()
     existing_story_urls: set[str] = set()
@@ -376,14 +374,18 @@ def upgrade() -> None:
         sa.column("news_gov_rss_feeds_json", sa.JSON()),
     )
 
-    legacy_rows = bind.execute(
-        sa.select(
-            app_settings.c.id,
-            app_settings.c.news_rss_feeds_json,
-            app_settings.c.news_gov_rss_enabled,
-            app_settings.c.news_gov_rss_feeds_json,
+    legacy_rows = (
+        bind.execute(
+            sa.select(
+                app_settings.c.id,
+                app_settings.c.news_rss_feeds_json,
+                app_settings.c.news_gov_rss_enabled,
+                app_settings.c.news_gov_rss_feeds_json,
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     sort_order = 900
 

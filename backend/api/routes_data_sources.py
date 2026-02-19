@@ -578,9 +578,7 @@ async def get_data_source_docs():
                 },
             },
             "strategy_sdk_access": {
-                "description": (
-                    "Strategy code has first-class DataSourceSDK access via StrategySDK wrappers."
-                ),
+                "description": ("Strategy code has first-class DataSourceSDK access via StrategySDK wrappers."),
                 "methods": {
                     "StrategySDK.get_data_records": "Wrapper around DataSourceSDK.get_records()",
                     "StrategySDK.get_latest_data_record": "Wrapper around DataSourceSDK.get_latest_record()",

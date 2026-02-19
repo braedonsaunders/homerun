@@ -135,11 +135,7 @@ class NewsFeedService:
         Topics are matched against source category overrides, names, descriptions,
         and slugs; only matching sources are polled.
         """
-        normalized_topics = {
-            str(topic or "").strip().lower()
-            for topic in topics
-            if str(topic or "").strip()
-        }
+        normalized_topics = {str(topic or "").strip().lower() for topic in topics if str(topic or "").strip()}
         if not normalized_topics:
             return []
 
@@ -314,16 +310,9 @@ class NewsFeedService:
             external_id = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
         source_name = (
-            _as_text(row.get("source"))
-            or _as_text(config.get("source_name"))
-            or _as_text(source.name)
-            or "news"
+            _as_text(row.get("source")) or _as_text(config.get("source_name")) or _as_text(source.name) or "news"
         )
-        category = (
-            _as_text(row.get("category"))
-            or _as_text(config.get("category_override"))
-            or ""
-        ).lower()
+        category = (_as_text(row.get("category")) or _as_text(config.get("category_override")) or "").lower()
 
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         feed_source = (

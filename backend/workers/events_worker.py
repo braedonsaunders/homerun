@@ -88,7 +88,9 @@ def _source_status_key(source_slug: str) -> str:
     return slug or "events"
 
 
-def _stable_signal_id(source_slug: str, external_id: str | None, url: str | None, title: str, observed_at: datetime) -> str:
+def _stable_signal_id(
+    source_slug: str, external_id: str | None, url: str | None, title: str, observed_at: datetime
+) -> str:
     key = (
         f"{source_slug}:{external_id}"
         if str(external_id or "").strip()
@@ -395,7 +397,9 @@ async def _load_enabled_event_sources() -> list[DataSource]:
     return list(rows)
 
 
-async def _run_event_data_sources_once() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str], dict[str, int]]:
+async def _run_event_data_sources_once() -> tuple[
+    list[dict[str, Any]], dict[str, dict[str, Any]], list[str], dict[str, int]
+]:
     sources = await _load_enabled_event_sources()
     source_status: dict[str, dict[str, Any]] = {}
     source_errors: list[str] = []

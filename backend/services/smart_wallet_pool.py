@@ -1464,9 +1464,7 @@ class SmartWalletPoolService:
             wallets_result = await session.execute(select(DiscoveredWallet))
             wallets = list(wallets_result.scalars().all())
             current_pool_set = {
-                wallet.address
-                for wallet in wallets
-                if wallet.in_top_pool and not self._is_pool_blocked(wallet)
+                wallet.address for wallet in wallets if wallet.in_top_pool and not self._is_pool_blocked(wallet)
             }
 
             selection_scores: dict[str, float] = {}

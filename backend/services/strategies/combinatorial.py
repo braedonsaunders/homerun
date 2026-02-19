@@ -935,9 +935,7 @@ class CombinatorialStrategy(BaseStrategy):
             event.prices or {},
         )
 
-    def _check_pair(
-        self, market_a: Market, market_b: Market, prices: dict[str, dict]
-    ) -> Optional[Opportunity]:
+    def _check_pair(self, market_a: Market, market_b: Market, prices: dict[str, dict]) -> Optional[Opportunity]:
         """
         Check a market pair for combinatorial arbitrage.
 

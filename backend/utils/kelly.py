@@ -1,4 +1,5 @@
 """Kelly criterion and fee-aware edge calculation for prediction markets."""
+
 from __future__ import annotations
 import math
 
@@ -20,8 +21,14 @@ def kelly_fraction(p_estimated: float, p_market: float, fraction: float = 0.25) 
     return max(0.0, min(1.0, fraction * f_star))
 
 
-def kelly_size(p_estimated: float, p_market: float, bankroll: float,
-               fraction: float = 0.25, min_size: float = 1.0, max_size: float = 500.0) -> float:
+def kelly_size(
+    p_estimated: float,
+    p_market: float,
+    bankroll: float,
+    fraction: float = 0.25,
+    min_size: float = 1.0,
+    max_size: float = 500.0,
+) -> float:
     """Position size in USD using fractional Kelly criterion.
 
     Args:
@@ -68,8 +75,7 @@ def kalshi_taker_fee(p: float, contracts: int = 1, fee_rate: float = 0.07) -> fl
     return math.ceil(fee_rate * contracts * p * (1.0 - p) * 100) / 100
 
 
-def fee_adjusted_edge(p_estimated: float, p_market: float,
-                       platform: str = "polymarket", side: str = "buy") -> float:
+def fee_adjusted_edge(p_estimated: float, p_market: float, platform: str = "polymarket", side: str = "buy") -> float:
     """Calculate edge after platform fees.
 
     Args:

@@ -80,9 +80,7 @@ async def handle_websocket(websocket: WebSocket):
             limit=100,
         )
         world_snapshot = (
-            (await session.execute(select(EventsSnapshot).where(EventsSnapshot.id == "latest")))
-            .scalars()
-            .one_or_none()
+            (await session.execute(select(EventsSnapshot).where(EventsSnapshot.id == "latest"))).scalars().one_or_none()
         )
     crypto_markets = []
     crypto_stats = crypto_snapshot.get("stats")

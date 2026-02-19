@@ -240,9 +240,7 @@ async def lifespan(app: FastAPI):
                 continue
 
             snapshot_by_name = {
-                str(item.get("worker_name") or ""): item
-                for item in snapshots
-                if isinstance(item, dict)
+                str(item.get("worker_name") or ""): item for item in snapshots if isinstance(item, dict)
             }
 
             now = utcnow()
@@ -576,9 +574,7 @@ async def lifespan(app: FastAPI):
                 name=f"monitor-{mod_name.split('.')[-1]}",
             )
             worker_monitor_tasks.append(monitor_task)
-        worker_monitor_tasks.append(
-            asyncio.create_task(_monitor_worker_freshness(), name="monitor-worker-freshness")
-        )
+        worker_monitor_tasks.append(asyncio.create_task(_monitor_worker_freshness(), name="monitor-worker-freshness"))
         logger.info("All %d worker processes started", len(worker_processes))
 
         yield

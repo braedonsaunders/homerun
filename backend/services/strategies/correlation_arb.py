@@ -529,10 +529,10 @@ class CorrelationArbStrategy(BaseStrategy):
         sum_x = sum(x)
         sum_y = sum(y)
         sum_xy = sum(xi * yi for xi, yi in zip(x, y))
-        sum_x2 = sum(xi ** 2 for xi in x)
+        sum_x2 = sum(xi**2 for xi in x)
         n_pts = len(x)
 
-        denom = n_pts * sum_x2 - sum_x ** 2
+        denom = n_pts * sum_x2 - sum_x**2
         if abs(denom) < 1e-12:
             return (0.0, sum_y / n_pts if n_pts > 0 else 0.0, 0.0)
 
@@ -549,8 +549,8 @@ class CorrelationArbStrategy(BaseStrategy):
 
         # Residual variance for sigma
         residuals = [yi - (a + b * xi) for xi, yi in zip(x, y)]
-        var_resid = sum(r ** 2 for r in residuals) / max(1, len(residuals))
-        sigma = math.sqrt(var_resid * 2.0 * theta / (1.0 - b ** 2)) if (1.0 - b ** 2) > 0 else 0.0
+        var_resid = sum(r**2 for r in residuals) / max(1, len(residuals))
+        sigma = math.sqrt(var_resid * 2.0 * theta / (1.0 - b**2)) if (1.0 - b**2) > 0 else 0.0
 
         return (theta, mu, sigma)
 
@@ -558,7 +558,7 @@ class CorrelationArbStrategy(BaseStrategy):
     def _half_life(theta: float) -> float:
         """Half-life of mean reversion in same units as dt."""
         if theta <= 0:
-            return float('inf')
+            return float("inf")
         return math.log(2) / theta
 
     @staticmethod
@@ -579,7 +579,7 @@ class CorrelationArbStrategy(BaseStrategy):
         mean_spread: float,
         prices: dict[str, dict],
         ou_theta: float = 0.0,
-        ou_half_life: float = float('inf'),
+        ou_half_life: float = float("inf"),
         ou_sigma: float = 0.0,
     ) -> Optional[Opportunity]:
         """
@@ -711,10 +711,7 @@ class CorrelationArbStrategy(BaseStrategy):
         # Build description with OU model metrics when available
         ou_label = ""
         if ou_theta > 0:
-            ou_label = (
-                f" OU: theta={ou_theta:.3f}, half-life={ou_half_life:.1f}, "
-                f"sigma={ou_sigma:.4f}."
-            )
+            ou_label = f" OU: theta={ou_theta:.3f}, half-life={ou_half_life:.1f}, sigma={ou_sigma:.4f}."
 
         opp = self.create_opportunity(
             title=f"Correlation Arb: {q_a[:25]} vs {q_b[:25]}",

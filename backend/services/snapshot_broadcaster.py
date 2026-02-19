@@ -344,11 +344,7 @@ class SnapshotBroadcaster:
                         .all()
                     )
                     world_snapshot = (
-                        (
-                            await session.execute(
-                                select(EventsSnapshot).where(EventsSnapshot.id == "latest")
-                            )
-                        )
+                        (await session.execute(select(EventsSnapshot).where(EventsSnapshot.id == "latest")))
                         .scalars()
                         .one_or_none()
                     )
@@ -539,7 +535,7 @@ class SnapshotBroadcaster:
                     await manager.broadcast({"type": "worker_status_update", "data": {"workers": worker_statuses}})
 
                 crypto_row = await read_worker_snapshot(session, "crypto")
-                crypto_stats = (crypto_row.get("stats") if isinstance(crypto_row.get("stats"), dict) else {})
+                crypto_stats = crypto_row.get("stats") if isinstance(crypto_row.get("stats"), dict) else {}
                 crypto_markets = crypto_stats.get("markets")
                 if not isinstance(crypto_markets, list):
                     crypto_markets = []

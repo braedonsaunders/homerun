@@ -1117,6 +1117,7 @@ class StrategySDK:
         """
         try:
             from services.ws_feeds import FeedManager
+
             mgr = FeedManager.get_instance()
             return mgr.cache.get_recent_trades(token_id, max_trades)
         except Exception:
@@ -1131,6 +1132,7 @@ class StrategySDK:
         """
         try:
             from services.ws_feeds import FeedManager
+
             mgr = FeedManager.get_instance()
             return mgr.cache.get_trade_volume(token_id, lookback_seconds)
         except Exception:
@@ -1144,6 +1146,7 @@ class StrategySDK:
         """
         try:
             from services.ws_feeds import FeedManager
+
             mgr = FeedManager.get_instance()
             return mgr.cache.get_buy_sell_imbalance(token_id, lookback_seconds)
         except Exception:

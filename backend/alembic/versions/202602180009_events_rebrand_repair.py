@@ -136,29 +136,15 @@ def _normalize_worker_key(table_name: str) -> None:
         return
     bind = op.get_bind()
     rows = bind.execute(
-        sa.text(
-            f"SELECT worker_name FROM {table_name} "
-            "WHERE worker_name IN ('world_intelligence', 'events')"
-        )
+        sa.text(f"SELECT worker_name FROM {table_name} WHERE worker_name IN ('world_intelligence', 'events')")
     ).fetchall()
     values = {str(row[0]) for row in rows if row and row[0] is not None}
     if "world_intelligence" not in values:
         return
     if "events" in values:
-        bind.execute(
-            sa.text(
-                f"DELETE FROM {table_name} "
-                "WHERE worker_name = 'world_intelligence'"
-            )
-        )
+        bind.execute(sa.text(f"DELETE FROM {table_name} WHERE worker_name = 'world_intelligence'"))
         return
-    bind.execute(
-        sa.text(
-            f"UPDATE {table_name} "
-            "SET worker_name = 'events' "
-            "WHERE worker_name = 'world_intelligence'"
-        )
-    )
+    bind.execute(sa.text(f"UPDATE {table_name} SET worker_name = 'events' WHERE worker_name = 'world_intelligence'"))
 
 
 def upgrade() -> None:

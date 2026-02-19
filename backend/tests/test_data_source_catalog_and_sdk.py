@@ -434,7 +434,9 @@ def test_seed_sources_define_retention_policies():
     events_seed = next(seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug == "events_acled")
     assert events_seed.retention == {"max_records": 50000, "max_age_days": 365}
 
-    stories_google_seed = next(seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug.startswith("stories_google_"))
+    stories_google_seed = next(
+        seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug.startswith("stories_google_")
+    )
     assert stories_google_seed.retention == {"max_records": 7500, "max_age_days": 30}
 
     stories_gdelt_seed = next(seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug.startswith("stories_gdelt_"))

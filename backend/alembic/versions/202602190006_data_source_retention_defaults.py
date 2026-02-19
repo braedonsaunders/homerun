@@ -108,9 +108,7 @@ def upgrade() -> None:
         return
 
     bind = op.get_bind()
-    rows = bind.execute(
-        sa.text("SELECT id, slug, source_key, source_kind, retention FROM data_sources")
-    ).fetchall()
+    rows = bind.execute(sa.text("SELECT id, slug, source_key, source_kind, retention FROM data_sources")).fetchall()
     if not rows:
         return
 
@@ -142,9 +140,7 @@ def upgrade() -> None:
         if has_updated_at:
             update_values["updated_at"] = now_value
 
-        bind.execute(
-            data_sources.update().where(data_sources.c.id == source_id).values(**update_values)
-        )
+        bind.execute(data_sources.update().where(data_sources.c.id == source_id).values(**update_values))
 
 
 def downgrade() -> None:

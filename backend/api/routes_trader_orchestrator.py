@@ -167,9 +167,7 @@ async def start_orchestrator(
         running=False,
         enabled=True,
         current_activity="Start command queued",
-        interval_seconds=int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
     )
     await create_trader_event(
         session,
@@ -198,9 +196,7 @@ async def stop_orchestrator(
         running=False,
         enabled=False,
         current_activity="Manual stop requested",
-        interval_seconds=int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
     )
     await create_trader_event(
         session,
@@ -301,9 +297,7 @@ async def start_live(
         running=False,
         enabled=True,
         current_activity="Live start command queued",
-        interval_seconds=int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
     )
     await create_trader_event(
         session,
@@ -334,9 +328,7 @@ async def stop_live(
         running=False,
         enabled=False,
         current_activity="Live stop requested",
-        interval_seconds=int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
     )
     await create_trader_event(
         session,

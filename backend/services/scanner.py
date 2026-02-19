@@ -661,9 +661,7 @@ class ArbitrageScanner:
         self._market_price_history[market_id] = merged
         return len(merged)
 
-    async def _backfill_market_history_for_opportunities(
-        self, opportunities: list[Opportunity], now: datetime
-    ) -> None:
+    async def _backfill_market_history_for_opportunities(self, opportunities: list[Opportunity], now: datetime) -> None:
         """Backfill multi-hour YES/NO history for visible opportunities."""
         if not opportunities:
             return
@@ -1592,7 +1590,9 @@ class ArbitrageScanner:
             else:
                 token_sample = candidate_token_ids
                 if token_sample:
-                    await self._set_activity(f"Fast scan: reading live prices for {len(token_sample)} hot-tier tokens...")
+                    await self._set_activity(
+                        f"Fast scan: reading live prices for {len(token_sample)} hot-tier tokens..."
+                    )
                     live_prices = await self._snapshot_ws_prices(token_sample)
                     print(f"  Loaded prices for {len(live_prices)} hot-tier tokens from Redis cache")
 
@@ -2101,6 +2101,7 @@ class ArbitrageScanner:
         if not settings.WS_FEED_ENABLED:
             return
         try:
+
             async def _on_price_change(event: DataEvent) -> list:
                 token = str(event.token_id or "").strip()
                 if token:

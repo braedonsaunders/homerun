@@ -576,8 +576,7 @@ def events_payload(settings: AppSettings) -> dict[str, Any]:
         }
 
     payload = {
-        field_name: _coerce_typed(stored.get(field_name), default)
-        for field_name, default in EVENTS_DEFAULTS.items()
+        field_name: _coerce_typed(stored.get(field_name), default) for field_name, default in EVENTS_DEFAULTS.items()
     }
     payload.update(
         {

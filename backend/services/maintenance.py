@@ -133,9 +133,7 @@ class MaintenanceService:
         cutoff = utcnow() - timedelta(days=older_than_days)
         cutoff_timestamp = cutoff.timestamp()
         backup_prefix = f"{db_path.name}.{self._BACKUP_GLOB_PREFIX}"
-        backup_timestamp_pattern = re.compile(
-            rf"^{re.escape(db_path.name)}\.backup_\d{{8}}_\d{{6}}\.db(?:-[^.]*)?$"
-        )
+        backup_timestamp_pattern = re.compile(rf"^{re.escape(db_path.name)}\.backup_\d{{8}}_\d{{6}}\.db(?:-[^.]*)?$")
         deleted_count = 0
         scanned_count = 0
 

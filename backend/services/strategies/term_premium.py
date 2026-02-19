@@ -39,10 +39,10 @@ logger = get_logger(__name__)
 # Calibration priors reused from FLB research (Snowberg & Wolfers).
 # For the term premium strategy we focus on the favorite range (>= 0.80).
 _CALIBRATION_PRIORS: dict[tuple[float, float], float] = {
-    (0.80, 0.85): 0.84,   # 80-85c favorites win ~84%
-    (0.85, 0.90): 0.88,   # 85-90c favorites win ~88%
-    (0.90, 0.95): 0.93,   # 90-95c favorites win ~93%
-    (0.95, 1.00): 0.97,   # 95-100c favorites win ~97%
+    (0.80, 0.85): 0.84,  # 80-85c favorites win ~84%
+    (0.85, 0.90): 0.88,  # 85-90c favorites win ~88%
+    (0.90, 0.95): 0.93,  # 90-95c favorites win ~93%
+    (0.95, 1.00): 0.97,  # 95-100c favorites win ~97%
 }
 
 
@@ -95,7 +95,7 @@ class TermPremiumStrategy(BaseStrategy):
         "base_size_usd": 15.0,
         "max_size_usd": 150.0,
         "convergence_exit_threshold": 0.02,  # exit when within 2% of true_prob
-        "drawdown_exit_threshold": 0.10,     # exit on 10% price drop from entry
+        "drawdown_exit_threshold": 0.10,  # exit on 10% price drop from entry
     }
 
     def __init__(self) -> None:
@@ -120,9 +120,7 @@ class TermPremiumStrategy(BaseStrategy):
     # Discount model
     # ------------------------------------------------------------------
 
-    def _compute_fair_price(
-        self, true_prob: float, days_to_resolution: float, discount_rate: float
-    ) -> float:
+    def _compute_fair_price(self, true_prob: float, days_to_resolution: float, discount_rate: float) -> float:
         """Compute the fair discounted price for a far-dated contract.
 
         fair_price = true_prob / (1 + discount_rate * years)
@@ -311,9 +309,7 @@ class TermPremiumStrategy(BaseStrategy):
     # Composable evaluate pipeline overrides
     # ------------------------------------------------------------------
 
-    def custom_checks(
-        self, signal: Any, context: Any, params: dict, payload: dict
-    ) -> list[DecisionCheck]:
+    def custom_checks(self, signal: Any, context: Any, params: dict, payload: dict) -> list[DecisionCheck]:
         """Term Premium: verify source and minimum liquidity."""
         source = str(getattr(signal, "source", "") or "").strip().lower()
         min_liq = float(params.get("min_liquidity", 1000.0) or 1000.0)
@@ -325,11 +321,14 @@ class TermPremiumStrategy(BaseStrategy):
 
         return [
             DecisionCheck(
-                "source", "Scanner source", source == "scanner",
+                "source",
+                "Scanner source",
+                source == "scanner",
                 detail=f"got={source}",
             ),
             DecisionCheck(
-                "liquidity", "Minimum liquidity",
+                "liquidity",
+                "Minimum liquidity",
                 liquidity >= min_liq,
                 score=liquidity,
                 detail=f"min=${min_liq:.0f}",
@@ -399,11 +398,16 @@ class TermPremiumStrategy(BaseStrategy):
     def on_blocked(self, signal: Any, reason: str, context: Any) -> None:
         logger.info(
             "%s: signal blocked - %s (market=%s)",
-            self.name, reason, getattr(signal, "market_id", "?"),
+            self.name,
+            reason,
+            getattr(signal, "market_id", "?"),
         )
 
     def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
         logger.info(
             "%s: size capped $%.0f -> $%.0f - %s",
-            self.name, original_size, capped_size, reason,
+            self.name,
+            original_size,
+            capped_size,
+            reason,
         )

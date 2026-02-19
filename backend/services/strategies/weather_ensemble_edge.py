@@ -173,10 +173,7 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
             market_payload = {}
 
         condition_id = str(
-            intent.get("market_id")
-            or market_payload.get("condition_id")
-            or market_payload.get("id")
-            or ""
+            intent.get("market_id") or market_payload.get("condition_id") or market_payload.get("id") or ""
         ).strip()
         if not condition_id:
             return None

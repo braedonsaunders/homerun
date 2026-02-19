@@ -90,9 +90,7 @@ class VPINToxicityStrategy(BaseStrategy):
         elif event.event_type == EventType.MARKET_DATA_REFRESH:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
-                None,
-                self.detect,
-                event.events or [], event.markets or [], event.prices or {}
+                None, self.detect, event.events or [], event.markets or [], event.prices or {}
             )
         return []
 
@@ -274,9 +272,7 @@ class VPINToxicityStrategy(BaseStrategy):
                 side_price = 1.0 - yes_price
 
             confidence = min(0.95, 0.50 + vpin * 0.4)
-            risk_score, risk_factors = self.calculate_risk_score(
-                [market], getattr(market, "end_date", None)
-            )
+            risk_score, risk_factors = self.calculate_risk_score([market], getattr(market, "end_date", None))
 
             opp = self.create_opportunity(
                 title=f"VPIN toxicity spike on {market.question[:60]}",
@@ -309,9 +305,7 @@ class VPINToxicityStrategy(BaseStrategy):
         payload: dict,
     ) -> list[DecisionCheck]:
         """Verify that VPIN data exists for the signal's token."""
-        strategy_type = str(
-            payload.get("strategy") or payload.get("strategy_type") or ""
-        ).strip().lower()
+        strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
         strategy_ok = strategy_type == "vpin_toxicity"
 
         # Check that we have bucket data (i.e. VPIN was actually computed)

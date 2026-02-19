@@ -983,6 +983,7 @@ class BaseStrategy(ABC):
     def fee_adjusted_edge_pct(edge_pct: float, entry_price: float, platform: str = "polymarket") -> float:
         """Return edge percent after platform taker fees."""
         from utils.kelly import polymarket_taker_fee, kalshi_taker_fee
+
         if platform == "polymarket":
             fee = polymarket_taker_fee(entry_price)
         elif platform == "kalshi":

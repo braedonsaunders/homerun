@@ -117,4 +117,3 @@ def test_tail_end_carry_emits_near_expiry_high_probability_entry() -> None:
     assert opp.is_guaranteed is False
     assert opp.expected_payout < 1.0
     assert opp.expected_payout > opp.total_cost
-

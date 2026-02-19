@@ -9,6 +9,7 @@ DEFAULT_GLOBAL_RISK = {
     "max_orders_per_cycle": 50,
 }
 
+
 def _normalize_template(template: dict[str, Any]) -> dict[str, Any]:
     configs = []
     for source_config in template.get("source_configs", []) or []:

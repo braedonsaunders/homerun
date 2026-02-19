@@ -847,8 +847,7 @@ class WorkflowOrchestrator:
                             f,
                             reason="insufficient_source_diversity",
                             details=(
-                                "Need at least "
-                                f"{min_supporting_sources} independent sources for actionable signal."
+                                f"Need at least {min_supporting_sources} independent sources for actionable signal."
                             ),
                         )
 

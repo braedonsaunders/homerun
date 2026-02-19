@@ -472,9 +472,7 @@ class ValidationService:
             for signal in signals:
                 metadata = signal.metadata_json if isinstance(signal.metadata_json, dict) else {}
                 related_market_ids = [
-                    str(item).strip()
-                    for item in list(signal.related_market_ids or [])
-                    if str(item).strip()
+                    str(item).strip() for item in list(signal.related_market_ids or []) if str(item).strip()
                 ]
                 market_relevance_score = signal.market_relevance_score
                 if market_relevance_score is None:

@@ -181,6 +181,7 @@ async def test_world_summary_uses_true_window_totals(monkeypatch):
             _FakeScalarExecuteResult(400),  # active_convergences
         ]
     )
+
     async def _fake_latest_instability(_session):
         return {}
 

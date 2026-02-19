@@ -37,11 +37,7 @@ def _rewrite_value_if_present(
         return
     bind = op.get_bind()
     table = sa.table(table_name, sa.column(column_name, sa.String()))
-    bind.execute(
-        table.update()
-        .where(table.c[column_name] == old_value)
-        .values({column_name: new_value})
-    )
+    bind.execute(table.update().where(table.c[column_name] == old_value).values({column_name: new_value}))
 
 
 def _rename_column_if_needed(table_name: str, old_name: str, new_name: str) -> None:
@@ -50,11 +46,7 @@ def _rename_column_if_needed(table_name: str, old_name: str, new_name: str) -> N
     existing_columns = column_names(table_name)
     if old_name not in existing_columns or new_name in existing_columns:
         return
-    op.execute(
-        sa.text(
-            f"ALTER TABLE {table_name} RENAME COLUMN {old_name} TO {new_name}"
-        )
-    )
+    op.execute(sa.text(f"ALTER TABLE {table_name} RENAME COLUMN {old_name} TO {new_name}"))
 
 
 def upgrade() -> None:

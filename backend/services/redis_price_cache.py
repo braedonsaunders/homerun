@@ -51,7 +51,9 @@ class RedisPriceCache:
         if payload:
             await redis_streams.hset_many(payload, expire_seconds=ttl)
 
-    async def read_prices(self, token_ids: list[str], *, stale_seconds: float | None = None) -> dict[str, dict[str, float]]:
+    async def read_prices(
+        self, token_ids: list[str], *, stale_seconds: float | None = None
+    ) -> dict[str, dict[str, float]]:
         if not token_ids:
             return {}
         ttl = float(stale_seconds if stale_seconds is not None else settings.WS_PRICE_STALE_SECONDS)

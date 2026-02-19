@@ -75,9 +75,7 @@ async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
             "running": bool(snapshot.get("running")),
             "enabled": bool(snapshot.get("enabled")),
             "current_activity": snapshot.get("current_activity"),
-            "interval_seconds": int(
-                snapshot.get("interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-            ),
+            "interval_seconds": int(snapshot.get("interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
             "last_run_at": snapshot.get("last_run_at"),
             "lag_seconds": None,
             "last_error": snapshot.get("last_error"),
@@ -229,9 +227,7 @@ async def start_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
             running=False,
             enabled=True,
             current_activity="Start command queued",
-            interval_seconds=int(
-                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-            ),
+            interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
         )
     else:
         await set_worker_paused(session, name, False)
@@ -259,9 +255,7 @@ async def pause_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
             running=False,
             enabled=False,
             current_activity="Manual stop requested",
-            interval_seconds=int(
-                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-            ),
+            interval_seconds=int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
         )
     else:
         await set_worker_paused(session, name, True)

@@ -356,9 +356,7 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
         "is_enabled": bool(row.is_enabled),
         "is_paused": bool(row.is_paused),
         "mode": str(row.mode or "paper"),
-        "run_interval_seconds": int(
-            row.run_interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        "run_interval_seconds": int(row.run_interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
         "requested_run_at": to_iso(row.requested_run_at),
         "kill_switch": bool(row.kill_switch),
         "settings": row.settings_json or {},
@@ -2532,9 +2530,7 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
     return {
         "mode": control.get("mode", "paper"),
         "kill_switch": bool(control.get("kill_switch", False)),
-        "run_interval_seconds": int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-        ),
+        "run_interval_seconds": int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
         "global_risk": {
             "max_gross_exposure_usd": safe_float(global_risk.get("max_gross_exposure_usd"), 5000.0),
             "max_daily_loss_usd": safe_float(global_risk.get("max_daily_loss_usd"), 500.0),

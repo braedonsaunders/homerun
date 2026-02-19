@@ -205,7 +205,9 @@ async def _data_source_status_by_slug(session: AsyncSession, source_slug: str | 
     }
 
 
-async def _run_data_source_now(session: AsyncSession, source_slug: str | None, *, max_records: int = 1500) -> dict[str, Any]:
+async def _run_data_source_now(
+    session: AsyncSession, source_slug: str | None, *, max_records: int = 1500
+) -> dict[str, Any]:
     slug = str(source_slug or "").strip().lower()
     if not slug:
         return {
@@ -1088,7 +1090,7 @@ async def get_world_opportunities(
             "description": signal.description or "",
             "source": signal.source or "events",
             "detected_at": to_iso(signal.detected_at),
-            "related_market_ids": related_market_ids[: max_markets_per_signal],
+            "related_market_ids": related_market_ids[:max_markets_per_signal],
             "market_relevance_score": relevance_value,
             "edge_percent": float(meta.get("edge_percent") or 0.0),
             "direction": str(meta.get("direction") or "unknown"),
@@ -1621,9 +1623,7 @@ async def get_events_summary(
     total_signals = int(
         (
             await session.execute(
-                select(func.count())
-                .select_from(EventsSignal)
-                .where(EventsSignal.detected_at >= cutoff)
+                select(func.count()).select_from(EventsSignal).where(EventsSignal.detected_at >= cutoff)
             )
         ).scalar()
         or 0
@@ -1643,12 +1643,8 @@ async def get_events_summary(
         await session.execute(
             select(
                 func.sum(case((severity_value >= 0.8, 1), else_=0)).label("critical"),
-                func.sum(
-                    case((and_(severity_value >= 0.6, severity_value < 0.8), 1), else_=0)
-                ).label("high"),
-                func.sum(
-                    case((and_(severity_value >= 0.3, severity_value < 0.6), 1), else_=0)
-                ).label("medium"),
+                func.sum(case((and_(severity_value >= 0.6, severity_value < 0.8), 1), else_=0)).label("high"),
+                func.sum(case((and_(severity_value >= 0.3, severity_value < 0.6), 1), else_=0)).label("medium"),
                 func.sum(case((severity_value < 0.3, 1), else_=0)).label("low"),
             ).where(EventsSignal.detected_at >= cutoff)
         )

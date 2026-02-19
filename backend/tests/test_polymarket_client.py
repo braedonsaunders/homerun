@@ -48,9 +48,7 @@ class _FakeStreamingClient:
         self.calls += 1
         if self.calls <= self.failures_before_success:
             return _FakeStreamingResponse(
-                read_error=httpx.RemoteProtocolError(
-                    "peer closed connection without sending complete message body"
-                )
+                read_error=httpx.RemoteProtocolError("peer closed connection without sending complete message body")
             )
         return _FakeStreamingResponse()
 

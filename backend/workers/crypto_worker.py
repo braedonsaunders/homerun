@@ -238,9 +238,7 @@ def _restore_price_to_beat_from_snapshot_markets(markets: list[dict]) -> int:
 def _market_token_ids(market) -> set[str]:
     token_ids = getattr(market, "clob_token_ids", None) or []
     return {
-        str(token_id).strip()
-        for token_id in token_ids
-        if str(token_id).strip() and len(str(token_id).strip()) > 20
+        str(token_id).strip() for token_id in token_ids if str(token_id).strip() and len(str(token_id).strip()) > 20
     }
 
 
@@ -506,9 +504,7 @@ async def _run_loop() -> None:
             if not feed_manager._started:
                 await feed_manager.start()
             if not ws_reactive_callback_registered:
-                feed_manager.cache.add_on_update_callback(
-                    _on_ws_price_update
-                )
+                feed_manager.cache.add_on_update_callback(_on_ws_price_update)
                 ws_reactive_callback_registered = True
             ws_feeds_running = True
             ws_feed_retry_delay_seconds = _WS_FEED_RETRY_INITIAL_SECONDS

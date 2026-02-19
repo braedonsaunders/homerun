@@ -56,6 +56,7 @@ def _is_expected_close(exc: Exception) -> bool:
         return close_code in {1000, 1001}
     return False
 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -158,10 +159,11 @@ class CachedEntry:
 @dataclass
 class TradeRecord:
     """A single executed trade from the CLOB."""
+
     price: float
-    size: float        # in shares
-    side: str          # "BUY" or "SELL"
-    timestamp: float   # epoch seconds
+    size: float  # in shares
+    side: str  # "BUY" or "SELL"
+    timestamp: float  # epoch seconds
 
 
 class PriceCache:
@@ -762,9 +764,7 @@ class PolymarketWSFeed:
         """Route an incoming WebSocket message to the right handler."""
         # Trade execution messages (from "trades" channel)
         event_type = data.get("event_type", "")
-        if event_type == "trade" or (
-            "price" in data and "size" in data and "side" in data and "bids" not in data
-        ):
+        if event_type == "trade" or ("price" in data and "size" in data and "side" in data and "bids" not in data):
             self._apply_trade(data, recv_time)
             return
 
@@ -1004,7 +1004,9 @@ class KalshiWSFeed:
                         close_code=getattr(exc, "code", None),
                     )
                 else:
-                    logger.warning(f"Kalshi WS disconnected ({exc!r}), reconnecting in {delay:.1f}s (attempt {attempt})")
+                    logger.warning(
+                        f"Kalshi WS disconnected ({exc!r}), reconnecting in {delay:.1f}s (attempt {attempt})"
+                    )
                 self._state = ConnectionState.DISCONNECTED
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)

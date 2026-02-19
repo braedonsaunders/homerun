@@ -260,7 +260,7 @@ def _stories_rss_source_code(
         "    async def fetch_async(self):",
         "        url = str(self.config.get('url') or '').strip()",
         "        if not url:",
-            "            return []",
+        "            return []",
         "        limit = self._as_int(self.config.get('limit'), self.default_config.get('limit', 40), 1, 500)",
         "        source_name = str(self.config.get('source_name') or '').strip() or str(self.name or '').strip() or 'rss'",
         "        category_filter = str(self.config.get('category_filter') or '').strip().lower() or None",
@@ -359,7 +359,7 @@ def _stories_rest_api_source_code(
         "        records = []",
         "        for item in raw_rows[:limit]:",
         "            if not isinstance(item, dict):",
-            "                continue",
+        "                continue",
         "",
         "            external_id = str(item.get('id') or item.get('external_id') or item.get('guid') or '').strip()",
         "            if not external_id:",
@@ -782,7 +782,7 @@ def _events_wrapper_source_code(
                 "                try:",
                 "                    payload = response.json()",
                 "                except Exception:",
-                    "                    continue",
+                "                    continue",
                 "                articles = payload.get('articles') if isinstance(payload, dict) else []",
                 "                if not isinstance(articles, list):",
                 "                    articles = []",
@@ -813,7 +813,7 @@ def _events_wrapper_source_code(
                 "                observed_at = observed.isoformat() if observed is not None else None",
                 "                score = round((severity * 100.0), 2)",
                 "                trend = 'rising' if event_count >= 60 else ('falling' if event_count <= 8 else 'stable')",
-                "                pair = f\"{country_a}-{country_b}\"",
+                '                pair = f"{country_a}-{country_b}"',
                 "                out.append(",
                 "                    {",
                 "                        'external_id': hashlib.sha256(f\"{pair}:{timespan_hours}\".encode('utf-8')).hexdigest()[:24],",
@@ -956,7 +956,7 @@ def _events_wrapper_source_code(
                 "                        continue",
                 "                    observed = self._parse_datetime(item.get('started_at') or item.get('detected_at') or item.get('timestamp') or item.get('time'))",
                 "                    observed_at = observed.isoformat() if observed is not None else None",
-                "                    key = f\"{event_type}:{country}:{summary[:120]}:{observed_at}\"",
+                '                    key = f"{event_type}:{country}:{summary[:120]}:{observed_at}"',
                 "                    out.append(",
                 "                        {",
                 "                            'external_id': str(item.get('id') or '').strip() or hashlib.sha256(key.encode('utf-8')).hexdigest()[:24],",
@@ -1037,7 +1037,7 @@ def _events_wrapper_source_code(
                 "                try:",
                 "                    payload = response.json()",
                 "                except Exception:",
-                    "                    continue",
+                "                    continue",
                 "                articles = payload.get('articles') if isinstance(payload, dict) else []",
                 "                if not isinstance(articles, list):",
                 "                    articles = []",
@@ -1056,7 +1056,7 @@ def _events_wrapper_source_code(
                 "                    observed = self._parse_datetime(item.get('seendate') or item.get('published') or item.get('date'))",
                 "                    observed_at = observed.isoformat() if observed is not None else None",
                 "                    summary = str(item.get('seendate') or item.get('domain') or item.get('sourcecountry') or '').strip()",
-                "                    key = f\"{query}:{url}:{observed_at}:{title}\"",
+                '                    key = f"{query}:{url}:{observed_at}:{title}"',
                 "                    out.append(",
                 "                        {",
                 "                            'external_id': hashlib.sha256(key.encode('utf-8')).hexdigest()[:24],",
@@ -1379,7 +1379,9 @@ async def ensure_system_data_sources_seeded(session: AsyncSession) -> int:
             await session.delete(row)
             deleted += 1
             continue
-        if bool(row.is_system) and (_is_seed_source_code(str(row.source_code or "")) or _is_legacy_system_source_row(row)):
+        if bool(row.is_system) and (
+            _is_seed_source_code(str(row.source_code or "")) or _is_legacy_system_source_row(row)
+        ):
             await session.delete(row)
             deleted += 1
 

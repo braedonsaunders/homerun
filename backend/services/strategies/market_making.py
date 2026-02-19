@@ -260,8 +260,7 @@ class MarketMakingStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _reservation_price(mid: float, inventory: float, gamma: float,
-                           sigma_sq: float, time_remaining: float) -> float:
+    def _reservation_price(mid: float, inventory: float, gamma: float, sigma_sq: float, time_remaining: float) -> float:
         """Avellaneda-Stoikov reservation price adjusted for inventory.
 
         r(t) = S(t) - q * gamma * sigma^2 * (T - t)
@@ -276,8 +275,7 @@ class MarketMakingStrategy(BaseStrategy):
         return mid - inventory * gamma * sigma_sq * time_remaining
 
     @staticmethod
-    def _optimal_spread(gamma: float, sigma_sq: float, time_remaining: float,
-                        kappa: float = 1.5) -> float:
+    def _optimal_spread(gamma: float, sigma_sq: float, time_remaining: float, kappa: float = 1.5) -> float:
         """Avellaneda-Stoikov optimal spread.
 
         delta = gamma * sigma^2 * (T-t) + (2/gamma) * ln(1 + gamma/kappa)
@@ -446,9 +444,7 @@ class MarketMakingStrategy(BaseStrategy):
             capture_fraction = 0.6
             if spread_dislocation > 0:
                 # Passive entry: aim to capture a fraction of the excess
-                passive_target = round(
-                    buy_price + capture_fraction * spread_dislocation, 4
-                )
+                passive_target = round(buy_price + capture_fraction * spread_dislocation, 4)
             else:
                 passive_target = sell_price  # No dislocation, normal target
 

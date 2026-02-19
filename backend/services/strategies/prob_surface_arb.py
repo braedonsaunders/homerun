@@ -355,41 +355,41 @@ class ProbSurfaceArbStrategy(BaseStrategy):
                 if dev > 0:
                     # Fitted > actual: market is underpriced, BUY YES
                     token_id = (
-                        market.clob_token_ids[0]
-                        if market.clob_token_ids and len(market.clob_token_ids) > 0
-                        else None
+                        market.clob_token_ids[0] if market.clob_token_ids and len(market.clob_token_ids) > 0 else None
                     )
-                    positions.append({
-                        "action": "BUY",
-                        "outcome": "YES",
-                        "market_id": market.id,
-                        "market_question": market.question,
-                        "price": yes_price,
-                        "token_id": token_id,
-                        "threshold": threshold_val,
-                        "deviation": round(dev, 4),
-                        "fitted_price": round(fitted[idx], 4),
-                    })
+                    positions.append(
+                        {
+                            "action": "BUY",
+                            "outcome": "YES",
+                            "market_id": market.id,
+                            "market_question": market.question,
+                            "price": yes_price,
+                            "token_id": token_id,
+                            "threshold": threshold_val,
+                            "deviation": round(dev, 4),
+                            "fitted_price": round(fitted[idx], 4),
+                        }
+                    )
                     total_cost += yes_price
                     opp_markets.append(market)
                 else:
                     # Fitted < actual: market is overpriced, BUY NO (fade)
                     token_id = (
-                        market.clob_token_ids[1]
-                        if market.clob_token_ids and len(market.clob_token_ids) > 1
-                        else None
+                        market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
                     )
-                    positions.append({
-                        "action": "BUY",
-                        "outcome": "NO",
-                        "market_id": market.id,
-                        "market_question": market.question,
-                        "price": no_price,
-                        "token_id": token_id,
-                        "threshold": threshold_val,
-                        "deviation": round(dev, 4),
-                        "fitted_price": round(fitted[idx], 4),
-                    })
+                    positions.append(
+                        {
+                            "action": "BUY",
+                            "outcome": "NO",
+                            "market_id": market.id,
+                            "market_question": market.question,
+                            "price": no_price,
+                            "token_id": token_id,
+                            "threshold": threshold_val,
+                            "deviation": round(dev, 4),
+                            "fitted_price": round(fitted[idx], 4),
+                        }
+                    )
                     total_cost += no_price
                     opp_markets.append(market)
 
@@ -490,9 +490,7 @@ class ProbSurfaceArbStrategy(BaseStrategy):
             num_legs = len(payload.get("markets") or [])
 
         return [
-            DecisionCheck(
-                "source", "Scanner source", source == "scanner", detail=f"got={source}"
-            ),
+            DecisionCheck("source", "Scanner source", source == "scanner", detail=f"got={source}"),
             DecisionCheck(
                 "family_size",
                 "Minimum family legs",

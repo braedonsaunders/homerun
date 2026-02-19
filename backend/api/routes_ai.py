@@ -219,9 +219,7 @@ async def judge_opportunities_bulk(
         targets = list(combined_by_id.values())
     else:
         targets = [
-            opp
-            for opp in combined_by_id.values()
-            if not opp.ai_analysis or opp.ai_analysis.recommendation == "pending"
+            opp for opp in combined_by_id.values() if not opp.ai_analysis or opp.ai_analysis.recommendation == "pending"
         ]
 
     if not targets:

@@ -158,8 +158,6 @@ def test_temporal_decay_certainty_shock_detects_no_surge_after_yes_crash():
     assert opp.expected_payout < 1.0
 
 
-
-
 def test_market_making_skips_multileg_contracts():
     strategy = MarketMakingStrategy()
     market = _make_market(

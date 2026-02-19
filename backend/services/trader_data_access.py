@@ -354,8 +354,7 @@ async def get_tracked_traders(
         tracked_rows = (
             (
                 await session.execute(
-                    select(TrackedWallet)
-                    .order_by(
+                    select(TrackedWallet).order_by(
                         desc(TrackedWallet.last_trade_at),
                         desc(TrackedWallet.total_trades),
                         TrackedWallet.address.asc(),
