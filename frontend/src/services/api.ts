@@ -3895,6 +3895,20 @@ export const getUnifiedDataSourceRecords = async (
   return unwrapApiData(data)
 }
 
+export const previewUnifiedDataSource = async (
+  id: string,
+  payload?: { max_records?: number }
+): Promise<{
+  source_id: string
+  source_slug: string
+  total_fetched: number
+  duration_ms: number
+  records: UnifiedDataSourceRecord[]
+}> => {
+  const { data } = await api.post(`/data-sources/${id}/preview`, payload || {})
+  return unwrapApiData(data)
+}
+
 export const getUnifiedDataSourceTemplate = async (): Promise<UnifiedDataSourceTemplateResponse> => {
   const { data } = await api.get('/data-sources/template')
   return unwrapApiData(data)

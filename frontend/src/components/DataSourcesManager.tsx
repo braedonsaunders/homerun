@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Eye,
   Loader2,
   Play,
   Plus,
@@ -30,6 +31,7 @@ import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import CodeEditor from './CodeEditor'
 import DataSourceApiDocsFlyout from './DataSourceApiDocsFlyout'
+import DataSourcePreviewFlyout from './DataSourcePreviewFlyout'
 import RestApiSourceForm from './RestApiSourceForm'
 import RssSourceForm from './RssSourceForm'
 import StrategyConfigForm from './StrategyConfigForm'
@@ -248,6 +250,7 @@ export default function DataSourcesManager() {
   const loadedEditorSourceKeyRef = useRef<string | null>(null)
 
   const [showApiDocs, setShowApiDocs] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
@@ -999,6 +1002,17 @@ export default function DataSourcesManager() {
                 </Button>
                 <Button
                   type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowPreview(true)}
+                  disabled={busy || !selectedSource}
+                >
+                  <Eye className="w-3 h-3" />
+                  Preview
+                </Button>
+                <Button
+                  type="button"
                   size="sm"
                   className="h-7 gap-1 px-2 text-[11px] bg-cyan-600 hover:bg-cyan-500 text-white"
                   onClick={() => saveMutation.mutate()}
@@ -1311,11 +1325,11 @@ export default function DataSourcesManager() {
                 )}
               </div>
 
-              <div className="shrink-0 border-t border-border/50">
+              <div className="min-h-0 border-t border-border/50 flex flex-col" style={{ maxHeight: showConfig ? '50%' : undefined }}>
                 <button
                   type="button"
                   onClick={() => setShowConfig((prev) => !prev)}
-                  className="w-full px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  className="shrink-0 w-full px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
                 >
                   {showConfig ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                   <Settings2 className="w-3 h-3" />
@@ -1327,7 +1341,7 @@ export default function DataSourcesManager() {
                   )}
                 </button>
                 {showConfig && (
-                  <div className="px-3 pb-3 animate-in fade-in duration-200 space-y-3">
+                  <div className="px-3 pb-3 animate-in fade-in duration-200 space-y-3 overflow-y-auto min-h-0">
                     {configSchemaFields.length > 0 && !showRawJson && (
                       <>
                         <StrategyConfigForm
@@ -1609,6 +1623,7 @@ export default function DataSourcesManager() {
       )}
 
       <DataSourceApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} />
+      <DataSourcePreviewFlyout open={showPreview} onOpenChange={setShowPreview} sourceId={selectedSourceId} />
     </div>
   )
 }

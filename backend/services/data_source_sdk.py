@@ -292,7 +292,7 @@ class BaseDataSource:
 
     def _hours(self) -> int:
         default = int(self.default_config.get("hours", 72) or 72)
-        return self._as_int(self.config.get("hours"), default, 1, 720)
+        return self._as_int(self.config.get("hours"), default, 1, 87600)
 
     def _limit(self) -> int:
         default = int(self.default_config.get("limit", 500) or 500)

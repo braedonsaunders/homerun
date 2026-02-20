@@ -310,6 +310,7 @@ async def run_data_source(
     """Run one source, normalize records, and upsert into data_source_records."""
 
     source_slug = str(source.slug or "").strip().lower()
+    source_id = str(source.id or "")
     if not source_slug:
         raise ValueError("source.slug is required")
     if not bool(source.enabled):
@@ -321,7 +322,7 @@ async def run_data_source(
 
     run_row = DataSourceRun(
         id=uuid.uuid4().hex,
-        data_source_id=source.id,
+        data_source_id=source_id,
         source_slug=source_slug,
         status="success",
         fetched_count=0,
@@ -478,11 +479,43 @@ async def run_data_source(
         if runtime is not None:
             runtime.error_count += 1
             runtime.last_error = str(exc)
-        source.status = "error"
-        source.error_message = str(exc)
-        run_row.status = "error"
-        run_row.error_message = str(exc)
+        error_message = str(exc)
         logger.error("Data source run failed", source_slug=source_slug, exc_info=exc)
+
+        # The session transaction may be tainted (e.g. autoflush hit
+        # "database is locked").  Roll back so we can persist the error
+        # run row cleanly.
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+        # Re-attach the source and run_row to the fresh transaction so the
+        # error state is persisted.
+        try:
+            source = await session.get(DataSource, source_id)
+            if source is not None:
+                source.status = "error"
+                source.error_message = error_message
+        except Exception:
+            pass
+
+        run_row = DataSourceRun(
+            id=uuid.uuid4().hex,
+            data_source_id=source_id,
+            source_slug=source_slug,
+            status="error",
+            fetched_count=fetched_count,
+            transformed_count=transformed_count,
+            upserted_count=upserted_count,
+            skipped_count=skipped_count,
+            error_message=error_message,
+            metadata_json={},
+            started_at=started_at,
+            completed_at=None,
+            duration_ms=None,
+        )
+        session.add(run_row)
 
     completed_at = _utcnow_naive()
     run_row.fetched_count = fetched_count
@@ -571,7 +604,91 @@ async def run_data_source_by_slug(
     )
 
 
+async def preview_data_source(
+    source: DataSource,
+    *,
+    max_records: int = 25,
+) -> dict[str, Any]:
+    source_slug = str(source.slug or "").strip().lower()
+    if not source_slug:
+        raise ValueError("source.slug is required")
+
+    safe_max = max(1, min(200, int(max_records)))
+    started_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    runtime = data_source_loader.get_runtime(source_slug)
+    if runtime is None:
+        runtime = data_source_loader.load(
+            slug=source_slug,
+            source_code=str(source.source_code or ""),
+            config=dict(source.config or {}),
+            class_name=source.class_name,
+        )
+    instance = runtime.instance
+
+    if hasattr(instance, "fetch_async"):
+        fetched = await _invoke_callable(instance.fetch_async)
+    elif hasattr(instance, "fetch"):
+        fetched = await _invoke_callable(instance.fetch)
+    else:
+        raise DataSourceValidationError("Source instance has no fetch/fetch_async method")
+
+    if fetched is None:
+        fetched_rows: list[Any] = []
+    elif isinstance(fetched, list):
+        fetched_rows = fetched
+    else:
+        raise DataSourceValidationError("fetch/fetch_async must return a list of dict records")
+
+    total_fetched = len(fetched_rows)
+    fetched_rows = fetched_rows[:safe_max]
+
+    normalized_rows: list[dict[str, Any]] = []
+    for raw_item in fetched_rows:
+        if not isinstance(raw_item, dict):
+            continue
+        raw_payload = dict(raw_item)
+        transformed_payload = dict(raw_payload)
+        if hasattr(instance, "transform"):
+            transformed = await _invoke_callable(instance.transform, dict(raw_payload))
+            if isinstance(transformed, dict):
+                transformed_payload = transformed
+            else:
+                continue
+        normalized = _normalize_record(raw_payload, transformed_payload)
+        normalized_rows.append(normalized)
+
+    elapsed_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - started_ms
+
+    return {
+        "source_id": source.id,
+        "source_slug": source_slug,
+        "total_fetched": total_fetched,
+        "duration_ms": max(0, elapsed_ms),
+        "records": [
+            {
+                "external_id": row.get("external_id"),
+                "title": row.get("title"),
+                "summary": row.get("summary"),
+                "category": row.get("category"),
+                "source": row.get("source"),
+                "url": row.get("url"),
+                "geotagged": bool(row.get("geotagged")),
+                "country_iso3": row.get("country_iso3"),
+                "latitude": row.get("latitude"),
+                "longitude": row.get("longitude"),
+                "observed_at": row["observed_at"].isoformat() if row.get("observed_at") else None,
+                "payload": row.get("payload_json"),
+                "transformed": row.get("transformed_json"),
+                "tags": row.get("tags_json"),
+            }
+            for row in normalized_rows
+        ],
+    }
+
+
 __all__ = [
     "run_data_source",
     "run_data_source_by_slug",
+    "preview_data_source",
 ]

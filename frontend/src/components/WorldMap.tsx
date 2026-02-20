@@ -47,6 +47,35 @@ const LIGHT_TILE_STYLE = {
 }
 
 type SignalPalette = Record<string, string>
+
+type MapPresentationConfig = {
+  map_color: string
+  map_layer_label: string
+  map_layer_short: string
+  map_radius_min: number
+  map_radius_max: number
+  map_opacity: number
+  map_blur: number
+  map_stroke_width: number
+  map_glow: boolean
+  map_dedicated_toggle: boolean
+  slug: string
+}
+
+const MAP_PRESENTATION_DEFAULTS: MapPresentationConfig = {
+  map_color: '#64748b',
+  map_layer_label: '',
+  map_layer_short: '',
+  map_radius_min: 4,
+  map_radius_max: 9,
+  map_opacity: 0.92,
+  map_blur: 0.1,
+  map_stroke_width: 1.0,
+  map_glow: true,
+  map_dedicated_toggle: false,
+  slug: '',
+}
+
 type LngLatTuple = [number, number]
 type MapGeoJSONFeature = {
   properties?: Record<string, unknown>
@@ -103,18 +132,9 @@ type CountryBoundaryFeatureCollection = {
   features: CountryBoundaryFeature[]
 }
 
-type LayerToggles = {
-  countryIntensity: boolean
-  tensionBorders: boolean
-  tensionArcs: boolean
-  countryBoundaries: boolean
-  conflictZones: boolean
-  signals: boolean
-  convergences: boolean
-  hotspots: boolean
-  chokepoints: boolean
-  earthquakes: boolean
-}
+// Dynamic record — structural keys are statically known, but data sources
+// with map_dedicated_toggle can add dsrc_<slug> keys at runtime.
+type LayerToggles = Record<string, boolean>
 
 type CountryMetric = {
   country_name: string
@@ -172,6 +192,7 @@ const SIGNAL_COLORS_DARK: SignalPalette = {
   military: '#60a5fa',
   infrastructure: '#34d399',
   earthquake: '#f59e0b',
+  fire: '#ef4444',
   news: '#a78bfa',
 }
 
@@ -184,6 +205,7 @@ const SIGNAL_COLORS_LIGHT: SignalPalette = {
   military: '#2563eb',
   infrastructure: '#15803d',
   earthquake: '#d97706',
+  fire: '#dc2626',
   news: '#7c3aed',
 }
 
@@ -203,7 +225,6 @@ const CLICKABLE_LAYERS = [
   'hotspots-fill',
   'hotspots-outline',
   'chokepoints-icon',
-  'earthquakes-dot',
 ] as const
 
 const DEFAULT_LAYER_TOGGLES: LayerToggles = {
@@ -216,10 +237,12 @@ const DEFAULT_LAYER_TOGGLES: LayerToggles = {
   convergences: true,
   hotspots: true,
   chokepoints: true,
-  earthquakes: true,
+  // Dynamic dsrc_* entries are added at runtime from data source configs
 }
 
-const LAYER_GROUPS: Record<keyof LayerToggles, readonly string[]> = {
+// Structural layer groups map toggle keys to actual MapLibre layer IDs.
+// Dynamic toggles (dsrc_*) work through source visibility filtering instead.
+const STRUCTURAL_LAYER_GROUPS: Record<string, readonly string[]> = {
   countryIntensity: ['countries-fill-intensity'],
   tensionBorders: ['countries-border-tension'],
   tensionArcs: ['tension-arcs-glow', 'tension-arcs-line'],
@@ -234,7 +257,6 @@ const LAYER_GROUPS: Record<keyof LayerToggles, readonly string[]> = {
   convergences: ['convergences-fill', 'convergences-ring'],
   hotspots: ['hotspots-fill', 'hotspots-outline'],
   chokepoints: ['chokepoints-icon'],
-  earthquakes: ['earthquakes-dot'],
 }
 
 const COUNTRY_BOUNDARY_URL = `${import.meta.env.BASE_URL}data/world_countries.geojson`
@@ -525,7 +547,9 @@ function pairFromSignal(signal: WorldSignal): [string, string] | null {
 function signalsToGeoJSON(
   signals: WorldSignal[],
   palette: SignalPalette,
-  centroids: Record<string, CountryCentroid>
+  centroids: Record<string, CountryCentroid>,
+  presentationBySignalType: Record<string, MapPresentationConfig> = {},
+  presentationBySourceName: Record<string, MapPresentationConfig> = {},
 ): GeoFeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -575,6 +599,12 @@ function signalsToGeoJSON(
         // Serialize metadata as JSON string so MapLibre can store it in feature properties
         const metadataJson = JSON.stringify(signal.metadata || {})
 
+        // Resolve map presentation config from data source
+        const pres =
+          presentationBySignalType[signal.signal_type?.toLowerCase() || ''] ||
+          presentationBySourceName[signal.source?.toLowerCase() || ''] ||
+          MAP_PRESENTATION_DEFAULTS
+
         return {
           type: 'Feature',
           geometry: {
@@ -589,13 +619,20 @@ function signalsToGeoJSON(
             country: signal.country || '',
             country_name: countryText || formatCountry(signal.country),
             source: signal.source,
-            color: palette[signal.signal_type] || '#64748b',
+            color: palette[signal.signal_type] || pres.map_color || '#64748b',
             geocode_mode: geocodeMode,
             activity_type: activityType,
             age_hours: Number(ageHours.toFixed(1)),
             is_fresh: isFresh,
             detected_at: signal.detected_at || null,
             metadata_json: metadataJson,
+            // Map presentation from data source config (data-driven styling)
+            map_radius_min: pres.map_radius_min,
+            map_radius_max: pres.map_radius_max,
+            map_opacity: pres.map_opacity,
+            map_blur: pres.map_blur,
+            map_stroke_width: pres.map_stroke_width,
+            map_glow: pres.map_glow ? 1 : 0,
             related_market_count: Array.isArray(signal.related_market_ids) ? signal.related_market_ids.length : 0,
             related_market_ids: Array.isArray(signal.related_market_ids)
               ? signal.related_market_ids.slice(0, 5).join(', ')
@@ -1223,6 +1260,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     type: 'geojson',
     data: emptyFeatureCollection(),
   })
+  // Glow layer: data-driven from source config (map_glow, map_radius_min/max)
   map.addLayer({
     id: 'signals-glow',
     type: 'circle',
@@ -1230,10 +1268,15 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     filter: [
       'all',
       ['!=', ['get', 'signal_type'], 'military'],
-      ['!=', ['get', 'signal_type'], 'earthquake'],
+      ['!=', ['get', 'signal_type'], 'conflict'],
+      ['==', ['get', 'map_glow'], 1],
     ],
     paint: {
-      'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 10, 0.5, 16, 1, 24],
+      'circle-radius': [
+        'interpolate', ['linear'], ['coalesce', ['get', 'severity'], 0],
+        0, ['*', ['coalesce', ['get', 'map_radius_min'], 4], 2.5],
+        1, ['*', ['coalesce', ['get', 'map_radius_max'], 9], 2.5],
+      ],
       'circle-color': ['get', 'color'],
       'circle-opacity': [
         'interpolate', ['linear'], ['coalesce', ['get', 'age_hours'], 24],
@@ -1244,6 +1287,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
       'circle-blur': 1,
     },
   })
+  // Dot layer: all paint props driven by per-feature map_* properties from data source config
   map.addLayer({
     id: 'signals-dot',
     type: 'circle',
@@ -1251,19 +1295,24 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     filter: [
       'all',
       ['!=', ['get', 'signal_type'], 'military'],
-      ['!=', ['get', 'signal_type'], 'earthquake'],
+      ['!=', ['get', 'signal_type'], 'conflict'],
     ],
     paint: {
-      'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 4, 0.5, 6, 1, 9],
+      'circle-radius': [
+        'interpolate', ['linear'], ['coalesce', ['get', 'severity'], 0],
+        0, ['coalesce', ['get', 'map_radius_min'], 4],
+        1, ['coalesce', ['get', 'map_radius_max'], 9],
+      ],
       'circle-color': ['get', 'color'],
       'circle-opacity': [
         'interpolate', ['linear'], ['coalesce', ['get', 'age_hours'], 24],
-        0, 0.98,
-        6, 0.90,
-        24, 0.60,
+        0, ['coalesce', ['get', 'map_opacity'], 0.92],
+        6, ['*', ['coalesce', ['get', 'map_opacity'], 0.92], 0.92],
+        24, ['*', ['coalesce', ['get', 'map_opacity'], 0.92], 0.65],
       ],
       'circle-stroke-color': theme === 'light' ? '#ffffff' : '#020617',
-      'circle-stroke-width': 1,
+      'circle-stroke-width': ['coalesce', ['get', 'map_stroke_width'], 1],
+      'circle-blur': ['coalesce', ['get', 'map_blur'], 0.1],
     },
   })
   map.addLayer({
@@ -1332,36 +1381,10 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     },
   })
 
-  // Earthquakes: separate layer from generic signals, sized by magnitude
-  // Uses the 'signals' source filtered to signal_type === 'earthquake'
-  map.addLayer({
-    id: 'earthquakes-dot',
-    type: 'circle',
-    source: 'signals',
-    filter: ['==', ['get', 'signal_type'], 'earthquake'],
-    paint: {
-      'circle-radius': [
-        'interpolate', ['linear'],
-        ['coalesce', ['get', 'severity'], 0.15],
-        0.15, 6,
-        0.4, 9,
-        0.65, 13,
-        0.85, 18,
-        1.0, 22,
-      ],
-      'circle-color': theme === 'light' ? '#d97706' : '#f59e0b',
-      'circle-opacity': [
-        'interpolate', ['linear'], ['coalesce', ['get', 'age_hours'], 24],
-        0, 0.88,
-        12, 0.70,
-        24, 0.45,
-      ],
-      'circle-stroke-color': theme === 'light' ? '#92400e' : '#fde68a',
-      'circle-stroke-width': 1.5,
-      'circle-stroke-opacity': 0.5,
-      'circle-blur': 0.15,
-    },
-  })
+  // NOTE: Earthquake and wildfire signals no longer have dedicated layers.
+  // Their visual properties (radius, opacity, color, stroke, blur) are all
+  // driven by per-feature map_* properties stamped from data source configs.
+  // Users control presentation entirely from the DataSourcesManager UI.
 }
 
 function updateSourceData(map: any, sourceId: string, data: unknown) {
@@ -1418,7 +1441,7 @@ function summarizeTopCounts(
     .join(', ')
 }
 
-const LAYER_LABELS: Partial<Record<keyof LayerToggles, string>> = {
+const LAYER_LABELS: Record<string, string> = {
   countryIntensity: 'Country intensity',
   tensionBorders: 'Tension borders',
   tensionArcs: 'Tension arcs',
@@ -1428,10 +1451,9 @@ const LAYER_LABELS: Partial<Record<keyof LayerToggles, string>> = {
   convergences: 'Convergences',
   hotspots: 'Hotspots',
   chokepoints: 'Chokepoints',
-  earthquakes: 'Earthquakes',
 }
 
-const LAYER_SHORT_LABELS: Partial<Record<keyof LayerToggles, string>> = {
+const LAYER_SHORT_LABELS: Record<string, string> = {
   countryIntensity: 'CI',
   tensionBorders: 'TB',
   tensionArcs: 'TA',
@@ -1441,10 +1463,9 @@ const LAYER_SHORT_LABELS: Partial<Record<keyof LayerToggles, string>> = {
   convergences: 'CV',
   hotspots: 'HS',
   chokepoints: 'CP',
-  earthquakes: 'EQ',
 }
 
-const LAYER_COLORS: Partial<Record<keyof LayerToggles, string>> = {
+const LAYER_COLORS: Record<string, string> = {
   countryIntensity: '#ef4444',
   tensionBorders: '#f97316',
   tensionArcs: '#f43f5e',
@@ -1454,7 +1475,6 @@ const LAYER_COLORS: Partial<Record<keyof LayerToggles, string>> = {
   convergences: '#a855f7',
   hotspots: '#3b82f6',
   chokepoints: '#10b981',
-  earthquakes: '#f59e0b',
 }
 
 const EVENT_SOURCE_HEALTH_KEY_BY_SLUG: Record<string, string> = {
@@ -1467,7 +1487,7 @@ const EVENT_SOURCE_HEALTH_KEY_BY_SLUG: Record<string, string> = {
 }
 
 type LayerDockItem = {
-  key: keyof LayerToggles
+  key: string
   label: string
   short: string
   color: string
@@ -1489,7 +1509,7 @@ type DataSourceDockItem = {
   signalCount: number
 }
 
-function formatLayerLabelFromKey(key: keyof LayerToggles): string {
+function formatLayerLabelFromKey(key: string): string {
   const raw = String(key)
   const withSpaces = raw.replace(/([a-z])([A-Z])/g, '$1 $2')
   return withSpaces.charAt(0).toUpperCase() + withSpaces.slice(1)
@@ -1545,10 +1565,15 @@ function resolveEventSourceHealthKey(source: UnifiedDataSource): string | null {
   if (!slug) return null
   const mapped = EVENT_SOURCE_HEALTH_KEY_BY_SLUG[slug]
   if (mapped) return mapped
-  if (String(source.source_key || '').trim().toLowerCase() !== 'events') return null
-  if (!slug.startsWith('events_')) return null
-  const suffix = slug.slice('events_'.length).trim().toLowerCase()
-  return suffix || null
+  // Events sources: strip "events_" prefix for the health key
+  if (slug.startsWith('events_')) {
+    const suffix = slug.slice('events_'.length).trim().toLowerCase()
+    return suffix || null
+  }
+  // Story and custom sources: the API now returns health keyed by full slug
+  const sourceKey = String(source.source_key || '').trim().toLowerCase()
+  if (sourceKey === 'stories' || sourceKey === 'custom') return slug
+  return slug
 }
 
 function normalizeSourceToken(value: string): string {
@@ -1592,7 +1617,7 @@ function MapRightDock({
   onCloseSelection: () => void
   layerItems: LayerDockItem[]
   toggles: LayerToggles
-  onToggle: (key: keyof LayerToggles) => void
+  onToggle: (key: string) => void
   signalCount: number
   signalTotal: number
   criticalCount: number
@@ -1881,7 +1906,7 @@ function MapRightDock({
                       </div>
                       <div className="text-[10px] text-muted-foreground truncate flex items-center justify-between gap-2">
                         <span className="truncate">{source.sourceKey} / {source.slug}</span>
-                        <span className="shrink-0">{source.signalCount} signals</span>
+                        <span className="shrink-0">{source.signalCount} {source.sourceKey === 'events' ? 'signals' : 'records'}</span>
                       </div>
                       <div className="text-[10px] text-muted-foreground flex items-center justify-between gap-2">
                         <span>{source.enabled ? 'enabled' : 'disabled'} / {source.status}</span>
@@ -1921,10 +1946,74 @@ function militaryEntityKey(signal: WorldSignal): string {
 
 export default function WorldMap({ isConnected = true }: { isConnected?: boolean }) {
   const theme = useAtomValue(themeAtom)
-  const colors = useMemo(
-    () => (theme === 'light' ? SIGNAL_COLORS_LIGHT : SIGNAL_COLORS_DARK),
-    [theme]
-  )
+
+  const { data: unifiedDataSourcesData } = useQuery({
+    queryKey: ['unified-data-sources'],
+    queryFn: () => getUnifiedDataSources(),
+    refetchInterval: 120000,
+    staleTime: 60000,
+  })
+
+  // Build dynamic palette: start with hardcoded defaults, then overlay
+  // map_color values from each data source config so users can control
+  // signal colors entirely from the DataSourceSDK level.
+  const colors = useMemo(() => {
+    const base: SignalPalette = { ...(theme === 'light' ? SIGNAL_COLORS_LIGHT : SIGNAL_COLORS_DARK) }
+    const sources = Array.isArray(unifiedDataSourcesData) ? unifiedDataSourcesData : []
+    for (const source of sources) {
+      const cfg = (source.config || {}) as Record<string, unknown>
+      const mapColor = typeof cfg.map_color === 'string' ? cfg.map_color.trim() : ''
+      if (!mapColor) continue
+      // Extract signal_types from config — each maps to the user-chosen color
+      const signalTypes = Array.isArray(cfg.signal_types) ? cfg.signal_types : []
+      for (const st of signalTypes) {
+        const key = String(st).trim().toLowerCase()
+        if (key) base[key] = mapColor
+      }
+      // Also map the source name itself (e.g. "nasa_firms" → color)
+      const sourceNames = Array.isArray(cfg.source_names) ? cfg.source_names : []
+      for (const sn of sourceNames) {
+        const key = String(sn).trim().toLowerCase()
+        if (key) base[key] = mapColor
+      }
+    }
+    return base
+  }, [theme, unifiedDataSourcesData])
+
+  // Build lookup: signal_type/source_name → map presentation config from data sources
+  const mapPresentation = useMemo(() => {
+    const bySignalType: Record<string, MapPresentationConfig> = {}
+    const bySourceName: Record<string, MapPresentationConfig> = {}
+    const sources = Array.isArray(unifiedDataSourcesData) ? unifiedDataSourcesData : []
+    for (const source of sources) {
+      if (source.source_key !== 'events') continue
+      const cfg = (source.config || {}) as Record<string, unknown>
+      const pres: MapPresentationConfig = {
+        map_color: String(cfg.map_color || MAP_PRESENTATION_DEFAULTS.map_color),
+        map_layer_label: String(cfg.map_layer_label || ''),
+        map_layer_short: String(cfg.map_layer_short || ''),
+        map_radius_min: Number(cfg.map_radius_min ?? MAP_PRESENTATION_DEFAULTS.map_radius_min),
+        map_radius_max: Number(cfg.map_radius_max ?? MAP_PRESENTATION_DEFAULTS.map_radius_max),
+        map_opacity: Number(cfg.map_opacity ?? MAP_PRESENTATION_DEFAULTS.map_opacity),
+        map_blur: Number(cfg.map_blur ?? MAP_PRESENTATION_DEFAULTS.map_blur),
+        map_stroke_width: Number(cfg.map_stroke_width ?? MAP_PRESENTATION_DEFAULTS.map_stroke_width),
+        map_glow: cfg.map_glow !== false && cfg.map_glow !== 0,
+        map_dedicated_toggle: Boolean(cfg.map_dedicated_toggle),
+        slug: source.slug,
+      }
+      const signalTypes = Array.isArray(cfg.signal_types) ? cfg.signal_types : []
+      for (const st of signalTypes) {
+        const key = String(st).trim().toLowerCase()
+        if (key) bySignalType[key] = pres
+      }
+      const sourceNames = Array.isArray(cfg.source_names) ? cfg.source_names : []
+      for (const sn of sourceNames) {
+        const key = String(sn).trim().toLowerCase()
+        if (key) bySourceName[key] = pres
+      }
+    }
+    return { bySignalType, bySourceName }
+  }, [unifiedDataSourcesData])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
@@ -1948,13 +2037,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   const { data: worldSourceStatusData } = useQuery({
     queryKey: ['events-sources'],
     queryFn: getWorldSourceStatus,
-    refetchInterval: sourceRefreshInterval,
-    staleTime: 60000,
-  })
-
-  const { data: unifiedDataSourcesData } = useQuery({
-    queryKey: ['unified-data-sources'],
-    queryFn: () => getUnifiedDataSources(),
     refetchInterval: sourceRefreshInterval,
     staleTime: 60000,
   })
@@ -2115,8 +2197,9 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   const [sourceVisibilityByKey, setSourceVisibilityByKey] = useState<Record<string, boolean>>({})
   const countryCentroids = useMemo(() => buildCountryCentroids(stableCountryGeoData), [stableCountryGeoData])
 
-  const layerDockItems = useMemo<LayerDockItem[]>(
-    () => (Object.keys(LAYER_GROUPS) as Array<keyof LayerToggles>).map((key) => {
+  const layerDockItems = useMemo<LayerDockItem[]>(() => {
+    // Static structural items
+    const items: LayerDockItem[] = (Object.keys(STRUCTURAL_LAYER_GROUPS) as string[]).map((key) => {
       const label = LAYER_LABELS[key] || formatLayerLabelFromKey(key)
       return {
         key,
@@ -2124,9 +2207,20 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         short: LAYER_SHORT_LABELS[key] || formatShortLayerLabel(label),
         color: LAYER_COLORS[key] || '#64748b',
       }
-    }),
-    []
-  )
+    })
+    // Dynamic items from data sources with map_dedicated_toggle: true
+    const sources = Array.isArray(unifiedDataSourcesData) ? unifiedDataSourcesData : []
+    for (const source of sources) {
+      if (source.source_key !== 'events') continue
+      const cfg = (source.config || {}) as Record<string, unknown>
+      if (!cfg.map_dedicated_toggle) continue
+      const label = String(cfg.map_layer_label || source.name || source.slug)
+      const short = String(cfg.map_layer_short || label.slice(0, 2).toUpperCase())
+      const color = String(cfg.map_color || '#64748b')
+      items.push({ key: `dsrc_${source.slug}`, label, short, color })
+    }
+    return items
+  }, [unifiedDataSourcesData])
 
   const sourceSignalCounts = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -2168,6 +2262,11 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         for (const alias of aliases) {
           signalCount += Number(sourceSignalCounts[alias] || 0)
         }
+        // For non-events sources, use total_records from the health endpoint
+        // since they don't produce EventsSignal rows
+        if (signalCount === 0 && healthDetails?.total_records) {
+          signalCount = Number(healthDetails.total_records)
+        }
         return {
           id: source.id,
           name: String(source.name || source.slug || source.id),
@@ -2195,6 +2294,30 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     })
   }, [sourceDockItems])
 
+  // Initialize dynamic toggle state for data sources with map_dedicated_toggle
+  useEffect(() => {
+    const sources = Array.isArray(unifiedDataSourcesData) ? unifiedDataSourcesData : []
+    const dynamicKeys: string[] = []
+    for (const source of sources) {
+      if (source.source_key !== 'events') continue
+      const cfg = (source.config || {}) as Record<string, unknown>
+      if (!cfg.map_dedicated_toggle) continue
+      dynamicKeys.push(`dsrc_${source.slug}`)
+    }
+    if (dynamicKeys.length === 0) return
+    setLayerToggles((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const key of dynamicKeys) {
+        if (!(key in next)) {
+          next[key] = true
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [unifiedDataSourcesData])
+
   const sourceAliasToCanonical = useMemo(() => {
     const out: Record<string, string> = {}
     for (const source of sourceDockItems) {
@@ -2219,8 +2342,12 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   }, [allSignals, sourceAliasToCanonical, sourceDockItems.length, sourceVisibilityByKey])
 
   const geocodedSignalsGeoJSON = useMemo(
-    () => signalsToGeoJSON(signals, colors, countryCentroids),
-    [signals, colors, countryCentroids]
+    () => signalsToGeoJSON(
+      signals, colors, countryCentroids,
+      mapPresentation.bySignalType,
+      mapPresentation.bySourceName,
+    ),
+    [signals, colors, countryCentroids, mapPresentation]
   )
   const geocodedSignalPoints = useMemo(
     () => geocodedSignalsGeoJSON.features.map((feature) => ({
@@ -2657,7 +2784,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   useEffect(() => {
     const map = mapRef.current
     if (!mapReady || !map) return
-    for (const [toggleKey, layerIds] of Object.entries(LAYER_GROUPS) as Array<[keyof LayerToggles, readonly string[]]>) {
+    for (const [toggleKey, layerIds] of Object.entries(STRUCTURAL_LAYER_GROUPS) as Array<[string, readonly string[]]>) {
       const visibility = layerToggles[toggleKey] ? 'visible' : 'none'
       for (const layerId of layerIds) {
         if (map.getLayer(layerId)) {
@@ -2707,7 +2834,14 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         const mag = meta.magnitude != null ? `M${Number(meta.magnitude).toFixed(1)}` : ''
         const depth = meta.depth_km != null ? `${Number(meta.depth_km).toFixed(0)}km depth` : ''
         const tsunami = meta.tsunami ? '⚠ Tsunami warning' : ''
-        metaDetails = [mag, depth, tsunami].filter(Boolean).join(' · ')
+        const alert = meta.alert ? `Alert: ${meta.alert}` : ''
+        metaDetails = [mag, depth, tsunami, alert].filter(Boolean).join(' · ')
+      } else if (signalType === 'fire') {
+        const frp = meta.frp != null ? `FRP: ${Number(meta.frp).toFixed(1)} MW` : ''
+        const bright = meta.bright_ti4 != null ? `Brightness: ${Number(meta.bright_ti4).toFixed(1)}K` : ''
+        const confidence = meta.confidence ? `Confidence: ${meta.confidence}` : ''
+        const daynight = meta.daynight === 'D' ? 'Daytime' : meta.daynight === 'N' ? 'Nighttime' : ''
+        metaDetails = [frp, bright, confidence, daynight].filter(Boolean).join(' · ')
       } else if (signalType === 'military') {
         const aircraft = meta.aircraft_type ? String(meta.aircraft_type) : ''
         const actType = meta.activity_type ? String(meta.activity_type) : ''
@@ -3037,41 +3171,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     [openSelection]
   )
 
-  const handleEarthquakeClick = useCallback(
-    (event: LayerClickEvent) => {
-      if (!event.features?.length) return
-      const feature = event.features[0]
-      const props = (feature.properties || {}) as Record<string, unknown>
-      let meta: Record<string, unknown> = {}
-      try { meta = JSON.parse(String(props.metadata_json || '{}')) } catch { meta = {} }
-      const mag = meta.magnitude != null ? `M${Number(meta.magnitude).toFixed(1)}` : ''
-      const depth = meta.depth_km != null ? `${Number(meta.depth_km).toFixed(0)}km depth` : ''
-      const tsunami = meta.tsunami ? '⚠ Tsunami warning' : ''
-      const alert = meta.alert ? `Alert: ${meta.alert}` : ''
-      const bodyParts = [mag, depth, tsunami, alert].filter(Boolean)
-      const earthquakeIso3 = normalizeCountryCode(String(
-        props.country_iso3
-        || props.country_code
-        || props.country_name
-        || props.country
-        || ''
-      )) || undefined
-      openSelection({
-        category: 'Earthquake',
-        title: String(props.title || 'Earthquake'),
-        subtitle: `${String(props.country_name || 'Unknown')} · USGS`,
-        body: bodyParts.join(' · ') || `Severity: ${Math.round((Number(props.severity) || 0) * 100)}%`,
-        iso3: earthquakeIso3,
-        countryName: props.country_name ? String(props.country_name) : undefined,
-        lat: Number.isFinite(Number(props.latitude)) ? Number(props.latitude) : undefined,
-        lon: Number.isFinite(Number(props.longitude)) ? Number(props.longitude) : undefined,
-        source: 'USGS',
-        signalType: 'earthquake',
-      })
-    },
-    [openSelection]
-  )
-
   const handleMapBackgroundClick = useCallback((event: LayerClickEvent & { point?: { x: number; y: number } }) => {
     const map = mapRef.current
     if (!map || !event.point) return
@@ -3112,7 +3211,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     map.on('click', 'hotspots-fill', handleHotspotClick)
     map.on('click', 'hotspots-outline', handleHotspotClick)
     map.on('click', 'chokepoints-icon', handleChokepointClick)
-    map.on('click', 'earthquakes-dot', handleEarthquakeClick)
     map.on('click', handleMapBackgroundClick)
 
     map.on('mousemove', 'countries-fill-intensity', handleCountryHover)
@@ -3139,7 +3237,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       map.off('click', 'hotspots-fill', handleHotspotClick)
       map.off('click', 'hotspots-outline', handleHotspotClick)
       map.off('click', 'chokepoints-icon', handleChokepointClick)
-      map.off('click', 'earthquakes-dot', handleEarthquakeClick)
       map.off('click', handleMapBackgroundClick)
       map.off('mousemove', 'countries-fill-intensity', handleCountryHover)
       map.off('mouseleave', 'countries-fill-intensity', handleCountryHoverLeave)
@@ -3159,7 +3256,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     handleConvergenceClick,
     handleHotspotClick,
     handleChokepointClick,
-    handleEarthquakeClick,
     handleMapBackgroundClick,
   ])
 
@@ -3188,6 +3284,12 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         toggles={layerToggles}
         onToggle={(key) => {
           setLayerToggles((prev) => ({ ...prev, [key]: !prev[key] }))
+          // Dynamic toggles (dsrc_*) also control source visibility
+          if (key.startsWith('dsrc_')) {
+            const slug = key.slice('dsrc_'.length)
+            const item = sourceDockItems.find((s) => s.slug === slug)
+            if (item) toggleSourceVisibility(item.canonicalKey)
+          }
         }}
         signalCount={signals.length}
         signalTotal={Number(stableSignalsData.total || signals.length)}

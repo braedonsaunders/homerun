@@ -15,9 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from models.database import (
     DataSource,
+    DataSourceRecord,
     DataSourceRun,
-    CountryInstabilityRecord,
-    TensionPairRecord,
     EventsSignal,
     EventsSnapshot,
     get_db_session,
@@ -79,14 +78,6 @@ _COUNTRY_NAMES = {
     "FRA": "France",
 }
 
-_WORLD_REFERENCE_SOURCE_SLUGS: dict[str, str | None] = {
-    "country_reference": None,
-    "ucdp_conflicts": None,
-    "mid_reference": None,
-    "trade_dependencies": None,
-    "chokepoint_reference": None,
-    "gdelt_news_reference": "events_gdelt_news",
-}
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -185,6 +176,11 @@ async def _data_source_status_by_slug(session: AsyncSession, source_slug: str | 
         .scalars()
         .first()
     )
+    total_records = (
+        await session.execute(
+            select(func.count(DataSourceRecord.id)).where(DataSourceRecord.source_slug == slug)
+        )
+    ).scalar() or 0
     run_status = str(latest_run.status or "").strip().lower() if latest_run is not None else ""
     run_error = str(latest_run.error_message or "").strip() if latest_run is not None else ""
     source_error = str(source.error_message or "").strip()
@@ -202,6 +198,7 @@ async def _data_source_status_by_slug(session: AsyncSession, source_slug: str | 
         "last_run_at": to_iso(latest_run.completed_at or latest_run.started_at) if latest_run is not None else None,
         "last_run_status": run_status or None,
         "count": int(latest_run.upserted_count or 0) if latest_run is not None else 0,
+        "total_records": int(total_records),
     }
 
 
@@ -377,31 +374,7 @@ async def _get_world_snapshot(session: AsyncSession) -> Optional[EventsSnapshot]
 async def _latest_instability_by_country(
     session: AsyncSession,
 ) -> dict[str, tuple[Any, Optional[Any]]]:
-    rows = (
-        (
-            await session.execute(
-                select(CountryInstabilityRecord).order_by(CountryInstabilityRecord.computed_at.desc()).limit(5000)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    latest: dict[str, tuple[Any, Optional[Any]]] = {}
-    for row in rows:
-        key = _instability_country_key(row)
-        if not key:
-            continue
-        if key not in latest:
-            latest[key] = (row, None)
-            continue
-        current, prev = latest[key]
-        if prev is None and _is_distinct_previous_snapshot(current, row, "score"):
-            latest[key] = (current, row)
-    if latest:
-        return latest
-
-    # Fallback: derive scores from recent instability signals when score history
-    # hasn't been persisted yet.
+    """Derive country instability scores from recent EventsSignal data."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)
     signal_rows = (
         (
@@ -416,6 +389,7 @@ async def _latest_instability_by_country(
         .scalars()
         .all()
     )
+    latest: dict[str, tuple[Any, Optional[Any]]] = {}
     for row in signal_rows:
         meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         iso3 = _normalize_country_value(str(row.iso3 or row.country or ""))
@@ -427,7 +401,7 @@ async def _latest_instability_by_country(
         contributing = meta.get("contributing_signals")
         if "contributing_signals" not in components and isinstance(contributing, list):
             components["contributing_signals"] = contributing
-        fallback_row = SimpleNamespace(
+        signal_row = SimpleNamespace(
             country=str(row.country or iso3),
             iso3=iso3,
             score=round(float(row.severity or 0.0) * 100.0, 1),
@@ -436,37 +410,18 @@ async def _latest_instability_by_country(
             computed_at=row.detected_at,
         )
         if iso3 not in latest:
-            latest[iso3] = (fallback_row, None)
+            latest[iso3] = (signal_row, None)
             continue
         current, prev = latest[iso3]
-        if prev is None and _is_distinct_previous_snapshot(current, fallback_row, "score"):
-            latest[iso3] = (current, fallback_row)
+        if prev is None and _is_distinct_previous_snapshot(current, signal_row, "score"):
+            latest[iso3] = (current, signal_row)
     return latest
 
 
 async def _latest_tension_pairs(
     session: AsyncSession,
 ) -> dict[str, tuple[Any, Optional[Any]]]:
-    rows = (
-        (await session.execute(select(TensionPairRecord).order_by(TensionPairRecord.computed_at.desc()).limit(5000)))
-        .scalars()
-        .all()
-    )
-    latest: dict[str, tuple[Any, Optional[Any]]] = {}
-    for row in rows:
-        key = _normalized_tension_pair_key(row.country_a, row.country_b)
-        if not key:
-            continue
-        if key not in latest:
-            latest[key] = (row, None)
-            continue
-        current, prev = latest[key]
-        if prev is None and _is_distinct_previous_snapshot(current, row, "tension_score"):
-            latest[key] = (current, row)
-    if latest:
-        return latest
-
-    # Fallback: derive pair scores from recent tension signals if pair history is empty.
+    """Derive country-pair tension scores from recent EventsSignal data."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     signal_rows = (
         (
@@ -481,6 +436,7 @@ async def _latest_tension_pairs(
         .scalars()
         .all()
     )
+    latest: dict[str, tuple[Any, Optional[Any]]] = {}
     for row in signal_rows:
         meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         a = str(meta.get("country_a") or "").strip().upper()
@@ -508,7 +464,7 @@ async def _latest_tension_pairs(
             event_count = int(event_count_raw or 0)
         except Exception:
             event_count = 0
-        fallback_row = SimpleNamespace(
+        signal_row = SimpleNamespace(
             country_a=a,
             country_b=b,
             tension_score=round(tension_score, 1),
@@ -521,11 +477,11 @@ async def _latest_tension_pairs(
         if not key:
             continue
         if key not in latest:
-            latest[key] = (fallback_row, None)
+            latest[key] = (signal_row, None)
             continue
         current, prev = latest[key]
-        if prev is None and _is_distinct_previous_snapshot(current, fallback_row, "tension_score"):
-            latest[key] = (current, fallback_row)
+        if prev is None and _is_distinct_previous_snapshot(current, signal_row, "tension_score"):
+            latest[key] = (current, signal_row)
     return latest
 
 
@@ -786,8 +742,9 @@ async def _dynamic_chokepoint_scores(
 
 async def _instability_change_7d(
     session: AsyncSession,
-    row: CountryInstabilityRecord,
+    row: Any,
 ) -> Optional[float]:
+    """Compute 7-day change in instability score using EventsSignal history."""
     if row.score is None:
         return None
     iso3 = (row.iso3 or "").upper()
@@ -797,20 +754,22 @@ async def _instability_change_7d(
     current_at = row.computed_at or datetime.now(timezone.utc)
     lookback = current_at - timedelta(days=6, hours=12)
     query = (
-        select(CountryInstabilityRecord)
-        .where(CountryInstabilityRecord.computed_at <= lookback)
-        .order_by(CountryInstabilityRecord.computed_at.desc())
+        select(EventsSignal)
+        .where(EventsSignal.signal_type == "instability")
+        .where(EventsSignal.detected_at <= lookback)
+        .order_by(EventsSignal.detected_at.desc())
         .limit(1)
     )
     if iso3:
-        query = query.where(func.upper(func.coalesce(CountryInstabilityRecord.iso3, "")) == iso3)
+        query = query.where(func.upper(func.coalesce(EventsSignal.iso3, "")) == iso3)
     else:
-        query = query.where(func.upper(func.coalesce(CountryInstabilityRecord.country, "")) == country.upper())
+        query = query.where(func.upper(func.coalesce(EventsSignal.country, "")) == country.upper())
     prev = (await session.execute(query)).scalar_one_or_none()
-    if prev is None or prev.score is None:
+    if prev is None or prev.severity is None:
         return None
     try:
-        return round(float(row.score) - float(prev.score), 1)
+        prev_score = round(float(prev.severity) * 100.0, 1)
+        return round(float(row.score) - prev_score, 1)
     except Exception:
         return None
 
@@ -1463,22 +1422,26 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     errors = stats.get("source_errors") or worker_stats.get("source_errors") or []
     merged_sources = dict(sources) if isinstance(sources, dict) else {}
 
-    for key, mapped_slug in _WORLD_REFERENCE_SOURCE_SLUGS.items():
-        if mapped_slug is None:
-            merged_sources[key] = {
-                "ok": False,
-                "status": "not_configured",
-                "error": "no datasource configured for this reference endpoint",
-                "last_error": "no datasource configured for this reference endpoint",
-                "source_slug": None,
-                "enabled": False,
-                "last_updated": None,
-                "last_run_at": None,
-                "last_run_status": None,
-                "count": 0,
-            }
+    # Include health status for ALL enabled data sources (events + stories + custom),
+    # not just the events worker's snapshot.  Story and custom sources are keyed by
+    # their full slug so the frontend can look them up directly.
+    all_sources = (
+        await session.execute(
+            select(DataSource)
+            .where(DataSource.enabled == True)  # noqa: E712
+            .order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
+        )
+    ).scalars().all()
+    for src in all_sources:
+        slug = str(src.slug or "").strip().lower()
+        if not slug:
             continue
-        merged_sources[key] = await _data_source_status_by_slug(session, mapped_slug)
+        # Events sources already have health from the worker snapshot — skip them
+        # unless the worker hasn't reported yet.
+        health_key = slug[len("events_"):] if slug.startswith("events_") else slug
+        if health_key in merged_sources:
+            continue
+        merged_sources[slug] = await _data_source_status_by_slug(session, slug)
 
     normalized_sources = {
         str(name): _normalize_source_health_entry(details) for name, details in merged_sources.items()
@@ -1491,126 +1454,6 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
         "errors": normalized_errors,
         "updated_at": to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
     }
-
-
-@router.get("/events/reference/countries/status")
-async def get_world_country_reference_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("country_reference"))
-
-
-@router.post("/events/reference/countries/sync")
-async def sync_world_country_reference(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("country_reference"),
-        max_records=max_records,
-    )
-
-
-@router.get("/events/reference/ucdp/status")
-async def get_world_ucdp_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("ucdp_conflicts"))
-
-
-@router.post("/events/reference/ucdp/sync")
-async def sync_world_ucdp_conflicts(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("ucdp_conflicts"),
-        max_records=max_records,
-    )
-
-
-@router.get("/events/reference/mid/status")
-async def get_world_mid_reference_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("mid_reference"))
-
-
-@router.post("/events/reference/mid/sync")
-async def sync_world_mid_reference(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("mid_reference"),
-        max_records=max_records,
-    )
-
-
-@router.get("/events/reference/trade-dependencies/status")
-async def get_world_trade_dependency_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("trade_dependencies"))
-
-
-@router.post("/events/reference/trade-dependencies/sync")
-async def sync_world_trade_dependencies(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("trade_dependencies"),
-        max_records=max_records,
-    )
-
-
-@router.get("/events/reference/chokepoints/status")
-async def get_world_chokepoint_reference_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("chokepoint_reference"))
-
-
-@router.post("/events/reference/chokepoints/sync")
-async def sync_world_chokepoint_reference(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("chokepoint_reference"),
-        max_records=max_records,
-    )
-
-
-@router.get("/events/reference/gdelt-news/status")
-async def get_world_gdelt_news_status(
-    session: AsyncSession = Depends(get_db_session),
-):
-    return await _data_source_status_by_slug(session, _WORLD_REFERENCE_SOURCE_SLUGS.get("gdelt_news_reference"))
-
-
-@router.post("/events/reference/gdelt-news/sync")
-async def sync_world_gdelt_news(
-    force: bool = Query(False),
-    session: AsyncSession = Depends(get_db_session),
-):
-    max_records = 5000 if bool(force) else 1500
-    return await _run_data_source_now(
-        session,
-        _WORLD_REFERENCE_SOURCE_SLUGS.get("gdelt_news_reference"),
-        max_records=max_records,
-    )
 
 
 @router.get("/events/summary")

@@ -485,39 +485,6 @@ class EventsSettings(BaseModel):
     airplanes_live_enabled: Optional[bool] = None
     airplanes_live_timeout_seconds: Optional[float] = None
     airplanes_live_max_records: Optional[int] = None
-    military_dedupe_radius_km: Optional[float] = None
-    military_enabled: Optional[bool] = None
-
-    country_reference_sync_enabled: Optional[bool] = None
-    country_reference_sync_hours: Optional[int] = None
-    country_reference_request_timeout_seconds: Optional[float] = None
-
-    ucdp_sync_enabled: Optional[bool] = None
-    ucdp_sync_hours: Optional[int] = None
-    ucdp_lookback_years: Optional[int] = None
-    ucdp_max_pages: Optional[int] = None
-    ucdp_request_timeout_seconds: Optional[float] = None
-
-    mid_sync_enabled: Optional[bool] = None
-    mid_sync_hours: Optional[int] = None
-    mid_request_timeout_seconds: Optional[float] = None
-
-    trade_dependency_sync_enabled: Optional[bool] = None
-    trade_dependency_sync_hours: Optional[int] = None
-    trade_dependency_request_timeout_seconds: Optional[float] = None
-    trade_dependency_wb_per_page: Optional[int] = None
-    trade_dependency_wb_max_pages: Optional[int] = None
-    trade_dependency_base_divisor: Optional[float] = None
-    trade_dependency_min_factor: Optional[float] = None
-    trade_dependency_max_factor: Optional[float] = None
-
-    chokepoints_enabled: Optional[bool] = None
-    chokepoints_refresh_seconds: Optional[int] = None
-    chokepoints_request_timeout_seconds: Optional[float] = None
-    chokepoints_max_daily_rows: Optional[int] = None
-    chokepoints_db_sync_enabled: Optional[bool] = None
-    chokepoints_db_sync_hours: Optional[int] = None
-
     convergence_min_types: Optional[int] = None
     anomaly_threshold: Optional[float] = None
     anomaly_min_baseline_points: Optional[int] = None
@@ -540,9 +507,6 @@ class EventsSettings(BaseModel):
     acled_auth_rate_limit_per_min: Optional[int] = None
     acled_cb_max_failures: Optional[int] = None
     acled_cb_cooldown_seconds: Optional[float] = None
-    opensky_cb_max_failures: Optional[int] = None
-    opensky_cb_cooldown_seconds: Optional[float] = None
-
     usgs_enabled: Optional[bool] = None
     usgs_min_magnitude: Optional[float] = None
 

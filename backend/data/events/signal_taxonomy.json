@@ -10,6 +10,7 @@
     "military",
     "infrastructure",
     "earthquake",
+    "fire",
     "news"
   ],
   "convergence_signal_types": [
@@ -67,6 +68,10 @@
     "earthquake": [
       "earthquake", "seismic", "tsunami", "richter",
       "tremor", "aftershock", "magnitude", "quake", "epicenter"
+    ],
+    "fire": [
+      "wildfire", "fire", "blaze", "burn", "arson",
+      "bushfire", "forestfire", "firestorm", "inferno"
     ],
     "news": [
       "breaking", "update", "announced", "confirmed", "reports",

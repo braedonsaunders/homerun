@@ -32,7 +32,7 @@ from services.data_source_loader import (
     data_source_loader,
     validate_data_source_source,
 )
-from services.data_source_runner import run_data_source
+from services.data_source_runner import preview_data_source, run_data_source
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -1104,6 +1104,27 @@ async def run_data_source_now(
             row,
             max_records=req.max_records,
             commit=True,
+        )
+    except (ValueError, DataSourceValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return result
+
+
+@router.post("/{source_id}/preview")
+async def preview_data_source_now(
+    source_id: str,
+    req: DataSourceRunRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    row = await session.get(DataSource, source_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Data source not found")
+
+    try:
+        result = await preview_data_source(
+            row,
+            max_records=min(req.max_records or 25, 200),
         )
     except (ValueError, DataSourceValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

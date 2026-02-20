@@ -425,7 +425,6 @@ class Settings(BaseSettings):
     EVENTS_AIRPLANES_LIVE_URL: str = "https://api.airplanes.live/v2/mil"
     EVENTS_AIRPLANES_LIVE_TIMEOUT_SECONDS: float = 20.0
     EVENTS_AIRPLANES_LIVE_MAX_RECORDS: int = 1500
-    EVENTS_MILITARY_DEDUPE_RADIUS_KM: float = 45.0
     EVENTS_COUNTRY_REFERENCE_SYNC_ENABLED: bool = True
     EVENTS_COUNTRY_REFERENCE_SYNC_HOURS: int = 24
     EVENTS_COUNTRY_REFERENCE_REQUEST_TIMEOUT_SECONDS: float = 20.0
@@ -445,20 +444,6 @@ class Settings(BaseSettings):
     EVENTS_TRADE_DEPENDENCY_BASE_DIVISOR: float = 120.0
     EVENTS_TRADE_DEPENDENCY_MIN_FACTOR: float = 0.5
     EVENTS_TRADE_DEPENDENCY_MAX_FACTOR: float = 1.5
-    EVENTS_CHOKEPOINTS_ENABLED: bool = True
-    EVENTS_CHOKEPOINTS_REFRESH_SECONDS: int = 1800
-    EVENTS_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS: float = 20.0
-    EVENTS_CHOKEPOINTS_MAX_DAILY_ROWS: int = 500
-    EVENTS_CHOKEPOINTS_DB_SYNC_ENABLED: bool = True
-    EVENTS_CHOKEPOINTS_DB_SYNC_HOURS: int = 6
-    EVENTS_CHOKEPOINTS_PORTWATCH_POINTS_URL: str = (
-        "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
-        "PortWatch_chokepoints_database/FeatureServer/0/query"
-    )
-    EVENTS_CHOKEPOINTS_PORTWATCH_DAILY_URL: str = (
-        "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
-        "Daily_Chokepoints_Data/FeatureServer/0/query"
-    )
     EVENTS_CONVERGENCE_MIN_TYPES: int = 2  # Min signal types for convergence
     EVENTS_ANOMALY_THRESHOLD: float = 1.8  # Z-score threshold for anomalies
     EVENTS_ANOMALY_MIN_BASELINE_POINTS: int = 3
@@ -480,12 +465,9 @@ class Settings(BaseSettings):
     EVENTS_ACLED_AUTH_RATE_LIMIT_PER_MIN: int = 12
     EVENTS_ACLED_CB_MAX_FAILURES: int = 8
     EVENTS_ACLED_CB_COOLDOWN_SECONDS: float = 180.0
-    EVENTS_OPENSKY_CB_MAX_FAILURES: int = 6
-    EVENTS_OPENSKY_CB_COOLDOWN_SECONDS: float = 120.0
     EVENTS_USGS_MIN_MAGNITUDE: float = 4.5
     EVENTS_GOV_RSS_ENABLED: bool = True  # Legacy flag (deprecated; NEWS_GOV_RSS_ENABLED is authoritative)
     EVENTS_USGS_ENABLED: bool = True  # Enable earthquake monitoring
-    EVENTS_MILITARY_ENABLED: bool = True  # Enable military flight tracking
 
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
@@ -562,7 +544,6 @@ _EVENTS_DB_FIELD_MAP: dict[str, tuple[str, object]] = {
         20.0,
     ),
     "airplanes_live_max_records": ("EVENTS_AIRPLANES_LIVE_MAX_RECORDS", 1500),
-    "military_dedupe_radius_km": ("EVENTS_MILITARY_DEDUPE_RADIUS_KM", 45.0),
     "country_reference_sync_enabled": ("EVENTS_COUNTRY_REFERENCE_SYNC_ENABLED", True),
     "country_reference_sync_hours": ("EVENTS_COUNTRY_REFERENCE_SYNC_HOURS", 24),
     "country_reference_request_timeout_seconds": (
@@ -588,15 +569,6 @@ _EVENTS_DB_FIELD_MAP: dict[str, tuple[str, object]] = {
     "trade_dependency_base_divisor": ("EVENTS_TRADE_DEPENDENCY_BASE_DIVISOR", 120.0),
     "trade_dependency_min_factor": ("EVENTS_TRADE_DEPENDENCY_MIN_FACTOR", 0.5),
     "trade_dependency_max_factor": ("EVENTS_TRADE_DEPENDENCY_MAX_FACTOR", 1.5),
-    "chokepoints_enabled": ("EVENTS_CHOKEPOINTS_ENABLED", True),
-    "chokepoints_refresh_seconds": ("EVENTS_CHOKEPOINTS_REFRESH_SECONDS", 1800),
-    "chokepoints_request_timeout_seconds": (
-        "EVENTS_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS",
-        20.0,
-    ),
-    "chokepoints_max_daily_rows": ("EVENTS_CHOKEPOINTS_MAX_DAILY_ROWS", 500),
-    "chokepoints_db_sync_enabled": ("EVENTS_CHOKEPOINTS_DB_SYNC_ENABLED", True),
-    "chokepoints_db_sync_hours": ("EVENTS_CHOKEPOINTS_DB_SYNC_HOURS", 6),
     "convergence_min_types": ("EVENTS_CONVERGENCE_MIN_TYPES", 2),
     "anomaly_threshold": ("EVENTS_ANOMALY_THRESHOLD", 1.8),
     "anomaly_min_baseline_points": ("EVENTS_ANOMALY_MIN_BASELINE_POINTS", 3),
@@ -620,11 +592,8 @@ _EVENTS_DB_FIELD_MAP: dict[str, tuple[str, object]] = {
     "acled_auth_rate_limit_per_min": ("EVENTS_ACLED_AUTH_RATE_LIMIT_PER_MIN", 12),
     "acled_cb_max_failures": ("EVENTS_ACLED_CB_MAX_FAILURES", 8),
     "acled_cb_cooldown_seconds": ("EVENTS_ACLED_CB_COOLDOWN_SECONDS", 180.0),
-    "opensky_cb_max_failures": ("EVENTS_OPENSKY_CB_MAX_FAILURES", 6),
-    "opensky_cb_cooldown_seconds": ("EVENTS_OPENSKY_CB_COOLDOWN_SECONDS", 120.0),
     "usgs_min_magnitude": ("EVENTS_USGS_MIN_MAGNITUDE", 4.5),
     "usgs_enabled": ("EVENTS_USGS_ENABLED", True),
-    "military_enabled": ("EVENTS_MILITARY_ENABLED", True),
 }
 
 

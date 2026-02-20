@@ -19,7 +19,7 @@ api.interceptors.response.use(
 
 export interface WorldSignal {
   signal_id: string
-  signal_type: 'conflict' | 'tension' | 'instability' | 'convergence' | 'anomaly' | 'military' | 'infrastructure'
+  signal_type: string
   severity: number
   country: string | null
   country_iso3?: string | null

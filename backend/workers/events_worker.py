@@ -101,27 +101,42 @@ def _stable_signal_id(
 
 
 def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
+    """Pure mechanical mapper — all business logic lives in the user's source code.
+
+    The user's fetch_async() sets category, source, title, summary, lat, lon,
+    country_iso3, and payload (dict).  This function copies those into the
+    EventsSignal shape without interpretation.  The full payload dict becomes
+    metadata_json so every field the source sets is available to the API layer.
+    """
     payload = dict(record.payload_json or {}) if isinstance(record.payload_json, dict) else {}
     transformed = dict(record.transformed_json or {}) if isinstance(record.transformed_json, dict) else {}
     merged: dict[str, Any] = {}
     merged.update(payload)
     merged.update(transformed)
+    # Flatten the nested "payload" sub-dict that _normalize_record() preserves
+    # from the source's fetch_async() output.  The inner payload holds the user's
+    # business fields (severity, country_a, risk_score, …) and should be promoted
+    # to top-level so the API layer and frontend can access them directly.
+    inner_payload = merged.get("payload")
+    if isinstance(inner_payload, dict):
+        for k, v in inner_payload.items():
+            merged.setdefault(k, v)
 
-    signal_type = str(record.category or merged.get("signal_type") or "world").strip().lower() or "world"
-    source = str(record.source or merged.get("source") or record.source_slug or "events").strip().lower() or "events"
-    title = str(record.title or merged.get("title") or "Events signal").strip() or "Events signal"
-    summary = str(record.summary or merged.get("summary") or "").strip()
-    severity = _clamp(_as_float(merged.get("severity"), _as_float(payload.get("severity"), 0.0)), 0.0, 1.0)
+    signal_type = str(record.category or "world").strip().lower() or "world"
+    source = str(record.source or record.source_slug or "events").strip().lower() or "events"
+    title = str(record.title or "Events signal").strip() or "Events signal"
+    summary = str(record.summary or "").strip()
+    severity = _clamp(_as_float(merged.get("severity"), 0.0), 0.0, 1.0)
 
-    observed_at = _to_aware(record.observed_at or merged.get("observed_at") or record.ingested_at)
-    country_iso3 = _as_iso3(record.country_iso3 or merged.get("country_iso3") or merged.get("country"))
+    observed_at = _to_aware(record.observed_at or record.ingested_at)
+    raw_country = str(record.country_iso3 or merged.get("country") or "").strip().upper() or None
+    country_iso3 = _as_iso3(raw_country)
 
-    metadata = merged.get("metadata") if isinstance(merged.get("metadata"), dict) else {}
-    metadata = dict(metadata)
-    metadata.setdefault("source_slug", str(record.source_slug or ""))
-    metadata.setdefault("external_id", str(record.external_id or "") or None)
+    metadata = dict(merged)
+    metadata["source_slug"] = str(record.source_slug or "")
+    metadata["external_id"] = str(record.external_id or "") or None
     if record.url:
-        metadata.setdefault("url", record.url)
+        metadata["url"] = record.url
 
     related_market_ids = []
     for item in _as_list(merged.get("related_market_ids")):
@@ -145,7 +160,7 @@ def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
         "signal_id": signal_id,
         "signal_type": signal_type,
         "severity": severity,
-        "country": country_iso3,
+        "country": raw_country or country_iso3,
         "latitude": record.latitude,
         "longitude": record.longitude,
         "title": title,
@@ -220,7 +235,8 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                 if not signal_id:
                     continue
                 signal_type = str(signal.get("signal_type") or "world").strip().lower() or "world"
-                country_iso3 = _as_iso3(signal.get("country"))
+                raw_country = str(signal.get("country") or "").strip().upper() or None
+                country_iso3 = _as_iso3(raw_country)
                 detected_at = _to_aware(signal.get("detected_at"))
                 related_market_ids = [
                     str(item or "").strip()
@@ -234,7 +250,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                         id=signal_id,
                         signal_type=signal_type,
                         severity=_clamp(_as_float(signal.get("severity"), 0.0), 0.0, 1.0),
-                        country=country_iso3,
+                        country=raw_country or country_iso3,
                         iso3=country_iso3,
                         latitude=signal.get("latitude"),
                         longitude=signal.get("longitude"),
@@ -255,7 +271,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                         set_={
                             "signal_type": signal_type,
                             "severity": _clamp(_as_float(signal.get("severity"), 0.0), 0.0, 1.0),
-                            "country": country_iso3,
+                            "country": raw_country or country_iso3,
                             "iso3": country_iso3,
                             "latitude": signal.get("latitude"),
                             "longitude": signal.get("longitude"),
@@ -385,7 +401,8 @@ async def _broadcast_update(signals: list[dict[str, Any]], summary: dict[str, An
         pass
 
 
-async def _load_enabled_event_sources() -> list[DataSource]:
+async def _load_enabled_event_sources() -> list[dict[str, Any]]:
+    """Return lightweight dicts (not detached ORM objects) to avoid greenlet errors."""
     async with AsyncSessionLocal() as session:
         query = (
             select(DataSource)
@@ -394,7 +411,14 @@ async def _load_enabled_event_sources() -> list[DataSource]:
             .order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
         )
         rows = (await session.execute(query)).scalars().all()
-    return list(rows)
+        return [
+            {
+                "id": row.id,
+                "slug": str(row.slug or "").strip().lower(),
+                "config": dict(row.config or {}),
+            }
+            for row in rows
+        ]
 
 
 async def _run_event_data_sources_once() -> tuple[
@@ -411,18 +435,17 @@ async def _run_event_data_sources_once() -> tuple[
         "sources_failed": 0,
     }
 
-    for source in sources:
-        slug = str(source.slug or "").strip().lower()
+    for source_info in sources:
+        slug = source_info["slug"]
         health_key = _source_status_key(slug)
-        max_records = max(1, min(5000, int((source.config or {}).get("limit") or 500)))
+        max_records = max(1, min(5000, int(source_info["config"].get("limit") or 500)))
         run_start = datetime.now(timezone.utc).replace(tzinfo=None)
 
         run_result: dict[str, Any]
-        records: list[DataSourceRecord]
-
+        source_signals: list[dict[str, Any]] = []
         try:
             async with AsyncSessionLocal() as session:
-                row = await session.get(DataSource, source.id)
+                row = await session.get(DataSource, source_info["id"])
                 if row is None or not bool(row.enabled):
                     continue
                 run_result = await run_data_source(session, row, max_records=max_records, commit=True)
@@ -442,15 +465,13 @@ async def _run_event_data_sources_once() -> tuple[
                     .scalars()
                     .all()
                 )
+                source_signals = [_record_to_signal(record) for record in records]
         except Exception as exc:
             run_result = {
                 "status": "error",
                 "error_message": str(exc),
                 "duration_ms": 0,
             }
-            records = []
-
-        source_signals = [_record_to_signal(record) for record in records]
         all_signals.extend(source_signals)
 
         run_ok = str(run_result.get("status") or "").strip().lower() == "success"
@@ -609,9 +630,6 @@ async def _run_loop() -> None:
             stats = {
                 "total_signals": len(signals),
                 "persisted_signals": persisted_signals,
-                "persisted_scores": 0,
-                "persisted_tensions": 0,
-                "persisted_conflicts": 0,
                 "emitted_trade_signals": int(emitted_signals),
                 "cycle_duration_seconds": round(cycle_duration, 2),
                 "critical_signals": int(summary.get("critical", 0) or 0),
@@ -621,13 +639,6 @@ async def _run_loop() -> None:
                 "source_status": source_status,
                 "source_errors": source_errors,
                 "source_runs": run_metrics,
-                "country_reference": {},
-                "ucdp_conflicts": {},
-                "mid_reference": {},
-                "trade_dependencies": {},
-                "chokepoint_reference": {},
-                "gdelt_news": {},
-                "runtime_state": {},
             }
 
             async with AsyncSessionLocal() as session:
