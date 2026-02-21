@@ -11,7 +11,7 @@ Implements the ReAct (Reason + Act) pattern where the LLM:
 Inspired by virattt/dexter's agent loop architecture with typed events
 and scratchpad persistence.
 
-All steps are persisted to a SQLite scratchpad for full audit trail.
+All steps are persisted to a database scratchpad for full audit trail.
 The agent yields typed ``AgentEvent`` objects so callers can display
 real-time progress (e.g. streaming to a WebSocket or SSE endpoint).
 """
@@ -131,7 +131,7 @@ class Agent:
     """Autonomous research agent using the ReAct pattern.
 
     Yields typed :class:`AgentEvent` objects for real-time progress
-    tracking.  All steps are persisted to the SQLite scratchpad for
+    tracking.  All steps are persisted to the database scratchpad for
     audit trail.
 
     Usage::

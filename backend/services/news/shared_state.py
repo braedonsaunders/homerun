@@ -278,6 +278,24 @@ async def count_pending_news_intents(session: AsyncSession) -> int:
     return len(rows)
 
 
+async def list_news_findings(
+    session: AsyncSession,
+    *,
+    limit: int = 200,
+    actionable_only: bool = False,
+    max_age_minutes: Optional[int] = None,
+) -> list[NewsWorkflowFinding]:
+    query = select(NewsWorkflowFinding).order_by(NewsWorkflowFinding.created_at.desc())
+    if actionable_only:
+        query = query.where(NewsWorkflowFinding.actionable.is_(True))
+    if max_age_minutes is not None and int(max_age_minutes) > 0:
+        cutoff = utcnow() - timedelta(minutes=int(max_age_minutes))
+        query = query.where(NewsWorkflowFinding.created_at >= cutoff)
+    query = query.limit(max(1, int(limit)))
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
 async def list_news_intents(
     session: AsyncSession,
     status_filter: Optional[str] = None,
@@ -319,7 +337,7 @@ async def mark_news_intent(
     if row is None:
         return False
     row.status = status
-    row.consumed_at = datetime.now(timezone.utc)
+    row.consumed_at = utcnow()
     if row.finding_id and status != "pending":
         finding = await session.execute(select(NewsWorkflowFinding).where(NewsWorkflowFinding.id == row.finding_id))
         finding_row = finding.scalar_one_or_none()
@@ -333,14 +351,15 @@ async def expire_stale_news_intents(
     session: AsyncSession,
     max_age_minutes: int,
 ) -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    now = utcnow()
+    cutoff = now - timedelta(minutes=max_age_minutes)
     result = await session.execute(
         update(NewsTradeIntent)
         .where(NewsTradeIntent.status == "pending")
         .where(NewsTradeIntent.created_at < cutoff)
         .values(
             status="expired",
-            consumed_at=datetime.now(timezone.utc),
+            consumed_at=now,
         )
     )
     await _commit_with_retry(session)

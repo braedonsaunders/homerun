@@ -26,7 +26,7 @@ from sqlalchemy import (
     delete,
     func,
 )
-from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models.database import (
     Base,
@@ -194,7 +194,7 @@ class MarketCacheService:
                 }
                 extra = {k: v for k, v in data.items() if k not in known_keys}
 
-                stmt = sqlite_upsert(CachedMarket).values(
+                stmt = pg_insert(CachedMarket).values(
                     condition_id=condition_id,
                     question=data.get("question"),
                     slug=data.get("slug"),
@@ -248,7 +248,7 @@ class MarketCacheService:
 
                 for condition_id, data in markets.items():
                     extra = {k: v for k, v in data.items() if k not in known_keys}
-                    stmt = sqlite_upsert(CachedMarket).values(
+                    stmt = pg_insert(CachedMarket).values(
                         condition_id=condition_id,
                         question=data.get("question"),
                         slug=data.get("slug"),
@@ -296,7 +296,7 @@ class MarketCacheService:
         try:
             async with AsyncSessionLocal() as session:
                 now = utcnow()
-                stmt = sqlite_upsert(CachedUsername).values(
+                stmt = pg_insert(CachedUsername).values(
                     address=addr_lower,
                     username=username,
                     cached_at=now,
@@ -331,7 +331,7 @@ class MarketCacheService:
             async with AsyncSessionLocal() as session:
                 now = utcnow()
                 for addr, uname in normalised.items():
-                    stmt = sqlite_upsert(CachedUsername).values(
+                    stmt = pg_insert(CachedUsername).values(
                         address=addr,
                         username=uname,
                         cached_at=now,

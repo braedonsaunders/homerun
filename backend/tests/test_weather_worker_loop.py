@@ -44,6 +44,10 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
     run_cycle_mock = AsyncMock(return_value={"markets": 0, "opportunities": 0, "intents": 0})
     monkeypatch.setattr(weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock)
     monkeypatch.setattr(weather_worker.shared_state, "clear_weather_scan_request", AsyncMock())
+    monkeypatch.setattr(weather_worker.shared_state, "list_weather_intents", AsyncMock(return_value=[]))
+    monkeypatch.setattr(weather_worker.shared_state, "get_enriched_weather_intents", lambda: [])
+    monkeypatch.setattr(weather_worker.event_dispatcher, "dispatch", AsyncMock(return_value=[]))
+    monkeypatch.setattr(weather_worker, "bridge_opportunities_to_signals", AsyncMock(return_value=0))
     monkeypatch.setattr(
         weather_worker.asyncio,
         "sleep",
@@ -80,6 +84,10 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
     monkeypatch.setattr(weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock)
     clear_mock = AsyncMock()
     monkeypatch.setattr(weather_worker.shared_state, "clear_weather_scan_request", clear_mock)
+    monkeypatch.setattr(weather_worker.shared_state, "list_weather_intents", AsyncMock(return_value=[]))
+    monkeypatch.setattr(weather_worker.shared_state, "get_enriched_weather_intents", lambda: [])
+    monkeypatch.setattr(weather_worker.event_dispatcher, "dispatch", AsyncMock(return_value=[]))
+    monkeypatch.setattr(weather_worker, "bridge_opportunities_to_signals", AsyncMock(return_value=0))
     monkeypatch.setattr(
         weather_worker.asyncio,
         "sleep",

@@ -120,6 +120,7 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
     monkeypatch.setattr(news_worker.shared_state, "expire_stale_news_intents", AsyncMock(return_value=0))
     monkeypatch.setattr(news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0))
     monkeypatch.setattr(news_worker.shared_state, "list_news_intents", AsyncMock(return_value=[]))
+    monkeypatch.setattr(news_worker.shared_state, "list_news_findings", AsyncMock(return_value=[]))
     monkeypatch.setattr(news_worker, "emit_news_intent_signals", AsyncMock(return_value=0))
     run_cycle_mock = AsyncMock(return_value={"status": "completed", "findings": 1, "intents": 1, "stats": {}})
     monkeypatch.setattr(news_worker.workflow_orchestrator, "run_cycle", run_cycle_mock)

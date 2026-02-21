@@ -18,19 +18,7 @@ from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
 
 from sqlalchemy import select, func, or_
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
-SQLITE_VAR_LIMIT = 900
-
-
-def _chunked_in(column, values: list, chunk_size: int = SQLITE_VAR_LIMIT):
-    """Build an OR of IN clauses to stay under SQLite's variable limit."""
-    if len(values) <= chunk_size:
-        return column.in_(values)
-    clauses = []
-    for i in range(0, len(values), chunk_size):
-        clauses.append(column.in_(values[i : i + chunk_size]))
-    return or_(*clauses)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models.database import (
     AsyncSessionLocal,
@@ -48,6 +36,26 @@ from utils.converters import clamp
 from utils.logger import get_logger
 
 logger = get_logger("smart_wallet_pool")
+
+IN_CLAUSE_CHUNK_SIZE = 5000
+ACTIVITY_INSERT_CHUNK_SIZE = 2000
+
+
+def _chunked_in(column, values: list, chunk_size: int = IN_CLAUSE_CHUNK_SIZE):
+    """Build an OR of IN clauses to stay under parameter-count limits."""
+    if len(values) <= chunk_size:
+        return column.in_(values)
+    clauses = []
+    for i in range(0, len(values), chunk_size):
+        clauses.append(column.in_(values[i : i + chunk_size]))
+    return or_(*clauses)
+
+
+def _iter_chunks(values: list[Any], chunk_size: int = IN_CLAUSE_CHUNK_SIZE):
+    for i in range(0, len(values), chunk_size):
+        chunk = values[i : i + chunk_size]
+        if chunk:
+            yield chunk
 
 # All pool eligibility defaults now live in StrategySDK.POOL_ELIGIBILITY_DEFAULTS.
 _SDK = StrategySDK.POOL_ELIGIBILITY_DEFAULTS
@@ -735,20 +743,20 @@ class SmartWalletPoolService:
                 await self._refresh_signal_market_metadata(session=session, signals=signals)
 
             addresses = {addr.lower() for s in signals for addr in (s.wallets or []) if isinstance(addr, str)}
-            profile_rows = await session.execute(
-                select(DiscoveredWallet).where(_chunked_in(DiscoveredWallet.address, list(addresses)))
-            )
-            profiles = {
-                w.address: {
-                    "address": w.address,
-                    "username": w.username,
-                    "rank_score": w.rank_score or 0.0,
-                    "composite_score": w.composite_score or 0.0,
-                    "quality_score": w.quality_score or 0.0,
-                    "activity_score": w.activity_score or 0.0,
-                }
-                for w in profile_rows.scalars().all()
-            }
+            profiles: dict[str, dict[str, Any]] = {}
+            for address_chunk in _iter_chunks(list(addresses)):
+                profile_rows = await session.execute(
+                    select(DiscoveredWallet).where(DiscoveredWallet.address.in_(address_chunk))
+                )
+                for w in profile_rows.scalars().all():
+                    profiles[w.address] = {
+                        "address": w.address,
+                        "username": w.username,
+                        "rank_score": w.rank_score or 0.0,
+                        "composite_score": w.composite_score or 0.0,
+                        "quality_score": w.quality_score or 0.0,
+                        "activity_score": w.activity_score or 0.0,
+                    }
 
             question_market_ids: dict[str, set[str]] = {}
             for s in signals:
@@ -1328,10 +1336,13 @@ class SmartWalletPoolService:
 
         addresses = list(candidates.keys())
         async with AsyncSessionLocal() as session:
-            existing_result = await session.execute(
-                select(DiscoveredWallet).where(_chunked_in(DiscoveredWallet.address, addresses))
-            )
-            existing = {w.address: w for w in existing_result.scalars().all()}
+            existing: dict[str, DiscoveredWallet] = {}
+            for address_chunk in _iter_chunks(addresses):
+                existing_result = await session.execute(
+                    select(DiscoveredWallet).where(DiscoveredWallet.address.in_(address_chunk))
+                )
+                for wallet in existing_result.scalars().all():
+                    existing[wallet.address] = wallet
 
             for address, flags in candidates.items():
                 wallet = existing.get(address)
@@ -1395,13 +1406,20 @@ class SmartWalletPoolService:
                 }
                 for event in inserts
             ]
-            stmt = sqlite_insert(WalletActivityRollup).values(rows).prefix_with("OR IGNORE")
-            result = await session.execute(stmt)
+            inserted_total = 0
+            unknown_rowcount = False
+            for row_chunk in _iter_chunks(rows, chunk_size=ACTIVITY_INSERT_CHUNK_SIZE):
+                stmt = pg_insert(WalletActivityRollup).values(row_chunk).on_conflict_do_nothing(index_elements=["id"])
+                result = await session.execute(stmt)
+                if result is None or result.rowcount is None or int(result.rowcount) < 0:
+                    unknown_rowcount = True
+                    continue
+                inserted_total += int(result.rowcount)
             await session.commit()
-            if result is None or result.rowcount is None:
+            if unknown_rowcount:
                 # Conservative fallback if driver does not report rowcount.
                 return len(inserts)
-            return int(max(result.rowcount, 0))
+            return inserted_total
 
     def _trim_activity_cache(self, now: datetime):
         if len(self._activity_cache) < 50_000:
@@ -2340,7 +2358,7 @@ class SmartWalletPoolService:
 
             wallet_ws_monitor.set_wallets_for_source("discovery_pool", pool_addresses)
             # Ensure the monitor is running even if copy trading is disabled.
-            asyncio.create_task(wallet_ws_monitor.start())
+            await wallet_ws_monitor.start()
         except Exception as e:
             logger.warning("Failed to sync discovery pool WS memberships", error=str(e))
 

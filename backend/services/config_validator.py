@@ -93,9 +93,6 @@ class ConfigValidator:
             self._check_required(result, "POLYMARKET_API_KEY", settings.POLYMARKET_API_KEY)
             self._check_required(result, "POLYMARKET_API_SECRET", settings.POLYMARKET_API_SECRET)
             self._check_required(result, "POLYMARKET_API_PASSPHRASE", settings.POLYMARKET_API_PASSPHRASE)
-        else:
-            if not settings.POLYMARKET_PRIVATE_KEY:
-                self._add_warning(result, "POLYMARKET_PRIVATE_KEY not set - live trading unavailable")
 
         # Telegram (optional but warn if partially configured)
         has_token = bool(settings.TELEGRAM_BOT_TOKEN)

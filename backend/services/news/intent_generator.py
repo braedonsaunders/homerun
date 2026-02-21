@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from services.news.edge_estimator import WorkflowFinding
+from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class IntentGenerator:
             List of dicts ready for DB insertion as NewsTradeIntent rows.
         """
         intents: list[dict] = []
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         market_metadata_by_id = market_metadata_by_id or {}
         required_articles = max(1, int(min_supporting_articles))
         required_sources = max(1, int(min_supporting_sources))

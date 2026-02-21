@@ -33,5 +33,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Explicit downgrade support omitted for SQLite safety.
+    # Explicit downgrade support omitted for migration safety.
     pass

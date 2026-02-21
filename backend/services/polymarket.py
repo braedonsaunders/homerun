@@ -3,6 +3,7 @@ import asyncio
 import random
 import json
 import re
+import time
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow, utcfromtimestamp
@@ -35,6 +36,7 @@ class PolymarketClient:
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._persistent_cache = None  # Lazy-loaded MarketCacheService
+        self._closed_positions_warning_cooldown_until: float = 0.0
 
     async def _get_persistent_cache(self):
         """Lazy-load the persistent market cache service."""
@@ -1980,11 +1982,20 @@ class PolymarketClient:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            _logger.warning(
-                "closed-positions fetch failed",
-                address=address[:10],
-                error=str(e),
-            )
+            now = time.monotonic()
+            if now >= self._closed_positions_warning_cooldown_until:
+                self._closed_positions_warning_cooldown_until = now + 60.0
+                _logger.warning(
+                    "closed-positions fetch failed",
+                    address=address[:10],
+                    error=str(e),
+                )
+            else:
+                _logger.debug(
+                    "closed-positions fetch failed (suppressed)",
+                    address=address[:10],
+                    error_type=type(e).__name__,
+                )
             return []
 
     async def get_closed_positions_paginated(self, address: str, max_positions: int = 200) -> list[dict]:

@@ -4,7 +4,7 @@ import asyncio
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import Any, Optional, TypedDict
-from datetime import datetime, timezone
+from datetime import datetime
 
 from models import (
     Opportunity,
@@ -20,20 +20,17 @@ from services.data_events import DataEvent, EventType
 
 from utils.converters import to_float, to_confidence
 from utils.signal_helpers import signal_payload
+from utils.utcnow import utcnow as _utcnow, as_utc
 
 
 def utcnow() -> datetime:
-    """Get current UTC time as timezone-aware datetime"""
-    return datetime.now(timezone.utc)
+    """Get current UTC time as timezone-aware datetime."""
+    return _utcnow()
 
 
 def make_aware(dt: Optional[datetime]) -> Optional[datetime]:
-    """Make a datetime timezone-aware (UTC) if it isn't already"""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+    """Normalize a datetime to timezone-aware UTC."""
+    return as_utc(dt)
 
 
 @dataclass

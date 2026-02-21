@@ -4,13 +4,14 @@ import json
 
 from models.database import AsyncSessionLocal, EventsSnapshot
 from sqlalchemy import select
-from services import shared_state, wallet_tracker
+from services import shared_state
 from services.news import shared_state as news_shared_state
 from services.trader_orchestrator_state import (
     list_serialized_execution_sessions,
     list_traders,
     read_orchestrator_snapshot,
 )
+from services.wallet_tracker import wallet_tracker
 from services.worker_state import list_worker_snapshots, read_worker_snapshot
 from services.weather import shared_state as weather_shared_state
 from utils.market_urls import serialize_opportunity_with_links
@@ -64,8 +65,7 @@ async def handle_websocket(websocket: WebSocket):
 
     # Send current state (from DB snapshot)
     async with AsyncSessionLocal() as session:
-        opportunities = await shared_state.get_opportunities_from_db(session, None)
-        status = await shared_state.get_scanner_status_from_db(session)
+        opportunities, status = await shared_state.read_scanner_snapshot(session)
         weather_opportunities = await weather_shared_state.get_weather_opportunities_from_db(session)
         weather_status = await weather_shared_state.get_weather_status_from_db(session)
         news_workflow_status = await news_shared_state.get_news_status_from_db(session)
@@ -142,7 +142,7 @@ async def handle_websocket(websocket: WebSocket):
                 async with AsyncSessionLocal() as session:
                     await shared_state.request_one_scan(session)
                 async with AsyncSessionLocal() as session:
-                    opportunities = await shared_state.get_opportunities_from_db(session, None)
+                    opportunities, _ = await shared_state.read_scanner_snapshot(session)
                 await manager.send_personal(
                     websocket,
                     {

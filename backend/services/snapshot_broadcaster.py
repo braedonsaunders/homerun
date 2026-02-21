@@ -329,9 +329,7 @@ class SnapshotBroadcaster:
         while self._running:
             try:
                 async with AsyncSessionLocal() as session:
-                    opportunities = await shared_state.get_opportunities_from_db(session, None)
-                    status = await shared_state.get_scanner_status_from_db(session)
-                    status["opportunities_count"] = len(opportunities)
+                    opportunities, status = await shared_state.read_scanner_snapshot(session)
                     weather_opps = await weather_shared_state.get_weather_opportunities_from_db(session)
                     weather_status = await weather_shared_state.get_weather_status_from_db(session)
                     weather_status["opportunities_count"] = len(weather_opps)

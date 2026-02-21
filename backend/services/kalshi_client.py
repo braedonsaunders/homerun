@@ -55,6 +55,10 @@ class KalshiClient:
         self._write_capacity: float = 10.0
         self._write_last_refill: float = time.monotonic()
         self._write_lock: asyncio.Lock = asyncio.Lock()
+        self._read_cooldown_until: float = 0.0
+        self._write_cooldown_until: float = 0.0
+        self._read_429_warning_cooldown_until: float = 0.0
+        self._write_429_warning_cooldown_until: float = 0.0
 
     # ------------------------------------------------------------------ #
     #  HTTP helpers
@@ -112,6 +116,11 @@ class KalshiClient:
             last = getattr(self, f"_{attr}_last_refill")
 
             now = time.monotonic()
+            cooldown_until = getattr(self, f"_{attr}_cooldown_until")
+            if now < cooldown_until:
+                wait = cooldown_until - now
+                await asyncio.sleep(wait)
+                now = time.monotonic()
             elapsed = now - last
             bucket = min(capacity, bucket + elapsed * rate)
             setattr(self, f"_{attr}_last_refill", now)
@@ -165,12 +174,23 @@ class KalshiClient:
                         backoff = max(backoff, float(retry_after))
                     except ValueError:
                         pass
-                logger.warning(
-                    "Kalshi 429 rate limited, retrying",
-                    path=path,
-                    attempt=attempt + 1,
-                    backoff_seconds=round(backoff, 2),
-                )
+                cooldown_until = time.monotonic() + backoff
+                self._read_cooldown_until = max(self._read_cooldown_until, cooldown_until)
+                if time.monotonic() >= self._read_429_warning_cooldown_until:
+                    logger.warning(
+                        "Kalshi 429 rate limited, retrying",
+                        path=path,
+                        attempt=attempt + 1,
+                        backoff_seconds=round(backoff, 2),
+                    )
+                    self._read_429_warning_cooldown_until = time.monotonic() + 30.0
+                else:
+                    logger.debug(
+                        "Kalshi 429 rate limited, retrying (suppressed)",
+                        path=path,
+                        attempt=attempt + 1,
+                        backoff_seconds=round(backoff, 2),
+                    )
                 await asyncio.sleep(backoff)
                 continue
             response.raise_for_status()
@@ -199,12 +219,23 @@ class KalshiClient:
                         backoff = max(backoff, float(retry_after))
                     except ValueError:
                         pass
-                logger.warning(
-                    "Kalshi 429 on POST, retrying",
-                    path=path,
-                    attempt=attempt + 1,
-                    backoff_seconds=round(backoff, 2),
-                )
+                cooldown_until = time.monotonic() + backoff
+                self._write_cooldown_until = max(self._write_cooldown_until, cooldown_until)
+                if time.monotonic() >= self._write_429_warning_cooldown_until:
+                    logger.warning(
+                        "Kalshi 429 on POST, retrying",
+                        path=path,
+                        attempt=attempt + 1,
+                        backoff_seconds=round(backoff, 2),
+                    )
+                    self._write_429_warning_cooldown_until = time.monotonic() + 30.0
+                else:
+                    logger.debug(
+                        "Kalshi 429 on POST, retrying (suppressed)",
+                        path=path,
+                        attempt=attempt + 1,
+                        backoff_seconds=round(backoff, 2),
+                    )
                 await asyncio.sleep(backoff)
                 continue
             response.raise_for_status()

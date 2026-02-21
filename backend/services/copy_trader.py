@@ -1716,7 +1716,7 @@ class CopyTradingService:
             # Sync all wallets (individual + pool + tracked_group)
             await self._sync_ws_wallets()
             wallet_ws_monitor.add_callback(self._on_realtime_trade)
-            asyncio.create_task(wallet_ws_monitor.start())
+            await wallet_ws_monitor.start()
             logger.info("WebSocket wallet monitor started for copy trading")
         except Exception as e:
             logger.warning(f"WebSocket monitor unavailable, using polling only: {e}")

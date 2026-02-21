@@ -142,29 +142,32 @@ async def _run_loop() -> None:
                     pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
                 except Exception:
                     pending_rows = []
+                enriched_intents = shared_state.get_enriched_weather_intents()
 
-            # Serialize intents to dicts for strategy consumption
-            intent_dicts = []
-            for row in pending_rows:
-                intent_dict = {
-                    "id": row.id,
-                    "market_id": row.market_id,
-                    "market_question": row.market_question,
-                    "direction": row.direction,
-                    "entry_price": row.entry_price,
-                    "take_profit_price": row.take_profit_price,
-                    "stop_loss_pct": row.stop_loss_pct,
-                    "model_probability": row.model_probability,
-                    "edge_percent": row.edge_percent,
-                    "confidence": row.confidence,
-                    "model_agreement": row.model_agreement,
-                    "suggested_size_usd": row.suggested_size_usd,
-                    "status": row.status,
-                    "created_at": row.created_at,
-                }
-                metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-                intent_dict.update(metadata)
-                intent_dicts.append(intent_dict)
+            intent_dicts: list[dict] = []
+            if enriched_intents:
+                intent_dicts = [dict(intent) for intent in enriched_intents if isinstance(intent, dict)]
+            else:
+                for row in pending_rows:
+                    intent_dict = {
+                        "id": row.id,
+                        "market_id": row.market_id,
+                        "market_question": row.market_question,
+                        "direction": row.direction,
+                        "entry_price": row.entry_price,
+                        "take_profit_price": row.take_profit_price,
+                        "stop_loss_pct": row.stop_loss_pct,
+                        "model_probability": row.model_probability,
+                        "edge_percent": row.edge_percent,
+                        "confidence": row.confidence,
+                        "model_agreement": row.model_agreement,
+                        "suggested_size_usd": row.suggested_size_usd,
+                        "status": row.status,
+                        "created_at": row.created_at,
+                    }
+                    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+                    intent_dict.update(metadata)
+                    intent_dicts.append(intent_dict)
 
             weather_event = DataEvent(
                 event_type="weather_update",
@@ -178,6 +181,7 @@ async def _run_loop() -> None:
                     session,
                     opportunities,
                     source="weather",
+                    sweep_missing=True,
                 )
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:

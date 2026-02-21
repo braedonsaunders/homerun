@@ -96,6 +96,7 @@ class RedisPriceCache:
                 "mid": float(mid),
                 "bid": float(bid) if bid is not None else float(mid),
                 "ask": float(ask) if ask is not None else float(mid),
+                "ts": float(ts),
             }
 
         return out

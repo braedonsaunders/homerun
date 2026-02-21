@@ -8,54 +8,18 @@ if str(BACKEND_ROOT) not in sys.path:
 import config
 
 
-def test_detect_project_root_repo_layout(tmp_path):
-    project_root = tmp_path / "project"
-    backend_dir = project_root / "backend"
-    backend_dir.mkdir(parents=True, exist_ok=True)
-    (backend_dir / "config.py").write_text("# stub\n", encoding="utf-8")
-
-    resolved = config._detect_project_root(backend_dir.resolve())
-    assert resolved == project_root.resolve()
+def test_database_url_default_is_postgres_asyncpg():
+    default_database_url = config.Settings.model_fields["DATABASE_URL"].default
+    assert str(default_database_url).startswith("postgresql+asyncpg://")
 
 
-def test_normalize_database_url_bootstraps_legacy_backend_db(tmp_path, monkeypatch):
-    project_root = tmp_path / "project"
-    backend_dir = project_root / "backend"
-    data_dir = project_root / "data"
-    backend_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    legacy_db = backend_dir / "homerun.db"
-    legacy_bytes = b"legacy-db-bytes"
-    legacy_db.write_bytes(legacy_bytes)
-
-    monkeypatch.setattr(config, "_PROJECT_ROOT", project_root.resolve())
-    monkeypatch.setattr(config, "_LEGACY_DB_PATH", legacy_db.resolve())
-
-    normalized = config.Settings._normalize_database_url("sqlite+aiosqlite:///./data/homerun.db")
-    expected_path = (project_root / "data" / "homerun.db").resolve()
-
-    assert normalized == f"sqlite+aiosqlite:///{expected_path}"
-    assert expected_path.read_bytes() == legacy_bytes
+def test_normalize_database_url_trims_quotes_whitespace_and_trailing_slash():
+    normalized = config.Settings._normalize_database_url(
+        "  'postgresql+asyncpg://homerun:homerun@127.0.0.1:5432/homerun/'  "
+    )
+    assert normalized == "postgresql+asyncpg://homerun:homerun@127.0.0.1:5432/homerun"
 
 
-def test_normalize_database_url_does_not_overwrite_existing_target(tmp_path, monkeypatch):
-    project_root = tmp_path / "project"
-    backend_dir = project_root / "backend"
-    data_dir = project_root / "data"
-    backend_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    legacy_db = backend_dir / "homerun.db"
-    legacy_db.write_bytes(b"legacy")
-
-    target_db = data_dir / "homerun.db"
-    target_db.write_bytes(b"current")
-
-    monkeypatch.setattr(config, "_PROJECT_ROOT", project_root.resolve())
-    monkeypatch.setattr(config, "_LEGACY_DB_PATH", legacy_db.resolve())
-
-    normalized = config.Settings._normalize_database_url("sqlite+aiosqlite:///./data/homerun.db")
-
-    assert normalized == f"sqlite+aiosqlite:///{target_db.resolve()}"
-    assert target_db.read_bytes() == b"current"
+def test_normalize_database_url_preserves_none_and_empty():
+    assert config.Settings._normalize_database_url(None) is None
+    assert config.Settings._normalize_database_url("   ") == ""

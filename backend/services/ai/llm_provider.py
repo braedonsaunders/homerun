@@ -54,7 +54,7 @@ from utils.secrets import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
-# Serialize LLM usage log writes to avoid SQLite "database is locked" under concurrent load
+# Serialize LLM usage log writes to avoid concurrent write conflicts under load
 _log_usage_lock = asyncio.Lock()
 
 
@@ -1769,6 +1769,7 @@ class LLMManager:
         self._spend_limit = 50.0
         self._default_model: str = "gpt-4o-mini"
         self._preferred_provider: Optional[LLMProvider] = None
+        self._provider_fallback_warnings_emitted: set[tuple[str, str, str]] = set()
 
     @staticmethod
     def _parse_provider_name(provider_name: Optional[str]) -> Optional[LLMProvider]:
@@ -1894,14 +1895,23 @@ class LLMManager:
                 if default_provider not in self._providers and self._providers:
                     for p, m in _provider_default_models.items():
                         if p in self._providers:
-                            logger.warning(
-                                "Selected model '%s' requires provider %s which is not configured. "
-                                "Falling back to '%s' (%s).",
-                                configured_model or self._default_model,
-                                default_provider.value,
-                                m,
-                                p.value,
-                            )
+                            selected_model = str(configured_model or self._default_model)
+                            fallback_key = (selected_model, default_provider.value, p.value)
+                            if fallback_key not in self._provider_fallback_warnings_emitted:
+                                uses_openai_default = (
+                                    configured_model == _provider_default_models[LLMProvider.OPENAI]
+                                    and default_provider == LLMProvider.OPENAI
+                                )
+                                log_fn = logger.warning if (configured_model and not uses_openai_default) else logger.info
+                                log_fn(
+                                    "Selected model '%s' requires provider %s which is not configured. "
+                                    "Falling back to '%s' (%s).",
+                                    selected_model,
+                                    default_provider.value,
+                                    m,
+                                    p.value,
+                                )
+                                self._provider_fallback_warnings_emitted.add(fallback_key)
                             self._default_model = m
                             break
 

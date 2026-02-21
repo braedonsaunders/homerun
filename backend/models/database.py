@@ -3,37 +3,84 @@ from sqlalchemy import (
     String,
     Integer,
     Boolean,
-    DateTime,
     Text,
     JSON,
     ForeignKey,
     Enum as SQLEnum,
     Index,
     UniqueConstraint,
-    event,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.exc import OperationalError
-from contextlib import contextmanager
-from datetime import datetime
+from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
+from datetime import datetime, timezone
 from pathlib import Path
 import enum
-import logging
-import os
 import asyncio
 
 from config import settings
 from models.types import PreciseFloat as Float
 
-logger = logging.getLogger(__name__)
-
 Base = declarative_base()
+
+
+class UTCDateTime(TypeDecorator):
+    impl = SADateTime
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        return dialect.type_descriptor(SADateTime(timezone=False))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if not isinstance(value, datetime):
+            raise TypeError(f"UTCDateTime only accepts datetime values, got {type(value)!r}")
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
+DateTime = UTCDateTime
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class RetryableAsyncSession(AsyncSession):
     _COMMIT_RETRY_ATTEMPTS = 4
     _COMMIT_BASE_DELAY_SECONDS = 0.05
+    _COMMIT_RETRYABLE_MESSAGES = (
+        "database is locked",
+        "database table is locked",
+        "deadlock detected",
+        "serialization failure",
+        "could not serialize access",
+        "lock not available",
+    )
+
+    async def _await_cancellation_safe(self, operation) -> None:
+        task = asyncio.create_task(operation)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    async def rollback(self) -> None:
+        await self._await_cancellation_safe(super().rollback())
+
+    async def close(self) -> None:
+        await self._await_cancellation_safe(super().close())
 
     async def commit(self) -> None:
         for attempt in range(1, self._COMMIT_RETRY_ATTEMPTS + 1):
@@ -41,8 +88,9 @@ class RetryableAsyncSession(AsyncSession):
                 await super().commit()
                 return
             except OperationalError as exc:
-                message = str(exc).lower()
-                if "locked" not in message or attempt >= self._COMMIT_RETRY_ATTEMPTS:
+                message = str(getattr(exc, "orig", exc)).lower()
+                retryable = any(marker in message for marker in self._COMMIT_RETRYABLE_MESSAGES)
+                if not retryable or attempt >= self._COMMIT_RETRY_ATTEMPTS:
                     raise
                 await self.rollback()
                 delay = min(self._COMMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 0.4)
@@ -84,8 +132,8 @@ class SimulationAccount(Base):
     total_trades = Column(Integer, nullable=False, default=0)
     winning_trades = Column(Integer, nullable=False, default=0)
     losing_trades = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Settings
     max_position_size_pct = Column(Float, default=10.0)  # Max % of capital per position
@@ -124,7 +172,7 @@ class SimulationPosition(Base):
     stop_loss_price = Column(Float, nullable=True)
 
     # Timing
-    opened_at = Column(DateTime, default=datetime.utcnow)
+    opened_at = Column(DateTime, default=_utcnow)
     resolution_date = Column(DateTime, nullable=True)
 
     # Status
@@ -161,7 +209,7 @@ class SimulationTrade(Base):
     fees_paid = Column(Float, default=0.0)
 
     # Timing
-    executed_at = Column(DateTime, default=datetime.utcnow)
+    executed_at = Column(DateTime, default=_utcnow)
     resolved_at = Column(DateTime, nullable=True)
 
     # Copy trading reference
@@ -219,8 +267,8 @@ class CopyTradingConfig(Base):
     total_buys_copied = Column(Integer, default=0)
     total_sells_copied = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (Index("idx_copy_wallet", "source_wallet"),)
 
@@ -255,7 +303,7 @@ class CopiedTrade(Base):
 
     # Timing
     source_timestamp = Column(DateTime, nullable=True)
-    copied_at = Column(DateTime, default=datetime.utcnow)
+    copied_at = Column(DateTime, default=_utcnow)
     executed_at = Column(DateTime, nullable=True)
 
     # PnL tracking
@@ -280,7 +328,7 @@ class TrackedWallet(Base):
 
     address = Column(String, primary_key=True)
     label = Column(String)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=_utcnow)
 
     # Stats
     total_trades = Column(Integer, default=0)
@@ -352,7 +400,7 @@ class OpportunityHistory(Base):
     positions_data = Column(JSON)
 
     # Timing
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=_utcnow)
     expired_at = Column(DateTime, nullable=True)
     resolution_date = Column(DateTime, nullable=True)
 
@@ -409,7 +457,7 @@ class NewsArticleCache(Base):
     category = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
     published = Column(DateTime, nullable=True)
-    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    fetched_at = Column(DateTime, default=_utcnow, nullable=False)
     embedding = Column(JSON, nullable=True)
 
     __table_args__ = (
@@ -434,8 +482,8 @@ class NewsMarketWatcher(Base):
     slug = Column(String, nullable=True)
     keywords = Column(JSON, nullable=True)
     embedding = Column(JSON, nullable=True)
-    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_news_watcher_updated", "updated_at"),
@@ -474,7 +522,7 @@ class NewsWorkflowFinding(Base):
     actionable = Column(Boolean, default=False, nullable=False)
     consumed_by_orchestrator = Column(Boolean, default=False, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_news_finding_created", "created_at"),
@@ -502,7 +550,7 @@ class NewsTradeIntent(Base):
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
@@ -536,7 +584,7 @@ class DetectedAnomaly(Base):
     score = Column(Float)
 
     # Timing
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=_utcnow)
 
     # Resolution
     is_resolved = Column(Boolean, default=False)
@@ -563,7 +611,7 @@ class MLModelWeights(Base):
     feature_names = Column(JSON, nullable=False)  # Ordered list of feature names
     metrics = Column(JSON, nullable=True)  # accuracy, precision, recall, f1
     training_samples = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     is_active = Column(Boolean, default=True)
 
 
@@ -580,7 +628,7 @@ class MLPredictionLog(Base):
     recommendation = Column(String, nullable=False)  # execute, skip, review
     confidence = Column(Float, nullable=False)
     model_version = Column(Integer, nullable=True)
-    predicted_at = Column(DateTime, default=datetime.utcnow)
+    predicted_at = Column(DateTime, default=_utcnow)
 
     # Outcome tracking (filled in later)
     actual_outcome = Column(Boolean, nullable=True)
@@ -605,7 +653,7 @@ class ParameterSet(Base):
     parameters = Column(JSON, nullable=False)
     backtest_results = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class ValidationJob(Base):
@@ -621,7 +669,7 @@ class ValidationJob(Base):
     error = Column(Text, nullable=True)
     progress = Column(Float, default=0.0)
     message = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
 
@@ -648,7 +696,7 @@ class StrategyValidationProfile(Base):
     manual_override_note = Column(String, nullable=True)
     demoted_at = Column(DateTime, nullable=True)
     restored_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_validation_profile_status", "status"),
@@ -667,7 +715,7 @@ class ScannerSettings(Base):
     id = Column(String, primary_key=True, default="default")
     is_enabled = Column(Boolean, default=True)
     scan_interval_seconds = Column(Integer, default=300)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # ==================== APP SETTINGS ====================
@@ -1005,8 +1053,8 @@ class AppSettings(Base):
     weather_workflow_temperature_unit = Column(String, default="F")
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # ==================== STRATEGY PLUGINS ====================
@@ -1021,7 +1069,7 @@ class StrategyTombstone(Base):
     __tablename__ = "strategy_tombstones"
 
     slug = Column(String, primary_key=True)  # Tombstoned system strategy slug
-    deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    deleted_at = Column(DateTime, default=_utcnow, nullable=False)
     reason = Column(String, nullable=True)
 
     __table_args__ = (Index("idx_strategy_tombstones_deleted_at", "deleted_at"),)
@@ -1053,8 +1101,8 @@ class Strategy(Base):
     aliases = Column(JSON, default=list)  # Alternative slug names
     version = Column(Integer, default=1)
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_strategy_slug", "slug"),
@@ -1072,7 +1120,7 @@ class StrategyRuntimeRevision(Base):
 
     scope = Column(String, primary_key=True)  # "__all__" or source_key
     revision = Column(Integer, nullable=False, default=0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (Index("idx_strategy_runtime_revisions_updated", "updated_at"),)
 
@@ -1086,7 +1134,7 @@ class DataSourceTombstone(Base):
     __tablename__ = "data_source_tombstones"
 
     slug = Column(String, primary_key=True)
-    deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    deleted_at = Column(DateTime, default=_utcnow, nullable=False)
     reason = Column(String, nullable=True)
 
     __table_args__ = (Index("idx_data_source_tombstones_deleted_at", "deleted_at"),)
@@ -1114,8 +1162,8 @@ class DataSource(Base):
     config_schema = Column(JSON, default=dict)
     version = Column(Integer, default=1)
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_data_source_slug", "slug"),
@@ -1142,7 +1190,7 @@ class DataSourceRun(Base):
     skipped_count = Column(Integer, nullable=False, default=0)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     duration_ms = Column(Integer, nullable=True)
 
@@ -1173,7 +1221,7 @@ class DataSourceRecord(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     observed_at = Column(DateTime, nullable=True)
-    ingested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ingested_at = Column(DateTime, nullable=False, default=_utcnow)
     payload_json = Column(JSON, nullable=True)
     transformed_json = Column(JSON, nullable=True)
     tags_json = Column(JSON, nullable=True)
@@ -1206,7 +1254,7 @@ class LLMModelCache(Base):
     provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model_id = Column(String, nullable=False)  # The model identifier used in API calls
     display_name = Column(String, nullable=True)  # Human-readable name
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         Index("idx_llm_model_provider", "provider"),
@@ -1250,7 +1298,7 @@ class ResearchSession(Base):
     model_used = Column(String, nullable=True)
 
     # Timing
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
@@ -1288,7 +1336,7 @@ class ScratchpadEntry(Base):
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     session = relationship("ResearchSession", back_populates="entries")
 
@@ -1308,8 +1356,8 @@ class AIChatSession(Base):
     context_id = Column(String, nullable=True)
     title = Column(String, nullable=True)
     archived = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_ai_chat_context", "context_type", "context_id"),
@@ -1334,7 +1382,7 @@ class AIChatMessage(Base):
     model_used = Column(String, nullable=True)
     input_tokens = Column(Integer, default=0, nullable=False)
     output_tokens = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_ai_chat_msg_session", "session_id"),
@@ -1377,7 +1425,7 @@ class ResolutionAnalysis(Base):
     # Metadata
     session_id = Column(String, ForeignKey("research_sessions.id"), nullable=True)
     model_used = Column(String, nullable=True)
-    analyzed_at = Column(DateTime, default=datetime.utcnow)
+    analyzed_at = Column(DateTime, default=_utcnow)
     expires_at = Column(DateTime, nullable=True)  # When to re-analyze
 
     __table_args__ = (
@@ -1420,7 +1468,7 @@ class OpportunityJudgment(Base):
     # Metadata
     session_id = Column(String, ForeignKey("research_sessions.id"), nullable=True)
     model_used = Column(String, nullable=True)
-    judged_at = Column(DateTime, default=datetime.utcnow)
+    judged_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         Index("idx_judgment_opp", "opportunity_id"),
@@ -1451,7 +1499,7 @@ class SkillExecution(Base):
     error = Column(Text, nullable=True)
 
     # Timing
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=_utcnow)
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
@@ -1485,7 +1533,7 @@ class LLMUsageLog(Base):
     session_id = Column(String, nullable=True)
 
     # Timing
-    requested_at = Column(DateTime, default=datetime.utcnow)
+    requested_at = Column(DateTime, default=_utcnow)
     latency_ms = Column(Integer, nullable=True)
 
     # Error tracking
@@ -1514,7 +1562,7 @@ class DiscoveredWallet(Base):
     username = Column(String, nullable=True)  # Polymarket username if resolved
 
     # Discovery metadata
-    discovered_at = Column(DateTime, default=datetime.utcnow)
+    discovered_at = Column(DateTime, default=_utcnow)
     last_analyzed_at = Column(DateTime, nullable=True)
     discovery_source = Column(String, default="scan")  # scan, manual, referral
 
@@ -1583,7 +1631,7 @@ class DiscoveredWallet(Base):
     pool_membership_reason = Column(String, nullable=True)
     source_flags = Column(JSON, default=dict)  # {"leaderboard": true, ...}
 
-    # Tags (many-to-many via JSON for simplicity in SQLite)
+    # Tags (many-to-many via JSON for simplicity)
     tags = Column(JSON, default=list)  # ["smart_predictor", "whale", "consistent", ...]
 
     # Entity clustering
@@ -1624,7 +1672,7 @@ class WalletTag(Base):
     category = Column(String, default="behavioral")  # behavioral, performance, risk, strategy
     color = Column(String, default="#6B7280")  # Hex color for UI
     criteria = Column(JSON, nullable=True)  # Auto-assignment criteria
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         Index("idx_tag_name", "name"),
@@ -1651,8 +1699,8 @@ class WalletCluster(Base):
     detection_method = Column(String, nullable=True)  # funding_source, timing_correlation, pattern_match
     evidence = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (Index("idx_cluster_pnl", "combined_pnl"),)
 
@@ -1670,8 +1718,8 @@ class TraderGroup(Base):
     criteria = Column(JSON, default=dict)
     auto_track_members = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_trader_group_active", "is_active"),
@@ -1690,7 +1738,7 @@ class TraderGroupMember(Base):
     source = Column(String, default="manual")  # manual, suggested, imported
     confidence = Column(Float, nullable=True)
     notes = Column(Text, nullable=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("group_id", "wallet_address", name="uq_group_wallet"),
@@ -1733,9 +1781,9 @@ class MarketConfluenceSignal(Base):
 
     # Status
     is_active = Column(Boolean, default=True)
-    first_seen_at = Column(DateTime, default=datetime.utcnow)
-    last_seen_at = Column(DateTime, default=datetime.utcnow)
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    first_seen_at = Column(DateTime, default=_utcnow)
+    last_seen_at = Column(DateTime, default=_utcnow)
+    detected_at = Column(DateTime, default=_utcnow)
     expired_at = Column(DateTime, nullable=True)
     cooldown_until = Column(DateTime, nullable=True)
 
@@ -1765,7 +1813,7 @@ class WalletActivityRollup(Base):
     source = Column(String, default="unknown")  # ws, activity_api, trades_api, holders_api
     cluster_id = Column(String, nullable=True)
     traded_at = Column(DateTime, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         Index("idx_war_wallet_time", "wallet_address", "traded_at"),
@@ -1798,8 +1846,8 @@ class CrossPlatformEntity(Base):
 
     confidence = Column(Float, default=0.0)  # Confidence that these are the same entity
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_cross_platform_poly", "polymarket_address"),
@@ -1821,7 +1869,7 @@ class ScannerRun(Base):
     success = Column(Boolean, nullable=False, default=True)
     error = Column(Text, nullable=True)
     opportunity_count = Column(Integer, nullable=False, default=0)
-    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, default=_utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=False)
 
     __table_args__ = (
@@ -1838,7 +1886,7 @@ class OpportunityState(Base):
 
     stable_id = Column(String, primary_key=True)
     opportunity_json = Column(JSON, nullable=False)
-    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    first_seen_at = Column(DateTime, default=_utcnow, nullable=False)
     last_seen_at = Column(DateTime, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
     last_run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=True)
@@ -1860,7 +1908,7 @@ class OpportunityEvent(Base):
     run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=False)
     event_type = Column(String, nullable=False)  # detected | updated | expired | reactivated
     opportunity_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_opportunity_events_created", "created_at"),
@@ -1880,7 +1928,7 @@ class ScannerControl(Base):
     is_paused = Column(Boolean, default=False)
     scan_interval_seconds = Column(Integer, default=60)
     requested_scan_at = Column(DateTime, nullable=True)  # set by API to trigger one scan
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class ScannerSnapshot(Base):
@@ -1889,7 +1937,7 @@ class ScannerSnapshot(Base):
     __tablename__ = "scanner_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_scan_at = Column(DateTime, nullable=True)
     opportunities_json = Column(JSON, default=list)  # list of Opportunity dicts
     # Status fields (denormalized for API)
@@ -1915,7 +1963,7 @@ class MarketCatalog(Base):
     __tablename__ = "market_catalog"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     events_json = Column(JSON, default=list)  # list of Event.model_dump() dicts
     markets_json = Column(JSON, default=list)  # list of Market.model_dump() dicts
     event_count = Column(Integer, default=0)
@@ -1936,7 +1984,7 @@ class NewsWorkflowControl(Base):
     requested_scan_at = Column(DateTime, nullable=True)
     lease_owner = Column(String, nullable=True)
     lease_expires_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class NewsWorkflowSnapshot(Base):
@@ -1945,7 +1993,7 @@ class NewsWorkflowSnapshot(Base):
     __tablename__ = "news_workflow_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_scan_at = Column(DateTime, nullable=True)
     next_scan_at = Column(DateTime, nullable=True)
     running = Column(Boolean, default=True)
@@ -1969,7 +2017,7 @@ class DiscoveryControl(Base):
     run_interval_minutes = Column(Integer, default=60)
     priority_backlog_mode = Column(Boolean, default=True)
     requested_run_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class DiscoverySnapshot(Base):
@@ -1978,7 +2026,7 @@ class DiscoverySnapshot(Base):
     __tablename__ = "discovery_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_run_at = Column(DateTime, nullable=True)
     running = Column(Boolean, default=False)
     enabled = Column(Boolean, default=True)
@@ -1998,7 +2046,7 @@ class WeatherControl(Base):
     is_paused = Column(Boolean, default=False)
     scan_interval_seconds = Column(Integer, default=14400)
     requested_scan_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class WeatherSnapshot(Base):
@@ -2007,7 +2055,7 @@ class WeatherSnapshot(Base):
     __tablename__ = "weather_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_scan_at = Column(DateTime, nullable=True)
     opportunities_json = Column(JSON, default=list)
     running = Column(Boolean, default=True)
@@ -2036,7 +2084,7 @@ class WeatherTradeIntent(Base):
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
@@ -2076,8 +2124,8 @@ class TradeSignal(Base):
     quality_passed = Column(Boolean, nullable=True)  # True = passed quality filter at signal creation
     quality_rejection_reasons = Column(JSON, nullable=True)  # List of rejection reason strings
     dedupe_key = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_trade_signals_created", "created_at"),
@@ -2103,7 +2151,7 @@ class TradeSignalSnapshot(Base):
     latest_signal_at = Column(DateTime, nullable=True)
     oldest_pending_at = Column(DateTime, nullable=True)
     freshness_seconds = Column(Float, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     stats_json = Column(JSON, default=dict)
 
 
@@ -2145,7 +2193,7 @@ class TradeSignalEmission(Base):
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
     snapshot_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
 
     __table_args__ = (
         Index("idx_trade_signal_emissions_source_created", "source", "created_at"),
@@ -2171,8 +2219,8 @@ class ExecutionSimRun(Base):
     finished_at = Column(DateTime, nullable=True)
     summary_json = Column(JSON, default=dict)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_execution_sim_runs_status", "status"),
@@ -2206,7 +2254,7 @@ class ExecutionSimEvent(Base):
     realized_pnl_usd = Column(Float, nullable=True)
     unrealized_pnl_usd = Column(Float, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("run_id", "sequence", name="uq_execution_sim_events_run_sequence"),
@@ -2227,7 +2275,7 @@ class WorkerControl(Base):
     is_paused = Column(Boolean, default=False)
     interval_seconds = Column(Integer, default=60)
     requested_run_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class WorkerSnapshot(Base):
@@ -2236,7 +2284,7 @@ class WorkerSnapshot(Base):
     __tablename__ = "worker_snapshot"
 
     worker_name = Column(String, primary_key=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_run_at = Column(DateTime, nullable=True)
     running = Column(Boolean, default=False)
     enabled = Column(Boolean, default=True)
@@ -2263,7 +2311,7 @@ class TraderOrchestratorControl(Base):
     requested_run_at = Column(DateTime, nullable=True)
     kill_switch = Column(Boolean, default=False)
     settings_json = Column(JSON, default=dict)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class TraderOrchestratorSnapshot(Base):
@@ -2272,7 +2320,7 @@ class TraderOrchestratorSnapshot(Base):
     __tablename__ = "trader_orchestrator_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_run_at = Column(DateTime, nullable=True)
     running = Column(Boolean, default=False)
     enabled = Column(Boolean, default=False)
@@ -2310,8 +2358,8 @@ class Trader(Base):
     requested_run_at = Column(DateTime, nullable=True)
     last_run_at = Column(DateTime, nullable=True)
     next_run_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class TraderSignalCursor(Base):
@@ -2326,7 +2374,7 @@ class TraderSignalCursor(Base):
     )
     last_signal_created_at = Column(DateTime, nullable=True)
     last_signal_id = Column(String, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class TraderDecision(Base):
@@ -2357,7 +2405,7 @@ class TraderDecision(Base):
     checks_summary_json = Column(JSON, default=dict)
     risk_snapshot_json = Column(JSON, default=dict)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_trader_decisions_created", "created_at"),
@@ -2384,7 +2432,7 @@ class TraderDecisionCheck(Base):
     score = Column(Float, nullable=True)
     detail = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),)
 
@@ -2425,9 +2473,9 @@ class TraderOrder(Base):
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
     executed_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_trader_orders_created", "created_at"),
@@ -2481,8 +2529,8 @@ class ExecutionSession(Base):
     expires_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_execution_sessions_created", "created_at"),
@@ -2521,8 +2569,8 @@ class ExecutionSessionLeg(Base):
     status = Column(String, nullable=False, default="pending")
     last_error = Column(Text, nullable=True)
     metadata_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("session_id", "leg_index", name="uq_execution_session_leg_index"),
@@ -2565,8 +2613,8 @@ class ExecutionSessionOrder(Base):
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         Index("idx_execution_session_orders_session_created", "session_id", "created_at"),
@@ -2596,7 +2644,7 @@ class ExecutionSessionEvent(Base):
     severity = Column(String, nullable=False, default="info")
     message = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
 
     __table_args__ = (Index("idx_execution_session_events_session_created", "session_id", "created_at"),)
 
@@ -2625,8 +2673,8 @@ class TraderPosition(Base):
     last_order_at = Column(DateTime, nullable=True)
     closed_at = Column(DateTime, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint(
@@ -2668,7 +2716,7 @@ class TraderSignalConsumption(Base):
     outcome = Column(String, nullable=True)
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
-    consumed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    consumed_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("trader_id", "signal_id", name="uq_trader_signal_consumption"),
@@ -2695,7 +2743,7 @@ class TraderEvent(Base):
     message = Column(Text, nullable=True)
     trace_id = Column(String, nullable=True, index=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
 
     __table_args__ = (Index("idx_trader_events_type_created", "event_type", "created_at"),)
 
@@ -2718,7 +2766,7 @@ class TraderConfigRevision(Base):
     orchestrator_after_json = Column(JSON, default=dict)
     trader_before_json = Column(JSON, default=dict)
     trader_after_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
 
 
 # ==================== EVENTS ====================
@@ -2741,7 +2789,7 @@ class EventsSignal(Base):
     title = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
     source = Column(String, nullable=True)
-    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    detected_at = Column(DateTime, default=_utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     related_market_ids = Column(JSON, nullable=True)  # list of market IDs
@@ -2764,32 +2812,43 @@ class EventsSnapshot(Base):
     status = Column(JSON, nullable=True)
     signals_json = Column(JSON, nullable=True)  # last batch of signals
     stats = Column(JSON, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # ==================== DATABASE SETUP ====================
 
-# SQLite-specific: improve concurrency (WAL + busy_timeout applied in _set_sqlite_pragma)
-_engine_kw: dict = {"echo": False}
-if "sqlite" in settings.DATABASE_URL:
-    _engine_kw["connect_args"] = {"timeout": 30}  # Wait up to 30s when DB is locked
-# For Postgres, pool_size/max_overflow can be set via env or here if needed
+_engine_kw: dict = {
+    "echo": False,
+    "pool_pre_ping": True,
+}
+
+_database_url = str(settings.DATABASE_URL or "").strip().lower()
+if _database_url.startswith("postgresql"):
+    _engine_kw.update(
+        {
+            "pool_size": max(1, int(settings.DATABASE_POOL_SIZE)),
+            "max_overflow": max(0, int(settings.DATABASE_MAX_OVERFLOW)),
+            "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT_SECONDS)),
+            "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS)),
+            "pool_use_lifo": True,
+        }
+    )
+    _engine_kw["connect_args"] = {
+        "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
+        "command_timeout": float(max(5.0, float(settings.DATABASE_POOL_TIMEOUT_SECONDS))),
+        "server_settings": {
+            "statement_timeout": str(max(1000, int(settings.DATABASE_STATEMENT_TIMEOUT_MS))),
+            "idle_in_transaction_session_timeout": str(
+                max(1000, int(settings.DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS))
+            ),
+        },
+    }
+elif _database_url.startswith("sqlite"):
+    _engine_kw["connect_args"] = {
+        "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
+    }
 
 async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
-
-
-def _set_sqlite_pragma(dbapi_connection, connection_record):
-    """Configure SQLite for better concurrent access (WAL mode, busy timeout)."""
-    if "sqlite" not in settings.DATABASE_URL:
-        return
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")  # Allow concurrent reads during writes
-    cursor.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s when locked (ms)
-    cursor.close()
-
-
-# Apply pragmas on each new SQLite connection
-event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_pragma)
 
 AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
@@ -2806,93 +2865,23 @@ def _run_alembic_upgrade(connection) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-@contextmanager
-def _sqlite_migration_lock():
-    """Serialize Alembic upgrades across processes for SQLite databases."""
-    if "sqlite" not in settings.DATABASE_URL:
-        yield
-        return
-
-    lock_path = Path(__file__).resolve().parents[1] / ".alembic.sqlite.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Delete stale lock file if it has grown unreasonably (>4 KB).
-    try:
-        if lock_path.exists() and lock_path.stat().st_size > 4096:
-            lock_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    # Use "a" (append) so multiple processes can open the file without
-    # Windows blocking on a competing truncate ("w" causes PermissionError
-    # when 9 services race to open the same file).
-    lock_file = None
-    try:
-        lock_file = lock_path.open("a", encoding="utf-8")
-    except (PermissionError, OSError):
-        # Cannot even open the lock file — proceed without a lock.
-        logger.warning("Cannot open migration lock file, proceeding without lock")
-        yield
-        return
-
-    try:
-        if os.name == "posix":
-            import fcntl
-
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            return
-
-        if os.name == "nt":
-            import msvcrt
-            import time
-
-            deadline = time.monotonic() + 30
-            locked = False
-            while True:
-                try:
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    locked = True
-                    break
-                except (PermissionError, OSError):
-                    if time.monotonic() >= deadline:
-                        logger.warning("Could not acquire migration lock after 30s, proceeding without lock")
-                        break
-                    time.sleep(0.5)
-            try:
-                yield
-            finally:
-                if locked:
-                    try:
-                        lock_file.seek(0)
-                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                    except (PermissionError, OSError):
-                        pass
-            return
-
-        # Unknown platform: continue without an OS-level file lock.
-        yield
-    finally:
-        try:
-            lock_file.close()
-        except (PermissionError, OSError):
-            pass
-
-
 async def init_database():
     """Initialize database and apply Alembic migrations."""
     from models.model_registry import register_all_models
 
     register_all_models()
-    with _sqlite_migration_lock():
-        async with async_engine.begin() as conn:
-            await conn.run_sync(_run_alembic_upgrade)
+    async with async_engine.begin() as conn:
+        await conn.run_sync(_run_alembic_upgrade)
 
 
 async def get_db_session() -> AsyncSession:
     """Get database session"""
-    async with AsyncSessionLocal() as session:
+    session = AsyncSessionLocal()
+    try:
         yield session
+    except BaseException:
+        if session.in_transaction():
+            await session.rollback()
+        raise
+    finally:
+        await session.close()

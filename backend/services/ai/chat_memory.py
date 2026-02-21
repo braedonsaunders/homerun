@@ -1,7 +1,7 @@
 """
 Persistent memory for AI copilot chat sessions.
 
-Stores chat sessions/messages in SQLite so conversations survive refreshes
+Stores chat sessions/messages in the database so conversations survive refreshes
 and panel close/open cycles.
 """
 

@@ -31,7 +31,7 @@ _IDLE_SLEEP_SECONDS = 5
 
 
 async def emit_news_intent_signals(session, opportunities: list) -> int:
-    return await bridge_opportunities_to_signals(session, opportunities, source="news")
+    return await bridge_opportunities_to_signals(session, opportunities, source="news", sweep_missing=True)
 
 
 def _interval_from_control_and_settings(control: dict, wf_settings: dict) -> int:
@@ -297,6 +297,16 @@ async def _run_loop() -> None:
                     stats=cycle_stats,
                 )
                 pending_rows = await shared_state.list_news_intents(session, status_filter="pending", limit=2000)
+                finding_rows = await shared_state.list_news_findings(
+                    session,
+                    limit=2000,
+                    max_age_minutes=int(
+                        max(
+                            1,
+                            wf_settings.get("orchestrator_max_age_minutes", 120) or 120,
+                        )
+                    ),
+                )
 
             # Serialize news intents to dicts for strategy consumption
             intent_dicts = []
@@ -317,11 +327,37 @@ async def _run_loop() -> None:
                     intent_dict.update(metadata)
                 intent_dicts.append(intent_dict)
 
+            finding_dicts = []
+            for row in finding_rows:
+                finding_dicts.append(
+                    {
+                        "id": row.id,
+                        "article_id": row.article_id,
+                        "market_id": row.market_id,
+                        "article_title": row.article_title,
+                        "article_source": row.article_source,
+                        "article_url": row.article_url,
+                        "market_question": row.market_question,
+                        "market_price": row.market_price,
+                        "model_probability": row.model_probability,
+                        "edge_percent": row.edge_percent,
+                        "direction": row.direction,
+                        "confidence": row.confidence,
+                        "reasoning": row.reasoning,
+                        "actionable": row.actionable,
+                        "signal_key": row.signal_key,
+                        "cache_key": row.cache_key,
+                        "event_graph": row.event_graph if isinstance(row.event_graph, dict) else {},
+                        "evidence": row.evidence if isinstance(row.evidence, dict) else {},
+                        "created_at": row.created_at,
+                    }
+                )
+
             news_event = DataEvent(
                 event_type="news_update",
                 source="news_worker",
                 timestamp=datetime.now(timezone.utc),
-                payload={"intents": intent_dicts},
+                payload={"intents": intent_dicts, "findings": finding_dicts},
             )
             opportunities = await event_dispatcher.dispatch(news_event)
             async with AsyncSessionLocal() as session:

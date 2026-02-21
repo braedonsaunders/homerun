@@ -263,6 +263,12 @@ class WalletWebSocketMonitor:
         self._rpc_backoff_until: float = 0.0
         self._rpc_backoff_base_seconds: float = 2.0
         self._rpc_backoff_max_seconds: float = 30.0
+        self._max_block_failures_before_skip: int = 5
+        self._block_failure_counts: dict[int, int] = {}
+        self._rpc_last_endpoint_failure_log_at: float = 0.0
+        self._rpc_endpoint_failure_log_interval_seconds: float = 10.0
+        self._rpc_last_total_failure_log_at: float = 0.0
+        self._rpc_total_failure_log_interval_seconds: float = 30.0
         self._stats = {
             "blocks_processed": 0,
             "events_detected": 0,
@@ -400,7 +406,7 @@ class WalletWebSocketMonitor:
         is already running, this is a no-op.
         """
         if self._running:
-            logger.warning("WS monitor already running")
+            logger.debug("WS monitor start skipped; already running")
             return
 
         if websockets is None:
@@ -580,6 +586,21 @@ class WalletWebSocketMonitor:
         try:
             # Query logs via HTTP RPC (more reliable for getLogs)
             logs = await self._get_logs_for_block(block_hex)
+            if logs is None:
+                failures = self._block_failure_counts.get(block_number, 0) + 1
+                self._block_failure_counts[block_number] = failures
+                if failures >= self._max_block_failures_before_skip:
+                    logger.warning(
+                        "Skipping block after repeated RPC failures",
+                        block_number=block_number,
+                        failures=failures,
+                    )
+                    # Advance cursor to avoid permanently stalling the monitor
+                    # on a single problematic block.
+                    self._last_processed_block = block_number
+                    self._block_failure_counts.pop(block_number, None)
+                return
+            self._block_failure_counts.pop(block_number, None)
 
             for log_entry in logs:
                 try:
@@ -605,16 +626,15 @@ class WalletWebSocketMonitor:
             self._stats["blocks_processed"] += 1
 
         except Exception as e:
-            logger.error(
+            logger.warning(
                 "Error handling block",
                 block_number=block_number,
                 error_type=type(e).__name__,
                 error=_exception_text(e),
-                exc_info=True,
             )
             self._stats["errors"] += 1
 
-    async def _get_logs_for_block(self, block_hex: str) -> list[dict]:
+    async def _get_logs_for_block(self, block_hex: str) -> Optional[list[dict]]:
         """Fetch OrdersFilled event logs for a specific block from the HTTP RPC.
 
         Args:
@@ -643,15 +663,15 @@ class WalletWebSocketMonitor:
             block_hex=block_hex,
         )
         if result is None:
-            raise RuntimeError(f"RPC request failed for eth_getLogs on block {block_hex}")
+            return None
 
         if "error" in result:
-            logger.error(
+            logger.warning(
                 "RPC error fetching logs",
                 error=result["error"],
                 block=block_hex,
             )
-            return []
+            return None
 
         logs = result.get("result", [])
         if isinstance(logs, list):
@@ -679,6 +699,38 @@ class WalletWebSocketMonitor:
                     response.raise_for_status()
                     result = response.json()
 
+                if not isinstance(result, dict):
+                    last_error = RuntimeError(f"Unexpected RPC payload type: {type(result).__name__}")
+                    logger.warning(
+                        "Unexpected RPC response payload",
+                        method=method,
+                        endpoint=endpoint,
+                        response_type=type(result).__name__,
+                    )
+                    continue
+
+                rpc_error = result.get("error")
+                if rpc_error is not None:
+                    last_error = RuntimeError(f"RPC error from endpoint {endpoint}: {rpc_error}")
+                    now = time.monotonic()
+                    if (now - self._rpc_last_endpoint_failure_log_at) >= self._rpc_endpoint_failure_log_interval_seconds:
+                        self._rpc_last_endpoint_failure_log_at = now
+                        logger.warning(
+                            "RPC endpoint returned error",
+                            method=method,
+                            endpoint=endpoint,
+                            block=block_hex or None,
+                            error=rpc_error,
+                        )
+                    else:
+                        logger.debug(
+                            "RPC endpoint returned error (suppressed)",
+                            method=method,
+                            endpoint=endpoint,
+                            block=block_hex or None,
+                        )
+                    continue
+
                 if endpoint != self._http_rpc_url:
                     logger.warning(
                         "Wallet monitor RPC failover",
@@ -688,27 +740,30 @@ class WalletWebSocketMonitor:
                     self._http_rpc_url = endpoint
                     self._rpc_urls = _build_rpc_candidates(self._http_rpc_url)
 
-                if not isinstance(result, dict):
-                    logger.warning(
-                        "Unexpected RPC response payload",
-                        method=method,
-                        endpoint=endpoint,
-                        response_type=type(result).__name__,
-                    )
-                    return None
                 self._rpc_failure_streak = 0
                 self._rpc_backoff_until = 0.0
                 return result
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    "Wallet monitor RPC request failed",
-                    method=method,
-                    endpoint=endpoint,
-                    block=block_hex or None,
-                    error_type=type(e).__name__,
-                    error=_exception_text(e),
-                )
+                now = time.monotonic()
+                if (now - self._rpc_last_endpoint_failure_log_at) >= self._rpc_endpoint_failure_log_interval_seconds:
+                    self._rpc_last_endpoint_failure_log_at = now
+                    logger.warning(
+                        "Wallet monitor RPC request failed",
+                        method=method,
+                        endpoint=endpoint,
+                        block=block_hex or None,
+                        error_type=type(e).__name__,
+                        error=_exception_text(e),
+                    )
+                else:
+                    logger.debug(
+                        "Wallet monitor RPC request failed (suppressed)",
+                        method=method,
+                        endpoint=endpoint,
+                        block=block_hex or None,
+                        error_type=type(e).__name__,
+                    )
 
         if last_error is not None:
             self._rpc_failure_streak += 1
@@ -717,16 +772,26 @@ class WalletWebSocketMonitor:
                 self._rpc_backoff_max_seconds,
             )
             self._rpc_backoff_until = time.monotonic() + cooldown_seconds
-            logger.error(
-                "Wallet monitor RPC failed across all endpoints",
-                method=method,
-                block=block_hex or None,
-                endpoints=self._rpc_urls,
-                failure_streak=self._rpc_failure_streak,
-                cooldown_seconds=round(cooldown_seconds, 2),
-                error_type=type(last_error).__name__,
-                error=_exception_text(last_error),
-            )
+            now = time.monotonic()
+            if (now - self._rpc_last_total_failure_log_at) >= self._rpc_total_failure_log_interval_seconds:
+                self._rpc_last_total_failure_log_at = now
+                logger.error(
+                    "Wallet monitor RPC failed across all endpoints",
+                    method=method,
+                    block=block_hex or None,
+                    endpoints=self._rpc_urls,
+                    failure_streak=self._rpc_failure_streak,
+                    cooldown_seconds=round(cooldown_seconds, 2),
+                    error_type=type(last_error).__name__,
+                    error=_exception_text(last_error),
+                )
+            else:
+                logger.debug(
+                    "Wallet monitor RPC all-endpoint failure (suppressed)",
+                    method=method,
+                    block=block_hex or None,
+                    failure_streak=self._rpc_failure_streak,
+                )
         return None
 
     # ==================== LOG PROCESSING ====================

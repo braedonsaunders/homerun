@@ -28,6 +28,7 @@ class EventBus:
         self._instance_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._listener_task: Optional[asyncio.Task] = None
         self._start_lock = asyncio.Lock()
+        self._cursor_lock = asyncio.Lock()
         self._running = False
         self._last_stream_id = "$"
 
@@ -117,16 +118,19 @@ class EventBus:
     async def _run_stream_listener(self) -> None:
         own_marker = f'"instance_id":"{self._instance_id}"'
         while self._running:
+            async with self._cursor_lock:
+                last_stream_id = self._last_stream_id
             messages = await redis_streams.read_raw(
                 self._stream_key,
-                last_id=self._last_stream_id,
+                last_id=last_stream_id,
                 block_ms=self._read_block_ms,
                 count=self._read_count,
             )
             if not messages:
                 continue
             for entry_id, raw in messages:
-                self._last_stream_id = entry_id
+                async with self._cursor_lock:
+                    self._last_stream_id = entry_id
                 if own_marker in raw:
                     continue
                 try:
@@ -151,9 +155,9 @@ async def _safe_invoke(
         await cb(event_type, data)
     except Exception as exc:
         logger.debug(
-            "Event subscriber raised: %s",
-            exc,
+            "Event subscriber raised",
             event_type=event_type,
+            exc_info=exc,
         )
 
 

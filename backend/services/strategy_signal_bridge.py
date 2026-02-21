@@ -7,36 +7,21 @@ pattern shared by all signal sources.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 from typing import Optional, Any
 
-from config import settings
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import text
 
 from models.opportunity import Opportunity
 from services.signal_bus import (
     build_signal_contract_from_opportunity,
+    expire_source_signals_except,
     make_dedupe_key,
     refresh_trade_signal_snapshots,
     upsert_trade_signal,
 )
+from services.worker_state import _commit_with_retry
 from utils.utcnow import utcnow
-
-SQLITE_LOCK_RETRY_ATTEMPTS = 6
-SQLITE_LOCK_BASE_DELAY_SECONDS = 0.15
-SQLITE_LOCK_MAX_DELAY_SECONDS = 1.5
-
-
-def _is_sqlite_lock_error(exc: Exception) -> bool:
-    message = str(getattr(exc, "orig", exc)).lower()
-    return "database is locked" in message or "database table is locked" in message
-
-
-def _sqlite_lock_retry_delay(attempt: int) -> float:
-    return min(SQLITE_LOCK_BASE_DELAY_SECONDS * (2**attempt), SQLITE_LOCK_MAX_DELAY_SECONDS)
 
 
 async def bridge_opportunities_to_signals(
@@ -47,6 +32,7 @@ async def bridge_opportunities_to_signals(
     default_ttl_minutes: int = 120,
     quality_filter_pipeline: Optional[Any] = None,
     quality_reports: Optional[dict] = None,
+    sweep_missing: bool = False,
 ) -> int:
     """Convert Opportunity objects into TradeSignal rows.
 
@@ -70,6 +56,7 @@ async def bridge_opportunities_to_signals(
     """
     now = utcnow()
     emitted = 0
+    keep_dedupe_keys: set[str] = set()
 
     for opp in opportunities:
         market_id, direction, entry_price, market_question, payload_json, strategy_context_json = (
@@ -83,6 +70,7 @@ async def bridge_opportunities_to_signals(
             opp.strategy,
             market_id,
         )
+        keep_dedupe_keys.add(dedupe_key)
         expires = opp.resolution_date or (now + timedelta(minutes=default_ttl_minutes))
 
         opp_quality_passed: Optional[bool] = None
@@ -124,17 +112,14 @@ async def bridge_opportunities_to_signals(
         )
         emitted += 1
 
-    for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
-        try:
-            if "sqlite" in settings.DATABASE_URL.lower():
-                await session.execute(text("PRAGMA busy_timeout=1500"))
-            await session.commit()
-            await refresh_trade_signal_snapshots(session)
-            return emitted
-        except OperationalError as exc:
-            await session.rollback()
-            if not _is_sqlite_lock_error(exc) or attempt >= SQLITE_LOCK_RETRY_ATTEMPTS - 1:
-                raise
-            await asyncio.sleep(_sqlite_lock_retry_delay(attempt))
-
+    if sweep_missing:
+        await expire_source_signals_except(
+            session,
+            source=source,
+            keep_dedupe_keys=keep_dedupe_keys,
+            signal_types=[f"{source}_opportunity"],
+            commit=False,
+        )
+    await _commit_with_retry(session)
+    await refresh_trade_signal_snapshots(session)
     return emitted

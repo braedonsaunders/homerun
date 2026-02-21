@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
 from typing import Any
+
+from utils.utcnow import utcnow
 
 from .signal_engine import WeatherSignal
 
@@ -19,7 +20,7 @@ def build_weather_intent(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a deterministic weather intent payload suitable for DB upsert."""
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     bucket = now.strftime("%Y%m%d%H")
     raw = f"{market_id}|{signal.direction}|{bucket}"
     intent_id = hashlib.sha256(raw.encode()).hexdigest()[:24]

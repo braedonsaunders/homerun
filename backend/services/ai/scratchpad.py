@@ -1,12 +1,12 @@
 """
-SQLite-backed research scratchpad.
+Database-backed research scratchpad.
 
 Provides persistent audit trail for all AI agent research steps.
 Each research task gets a session with ordered entries tracking
 every thinking step, tool call, observation, and conclusion.
 
 Inspired by virattt/dexter's JSONL scratchpad pattern but using
-SQLite for proper persistence and queryability.
+the primary database for proper persistence and queryability.
 """
 
 import json
@@ -64,7 +64,7 @@ VALID_ENTRY_TYPES = {
 
 
 class ScratchpadService:
-    """Manages research sessions and their scratchpad entries in SQLite.
+    """Manages research sessions and their scratchpad entries in the database.
 
     Each research session (e.g. "analyze market resolution criteria for
     market X") gets a unique ID and an ordered list of scratchpad entries

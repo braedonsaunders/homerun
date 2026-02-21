@@ -71,6 +71,38 @@ export function useRealtimeInvalidation(
     const messageType = lastMessage?.type
     if (!messageType) return
 
+    const mergeWorkerStatuses = (incomingWorkers: any[]) => {
+      queryClient.setQueryData(['workers-status'], (old: any) => {
+        const previousWorkers = Array.isArray(old?.workers) ? old.workers : []
+        const workerMap = new Map<string, any>()
+
+        for (const worker of previousWorkers) {
+          if (!worker || typeof worker !== 'object') continue
+          const workerName = String(worker.worker_name || '').trim()
+          if (!workerName) continue
+          workerMap.set(workerName, worker)
+        }
+
+        for (const worker of incomingWorkers) {
+          if (!worker || typeof worker !== 'object') continue
+          const workerName = String(worker.worker_name || '').trim()
+          if (!workerName) continue
+          const previous = workerMap.get(workerName) || {}
+          workerMap.set(workerName, {
+            ...previous,
+            ...worker,
+            stats: worker.stats ?? previous.stats ?? {},
+            control: worker.control ?? previous.control,
+          })
+        }
+
+        return {
+          ...(old && typeof old === 'object' ? old : {}),
+          workers: Array.from(workerMap.values()),
+        }
+      })
+    }
+
     const activeTab = String(context.activeTab || '')
     const opportunitiesView = String(context.opportunitiesView || '')
     const dataView = String(context.dataView || '')
@@ -105,6 +137,9 @@ export function useRealtimeInvalidation(
         ['opportunity-subfilters'],
         ['scanner-status'],
       ], { immediate: viewingScannerFamily })
+    }
+    if (messageType === 'init' && Array.isArray(lastMessage.data?.workers_status)) {
+      mergeWorkerStatuses(lastMessage.data.workers_status)
     }
     if (messageType === 'opportunity_events') {
       queueInvalidations(
@@ -234,6 +269,7 @@ export function useRealtimeInvalidation(
       // Direct cache update for events status
       queryClient.setQueryData(['events-status'], lastMessage.data)
       queueInvalidations([
+        ['events-summary'],
         ...(viewingWorld
           ? ([
               ['world-signals'],
@@ -242,7 +278,6 @@ export function useRealtimeInvalidation(
               ['world-convergences'],
               ['world-anomalies'],
               ['world-regions'],
-              ['events-summary'],
               ['events-sources'],
             ] as QueryKey[])
           : []),
@@ -261,6 +296,7 @@ export function useRealtimeInvalidation(
       }
       // Still invalidate derived queries
       queueInvalidations([
+        ['events-summary'],
         ...(viewingWorld
           ? ([
               ['world-instability'],
@@ -268,15 +304,14 @@ export function useRealtimeInvalidation(
               ['world-convergences'],
               ['world-anomalies'],
               ['world-regions'],
-              ['events-summary'],
               ['events-sources'],
             ] as QueryKey[])
           : []),
       ])
     }
     if (messageType === 'worker_status_update' && lastMessage.data) {
-      // Direct cache update for workers status
-      queryClient.setQueryData(['workers-status'], lastMessage.data)
+      const workers = Array.isArray(lastMessage.data.workers) ? lastMessage.data.workers : []
+      mergeWorkerStatuses(workers)
       // Still invalidate related status queries
       queueInvalidations([
         ['scanner-status'],

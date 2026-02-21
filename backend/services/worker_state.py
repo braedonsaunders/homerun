@@ -6,14 +6,16 @@ import asyncio
 import os
 import subprocess
 import sys
+from copy import deepcopy
 from datetime import datetime
 
-from config import settings
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
-from sqlalchemy import text
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,34 +34,135 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
     "discovery": 3600,
     "events": 300,
 }
-SQLITE_LOCK_RETRY_ATTEMPTS = 6
-SQLITE_LOCK_BASE_DELAY_SECONDS = 0.15
-SQLITE_LOCK_MAX_DELAY_SECONDS = 1.5
+DB_RETRY_ATTEMPTS = 3
+DB_RETRY_BASE_DELAY_SECONDS = 0.05
+DB_RETRY_MAX_DELAY_SECONDS = 0.3
 
 
-def _is_sqlite_lock_error(exc: Exception) -> bool:
+def _is_retryable_db_error(exc: Exception) -> bool:
     message = str(getattr(exc, "orig", exc)).lower()
-    return "database is locked" in message or "database table is locked" in message
+    return any(
+        marker in message
+        for marker in (
+            "database is locked",
+            "database table is locked",
+            "deadlock detected",
+            "serialization failure",
+            "could not serialize access",
+            "lock not available",
+        )
+    )
 
 
-def _sqlite_lock_retry_delay(attempt: int) -> float:
-    return min(SQLITE_LOCK_BASE_DELAY_SECONDS * (2**attempt), SQLITE_LOCK_MAX_DELAY_SECONDS)
+def _db_retry_delay(attempt: int) -> float:
+    return min(DB_RETRY_BASE_DELAY_SECONDS * (2**attempt), DB_RETRY_MAX_DELAY_SECONDS)
 
 
-async def _commit_with_retry(session: AsyncSession) -> None:
-    for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:
+    """Capture pending SQLAlchemy unit-of-work state so lock retries can replay it."""
+    if not all(hasattr(session, attr) for attr in ("new", "dirty", "deleted")):
+        return {"new": [], "dirty": [], "deleted": []}
+
+    try:
+        pending_new = list(session.new)
+        pending_dirty_candidates = list(session.dirty)
+        pending_deleted_candidates = list(session.deleted)
+    except Exception:
+        return {"new": [], "dirty": [], "deleted": []}
+
+    pending_deleted: list[tuple[type[Any], dict[str, Any]]] = []
+    pending_dirty: list[tuple[type[Any], dict[str, Any], dict[str, Any]]] = []
+
+    for obj in pending_dirty_candidates:
+        if obj in pending_new or obj in pending_deleted_candidates:
+            continue
         try:
-            if "sqlite" in settings.DATABASE_URL.lower():
-                await session.execute(text("PRAGMA busy_timeout=1500"))
+            state = sa_inspect(obj)
+        except Exception:
+            continue
+        primary_keys = {
+            str(column.key): deepcopy(getattr(obj, str(column.key)))
+            for column in state.mapper.primary_key
+        }
+        if not primary_keys:
+            continue
+        values: dict[str, Any] = {}
+        for column_attr in state.mapper.column_attrs:
+            key = column_attr.key
+            if key in primary_keys:
+                continue
+            values[key] = deepcopy(getattr(obj, key))
+        pending_dirty.append((type(obj), primary_keys, values))
+
+    for obj in pending_deleted_candidates:
+        if obj in pending_new:
+            continue
+        try:
+            state = sa_inspect(obj)
+        except Exception:
+            continue
+        primary_keys = {
+            str(column.key): deepcopy(getattr(obj, str(column.key)))
+            for column in state.mapper.primary_key
+        }
+        if not primary_keys:
+            continue
+        pending_deleted.append((type(obj), primary_keys))
+
+    return {
+        "new": pending_new,
+        "dirty": pending_dirty,
+        "deleted": pending_deleted,
+    }
+
+
+async def _restore_pending_session_state(session: AsyncSession, snapshot: dict[str, Any]) -> None:
+    """Re-apply captured unit-of-work objects after rollback."""
+    for obj in snapshot.get("new", []):
+        session.add(obj)
+
+    for model_cls, primary_keys, values in snapshot.get("dirty", []):
+        if not values:
+            continue
+        where_clauses = [getattr(model_cls, key) == value for key, value in primary_keys.items()]
+        await session.execute(sa_update(model_cls).where(*where_clauses).values(**deepcopy(values)))
+
+    for model_cls, primary_keys in snapshot.get("deleted", []):
+        where_clauses = [getattr(model_cls, key) == value for key, value in primary_keys.items()]
+        await session.execute(sa_delete(model_cls).where(*where_clauses))
+
+
+async def _commit_with_retry(
+    session: AsyncSession,
+    *,
+    retry_attempts: int = DB_RETRY_ATTEMPTS,
+    base_delay_seconds: float = DB_RETRY_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = DB_RETRY_MAX_DELAY_SECONDS,
+) -> None:
+    if not hasattr(session, "commit"):
+        return
+
+    attempts = max(1, int(retry_attempts))
+    base_delay = max(0.0, float(base_delay_seconds))
+    max_delay = max(base_delay, float(max_delay_seconds))
+
+    pending_snapshot = _capture_pending_session_state(session)
+    for attempt in range(attempts):
+        try:
             await session.commit()
             return
         except OperationalError as exc:
-            await session.rollback()
-            is_locked = _is_sqlite_lock_error(exc)
-            is_last = attempt >= SQLITE_LOCK_RETRY_ATTEMPTS - 1
+            if hasattr(session, "rollback"):
+                await session.rollback()
+            is_locked = _is_retryable_db_error(exc)
+            is_last = attempt >= attempts - 1
             if not is_locked or is_last:
                 raise
-            await asyncio.sleep(_sqlite_lock_retry_delay(attempt))
+            if pending_snapshot.get("new") or pending_snapshot.get("dirty") or pending_snapshot.get("deleted"):
+                await _restore_pending_session_state(session, pending_snapshot)
+            delay = min(base_delay * (2**attempt), max_delay)
+            if delay > 0:
+                await asyncio.sleep(delay)
 
 
 def _now() -> datetime:

@@ -10,6 +10,7 @@ from services.trading import trading_service
 from utils.converters import safe_float
 
 
+_MIN_EXECUTION_PRICE = 0.001
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
@@ -139,7 +140,29 @@ async def submit_execution_leg(
             notional_usd=notional,
         )
 
-    shares = notional / max(0.0001, price)
+    if price > 1.0:
+        return LegSubmitResult(
+            leg_id=leg_id,
+            status="failed",
+            effective_price=price,
+            error_message="Execution price must be <= 1.0 for binary contracts.",
+            payload={"mode": mode_key, "leg": dict(leg), "reason": "invalid_price_range"},
+            shares=None,
+            notional_usd=notional,
+        )
+
+    if price < _MIN_EXECUTION_PRICE:
+        return LegSubmitResult(
+            leg_id=leg_id,
+            status="failed",
+            effective_price=price,
+            error_message=f"Execution price below minimum allowed ({_MIN_EXECUTION_PRICE:.4f}).",
+            payload={"mode": mode_key, "leg": dict(leg), "reason": "invalid_price_too_small"},
+            shares=None,
+            notional_usd=notional,
+        )
+
+    shares = notional / price
     if shares <= 0:
         return LegSubmitResult(
             leg_id=leg_id,

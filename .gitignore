@@ -44,6 +44,7 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 data/*.stale*
+data/postgres/
 backend/.alembic.sqlite.lock
 
 # Logs

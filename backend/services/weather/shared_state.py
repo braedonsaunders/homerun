@@ -453,7 +453,7 @@ async def mark_weather_intent(
     if row is None:
         return False
     row.status = status
-    row.consumed_at = datetime.now(timezone.utc)
+    row.consumed_at = utcnow()
     await session.commit()
     return True
 

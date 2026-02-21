@@ -5,21 +5,9 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
-from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import func, or_, select
-
-SQLITE_VAR_LIMIT = 900
-
-
-def _chunked_in(column, values: list, chunk_size: int = SQLITE_VAR_LIMIT):
-    if len(values) <= chunk_size:
-        return column.in_(values)
-    clauses = []
-    for i in range(0, len(values), chunk_size):
-        clauses.append(column.in_(values[i : i + chunk_size]))
-    return or_(*clauses)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -29,8 +17,20 @@ from models.database import (
     WalletActivityRollup,
 )
 from services.polymarket import polymarket_client
-from utils.logger import get_logger
 from utils.converters import clamp, safe_float
+from utils.logger import get_logger
+from utils.utcnow import utcnow
+
+IN_CLAUSE_CHUNK_SIZE = 900
+
+
+def _chunked_in(column, values: list, chunk_size: int = IN_CLAUSE_CHUNK_SIZE):
+    if len(values) <= chunk_size:
+        return column.in_(values)
+    clauses = []
+    for i in range(0, len(values), chunk_size):
+        clauses.append(column.in_(values[i : i + chunk_size]))
+    return or_(*clauses)
 
 logger = get_logger("insider_detector")
 

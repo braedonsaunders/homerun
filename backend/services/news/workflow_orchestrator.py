@@ -29,9 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from services.shared_state import _commit_with_retry
-from models.database import LLMUsageLog, NewsTradeIntent, NewsWorkflowFinding, Strategy
+from models.database import LLMUsageLog, NewsTradeIntent, NewsWorkflowFinding
 from services.news import shared_state
-from services.strategy_sdk import StrategySDK
 
 logger = logging.getLogger(__name__)
 
@@ -291,11 +290,6 @@ class WorkflowOrchestrator:
         self._is_cycling = False
         self._negative_cache = _NegativeCache()
 
-    async def _load_news_strategy_filters(self, session: AsyncSession) -> dict[str, Any]:
-        row = (await session.execute(select(Strategy).where(Strategy.slug == "news_edge"))).scalar_one_or_none()
-        payload = row.config if row is not None and isinstance(row.config, dict) else {}
-        return StrategySDK.validate_news_filter_config(payload)
-
     async def run_cycle(self, session: AsyncSession) -> dict:
         """Run one cycle. Caller (worker) owns loop scheduling and control flow."""
         if self._is_cycling:
@@ -315,7 +309,6 @@ class WorkflowOrchestrator:
             from services.news.reranker import reranker
 
             wf_settings = await shared_state.get_news_settings(session)
-            news_strategy_filters = await self._load_news_strategy_filters(session)
 
             # 1) Sync articles from provider feeds.
             try:
@@ -555,15 +548,15 @@ class WorkflowOrchestrator:
             # min_semantic_signal: 0.05 lets through candidates with partial
             # semantic overlap; the reranker handles false positives.
             min_semantic_signal = float(wf_settings.get("min_semantic_signal", 0.05) or 0.05)
-            # Business filtering thresholds are strategy-owned (news_edge config),
-            # validated through StrategySDK.
-            min_edge = float(news_strategy_filters.get("min_edge_percent", 5.0) or 5.0)
-            min_conf = float(news_strategy_filters.get("min_confidence", 0.45) or 0.45)
-            orchestrator_min_edge = float(news_strategy_filters.get("orchestrator_min_edge", 10.0) or 10.0)
-            require_verifier = bool(news_strategy_filters.get("require_verifier", True))
-            require_second_source = bool(news_strategy_filters.get("require_second_source", False))
-            min_supporting_articles = max(1, int(news_strategy_filters.get("min_supporting_articles", 2) or 2))
-            min_supporting_sources = max(1, int(news_strategy_filters.get("min_supporting_sources", 2) or 2))
+            # Trade/business gating is strategy-owned (news_edge on_event config).
+            # Keep workflow thresholds permissive so strategies decide.
+            min_edge = 0.0
+            min_conf = 0.0
+            orchestrator_min_edge = 0.0
+            require_verifier = False
+            require_second_source = False
+            min_supporting_articles = 1
+            min_supporting_sources = 1
             max_edge_evals_per_cluster = int(wf_settings.get("max_edge_evals_per_article", 6) or 6)
             cache_ttl_minutes = int(wf_settings.get("cache_ttl_minutes", 30) or 30)
 
@@ -1229,6 +1222,14 @@ class WorkflowOrchestrator:
             dt = dt.astimezone(timezone.utc)
         return dt
 
+    @staticmethod
+    def _to_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
     @classmethod
     def _is_temporally_compatible(cls, article, event, candidate) -> bool:
         market_end = cls._coerce_datetime(getattr(candidate, "end_date", None))
@@ -1291,7 +1292,7 @@ class WorkflowOrchestrator:
             },
             reasoning=f"Rejected before edge estimation: {reason}.",
             actionable=False,
-            created_at=datetime.now(timezone.utc),
+            created_at=utcnow(),
         )
 
     def _split_verified_candidates(self, article, event, reranked, llm_was_requested: bool = False):
@@ -1721,7 +1722,7 @@ class WorkflowOrchestrator:
     ) -> dict[str, NewsWorkflowFinding]:
         if not cache_keys:
             return {}
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, ttl_minutes))
+        cutoff = utcnow() - timedelta(minutes=max(1, ttl_minutes))
         result = await session.execute(
             select(NewsWorkflowFinding)
             .where(NewsWorkflowFinding.cache_key.in_(cache_keys))
@@ -1772,12 +1773,13 @@ class WorkflowOrchestrator:
     async def _persist_findings(self, session: AsyncSession, findings: list) -> int:
         if not findings:
             return 0
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         count = 0
         for f in findings:
+            created_at = self._to_naive_utc(getattr(f, "created_at", None)) or utcnow()
             stmt = (
-                sqlite_insert(NewsWorkflowFinding)
+                pg_insert(NewsWorkflowFinding)
                 .values(
                     id=f.id,
                     article_id=f.article_id,
@@ -1802,7 +1804,7 @@ class WorkflowOrchestrator:
                     evidence=f.evidence,
                     reasoning=f.reasoning,
                     actionable=f.actionable,
-                    created_at=f.created_at,
+                    created_at=created_at,
                 )
                 .on_conflict_do_update(
                     index_elements=["id"],
@@ -1823,7 +1825,7 @@ class WorkflowOrchestrator:
                         "evidence": f.evidence,
                         "reasoning": f.reasoning,
                         "actionable": f.actionable,
-                        "created_at": f.created_at,
+                        "created_at": created_at,
                     },
                 )
             )
@@ -1838,22 +1840,28 @@ class WorkflowOrchestrator:
 
         count = 0
         for intent in intents:
-            signal_key = intent.get("signal_key")
+            normalized_intent = dict(intent)
+            for key in ("created_at", "consumed_at"):
+                value = normalized_intent.get(key)
+                if isinstance(value, datetime):
+                    normalized_intent[key] = self._to_naive_utc(value)
+
+            signal_key = normalized_intent.get("signal_key")
             query = select(NewsTradeIntent)
             if signal_key:
                 query = query.where(NewsTradeIntent.signal_key == signal_key)
             else:
-                query = query.where(NewsTradeIntent.id == intent["id"])
+                query = query.where(NewsTradeIntent.id == normalized_intent["id"])
             existing_result = await session.execute(query)
             existing = existing_result.scalar_one_or_none()
             if existing is None:
-                session.add(NewsTradeIntent(**intent))
+                session.add(NewsTradeIntent(**normalized_intent))
                 count += 1
                 continue
 
             # Preserve consumed outcomes and only refresh pending/submitted rows.
             if existing.status in {"pending", "submitted"}:
-                for key, value in intent.items():
+                for key, value in normalized_intent.items():
                     setattr(existing, key, value)
                 count += 1
 

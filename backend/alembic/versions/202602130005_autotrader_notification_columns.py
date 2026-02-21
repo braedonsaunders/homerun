@@ -28,19 +28,19 @@ def upgrade() -> None:
             "notify_autotrader_orders",
             sa.Boolean(),
             nullable=True,
-            server_default=sa.text("0"),
+            server_default=sa.false(),
         ),
         sa.Column(
             "notify_autotrader_issues",
             sa.Boolean(),
             nullable=True,
-            server_default=sa.text("1"),
+            server_default=sa.true(),
         ),
         sa.Column(
             "notify_autotrader_timeline",
             sa.Boolean(),
             nullable=True,
-            server_default=sa.text("1"),
+            server_default=sa.true(),
         ),
         sa.Column(
             "notify_autotrader_summary_interval_minutes",
@@ -52,7 +52,7 @@ def upgrade() -> None:
             "notify_autotrader_summary_per_trader",
             sa.Boolean(),
             nullable=True,
-            server_default=sa.text("0"),
+            server_default=sa.false(),
         ),
     ]
 
@@ -62,5 +62,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Explicit downgrade support is intentionally omitted for SQLite safety.
+    # Explicit downgrade support is intentionally omitted for migration safety.
     pass

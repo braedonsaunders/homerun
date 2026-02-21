@@ -1489,7 +1489,7 @@ class WalletDiscoveryEngine:
                 if key == "address":
                     continue
                 # Handle float('inf') and float('nan') values that cannot
-                # be serialized to JSON or stored in SQLite.
+                # be serialized to JSON or stored in the database.
                 if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
                     value = None
                 if hasattr(wallet, key):
@@ -2082,7 +2082,10 @@ class WalletDiscoveryEngine:
 
             # When a rolling window is active, filter to wallets with trades in that window
             if window_key:
-                trade_count_expr = func.json_extract(DiscoveredWallet.rolling_trade_count, f"$.{window_key}")
+                trade_count_expr = func.coalesce(
+                    DiscoveredWallet.rolling_trade_count[window_key].as_integer(),
+                    0,
+                )
                 base_filter.append(trade_count_expr > 0)
 
             # Build main query
@@ -2094,7 +2097,10 @@ class WalletDiscoveryEngine:
                 rolling_col_name = self.SORT_FIELD_TO_ROLLING_COLUMN[sort_by]
                 rolling_col = getattr(DiscoveredWallet, rolling_col_name, None)
                 if rolling_col is not None:
-                    sort_expr = func.json_extract(rolling_col, f"$.{window_key}")
+                    if sort_by == "total_trades":
+                        sort_expr = func.coalesce(rolling_col[window_key].as_integer(), 0)
+                    else:
+                        sort_expr = func.coalesce(rolling_col[window_key].as_float(), 0.0)
                 else:
                     sort_expr = DiscoveredWallet.rank_score
             else:

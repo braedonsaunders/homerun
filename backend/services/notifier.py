@@ -153,7 +153,7 @@ class TelegramNotifier:
         except Exception as exc:
             logger.warning(
                 "Could not load notifier settings from DB, using config.py",
-                error=str(exc),
+                exc_info=exc,
             )
 
         if row is None:
@@ -167,9 +167,19 @@ class TelegramNotifier:
             self._summary_per_trader = False
             return
 
-        self._bot_token = decrypt_secret(row.telegram_bot_token) or settings.TELEGRAM_BOT_TOKEN
-        self._chat_id = row.telegram_chat_id or settings.TELEGRAM_CHAT_ID
-        self._notifications_enabled = bool(row.notifications_enabled)
+        db_bot_token = decrypt_secret(row.telegram_bot_token)
+        db_bot_token = str(db_bot_token).strip() if db_bot_token is not None else ""
+        db_chat_id = str(getattr(row, "telegram_chat_id", "") or "").strip()
+        env_bot_token = str(getattr(settings, "TELEGRAM_BOT_TOKEN", "") or "").strip()
+        env_chat_id = str(getattr(settings, "TELEGRAM_CHAT_ID", "") or "").strip()
+
+        # Runtime precedence: DB non-null override > env > default(None).
+        self._bot_token = db_bot_token or env_bot_token or None
+        self._chat_id = db_chat_id or env_chat_id or None
+        if row.notifications_enabled is None:
+            self._notifications_enabled = bool(self._bot_token and self._chat_id)
+        else:
+            self._notifications_enabled = bool(row.notifications_enabled)
 
         # Legacy bridge: if new toggles are missing for any reason, fall back to old flags.
         self._notify_autotrader_orders = bool(getattr(row, "notify_autotrader_orders", bool(row.notify_on_trade)))
@@ -228,7 +238,7 @@ class TelegramNotifier:
                 if self._autotrader_active:
                     self._last_summary_at = utcnow()
         except Exception as exc:
-            logger.debug("Notifier cursor priming skipped", error=str(exc))
+            logger.debug("Notifier cursor priming skipped", exc_info=exc)
 
     async def _autotrader_monitor_loop(self) -> None:
         """Poll trader-orchestrator state and emit Telegram notifications."""
@@ -315,7 +325,7 @@ class TelegramNotifier:
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                logger.error("Autotrader notifier monitor error", error=str(exc))
+                logger.error("Autotrader notifier monitor error", exc_info=exc)
 
             await asyncio.sleep(MONITOR_POLL_SECONDS)
 
@@ -849,7 +859,7 @@ class TelegramNotifier:
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                logger.error("Queue worker error", error=str(exc))
+                logger.error("Queue worker error", exc_info=exc)
                 await asyncio.sleep(1.0)
 
     async def _send_telegram(self, text: str) -> bool:
@@ -893,7 +903,7 @@ class TelegramNotifier:
             logger.warning("Telegram API request timed out")
             return False
         except Exception as exc:
-            logger.error("Failed to send Telegram message", error=str(exc))
+            logger.error("Failed to send Telegram message", exc_info=exc)
             return False
 
     async def send_test_message(self) -> bool:

@@ -103,6 +103,9 @@ export interface Market {
   no_price: number
   current_yes_price?: number | null
   current_no_price?: number | null
+  price_updated_at?: string | null
+  price_age_seconds?: number | null
+  is_price_fresh?: boolean
   outcome_labels?: string[]
   outcomes?: unknown[]
   outcome_prices?: number[]

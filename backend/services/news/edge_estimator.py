@@ -19,11 +19,12 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from services.news.event_extractor import ExtractedEvent
 from services.news.reranker import RerankedCandidate
+from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class WorkflowFinding:
     actionable: bool = False
     signal_key: Optional[str] = None
     cache_key: Optional[str] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------

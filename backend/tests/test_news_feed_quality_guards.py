@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.news.feed_service import (
+    NewsArticle,
     NewsFeedService,
+    _parse_datetime,
     _clean_summary_text,
     _has_min_text_quality,
 )
@@ -68,3 +71,49 @@ async def test_fetch_source_rows_handles_string_limit_without_name_error(monkeyp
 
     rows = await service._fetch_source_rows(source)
     assert rows == []
+
+
+def test_parse_datetime_normalizes_to_naive_utc():
+    parsed = _parse_datetime("2026-02-21T00:29:13+00:00")
+    assert parsed is not None
+    assert parsed.tzinfo is None
+    assert parsed == datetime(2026, 2, 21, 0, 29, 13)
+
+
+@pytest.mark.asyncio
+async def test_fetch_all_handles_mixed_timezone_article_timestamps(monkeypatch):
+    service = NewsFeedService()
+
+    article_id = "mixed-timezone-id"
+    service._articles[article_id] = NewsArticle(
+        article_id=article_id,
+        title="Existing article with enough alphanumeric content for quality checks to pass reliably",
+        url="https://example.com/existing",
+        source="existing",
+        summary="Existing summary content that easily exceeds the minimum text quality threshold requirements.",
+        fetched_at=datetime(2026, 2, 21, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    incoming = NewsArticle(
+        article_id=article_id,
+        title="Incoming article with enough alphanumeric content for quality checks to pass reliably",
+        url="https://example.com/incoming",
+        source="incoming",
+        summary="Incoming summary content that also exceeds the text quality threshold by a wide margin.",
+        fetched_at=datetime(2026, 2, 21, 0, 1, 0),
+    )
+
+    async def _fake_load_sources():
+        return [SimpleNamespace()]
+
+    async def _fake_fetch_articles(_sources):
+        return [incoming]
+
+    monkeypatch.setattr(service, "_load_enabled_story_sources", _fake_load_sources)
+    monkeypatch.setattr(service, "_fetch_articles_from_sources", _fake_fetch_articles)
+
+    new_articles = await service.fetch_all()
+    assert new_articles == []
+    assert service._articles[article_id].source == "incoming"
+    assert service._articles[article_id].fetched_at == datetime(2026, 2, 21, 0, 1, 0)
+    assert service._articles[article_id].fetched_at.tzinfo is None

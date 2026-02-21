@@ -24,6 +24,15 @@ from services.wallet_intelligence import wallet_intelligence
 from services.wallet_tracker import wallet_tracker
 from utils.utcnow import utcfromtimestamp, utcnow
 
+SQL_IN_CHUNK_SIZE = 2000
+
+
+def _iter_chunks(values: list[str], chunk_size: int = SQL_IN_CHUNK_SIZE):
+    for i in range(0, len(values), chunk_size):
+        chunk = values[i : i + chunk_size]
+        if chunk:
+            yield chunk
+
 
 def _normalize_wallet_address(value: object) -> Optional[str]:
     text = str(value or "").strip().lower()
@@ -162,39 +171,40 @@ async def annotate_trader_signal_source_context(rows: list[dict[str, Any]]) -> l
     if all_addresses:
         addr_list = list(all_addresses)
         async with AsyncSessionLocal() as session:
-            discovered_rows = await session.execute(
-                select(DiscoveredWallet.address, DiscoveredWallet.in_top_pool).where(
-                    func.lower(DiscoveredWallet.address).in_(addr_list)
+            for addr_chunk in _iter_chunks(addr_list):
+                discovered_rows = await session.execute(
+                    select(DiscoveredWallet.address, DiscoveredWallet.in_top_pool).where(
+                        func.lower(DiscoveredWallet.address).in_(addr_chunk)
+                    )
                 )
-            )
-            for address, in_top_pool in discovered_rows.all():
-                normalized = _normalize_wallet_address(address)
-                if normalized and bool(in_top_pool):
-                    pool_addresses.add(normalized)
+                for address, in_top_pool in discovered_rows.all():
+                    normalized = _normalize_wallet_address(address)
+                    if normalized and bool(in_top_pool):
+                        pool_addresses.add(normalized)
 
-            tracked_rows = await session.execute(
-                select(TrackedWallet.address).where(func.lower(TrackedWallet.address).in_(addr_list))
-            )
-            for (address,) in tracked_rows.all():
-                normalized = _normalize_wallet_address(address)
-                if normalized:
-                    tracked_addresses.add(normalized)
-
-            group_rows = await session.execute(
-                select(TraderGroupMember.wallet_address, TraderGroupMember.group_id)
-                .join(TraderGroup, TraderGroupMember.group_id == TraderGroup.id)
-                .where(
-                    TraderGroup.is_active == True,  # noqa: E712
-                    func.lower(TraderGroupMember.wallet_address).in_(addr_list),
+                tracked_rows = await session.execute(
+                    select(TrackedWallet.address).where(func.lower(TrackedWallet.address).in_(addr_chunk))
                 )
-            )
-            for address, group_id in group_rows.all():
-                normalized = _normalize_wallet_address(address)
-                if normalized is None:
-                    continue
-                bucket = group_ids_by_address.setdefault(normalized, set())
-                if group_id:
-                    bucket.add(str(group_id))
+                for (address,) in tracked_rows.all():
+                    normalized = _normalize_wallet_address(address)
+                    if normalized:
+                        tracked_addresses.add(normalized)
+
+                group_rows = await session.execute(
+                    select(TraderGroupMember.wallet_address, TraderGroupMember.group_id)
+                    .join(TraderGroup, TraderGroupMember.group_id == TraderGroup.id)
+                    .where(
+                        TraderGroup.is_active == True,  # noqa: E712
+                        func.lower(TraderGroupMember.wallet_address).in_(addr_chunk),
+                    )
+                )
+                for address, group_id in group_rows.all():
+                    normalized = _normalize_wallet_address(address)
+                    if normalized is None:
+                        continue
+                    bucket = group_ids_by_address.setdefault(normalized, set())
+                    if group_id:
+                        bucket.add(str(group_id))
 
     for row, wallet_addresses in zip(rows, wallets_per_row):
         pool_wallets = sum(1 for addr in wallet_addresses if addr in pool_addresses)
@@ -368,11 +378,12 @@ async def get_tracked_traders(
         addresses = [str(row.address).strip().lower() for row in tracked_rows if row.address]
         discovered_map: dict[str, DiscoveredWallet] = {}
         if addresses:
-            discovered_rows = await session.execute(
-                select(DiscoveredWallet).where(func.lower(DiscoveredWallet.address).in_(addresses))
-            )
-            for wallet in discovered_rows.scalars().all():
-                discovered_map[str(wallet.address).strip().lower()] = wallet
+            for addr_chunk in _iter_chunks(addresses):
+                discovered_rows = await session.execute(
+                    select(DiscoveredWallet).where(func.lower(DiscoveredWallet.address).in_(addr_chunk))
+                )
+                for wallet in discovered_rows.scalars().all():
+                    discovered_map[str(wallet.address).strip().lower()] = wallet
 
     activity_map: dict[str, dict[str, Any]] = {}
     if include_recent_activity:
@@ -478,11 +489,12 @@ async def get_trader_groups(
 
         profiles_by_address: dict[str, DiscoveredWallet] = {}
         if member_addresses:
-            profiles = await session.execute(
-                select(DiscoveredWallet).where(func.lower(DiscoveredWallet.address).in_(list(member_addresses)))
-            )
-            for profile in profiles.scalars().all():
-                profiles_by_address[str(profile.address).strip().lower()] = profile
+            for addr_chunk in _iter_chunks(list(member_addresses)):
+                profiles = await session.execute(
+                    select(DiscoveredWallet).where(func.lower(DiscoveredWallet.address).in_(addr_chunk))
+                )
+                for profile in profiles.scalars().all():
+                    profiles_by_address[str(profile.address).strip().lower()] = profile
 
     payload: list[dict[str, Any]] = []
     for group in groups:

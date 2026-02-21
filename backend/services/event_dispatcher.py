@@ -76,9 +76,15 @@ class EventDispatcher:
         self._instance_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._listener_task: Optional[asyncio.Task] = None
         self._start_lock = asyncio.Lock()
+        self._cursor_lock = asyncio.Lock()
         self._running = False
         self._last_stream_id = "$"
-        self._handler_timeout_seconds = float(max(5.0, float(os.environ.get("EVENT_HANDLER_TIMEOUT_SECONDS", "120"))))
+        self._handler_timeout_seconds = float(
+            max(
+                5.0,
+                float(getattr(settings, "EVENT_HANDLER_TIMEOUT_SECONDS", 60.0) or 60.0),
+            )
+        )
 
     def subscribe(self, strategy_slug: str, event_type: str, handler: EventHandler) -> None:
         if event_type != "*" and event_type not in EventType._ALL:
@@ -135,8 +141,17 @@ class EventDispatcher:
             except asyncio.CancelledError:
                 pass
 
-    async def dispatch(self, event: DataEvent, include_strategies: Set[str] | None = None) -> list:
-        all_opportunities = await self._dispatch_local(event, include_strategies=include_strategies)
+    async def dispatch(
+        self,
+        event: DataEvent,
+        include_strategies: Set[str] | None = None,
+        handler_timeout_seconds: Optional[float] = None,
+    ) -> list:
+        all_opportunities = await self._dispatch_local(
+            event,
+            include_strategies=include_strategies,
+            handler_timeout_seconds=handler_timeout_seconds,
+        )
         if include_strategies is None:
             await self._publish_remote(event)
         return all_opportunities
@@ -146,6 +161,7 @@ class EventDispatcher:
         event: DataEvent,
         *,
         include_strategies: Set[str] | None = None,
+        handler_timeout_seconds: Optional[float] = None,
     ) -> list:
         handlers = list(self._handlers.get(event.event_type, []))
         handlers.extend(self._handlers.get("*", []))
@@ -155,7 +171,22 @@ class EventDispatcher:
         if not handlers:
             return []
 
-        tasks = [asyncio.create_task(self._safe_invoke(slug, handler, event)) for slug, handler in handlers]
+        timeout_seconds = (
+            self._handler_timeout_seconds
+            if handler_timeout_seconds is None
+            else max(1.0, float(handler_timeout_seconds))
+        )
+        tasks = [
+            asyncio.create_task(
+                self._safe_invoke(
+                    slug,
+                    handler,
+                    event,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            for slug, handler in handlers
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_opportunities = []
@@ -166,11 +197,18 @@ class EventDispatcher:
                 all_opportunities.extend(result)
         return all_opportunities
 
-    async def _safe_invoke(self, slug: str, handler: EventHandler, event: DataEvent) -> list:
+    async def _safe_invoke(
+        self,
+        slug: str,
+        handler: EventHandler,
+        event: DataEvent,
+        *,
+        timeout_seconds: float,
+    ) -> list:
         try:
             result = await asyncio.wait_for(
                 handler(event),
-                timeout=self._handler_timeout_seconds,
+                timeout=timeout_seconds,
             )
             return result if isinstance(result, list) else []
         except asyncio.TimeoutError:
@@ -178,7 +216,7 @@ class EventDispatcher:
                 "Strategy event handler timed out",
                 strategy=slug,
                 event_type=event.event_type,
-                timeout_seconds=self._handler_timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
             return []
         except Exception as exc:
@@ -186,7 +224,7 @@ class EventDispatcher:
                 "Strategy event handler failed",
                 strategy=slug,
                 event_type=event.event_type,
-                error=str(exc),
+                exc_info=exc,
             )
             return []
 
@@ -245,16 +283,19 @@ class EventDispatcher:
     async def _run_stream_listener(self) -> None:
         own_marker = f'"instance_id":"{self._instance_id}"'
         while self._running:
+            async with self._cursor_lock:
+                last_stream_id = self._last_stream_id
             messages = await redis_streams.read_raw(
                 self._stream_key,
-                last_id=self._last_stream_id,
+                last_id=last_stream_id,
                 block_ms=self._read_block_ms,
                 count=self._read_count,
             )
             if not messages:
                 continue
             for entry_id, raw in messages:
-                self._last_stream_id = entry_id
+                async with self._cursor_lock:
+                    self._last_stream_id = entry_id
                 if own_marker in raw:
                     continue
                 try:
@@ -281,7 +322,7 @@ class EventDispatcher:
                             "Remote DataEvent signal bridge failed",
                             event_type=event.event_type,
                             source=bridge_source,
-                            error=str(exc),
+                            exc_info=exc,
                         )
 
     @property

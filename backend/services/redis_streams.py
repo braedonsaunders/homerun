@@ -88,7 +88,7 @@ class RedisStreamClient:
             logger.debug(
                 "Redis stream append failed",
                 stream=stream,
-                error=str(exc),
+                exc_info=exc,
             )
             await self._close_client()
             return None
@@ -112,7 +112,7 @@ class RedisStreamClient:
             logger.debug(
                 "Redis stream read failed",
                 stream=stream,
-                error=str(exc),
+                exc_info=exc,
             )
             await self._close_client()
             await asyncio.sleep(0.5)
@@ -139,7 +139,7 @@ class RedisStreamClient:
             logger.debug(
                 "Redis hash read failed",
                 keys_count=len(keys),
-                error=str(exc),
+                exc_info=exc,
             )
             await self._close_client()
             return []
@@ -169,7 +169,7 @@ class RedisStreamClient:
             logger.debug(
                 "Redis hash write failed",
                 keys_count=len(rows),
-                error=str(exc),
+                exc_info=exc,
             )
             await self._close_client()
 

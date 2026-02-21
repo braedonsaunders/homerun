@@ -5,14 +5,11 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 """
 
 import asyncio
-import re
 from datetime import timedelta
-from pathlib import Path
-from utils.utcnow import utcnow
 from typing import Optional
+from utils.utcnow import utcnow
 from sqlalchemy import select, delete, func, and_
 
-from config import settings as app_settings
 from models.database import (
     SimulationTrade,
     SimulationPosition,
@@ -40,7 +37,6 @@ class MaintenanceService:
     DEFAULT_WALLET_TRADE_AGE = 60  # Delete wallet trades older than 60 days
     DEFAULT_ANOMALY_AGE = 30  # Delete resolved anomalies older than 30 days
     DEFAULT_LLM_USAGE_RETENTION_DAYS = 30  # Delete raw LLM usage logs older than 30 days
-    _BACKUP_GLOB_PREFIX = "backup_"
 
     async def _market_cache_hygiene_settings(self) -> dict:
         config = {
@@ -83,15 +79,6 @@ class MaintenanceService:
             logger.warning("Failed to read LLM usage retention setting", error=str(e))
         return retention_days
 
-    def _database_path_from_url(self) -> Optional[Path]:
-        for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
-            if app_settings.DATABASE_URL.startswith(prefix):
-                db_path = app_settings.DATABASE_URL[len(prefix) :]
-                if db_path in {":memory:", "/:memory:"}:
-                    return None
-                return Path(db_path)
-        return None
-
     async def cleanup_database_backups(self, older_than_days: int = DEFAULT_DATABASE_BACKUP_RETENTION_DAYS) -> dict:
         """
         Delete backup files older than the configured retention window.
@@ -102,82 +89,9 @@ class MaintenanceService:
         Returns:
             Dict with deletion count and retention metadata.
         """
-        if older_than_days <= 0:
-            return {
-                "status": "disabled",
-                "files_deleted": 0,
-                "older_than_days": int(older_than_days),
-                "retention_days": int(older_than_days),
-            }
-
-        db_path = self._database_path_from_url()
-        if db_path is None:
-            return {
-                "status": "skipped",
-                "files_deleted": 0,
-                "reason": "non_sqlite_database",
-                "older_than_days": int(older_than_days),
-                "retention_days": int(older_than_days),
-            }
-
-        backup_dir = db_path.parent
-        if not backup_dir.exists():
-            return {
-                "status": "skipped",
-                "files_deleted": 0,
-                "reason": "database_directory_missing",
-                "older_than_days": int(older_than_days),
-                "retention_days": int(older_than_days),
-            }
-
-        cutoff = utcnow() - timedelta(days=older_than_days)
-        cutoff_timestamp = cutoff.timestamp()
-        backup_prefix = f"{db_path.name}.{self._BACKUP_GLOB_PREFIX}"
-        backup_timestamp_pattern = re.compile(rf"^{re.escape(db_path.name)}\.backup_\d{{8}}_\d{{6}}\.db(?:-[^.]*)?$")
-        deleted_count = 0
-        scanned_count = 0
-
-        try:
-            for file_path in backup_dir.glob(f"{backup_prefix}*"):
-                if not file_path.is_file():
-                    continue
-                if not backup_timestamp_pattern.match(file_path.name):
-                    continue
-                scanned_count += 1
-                try:
-                    stat = file_path.stat()
-                    if stat.st_mtime <= cutoff_timestamp:
-                        file_path.unlink()
-                        deleted_count += 1
-                except OSError as exc:
-                    logger.warning(
-                        "Failed to delete old DB backup file",
-                        path=str(file_path),
-                        error=str(exc),
-                    )
-        except OSError as exc:
-            logger.warning("Failed to scan DB backup directory", directory=str(backup_dir), error=str(exc))
-            return {
-                "status": "error",
-                "files_deleted": int(deleted_count),
-                "reason": str(exc),
-                "older_than_days": int(older_than_days),
-                "retention_days": int(older_than_days),
-            }
-
-        logger.info(
-            "Cleaned up old DB backup files",
-            backup_dir=str(backup_dir),
-            scanned_count=scanned_count,
-            files_deleted=deleted_count,
-            retention_days=older_than_days,
-        )
-
         return {
-            "status": "success",
-            "files_scanned": scanned_count,
-            "files_deleted": deleted_count,
-            "cutoff_date": cutoff.isoformat(),
+            "status": "skipped",
+            "reason": "database_backups_managed_externally",
             "older_than_days": int(older_than_days),
             "retention_days": int(older_than_days),
         }

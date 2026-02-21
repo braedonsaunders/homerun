@@ -19,12 +19,8 @@ depends_on = None
 
 
 def _table_exists(name: str) -> bool:
-    bind = op.get_bind()
-    result = bind.execute(
-        sa.text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"),
-        {"n": name},
-    )
-    return result.scalar() is not None
+    inspector = sa.inspect(op.get_bind())
+    return name in set(inspector.get_table_names())
 
 
 def upgrade():

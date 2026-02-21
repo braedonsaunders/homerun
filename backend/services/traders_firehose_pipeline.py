@@ -7,8 +7,6 @@ and opportunity conversion inside DB-loaded traders strategies.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from functools import partial
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -19,46 +17,15 @@ from models.database import (
     Strategy,
 )
 from models.opportunity import Opportunity
-from services.market_tradability import get_market_tradability_map
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
-from services.smart_wallet_pool import _looks_like_crypto_market
 from services.strategy_loader import strategy_loader
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.strategy_sdk import StrategySDK
-from utils.converters import normalize_market_id, safe_float
 from utils.logger import get_logger
-from utils.utcnow import utcnow
-
-_safe_float = partial(safe_float, reject_nan_inf=True)
 
 logger = get_logger("traders_firehose_pipeline")
 
 _STRATEGY_SLUG = "traders_confluence"
-
-
-def _parse_time(value: object) -> Optional[datetime]:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).replace(tzinfo=None)
-        except Exception:
-            return None
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            return parsed
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    except Exception:
-        try:
-            return datetime.fromtimestamp(float(text), tz=timezone.utc).replace(tzinfo=None)
-        except Exception:
-            return None
 
 
 def _strip_internal_schema(config: object) -> dict[str, Any]:
@@ -113,44 +80,6 @@ async def _resolve_traders_strategy(session: AsyncSession) -> Optional[Any]:
     instance = loaded.instance
     _apply_strategy_config(instance, config)
     return instance
-
-
-async def _annotate_firehose_context(rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
-
-    market_ids = [
-        normalize_market_id(row.get("market_id")) for row in rows if normalize_market_id(row.get("market_id"))
-    ]
-    tradability = await get_market_tradability_map(market_ids) if market_ids else {}
-    now = utcnow()
-
-    for row in rows:
-        market_id = normalize_market_id(row.get("market_id"))
-        detected = _parse_time(row.get("detected_at") or row.get("last_seen_at") or row.get("first_seen_at"))
-        age_minutes = 0.0
-        if detected is not None:
-            age_minutes = max(0.0, (now - detected).total_seconds() / 60.0)
-
-        row["firehose_market_tradable"] = bool(tradability.get(market_id, True))
-        row["firehose_is_crypto"] = bool(
-            _looks_like_crypto_market(
-                row.get("market_question"),
-                row.get("market_slug"),
-                row.get("market_id"),
-            )
-        )
-        row["firehose_age_minutes"] = age_minutes
-        row["firehose_confidence"] = (
-            _safe_float(row.get("strength"))
-            if _safe_float(row.get("strength")) is not None
-            else (
-                (_safe_float(row.get("conviction_score")) or 0.0) / 100.0
-                if (_safe_float(row.get("conviction_score")) or 0.0) > 1.0
-                else (_safe_float(row.get("conviction_score")) or 0.0)
-            )
-        )
-        row.update(StrategySDK.normalize_trader_signal(row))
 
 
 def _apply_strategy_filter(
@@ -231,13 +160,20 @@ async def apply_traders_firehose_strategy(
     if strategy is None:
         return []
 
-    from services.trader_data_access import annotate_trader_signal_source_context
+    prepared_rows = cloned_rows
+    prepare = getattr(strategy, "prepare_firehose_signals", None)
+    if callable(prepare):
+        prepared = prepare(cloned_rows)
+        if asyncio.iscoroutine(prepared):
+            prepared = await prepared
+        if not isinstance(prepared, list):
+            logger.error("Traders strategy returned non-list prepared firehose payload")
+            return []
+        prepared_rows = [StrategySDK.normalize_trader_signal(dict(row)) for row in prepared if isinstance(row, dict)]
 
-    await annotate_trader_signal_source_context(cloned_rows)
-    await _annotate_firehose_context(cloned_rows)
     return _apply_strategy_filter(
         strategy,
-        cloned_rows,
+        prepared_rows,
         include_filtered=include_filtered,
         limit=limit,
     )

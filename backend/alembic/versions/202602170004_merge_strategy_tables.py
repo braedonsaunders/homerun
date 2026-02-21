@@ -40,13 +40,13 @@ def upgrade():
             sa.Column("description", sa.Text(), nullable=True),
             sa.Column("source_code", sa.Text(), nullable=False),
             sa.Column("class_name", sa.String(), nullable=True),
-            sa.Column("is_system", sa.Boolean(), server_default=sa.text("0")),
-            sa.Column("enabled", sa.Boolean(), server_default=sa.text("1")),
+            sa.Column("is_system", sa.Boolean(), server_default=sa.false()),
+            sa.Column("enabled", sa.Boolean(), server_default=sa.true()),
             sa.Column("status", sa.String(), server_default="unloaded"),
             sa.Column("error_message", sa.Text(), nullable=True),
-            sa.Column("config", sa.JSON(), server_default="{}"),
-            sa.Column("config_schema", sa.JSON(), server_default="{}"),
-            sa.Column("aliases", sa.JSON(), server_default="[]"),
+            sa.Column("config", sa.JSON(), server_default=sa.text("'{}'::json")),
+            sa.Column("config_schema", sa.JSON(), server_default=sa.text("'{}'::json")),
+            sa.Column("aliases", sa.JSON(), server_default=sa.text("'[]'::json")),
             sa.Column("version", sa.Integer(), server_default="1"),
             sa.Column("sort_order", sa.Integer(), server_default="0"),
             sa.Column("created_at", sa.DateTime()),
@@ -70,7 +70,7 @@ def upgrade():
     if "strategy_plugins" in tables:
         op.execute(
             """
-            INSERT OR IGNORE INTO strategies (id, slug, source_key, name, description, source_code,
+            INSERT INTO strategies (id, slug, source_key, name, description, source_code,
                                     class_name, is_system, enabled, status, error_message,
                                     config, config_schema, aliases, version, sort_order,
                                     created_at, updated_at)
@@ -79,6 +79,7 @@ def upgrade():
                    config, '{}', '[]', version, sort_order,
                    created_at, updated_at
             FROM strategy_plugins
+            ON CONFLICT (slug) DO NOTHING
             """
         )
 
@@ -86,15 +87,16 @@ def upgrade():
     if "trader_strategy_definitions" in tables:
         op.execute(
             """
-            INSERT OR IGNORE INTO strategies (id, slug, source_key, name, description, source_code,
-                                              class_name, is_system, enabled, status, error_message,
-                                              config, config_schema, aliases, version, sort_order,
-                                              created_at, updated_at)
+            INSERT INTO strategies (id, slug, source_key, name, description, source_code,
+                                    class_name, is_system, enabled, status, error_message,
+                                    config, config_schema, aliases, version, sort_order,
+                                    created_at, updated_at)
             SELECT id, strategy_key, source_key, label, description, source_code,
                    class_name, is_system, enabled, status, error_message,
                    default_params_json, param_schema_json, aliases_json, version, 0,
                    created_at, updated_at
             FROM trader_strategy_definitions
+            ON CONFLICT (slug) DO NOTHING
             """
         )
 

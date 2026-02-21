@@ -26,6 +26,7 @@ from services.shared_state import _commit_with_retry
 from config import settings
 from models.database import AsyncSessionLocal, DataSource, DataSourceRecord
 from services.data_source_runner import run_data_source
+from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class NewsArticle:
     summary: str = ""
     feed_source: str = ""
     category: str = ""
-    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    fetched_at: datetime = field(default_factory=utcnow)
 
     embedding: Optional[list[float]] = None
 
@@ -90,7 +91,10 @@ class NewsFeedService:
                 new_articles.append(article)
             else:
                 # Keep freshest metadata if we already know the article.
-                if article.fetched_at >= existing.fetched_at:
+                incoming_fetched_at = _to_naive_utc(article.fetched_at) or utcnow()
+                existing_fetched_at = _to_naive_utc(existing.fetched_at) or utcnow()
+                if incoming_fetched_at >= existing_fetched_at:
+                    article.fetched_at = incoming_fetched_at
                     self._articles[article.article_id] = article
 
         self._prune_old_articles()
@@ -250,7 +254,7 @@ class NewsFeedService:
         if not slug:
             return []
 
-        run_started_at = datetime.now(timezone.utc)
+        run_started_at = utcnow()
 
         async with AsyncSessionLocal() as session:
             row = await session.get(DataSource, source.id)
@@ -331,7 +335,7 @@ class NewsFeedService:
         fetched_at = (
             _parse_datetime(row.get("fetched_at"))
             or _parse_datetime(payload.get("fetched_at"))
-            or datetime.now(timezone.utc)
+            or utcnow()
         )
 
         if feed_source == "gdelt":
@@ -361,7 +365,7 @@ class NewsFeedService:
     async def persist_to_db(self) -> int:
         try:
             from models.database import AsyncSessionLocal, NewsArticleCache
-            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
 
             articles = list(self._articles.values())
             if not articles:
@@ -371,7 +375,7 @@ class NewsFeedService:
             async with AsyncSessionLocal() as session:
                 for a in articles:
                     stmt = (
-                        sqlite_insert(NewsArticleCache)
+                        pg_insert(NewsArticleCache)
                         .values(
                             article_id=a.article_id,
                             url=a.url,
@@ -380,8 +384,8 @@ class NewsFeedService:
                             feed_source=a.feed_source,
                             category=a.category,
                             summary=a.summary or "",
-                            published=a.published,
-                            fetched_at=a.fetched_at,
+                            published=_to_naive_utc(a.published),
+                            fetched_at=_to_naive_utc(a.fetched_at),
                             embedding=a.embedding,
                         )
                         .on_conflict_do_update(
@@ -406,7 +410,7 @@ class NewsFeedService:
             from models.database import AsyncSessionLocal, NewsArticleCache
             from sqlalchemy import select
 
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
+            cutoff = utcnow() - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             loaded = 0
             async with AsyncSessionLocal() as session:
                 result = await session.execute(select(NewsArticleCache).where(NewsArticleCache.fetched_at >= cutoff))
@@ -425,7 +429,7 @@ class NewsFeedService:
                         summary=row.summary or "",
                         feed_source=row.feed_source or "",
                         category=row.category or "",
-                        fetched_at=fetched_at or datetime.now(timezone.utc),
+                        fetched_at=fetched_at or utcnow(),
                         embedding=row.embedding,
                     )
                     loaded += 1
@@ -440,7 +444,7 @@ class NewsFeedService:
             from models.database import AsyncSessionLocal, NewsArticleCache
             from sqlalchemy import delete
 
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
+            cutoff = utcnow() - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(delete(NewsArticleCache).where(NewsArticleCache.fetched_at < cutoff))
                 await _commit_with_retry(session)
@@ -522,8 +526,8 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is not None:
-            return value.astimezone(timezone.utc)
-        return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
 
     text = str(value).strip()
     if not text:
@@ -541,8 +545,8 @@ def _parse_datetime(value: Any) -> datetime | None:
         try:
             parsed = datetime.strptime(text, fmt)
             if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
+                return parsed
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
         except ValueError:
             continue
 
@@ -552,8 +556,16 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _infer_feed_source_from_slug(slug: str) -> str:

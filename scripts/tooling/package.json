@@ -1,0 +1,10 @@
+{
+  "name": "homerun-launcher-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "tree-sitter": "0.25.0",
+    "tree-sitter-powershell": "0.25.10"
+  }
+}

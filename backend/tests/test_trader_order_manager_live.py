@@ -147,3 +147,33 @@ async def test_submit_execution_leg_paper_still_simulates_execution():
     assert result.effective_price == 0.55
     assert result.error_message is None
     assert result.payload["submission"] == "simulated"
+
+
+@pytest.mark.asyncio
+async def test_submit_execution_leg_rejects_tiny_price_without_floor_inflation():
+    signal = SimpleNamespace(
+        id="sig-4",
+        market_id="m4",
+        direction="buy_yes",
+        entry_price=0.00005,
+        market_question="Will tiny price be rejected?",
+        payload_json={},
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="paper",
+        signal=signal,
+        leg={
+            "leg_id": "leg_1",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": signal.entry_price,
+        },
+        notional_usd=25.0,
+    )
+
+    assert result.status == "failed"
+    assert result.payload["reason"] == "invalid_price_too_small"
+    assert result.shares is None

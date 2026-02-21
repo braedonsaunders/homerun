@@ -1,76 +1,13 @@
-import logging
-import shutil
-from pathlib import Path
 from typing import Optional
+import warnings
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
-# Get the directory where this config file is located.
-_BACKEND_DIR = Path(__file__).parent.resolve()
-
-
-def _detect_project_root(backend_dir: Path) -> Path:
-    """Resolve project root from the backend directory in the repo layout."""
-    return backend_dir.parent.resolve()
-
-
-_PROJECT_ROOT = _detect_project_root(_BACKEND_DIR)
-_DEFAULT_DB_PATH = (_PROJECT_ROOT / "data" / "homerun.db").resolve()
-_LEGACY_DB_PATH = (_BACKEND_DIR / "homerun.db").resolve()
-_SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
-_SQLITE_SYNC_PREFIX = "sqlite:///"
-_LOGGER = logging.getLogger(__name__)
-
-
-def _safe_file_size(path: Path) -> int:
-    try:
-        return path.stat().st_size if path.exists() else 0
-    except OSError:
-        return 0
-
-
-def _bootstrap_legacy_sqlite_db(target_path: Path) -> None:
-    """One-time copy from legacy backend DB into canonical configured path."""
-    if target_path == _LEGACY_DB_PATH:
-        return
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    if _safe_file_size(target_path) > 0:
-        return
-
-    legacy_size = _safe_file_size(_LEGACY_DB_PATH)
-    if legacy_size <= 0:
-        return
-
-    try:
-        if not target_path.exists():
-            shutil.copy2(_LEGACY_DB_PATH, target_path)
-        else:
-            temp_copy = target_path.with_suffix(target_path.suffix + ".migrating")
-            shutil.copy2(_LEGACY_DB_PATH, temp_copy)
-            if _safe_file_size(target_path) == 0:
-                temp_copy.replace(target_path)
-            else:
-                temp_copy.unlink(missing_ok=True)
-                return
-        _LOGGER.warning(
-            "Bootstrapped canonical SQLite DB from legacy backend path",
-            extra={
-                "legacy_path": str(_LEGACY_DB_PATH),
-                "target_path": str(target_path),
-            },
-        )
-    except Exception as exc:
-        _LOGGER.warning(
-            "Failed to bootstrap canonical SQLite DB from legacy path",
-            extra={
-                "legacy_path": str(_LEGACY_DB_PATH),
-                "target_path": str(target_path),
-                "error": str(exc),
-            },
-        )
-
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+.*",
+)
 
 class Settings(BaseSettings):
     # API Base URLs
@@ -151,8 +88,15 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[str] = None
 
-    # Database - canonical path under project-root data directory
-    DATABASE_URL: str = f"sqlite+aiosqlite:///{_DEFAULT_DB_PATH}"
+    # Database
+    DATABASE_URL: str = "postgresql+asyncpg://homerun:homerun@127.0.0.1:5432/homerun"
+    DATABASE_POOL_SIZE: int = 20
+    DATABASE_MAX_OVERFLOW: int = 40
+    DATABASE_POOL_TIMEOUT_SECONDS: int = 30
+    DATABASE_POOL_RECYCLE_SECONDS: int = 1800
+    DATABASE_CONNECT_TIMEOUT_SECONDS: float = 8.0
+    DATABASE_STATEMENT_TIMEOUT_MS: int = 45000
+    DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 15000
 
     # Redis (worker/event IPC)
     REDIS_HOST: str = "127.0.0.1"
@@ -166,6 +110,7 @@ class Settings(BaseSettings):
     EVENT_BUS_STREAM_KEY: str = "homerun:event_bus"
     DATA_EVENT_STREAM_KEY: str = "homerun:data_events"
     REDIS_EVENT_STREAM_MAXLEN: int = 50000
+    EVENT_HANDLER_TIMEOUT_SECONDS: float = 60.0
 
     # Production Settings
     LOG_LEVEL: str = "INFO"
@@ -189,6 +134,10 @@ class Settings(BaseSettings):
     API_TIMEOUT_SECONDS: int = 30
     MAX_RETRY_ATTEMPTS: int = 4
     RETRY_BASE_DELAY: float = 1.0
+    API_RATE_LIMIT_ENABLED: bool = True
+    API_RATE_LIMIT_REQUESTS_PER_WINDOW: int = 240
+    API_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    API_RATE_LIMIT_BURST: int = 300
 
     # Trading Configuration (Polymarket CLOB)
     # Get these from: https://polymarket.com/settings/api-keys
@@ -294,6 +243,16 @@ class Settings(BaseSettings):
     TIERED_SCANNING_ENABLED: bool = True  # Enable tiered scan loop
     FAST_SCAN_INTERVAL_SECONDS: int = 15  # Hot-tier poll frequency
     FULL_SCAN_INTERVAL_SECONDS: int = 120  # Full (baseline) scan frequency
+    # Full-snapshot strategies are CPU-heavy on large catalogs. Run them on a
+    # slower cadence with an explicit bounded market batch.
+    SCANNER_FULL_SNAPSHOT_STRATEGY_INTERVAL_SECONDS: int = 120
+    SCANNER_FULL_SNAPSHOT_MAX_MARKETS: int = 1500
+    SCANNER_FAST_STRATEGY_TIMEOUT_SECONDS: float = 12.0
+    SCANNER_FULL_SNAPSHOT_STRATEGY_TIMEOUT_SECONDS: float = 60.0
+    SCANNER_FULL_SNAPSHOT_WATCHDOG_SECONDS: int = 180
+    # Maximum allowed age for live token prices attached to opportunities.
+    # Stale opportunities are pruned before UI/autotrader visibility.
+    SCANNER_MARKET_PRICE_MAX_AGE_SECONDS: int = 90
     REALTIME_SCAN_DEBOUNCE_SECONDS: float = 0.25  # WS change coalescing window
     REALTIME_SCAN_MAX_PENDING_TOKENS: int = 2000  # Backpressure cap for queued changed tokens
     REALTIME_SCAN_MAX_BATCH_TOKENS: int = 500  # Max changed tokens consumed per fast scan
@@ -501,7 +460,7 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def _normalize_database_url(cls, value: object) -> object:
-        """Normalize DB URL so TUI/worker cwd changes never split databases."""
+        """Normalize DB URL from env/CLI input."""
         if value is None:
             return value
 
@@ -509,26 +468,15 @@ class Settings(BaseSettings):
         if not text:
             return text
 
-        # Convert relative SQLite paths to absolute project-root paths.
-        for prefix in (_SQLITE_ASYNC_PREFIX, _SQLITE_SYNC_PREFIX):
-            if not text.startswith(prefix):
-                continue
-            path_part = text[len(prefix) :]
-            if not path_part:
-                return text
-            if path_part in {":memory:", "/:memory:"}:
-                return f"{prefix}:memory:"
-            absolute = Path(path_part).resolve() if path_part.startswith("/") else (_PROJECT_ROOT / path_part).resolve()
-            _bootstrap_legacy_sqlite_db(absolute)
-            return f"{prefix}{absolute}"
-
-        return text
+        return text.rstrip("/")
 
     class Config:
         pass
 
 
 settings = Settings()
+
+RUNTIME_SETTINGS_PRECEDENCE = "db_non_null_override > env > code_default"
 
 
 _EVENTS_DB_FIELD_MAP: dict[str, tuple[str, object]] = {
@@ -627,6 +575,15 @@ def _coerce_setting(value: object, default: object) -> object:
     return value
 
 
+def _resolve_runtime_override(
+    db_value: object,
+    current_value: object,
+    fallback_default: object,
+) -> object:
+    baseline = current_value if current_value is not None else fallback_default
+    return _coerce_setting(db_value, baseline)
+
+
 async def apply_events_settings():
     """Load events settings from DB into the runtime config singleton."""
     from models.database import AsyncSessionLocal, AppSettings
@@ -651,38 +608,70 @@ async def apply_events_settings():
         config_payload["gdelt_news_max_records"] = getattr(db, "events_gdelt_news_max_records", None)
 
     for db_field, (config_attr, default) in _EVENTS_DB_FIELD_MAP.items():
-        resolved = _coerce_setting(config_payload.get(db_field), default)
+        current = getattr(settings, config_attr, default)
+        resolved = _resolve_runtime_override(config_payload.get(db_field), current, default)
         object.__setattr__(settings, config_attr, resolved)
+
+    current_acled_key = getattr(settings, "ACLED_API_KEY", None)
+    current_acled_email = getattr(settings, "ACLED_EMAIL", None)
+    current_opensky_user = getattr(settings, "OPENSKY_USERNAME", None)
+    current_opensky_password = getattr(settings, "OPENSKY_PASSWORD", None)
+    current_aisstream_key = getattr(settings, "AISSTREAM_API_KEY", None)
+    current_cloudflare_token = getattr(settings, "CLOUDFLARE_RADAR_TOKEN", None)
 
     object.__setattr__(
         settings,
         "ACLED_API_KEY",
-        decrypt_secret(getattr(db, "events_acled_api_key", None)),
+        _resolve_runtime_override(
+            decrypt_secret(getattr(db, "events_acled_api_key", None)),
+            current_acled_key,
+            None,
+        ),
     )
     object.__setattr__(
         settings,
         "ACLED_EMAIL",
-        str(getattr(db, "events_acled_email", "") or "").strip() or None,
+        _resolve_runtime_override(
+            str(getattr(db, "events_acled_email", "") or "").strip() or None,
+            current_acled_email,
+            None,
+        ),
     )
     object.__setattr__(
         settings,
         "OPENSKY_USERNAME",
-        str(getattr(db, "events_opensky_username", "") or "").strip() or None,
+        _resolve_runtime_override(
+            str(getattr(db, "events_opensky_username", "") or "").strip() or None,
+            current_opensky_user,
+            None,
+        ),
     )
     object.__setattr__(
         settings,
         "OPENSKY_PASSWORD",
-        decrypt_secret(getattr(db, "events_opensky_password", None)),
+        _resolve_runtime_override(
+            decrypt_secret(getattr(db, "events_opensky_password", None)),
+            current_opensky_password,
+            None,
+        ),
     )
     object.__setattr__(
         settings,
         "AISSTREAM_API_KEY",
-        decrypt_secret(getattr(db, "events_aisstream_api_key", None)),
+        _resolve_runtime_override(
+            decrypt_secret(getattr(db, "events_aisstream_api_key", None)),
+            current_aisstream_key,
+            None,
+        ),
     )
     object.__setattr__(
         settings,
         "CLOUDFLARE_RADAR_TOKEN",
-        decrypt_secret(getattr(db, "events_cloudflare_radar_token", None)),
+        _resolve_runtime_override(
+            decrypt_secret(getattr(db, "events_cloudflare_radar_token", None)),
+            current_cloudflare_token,
+            None,
+        ),
     )
 
 
@@ -796,13 +785,23 @@ async def apply_search_filters():
 
     for config_attr, db_attr, default in _apply:
         db_val = getattr(db, db_attr, None)
-        if db_val is not None:
-            if isinstance(db_val, str) and not str(db_val).strip():
-                if default is not None:
-                    db_val = default
-            # min_profit_threshold is stored as percentage in DB, fraction in config
-            if db_attr == "min_profit_threshold":
-                db_val = db_val / 100.0
-            object.__setattr__(settings, config_attr, db_val)
-        elif default is not None:
-            object.__setattr__(settings, config_attr, default)
+        if isinstance(db_val, str) and not str(db_val).strip() and default is not None:
+            db_val = default
+        if db_attr == "min_profit_threshold" and db_val is not None:
+            db_val = db_val / 100.0
+
+        current = getattr(settings, config_attr, default)
+        resolved = _resolve_runtime_override(db_val, current, default)
+        object.__setattr__(settings, config_attr, resolved)
+
+
+async def apply_runtime_settings_overrides() -> None:
+    """Apply DB runtime overrides with deterministic precedence.
+
+    Precedence is always:
+      1) non-null DB override
+      2) environment value already loaded into ``settings``
+      3) code default
+    """
+    await apply_events_settings()
+    await apply_search_filters()

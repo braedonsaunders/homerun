@@ -25,12 +25,14 @@ from models.database import (
 )
 from services.data_source_runner import run_data_source
 from services.worker_state import (
+    _is_retryable_db_error,
     clear_worker_run_request,
     read_worker_control,
     read_worker_snapshot,
     write_worker_snapshot,
 )
 from utils.logger import setup_logging
+from utils.utcnow import utcnow
 
 setup_logging(level=os.environ.get("LOG_LEVEL", "INFO"), json_format=False)
 logger = logging.getLogger("events_worker")
@@ -40,6 +42,18 @@ _IDLE_SLEEP_SECONDS = 5
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _utcnow_naive() -> datetime:
+    return utcnow()
+
+
+def _to_naive_utc(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    return _utcnow_naive()
 
 
 def _to_aware(value: Any) -> datetime:
@@ -226,7 +240,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
         return 0
 
     try:
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         persisted = 0
         async with AsyncSessionLocal() as session:
@@ -237,7 +251,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                 signal_type = str(signal.get("signal_type") or "world").strip().lower() or "world"
                 raw_country = str(signal.get("country") or "").strip().upper() or None
                 country_iso3 = _as_iso3(raw_country)
-                detected_at = _to_aware(signal.get("detected_at"))
+                detected_at = _to_naive_utc(signal.get("detected_at"))
                 related_market_ids = [
                     str(item or "").strip()
                     for item in _as_list(signal.get("related_market_ids"))
@@ -245,7 +259,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                 ]
                 metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
                 stmt = (
-                    sqlite_insert(EventsSignal)
+                    pg_insert(EventsSignal)
                     .values(
                         id=signal_id,
                         signal_type=signal_type,
@@ -304,7 +318,7 @@ async def _write_snapshot(
     signals: list[dict[str, Any]] | None = None,
     preserve_existing: bool = False,
 ) -> None:
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
@@ -330,13 +344,13 @@ async def _write_snapshot(
                 )
 
                 stmt = (
-                    sqlite_insert(EventsSnapshot)
+                    pg_insert(EventsSnapshot)
                     .values(
                         id="latest",
                         status=next_status,
                         signals_json=next_signals,
                         stats=next_stats,
-                        updated_at=_utcnow(),
+                        updated_at=_utcnow_naive(),
                     )
                     .on_conflict_do_update(
                         index_elements=["id"],
@@ -344,7 +358,7 @@ async def _write_snapshot(
                             "status": next_status,
                             "signals_json": next_signals,
                             "stats": next_stats,
-                            "updated_at": _utcnow(),
+                            "updated_at": _utcnow_naive(),
                         },
                     )
                 )
@@ -352,7 +366,7 @@ async def _write_snapshot(
                 await session.commit()
             return
         except Exception as exc:
-            if "locked" in str(exc).lower() and attempt < max_attempts:
+            if _is_retryable_db_error(exc) and attempt < max_attempts:
                 await asyncio.sleep(0.15 * attempt)
                 continue
             logger.warning("Failed to write events snapshot: %s", exc)

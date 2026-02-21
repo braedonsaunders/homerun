@@ -6,6 +6,8 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -97,8 +99,8 @@ def test_tail_end_carry_emits_near_expiry_high_probability_entry() -> None:
     market = _market(
         market_id="tail_1",
         question="Will Team X make playoffs?",
-        yes_price=0.93,
-        no_price=0.07,
+        yes_price=0.90,
+        no_price=0.10,
         end_in_days=2.0,
         liquidity=30000.0,
     )
@@ -106,8 +108,8 @@ def test_tail_end_carry_emits_near_expiry_high_probability_entry() -> None:
     yes_token, no_token = market.clob_token_ids
 
     prices = {
-        yes_token: {"mid": 0.93, "bid": 0.925, "ask": 0.935},
-        no_token: {"mid": 0.07, "bid": 0.065, "ask": 0.075},
+        yes_token: {"mid": 0.90, "bid": 0.895, "ask": 0.905},
+        no_token: {"mid": 0.10, "bid": 0.095, "ask": 0.105},
     }
 
     opps = strategy.detect(events=[event], markets=[market], prices=prices)
@@ -117,3 +119,8 @@ def test_tail_end_carry_emits_near_expiry_high_probability_entry() -> None:
     assert opp.is_guaranteed is False
     assert opp.expected_payout < 1.0
     assert opp.expected_payout > opp.total_cost
+    raw_roi = ((opp.expected_payout - opp.total_cost) / opp.total_cost) * 100.0
+    expected_fee = opp.expected_payout * strategy.fee
+    expected_roi = ((opp.expected_payout - opp.total_cost - expected_fee) / opp.total_cost) * 100.0
+    assert opp.roi_percent < raw_roi
+    assert opp.roi_percent == pytest.approx(expected_roi, rel=1e-9)

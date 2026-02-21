@@ -26,13 +26,27 @@ from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights
 from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
-from utils.converters import to_confidence
+from utils.converters import normalize_market_id, to_confidence
 from functools import partial
 from utils.converters import safe_float
+from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
 _safe_float_nan = partial(safe_float, reject_nan_inf=True)
+
+_CRYPTO_MARKET_HINTS = (
+    "btc",
+    "bitcoin",
+    "eth",
+    "ethereum",
+    "sol",
+    "solana",
+    "xrp",
+    "doge",
+    "crypto",
+    "coinbase",
+)
 
 
 class TradersConfluenceStrategy(BaseStrategy):
@@ -175,6 +189,64 @@ class TradersConfluenceStrategy(BaseStrategy):
                 return datetime.fromtimestamp(float(text), tz=timezone.utc)
             except Exception:
                 return None
+
+    @staticmethod
+    def _age_minutes(signal: dict) -> float:
+        detected = TradersConfluenceStrategy._parse_dt(
+            signal.get("detected_at") or signal.get("last_seen_at") or signal.get("first_seen_at")
+        )
+        if detected is None:
+            return 0.0
+        now = utcnow()
+        return max(0.0, (now - detected).total_seconds() / 60.0)
+
+    @staticmethod
+    def _is_crypto_market(signal: dict) -> bool:
+        merged_text = " ".join(
+            [
+                str(signal.get("market_question") or ""),
+                str(signal.get("market_slug") or ""),
+                str(signal.get("market_id") or ""),
+            ]
+        ).strip().lower()
+        if not merged_text:
+            return False
+        return any(hint in merged_text for hint in _CRYPTO_MARKET_HINTS)
+
+    @staticmethod
+    def _is_market_tradable(signal: dict) -> bool:
+        explicit = signal.get("is_tradeable")
+        if isinstance(explicit, bool):
+            return explicit
+        tradability_flags = (
+            signal.get("is_actionable"),
+            signal.get("active"),
+            signal.get("accepting_orders"),
+            signal.get("enable_order_book"),
+        )
+        for value in tradability_flags:
+            if isinstance(value, bool):
+                return value
+        return True
+
+    async def prepare_firehose_signals(self, signals: list[dict]) -> list[dict]:
+        if not signals:
+            return []
+
+        rows = [StrategySDK.normalize_trader_signal(dict(row)) for row in signals if isinstance(row, dict)]
+        if not rows:
+            return []
+
+        for row in rows:
+            market_id = normalize_market_id(row.get("market_id")) or ""
+            row["market_id"] = market_id
+            row["firehose_market_tradable"] = self._is_market_tradable(row)
+            row["firehose_is_crypto"] = self._is_crypto_market(row)
+            row["firehose_age_minutes"] = self._age_minutes(row)
+            row["firehose_confidence"] = self._confidence(row)
+            row.update(StrategySDK.normalize_trader_signal(row))
+
+        return rows
 
     def evaluate_firehose_signal(
         self,
@@ -561,13 +633,16 @@ class TradersConfluenceStrategy(BaseStrategy):
         prices: dict[str, dict],
     ) -> list[Opportunity]:
         """Async detect for DB/runtime backtests and direct strategy invocation."""
-        signals = await StrategySDK.get_trader_strategy_signals(
+        signals = await StrategySDK.get_trader_firehose_signals(
             limit=250,
-            include_filtered=False,
+            include_filtered=True,
+            include_source_context=False,
         )
         if not signals:
             return []
-        return self.build_opportunities_from_firehose(signals, limit=None)
+        prepared = await self.prepare_firehose_signals(signals)
+        filtered = self.apply_firehose_filters(prepared, include_filtered=False, limit=None)
+        return self.build_opportunities_from_firehose(filtered, limit=None)
 
     def detect_from_signals(
         self,
@@ -602,9 +677,10 @@ class TradersConfluenceStrategy(BaseStrategy):
     async def on_event(self, event: DataEvent) -> list[Opportunity]:
         if event.event_type != "trader_activity":
             return []
-        signals = event.payload.get("signals") or []
-        if not signals:
+        raw_signals = event.payload.get("signals") or []
+        if not raw_signals:
             return []
+        signals = await self.prepare_firehose_signals(raw_signals)
         filtered = self.apply_firehose_filters(signals, include_filtered=False, limit=None)
         return self.build_opportunities_from_firehose(filtered, limit=None)
 

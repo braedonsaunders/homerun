@@ -23,7 +23,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 
 from utils.utcnow import utcnow
-from config import settings, apply_search_filters
+from config import settings, apply_runtime_settings_overrides
 from models.database import AsyncSessionLocal
 from services.scanner import scanner
 from services.strategy_signal_bridge import bridge_opportunities_to_signals
@@ -70,6 +70,36 @@ def _parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _build_market_history_payload(opps: list) -> Optional[dict[str, list[dict[str, float]]]]:
+    """Build a non-empty market history payload for scanner snapshot writes."""
+    market_history = scanner.get_broad_market_history(max_markets=500)
+
+    # Ensure all opportunity markets are included even if they didn't make
+    # the broad recency cap.
+    opp_history = scanner.get_market_history_for_opportunities(opps)
+    for market_id, points in opp_history.items():
+        if market_id and market_id not in market_history and isinstance(points, list) and len(points) >= 2:
+            market_history[market_id] = points
+
+    # Fallback: preserve inline history that already exists on opportunities.
+    for opp in opps:
+        markets = getattr(opp, "markets", None)
+        if not isinstance(markets, list):
+            continue
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            market_id = str(market.get("id", "") or "").strip()
+            if not market_id or market_id in market_history:
+                continue
+            points = market.get("price_history")
+            if not isinstance(points, list) or len(points) < 2:
+                continue
+            market_history[market_id] = points
+
+    return market_history if market_history else None
 
 
 async def _catalog_refresh_loop() -> None:
@@ -281,329 +311,409 @@ async def _run_scan_loop() -> None:
     catalog_task = asyncio.create_task(_catalog_refresh_loop())
 
     stale_scan_streak = 0
-    # scan_fast reads from Redis (no HTTP pagination), so watchdog can be tight.
+    # Keep watchdog above fast-scan cadence while honoring configured ceiling.
     scan_watchdog_seconds = max(
-        120,
+        30,
+        int(settings.SCAN_WATCHDOG_SECONDS),
         int(settings.FAST_SCAN_INTERVAL_SECONDS) * 3,
     )
+    full_snapshot_watchdog_seconds = max(
+        30,
+        int(getattr(settings, "SCANNER_FULL_SNAPSHOT_WATCHDOG_SECONDS", 180) or 180),
+    )
+    heavy_scan_task: asyncio.Task | None = None
+    pending_heavy_targeted_ids: list[str] | None = None
 
-    while True:
-        async with AsyncSessionLocal() as session:
-            control = await read_scanner_control(session)
+    async def _run_full_snapshot_cycle(
+        *,
+        reason: str,
+        targeted_ids: list[str] | None,
+        force: bool,
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                scanner.scan_full_snapshot_strategies(
+                    reason=reason,
+                    targeted_condition_ids=targeted_ids,
+                    force=force,
+                ),
+                timeout=full_snapshot_watchdog_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Full-snapshot scan timed out after %ss",
+                full_snapshot_watchdog_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Full-snapshot scan cycle failed")
+
+    try:
+        while True:
+            async with AsyncSessionLocal() as session:
+                control = await read_scanner_control(session)
+                try:
+                    # Rehydrate DB-backed runtime settings each loop using the
+                    # global precedence chain: DB override > env > defaults.
+                    await apply_runtime_settings_overrides()
+                except Exception as exc:
+                    logger.warning("Failed to refresh scanner runtime settings from DB: %s", exc)
+                try:
+                    await refresh_strategy_runtime_if_needed(
+                        session,
+                        source_keys=["scanner"],
+                    )
+                except Exception as exc:
+                    logger.warning("Scanner strategy refresh check failed: %s", exc)
+
+            interval = max(10, min(3600, control["scan_interval_seconds"] or 60))
+            paused = control.get("is_paused", False)
+            requested = control.get("requested_scan_at")
+
+            if paused and not requested:
+                if heavy_scan_task is not None and not heavy_scan_task.done():
+                    heavy_scan_task.cancel()
+                    try:
+                        await heavy_scan_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    heavy_scan_task = None
+                pending_heavy_targeted_ids = None
+                await _stop_ws_feeds()
+                try:
+                    async with AsyncSessionLocal() as session:
+                        await write_worker_snapshot(
+                            session,
+                            "scanner",
+                            running=True,
+                            enabled=False,
+                            current_activity="Paused",
+                            interval_seconds=interval,
+                            last_run_at=None,
+                            last_error=None,
+                            stats={"opportunities_count": 0, "signals_emitted_last_run": 0},
+                        )
+                except Exception:
+                    pass
+                await asyncio.sleep(min(10, interval))
+                continue
+
+            await _ensure_ws_feeds_running()
+
+            # If a manual scan was requested, trigger an immediate catalog refresh
+            # (non-blocking) so the next scan cycle uses the freshest data.
+            targeted_ids = pop_targeted_condition_ids() if requested else []
+            if requested:
+                asyncio.create_task(_one_shot_catalog_refresh())
+                pending_heavy_targeted_ids = list(targeted_ids)
+
+            # Always use scan_fast — catalog refresh runs independently.
+            scan_error: Exception | None = None
             try:
-                # Rehydrate DB-backed scanner/search strategy settings each loop.
-                await apply_search_filters()
-            except Exception as exc:
-                logger.warning("Failed to refresh scanner runtime settings from DB: %s", exc)
-            try:
-                await refresh_strategy_runtime_if_needed(
-                    session,
-                    source_keys=["scanner"],
+                reactive_tokens = await scanner.consume_reactive_tokens()
+                await asyncio.wait_for(
+                    scanner.scan_fast(
+                        reactive_token_ids=reactive_tokens,
+                        targeted_condition_ids=targeted_ids or None,
+                    ),
+                    timeout=scan_watchdog_seconds,
                 )
-            except Exception as exc:
-                logger.warning("Scanner strategy refresh check failed: %s", exc)
-        interval = max(10, min(3600, control["scan_interval_seconds"] or 60))
-        paused = control.get("is_paused", False)
-        requested = control.get("requested_scan_at")
+                stale_scan_streak = 0
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError as exc:
+                stale_scan_streak += 1
+                logger.warning(
+                    "Scanner scan cycle timed out after %ss (streak=%d)",
+                    scan_watchdog_seconds,
+                    stale_scan_streak,
+                )
+                # NOTE: we no longer clear _cached_markets on timeout streaks.
+                # The catalog is persisted to DB and refreshed independently —
+                # clearing the in-memory cache would cause a degenerate loop.
+                if stale_scan_streak >= 5:
+                    try:
+                        await _stop_ws_feeds()
+                        await _ensure_ws_feeds_running()
+                    except Exception as fb_exc:
+                        logger.warning("Scanner stale timeout heartbeat restart failed: %s", fb_exc)
+                    stale_scan_streak = 0
+                scan_error = exc
+            except Exception as e:
+                stale_scan_streak = 0
+                scan_error = e
 
-        if paused and not requested:
-            await _stop_ws_feeds()
-            try:
+            if scan_error is not None:
+                network_resolution_error = _is_upstream_resolution_error(scan_error)
+                timeout_error = isinstance(scan_error, asyncio.TimeoutError)
+                if timeout_error:
+                    logger.warning("Scanner scan timeout handling after %.1fs: %s", scan_watchdog_seconds, scan_error)
+                elif network_resolution_error:
+                    logger.warning(
+                        "Scanner upstream DNS/network resolution failed; retaining previous snapshot where possible: %s",
+                        scan_error,
+                    )
+                else:
+                    logger.exception("Scan failed: %s", scan_error)
+
+                try:
+                    prev_opps = scanner.get_opportunities()
+                except Exception:
+                    prev_opps = []
+
+                existing_last_scan = None
                 async with AsyncSessionLocal() as session:
+                    try:
+                        existing_opps, existing_status = await read_scanner_snapshot(session)
+                    except Exception:
+                        existing_opps, existing_status = [], {}
+                if not prev_opps and existing_opps:
+                    prev_opps = existing_opps
+                if isinstance(existing_status, dict):
+                    existing_last_scan = existing_status.get("last_scan")
+
+                if timeout_error and prev_opps:
+                    try:
+                        attached = await scanner.attach_price_history_to_opportunities(
+                            prev_opps,
+                            timeout_seconds=0.0,
+                        )
+                        if attached > 0:
+                            logger.info(
+                                "Timeout recovery hydrated sparkline history for %d markets",
+                                attached,
+                            )
+                    except Exception as history_exc:
+                        logger.debug("Timeout recovery sparkline hydration skipped: %s", history_exc)
+
+                if timeout_error:
+                    activity = "Scanner cycle timeout; retaining last known snapshot."
+                elif network_resolution_error:
+                    activity = "Upstream market API DNS/network error; retaining last known snapshot."
+                else:
+                    activity = f"Last scan error: {scan_error}"
+
+                async with AsyncSessionLocal() as session:
+                    await write_scanner_snapshot(
+                        session,
+                        prev_opps,
+                        {
+                            "running": True,
+                            "enabled": not paused,
+                            "interval_seconds": interval,
+                            "last_scan": existing_last_scan,
+                            "current_activity": activity,
+                            "strategies": [],
+                        },
+                        market_history=_build_market_history_payload(prev_opps),
+                    )
                     await write_worker_snapshot(
                         session,
                         "scanner",
                         running=True,
-                        enabled=False,
-                        current_activity="Paused",
+                        enabled=not paused,
+                        current_activity=activity,
                         interval_seconds=interval,
-                        last_run_at=None,
-                        last_error=None,
-                        stats={"opportunities_count": 0, "signals_emitted_last_run": 0},
+                        last_run_at=utcnow(),
+                        last_error=str(scan_error),
+                        stats={
+                            "opportunities_count": len(prev_opps),
+                            "signals_emitted_last_run": 0,
+                        },
                     )
-            except Exception:
-                pass
-            await asyncio.sleep(min(10, interval))
-            continue
+                sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED else interval
+                await asyncio.sleep(max(1, sleep_seconds))
+                continue
 
-        await _ensure_ws_feeds_running()
-
-        # If a manual scan was requested, trigger an immediate catalog refresh
-        # (non-blocking) so the next scan cycle uses the freshest data.
-        targeted_ids = pop_targeted_condition_ids() if requested else []
-        if requested:
-            asyncio.create_task(_one_shot_catalog_refresh())
-
-        # Always use scan_fast — catalog refresh runs independently.
-        scan_error: Exception | None = None
-        try:
-            reactive_tokens = await scanner.consume_reactive_tokens()
-            await asyncio.wait_for(
-                scanner.scan_fast(
-                    reactive_token_ids=reactive_tokens,
-                    targeted_condition_ids=targeted_ids or None,
-                ),
-                timeout=scan_watchdog_seconds,
-            )
-            stale_scan_streak = 0
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError as exc:
-            stale_scan_streak += 1
-            logger.warning(
-                "Scanner scan cycle timed out after %ss (streak=%d)",
-                scan_watchdog_seconds,
-                stale_scan_streak,
-            )
-            # NOTE: we no longer clear _cached_markets on timeout streaks.
-            # The catalog is persisted to DB and refreshed independently —
-            # clearing the in-memory cache would cause a degenerate loop.
-            if stale_scan_streak >= 5:
-                try:
-                    await _stop_ws_feeds()
-                    await _ensure_ws_feeds_running()
-                except Exception as fb_exc:
-                    logger.warning("Scanner stale timeout heartbeat restart failed: %s", fb_exc)
-                stale_scan_streak = 0
-            scan_error = exc
-        except Exception as e:
-            stale_scan_streak = 0
-            scan_error = e
-
-        if scan_error is not None:
-            network_resolution_error = _is_upstream_resolution_error(scan_error)
-            timeout_error = isinstance(scan_error, asyncio.TimeoutError)
-            if timeout_error:
-                logger.warning("Scanner scan timeout handling after %.1fs: %s", scan_watchdog_seconds, scan_error)
-            elif network_resolution_error:
-                logger.warning(
-                    "Scanner upstream DNS/network resolution failed; retaining previous snapshot where possible: %s",
-                    scan_error,
-                )
-            else:
-                logger.exception("Scan failed: %s", scan_error)
-
-            try:
-                prev_opps = scanner.get_opportunities()
-            except Exception:
-                prev_opps = []
-
-            existing_last_scan = None
-            async with AsyncSessionLocal() as session:
-                try:
-                    existing_opps, existing_status = await read_scanner_snapshot(session)
-                except Exception:
-                    existing_opps, existing_status = [], {}
-            if not prev_opps and existing_opps:
-                prev_opps = existing_opps
-            if isinstance(existing_status, dict):
-                existing_last_scan = existing_status.get("last_scan")
-
-            if timeout_error and prev_opps:
-                try:
-                    attached = await scanner.attach_price_history_to_opportunities(
-                        prev_opps,
-                        timeout_seconds=18.0,
-                    )
-                    if attached > 0:
-                        logger.info(
-                            "Timeout recovery hydrated sparkline history for %d markets",
-                            attached,
-                        )
-                except Exception as history_exc:
-                    logger.debug("Timeout recovery sparkline hydration skipped: %s", history_exc)
-
-            if timeout_error:
-                activity = "Scanner cycle timeout; retaining last known snapshot."
-            elif network_resolution_error:
-                activity = "Upstream market API DNS/network error; retaining last known snapshot."
-            else:
-                activity = f"Last scan error: {scan_error}"
-
-            async with AsyncSessionLocal() as session:
-                await write_scanner_snapshot(
-                    session,
-                    prev_opps,
-                    {
-                        "running": True,
-                        "enabled": not paused,
-                        "interval_seconds": interval,
-                        "last_scan": existing_last_scan,
-                        "current_activity": activity,
-                        "strategies": [],
-                    },
-                    market_history=scanner.get_broad_market_history(max_markets=500),
-                )
-                await write_worker_snapshot(
-                    session,
-                    "scanner",
-                    running=True,
-                    enabled=not paused,
-                    current_activity=activity,
-                    interval_seconds=interval,
-                    last_run_at=utcnow(),
-                    last_error=str(scan_error),
-                    stats={
-                        "opportunities_count": len(prev_opps),
-                        "signals_emitted_last_run": 0,
-                    },
-                )
-            sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED else interval
-            await asyncio.sleep(max(1, sleep_seconds))
-            continue
-
-        # Persist snapshot. Post-scan failures must not crash the worker loop.
-        try:
-            opps = scanner.get_opportunities()
-        except Exception as e:
-            logger.exception("Failed to fetch opportunities after scan: %s", e)
-            opps = []
-
-        # Reattach inline analysis previously persisted by API/manual judging.
-        # This prevents worker snapshot writes from clobbering card AI data.
-        if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
-            try:
-                attached_inline = await _reattach_inline_ai_from_snapshot(opps)
-                if attached_inline:
-                    logger.debug(
-                        "Reattached %d inline AI analyses from snapshot",
-                        attached_inline,
-                    )
-            except Exception as e:
-                logger.debug("Inline AI snapshot reattach skipped: %s", e)
-
-        # API-triggered manual AI analysis runs in the API process and writes
-        # OpportunityJudgment rows. Re-attach those judgments here so scanner
-        # worker memory doesn't wipe them on the next snapshot write.
-        if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
-            try:
-                await asyncio.wait_for(scanner._attach_ai_judgments(opps), timeout=6)
-            except asyncio.TimeoutError:
-                logger.debug("Timed out reattaching AI judgments in worker loop")
-            except Exception as e:
-                logger.debug("AI judgment reattach skipped: %s", e)
-
-        try:
-            status = scanner.get_status()
-        except Exception as e:
-            logger.exception("Failed to build scanner status after scan: %s", e)
-            last_scan = None
-            try:
-                if scanner.last_scan:
-                    ls = scanner.last_scan
-                    if ls.tzinfo is None:
-                        ls = ls.replace(tzinfo=timezone.utc)
-                    else:
-                        ls = ls.astimezone(timezone.utc)
-                    last_scan = ls.replace(tzinfo=None).isoformat() + "Z"
-            except Exception:
-                pass
-            status = {
-                "running": True,
-                "enabled": not paused,
-                "interval_seconds": interval,
-                "last_scan": last_scan,
-                "current_activity": getattr(scanner, "_current_activity", None),
-                "strategies": [],
-            }
-
-        try:
-            async with AsyncSessionLocal() as session:
-                # Re-read AI analysis fields from the current snapshot right before
-                # writing, inside the same session/transaction.  This closes the
-                # TOCTOU window: any AI analysis that landed between the earlier
-                # reattach-read and this point is merged into the outgoing opps so
-                # the subsequent write does not clobber it.
-                if opps:
+            force_heavy_scan = pending_heavy_targeted_ids is not None
+            targeted_for_heavy = list(pending_heavy_targeted_ids or [])
+            if heavy_scan_task is None or heavy_scan_task.done():
+                if heavy_scan_task is not None and heavy_scan_task.done():
                     try:
-                        snapshot_opps, _ = await read_scanner_snapshot(session)
-                        ai_by_stable: dict[str, object] = {}
-                        for snap_opp in snapshot_opps:
-                            stable_id = getattr(snap_opp, "stable_id", None)
-                            analysis = getattr(snap_opp, "ai_analysis", None)
-                            if stable_id and analysis is not None:
-                                ai_by_stable[stable_id] = analysis
-                        if ai_by_stable:
-                            merged = 0
-                            for opp in opps:
-                                if getattr(opp, "ai_analysis", None) is not None:
-                                    continue
-                                sid = getattr(opp, "stable_id", None)
-                                if sid and sid in ai_by_stable:
-                                    opp.ai_analysis = ai_by_stable[sid]
-                                    merged += 1
-                            if merged:
-                                logger.debug(
-                                    "Pre-write AI merge: attached %d analyses",
-                                    merged,
-                                )
-                    except Exception as e:
-                        logger.debug("Pre-write AI merge skipped: %s", e)
+                        await heavy_scan_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    heavy_scan_task = None
+                run_heavy_now = force_heavy_scan or scanner._full_snapshot_strategy_due(datetime.now(timezone.utc))
+                if run_heavy_now:
+                    pending_heavy_targeted_ids = None
+                    heavy_scan_task = asyncio.create_task(
+                        _run_full_snapshot_cycle(
+                            reason="manual_request" if force_heavy_scan else "scheduled",
+                            targeted_ids=targeted_for_heavy if targeted_for_heavy else None,
+                            force=force_heavy_scan,
+                        ),
+                        name="scanner-full-snapshot-lane",
+                    )
 
-                # Write broad market history so subprocesses (traders, weather)
-                # can hydrate sparklines for any market, not just arb opportunities.
-                market_history = scanner.get_broad_market_history(max_markets=500)
-                # Ensure all opportunity markets are included even if they didn't
-                # make the top-500 recency cut.
-                opp_history = scanner.get_market_history_for_opportunities(opps)
-                for mid, hist in opp_history.items():
-                    if mid not in market_history:
-                        market_history[mid] = hist
-                await write_scanner_snapshot(session, opps, status, market_history=market_history)
-                emitted = await bridge_opportunities_to_signals(
-                    session,
-                    opps,
-                    source="scanner",
-                    quality_reports=scanner.quality_reports,
-                )
-                await clear_scan_request(session)
-                await write_worker_snapshot(
-                    session,
-                    "scanner",
-                    running=True,
-                    enabled=not paused,
-                    current_activity="Idle - waiting for next scanner cycle.",
-                    interval_seconds=interval,
-                    last_run_at=utcnow(),
-                    last_error=None,
-                    stats={
-                        "opportunities_count": len(opps),
-                        "signals_emitted_last_run": int(emitted),
-                    },
-                )
-            logger.debug("Wrote snapshot: %d opportunities", len(opps))
-        except Exception as e:
-            logger.exception("Failed to persist scanner snapshot: %s", e)
-        sleep_seconds = (
-            settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED and not requested else interval
-        )
-        sleep_seconds = max(1, sleep_seconds)
-
-        # Reactive wake-up path: wait for significant WS price changes
-        # (debounced in scanner/feed manager) or timeout fallback.
-        if settings.TIERED_SCANNING_ENABLED and not requested:
+            # Persist snapshot. Post-scan failures must not crash the worker loop.
             try:
-                scanner._register_reactive_scanning()
-                if scanner._pending_reactive_tokens:
-                    scanner._reactive_trigger.set()
-                else:
-                    scanner._reactive_trigger.clear()
-                await asyncio.wait_for(
-                    scanner._reactive_trigger.wait(),
-                    timeout=sleep_seconds,
-                )
-            except asyncio.TimeoutError:
+                opps = scanner.get_opportunities()
+            except Exception as e:
+                logger.exception("Failed to fetch opportunities after scan: %s", e)
+                opps = []
+
+            # Reattach inline analysis previously persisted by API/manual judging.
+            # This prevents worker snapshot writes from clobbering card AI data.
+            if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
+                try:
+                    attached_inline = await _reattach_inline_ai_from_snapshot(opps)
+                    if attached_inline:
+                        logger.debug(
+                            "Reattached %d inline AI analyses from snapshot",
+                            attached_inline,
+                        )
+                except Exception as e:
+                    logger.debug("Inline AI snapshot reattach skipped: %s", e)
+
+            # API-triggered manual AI analysis runs in the API process and writes
+            # OpportunityJudgment rows. Re-attach those judgments here so scanner
+            # worker memory doesn't wipe them on the next snapshot write.
+            if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
+                try:
+                    await asyncio.wait_for(scanner._attach_ai_judgments(opps), timeout=6)
+                except asyncio.TimeoutError:
+                    logger.debug("Timed out reattaching AI judgments in worker loop")
+                except Exception as e:
+                    logger.debug("AI judgment reattach skipped: %s", e)
+
+            try:
+                status = scanner.get_status()
+            except Exception as e:
+                logger.exception("Failed to build scanner status after scan: %s", e)
+                last_scan = None
+                try:
+                    if scanner.last_scan:
+                        ls = scanner.last_scan
+                        if ls.tzinfo is None:
+                            ls = ls.replace(tzinfo=timezone.utc)
+                        else:
+                            ls = ls.astimezone(timezone.utc)
+                        last_scan = ls.replace(tzinfo=None).isoformat() + "Z"
+                except Exception:
+                    pass
+                status = {
+                    "running": True,
+                    "enabled": not paused,
+                    "interval_seconds": interval,
+                    "last_scan": last_scan,
+                    "current_activity": getattr(scanner, "_current_activity", None),
+                    "strategies": [],
+                }
+
+            try:
+                async with AsyncSessionLocal() as session:
+                    # Re-read AI analysis fields from the current snapshot right before
+                    # writing, inside the same session/transaction. This closes the
+                    # TOCTOU window for manual AI judgments.
+                    if opps:
+                        try:
+                            snapshot_opps, _ = await read_scanner_snapshot(session)
+                            ai_by_stable: dict[str, object] = {}
+                            for snap_opp in snapshot_opps:
+                                stable_id = getattr(snap_opp, "stable_id", None)
+                                analysis = getattr(snap_opp, "ai_analysis", None)
+                                if stable_id and analysis is not None:
+                                    ai_by_stable[stable_id] = analysis
+                            if ai_by_stable:
+                                merged = 0
+                                for opp in opps:
+                                    if getattr(opp, "ai_analysis", None) is not None:
+                                        continue
+                                    sid = getattr(opp, "stable_id", None)
+                                    if sid and sid in ai_by_stable:
+                                        opp.ai_analysis = ai_by_stable[sid]
+                                        merged += 1
+                                if merged:
+                                    logger.debug(
+                                        "Pre-write AI merge: attached %d analyses",
+                                        merged,
+                                    )
+                        except Exception as e:
+                            logger.debug("Pre-write AI merge skipped: %s", e)
+
+                    market_history = _build_market_history_payload(opps)
+                    await write_scanner_snapshot(session, opps, status, market_history=market_history)
+                    emitted = await bridge_opportunities_to_signals(
+                        session,
+                        opps,
+                        source="scanner",
+                        quality_reports=scanner.quality_reports,
+                        sweep_missing=True,
+                    )
+                    await clear_scan_request(session)
+                    await write_worker_snapshot(
+                        session,
+                        "scanner",
+                        running=True,
+                        enabled=not paused,
+                        current_activity="Idle - waiting for next scanner cycle.",
+                        interval_seconds=interval,
+                        last_run_at=utcnow(),
+                        last_error=None,
+                        stats={
+                            "opportunities_count": len(opps),
+                            "signals_emitted_last_run": int(emitted),
+                            "full_snapshot_running": bool(
+                                (status.get("tiered_scanning") or {}).get("full_snapshot_strategy_running", False)
+                            ),
+                        },
+                    )
+                logger.debug("Wrote snapshot: %d opportunities", len(opps))
+            except Exception as e:
+                logger.exception("Failed to persist scanner snapshot: %s", e)
+
+            sleep_seconds = (
+                settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED and not requested else interval
+            )
+            sleep_seconds = max(1, sleep_seconds)
+
+            # Reactive wake-up path: wait for significant WS price changes
+            # (debounced in scanner/feed manager) or timeout fallback.
+            if settings.TIERED_SCANNING_ENABLED and not requested:
+                try:
+                    scanner._register_reactive_scanning()
+                    if scanner._pending_reactive_tokens:
+                        scanner._reactive_trigger.set()
+                    else:
+                        scanner._reactive_trigger.clear()
+                    await asyncio.wait_for(
+                        scanner._reactive_trigger.wait(),
+                        timeout=sleep_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    await asyncio.sleep(sleep_seconds)
+            else:
+                await asyncio.sleep(sleep_seconds)
+    finally:
+        catalog_task.cancel()
+        try:
+            await catalog_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        if heavy_scan_task is not None and not heavy_scan_task.done():
+            heavy_scan_task.cancel()
+            try:
+                await heavy_scan_task
+            except asyncio.CancelledError:
                 pass
             except Exception:
-                await asyncio.sleep(sleep_seconds)
-        else:
-            await asyncio.sleep(sleep_seconds)
+                pass
 
 
 async def start_loop() -> None:
     """Run the scanner worker loop (called from API process lifespan)."""
     try:
-        await apply_search_filters()
+        await apply_runtime_settings_overrides()
     except Exception as exc:
         logger.warning("Initial scanner runtime settings refresh failed: %s", exc)
     try:

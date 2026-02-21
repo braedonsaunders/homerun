@@ -25,10 +25,6 @@ from services.market_cache import market_cache_service
 from services.scanner import scanner as market_scanner
 from services.smart_wallet_pool import smart_wallet_pool
 from services import shared_state
-from services.traders_firehose_pipeline import (
-    apply_traders_firehose_strategy,
-    build_strategy_trader_opportunities_from_rows,
-)
 from services.strategy_sdk import StrategySDK
 from services.wallet_intelligence import wallet_intelligence
 from services.worker_state import (
@@ -390,51 +386,22 @@ async def _run_loop() -> None:
                 include_filtered=True,
             )
             confluence_scanned = len(firehose_rows)
-
-            filtered_rows = await apply_traders_firehose_strategy(
-                firehose_rows,
-                include_filtered=False,
-                limit=confluence_scan_limit,
-            )
-            confluence_count = len(filtered_rows)
-
-            opportunities = await build_strategy_trader_opportunities_from_rows(
-                filtered_rows,
-                limit=confluence_limit,
-            )
             deduped_by_stable_id: dict[str, Any] = {}
-            for opp in opportunities:
-                stable_id = str(getattr(opp, "stable_id", "") or getattr(opp, "id", "")).strip()
-                if not stable_id:
-                    continue
-                existing = deduped_by_stable_id.get(stable_id)
-                if existing is None or float(getattr(opp, "confidence", 0.0) or 0.0) > float(
-                    getattr(existing, "confidence", 0.0) or 0.0
-                ):
-                    deduped_by_stable_id[stable_id] = opp
-            deduped_opportunities = list(deduped_by_stable_id.values())
-            strategies_used = sorted(
-                {
-                    str(getattr(opp, "strategy", "") or "").strip()
-                    for opp in deduped_opportunities
-                    if str(getattr(opp, "strategy", "") or "").strip()
-                }
-            )
+            deduped_opportunities: list[Any] = []
+            strategies_used: list[str] = []
             emitted = 0
 
             # Dispatch trader_activity DataEvent so subscribed strategies
             # (e.g. TradersConfluenceStrategy) can react via on_event().
-            if deduped_opportunities:
+            if firehose_rows:
                 try:
                     trader_event = DataEvent(
                         event_type=EventType.TRADER_ACTIVITY,
                         source="tracked_traders_worker",
                         timestamp=utcnow(),
                         payload={
-                            "confluence_count": len(deduped_opportunities),
-                            "strategies_used": strategies_used,
-                            "signals": filtered_rows,
-                            "opportunities": deduped_opportunities,
+                            "confluence_count": len(firehose_rows),
+                            "signals": firehose_rows,
                         },
                     )
                     event_opps = await event_dispatcher.dispatch(trader_event)
@@ -444,14 +411,25 @@ async def _run_loop() -> None:
                             if stable_id and stable_id not in deduped_by_stable_id:
                                 deduped_by_stable_id[stable_id] = opp
                         deduped_opportunities = list(deduped_by_stable_id.values())
+                        if confluence_limit > 0:
+                            deduped_opportunities = deduped_opportunities[:confluence_limit]
+                        strategies_used = sorted(
+                            {
+                                str(getattr(opp, "strategy", "") or "").strip()
+                                for opp in deduped_opportunities
+                                if str(getattr(opp, "strategy", "") or "").strip()
+                            }
+                        )
                 except Exception as exc:
                     logger.warning("trader_activity DataEvent dispatch failed: %s", exc)
+            confluence_count = len(deduped_opportunities)
 
             # Attach shared sparkline price history from the scanner cache
             if deduped_opportunities:
                 try:
                     await market_scanner.attach_price_history_to_opportunities(
-                        deduped_opportunities, timeout_seconds=8.0,
+                        deduped_opportunities,
+                        timeout_seconds=0.0,
                     )
                 except Exception as exc:
                     logger.warning("Sparkline backfill for trader opps failed: %s", exc)
@@ -473,6 +451,7 @@ async def _run_loop() -> None:
                     session,
                     deduped_opportunities,
                     source="traders",
+                    sweep_missing=True,
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)

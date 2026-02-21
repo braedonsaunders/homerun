@@ -26,13 +26,13 @@ def upgrade() -> None:
     if "retention" not in existing_columns:
         op.add_column(
             "data_sources",
-            sa.Column("retention", sa.JSON(), nullable=True, server_default=sa.text("'{}'")),
+            sa.Column("retention", sa.JSON(), nullable=True, server_default=sa.text("'{}'::json")),
         )
         existing_columns.add("retention")
 
     if "retention" in existing_columns:
         bind = op.get_bind()
-        bind.execute(sa.text("UPDATE data_sources SET retention = '{}' WHERE retention IS NULL"))
+        bind.execute(sa.text("UPDATE data_sources SET retention = '{}'::json WHERE retention IS NULL"))
 
 
 def downgrade() -> None:

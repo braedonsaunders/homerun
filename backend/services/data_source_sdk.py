@@ -179,6 +179,13 @@ def _normalize_source_kind(value: str, default: str = "python") -> str:
     return out
 
 
+def _normalize_source_code_text(value: str | None) -> str:
+    text = str(value or "")
+    if "\\n" in text and "\n" not in text:
+        text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    return text
+
+
 def _normalize_retention_policy(retention: Any, *, strict: bool = True) -> dict[str, int]:
     if retention is None:
         return {}
@@ -237,7 +244,7 @@ def _resolve_source_code_for_kind(
     source_code: str | None,
     config: dict[str, Any] | None,
 ) -> str:
-    raw_code = str(source_code or "")
+    raw_code = _normalize_source_code_text(source_code)
     if raw_code.strip():
         return raw_code
 

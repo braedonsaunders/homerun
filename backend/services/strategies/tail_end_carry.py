@@ -214,8 +214,6 @@ class TailEndCarryStrategy(BaseStrategy):
                     is_guaranteed=False,
                     min_liquidity_hard=min_liquidity,
                     min_position_size=max(settings.MIN_POSITION_SIZE, 5.0),
-                    skip_fee_model=True,
-                    custom_roi_percent=((target_price - price) / price) * 100.0 if price > 0 else 0.0,
                 )
                 if not opp:
                     continue

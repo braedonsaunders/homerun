@@ -32,7 +32,7 @@ def _locked_exc() -> OperationalError:
     )
 
 
-def test_create_account_retries_sqlite_lock_and_succeeds(monkeypatch):
+def test_create_account_retries_transient_db_error_and_succeeds(monkeypatch):
     state = {
         "commits": 0,
         "rollbacks": 0,
@@ -67,11 +67,6 @@ def test_create_account_retries_sqlite_lock_and_succeeds(monkeypatch):
     sleep_mock = AsyncMock()
     monkeypatch.setattr("services.simulation._legacy.AsyncSessionLocal", _session_factory)
     monkeypatch.setattr("services.simulation._legacy.asyncio.sleep", sleep_mock)
-    monkeypatch.setattr(
-        "services.simulation._legacy.settings.DATABASE_URL",
-        "sqlite+aiosqlite:////tmp/test.db",
-        raising=False,
-    )
 
     service = SimulationService()
     account = asyncio.run(
@@ -122,16 +117,11 @@ def test_create_account_raises_after_retry_budget(monkeypatch):
     sleep_mock = AsyncMock()
     monkeypatch.setattr("services.simulation._legacy.AsyncSessionLocal", _session_factory)
     monkeypatch.setattr("services.simulation._legacy.asyncio.sleep", sleep_mock)
-    monkeypatch.setattr(
-        "services.simulation._legacy.settings.DATABASE_URL",
-        "sqlite+aiosqlite:////tmp/test.db",
-        raising=False,
-    )
 
     service = SimulationService()
-    service.SQLITE_LOCK_RETRY_ATTEMPTS = 3
-    service.SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0
-    service.SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS = 0
+    service.DB_RETRY_ATTEMPTS = 3
+    service.DB_RETRY_BASE_DELAY_SECONDS = 0
+    service.DB_RETRY_MAX_DELAY_SECONDS = 0
 
     with pytest.raises(OperationalError):
         asyncio.run(service.create_account(name="retry-fail"))

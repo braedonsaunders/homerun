@@ -19,6 +19,7 @@ from models.database import (
     TrackedWallet,
     Trader,
     TraderGroupMember,
+    init_database,
 )
 from services.trader_orchestrator.live_market_context import (
     RuntimeTradeSignalView,
@@ -32,7 +33,7 @@ from services.trader_orchestrator.decision_gates import (
     apply_platform_decision_gates,
     is_within_trading_window_utc,
 )
-from services.worker_state import _commit_with_retry
+from services.worker_state import _commit_with_retry, _is_retryable_db_error
 from services.trader_orchestrator.sources.registry import (
     normalize_source_key,
 )
@@ -69,6 +70,7 @@ from services.signal_bus import expire_stale_signals, set_trade_signal_status
 from utils.utcnow import utcnow
 from utils.converters import safe_float, safe_int
 from utils.secrets import decrypt_secret
+from sqlalchemy.exc import OperationalError
 
 logger = logging.getLogger("trader_orchestrator_worker")
 strategy_db_loader = strategy_loader
@@ -77,7 +79,9 @@ _RESUME_POLICIES = {"resume_full", "manage_only", "flatten_then_start"}
 _PAPER_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
 _ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE = 32
 _ORCHESTRATOR_CYCLE_LOCK_KEY = 0x54524F5243485354  # "TRORCHST"
-_orchestrator_lock_ctx: tuple[Any, Any] | None = None
+_orchestrator_lock_session: Any | None = None
+_TRADER_IDLE_MAINTENANCE_INTERVAL_SECONDS = 60
+_trader_idle_maintenance_last_run: dict[str, datetime] = {}
 
 
 def _session_dialect_name(session: Any) -> str:
@@ -86,6 +90,17 @@ def _session_dialect_name(session: Any) -> str:
         return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
     except Exception:
         return ""
+
+
+async def _write_orchestrator_snapshot_best_effort(session: Any, **snapshot_kwargs: Any) -> None:
+    try:
+        await write_orchestrator_snapshot(session, **snapshot_kwargs)
+    except OperationalError as exc:
+        if not _is_retryable_db_error(exc):
+            raise
+        if hasattr(session, "rollback"):
+            await session.rollback()
+        logger.warning("Skipped orchestrator snapshot write due to transient DB error")
 
 
 async def submit_order(
@@ -222,7 +237,7 @@ def _strategy_instance_from_loaded(candidate: Any) -> Any:
 async def _try_acquire_orchestrator_cycle_lock(session: Any) -> bool:
     """Acquire a cross-process lock when running on PostgreSQL.
 
-    For non-PostgreSQL dialects (e.g. sqlite in local tests), fall back to
+    For non-PostgreSQL dialects, fall back to
     allowing the cycle to proceed.
     """
     dialect_name = _session_dialect_name(session)
@@ -259,13 +274,12 @@ async def _release_orchestrator_cycle_lock(session: Any) -> None:
 
 async def _ensure_orchestrator_cycle_lock_owner() -> bool:
     """Own the cross-process orchestrator lock for this worker process."""
-    global _orchestrator_lock_ctx
+    global _orchestrator_lock_session
 
-    if _orchestrator_lock_ctx is not None:
+    if _orchestrator_lock_session is not None:
         return True
 
-    session_ctx = AsyncSessionLocal()
-    session = await session_ctx.__aenter__()
+    session = AsyncSessionLocal()
     keep_lock_session = False
     try:
         acquired = await _try_acquire_orchestrator_cycle_lock(session)
@@ -273,29 +287,29 @@ async def _ensure_orchestrator_cycle_lock_owner() -> bool:
             return False
 
         if _session_dialect_name(session) == "postgresql":
-            _orchestrator_lock_ctx = (session_ctx, session)
+            _orchestrator_lock_session = session
             keep_lock_session = True
             logger.info("Acquired orchestrator cross-process cycle lock")
 
         return True
     finally:
         if not keep_lock_session:
-            await session_ctx.__aexit__(None, None, None)
+            await session.close()
 
 
 async def _release_orchestrator_cycle_lock_owner() -> None:
     """Release owned lock session on shutdown/error."""
-    global _orchestrator_lock_ctx
-    if _orchestrator_lock_ctx is None:
+    global _orchestrator_lock_session
+    if _orchestrator_lock_session is None:
         return
 
-    session_ctx, session = _orchestrator_lock_ctx
-    _orchestrator_lock_ctx = None
+    session = _orchestrator_lock_session
+    _orchestrator_lock_session = None
     try:
         await _release_orchestrator_cycle_lock(session)
         logger.info("Released orchestrator cross-process cycle lock")
     finally:
-        await session_ctx.__aexit__(None, None, None)
+        await session.close()
 
 
 def _query_sources_for_configs(source_configs: dict[str, dict[str, Any]]) -> list[str]:
@@ -506,6 +520,44 @@ async def _run_trader_once(
         metadata = dict(trader.get("metadata") or {})
         run_mode = str(control.get("mode") or "paper").strip().lower()
         resume_policy = _normalize_resume_policy(metadata.get("resume_policy"))
+        sources = _query_sources_for_configs(source_configs)
+        cursor_created_at, cursor_signal_id = await get_trader_signal_cursor(
+            session,
+            trader_id=trader_id,
+        )
+        prefetched_signals: list[Any] | None = None
+        if process_signals and sources:
+            pending_preview = await list_unconsumed_trade_signals(
+                session,
+                trader_id=trader_id,
+                sources=sources,
+                statuses=["pending"],
+                cursor_created_at=cursor_created_at,
+                cursor_signal_id=cursor_signal_id,
+                limit=1,
+            )
+            if pending_preview:
+                prefetched_signals = pending_preview
+            else:
+                now = utcnow()
+                idle_maintenance_interval_seconds = int(
+                    max(
+                        15,
+                        min(
+                            900,
+                            safe_int(
+                                default_strategy_params.get("idle_maintenance_interval_seconds"),
+                                _TRADER_IDLE_MAINTENANCE_INTERVAL_SECONDS,
+                            ),
+                        ),
+                    )
+                )
+                last_idle_maintenance = _trader_idle_maintenance_last_run.get(trader_id)
+                if last_idle_maintenance is not None:
+                    elapsed_seconds = (now - last_idle_maintenance).total_seconds()
+                    if elapsed_seconds < idle_maintenance_interval_seconds:
+                        return 0, 0
+                _trader_idle_maintenance_last_run[trader_id] = now
         open_positions = 0
         open_market_ids: set[str] = set()
 
@@ -660,8 +712,6 @@ async def _run_trader_once(
                 ),
             )
         )
-        sources = _query_sources_for_configs(source_configs)
-
         control_settings = control.get("settings") or {}
         enable_live_market_context = bool(control_settings.get("enable_live_market_context", True))
         history_window_seconds = int(
@@ -697,6 +747,28 @@ async def _run_trader_once(
                         control_settings.get("live_market_history_max_points", 120),
                         120,
                     ),
+                ),
+            )
+        )
+        live_market_context_timeout_seconds = float(
+            max(
+                1.0,
+                min(
+                    12.0,
+                    safe_float(
+                        control_settings.get("live_market_context_timeout_seconds"),
+                        4.0,
+                    )
+                    or 4.0,
+                ),
+            )
+        )
+        live_market_context_request_timeout_seconds = float(
+            max(
+                0.5,
+                min(
+                    4.0,
+                    live_market_context_timeout_seconds / 2.0,
                 ),
             )
         )
@@ -757,10 +829,6 @@ async def _run_trader_once(
                 dict(traders_source_config.get("traders_scope") or {}),
             )
 
-        cursor_created_at, cursor_signal_id = await get_trader_signal_cursor(
-            session,
-            trader_id=trader_id,
-        )
         processed_signals = 0
 
         # Kill switch is the very first gate: short-circuit before any signal
@@ -774,15 +842,19 @@ async def _run_trader_once(
 
         while processed_signals < max_signals_per_cycle:
             batch_limit = min(scan_batch_size, max_signals_per_cycle - processed_signals)
-            signals = await list_unconsumed_trade_signals(
-                session,
-                trader_id=trader_id,
-                sources=sources,
-                statuses=["pending"],
-                cursor_created_at=cursor_created_at,
-                cursor_signal_id=cursor_signal_id,
-                limit=batch_limit,
-            )
+            if prefetched_signals is not None:
+                signals = prefetched_signals[:batch_limit]
+                prefetched_signals = None
+            else:
+                signals = await list_unconsumed_trade_signals(
+                    session,
+                    trader_id=trader_id,
+                    sources=sources,
+                    statuses=["pending"],
+                    cursor_created_at=cursor_created_at,
+                    cursor_signal_id=cursor_signal_id,
+                    limit=batch_limit,
+                )
             if not signals:
                 break
 
@@ -790,11 +862,17 @@ async def _run_trader_once(
             if enable_live_market_context:
                 context_candidates = [sig for sig in signals if _supports_live_market_context(sig)]
                 try:
-                    live_contexts = await build_live_signal_contexts(
-                        context_candidates,
-                        history_window_seconds=history_window_seconds,
-                        history_fidelity_seconds=history_fidelity_seconds,
-                        max_history_points=max_history_points,
+                    live_contexts = await asyncio.wait_for(
+                        build_live_signal_contexts(
+                            context_candidates,
+                            history_window_seconds=history_window_seconds,
+                            history_fidelity_seconds=history_fidelity_seconds,
+                            max_history_points=max_history_points,
+                            market_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
+                            prices_batch_timeout_seconds=live_market_context_request_timeout_seconds,
+                            history_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
+                        ),
+                        timeout=live_market_context_timeout_seconds,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -1385,29 +1463,44 @@ async def _run_trader_once(
         if process_signals:
             row = await session.get(Trader, trader_id)
             if row is not None:
+                should_persist_heartbeat = (
+                    processed_signals > 0
+                    or decisions_written > 0
+                    or orders_written > 0
+                    or row.requested_run_at is not None
+                )
+                if not should_persist_heartbeat:
+                    return decisions_written, orders_written
                 now = utcnow()
                 row.last_run_at = now
                 row.requested_run_at = None
                 row.updated_at = now
-                await _commit_with_retry(session)
+                await _commit_with_retry(
+                    session,
+                    retry_attempts=2,
+                    base_delay_seconds=0.05,
+                    max_delay_seconds=0.1,
+                )
 
     return decisions_written, orders_written
 
 
 async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
     """Close/cancel open orders for trader_ids that no longer exist."""
+    mode_key_expr = func.lower(func.coalesce(TraderOrder.mode, ""))
+    status_key_expr = func.lower(func.coalesce(TraderOrder.status, ""))
     rows = (
         await session.execute(
             select(
                 TraderOrder.trader_id,
-                func.lower(func.coalesce(TraderOrder.mode, "")).label("mode_key"),
+                mode_key_expr.label("mode_key"),
                 func.count(TraderOrder.id).label("count"),
             )
             .select_from(TraderOrder)
             .outerjoin(Trader, Trader.id == TraderOrder.trader_id)
             .where(Trader.id.is_(None))
-            .where(func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(_PAPER_ACTIVE_ORDER_STATUSES)))
-            .group_by(TraderOrder.trader_id, func.lower(func.coalesce(TraderOrder.mode, "")))
+            .where(status_key_expr.in_(tuple(_PAPER_ACTIVE_ORDER_STATUSES)))
+            .group_by(TraderOrder.trader_id, mode_key_expr)
             .limit(_ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE)
         )
     ).all()
@@ -1483,6 +1576,61 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
     }
 
 
+async def _run_trader_once_with_timeout(
+    trader: dict[str, Any],
+    control: dict[str, Any],
+    *,
+    process_signals: bool,
+    timeout_seconds: float,
+) -> tuple[int, int]:
+    timeout = max(1.0, float(timeout_seconds))
+    trader_id = str(trader.get("id") or "")
+    try:
+        return await asyncio.wait_for(
+            _run_trader_once(
+                trader,
+                control,
+                process_signals=process_signals,
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Trader cycle timed out for trader=%s process_signals=%s timeout=%.1fs",
+            trader_id,
+            process_signals,
+            timeout,
+        )
+        if trader_id:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await create_trader_event(
+                        session,
+                        trader_id=trader_id,
+                        event_type="cycle_timeout",
+                        severity="warn",
+                        source="worker",
+                        message=f"Trader cycle timed out after {timeout:.1f}s",
+                        payload={
+                            "process_signals": bool(process_signals),
+                            "timeout_seconds": timeout,
+                        },
+                        commit=True,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to persist trader timeout event: %s", exc)
+        return 0, 0
+    except OperationalError as exc:
+        if not _is_retryable_db_error(exc):
+            raise
+        logger.warning(
+            "Trader cycle skipped due to transient DB error for trader=%s process_signals=%s",
+            trader_id,
+            process_signals,
+        )
+        return 0, 0
+
+
 async def run_worker_loop() -> None:
     logger.info("Starting trader orchestrator worker loop")
 
@@ -1511,10 +1659,24 @@ async def run_worker_loop() -> None:
                     continue
 
                 async with AsyncSessionLocal() as session:
-                    await expire_stale_signals(session)
+                    try:
+                        await expire_stale_signals(session)
+                    except OperationalError as exc:
+                        if _is_retryable_db_error(exc):
+                            if hasattr(session, "rollback"):
+                                await session.rollback()
+                            logger.warning("Skipped stale-signal expiry due to transient DB error")
+                        else:
+                            raise
+                    except Exception as exc:
+                        if hasattr(session, "rollback"):
+                            await session.rollback()
+                        logger.warning("Failed stale-signal expiry pass: %s", exc)
                     try:
                         await refresh_strategy_runtime_if_needed(session, source_keys=None)
                     except Exception as exc:
+                        if hasattr(session, "rollback"):
+                            await session.rollback()
                         logger.warning("Failed strategy runtime refresh pass: %s", exc)
 
                     try:
@@ -1525,6 +1687,8 @@ async def run_worker_loop() -> None:
                                 extra={"orphan_cleanup": orphan_cleanup},
                             )
                     except Exception as exc:
+                        if hasattr(session, "rollback"):
+                            await session.rollback()
                         logger.warning("Failed orphan-order reconciliation pass: %s", exc)
 
                     control = await read_orchestrator_control(session)
@@ -1533,10 +1697,24 @@ async def run_worker_loop() -> None:
                         int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
                     )
                     sleep_seconds = cycle_interval
+                    default_trader_cycle_timeout = float(max(8, cycle_interval * 2))
+                    trader_cycle_timeout_seconds = float(
+                        max(
+                            3.0,
+                            min(
+                                120.0,
+                                safe_float(
+                                    (control.get("settings") or {}).get("trader_cycle_timeout_seconds"),
+                                    default_trader_cycle_timeout,
+                                )
+                                or default_trader_cycle_timeout,
+                            ),
+                        )
+                    )
                     force_cycle = _parse_iso(control.get("requested_run_at")) is not None
 
                     if not control.get("is_enabled") or control.get("is_paused"):
-                        await write_orchestrator_snapshot(
+                        await _write_orchestrator_snapshot_best_effort(
                             session,
                             running=False,
                             enabled=bool(control.get("is_enabled", False)),
@@ -1551,7 +1729,7 @@ async def run_worker_loop() -> None:
                     # signal processing so no work is wasted while the switch is on.
                     if not skip_cycle and bool(control.get("kill_switch")):
                         logger.info("Kill switch active — skipping entire orchestrator cycle")
-                        await write_orchestrator_snapshot(
+                        await _write_orchestrator_snapshot_best_effort(
                             session,
                             running=True,
                             enabled=True,
@@ -1568,7 +1746,7 @@ async def run_worker_loop() -> None:
                         if mode == "paper":
                             paper_account_id = str(control_settings.get("paper_account_id") or "").strip()
                             if not paper_account_id:
-                                await write_orchestrator_snapshot(
+                                await _write_orchestrator_snapshot_best_effort(
                                     session,
                                     running=False,
                                     enabled=True,
@@ -1581,7 +1759,7 @@ async def run_worker_loop() -> None:
                             else:
                                 paper_account = await session.get(SimulationAccount, paper_account_id)
                                 if paper_account is None:
-                                    await write_orchestrator_snapshot(
+                                    await _write_orchestrator_snapshot_best_effort(
                                         session,
                                         running=False,
                                         enabled=True,
@@ -1598,7 +1776,7 @@ async def run_worker_loop() -> None:
                                 app_settings.trading_enabled if app_settings is not None else False
                             )
                             if not trading_enabled:
-                                await write_orchestrator_snapshot(
+                                await _write_orchestrator_snapshot_best_effort(
                                     session,
                                     running=False,
                                     enabled=True,
@@ -1609,7 +1787,7 @@ async def run_worker_loop() -> None:
                                 )
                                 skip_cycle = True
                             elif not _is_live_credentials_configured(app_settings):
-                                await write_orchestrator_snapshot(
+                                await _write_orchestrator_snapshot_best_effort(
                                     session,
                                     running=False,
                                     enabled=True,
@@ -1639,15 +1817,30 @@ async def run_worker_loop() -> None:
 
                     if is_paused:
                         if mode in ("paper", "live"):
-                            await _run_trader_once(trader, control, process_signals=False)
+                            await _run_trader_once_with_timeout(
+                                trader,
+                                control,
+                                process_signals=False,
+                                timeout_seconds=trader_cycle_timeout_seconds,
+                            )
                         continue
 
                     if not due:
                         if mode in ("paper", "live"):
-                            await _run_trader_once(trader, control, process_signals=False)
+                            await _run_trader_once_with_timeout(
+                                trader,
+                                control,
+                                process_signals=False,
+                                timeout_seconds=trader_cycle_timeout_seconds,
+                            )
                         continue
 
-                    decisions, orders = await _run_trader_once(trader, control, process_signals=True)
+                    decisions, orders = await _run_trader_once_with_timeout(
+                        trader,
+                        control,
+                        process_signals=True,
+                        timeout_seconds=trader_cycle_timeout_seconds,
+                    )
                     total_decisions += decisions
                     total_orders += orders
 
@@ -1657,7 +1850,7 @@ async def run_worker_loop() -> None:
                     metrics = await compute_orchestrator_metrics(session)
                     metrics["decisions_last_cycle"] = total_decisions
                     metrics["orders_last_cycle"] = total_orders
-                    await write_orchestrator_snapshot(
+                    await _write_orchestrator_snapshot_best_effort(
                         session,
                         running=True,
                         enabled=True,
@@ -1673,7 +1866,7 @@ async def run_worker_loop() -> None:
                 try:
                     async with AsyncSessionLocal() as session:
                         control = await read_orchestrator_control(session)
-                        await write_orchestrator_snapshot(
+                        await _write_orchestrator_snapshot_best_effort(
                             session,
                             running=False,
                             enabled=bool(control.get("is_enabled", False)),
@@ -1716,3 +1909,15 @@ async def start_loop() -> None:
                 await notifier.shutdown()
             except Exception as exc:
                 logger.debug("Notifier shutdown skipped: %s", exc)
+
+
+async def main() -> None:
+    await init_database()
+    try:
+        await run_worker_loop()
+    except asyncio.CancelledError:
+        logger.info("Trader orchestrator worker shutting down")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

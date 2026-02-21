@@ -1,8 +1,8 @@
 import asyncio
 import uuid
-from utils.utcnow import utcnow
 from typing import Any, Optional
-from sqlalchemy import select, text
+
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from models.database import (
 )
 from models.opportunity import Opportunity
 from utils.logger import get_logger
+from utils.utcnow import utcnow
 
 logger = get_logger("simulation")
 
@@ -46,10 +47,9 @@ class SimulationService:
     """Paper trading simulation service"""
 
     POLYMARKET_FEE = 0.02  # 2% winner fee
-    SQLITE_LOCK_BUSY_TIMEOUT_MS = 1500
-    SQLITE_LOCK_RETRY_ATTEMPTS = 8
-    SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.2
-    SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS = 1.5
+    DB_RETRY_ATTEMPTS = 8
+    DB_RETRY_BASE_DELAY_SECONDS = 0.2
+    DB_RETRY_MAX_DELAY_SECONDS = 1.5
 
     @staticmethod
     def _direction_to_position_side(direction: str) -> tuple[PositionSide, str]:
@@ -61,9 +61,19 @@ class SimulationService:
         raise ValueError(f"Unsupported direction '{direction}'")
 
     @staticmethod
-    def is_sqlite_lock_error(exc: Exception) -> bool:
+    def is_retryable_db_error(exc: Exception) -> bool:
         message = str(getattr(exc, "orig", exc)).lower()
-        return "database is locked" in message or "database table is locked" in message
+        return any(
+            marker in message
+            for marker in (
+                "database is locked",
+                "database table is locked",
+                "deadlock detected",
+                "serialization failure",
+                "could not serialize access",
+                "lock not available",
+            )
+        )
 
     async def create_account(
         self,
@@ -74,17 +84,12 @@ class SimulationService:
     ) -> SimulationAccount:
         """Create a new simulation account.
 
-        SQLite can briefly lock writes while background workers flush updates.
-        Retry short lock windows so account creation remains responsive.
+        Retry transient database lock/serialization windows so account creation
+        remains responsive while workers are writing concurrently.
         """
-        is_sqlite = "sqlite" in settings.DATABASE_URL.lower()
-
-        for attempt in range(self.SQLITE_LOCK_RETRY_ATTEMPTS):
+        for attempt in range(self.DB_RETRY_ATTEMPTS):
             async with AsyncSessionLocal() as session:
                 try:
-                    if is_sqlite:
-                        await session.execute(text(f"PRAGMA busy_timeout={self.SQLITE_LOCK_BUSY_TIMEOUT_MS}"))
-
                     account = SimulationAccount(
                         id=str(uuid.uuid4()),
                         name=name,
@@ -107,19 +112,19 @@ class SimulationService:
                     return account
                 except OperationalError as exc:
                     await session.rollback()
-                    is_retryable_lock = is_sqlite and self.is_sqlite_lock_error(exc)
-                    is_last_attempt = attempt >= self.SQLITE_LOCK_RETRY_ATTEMPTS - 1
+                    is_retryable_lock = self.is_retryable_db_error(exc)
+                    is_last_attempt = attempt >= self.DB_RETRY_ATTEMPTS - 1
                     if not is_retryable_lock or is_last_attempt:
                         raise
 
                     delay = min(
-                        self.SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS * (2**attempt),
-                        self.SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS,
+                        self.DB_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                        self.DB_RETRY_MAX_DELAY_SECONDS,
                     )
                     logger.warning(
-                        "Simulation account create hit SQLite lock; retrying",
+                        "Simulation account create hit transient DB error; retrying",
                         attempt=attempt + 1,
-                        max_attempts=self.SQLITE_LOCK_RETRY_ATTEMPTS,
+                        max_attempts=self.DB_RETRY_ATTEMPTS,
                         retry_in_seconds=delay,
                     )
 

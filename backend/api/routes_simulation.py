@@ -40,7 +40,7 @@ async def create_simulation_account(request: CreateAccountRequest):
             max_positions=request.max_positions,
         )
     except OperationalError as exc:
-        if simulation_service.is_sqlite_lock_error(exc):
+        if simulation_service.is_retryable_db_error(exc):
             raise HTTPException(
                 status_code=503,
                 detail="Database is busy; please retry creating the sandbox account in a few seconds.",

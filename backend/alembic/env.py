@@ -50,7 +50,6 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
-        render_as_batch=connection.dialect.name == "sqlite",
     )
 
     with context.begin_transaction():

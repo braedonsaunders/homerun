@@ -594,7 +594,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
   const [marketCategoryFilter, setMarketCategoryFilter] = useState<'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather'>('all')
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('24h')
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('all')
   const [minInsiderScore, setMinInsiderScore] = useState(0)
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -712,7 +712,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
 
   const selectedTagString = selectedTags.join(',')
 
-  const { data: leaderboardData, isLoading: leaderboardLoading } = useQuery({
+  const { data: leaderboardData, isLoading: leaderboardLoading, error: leaderboardError } = useQuery({
     queryKey: [
       'discovery-leaderboard',
       sortBy,
@@ -915,6 +915,13 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     if (typeof detail === 'string' && detail.trim()) return detail.trim()
     return 'Failed to load pool members.'
   }, [poolMembersError])
+
+  const leaderboardErrorMessage = useMemo(() => {
+    if (!leaderboardError) return null
+    const detail = (leaderboardError as any)?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail.trim()
+    return 'Failed to load discovery leaderboard.'
+  }, [leaderboardError])
 
   const totalPages = Math.ceil(totalWallets / ITEMS_PER_PAGE)
   const poolTotalPages = Math.ceil(poolTotalMembers / ITEMS_PER_PAGE)
@@ -1749,7 +1756,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                   size="sm"
                   className="h-8 text-xs gap-1.5 mb-0.5"
                   onClick={() => {
-                    setTimePeriod('24h')
+                    setTimePeriod('all')
                     setTagSearch('')
                     setTagPicker('')
                     setSelectedTags([])
@@ -1790,6 +1797,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <div className="flex items-center justify-center py-12">
             <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
+        ) : leaderboardErrorMessage ? (
+          <Card className="border-border">
+            <CardContent className="flex flex-col items-center justify-center py-12">
+              <AlertTriangle className="w-12 h-12 text-rose-400/70 mb-4" />
+              <p className="text-rose-300">Failed to load leaderboard</p>
+              <p className="text-sm text-muted-foreground mt-1">{leaderboardErrorMessage}</p>
+            </CardContent>
+          </Card>
         ) : wallets.length === 0 ? (
           <Card className="border-border">
             <CardContent className="flex flex-col items-center justify-center py-12">

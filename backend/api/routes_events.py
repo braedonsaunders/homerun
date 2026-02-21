@@ -25,6 +25,7 @@ from services.data_source_runner import run_data_source_by_slug
 from services.worker_state import read_worker_snapshot
 
 from utils.converters import to_iso
+from utils.utcnow import utcnow
 
 router = APIRouter(tags=["events"])
 logger = logging.getLogger(__name__)
@@ -375,7 +376,7 @@ async def _latest_instability_by_country(
     session: AsyncSession,
 ) -> dict[str, tuple[Any, Optional[Any]]]:
     """Derive country instability scores from recent EventsSignal data."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    cutoff = utcnow() - timedelta(days=3)
     signal_rows = (
         (
             await session.execute(
@@ -422,7 +423,7 @@ async def _latest_tension_pairs(
     session: AsyncSession,
 ) -> dict[str, tuple[Any, Optional[Any]]]:
     """Derive country-pair tension scores from recent EventsSignal data."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = utcnow() - timedelta(days=7)
     signal_rows = (
         (
             await session.execute(
@@ -488,7 +489,7 @@ async def _latest_tension_pairs(
 async def _latest_tension_signal_meta(
     session: AsyncSession,
 ) -> dict[str, dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = utcnow() - timedelta(days=7)
     rows = (
         (
             await session.execute(
@@ -521,7 +522,7 @@ async def _dynamic_military_hotspots(
     min_events: int = 2,
 ) -> list[dict[str, Any]]:
     """Build map hotspots from recent real military signal coordinates."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = utcnow() - timedelta(hours=24)
     rows = (
         (
             await session.execute(
@@ -640,7 +641,7 @@ async def _dynamic_chokepoint_scores(
     if not chokepoints:
         return []
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
+    cutoff = utcnow() - timedelta(hours=72)
     rows = (
         (
             await session.execute(
@@ -668,7 +669,7 @@ async def _dynamic_chokepoint_scores(
                     "risk_method": "proximity_weighted_v1",
                     "source": f"{base_source}+live_signals",
                     "chokepoint_source": base_source,
-                    "last_updated": str(cp.get("last_updated") or to_iso(datetime.now(timezone.utc))),
+                    "last_updated": str(cp.get("last_updated") or to_iso(utcnow())),
                 }
             )
             out.append(enriched)
@@ -725,7 +726,7 @@ async def _dynamic_chokepoint_scores(
                 "risk_method": "proximity_weighted_v1",
                 "source": f"{base_source}+live_signals",
                 "chokepoint_source": base_source,
-                "last_updated": to_iso(newest_ts) if newest_ts else to_iso(datetime.now(timezone.utc)),
+                "last_updated": to_iso(newest_ts) if newest_ts else to_iso(utcnow()),
             }
         )
         out.append(enriched)
@@ -751,7 +752,7 @@ async def _instability_change_7d(
     country = row.country or ""
     if not iso3 and not country:
         return None
-    current_at = row.computed_at or datetime.now(timezone.utc)
+    current_at = row.computed_at or utcnow()
     lookback = current_at - timedelta(days=6, hours=12)
     query = (
         select(EventsSignal)
@@ -778,7 +779,7 @@ async def _instability_change_7d(
 async def get_world_regions(session: AsyncSession = Depends(get_db_session)):
     """Get map overlays from persisted event signals."""
     hotspots = await _dynamic_military_hotspots(session)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
+    cutoff = utcnow() - timedelta(hours=72)
     chokepoint_rows = (
         (
             await session.execute(
@@ -832,7 +833,7 @@ async def get_world_regions(session: AsyncSession = Depends(get_db_session)):
         chokepoint_source_health = ((snapshot.stats or {}).get("source_status") or {}).get("chokepoints", {}) or {}
     return {
         "version": 1,
-        "updated_at": to_iso(datetime.now(timezone.utc)),
+        "updated_at": to_iso(utcnow()),
         "hotspots": hotspots,
         "chokepoints": chokepoints,
         "chokepoint_source_health": chokepoint_source_health,
@@ -988,7 +989,7 @@ async def get_world_opportunities(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Resolve persisted signals into execution candidates without backend provider helpers."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    cutoff = utcnow() - timedelta(hours=int(hours))
     signal_limit = max(
         50,
         min(5000, int(limit) * max(1, int(max_markets_per_signal))),
@@ -1217,7 +1218,7 @@ async def get_convergence_zones(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get active geo-convergence zones from persisted signals."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    cutoff = utcnow() - timedelta(hours=48)
     rows = (
         (
             await session.execute(
@@ -1264,7 +1265,7 @@ async def get_temporal_anomalies(
     min_severity_value = min_severity if isinstance(min_severity, str) else "medium"
     min_level = severity_order.get((min_severity_value or "medium").lower(), 1)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
+    cutoff = utcnow() - timedelta(hours=72)
     rows = (
         (
             await session.execute(
@@ -1306,7 +1307,7 @@ async def get_temporal_anomalies(
 @router.get("/events/military")
 async def get_military_activity(session: AsyncSession = Depends(get_db_session)):
     """Get persisted military activity summary from DB."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = utcnow() - timedelta(hours=24)
     rows = (
         (
             await session.execute(
@@ -1344,14 +1345,14 @@ async def get_military_activity(session: AsyncSession = Depends(get_db_session))
         "surge_regions": sorted(surge_regions),
         "hotspots": await _dynamic_military_hotspots(session, max_hotspots=20, min_events=1),
         "source_health": source_health,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": to_iso(utcnow()),
     }
 
 
 @router.get("/events/infrastructure")
 async def get_infrastructure_events(session: AsyncSession = Depends(get_db_session)):
     """Get persisted infrastructure disruptions and cascade summaries."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
+    cutoff = utcnow() - timedelta(hours=72)
     rows = (
         (
             await session.execute(
@@ -1461,7 +1462,7 @@ async def get_events_summary(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get high-level events summary from persisted data."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    cutoff = utcnow() - timedelta(days=2)
     severity_value = func.coalesce(EventsSignal.severity, 0.0)
     total_signals = int(
         (
@@ -1618,7 +1619,7 @@ async def get_events_status(
     if last_scan is not None:
         lag_seconds = max(
             0.0,
-            (datetime.now(timezone.utc).replace(tzinfo=None) - last_scan).total_seconds(),
+            (utcnow() - last_scan).total_seconds(),
         )
         stale_after = max(interval_seconds * 2, 900)
         stale = lag_seconds > stale_after

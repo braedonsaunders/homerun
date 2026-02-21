@@ -17,8 +17,9 @@ from datetime import datetime, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
+from config import settings
 from sqlalchemy import case, func, or_, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -55,6 +56,66 @@ def _safe_json(value: Any) -> Any:
         return value
     except Exception:
         return {"raw": str(value)}
+
+
+def _parse_price_timestamp(value: Any) -> Optional[datetime]:
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 10_000_000_000:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        ts = float(text)
+        if ts > 10_000_000_000:
+            ts /= 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _payload_contains_stale_market_prices(payload: Any, now: datetime, max_age_seconds: float) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    markets = payload.get("markets")
+    if not isinstance(markets, list) or not markets:
+        return False
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        token_ids = market.get("clob_token_ids")
+        if isinstance(token_ids, str):
+            text = token_ids.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    token_ids = json.loads(text)
+                except Exception:
+                    token_ids = []
+        if not isinstance(token_ids, list) and not isinstance(token_ids, tuple):
+            continue
+        if len(token_ids) < 2:
+            continue
+        ts = _parse_price_timestamp(market.get("price_updated_at"))
+        if ts is None:
+            return True
+        age = (now - ts).total_seconds()
+        if age > max_age_seconds:
+            return True
+    return False
 
 
 def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None:
@@ -401,22 +462,34 @@ async def set_trade_signal_status(
 
 async def expire_stale_signals(session: AsyncSession, *, commit: bool = True) -> int:
     now = _utc_now()
+    now_naive = _to_utc_naive(now)
+    max_price_age_seconds = float(getattr(settings, "SCANNER_MARKET_PRICE_MAX_AGE_SECONDS", 0) or 0)
+    if max_price_age_seconds <= 0:
+        max_price_age_seconds = max(30.0, float(getattr(settings, "WS_PRICE_STALE_SECONDS", 30.0) or 30.0) * 2.0)
     result = await session.execute(
         select(TradeSignal).where(
             TradeSignal.status.in_(tuple(SIGNAL_ACTIVE_STATUSES)),
-            TradeSignal.expires_at.is_not(None),
-            TradeSignal.expires_at < now,
         )
     )
     rows = list(result.scalars().all())
     for row in rows:
+        expire_reason = None
+        expires_at = row.expires_at
+        if expires_at is not None and expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if expires_at is not None and expires_at < now_naive:
+            expire_reason = "expires_at_passed"
+        elif _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds):
+            expire_reason = "market_price_stale"
+        if expire_reason is None:
+            continue
         row.status = "expired"
-        row.updated_at = now
+        row.updated_at = now_naive
         await _record_signal_emission(
             session,
             row,
             event_type="status_expired",
-            reason="expires_at_passed",
+            reason=expire_reason,
         )
     if rows and commit:
         await session.commit()
@@ -434,13 +507,13 @@ async def expire_source_signals_except(
     signal_types: Optional[list[str]] = None,
     commit: bool = True,
 ) -> int:
-    """Expire active source signals not present in the current emission set."""
-    now = _utc_now()
+    """Expire pending source signals not present in the current emission set."""
+    now = _to_utc_naive(_utc_now())
     keep = {str(key) for key in keep_dedupe_keys if str(key).strip()}
 
     query = select(TradeSignal).where(
         TradeSignal.source == str(source),
-        TradeSignal.status.in_(tuple(SIGNAL_ACTIVE_STATUSES)),
+        TradeSignal.status == "pending",
     )
     if signal_types:
         normalized_signal_types = [
@@ -528,11 +601,25 @@ async def _expire_non_tradable_pending_signals(
 
     tradability = await get_market_tradability_map([str(row.market_id) for row in pending_rows])
     now = _utc_now()
+    max_price_age_seconds = float(getattr(settings, "SCANNER_MARKET_PRICE_MAX_AGE_SECONDS", 0) or 0)
+    if max_price_age_seconds <= 0:
+        max_price_age_seconds = max(30.0, float(getattr(settings, "WS_PRICE_STALE_SECONDS", 30.0) or 30.0) * 2.0)
     changed = False
     output: list[TradeSignal] = []
     for row in rows:
         if row.status != "pending":
             output.append(row)
+            continue
+        if _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds):
+            row.status = "expired"
+            row.updated_at = now
+            await _record_signal_emission(
+                session,
+                row,
+                event_type="status_expired",
+                reason="market_price_stale",
+            )
+            changed = True
             continue
         market_key = str(row.market_id or "").strip().lower()
         if tradability.get(market_key, True):
@@ -635,7 +722,7 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
                 )
             },
         }
-        stmt = sqlite_insert(TradeSignalSnapshot).values(**payload)
+        stmt = pg_insert(TradeSignalSnapshot).values(**payload)
         stmt = stmt.on_conflict_do_update(
             index_elements=[TradeSignalSnapshot.source],
             set_={
