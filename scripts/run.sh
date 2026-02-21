@@ -476,4 +476,8 @@ if [ "$RUN_SERVICE_SMOKE_TEST" -eq 1 ]; then
 fi
 
 # Launch the TUI
-python tui.py "${TUI_ARGS[@]}"
+if [ "${#TUI_ARGS[@]}" -gt 0 ]; then
+    python tui.py "${TUI_ARGS[@]}"
+else
+    python tui.py
+fi
