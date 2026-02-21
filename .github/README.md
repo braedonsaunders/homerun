@@ -1,442 +1,341 @@
-<p align="center">
-  <img src="../homerun-logo.png" alt="Homerun" width="180"/>
-</p>
+<div align="center">
+  <img src="./homerun-logo.png" alt="Homerun" width="340" />
+  <h1>Homerun</h1>
+  <p><strong>Wire any data source into any trading strategy for prediction markets.</strong></p>
+  <p>Polymarket + Kalshi scanning, DB-managed Python runtimes, and paper/live execution orchestration.</p>
+</div>
 
 <p align="center">
-  <strong>Open-source prediction market arbitrage scanner and trading platform.<br/>Clone, run, and start finding mispriced markets in under a minute.</strong>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/FastAPI-0.109.0-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-18.2.0-61DAFB?logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/TypeScript-5.3.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License" />
 </p>
 
-<p align="center">
-  <a href="https://github.com/braedonsaunders/homerun/actions/workflows/sloppy.yml"><img src="https://github.com/braedonsaunders/homerun/actions/workflows/sloppy.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/braedonsaunders/homerun/blob/main/LICENSE"><img src="https://img.shields.io/github/license/braedonsaunders/homerun?style=flat" alt="License"></a>
-  <a href="https://github.com/braedonsaunders/homerun/stargazers"><img src="https://img.shields.io/github/stars/braedonsaunders/homerun?style=flat" alt="Stars"></a>
-  <a href="https://github.com/braedonsaunders/homerun/issues"><img src="https://img.shields.io/github/issues/braedonsaunders/homerun?style=flat" alt="Issues"></a>
-</p>
+![Homerun Dashboard — Market Scanner](./screenshots/dashboard-scanner.png)
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#what-it-does">What It Does</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#strategies">Strategies</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#dashboard">Dashboard</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#copy-trading--wallet-intelligence">Copy Trading</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="#api-reference">API</a>
-</p>
+## Quick Links
 
-<br/>
+- Start local dev: `make setup && make dev`
+- Start terminal UI: `make run`
+- Strategy API docs: `GET /api/strategy-manager/docs`
+- Data source API docs: `GET /api/data-sources/docs`
+- FastAPI swagger: `http://localhost:8000/docs`
 
-<p align="center">
-  <img src="../screenshots/screenshot.png" alt="Homerun Dashboard" width="800"/>
-</p>
+## TL;DR
 
-<br/>
+Homerun is a full-stack platform for building and running prediction-market trading systems where:
 
-## What It Does
+- Data sources are first-class, DB-managed Python classes (`python`, `rss`, `rest_api`) with validation, run history, and normalized records.
+- Strategies are first-class, DB-managed Python classes with full lifecycle hooks (`detect`, `evaluate`, `should_exit`).
+- Strategies can consume any source directly through `StrategySDK` (`get_data_records`, `run_data_source`, `list_data_sources`, etc.).
+- Trader intelligence is available through a formal `TradersSDK` (`get_firehose_signals`, `get_strategy_filtered_signals`, `get_confluence_signals`, etc.).
+- You can validate and backtest strategy code before enabling it.
+- Opportunities flow into a risk-gated orchestrator for paper or live execution.
 
-Homerun scans Polymarket and Kalshi for arbitrage opportunities — cases where market prices are internally inconsistent or diverge across platforms — and can execute trades automatically.
+If you can fetch the signal, you can trade the signal.
 
-It ships with a set of built-in detection strategies (basic arbitrage, NegRisk bundles, cross-platform discrepancies, news-driven edges, and more), but strategies are **fully user-definable** — you can write your own in Python and plug them in at runtime.
+## Why Homerun
 
-The scanner runs continuously, pushes results to a real-time dashboard, and supports paper trading out of the box with no API keys required.
+Most trading bots force a rigid pipeline or a toy DSL. Homerun does not.
 
-<br/>
-
-## Quick Start
-
-```bash
-git clone https://github.com/braedonsaunders/homerun.git
-cd homerun
-./scripts/run.sh
-```
-
-Open **http://localhost:3000**. The scanner starts immediately with a virtual $10k paper account.
-
-No `.env` file. No manual database setup. No API keys. The launcher provisions local Postgres automatically on first run.
-
-> **Windows?** Run `.\scripts\run.ps1` in PowerShell, or double-click `scripts\Homerun.bat`.
-
-<details>
-<summary><strong>One-click launchers</strong></summary>
-<br/>
-
-- **macOS:** `scripts/Homerun.command`
-- **Windows:** `scripts/Homerun.bat`
-- **Linux:** `scripts/Homerun.desktop` (run `chmod +x scripts/run.sh scripts/Homerun.desktop` first)
-
-</details>
-
-<details>
-<summary><strong>Requirements</strong></summary>
-<br/>
-
-- Python 3.10+ (3.11 recommended)
-- Node.js 18+
-
-</details>
-
-| Service | URL |
-|---------|-----|
-| Dashboard | `http://localhost:3000` |
-| API | `http://localhost:8000` |
-| Swagger Docs | `http://localhost:8000/docs` |
-| WebSocket | `ws://localhost:8000/ws` |
-| Prometheus Metrics | `http://localhost:8000/metrics` |
-
-<br/>
-
-## Strategies
-
-Homerun ships with built-in strategies covering the most common prediction market mispricings:
-
-| Strategy | What It Detects |
-|----------|----------------|
-| **Basic Arbitrage** | YES + NO on the same market sum to less than $1.00 |
-| **NegRisk** | Mutually exclusive outcome bundles priced below guaranteed payout |
-| **Mutually Exclusive** | Two events where only one can happen, both underpriced |
-| **Contradiction** | Markets implying logically inconsistent outcomes |
-| **Must-Happen** | Exhaustive outcome sets where probabilities sum below 100% |
-| **Miracle Scanner** | Near-impossible events priced too high on YES |
-| **Combinatorial** | Multi-leg integer programming across related markets |
-| **Settlement Lag** | Markets that haven't repriced after an outcome is already known |
-| **BTC/ETH High-Frequency** | Short-window crypto binaries drifting from Chainlink oracle prices |
-| **Cross-Platform** | Price discrepancies between Polymarket and Kalshi |
-| **News Edge** | LLM reads breaking news, estimates probability, flags the gap |
-| **Bayesian Cascade** | Belief propagation across correlated market graphs |
-| **Liquidity Vacuum** | Order book imbalance exploitation |
-| **Entropy Arbitrage** | Information-theoretic mispricing detection |
-| **Event-Driven** | Price lag after news catalysts |
-| **Temporal Decay** | Time-decay mispricing near resolution deadlines |
-| **Correlation Arbitrage** | Mean-reversion on correlated pair spreads |
-| **Market Making** | Earn bid-ask spread as liquidity provider |
-
-### Custom Strategies
-
-Strategies are pluggable. Write a Python class extending `BaseStrategy`, submit it through the UI, and it runs alongside the built-ins every scan cycle:
-
-```python
-from services.strategies.base import BaseStrategy
-
-class MyStrategy(BaseStrategy):
-    name = "My Custom Strategy"
-    description = "What this detects"
-
-    def detect(self, events, markets, prices):
-        opportunities = []
-        # your detection logic
-        return opportunities
-```
-
-Plugins are stored in the database and loaded dynamically at runtime.
-
-<br/>
-
-## Dashboard
-
-Eight tabs, each with its own real-time data pipeline via WebSocket:
-
-| Tab | What It Does |
-|-----|-------------|
-| **Opportunities** | Live arbitrage feed — card, table, terminal, and Polymarket search views |
-| **Trading** | Trader orchestrator cockpit + copy trading configuration |
-| **Accounts** | Paper and live account management |
-| **Traders** | Wallet discovery, tracking, and deep analysis |
-| **Positions** | Open positions across all accounts |
-| **Performance** | Equity curves, P&L charts, trade history |
-| **AI** | LLM copilot, opportunity scoring, resolution analysis |
-| **Settings** | 180+ configurable parameters, persisted to database |
-
-### Trading Modes
-
-| Mode | Description |
-|------|-------------|
-| **Paper** | Virtual $10k account — no API keys needed |
-| **Shadow** | Tracks every trade without executing |
-| **Live** | Real money on Polymarket CLOB |
-| **Mock** | Full pipeline with simulated execution |
-
-Trading infrastructure includes Kelly Criterion sizing, VWAP execution, circuit breakers, emergency kill switch, daily loss limits, maker mode for rebates, and configurable order types (GTC, FOK, GTD, FAK).
-
-<br/>
-
-## Copy Trading & Wallet Intelligence
-
-- **Full copy trading** — mirror trades from profitable wallets with proportional sizing
-- **Arb-only copy** — only replicate trades matching detected arbitrage patterns
-- **Whale filtering** — ignore noise below configurable thresholds
-- **Wallet discovery** — scans the blockchain for wallets with strong track records
-- **Anomaly detection** — flags impossible win rates, front-running, wash trading
-- **Real-time monitoring** — WebSocket-powered activity tracking
-
-<br/>
-
-## AI Layer
-
-Multi-provider LLM support (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio):
-
-- **ReAct agent** — reasoning + tool use for market analysis
-- **LLM-as-judge** — scores opportunities on profit viability, resolution safety, execution feasibility
-- **Resolution analysis** — detects ambiguity and dispute risk in market criteria
-- **News Edge** — estimates true probability from breaking news, flags mispriced markets
-- **AI Copilot** — context-aware chat for any opportunity, wallet, or market
-
-<br/>
-
-## Data Sources
-
-| Layer | Sources |
-|-------|---------|
-| **Prediction markets** | Polymarket (Gamma + CLOB + Data APIs), Kalshi |
-| **Crypto resolution data** | Polymarket RTDS, Chainlink oracle feeds |
-| **News** | Google News RSS, GDELT DOC 2.0, custom RSS feeds |
-| **Wallet intelligence** | On-chain activity via Polygon RPC, anomaly filtering |
-| **World intelligence** | Military aircraft (OpenSky), maritime vessels (AIS Stream), conflict data (ACLED, UCDP), earthquakes (USGS) |
-
-<br/>
-
-## Going Live
-
-Paper trading works with zero configuration. To trade real money:
-
-1. Get API credentials from [Polymarket Settings](https://polymarket.com/settings/api-keys)
-2. Add keys via the **Settings** tab, or set environment variables:
-
-```bash
-TRADING_ENABLED=true
-POLYMARKET_PRIVATE_KEY=your_key
-POLYMARKET_API_KEY=your_api_key
-POLYMARKET_API_SECRET=your_secret
-POLYMARKET_API_PASSPHRASE=your_passphrase
-```
-
-3. **Start with paper mode first.** Verify everything works before risking real money.
-
-<br/>
-
-## API Reference
-
-50+ endpoints. Full interactive docs at `http://localhost:8000/docs` when running.
-
-<details>
-<summary><strong>Opportunities</strong></summary>
-
-```
-GET  /api/opportunities          # Current arbitrage opportunities
-GET  /api/opportunities/{id}     # Specific opportunity details
-POST /api/scan                   # Trigger manual scan
-GET  /api/strategies             # Available strategies
-```
-
-</details>
-
-<details>
-<summary><strong>Scanner Control</strong></summary>
-
-```
-GET  /api/scanner/status         # Scanner status and stats
-POST /api/scanner/start          # Start scanning
-POST /api/scanner/pause          # Pause scanning
-POST /api/scanner/configure      # Update scanner settings
-```
-
-</details>
-
-<details>
-<summary><strong>Paper Trading</strong></summary>
-
-```
-POST /api/simulation/accounts              # Create paper account
-POST /api/simulation/accounts/{id}/execute # Execute opportunity
-GET  /api/simulation/accounts/{id}/performance
-GET  /api/simulation/accounts/{id}/equity  # Equity curve data
-```
-
-</details>
-
-<details>
-<summary><strong>Trader Orchestrator</strong></summary>
-
-```
-GET    /api/trader-orchestrator/overview
-POST   /api/trader-orchestrator/start
-POST   /api/trader-orchestrator/stop
-POST   /api/trader-orchestrator/kill-switch
-POST   /api/trader-orchestrator/live/preflight
-POST   /api/trader-orchestrator/live/arm
-POST   /api/trader-orchestrator/live/start
-POST   /api/trader-orchestrator/live/stop
-GET    /api/traders
-POST   /api/traders
-GET    /api/traders/{trader_id}
-PUT    /api/traders/{trader_id}
-DELETE /api/traders/{trader_id}
-```
-
-</details>
-
-<details>
-<summary><strong>Live Trading</strong></summary>
-
-```
-POST /api/trading/orders         # Place order
-GET  /api/trading/positions      # Open positions
-POST /api/trading/execute-opportunity
-```
-
-</details>
-
-<details>
-<summary><strong>Copy Trading</strong></summary>
-
-```
-POST /api/copy-trading/configs              # Create config
-POST /api/copy-trading/configs/{id}/enable  # Enable config
-GET  /api/copy-trading/configs              # List configs
-```
-
-</details>
-
-<details>
-<summary><strong>Wallet Intelligence</strong></summary>
-
-```
-GET  /api/anomaly/analyze/{address}    # Analyze a wallet
-POST /api/anomaly/find-profitable      # Find profitable wallets
-GET  /api/discovery/leaderboard        # Wallet leaderboard
-GET  /api/discovery/wallets/{address}  # Wallet details
-```
-
-</details>
-
-<details>
-<summary><strong>AI</strong></summary>
-
-```
-POST /api/ai/judge                     # AI opportunity scoring
-POST /api/ai/analyze                   # Market analysis
-GET  /api/ai/skills                    # Available AI skills
-```
-
-</details>
-
-<details>
-<summary><strong>News & Crypto</strong></summary>
-
-```
-GET  /api/news/articles          # Latest matched articles
-GET  /api/news/edges             # News-driven opportunities
-GET  /api/crypto/markets         # Live crypto binary markets
-GET  /api/crypto/prices          # Chainlink oracle prices
-```
-
-</details>
-
-<details>
-<summary><strong>Settings & Health</strong></summary>
-
-```
-GET  /api/settings               # Current settings
-PUT  /api/settings               # Update settings
-GET  /health                     # Basic health check
-GET  /health/live                # Liveness probe
-GET  /health/ready               # Readiness probe
-GET  /health/detailed            # Full system diagnostics
-GET  /metrics                    # Prometheus metrics
-WS   /ws                         # Real-time updates
-```
-
-</details>
-
-<br/>
+- Full Python strategies, not expression-language rules.
+- Full Python data sources, not fixed connectors only.
+- Runtime editing via API/UI with source validation and hot reload.
+- Unified opportunity model across scanner/news/weather/events/trader flows.
+- Built for prediction markets first (binary contracts, event settlement, cross-venue dislocations).
 
 ## Architecture
 
-```
-backend/
-├── main.py                      # FastAPI entry, lifespan, health checks, metrics
-├── config.py                    # 180+ settings via Pydantic Settings
-├── alembic/                     # Versioned schema/data migrations
-├── api/                         # REST + WebSocket endpoints
-├── services/
-│   ├── scanner.py               # Orchestrates all strategies per scan cycle
-│   ├── strategies/              # Built-in strategy implementations
-│   ├── trader_orchestrator/     # Multi-trader orchestration engine
-│   ├── trading.py               # Polymarket CLOB execution
-│   ├── copy_trader.py           # Copy trading orchestration
-│   ├── crypto_service.py        # Dedicated crypto market pipeline
-│   ├── chainlink_feed.py        # Oracle price feeds
-│   ├── wallet_intelligence.py   # Pattern analysis
-│   ├── anomaly_detector.py      # Statistical anomaly detection
-│   ├── ml_classifier.py         # False-positive classifier
-│   ├── plugin_loader.py         # Dynamic strategy loading
-│   ├── optimization/            # Frank-Wolfe, VWAP, constraint solver
-│   ├── news/                    # Feed aggregation, semantic matching, edge detection
-│   ├── world_intelligence/      # Geopolitical signal tracking
-│   └── ai/                      # LLM agent, skills, copilot, judgment
-├── models/
-│   ├── database.py              # 25+ SQLAlchemy tables
-│   └── market.py                # Market + opportunity schemas
-└── workers/                     # Background scan loops (scanner, news, crypto, discovery, etc.)
-
-frontend/
-├── src/
-│   ├── App.tsx                  # 8-tab dashboard
-│   ├── components/              # 50+ components (shadcn/ui + custom)
-│   ├── services/api.ts          # Typed API client
-│   ├── hooks/                   # WebSocket, keyboard shortcuts
-│   └── store/                   # Jotai atoms
-
-tui.py                           # Terminal UI (Textual + Rich)
+```text
+External APIs / RSS / Python Sources
+                |
+                v
+       Data Source Runtime
+  (fetch -> transform -> upsert)
+                |
+                v
+      data_source_records table  <-----+
+                |                      |
+                |                  StrategySDK
+                |             (read/run/list sources)
+                v                      |
+   Event Dispatcher + Workers          |
+  (market/news/weather/events/traders) |
+                |                      |
+                +----------> Strategy Runtime (DB-loaded Python)
+                               detect / evaluate / should_exit
+                                          |
+                                          v
+                                    Opportunity + Signal
+                                          |
+                                          v
+                                 Trader Orchestrator
+                              (risk gates + order manager)
+                                          |
+                                          v
+                              Paper / Live execution paths
 ```
 
-## Tech Stack
+## Current State (Accurate)
 
-| Layer | Technology |
-|-------|------------|
-| **Backend** | Python 3.10+ · FastAPI · SQLAlchemy 2.0 (async) · Pydantic |
-| **Frontend** | React 18 · TypeScript · Vite · TailwindCSS · shadcn/ui · Jotai · TanStack Query |
-| **Database** | PostgreSQL (launcher-managed local runtime) |
-| **Real-time** | WebSockets · Framer Motion |
-| **Trading** | Polymarket CLOB · Kalshi API · Polygon RPC |
-| **AI** | Multi-provider LLM (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio) · ReAct agent |
-| **ML** | Custom logistic regression · FAISS (optional) · sentence-transformers (optional) |
-| **Crypto** | Chainlink oracle feeds · Binary market scanner |
-| **Infra** | GitHub Actions · Prometheus · Textual TUI · Telegram alerts |
+- Unified strategy registry: `strategies` table managed by `/api/strategy-manager/*`.
+- Unified data-source registry: `data_sources` table managed by `/api/data-sources/*`.
+- Strategy runtime refresh is revision-driven (`strategy_runtime_revisions`) and hot-reloadable.
+- Data-source runtime includes validation, reload, immediate run, run history, and record inspection.
+- Code backtesting endpoints are live for all strategy lifecycle phases:
+  - `POST /api/validation/code-backtest`
+  - `POST /api/validation/code-backtest/evaluate`
+  - `POST /api/validation/code-backtest/exit`
+- Unified opportunities endpoint supports source scoping:
+  - `GET /api/opportunities?source=markets|traders|all`
 
-<br/>
+## Quick Start
 
-## Risk Disclosure
+### Prereqs
 
-**This is not risk-free.** Understand before trading real money:
+- Python 3
+- Node.js
+- Docker or `redis-server` (setup script can bootstrap Redis runtime prerequisites)
 
-- **Fees** — Polymarket charges 2% on winnings. Spreads must exceed that to profit.
-- **Resolution Risk** — Markets can resolve unexpectedly or ambiguously.
-- **Liquidity Risk** — You may not exit at expected prices.
-- **Oracle Risk** — Subjective resolution criteria can go against you.
-- **Timing Risk** — Opportunities can close before your order fills.
-- **Platform Risk** — Rules, fees, or market availability can change.
+### Local dev (frontend + backend)
 
-**Start with paper trading. Never risk money you can't afford to lose.**
+```bash
+git clone <your-repo-url>
+cd homerun
+make setup
+make dev
+```
 
-<br/>
+App endpoints:
+
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000`
+- FastAPI docs: `http://localhost:8000/docs`
+- WebSocket: `ws://localhost:8000/ws`
+
+### Terminal mode (TUI)
+
+```bash
+make run
+```
+
+`make run` launches the Textual/Rich TUI (`tui.py`) and ensures Redis is up.
+
+## Wire Any Source Into Any Strategy
+
+![Global Event Map — Data Sources](./screenshots/map.png)
+
+Two ways to connect source data into strategy logic:
+
+1. Event-driven: subscribe strategy to `EventType.DATA_SOURCE_UPDATE`.
+2. Direct read: call `StrategySDK.get_data_records(...)` inside your strategy.
+
+In practice, teams combine both: event for wake-up signal, SDK reads for filtered payload access.
+
+## Write a Data Source (full Python)
+
+```python
+from services.data_source_sdk import BaseDataSource
+
+
+class MacroFeedSource(BaseDataSource):
+    name = "Macro Feed"
+    description = "Example REST ingest for macro events"
+    default_config = {
+        "endpoint": "https://example.com/macro",
+        "limit": 200,
+    }
+
+    async def fetch_async(self):
+        endpoint = str(self.config.get("endpoint") or "").strip()
+        if not endpoint:
+            return []
+
+        payload = await self._http_get_json(endpoint, default=[])
+        rows = payload if isinstance(payload, list) else payload.get("items", [])
+
+        out = []
+        for row in rows[: self._as_int(self.config.get("limit"), 200, 1, 5000)]:
+            observed = self._parse_datetime(row.get("timestamp"))
+            out.append(
+                {
+                    "external_id": str(row.get("id") or ""),
+                    "title": str(row.get("title") or "").strip(),
+                    "summary": str(row.get("summary") or "").strip(),
+                    "category": "macro",
+                    "source": "macro_feed",
+                    "url": row.get("url"),
+                    "observed_at": observed.isoformat() if observed else None,
+                    "payload": row,
+                    "tags": ["macro", "custom"],
+                }
+            )
+        return out
+```
+
+Then use:
+
+- `POST /api/data-sources/validate`
+- `POST /api/data-sources`
+- `POST /api/data-sources/{id}/run`
+
+Or create it from the UI: `Data -> Sources`.
+
+## Write a Strategy (full Python)
+
+![Strategy Editor — Source Code & Settings](./screenshots/strategy-editor.png)
+
+```python
+from models import Opportunity
+from services.data_events import EventType
+from services.strategies.base import BaseStrategy
+from services.strategy_sdk import StrategySDK
+
+
+class MacroShockStrategy(BaseStrategy):
+    strategy_type = "macro_shock"
+    name = "Macro Shock"
+    description = "Uses custom macro feed records to find directional mispricing"
+
+    source_key = "scanner"
+    subscriptions = [EventType.MARKET_DATA_REFRESH]
+
+    default_config = {
+        "source_slug": "macro_feed_source",
+        "min_confidence": 0.55,
+    }
+
+    async def detect_async(self, events, markets, prices) -> list[Opportunity]:
+        source_slug = str(self.config.get("source_slug") or "macro_feed_source")
+        records = await StrategySDK.get_data_records(source_slug=source_slug, limit=100)
+        if not records:
+            return []
+
+        opportunities: list[Opportunity] = []
+        confidence = max(0.0, min(1.0, float(self.config.get("min_confidence", 0.55))))
+
+        for market in markets:
+            if market.closed or not market.active:
+                continue
+            if not market.clob_token_ids:
+                continue
+
+            yes_token = market.clob_token_ids[0]
+            yes_price = market.yes_price
+            if yes_token in prices:
+                yes_price = float(prices[yes_token].get("mid", yes_price) or yes_price)
+
+            if yes_price >= 0.60:
+                continue
+
+            opp = self.create_opportunity(
+                title=f"Macro Shock: {market.question[:80]}",
+                description="Directional YES based on external macro feed signal",
+                total_cost=yes_price,
+                expected_payout=1.0,
+                is_guaranteed=False,
+                markets=[market],
+                positions=[
+                    {
+                        "action": "BUY",
+                        "outcome": "YES",
+                        "price": yes_price,
+                        "token_id": yes_token,
+                    }
+                ],
+                confidence=confidence,
+            )
+            if opp:
+                opp.strategy_context = {
+                    "source_slug": source_slug,
+                    "records_used": len(records),
+                }
+                opportunities.append(opp)
+
+        return opportunities
+```
+
+Then use:
+
+- `POST /api/strategy-manager/validate`
+- `POST /api/validation/code-backtest`
+- `POST /api/strategy-manager`
+- `POST /api/strategy-manager/{id}/reload`
+
+Or create/edit it from the UI: `Strategies`.
+
+## Built-In Packs
+
+System seeds currently include:
+
+- 25 built-in opportunity strategies.
+- 39 prebuilt data-source presets (events + stories) plus a full custom Python source template.
+
+You can disable system seeds, clone them, or replace with your own strategy/source code.
+
+## Key API Surface
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/strategy-manager` | List strategies with capabilities/runtime metadata |
+| `GET /api/strategy-manager/template` | Strategy starter template |
+| `GET /api/strategy-manager/docs` | Strategy developer reference |
+| `POST /api/strategy-manager/validate` | Validate strategy source code |
+| `POST /api/strategy-manager/{id}/reload` | Recompile/reload strategy runtime |
+| `GET /api/data-sources` | List data sources |
+| `GET /api/data-sources/template` | Data-source templates/presets |
+| `GET /api/data-sources/docs` | Data-source developer reference |
+| `POST /api/data-sources/validate` | Validate source code |
+| `POST /api/data-sources/{id}/run` | Execute ingestion now |
+| `GET /api/data-sources/{id}/runs` | Source run history |
+| `GET /api/data-sources/{id}/records` | Normalized records |
+| `GET /api/opportunities` | Unified opportunities feed |
+| `POST /api/validation/code-backtest*` | Detect/evaluate/exit code backtests |
+
+## Project Layout
+
+```text
+homerun/
+├── backend/
+│   ├── api/                    # FastAPI routes
+│   ├── services/               # Strategy runtime, data-source runtime, orchestrator
+│   ├── workers/                # Background workers
+│   ├── models/                 # ORM + Pydantic models
+│   └── main.py                 # App entrypoint
+├── frontend/
+│   └── src/
+│       ├── components/         # UI panels (Strategies, Data Sources, Trading, Validation)
+│       ├── services/           # API client layer
+│       └── hooks/store/lib
+├── scripts/                    # setup/run helpers
+└── tui.py                      # terminal UI
+```
+
+## Development Commands
+
+```bash
+make setup      # install backend/frontend deps and bootstrap runtime prerequisites
+make dev        # backend + frontend dev servers
+make run        # launch TUI runtime
+make stop       # stop services on dev ports
+make build      # frontend build
+make clean      # remove generated artifacts
+```
+
+## Safety and Risk
+
+- This software can drive real-money trading decisions.
+- Strategy code should be validated and backtested before enabling execution.
+- Start in paper mode and graduate carefully.
+- Nothing in this repository is financial advice.
 
 ## Contributing
 
-PRs welcome. See [**CONTRIBUTING.md**](../docs/CONTRIBUTING.md) for the full guide.
-
-```bash
-git clone https://github.com/braedonsaunders/homerun.git
-cd homerun
-./scripts/setup.sh
-./scripts/run.sh
-```
-
-<br/>
-
-## Security
-
-Found a vulnerability? **Do not open a public issue.** See [**SECURITY.md**](../docs/SECURITY.md) for responsible disclosure.
-
-<br/>
+- Read `./docs/CONTRIBUTING.md`
+- Security policy: `./docs/SECURITY.md`
 
 ## License
 
-[MIT](LICENSE)
+MIT. See `./LICENSE`.
