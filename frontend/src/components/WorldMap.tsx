@@ -160,6 +160,44 @@ type CountryPopupSummary = {
   arcPreviews: string[]
 }
 
+type CountryRiskTone = 'stable' | 'elevated' | 'critical'
+
+type CountryMetricChip = {
+  label: string
+  value: string
+  tone?: 'default' | 'info' | 'warn' | 'critical'
+}
+
+type CountrySignalRow = {
+  id: string
+  title: string
+  subheader: string
+  severityLabel: string
+  description?: string
+}
+
+type CountryStoryRow = {
+  id: string
+  title: string
+  subheader: string
+  url?: string
+  domain?: string
+  summary?: string
+}
+
+type CountryFlyoutDetails = {
+  riskLabel: string
+  riskTone: CountryRiskTone
+  metricChips: CountryMetricChip[]
+  signalRows: CountrySignalRow[]
+  storyRows: CountryStoryRow[]
+  topSignalMix?: string
+  topSources?: string
+  arcContext?: string
+  coordinates?: string
+  lastSignalUpdate?: string
+}
+
 type FlyoutSelection = {
   category: string
   title: string
@@ -171,6 +209,7 @@ type FlyoutSelection = {
   lon?: number
   source?: string
   signalType?: string
+  countryDetails?: CountryFlyoutDetails
 }
 
 type FlyoutTab = 'context' | 'layers' | 'sources'
@@ -220,8 +259,6 @@ const CLICKABLE_LAYERS = [
   'signals-glow',
   'signals-military-flight-icon',
   'signals-military-vessel-icon',
-  'convergences-ring',
-  'convergences-fill',
   'hotspots-fill',
   'hotspots-outline',
   'chokepoints-icon',
@@ -234,7 +271,6 @@ const DEFAULT_LAYER_TOGGLES: LayerToggles = {
   countryBoundaries: true,
   conflictZones: true,
   signals: true,
-  convergences: true,
   hotspots: true,
   chokepoints: true,
   // Dynamic dsrc_* entries are added at runtime from data source configs
@@ -254,7 +290,6 @@ const STRUCTURAL_LAYER_GROUPS: Record<string, readonly string[]> = {
     'signals-military-flight-icon',
     'signals-military-vessel-icon',
   ],
-  convergences: ['convergences-fill', 'convergences-ring'],
   hotspots: ['hotspots-fill', 'hotspots-outline'],
   chokepoints: ['chokepoints-icon'],
 }
@@ -555,6 +590,9 @@ function signalsToGeoJSON(
     type: 'FeatureCollection',
     features: signals
       .map((signal) => {
+        if (String(signal.signal_type || '').trim().toLowerCase() === 'convergence') {
+          return null
+        }
         const metadata = (signal.metadata || {}) as Record<string, unknown>
         const activityType = String(metadata.activity_type || '').trim().toLowerCase()
         let coords: LngLatTuple | null = null
@@ -642,27 +680,6 @@ function signalsToGeoJSON(
         } as PointFeature
       })
       .filter((feature): feature is PointFeature => feature !== null),
-  }
-}
-
-function convergencesToGeoJSON(zones: ConvergenceZone[]): GeoFeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: zones.map((zone) => ({
-      type: 'Feature',
-      geometry: {
-        type: 'Point',
-        coordinates: [zone.longitude, zone.latitude],
-      },
-      properties: {
-        grid_key: zone.grid_key,
-        urgency_score: zone.urgency_score,
-        signal_count: zone.signal_count,
-        signal_types: zone.signal_types.join(', '),
-        country: zone.country || '',
-        country_name: zone.country ? formatCountry(zone.country) : '',
-      },
-    })),
   }
 }
 
@@ -1354,33 +1371,6 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     },
   })
 
-  map.addSource('convergences', {
-    type: 'geojson',
-    data: emptyFeatureCollection(),
-  })
-  map.addLayer({
-    id: 'convergences-fill',
-    type: 'circle',
-    source: 'convergences',
-    paint: {
-      'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 24, 50, 36, 100, 52],
-      'circle-color': theme === 'light' ? '#7c3aed' : '#c084fc',
-      'circle-opacity': 0.14,
-    },
-  })
-  map.addLayer({
-    id: 'convergences-ring',
-    type: 'circle',
-    source: 'convergences',
-    paint: {
-      'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 24, 50, 36, 100, 52],
-      'circle-color': 'transparent',
-      'circle-stroke-color': theme === 'light' ? '#6d28d9' : '#c084fc',
-      'circle-stroke-width': 2.5,
-      'circle-opacity': 0.85,
-    },
-  })
-
   // NOTE: Earthquake and wildfire signals no longer have dedicated layers.
   // Their visual properties (radius, opacity, color, stroke, blur) are all
   // driven by per-feature map_* properties stamped from data source configs.
@@ -1441,6 +1431,67 @@ function summarizeTopCounts(
     .join(', ')
 }
 
+function formatAgeLabel(timestamp: string | null | undefined): string {
+  if (!timestamp) return 'Unknown time'
+  const value = Date.parse(timestamp)
+  if (!Number.isFinite(value)) return 'Unknown time'
+  const deltaHours = Math.max(0, (Date.now() - value) / 3_600_000)
+  if (deltaHours < 1) return '<1h ago'
+  if (deltaHours < 24) return `${Math.round(deltaHours)}h ago`
+  const deltaDays = deltaHours / 24
+  if (deltaDays < 7) return `${Math.round(deltaDays)}d ago`
+  return `${Math.round(deltaDays / 7)}w ago`
+}
+
+function resolveStoryUrl(metadata: Record<string, unknown>): string | undefined {
+  const candidates = [
+    metadata.url,
+    metadata.article_url,
+    metadata.story_url,
+    metadata.link,
+  ]
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim()
+    if (!raw) continue
+    try {
+      const parsed = new URL(raw)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.toString()
+      }
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
+function hostFromUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    return new URL(value).hostname.replace(/^www\./, '')
+  } catch {
+    return undefined
+  }
+}
+
+function countryRiskTone(
+  instabilityScore: number,
+  tensionScore: number,
+  criticalSignals: number,
+  signalCount: number
+): { tone: CountryRiskTone; label: string } {
+  const maxScore = Math.max(instabilityScore, tensionScore)
+  if (criticalSignals >= 3 || maxScore >= 75) {
+    return { tone: 'critical', label: 'Critical watch' }
+  }
+  if (criticalSignals >= 1 || maxScore >= 45 || signalCount >= 8) {
+    return { tone: 'elevated', label: 'Elevated risk' }
+  }
+  return signalCount > 0 || maxScore >= 20
+    ? { tone: 'stable', label: 'Active monitoring' }
+    : { tone: 'stable', label: 'Low activity' }
+}
+
 const LAYER_LABELS: Record<string, string> = {
   countryIntensity: 'Country intensity',
   tensionBorders: 'Tension borders',
@@ -1448,7 +1499,6 @@ const LAYER_LABELS: Record<string, string> = {
   countryBoundaries: 'Country boundaries',
   conflictZones: 'Conflict zones',
   signals: 'Signals',
-  convergences: 'Convergences',
   hotspots: 'Hotspots',
   chokepoints: 'Chokepoints',
 }
@@ -1460,7 +1510,6 @@ const LAYER_SHORT_LABELS: Record<string, string> = {
   countryBoundaries: 'CB',
   conflictZones: 'CF',
   signals: 'SG',
-  convergences: 'CV',
   hotspots: 'HS',
   chokepoints: 'CP',
 }
@@ -1472,7 +1521,6 @@ const LAYER_COLORS: Record<string, string> = {
   countryBoundaries: '#38bdf8',
   conflictZones: '#dc2626',
   signals: '#8b5cf6',
-  convergences: '#a855f7',
   hotspots: '#3b82f6',
   chokepoints: '#10b981',
 }
@@ -1596,7 +1644,6 @@ function MapRightDock({
   toggles,
   onToggle,
   signalCount,
-  signalTotal,
   criticalCount,
   geocodedSignalCount,
   convergenceCount,
@@ -1619,7 +1666,6 @@ function MapRightDock({
   toggles: LayerToggles
   onToggle: (key: string) => void
   signalCount: number
-  signalTotal: number
   criticalCount: number
   geocodedSignalCount: number
   convergenceCount: number
@@ -1631,7 +1677,7 @@ function MapRightDock({
   onToggleSource: (canonicalKey: string) => void
   sourceError: string | null
 }) {
-  const signalLabel = signalTotal > signalCount ? `${signalCount}/${signalTotal}` : `${signalCount}`
+  const signalLabel = `${signalCount}`
   const typeEntries = Object.entries(byType)
     .filter(([, count]) => count > 0)
     .sort((a, b) => b[1] - a[1])
@@ -1639,6 +1685,19 @@ function MapRightDock({
   const bodySegments = splitPopupSegments(selection?.body)
   const detailRows = extractPopupDetails(bodySegments)
   const summaryRows = bodySegments.filter((segment) => !segment.includes(':'))
+  const countryDetails = selection?.category === 'Country' ? selection.countryDetails : undefined
+  const countryRiskToneClasses =
+    countryDetails?.riskTone === 'critical'
+      ? 'border-red-500/35 bg-red-500/12 text-red-400'
+      : countryDetails?.riskTone === 'elevated'
+        ? 'border-orange-500/35 bg-orange-500/12 text-orange-300'
+        : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  const metricToneClass = (tone: CountryMetricChip['tone'] | undefined): string => {
+    if (tone === 'critical') return 'text-red-400'
+    if (tone === 'warn') return 'text-orange-300'
+    if (tone === 'info') return 'text-blue-300'
+    return 'text-foreground'
+  }
 
   const openContext = () => {
     onTabChange('context')
@@ -1733,43 +1792,166 @@ function MapRightDock({
                 <>
                   {selection ? (
                     <div className="space-y-3">
-                      <div className="space-y-2 rounded-xl border border-border/70 bg-gradient-to-br from-card via-card to-muted/30 p-3">
-                        <div className="text-[14px] font-semibold text-foreground leading-tight">{selection.title}</div>
-                        {selection.subtitle ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {splitPopupSegments(selection.subtitle).map((segment, index) => (
-                              <span
-                                key={`selection-subtitle-${segment}-${index}`}
-                                className="inline-flex items-center rounded-full border border-border bg-background/75 px-2 py-0.5 text-[10px] leading-4 text-muted-foreground"
-                              >
-                                {segment}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        {summaryRows.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {summaryRows.map((row, index) => (
-                              <span
-                                key={`selection-summary-${row}-${index}`}
-                                className="inline-flex items-center rounded-md border border-border/70 bg-muted/45 px-2 py-1 text-[10px] leading-4 text-foreground/90"
-                              >
-                                {row}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        {detailRows.length > 0 ? (
-                          <dl className="space-y-1.5 rounded-md border border-border/70 bg-background/70 p-2.5">
-                            {detailRows.map((row, index) => (
-                              <div key={`selection-detail-${row.label}-${index}`} className="grid grid-cols-[100px_minmax(0,1fr)] items-start gap-2">
-                                <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{row.label}</dt>
-                                <dd className="text-[11px] leading-4 text-foreground break-words">{row.value}</dd>
+                      {countryDetails ? (
+                        <>
+                          <div className="space-y-2 rounded-xl border border-border/70 bg-gradient-to-br from-card via-card to-muted/30 p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="space-y-1 min-w-0">
+                                <div className="text-[15px] font-semibold text-foreground leading-tight">{selection.title}</div>
+                                {selection.subtitle ? (
+                                  <div className="text-[10px] text-muted-foreground">{selection.subtitle}</div>
+                                ) : null}
                               </div>
-                            ))}
-                          </dl>
-                        ) : null}
-                      </div>
+                              <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${countryRiskToneClasses}`}>
+                                {countryDetails.riskLabel}
+                              </span>
+                            </div>
+
+                            {countryDetails.metricChips.length > 0 ? (
+                              <div className="grid grid-cols-2 gap-1.5">
+                                {countryDetails.metricChips.map((chip, index) => (
+                                  <div key={`country-metric-chip-${chip.label}-${index}`} className="rounded-md border border-border/65 bg-background/70 px-2 py-1">
+                                    <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{chip.label}</div>
+                                    <div className={`text-[12px] font-semibold ${metricToneClass(chip.tone)}`}>{chip.value}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            {countryDetails.topSignalMix ? (
+                              <div className="text-[10px] text-muted-foreground">
+                                <span className="text-foreground/90">Signal mix:</span> {countryDetails.topSignalMix}
+                              </div>
+                            ) : null}
+                            {countryDetails.topSources ? (
+                              <div className="text-[10px] text-muted-foreground">
+                                <span className="text-foreground/90">Top sources:</span> {countryDetails.topSources}
+                              </div>
+                            ) : null}
+                            {countryDetails.arcContext ? (
+                              <div className="text-[10px] text-muted-foreground">
+                                <span className="text-foreground/90">Bilateral context:</span> {countryDetails.arcContext}
+                              </div>
+                            ) : null}
+                            {countryDetails.coordinates || countryDetails.lastSignalUpdate ? (
+                              <div className="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+                                {countryDetails.coordinates ? (
+                                  <span className="inline-flex items-center rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5">
+                                    {countryDetails.coordinates}
+                                  </span>
+                                ) : null}
+                                {countryDetails.lastSignalUpdate ? (
+                                  <span className="inline-flex items-center rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5">
+                                    {countryDetails.lastSignalUpdate}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
+                            <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                              Signals ({countryDetails.signalRows.length})
+                            </div>
+                            {countryDetails.signalRows.length > 0 ? countryDetails.signalRows.slice(0, 8).map((row) => (
+                              <div key={row.id} className="rounded-md border border-border/55 bg-background/70 px-2 py-1.5 space-y-0.5">
+                                <div className="text-[11px] text-foreground leading-4">{row.title}</div>
+                                <div className="text-[10px] text-muted-foreground leading-4">{row.subheader}</div>
+                                <div className="text-[10px] text-orange-300 font-semibold">{row.severityLabel}</div>
+                                {row.description ? (
+                                  <div className="text-[10px] text-muted-foreground leading-4">{row.description}</div>
+                                ) : null}
+                              </div>
+                            )) : (
+                              <div className="rounded-md border border-dashed border-border/60 bg-background/65 px-2 py-2 text-[11px] text-muted-foreground">
+                                No non-story signals for this country.
+                              </div>
+                            )}
+                            {countryDetails.signalRows.length > 8 ? (
+                              <div className="text-[10px] text-muted-foreground">
+                                +{countryDetails.signalRows.length - 8} more signals
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
+                            <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                              Stories ({countryDetails.storyRows.length})
+                            </div>
+                            {countryDetails.storyRows.length > 0 ? countryDetails.storyRows.slice(0, 8).map((story) => (
+                              <div key={story.id} className="rounded-md border border-border/55 bg-background/70 px-2 py-1.5 space-y-0.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="text-[11px] text-foreground leading-4">{story.title}</div>
+                                  {story.url ? (
+                                    <a
+                                      href={story.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="shrink-0 text-[10px] text-blue-300 hover:text-blue-200 underline"
+                                    >
+                                      Open
+                                    </a>
+                                  ) : null}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground leading-4">{story.subheader}</div>
+                                {story.domain ? (
+                                  <div className="text-[10px] text-cyan-300">{story.domain}</div>
+                                ) : null}
+                                {story.summary ? (
+                                  <div className="text-[10px] text-muted-foreground leading-4">{story.summary}</div>
+                                ) : null}
+                              </div>
+                            )) : (
+                              <div className="rounded-md border border-dashed border-border/60 bg-background/65 px-2 py-2 text-[11px] text-muted-foreground">
+                                No story items for this country.
+                              </div>
+                            )}
+                            {countryDetails.storyRows.length > 8 ? (
+                              <div className="text-[10px] text-muted-foreground">
+                                +{countryDetails.storyRows.length - 8} more stories
+                              </div>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="space-y-2 rounded-xl border border-border/70 bg-gradient-to-br from-card via-card to-muted/30 p-3">
+                          <div className="text-[14px] font-semibold text-foreground leading-tight">{selection.title}</div>
+                          {selection.subtitle ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {splitPopupSegments(selection.subtitle).map((segment, index) => (
+                                <span
+                                  key={`selection-subtitle-${segment}-${index}`}
+                                  className="inline-flex items-center rounded-full border border-border bg-background/75 px-2 py-0.5 text-[10px] leading-4 text-muted-foreground"
+                                >
+                                  {segment}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                          {summaryRows.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {summaryRows.map((row, index) => (
+                                <span
+                                  key={`selection-summary-${row}-${index}`}
+                                  className="inline-flex items-center rounded-md border border-border/70 bg-muted/45 px-2 py-1 text-[10px] leading-4 text-foreground/90"
+                                >
+                                  {row}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                          {detailRows.length > 0 ? (
+                            <dl className="space-y-1.5 rounded-md border border-border/70 bg-background/70 p-2.5">
+                              {detailRows.map((row, index) => (
+                                <div key={`selection-detail-${row.label}-${index}`} className="grid grid-cols-[100px_minmax(0,1fr)] items-start gap-2">
+                                  <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{row.label}</dt>
+                                  <dd className="text-[11px] leading-4 text-foreground break-words">{row.value}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          ) : null}
+                        </div>
+                      )}
 
                       <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
                         <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Nearby and Related</div>
@@ -1791,7 +1973,7 @@ function MapRightDock({
                     </div>
                   ) : (
                     <div className="rounded-xl border border-dashed border-border/70 bg-card/35 px-3 py-3 text-[11px] text-muted-foreground">
-                      Click a country, signal, hotspot, chokepoint, arc, or convergence to open context here.
+                      Click a country, signal, hotspot, chokepoint, or arc to open context here.
                     </div>
                   )}
                 </>
@@ -2758,11 +2940,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
 
   useEffect(() => {
     if (!mapReady || !mapRef.current) return
-    updateSourceData(mapRef.current, 'convergences', convergencesToGeoJSON(convergences))
-  }, [mapReady, convergences])
-
-  useEffect(() => {
-    if (!mapReady || !mapRef.current) return
     updateSourceData(mapRef.current, 'hotspots', hotspotsToGeoJSON(hotspots))
   }, [mapReady, hotspots])
 
@@ -2898,35 +3075,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         lon: hasSignalCoordinates ? signalLon : undefined,
         source: String(props.source || ''),
         signalType,
-      })
-    },
-    [openSelection]
-  )
-
-  const handleConvergenceClick = useCallback(
-    (event: LayerClickEvent) => {
-      if (!event.features?.length) return
-      const feature = event.features[0]
-      const props = (feature.properties || {}) as Record<string, unknown>
-      const convergenceIso3 = normalizeCountryCode(String(
-        props.country_iso3
-        || props.country_code
-        || props.country_name
-        || props.country
-        || ''
-      )) || undefined
-      const convergenceLat = Number(props.latitude)
-      const convergenceLon = Number(props.longitude)
-      const hasConvergenceCoordinates = Number.isFinite(convergenceLat) && Number.isFinite(convergenceLon)
-      openSelection({
-        category: 'Convergence',
-        title: 'Convergence Zone',
-        subtitle: `${props.country_name ? `${String(props.country_name)} · ` : ''}${String(props.signal_count || 0)} signals`,
-        body: `Urgency: ${Math.round(Number(props.urgency_score) || 0)} · Types: ${String(props.signal_types || 'unknown')}`,
-        iso3: convergenceIso3,
-        countryName: props.country_name ? String(props.country_name) : undefined,
-        lat: hasConvergenceCoordinates ? convergenceLat : undefined,
-        lon: hasConvergenceCoordinates ? convergenceLon : undefined,
       })
     },
     [openSelection]
@@ -3068,55 +3216,180 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       }
       const countryCenter = countryCentroids[iso3]
       const popupSummary = countryPopupSummaryByIso3[iso3]
-      const trackedSignals = popupSummary?.totalSignals ?? metrics.signal_count
-      const uniqueSources = popupSummary ? Object.keys(popupSummary.sourceCounts).length : 0
-      const summaryChips = popupSummary
-        ? [
-          popupSummary.riskSignals > 0 ? `Risk ${popupSummary.riskSignals}` : '',
-          popupSummary.newsSignals > 0 ? `News ${popupSummary.newsSignals}` : '',
-          popupSummary.criticalSignals > 0 ? `Critical ${popupSummary.criticalSignals}` : '',
-          popupSummary.tensionArcCount > 0 ? `Arcs ${popupSummary.tensionArcCount}` : '',
-          popupSummary.convergenceCount > 0 ? `Convergences ${popupSummary.convergenceCount}` : '',
-        ].filter(Boolean)
-        : []
+      const signalRowsForCountry: Array<{
+        id: string
+        title: string
+        description: string
+        signalType: string
+        source: string
+        severity: number
+        detectedAt: string | null
+        relatedMarketCount: number
+        storyUrl?: string
+        domain?: string
+        isStory: boolean
+      }> = []
+      for (const signal of signals) {
+        const directIso = normalizeCountryCode(
+          signal.country_iso3 || signal.country_name || signal.country || ''
+        )
+        const pair = pairFromSignal(signal)
+        const inScope =
+          directIso === iso3
+          || (pair ? pair[0] === iso3 || pair[1] === iso3 : false)
+        if (!inScope) continue
 
-      const topSignalMix = popupSummary
-        ? summarizeTopCounts(popupSummary.typeCounts, 3, formatSignalTypeLabel)
-        : ''
-      const topSources = popupSummary
-        ? summarizeTopCounts(popupSummary.sourceCounts, 2)
-        : ''
+        const metadata = (signal.metadata || {}) as Record<string, unknown>
+        const signalType = String(signal.signal_type || 'unknown').trim().toLowerCase() || 'unknown'
+        const source = String(signal.source || 'unknown').trim() || 'unknown'
+        const sourceToken = normalizeSourceToken(source)
+        const severity = Number(signal.severity || 0)
+        const relatedMarketCount = Array.isArray(signal.related_market_ids) ? signal.related_market_ids.length : 0
+        const storyUrl = resolveStoryUrl(metadata)
+        const domain = hostFromUrl(storyUrl)
+        const isStory = signalType === 'news' || sourceToken.includes('news') || sourceToken.includes('story')
+        signalRowsForCountry.push({
+          id: String(signal.signal_id || `${signalType}:${source}:${signal.detected_at || ''}`),
+          title: String(signal.title || formatSignalTypeLabel(signalType)),
+          description: truncateText(String(signal.description || '').trim(), 120),
+          signalType,
+          source,
+          severity,
+          detectedAt: signal.detected_at || null,
+          relatedMarketCount,
+          storyUrl,
+          domain,
+          isStory,
+        })
+      }
+
+      const timestampValue = (value: string | null): number => {
+        if (!value) return Number.NEGATIVE_INFINITY
+        const parsed = Date.parse(value)
+        return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+      }
+
+      const sortedSignals = signalRowsForCountry.slice().sort((left, right) => {
+        if (right.severity !== left.severity) return right.severity - left.severity
+        return timestampValue(right.detectedAt) - timestampValue(left.detectedAt)
+      })
+
+      const signalRows: CountrySignalRow[] = sortedSignals
+        .filter((row) => !row.isStory)
+        .map((row) => {
+          const subheaderParts = [
+            formatSignalTypeLabel(row.signalType),
+            row.source,
+            formatAgeLabel(row.detectedAt),
+            row.relatedMarketCount > 0 ? `${row.relatedMarketCount} market${row.relatedMarketCount === 1 ? '' : 's'}` : '',
+          ].filter(Boolean)
+          return {
+            id: row.id,
+            title: row.title,
+            subheader: subheaderParts.join(' · '),
+            severityLabel: `${Math.round(row.severity * 100)}% severity`,
+            description: row.description || undefined,
+          }
+        })
+
+      const storyRows: CountryStoryRow[] = sortedSignals
+        .filter((row) => row.isStory)
+        .sort((left, right) => timestampValue(right.detectedAt) - timestampValue(left.detectedAt))
+        .map((row) => {
+          const subheaderParts = [
+            row.source,
+            formatAgeLabel(row.detectedAt),
+            `${Math.round(row.severity * 100)}% severity`,
+          ].filter(Boolean)
+          return {
+            id: `${row.id}:story`,
+            title: row.title,
+            subheader: subheaderParts.join(' · '),
+            url: row.storyUrl,
+            domain: row.domain,
+            summary: row.description || undefined,
+          }
+        })
+
+      const typeCounts: Record<string, number> = {}
+      const sourceCounts: Record<string, number> = {}
+      let criticalSignals = 0
+      for (const row of signalRowsForCountry) {
+        typeCounts[row.signalType] = (typeCounts[row.signalType] || 0) + 1
+        sourceCounts[row.source] = (sourceCounts[row.source] || 0) + 1
+        if (row.severity >= 0.75) criticalSignals += 1
+      }
+
+      const trackedSignals = signalRowsForCountry.length
+      const uniqueSources = Object.keys(sourceCounts).length
+      const topSignalMix = summarizeTopCounts(typeCounts, 3, formatSignalTypeLabel)
+      const topSources = summarizeTopCounts(sourceCounts, 3)
       const arcContext = popupSummary?.arcPreviews.length
         ? popupSummary.arcPreviews.join(' | ')
         : ''
-      const newsHighlights = popupSummary?.headlinePreviews.length
-        ? popupSummary.headlinePreviews.join(' | ')
-        : ''
-
-      const bodyParts = [
-        ...summaryChips,
-        `Instability: ${metrics.instability_score.toFixed(1)}`,
-        `Tension: ${metrics.tension_score.toFixed(1)}`,
-        `Signals: ${trackedSignals}`,
-        uniqueSources > 0 ? `Sources: ${uniqueSources}` : '',
-        topSignalMix ? `Signal mix: ${topSignalMix}` : '',
-        topSources ? `Top sources: ${topSources}` : '',
-        arcContext ? `Bilateral context: ${arcContext}` : '',
-        newsHighlights ? `News highlights: ${newsHighlights}` : '',
-      ].filter(Boolean)
+      const latestSignalTimestamp = sortedSignals.length > 0
+        ? sortedSignals
+          .map((row) => timestampValue(row.detectedAt))
+          .reduce((highest, value) => Math.max(highest, value), Number.NEGATIVE_INFINITY)
+        : Number.NEGATIVE_INFINITY
+      const latestSignalLabel = Number.isFinite(latestSignalTimestamp)
+        ? `Latest signal ${new Date(latestSignalTimestamp).toLocaleString()}`
+        : undefined
+      const riskState = countryRiskTone(
+        metrics.instability_score,
+        metrics.tension_score,
+        criticalSignals,
+        trackedSignals
+      )
+      const coordinatesLabel = countryCenter
+        ? `Center ${countryCenter.latitude.toFixed(2)}, ${countryCenter.longitude.toFixed(2)}`
+        : undefined
+      const metricChips: CountryMetricChip[] = [
+        { label: 'Signals', value: `${trackedSignals}` },
+        { label: 'Stories', value: `${storyRows.length}`, tone: storyRows.length > 0 ? 'info' : 'default' },
+        { label: 'Critical', value: `${criticalSignals}`, tone: criticalSignals > 0 ? 'critical' : 'default' },
+        { label: 'Instability', value: metrics.instability_score.toFixed(1), tone: metrics.instability_score >= 45 ? 'warn' : 'default' },
+        { label: 'Tension', value: metrics.tension_score.toFixed(1), tone: metrics.tension_score >= 45 ? 'warn' : 'default' },
+        { label: 'Sources', value: `${uniqueSources}` },
+      ]
+      if (popupSummary?.tensionArcCount && popupSummary.tensionArcCount > 0) {
+        metricChips.push({ label: 'Arcs', value: `${popupSummary.tensionArcCount}`, tone: 'warn' })
+      }
+      if (popupSummary?.convergenceCount && popupSummary.convergenceCount > 0) {
+        metricChips.push({ label: 'Convergences', value: `${popupSummary.convergenceCount}`, tone: 'info' })
+      }
 
       openSelection({
         category: 'Country',
         title: metrics.country_name || formatCountry(iso3),
-        subtitle: `ISO3 ${iso3} · ${trackedSignals} tracked${uniqueSources > 0 ? ` · ${uniqueSources} sources` : ''}`,
-        body: bodyParts.join(' · '),
+        subtitle: `ISO3 ${iso3} · ${trackedSignals} tracked · ${signalRows.length} signals · ${storyRows.length} stories`,
+        body: [
+          `Instability: ${metrics.instability_score.toFixed(1)}`,
+          `Tension: ${metrics.tension_score.toFixed(1)}`,
+          uniqueSources > 0 ? `Sources: ${uniqueSources}` : '',
+          topSignalMix ? `Signal mix: ${topSignalMix}` : '',
+          topSources ? `Top sources: ${topSources}` : '',
+          arcContext ? `Bilateral context: ${arcContext}` : '',
+        ].filter(Boolean).join(' · '),
         iso3,
         countryName: metrics.country_name || formatCountry(iso3),
         lat: countryCenter?.latitude,
         lon: countryCenter?.longitude,
+        countryDetails: {
+          riskLabel: riskState.label,
+          riskTone: riskState.tone,
+          metricChips,
+          signalRows,
+          storyRows,
+          topSignalMix: topSignalMix || undefined,
+          topSources: topSources || undefined,
+          arcContext: arcContext || undefined,
+          coordinates: coordinatesLabel,
+          lastSignalUpdate: latestSignalLabel,
+        },
       })
     },
-    [countryCentroids, countryMetricsByIso3, countryPopupSummaryByIso3, openSelection]
+    [countryCentroids, countryMetricsByIso3, countryPopupSummaryByIso3, openSelection, signals]
   )
 
   const handleTensionArcClick = useCallback(
@@ -3206,8 +3479,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     map.on('click', 'signals-glow', handleSignalClick)
     map.on('click', 'signals-military-flight-icon', handleSignalClick)
     map.on('click', 'signals-military-vessel-icon', handleSignalClick)
-    map.on('click', 'convergences-ring', handleConvergenceClick)
-    map.on('click', 'convergences-fill', handleConvergenceClick)
     map.on('click', 'hotspots-fill', handleHotspotClick)
     map.on('click', 'hotspots-outline', handleHotspotClick)
     map.on('click', 'chokepoints-icon', handleChokepointClick)
@@ -3232,8 +3503,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       map.off('click', 'signals-glow', handleSignalClick)
       map.off('click', 'signals-military-flight-icon', handleSignalClick)
       map.off('click', 'signals-military-vessel-icon', handleSignalClick)
-      map.off('click', 'convergences-ring', handleConvergenceClick)
-      map.off('click', 'convergences-fill', handleConvergenceClick)
       map.off('click', 'hotspots-fill', handleHotspotClick)
       map.off('click', 'hotspots-outline', handleHotspotClick)
       map.off('click', 'chokepoints-icon', handleChokepointClick)
@@ -3253,7 +3522,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     handleTensionArcClick,
     handleConflictClick,
     handleSignalClick,
-    handleConvergenceClick,
     handleHotspotClick,
     handleChokepointClick,
     handleMapBackgroundClick,
@@ -3292,7 +3560,6 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
           }
         }}
         signalCount={signals.length}
-        signalTotal={Number(stableSignalsData.total || signals.length)}
         criticalCount={signalStatsExtra.criticalCount}
         geocodedSignalCount={geocodedSignalCount}
         convergenceCount={convergences.length}

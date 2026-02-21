@@ -4,13 +4,14 @@ import json
 
 from models.database import AsyncSessionLocal, EventsSnapshot
 from sqlalchemy import select
-from services import shared_state, wallet_tracker
+from services import shared_state
 from services.news import shared_state as news_shared_state
 from services.trader_orchestrator_state import (
     list_serialized_execution_sessions,
     list_traders,
     read_orchestrator_snapshot,
 )
+from services.wallet_tracker import wallet_tracker
 from services.worker_state import list_worker_snapshots, read_worker_snapshot
 from services.weather import shared_state as weather_shared_state
 from utils.market_urls import serialize_opportunity_with_links

@@ -351,6 +351,40 @@ class MarketMonitor:
 
         return alerts
 
+    async def ingest_snapshot(self, events: list[Event], markets: list[Market]) -> int:
+        """Update monitor registries from an already-fetched catalog snapshot."""
+        event_by_market: dict[str, Event] = {}
+        combined_by_id: dict[str, Market] = {}
+
+        for market in markets:
+            market_id = str(getattr(market, "id", "") or "")
+            if market_id:
+                combined_by_id[market_id] = market
+
+        for event in events:
+            for market in list(getattr(event, "markets", None) or []):
+                market_id = str(getattr(market, "id", "") or "")
+                if not market_id:
+                    continue
+                event_by_market[market_id] = event
+                if market_id not in combined_by_id:
+                    combined_by_id[market_id] = market
+
+        combined = list(combined_by_id.values())
+        if not combined:
+            return 0
+
+        async with self._lock:
+            self._detect_new_markets(combined, event_by_market)
+            self._detect_new_events(events, combined)
+            self._detect_price_dislocations(combined, event_by_market)
+            self._detect_thin_books(combined, event_by_market)
+            self._update_snapshots(combined)
+            self._update_crypto_schedules(combined)
+            self._cleanup_old_entries()
+
+        return len(combined)
+
     # ------------------------------------------------------------------
     # Detection methods
     # ------------------------------------------------------------------

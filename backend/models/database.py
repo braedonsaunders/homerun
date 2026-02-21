@@ -2771,8 +2771,9 @@ class EventsSnapshot(Base):
 
 # SQLite-specific: improve concurrency (WAL + busy_timeout applied in _set_sqlite_pragma)
 _engine_kw: dict = {"echo": False}
+_SQLITE_BUSY_TIMEOUT_MS = 1500
 if "sqlite" in settings.DATABASE_URL:
-    _engine_kw["connect_args"] = {"timeout": 30}  # Wait up to 30s when DB is locked
+    _engine_kw["connect_args"] = {"timeout": _SQLITE_BUSY_TIMEOUT_MS / 1000}  # Fail fast on lock contention
 # For Postgres, pool_size/max_overflow can be set via env or here if needed
 
 async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
@@ -2784,7 +2785,7 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
         return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")  # Allow concurrent reads during writes
-    cursor.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s when locked (ms)
+    cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")  # Fail fast when locked (ms)
     cursor.close()
 
 

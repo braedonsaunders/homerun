@@ -451,7 +451,8 @@ async def _run_loop() -> None:
             if deduped_opportunities:
                 try:
                     await market_scanner.attach_price_history_to_opportunities(
-                        deduped_opportunities, timeout_seconds=8.0,
+                        deduped_opportunities,
+                        timeout_seconds=0.0,
                     )
                 except Exception as exc:
                     logger.warning("Sparkline backfill for trader opps failed: %s", exc)
@@ -473,6 +474,7 @@ async def _run_loop() -> None:
                     session,
                     deduped_opportunities,
                     source="traders",
+                    sweep_missing=True,
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)

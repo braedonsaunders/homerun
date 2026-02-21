@@ -46,9 +46,10 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_ID = "latest"
 TRADERS_SNAPSHOT_ID = "traders_latest"
 CONTROL_ID = "default"
-SQLITE_LOCK_RETRY_ATTEMPTS = 6
-SQLITE_LOCK_BASE_DELAY_SECONDS = 0.15
-SQLITE_LOCK_MAX_DELAY_SECONDS = 1.5
+SQLITE_LOCK_RETRY_ATTEMPTS = 3
+SQLITE_LOCK_BASE_DELAY_SECONDS = 0.05
+SQLITE_LOCK_MAX_DELAY_SECONDS = 0.3
+SQLITE_LOCK_BUSY_TIMEOUT_MS = 500
 
 # In-memory targeted condition IDs for the next scan request.
 # Set by the evaluate endpoint, consumed and cleared by the scanner worker.
@@ -97,7 +98,7 @@ async def _commit_with_retry(session: AsyncSession) -> None:
     for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
         try:
             if "sqlite" in settings.DATABASE_URL.lower():
-                await session.execute(text("PRAGMA busy_timeout=1500"))
+                await session.execute(text(f"PRAGMA busy_timeout={SQLITE_LOCK_BUSY_TIMEOUT_MS}"))
             await session.commit()
             return
         except OperationalError as exc:
@@ -731,6 +732,44 @@ async def get_opportunities_from_db(
 
     for opp in opportunities:
         opp.title = _normalize_weather_edge_title(opp.title)
+
+    if opportunities:
+        try:
+            from services.scanner import scanner as market_scanner
+
+            opportunities = await market_scanner.refresh_opportunity_prices(
+                opportunities,
+                drop_stale=True,
+            )
+        except Exception:
+            pass
+
+    # For trader-sourced cards, trigger non-blocking sparkline hydration on read.
+    # This keeps API/UI latency low while allowing history to warm in the
+    # scanner cache/snapshot even when worker cycles are delayed.
+    if opportunities and source_key in {"traders", "all"}:
+        trader_candidates: list[Opportunity] = []
+        for opp in opportunities:
+            if source_key == "all" and not _is_traders_opportunity(opp):
+                continue
+            has_missing_market_history = False
+            for market in opp.markets:
+                history = market.get("price_history")
+                if not isinstance(history, list) or len(history) < 2:
+                    has_missing_market_history = True
+                    break
+            if has_missing_market_history:
+                trader_candidates.append(opp)
+        if trader_candidates:
+            try:
+                from services.scanner import scanner as market_scanner
+
+                await market_scanner.attach_price_history_to_opportunities(
+                    trader_candidates,
+                    timeout_seconds=0.0,
+                )
+            except Exception:
+                pass
 
     apply_tradability_filter = source_key in {"markets", "all"}
     if opportunities and apply_tradability_filter:

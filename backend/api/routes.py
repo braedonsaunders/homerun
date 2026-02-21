@@ -17,7 +17,8 @@ from models.database import (
     StrategyValidationProfile,
     get_db_session,
 )
-from services import wallet_tracker, polymarket_client
+from services import polymarket_client
+from services.wallet_tracker import wallet_tracker
 from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client

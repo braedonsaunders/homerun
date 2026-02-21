@@ -183,18 +183,32 @@ def _extract_model_probability(signal: Any, *, direction: str) -> Optional[float
     return None
 
 
-async def _fetch_market_info(market_id: str) -> Optional[dict[str, Any]]:
+async def _fetch_market_info(
+    market_id: str,
+    *,
+    timeout_seconds: float = 3.0,
+) -> Optional[dict[str, Any]]:
     normalized = _normalize_identifier(market_id)
     if not normalized:
         return None
 
+    timeout = max(0.1, float(timeout_seconds))
     try:
         if _is_condition_id(normalized):
-            return await polymarket_client.get_market_by_condition_id(normalized)
+            return await asyncio.wait_for(
+                polymarket_client.get_market_by_condition_id(normalized),
+                timeout=timeout,
+            )
         if _is_token_id(normalized):
-            return await polymarket_client.get_market_by_token_id(normalized)
+            return await asyncio.wait_for(
+                polymarket_client.get_market_by_token_id(normalized),
+                timeout=timeout,
+            )
         # Last-resort fallback: treat as condition id.
-        return await polymarket_client.get_market_by_condition_id(normalized)
+        return await asyncio.wait_for(
+            polymarket_client.get_market_by_condition_id(normalized),
+            timeout=timeout,
+        )
     except Exception:
         return None
 
@@ -208,6 +222,9 @@ async def build_live_signal_contexts(
     history_tail_points: int = 20,
     max_market_concurrency: int = 12,
     max_history_concurrency: int = 24,
+    market_fetch_timeout_seconds: float = 3.0,
+    prices_batch_timeout_seconds: float = 3.0,
+    history_fetch_timeout_seconds: float = 3.0,
 ) -> dict[str, dict[str, Any]]:
     """Fetch live market prices + movement context for a set of trade signals."""
     signal_rows: list[dict[str, Any]] = []
@@ -234,7 +251,10 @@ async def build_live_signal_contexts(
 
     async def _resolve_market(market_id: str) -> None:
         async with market_sem:
-            market_infos[market_id] = await _fetch_market_info(market_id)
+            market_infos[market_id] = await _fetch_market_info(
+                market_id,
+                timeout_seconds=market_fetch_timeout_seconds,
+            )
 
     await asyncio.gather(*[_resolve_market(mid) for mid in market_ids])
 
@@ -254,8 +274,12 @@ async def build_live_signal_contexts(
 
     live_prices: dict[str, float] = {}
     if all_market_tokens:
+        batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
         try:
-            batch = await polymarket_client.get_prices_batch(sorted(all_market_tokens))
+            batch = await asyncio.wait_for(
+                polymarket_client.get_prices_batch(sorted(all_market_tokens)),
+                timeout=batch_timeout,
+            )
             for token_id, payload in (batch or {}).items():
                 norm = _normalize_identifier(token_id)
                 if not norm or not isinstance(payload, dict):
@@ -293,15 +317,19 @@ async def build_live_signal_contexts(
     now_s = int(time.time())
     start_s = max(0, now_s - max(60, int(history_window_seconds)))
     fidelity = max(30, int(history_fidelity_seconds))
+    history_timeout = max(0.1, float(history_fetch_timeout_seconds))
 
     async def _resolve_history(token_id: str) -> None:
         async with history_sem:
             try:
-                raw = await polymarket_client.get_prices_history(
-                    token_id,
-                    start_ts=start_s,
-                    end_ts=now_s,
-                    fidelity=fidelity,
+                raw = await asyncio.wait_for(
+                    polymarket_client.get_prices_history(
+                        token_id,
+                        start_ts=start_s,
+                        end_ts=now_s,
+                        fidelity=fidelity,
+                    ),
+                    timeout=history_timeout,
                 )
             except Exception:
                 raw = []

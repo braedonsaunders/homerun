@@ -19,15 +19,17 @@ from sqlalchemy import text
 from models.opportunity import Opportunity
 from services.signal_bus import (
     build_signal_contract_from_opportunity,
+    expire_source_signals_except,
     make_dedupe_key,
     refresh_trade_signal_snapshots,
     upsert_trade_signal,
 )
 from utils.utcnow import utcnow
 
-SQLITE_LOCK_RETRY_ATTEMPTS = 6
-SQLITE_LOCK_BASE_DELAY_SECONDS = 0.15
-SQLITE_LOCK_MAX_DELAY_SECONDS = 1.5
+SQLITE_LOCK_RETRY_ATTEMPTS = 3
+SQLITE_LOCK_BASE_DELAY_SECONDS = 0.05
+SQLITE_LOCK_MAX_DELAY_SECONDS = 0.3
+SQLITE_LOCK_BUSY_TIMEOUT_MS = 500
 
 
 def _is_sqlite_lock_error(exc: Exception) -> bool:
@@ -47,6 +49,7 @@ async def bridge_opportunities_to_signals(
     default_ttl_minutes: int = 120,
     quality_filter_pipeline: Optional[Any] = None,
     quality_reports: Optional[dict] = None,
+    sweep_missing: bool = False,
 ) -> int:
     """Convert Opportunity objects into TradeSignal rows.
 
@@ -70,6 +73,7 @@ async def bridge_opportunities_to_signals(
     """
     now = utcnow()
     emitted = 0
+    keep_dedupe_keys: set[str] = set()
 
     for opp in opportunities:
         market_id, direction, entry_price, market_question, payload_json, strategy_context_json = (
@@ -83,6 +87,7 @@ async def bridge_opportunities_to_signals(
             opp.strategy,
             market_id,
         )
+        keep_dedupe_keys.add(dedupe_key)
         expires = opp.resolution_date or (now + timedelta(minutes=default_ttl_minutes))
 
         opp_quality_passed: Optional[bool] = None
@@ -127,7 +132,15 @@ async def bridge_opportunities_to_signals(
     for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
         try:
             if "sqlite" in settings.DATABASE_URL.lower():
-                await session.execute(text("PRAGMA busy_timeout=1500"))
+                await session.execute(text(f"PRAGMA busy_timeout={SQLITE_LOCK_BUSY_TIMEOUT_MS}"))
+            if sweep_missing:
+                await expire_source_signals_except(
+                    session,
+                    source=source,
+                    keep_dedupe_keys=keep_dedupe_keys,
+                    signal_types=[f"{source}_opportunity"],
+                    commit=False,
+                )
             await session.commit()
             await refresh_trade_signal_snapshots(session)
             return emitted

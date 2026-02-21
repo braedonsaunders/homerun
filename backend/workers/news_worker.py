@@ -31,7 +31,7 @@ _IDLE_SLEEP_SECONDS = 5
 
 
 async def emit_news_intent_signals(session, opportunities: list) -> int:
-    return await bridge_opportunities_to_signals(session, opportunities, source="news")
+    return await bridge_opportunities_to_signals(session, opportunities, source="news", sweep_missing=True)
 
 
 def _interval_from_control_and_settings(control: dict, wf_settings: dict) -> int:

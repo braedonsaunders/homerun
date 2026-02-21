@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select, text, update as sa_update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -31,7 +33,12 @@ from models.database import (
     TraderSignalConsumption,
 )
 from services.event_bus import event_bus
-from services.worker_state import _commit_with_retry
+from services.worker_state import (
+    SQLITE_LOCK_RETRY_ATTEMPTS,
+    _commit_with_retry,
+    _is_sqlite_lock_error,
+    _sqlite_lock_retry_delay,
+)
 from services.simulation import simulation_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.opportunity_strategy_catalog import (
@@ -64,6 +71,11 @@ _RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
 _TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
 _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 5.0
 _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 15.0
+_LEGACY_STRATEGY_KEY_ALIASES = {
+    "strategy.default": "btc_eth_highfreq",
+    "crypto_15m": "btc_eth_highfreq",
+    "crypto_5m": "btc_eth_highfreq",
+}
 
 
 def _now() -> datetime:
@@ -137,7 +149,8 @@ def _normalize_resume_policy(value: Any) -> str:
 
 
 def _normalize_strategy_key(value: Any) -> str:
-    return str(value or "").strip().lower()
+    key = str(value or "").strip().lower()
+    return _LEGACY_STRATEGY_KEY_ALIASES.get(key, key)
 
 
 def _normalize_strategy_for_source(source_key: str, strategy_key: str) -> str:
@@ -639,21 +652,45 @@ async def read_orchestrator_snapshot(session: AsyncSession) -> dict[str, Any]:
 
 async def update_orchestrator_control(session: AsyncSession, **updates: Any) -> dict[str, Any]:
     row = await ensure_orchestrator_control(session)
-    # Fields where None is never a valid explicit value -- skip if None.
+    payload: dict[str, Any] = {}
+
     for field in ("is_enabled", "is_paused", "mode", "run_interval_seconds", "kill_switch"):
         if field in updates and updates[field] is not None:
-            setattr(row, field, updates[field])
-    # requested_run_at accepts explicit None (to clear a stale timestamp).
+            payload[field] = updates[field]
+
     if "requested_run_at" in updates:
-        setattr(row, "requested_run_at", updates["requested_run_at"])
+        payload["requested_run_at"] = updates["requested_run_at"]
+
     if isinstance(updates.get("settings_json"), dict):
         merged = dict(row.settings_json or {})
         merged.update(updates["settings_json"])
-        row.settings_json = merged
-    row.updated_at = _now()
-    await _commit_with_retry(session)
-    await session.refresh(row)
-    return _serialize_control(row)
+        payload["settings_json"] = merged
+
+    payload["updated_at"] = _now()
+
+    for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+        try:
+            if "sqlite" in settings.DATABASE_URL.lower():
+                await session.execute(text("PRAGMA busy_timeout=1500"))
+            await session.execute(
+                sa_update(TraderOrchestratorControl)
+                .where(TraderOrchestratorControl.id == ORCHESTRATOR_CONTROL_ID)
+                .values(**payload)
+            )
+            await session.commit()
+            break
+        except OperationalError as exc:
+            await session.rollback()
+            is_locked = _is_sqlite_lock_error(exc)
+            is_last = attempt >= SQLITE_LOCK_RETRY_ATTEMPTS - 1
+            if not is_locked or is_last:
+                raise
+            await asyncio.sleep(_sqlite_lock_retry_delay(attempt))
+
+    refreshed = await session.get(TraderOrchestratorControl, ORCHESTRATOR_CONTROL_ID)
+    if refreshed is None:
+        refreshed = await ensure_orchestrator_control(session)
+    return _serialize_control(refreshed)
 
 
 async def write_orchestrator_snapshot(
@@ -686,7 +723,13 @@ async def write_orchestrator_snapshot(
         row.open_orders = int(stats.get("open_orders", row.open_orders or 0) or 0)
         row.gross_exposure_usd = float(stats.get("gross_exposure_usd", row.gross_exposure_usd or 0.0) or 0.0)
         row.daily_pnl = float(stats.get("daily_pnl", row.daily_pnl or 0.0) or 0.0)
-    await _commit_with_retry(session)
+    await _commit_with_retry(
+        session,
+        retry_attempts=2,
+        busy_timeout_ms=250,
+        base_delay_seconds=0.05,
+        max_delay_seconds=0.1,
+    )
     await session.refresh(row)
     snapshot_data = _serialize_snapshot(row)
 

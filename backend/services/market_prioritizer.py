@@ -20,6 +20,7 @@ Also provides:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -89,11 +90,15 @@ class MarketPrioritizer:
         """Lazy-load MarketMonitor to avoid circular imports."""
         if self._monitor is None:
             try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return None
+            try:
                 from services.market_monitor import market_monitor
 
                 self._monitor = market_monitor
-            except ImportError:
-                pass
+            except Exception:
+                return None
         return self._monitor
 
     # ------------------------------------------------------------------
@@ -143,8 +148,10 @@ class MarketPrioritizer:
         state = self._states.get(market.id)
 
         if state is None:
-            # Brand new market — always HOT
-            return MarketTier.HOT
+            # Unseen markets default to WARM to avoid HOT-tier floods when a
+            # large catalog is first loaded. The scanner explicitly injects
+            # newly discovered incremental markets for immediate evaluation.
+            return MarketTier.WARM
 
         # Score-based classification
         hot_signals = 0

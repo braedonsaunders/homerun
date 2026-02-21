@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     TIERED_SCANNING_ENABLED: bool = True  # Enable tiered scan loop
     FAST_SCAN_INTERVAL_SECONDS: int = 15  # Hot-tier poll frequency
     FULL_SCAN_INTERVAL_SECONDS: int = 120  # Full (baseline) scan frequency
+    # Full-snapshot strategies are CPU-heavy on large catalogs. Run them on a
+    # slower cadence with an explicit bounded market batch.
+    SCANNER_FULL_SNAPSHOT_STRATEGY_INTERVAL_SECONDS: int = 120
+    SCANNER_FULL_SNAPSHOT_MAX_MARKETS: int = 1500
+    # Maximum allowed age for live token prices attached to opportunities.
+    # Stale opportunities are pruned before UI/autotrader visibility.
+    SCANNER_MARKET_PRICE_MAX_AGE_SECONDS: int = 90
     REALTIME_SCAN_DEBOUNCE_SECONDS: float = 0.25  # WS change coalescing window
     REALTIME_SCAN_MAX_PENDING_TOKENS: int = 2000  # Backpressure cap for queued changed tokens
     REALTIME_SCAN_MAX_BATCH_TOKENS: int = 500  # Max changed tokens consumed per fast scan

@@ -178,6 +178,7 @@ async def _run_loop() -> None:
                     session,
                     opportunities,
                     source="weather",
+                    sweep_missing=True,
                 )
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:

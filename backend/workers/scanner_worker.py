@@ -72,6 +72,36 @@ def _parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _build_market_history_payload(opps: list) -> Optional[dict[str, list[dict[str, float]]]]:
+    """Build a non-empty market history payload for scanner snapshot writes."""
+    market_history = scanner.get_broad_market_history(max_markets=500)
+
+    # Ensure all opportunity markets are included even if they didn't make
+    # the broad recency cap.
+    opp_history = scanner.get_market_history_for_opportunities(opps)
+    for market_id, points in opp_history.items():
+        if market_id and market_id not in market_history and isinstance(points, list) and len(points) >= 2:
+            market_history[market_id] = points
+
+    # Fallback: preserve inline history that already exists on opportunities.
+    for opp in opps:
+        markets = getattr(opp, "markets", None)
+        if not isinstance(markets, list):
+            continue
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            market_id = str(market.get("id", "") or "").strip()
+            if not market_id or market_id in market_history:
+                continue
+            points = market.get("price_history")
+            if not isinstance(points, list) or len(points) < 2:
+                continue
+            market_history[market_id] = points
+
+    return market_history if market_history else None
+
+
 async def _catalog_refresh_loop() -> None:
     """Background loop that refreshes the market catalog independently.
 
@@ -403,7 +433,7 @@ async def _run_scan_loop() -> None:
                 try:
                     attached = await scanner.attach_price_history_to_opportunities(
                         prev_opps,
-                        timeout_seconds=18.0,
+                        timeout_seconds=0.0,
                     )
                     if attached > 0:
                         logger.info(
@@ -432,7 +462,7 @@ async def _run_scan_loop() -> None:
                         "current_activity": activity,
                         "strategies": [],
                     },
-                    market_history=scanner.get_broad_market_history(max_markets=500),
+                    market_history=_build_market_history_payload(prev_opps),
                 )
                 await write_worker_snapshot(
                     session,
@@ -540,21 +570,14 @@ async def _run_scan_loop() -> None:
                     except Exception as e:
                         logger.debug("Pre-write AI merge skipped: %s", e)
 
-                # Write broad market history so subprocesses (traders, weather)
-                # can hydrate sparklines for any market, not just arb opportunities.
-                market_history = scanner.get_broad_market_history(max_markets=500)
-                # Ensure all opportunity markets are included even if they didn't
-                # make the top-500 recency cut.
-                opp_history = scanner.get_market_history_for_opportunities(opps)
-                for mid, hist in opp_history.items():
-                    if mid not in market_history:
-                        market_history[mid] = hist
+                market_history = _build_market_history_payload(opps)
                 await write_scanner_snapshot(session, opps, status, market_history=market_history)
                 emitted = await bridge_opportunities_to_signals(
                     session,
                     opps,
                     source="scanner",
                     quality_reports=scanner.quality_reports,
+                    sweep_missing=True,
                 )
                 await clear_scan_request(session)
                 await write_worker_snapshot(
