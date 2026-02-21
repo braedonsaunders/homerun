@@ -404,9 +404,17 @@ needs_setup() {
         return 0
     fi
 
-    python3 - <<'PY'
+    local fingerprint_python_version
+    if [ -x "backend/venv/bin/python" ]; then
+        fingerprint_python_version="$(backend/venv/bin/python -c 'import platform; print(platform.python_version())')"
+    else
+        fingerprint_python_version="$(python3 -c 'import platform; print(platform.python_version())')"
+    fi
+
+    SETUP_FINGERPRINT_PY_VERSION="$fingerprint_python_version" python3 - <<'PY'
 import hashlib
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -429,7 +437,7 @@ except Exception:
     sys.exit(0)
 
 current = {
-    "python_version": platform.python_version(),
+    "python_version": os.getenv("SETUP_FINGERPRINT_PY_VERSION", platform.python_version()),
     "requirements_sha256": sha256(root / "backend" / "requirements.txt"),
     "requirements_trading_sha256": sha256(root / "backend" / "requirements-trading.txt"),
     "package_json_sha256": sha256(root / "frontend" / "package.json"),

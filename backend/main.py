@@ -106,6 +106,7 @@ async def lifespan(app: FastAPI):
     )
     worker_processes: dict[str, asyncio.subprocess.Process] = {}
     worker_monitor_tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task] = []
     workers_shutting_down = False
 
     def _worker_name_from_module(module_name: str) -> str:
@@ -431,7 +432,6 @@ async def lifespan(app: FastAPI):
             await wallet_tracker.add_wallet(wallet)
 
         # Background tasks (scanner runs in separate worker process; API reads from DB)
-        tasks = []
 
         # Broadcast scanner snapshot deltas from DB to connected WebSocket clients.
         await snapshot_broadcaster.start(interval_seconds=1.0)

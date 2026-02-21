@@ -254,9 +254,16 @@ echo "Ensuring Postgres runtime prerequisites..."
 ensure_postgres_runtime
 
 # Write setup fingerprint so run.sh can detect drift and auto-rerun setup.
-python3 - <<'PY'
+if [ -x "backend/venv/bin/python" ]; then
+    FINGERPRINT_PY_VERSION="$(backend/venv/bin/python -c 'import platform; print(platform.python_version())')"
+else
+    FINGERPRINT_PY_VERSION="$(python3 -c 'import platform; print(platform.python_version())')"
+fi
+
+SETUP_FINGERPRINT_PY_VERSION="$FINGERPRINT_PY_VERSION" python3 - <<'PY'
 import hashlib
 import json
+import os
 import platform
 from pathlib import Path
 
@@ -272,7 +279,7 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 stamp = {
-    "python_version": platform.python_version(),
+    "python_version": os.getenv("SETUP_FINGERPRINT_PY_VERSION", platform.python_version()),
     "requirements_sha256": sha256(root / "backend" / "requirements.txt"),
     "requirements_trading_sha256": sha256(root / "backend" / "requirements-trading.txt"),
     "package_json_sha256": sha256(root / "frontend" / "package.json"),

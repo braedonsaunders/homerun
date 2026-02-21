@@ -304,7 +304,7 @@ function Get-HashOrMissing {
 }
 
 $stamp = @{
-    python_version = (python -c "import platform; print(platform.python_version())")
+    python_version = (& .\backend\venv\Scripts\python.exe -c "import platform; print(platform.python_version())")
     requirements_sha256 = Get-HashOrMissing "backend\requirements.txt"
     requirements_trading_sha256 = Get-HashOrMissing "backend\requirements-trading.txt"
     package_json_sha256 = Get-HashOrMissing "frontend\package.json"

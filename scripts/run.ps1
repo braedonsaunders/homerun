@@ -537,7 +537,12 @@ function Test-NeedsSetup {
         return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 
-    $pythonVersion = (python -c "import platform; print(platform.python_version())")
+    $fingerprintPython = "python"
+    if (Test-Path "backend\venv\Scripts\python.exe") {
+        $fingerprintPython = "backend\venv\Scripts\python.exe"
+    }
+
+    $pythonVersion = (& $fingerprintPython -c "import platform; print(platform.python_version())")
     if ($stamp.python_version -ne $pythonVersion) { return $true }
     if ($stamp.requirements_sha256 -ne (Get-HashOrMissing "backend\requirements.txt")) { return $true }
     if ($stamp.requirements_trading_sha256 -ne (Get-HashOrMissing "backend\requirements-trading.txt")) { return $true }
