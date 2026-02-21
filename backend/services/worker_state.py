@@ -16,7 +16,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import WorkerControl, WorkerSnapshot
@@ -48,6 +48,13 @@ def _is_retryable_db_error(exc: Exception) -> bool:
             "serialization failure",
             "could not serialize access",
             "lock not available",
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
         )
     )
 
@@ -149,7 +156,7 @@ async def _commit_with_retry(
         try:
             await session.commit()
             return
-        except OperationalError as exc:
+        except (OperationalError, InterfaceError) as exc:
             if hasattr(session, "rollback"):
                 await session.rollback()
             is_locked = _is_retryable_db_error(exc)

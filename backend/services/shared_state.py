@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 SQL_IN_CLAUSE_CHUNK_SIZE = 900
@@ -91,6 +91,13 @@ def _is_retryable_db_error(exc: Exception) -> bool:
             "serialization failure",
             "could not serialize access",
             "lock not available",
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
         )
     )
 
@@ -104,7 +111,7 @@ async def _commit_with_retry(session: AsyncSession) -> None:
         try:
             await session.commit()
             return
-        except OperationalError as exc:
+        except (OperationalError, InterfaceError) as exc:
             await session.rollback()
             is_locked = _is_retryable_db_error(exc)
             is_last = attempt >= DB_RETRY_ATTEMPTS - 1

@@ -2169,12 +2169,63 @@ class PolymarketClient:
         trade history for buy/sell activity counts.
         """
         try:
-            # Fetch all data sources in parallel for speed
-            closed_positions, positions, trades = await asyncio.gather(
+            # Fetch all data sources in parallel for speed. If one endpoint
+            # is temporarily rate-limited/unavailable, continue with partial
+            # data instead of failing the whole PnL calculation.
+            closed_positions_result, positions_result, trades_result = await asyncio.gather(
                 self.get_closed_positions_paginated(address, max_positions=1000),
                 self.get_wallet_positions_with_prices(address),
                 self.get_wallet_trades(address, limit=500),
+                return_exceptions=True,
             )
+
+            closed_positions: list[dict] = []
+            positions: list[dict] = []
+            trades: list[dict] = []
+
+            if isinstance(closed_positions_result, Exception):
+                _logger.warning(
+                    "Closed-positions fetch failed during PnL calculation; using empty fallback",
+                    address=address,
+                    error=str(closed_positions_result),
+                    error_type=type(closed_positions_result).__name__,
+                    exc_info=closed_positions_result,
+                )
+            else:
+                closed_positions = closed_positions_result
+
+            if isinstance(positions_result, Exception):
+                _logger.warning(
+                    "Open-positions fetch failed during PnL calculation; using empty fallback",
+                    address=address,
+                    error=str(positions_result),
+                    error_type=type(positions_result).__name__,
+                    exc_info=positions_result,
+                )
+            else:
+                positions = positions_result
+
+            if isinstance(trades_result, Exception):
+                is_rate_limited = (
+                    isinstance(trades_result, httpx.HTTPStatusError)
+                    and trades_result.response is not None
+                    and trades_result.response.status_code == 429
+                )
+                if is_rate_limited:
+                    _logger.debug(
+                        "Trade history fetch rate-limited during PnL calculation; continuing without trades",
+                        address=address,
+                    )
+                else:
+                    _logger.warning(
+                        "Trade history fetch failed during PnL calculation; using empty fallback",
+                        address=address,
+                        error=str(trades_result),
+                        error_type=type(trades_result).__name__,
+                        exc_info=trades_result,
+                    )
+            else:
+                trades = trades_result
 
             # Apply time period filter to trades
             trades = self._filter_by_time_period(trades, time_period)

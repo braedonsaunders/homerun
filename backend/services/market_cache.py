@@ -44,6 +44,9 @@ MARKET_CACHE_REFERENCE_LOOKBACK_DAYS = 45
 MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS = 7
 MARKET_CACHE_MAX_ENTRIES_PER_SLUG = 3
 
+def _utcnow_naive() -> datetime:
+    return utcnow().replace(tzinfo=None)
+
 
 # ==================== SQLAlchemy Models ====================
 
@@ -60,8 +63,8 @@ class CachedMarket(Base):
     category = Column(String, nullable=True)
     active = Column(Boolean, nullable=True)
     extra_data = Column(JSON, nullable=True)  # Any additional metadata
-    cached_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cached_at = Column(DateTime, default=_utcnow_naive)
+    updated_at = Column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     __table_args__ = (
         Index("idx_cm_category", "category"),
@@ -76,8 +79,8 @@ class CachedUsername(Base):
 
     address = Column(String, primary_key=True)  # Lowercase wallet address
     username = Column(String, nullable=False)
-    cached_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cached_at = Column(DateTime, default=_utcnow_naive)
+    updated_at = Column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
     __table_args__ = (Index("idx_cu_cached_at", "cached_at"),)
 
@@ -183,7 +186,7 @@ class MarketCacheService:
         # Persist to database
         try:
             async with AsyncSessionLocal() as session:
-                now = utcnow()
+                now = _utcnow_naive()
                 # Separate known columns from extra data
                 known_keys = {
                     "question",
@@ -237,7 +240,7 @@ class MarketCacheService:
         # Persist to database in a single transaction
         try:
             async with AsyncSessionLocal() as session:
-                now = utcnow()
+                now = _utcnow_naive()
                 known_keys = {
                     "question",
                     "slug",
@@ -295,7 +298,7 @@ class MarketCacheService:
 
         try:
             async with AsyncSessionLocal() as session:
-                now = utcnow()
+                now = _utcnow_naive()
                 stmt = pg_insert(CachedUsername).values(
                     address=addr_lower,
                     username=username,
@@ -329,7 +332,7 @@ class MarketCacheService:
 
         try:
             async with AsyncSessionLocal() as session:
-                now = utcnow()
+                now = _utcnow_naive()
                 for addr, uname in normalised.items():
                     stmt = pg_insert(CachedUsername).values(
                         address=addr,
@@ -400,7 +403,7 @@ class MarketCacheService:
 
     async def cleanup_old_entries(self, max_age_days: int = 30):
         """Remove entries older than max_age_days from both DB and memory."""
-        cutoff = utcnow() - timedelta(days=max_age_days)
+        cutoff = _utcnow_naive() - timedelta(days=max_age_days)
         removed_markets = 0
         removed_usernames = 0
 

@@ -11,6 +11,8 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import InterfaceError, OperationalError
+
 from config import settings
 from models.database import AsyncSessionLocal
 from services.data_events import DataEvent
@@ -25,6 +27,24 @@ from utils.logger import setup_logging
 
 setup_logging(level=os.environ.get("LOG_LEVEL", "INFO"), json_format=False)
 logger = logging.getLogger("weather_worker")
+
+
+def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
+    if not isinstance(exc, (OperationalError, InterfaceError)):
+        return False
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(
+        marker in message
+        for marker in (
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
+        )
+    )
 
 
 async def _run_loop() -> None:
@@ -135,14 +155,31 @@ async def _run_loop() -> None:
             continue
 
         try:
-            async with AsyncSessionLocal() as session:
-                result = await weather_workflow_orchestrator.run_cycle(session)
-                await shared_state.clear_weather_scan_request(session)
+            result: dict = {}
+            pending_rows: list = []
+            enriched_intents: list[dict] = []
+            max_db_attempts = 2
+            for attempt in range(max_db_attempts):
                 try:
-                    pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
-                except Exception:
-                    pending_rows = []
-                enriched_intents = shared_state.get_enriched_weather_intents()
+                    async with AsyncSessionLocal() as session:
+                        result = await weather_workflow_orchestrator.run_cycle(session)
+                        await shared_state.clear_weather_scan_request(session)
+                        try:
+                            pending_rows = await shared_state.list_weather_intents(
+                                session,
+                                status_filter="pending",
+                                limit=2000,
+                            )
+                        except Exception:
+                            pending_rows = []
+                        enriched_intents = shared_state.get_enriched_weather_intents()
+                    break
+                except Exception as exc:
+                    is_retryable_disconnect = _is_retryable_db_disconnect_error(exc)
+                    if not is_retryable_disconnect or attempt >= max_db_attempts - 1:
+                        raise
+                    logger.warning("Weather workflow DB connection dropped; retrying cycle: %s", exc)
+                    await asyncio.sleep(0.25 * (attempt + 1))
 
             intent_dicts: list[dict] = []
             if enriched_intents:

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, desc, func, select
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import DataSource, DataSourceRecord, DataSourceRun
@@ -21,6 +23,29 @@ _RETENTION_BOUNDS: dict[str, tuple[int, int]] = {
     "max_records": (1, 250_000),
     "max_age_days": (1, 3650),
 }
+_DB_DISCONNECT_RETRY_BASE_DELAY_SECONDS = 0.2
+
+
+def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
+    if not isinstance(exc, (OperationalError, InterfaceError)):
+        return False
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(
+        marker in message
+        for marker in (
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
+        )
+    )
+
+
+def _db_disconnect_retry_delay(attempt: int) -> float:
+    return min(_DB_DISCONNECT_RETRY_BASE_DELAY_SECONDS * (2**attempt), 1.5)
 
 
 def _utcnow_naive() -> datetime:
@@ -306,6 +331,7 @@ async def run_data_source(
     *,
     max_records: int = 500,
     commit: bool = True,
+    _retry_on_disconnect: bool = True,
 ) -> dict[str, Any]:
     """Run one source, normalize records, and upsert into data_source_records."""
 
@@ -402,17 +428,18 @@ async def run_data_source(
 
         existing_by_external_id: dict[str, DataSourceRecord] = {}
         if external_ids:
-            existing_rows = (
-                (
-                    await session.execute(
-                        select(DataSourceRecord)
-                        .where(DataSourceRecord.source_slug == source_slug)
-                        .where(DataSourceRecord.external_id.in_(external_ids))
+            with session.no_autoflush:
+                existing_rows = (
+                    (
+                        await session.execute(
+                            select(DataSourceRecord)
+                            .where(DataSourceRecord.source_slug == source_slug)
+                            .where(DataSourceRecord.external_id.in_(external_ids))
+                        )
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
-            )
             existing_by_external_id = {str(row.external_id): row for row in existing_rows if row.external_id}
 
         ingested_at = _utcnow_naive()
@@ -476,6 +503,32 @@ async def run_data_source(
         run_row.status = "success"
         run_row.error_message = None
     except Exception as exc:
+        if _retry_on_disconnect and _is_retryable_db_disconnect_error(exc):
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "Data source run hit transient DB disconnect; retrying once",
+                source_slug=source_slug,
+                error=str(exc),
+            )
+            await asyncio.sleep(_db_disconnect_retry_delay(0))
+            retry_source = source
+            try:
+                reloaded_source = await session.get(DataSource, source_id)
+                if reloaded_source is not None:
+                    retry_source = reloaded_source
+            except Exception:
+                pass
+            return await run_data_source(
+                session,
+                retry_source,
+                max_records=max_records,
+                commit=commit,
+                _retry_on_disconnect=False,
+            )
+
         if runtime is not None:
             runtime.error_count += 1
             runtime.last_error = str(exc)
