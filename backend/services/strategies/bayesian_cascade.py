@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity, MispricingType
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from services.quality_filter import QualityFilterOverrides
 from utils.kelly import kelly_fraction
@@ -298,6 +297,7 @@ class BayesianCascadeStrategy(BaseStrategy):
         "min_confidence": 0.40,
         "max_risk_score": 0.75,
         "min_propagation_edge": 0.05,
+        "max_propagation_depth": 3,
         "base_size_usd": 15.0,
         "max_size_usd": 120.0,
     }
@@ -344,9 +344,6 @@ class BayesianCascadeStrategy(BaseStrategy):
         markets: list[Market],
         prices: dict[str, dict],
     ) -> list[Opportunity]:
-        if not settings.BAYESIAN_CASCADE_ENABLED:
-            return []
-
         # 1. Build the graph from all active markets
         graph = self._build_graph(markets, prices)
 
@@ -561,8 +558,8 @@ class BayesianCascadeStrategy(BaseStrategy):
         If a target market has NOT adjusted as expected, flag it.
         """
         opportunities: list[Opportunity] = []
-        min_edge_pct = settings.BAYESIAN_MIN_EDGE_PERCENT / 100.0
-        max_depth = settings.BAYESIAN_PROPAGATION_DEPTH
+        min_edge_pct = max(0.0, float(self.config.get("min_propagation_edge", 0.05) or 0.05))
+        max_depth = max(1, int(float(self.config.get("max_propagation_depth", 3) or 3)))
 
         # Build a lookup: market_id -> event for enriching opportunities
         market_to_event: dict[str, Event] = {}

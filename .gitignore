@@ -41,11 +41,8 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
-*.sqlite
-*.sqlite3
 data/*.stale*
 data/postgres/
-backend/.alembic.sqlite.lock
 
 # Logs
 *.log

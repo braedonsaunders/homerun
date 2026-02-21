@@ -9,7 +9,6 @@ import {
   RefreshCw,
   ExternalLink,
   ChevronRight,
-  ArrowUpDown,
   Settings,
   Maximize2,
   Minimize2,
@@ -968,22 +967,32 @@ export default function CryptoMarketsPanel({
     }
   }, [filteredMarkets])
 
+  const wsStatus = !isViewerActive
+    ? {
+      label: 'Updates Paused',
+      toneClass: 'text-muted-foreground border-border/50 bg-card/70',
+    }
+    : isConnected
+      ? hasFreshWsMarkets
+        ? {
+          label: 'WebSocket Live',
+          toneClass: 'text-green-400 border-green-500/30 bg-green-500/10',
+        }
+        : {
+          label: 'WebSocket Connected',
+          toneClass: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
+        }
+      : {
+        label: 'Polling 2s',
+        toneClass: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10',
+      }
+
   return (
     <div ref={panelRef} className="space-y-4">
       {/* Header */}
-      <div className="rounded-xl border border-border/40 bg-card/60 p-3">
+      <div className="rounded-xl border border-border/40 bg-card/60 px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="relative">
-              <ArrowUpDown className="w-4 h-4 text-orange-400" />
-              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            </div>
-            <Badge variant="outline" className="text-[9px] text-orange-400 border-orange-500/20 bg-orange-500/10">
-              LIVE
-            </Badge>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            <div className="flex items-center rounded-lg border border-border/50 overflow-hidden p-0.5 bg-card/70">
+          <div className="flex items-center rounded-lg border border-border/50 overflow-hidden p-0.5 bg-card/70">
               {([
                 { label: 'All', value: 'all', count: allMarkets.length },
                 { label: '5m', value: '5m', count: timeframeCounts['5m'] },
@@ -1005,58 +1014,63 @@ export default function CryptoMarketsPanel({
                   {option.label} ({option.count})
                 </button>
               ))}
-            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {showSettingsButton && onOpenCryptoSettings && (
               <Button size="sm" variant="outline" onClick={onOpenCryptoSettings} className="h-7 px-2.5 text-xs gap-1.5">
                 <Settings className="w-3.5 h-3.5" />
                 Settings
               </Button>
             )}
-            <div className="text-[11px] text-muted-foreground font-data flex items-center gap-1.5">
-              {!isViewerActive ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50" />
-                  Updates paused (view hidden)
-                </>
-              ) : isConnected ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                  {hasFreshWsMarkets ? 'Real-time via WebSocket' : 'WebSocket connected'}
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                  Polling fallback (2s)
-                </>
-              )}
+            <Button type="button" size="sm" variant="outline" className={cn("h-7 px-2.5 text-xs", wsStatus.toneClass)}>
+              {wsStatus.label}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-2 border-t border-border/30 pt-2">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 md:grid-cols-5">
+            <div className="min-w-0">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Markets</div>
+              <div className="text-sm font-bold font-data leading-tight text-foreground">
+                {stats.total}
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.live} live</span>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Series Liquidity</div>
+              <div className="text-sm font-bold font-data leading-tight text-foreground">
+                {formatUsd(stats.totalLiquidity)}
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.seriesCount} series</span>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Series 24h Vol</div>
+              <div className="text-sm font-bold font-data leading-tight text-foreground">
+                {formatUsd(stats.totalVolume24h)}
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.seriesCount} series</span>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Avg Spread</div>
+              <div className={cn("text-sm font-bold font-data leading-tight", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>
+                {(stats.avgSpread * 100).toFixed(2)}%
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.spreadSampleCount} mkts</span>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Taker Fee</div>
+              <div className={cn("text-sm font-bold font-data leading-tight", stats.avgTakerFeePct !== null && stats.avgTakerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground')}>
+                {stats.avgTakerFeePct !== null ? `${(stats.avgTakerFeePct * 100).toFixed(2)}%` : '--'}
+                {stats.maxTakerFeePct !== null && (
+                  <span className="ml-1 text-[10px] font-medium text-muted-foreground">
+                    max {(stats.maxTakerFeePct * 100).toFixed(2)}%
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* KPI row */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        {[
-          { label: 'Markets', value: <span className="text-lg font-bold font-data text-foreground">{stats.total}</span>, sub: `${stats.live} live` },
-          { label: 'Series Liquidity', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalLiquidity)}</span>, sub: `${stats.seriesCount} series` },
-          { label: 'Series 24h Vol', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalVolume24h)}</span>, sub: `${stats.seriesCount} series` },
-          { label: 'Avg Spread', value: <span className={cn("text-lg font-bold font-data", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>{(stats.avgSpread * 100).toFixed(2)}%</span>, sub: `${stats.spreadSampleCount} mkts vs $1.00` },
-          {
-            label: 'Taker Fee',
-            value: <span className={cn("text-lg font-bold font-data", stats.avgTakerFeePct !== null && stats.avgTakerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground')}>
-              {stats.avgTakerFeePct !== null ? `${(stats.avgTakerFeePct * 100).toFixed(2)}%` : '--'}
-            </span>,
-            sub: stats.takerFeeSampleCount > 0
-              ? `avg ${stats.takerFeeSampleCount} mkts${stats.maxTakerFeePct !== null ? ` · max ${(stats.maxTakerFeePct * 100).toFixed(2)}%` : ''}`
-              : 'not available'
-          },
-        ].map((stat, i) => (
-          <Card key={i} className="rounded-lg border border-border/40 bg-card/40 p-3">
-            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{stat.label}</div>
-            <div>{stat.value}</div>
-            <div className="text-[10px] text-muted-foreground/60 mt-0.5">{stat.sub}</div>
-          </Card>
-        ))}
       </div>
 
       {/* Content */}

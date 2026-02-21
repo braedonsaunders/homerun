@@ -766,6 +766,7 @@ export const updatePlugin = async (
     source_key: string
     name: string
     description: string
+    unlock_system: boolean
   }>
 ): Promise<StrategyPlugin> => {
   const { data } = await api.put(`/strategy-manager/${id}`, updates)
@@ -2450,16 +2451,6 @@ export interface SearchFilterSettings {
   max_plausible_roi: number
   max_trade_legs: number
   min_liquidity_per_leg: number
-  // NegRisk
-  negrisk_min_total_yes: number
-  negrisk_warn_total_yes: number
-  negrisk_election_min_total_yes: number
-  negrisk_max_resolution_spread_days: number
-  // Settlement lag
-  settlement_lag_max_days_to_resolution: number
-  settlement_lag_near_zero: number
-  settlement_lag_near_one: number
-  settlement_lag_min_sum_deviation: number
   // Risk scoring
   risk_very_short_days: number
   risk_short_days: number
@@ -2491,41 +2482,6 @@ export interface SearchFilterSettings {
   btc_eth_pure_arb_max_combined: number
   btc_eth_dump_hedge_drop_pct: number
   btc_eth_thin_liquidity_usd: number
-  // Miracle strategy
-  miracle_min_no_price: number
-  miracle_max_no_price: number
-  miracle_min_impossibility_score: number
-  // Cross-platform
-  cross_platform_enabled: boolean
-  // Combinatorial
-  combinatorial_min_confidence: number
-  combinatorial_high_confidence: number
-  // Bayesian cascade
-  bayesian_cascade_enabled: boolean
-  bayesian_min_edge_percent: number
-  bayesian_propagation_depth: number
-  // Liquidity vacuum
-  liquidity_vacuum_enabled: boolean
-  liquidity_vacuum_min_imbalance_ratio: number
-  liquidity_vacuum_min_depth_usd: number
-  // Entropy arb
-  entropy_arb_enabled: boolean
-  entropy_arb_min_deviation: number
-  // Event-driven
-  event_driven_enabled: boolean
-  // Temporal decay
-  temporal_decay_enabled: boolean
-  // Correlation arb
-  correlation_arb_enabled: boolean
-  correlation_arb_min_correlation: number
-  correlation_arb_min_divergence: number
-  // Market making
-  market_making_enabled: boolean
-  market_making_spread_bps: number
-  market_making_max_inventory_usd: number
-  // Statistical arb
-  stat_arb_enabled: boolean
-  stat_arb_min_edge: number
 }
 
 export interface AllSettings {
@@ -3255,57 +3211,6 @@ export interface NewsSupportingArticle {
   fetched_at?: string | null
 }
 
-export interface NewsTradeIntent {
-  id: string
-  signal_key?: string | null
-  finding_id: string
-  market_id: string
-  market_question: string
-  direction: string
-  entry_price: number
-  model_probability: number
-  edge_percent: number
-  confidence: number
-  suggested_size_usd: number
-  metadata?: {
-    market?: {
-      id?: string
-      slug?: string
-      event_slug?: string
-      event_ticker?: string
-      platform?: string
-      market_url?: string
-      url?: string
-      event_title?: string
-      liquidity?: number
-      yes_price?: number
-      no_price?: number
-      outcome_labels?: string[]
-      outcome_prices?: number[]
-      outcomes?: unknown[]
-      tokens?: unknown[]
-      token_ids?: string[]
-    }
-    finding?: {
-      article_id?: string
-      signal_key?: string
-      cache_key?: string
-    }
-    supporting_articles?: NewsSupportingArticle[]
-    supporting_article_count?: number
-  }
-  market_platform?: string | null
-  market_slug?: string | null
-  market_event_slug?: string | null
-  market_event_ticker?: string | null
-  market_url?: string | null
-  polymarket_url?: string | null
-  kalshi_url?: string | null
-  status: string
-  created_at: string
-  consumed_at: string | null
-}
-
 export interface NewsWorkflowStatus {
   running: boolean
   enabled: boolean
@@ -3358,19 +3263,6 @@ export const getNewsWorkflowFindings = async (params?: {
   offset?: number
 }): Promise<{ total: number; offset: number; limit: number; findings: NewsWorkflowFinding[] }> => {
   const { data } = await api.get('/news-workflow/findings', { params })
-  return unwrapApiData(data)
-}
-
-export const getNewsWorkflowIntents = async (params?: {
-  status_filter?: string
-  limit?: number
-}): Promise<{ total: number; intents: NewsTradeIntent[] }> => {
-  const { data } = await api.get('/news-workflow/intents', { params })
-  return unwrapApiData(data)
-}
-
-export const skipNewsWorkflowIntent = async (intentId: string): Promise<{ status: string; intent_id: string }> => {
-  const { data } = await api.post(`/news-workflow/intents/${intentId}/skip`)
   return unwrapApiData(data)
 }
 

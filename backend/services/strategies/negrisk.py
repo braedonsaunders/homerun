@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from models import Market, Event, Opportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, make_aware
 from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float
@@ -66,6 +65,10 @@ class NegRiskStrategy(BaseStrategy):
         "min_confidence": 0.42,
         "max_risk_score": 0.68,
         "min_markets": 2,
+        "min_total_yes": 0.95,
+        "warn_total_yes": 0.97,
+        "election_min_total_yes": 0.97,
+        "max_resolution_spread_days": 7,
         "base_size_usd": 20.0,
         "max_size_usd": 180.0,
     }
@@ -150,11 +153,29 @@ class NegRiskStrategy(BaseStrategy):
 
         is_election = self._is_election_market(event.title)
         is_open_ended = self._is_open_ended_event(event.title)
+        min_total_yes = max(0.5, min(1.0, to_float(self.config.get("min_total_yes", 0.95), 0.95)))
+        election_min_total_yes = max(
+            min_total_yes,
+            min(1.0, to_float(self.config.get("election_min_total_yes", 0.97), 0.97)),
+        )
+        warn_total_yes = max(
+            min_total_yes,
+            min(1.0, to_float(self.config.get("warn_total_yes", 0.97), 0.97)),
+        )
+        max_resolution_spread_days = max(
+            0,
+            int(to_float(self.config.get("max_resolution_spread_days", 7), 7)),
+        )
+        min_required_total_yes = election_min_total_yes if is_election else min_total_yes
 
         # Open-ended events (Nobel Prize, awards, "best X") where the outcome
         # universe is inherently unbounded — anyone/anything could win.
         # The listed outcomes can never be exhaustive.
         if is_open_ended:
+            return None
+
+        # Hard reject when listed outcomes are likely non-exhaustive.
+        if total_yes < min_required_total_yes:
             return None
 
         # --- Multi-winner / threshold detection ---
@@ -176,7 +197,7 @@ class NegRiskStrategy(BaseStrategy):
             earliest = min(end_dates)
             latest = max(end_dates)
             spread_days = (latest - earliest).days
-            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+            if spread_days > max_resolution_spread_days:
                 return None
 
         opp = self.create_opportunity(
@@ -189,10 +210,10 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+            if total_yes < warn_total_yes:
                 opp.risk_factors.insert(
                     0,
-                    f"Total YES ({total_yes:.1%}) below 97% — possible missing outcomes",
+                    f"Total YES ({total_yes:.1%}) below {warn_total_yes:.1%} — possible missing outcomes",
                 )
             if is_election:
                 opp.risk_factors.insert(
@@ -613,7 +634,11 @@ class NegRiskStrategy(BaseStrategy):
             earliest = min(end_dates)
             latest = max(end_dates)
             spread_days = (latest - earliest).days
-            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+            max_resolution_spread_days = max(
+                0,
+                int(to_float(self.config.get("max_resolution_spread_days", 7), 7)),
+            )
+            if spread_days > max_resolution_spread_days:
                 return None
 
         opp = self.create_opportunity(

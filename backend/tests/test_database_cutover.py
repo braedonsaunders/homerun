@@ -5,14 +5,13 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import models.database as database
+from tests.postgres_test_db import build_postgres_session_factory
 
 
 def _repo_head_revision() -> str:
@@ -23,9 +22,7 @@ def _repo_head_revision() -> str:
 
 @pytest.mark.asyncio
 async def test_init_database_creates_schema_and_revision(tmp_path, monkeypatch):
-    db_path = tmp_path / "schema.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine, session_factory = await build_postgres_session_factory(database.Base, "database_cutover_schema")
 
     monkeypatch.setattr(database, "async_engine", engine)
     monkeypatch.setattr(database, "AsyncSessionLocal", session_factory)
@@ -33,16 +30,19 @@ async def test_init_database_creates_schema_and_revision(tmp_path, monkeypatch):
     await database.init_database()
 
     async with engine.begin() as conn:
-        orchestrator_rows = await conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='trader_orchestrator_control'")
-        )
-        assert orchestrator_rows.first() is not None
+        orchestrator_rows = await conn.execute(text("SELECT to_regclass('public.trader_orchestrator_control')"))
+        assert orchestrator_rows.scalar_one() is not None
 
         revision_row = await conn.execute(text("SELECT version_num FROM alembic_version"))
         assert revision_row.scalar_one() == _repo_head_revision()
 
-        app_columns = await conn.execute(text("PRAGMA table_info(app_settings)"))
-        app_column_names = {row[1] for row in app_columns.fetchall()}
+        app_columns = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'app_settings'"
+            )
+        )
+        app_column_names = {row[0] for row in app_columns.fetchall()}
         assert "events_settings_json" in app_column_names
 
     await engine.dispose()
@@ -50,9 +50,7 @@ async def test_init_database_creates_schema_and_revision(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_init_database_is_idempotent(tmp_path, monkeypatch):
-    db_path = tmp_path / "idempotent.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine, session_factory = await build_postgres_session_factory(database.Base, "database_cutover_idempotent")
 
     monkeypatch.setattr(database, "async_engine", engine)
     monkeypatch.setattr(database, "AsyncSessionLocal", session_factory)

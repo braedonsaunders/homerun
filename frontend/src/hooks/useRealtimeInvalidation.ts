@@ -193,7 +193,6 @@ export function useRealtimeInvalidation(
               ['news-edges'],
               ['news-feed-status'],
               ['news-workflow-findings'],
-              ['news-workflow-intents'],
             ] as QueryKey[])
           : []),
       ])
@@ -212,7 +211,6 @@ export function useRealtimeInvalidation(
               ['news-edges'],
               ['news-feed-status'],
               ['news-workflow-findings'],
-              ['news-workflow-intents'],
             ] as QueryKey[])
           : []),
       ])
@@ -228,7 +226,6 @@ export function useRealtimeInvalidation(
               ['news-edges'],
               ['news-feed-status'],
               ['news-workflow-findings'],
-              ['news-workflow-intents'],
             ] as QueryKey[])
           : []),
       ])

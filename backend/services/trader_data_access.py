@@ -20,6 +20,7 @@ from services.smart_wallet_pool import (
     POOL_FLAG_MANUAL_INCLUDE,
     smart_wallet_pool,
 )
+from services.strategy_sdk import StrategySDK
 from services.wallet_intelligence import wallet_intelligence
 from services.wallet_tracker import wallet_tracker
 from utils.utcnow import utcfromtimestamp, utcnow
@@ -212,12 +213,11 @@ async def annotate_trader_signal_source_context(rows: list[dict[str, Any]]) -> l
         group_wallets = sum(1 for addr in wallet_addresses if group_ids_by_address.get(addr))
         matched_group_ids = sorted({gid for addr in wallet_addresses for gid in group_ids_by_address.get(addr, set())})
 
-        row["source_flags"] = {
-            "from_pool": pool_wallets > 0,
-            "from_tracked_traders": tracked_wallets > 0,
-            "from_trader_groups": group_wallets > 0,
-            "qualified": bool(pool_wallets or tracked_wallets or group_wallets),
-        }
+        row["source_flags"] = StrategySDK.derive_trader_source_flags(
+            pool_wallets=pool_wallets,
+            tracked_wallets=tracked_wallets,
+            group_wallets=group_wallets,
+        )
         row["source_breakdown"] = {
             "wallets_considered": len(wallet_addresses),
             "pool_wallets": pool_wallets,

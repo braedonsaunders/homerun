@@ -54,32 +54,12 @@ class Settings(BaseSettings):
     MIN_ABSOLUTE_PROFIT: float = 10.0  # Reject if net profit on max position < this
     MIN_ANNUALIZED_ROI: float = 10.0  # Reject if annualized ROI < this percent
     MAX_RESOLUTION_MONTHS: int = 18  # Reject if resolution > this many months away (capital lockup)
-
-    # NegRisk Exhaustivity Thresholds
-    # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
-    # A total YES below 0.95 almost always indicates non-exhaustive outcomes
-    # (unlisted candidates, "Other/Field"), not mispricing. The 5%+ gap is
-    # rational pricing of the probability that someone not listed wins.
-    NEGRISK_MIN_TOTAL_YES: float = 0.95  # Hard reject below this
-    NEGRISK_WARN_TOTAL_YES: float = 0.97  # Warn below this
-    # Election/primary markets are especially prone to non-exhaustive outcomes
-    # because there are always unlisted candidates. Require higher total YES.
-    NEGRISK_ELECTION_MIN_TOTAL_YES: float = 0.97  # Hard reject elections below this
-    # Maximum spread between earliest and latest resolution dates in a bundle.
-    # Mismatched dates can create a gap where ALL outcomes resolve NO.
-    NEGRISK_MAX_RESOLUTION_SPREAD_DAYS: int = 7  # Reject if dates differ by more
     # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
     MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
     # Max number of legs in a multi-leg trade (slippage compounds per leg)
     MAX_TRADE_LEGS: int = 6
     # Minimum liquidity per leg: total_liquidity must exceed this * num_legs
     MIN_LIQUIDITY_PER_LEG: float = 500.0  # $500 per leg minimum
-
-    # Settlement Lag Timing
-    SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = 14  # Only detect settlement lag within this window
-    SETTLEMENT_LAG_NEAR_ZERO: float = 0.02  # Price below this suggests resolved to NO
-    SETTLEMENT_LAG_NEAR_ONE: float = 0.95  # Price above this suggests resolved to YES
-    SETTLEMENT_LAG_MIN_SUM_DEVIATION: float = 0.03  # Min deviation from 1.0
 
     # Wallet Tracking
     TRACKED_WALLETS: list[str] = []
@@ -271,28 +251,12 @@ class Settings(BaseSettings):
     INCREMENTAL_FETCH_ENABLED: bool = True  # Use delta fetching for new market detection
     WS_PRICE_HISTORY_MAX_SNAPSHOTS: int = 1500  # Per-token in-memory ring buffer for strategy SDK history
 
-    # Combinatorial Validation
-    COMBINATORIAL_MIN_CONFIDENCE: float = 0.75  # Min LLM confidence for trades
-    COMBINATORIAL_HIGH_CONFIDENCE: float = 0.90  # High confidence threshold
-    COMBINATORIAL_MIN_ACCURACY: float = 0.70  # Auto-raise threshold if below
-
     # Maker Mode / Fee Model
     MAKER_MODE_DEFAULT: bool = True  # Use limit orders (maker) by default
     FEE_MODEL_MAKER_MODE: bool = True  # Pass maker_mode=True to fee model
 
-    # Cross-Platform Arbitrage
-    CROSS_PLATFORM_ENABLED: bool = True
+    # Cross-platform market API
     KALSHI_API_URL: str = "https://api.elections.kalshi.com/trade-api/v2"
-
-    # Bayesian Cascade Strategy
-    BAYESIAN_CASCADE_ENABLED: bool = True  # Enable Bayesian Cascade strategy
-    BAYESIAN_MIN_EDGE_PERCENT: float = 5.0  # Min expected-vs-actual diff to flag (%)
-    BAYESIAN_PROPAGATION_DEPTH: int = 3  # Max hops through the dependency graph
-
-    # Liquidity Vacuum
-    LIQUIDITY_VACUUM_ENABLED: bool = True
-    LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO: float = 5.0
-    LIQUIDITY_VACUUM_MIN_DEPTH_USD: float = 100.0
 
     # Entropy Arbitrage
     ENTROPY_ARB_ENABLED: bool = True
@@ -301,9 +265,7 @@ class Settings(BaseSettings):
     # Event-Driven Arbitrage
     EVENT_DRIVEN_ENABLED: bool = True
 
-    # Temporal Decay
-    TEMPORAL_DECAY_ENABLED: bool = True
-    # Certainty shock branch (rapid repricing toward near-certain outcome)
+    # Temporal decay certainty-shock branch (rapid repricing toward near-certain outcome)
     TEMPORAL_SHOCK_ENABLED: bool = True
     TEMPORAL_SHOCK_LOOKBACK_SECONDS: int = 21600  # 6h rolling window
     TEMPORAL_SHOCK_MIN_POINTS: int = 3
@@ -318,20 +280,6 @@ class Settings(BaseSettings):
     TEMPORAL_SHOCK_MIN_EXPECTED_MOVE: float = 0.03
     TEMPORAL_SHOCK_MIN_LIQUIDITY_HARD: float = 1000.0
     TEMPORAL_SHOCK_MIN_POSITION_SIZE: float = 50.0
-
-    # Correlation Arbitrage
-    CORRELATION_ARB_ENABLED: bool = True
-    CORRELATION_ARB_MIN_CORRELATION: float = 0.7
-    CORRELATION_ARB_MIN_DIVERGENCE: float = 0.05
-
-    # Market Making
-    MARKET_MAKING_ENABLED: bool = True
-    MARKET_MAKING_SPREAD_BPS: float = 100.0
-    MARKET_MAKING_MAX_INVENTORY_USD: float = 500.0
-
-    # Statistical Arbitrage
-    STAT_ARB_ENABLED: bool = True
-    STAT_ARB_MIN_EDGE: float = 0.05
 
     # News Edge Strategy
     NEWS_EDGE_ENABLED: bool = True  # Enable news-driven edge scanning
@@ -699,18 +647,6 @@ async def apply_search_filters():
         ("MAX_PLAUSIBLE_ROI", "max_plausible_roi", 30.0),
         ("MAX_TRADE_LEGS", "max_trade_legs", 6),
         ("MIN_LIQUIDITY_PER_LEG", "min_liquidity_per_leg", 500.0),
-        ("NEGRISK_MIN_TOTAL_YES", "negrisk_min_total_yes", 0.95),
-        ("NEGRISK_WARN_TOTAL_YES", "negrisk_warn_total_yes", 0.97),
-        ("NEGRISK_ELECTION_MIN_TOTAL_YES", "negrisk_election_min_total_yes", 0.97),
-        ("NEGRISK_MAX_RESOLUTION_SPREAD_DAYS", "negrisk_max_resolution_spread_days", 7),
-        (
-            "SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION",
-            "settlement_lag_max_days_to_resolution",
-            14,
-        ),
-        ("SETTLEMENT_LAG_NEAR_ZERO", "settlement_lag_near_zero", 0.02),
-        ("SETTLEMENT_LAG_NEAR_ONE", "settlement_lag_near_one", 0.95),
-        ("SETTLEMENT_LAG_MIN_SUM_DEVIATION", "settlement_lag_min_sum_deviation", 0.03),
         ("BTC_ETH_HF_PURE_ARB_MAX_COMBINED", "btc_eth_pure_arb_max_combined", 0.98),
         ("BTC_ETH_HF_DUMP_THRESHOLD", "btc_eth_dump_hedge_drop_pct", 0.05),
         ("BTC_ETH_HF_THIN_LIQUIDITY_USD", "btc_eth_thin_liquidity_usd", 500.0),
@@ -730,10 +666,6 @@ async def apply_search_filters():
         ("BTC_ETH_HF_SERIES_ETH_4H", "btc_eth_hf_series_eth_4h", "10332"),
         ("BTC_ETH_HF_SERIES_SOL_4H", "btc_eth_hf_series_sol_4h", "10326"),
         ("BTC_ETH_HF_SERIES_XRP_4H", "btc_eth_hf_series_xrp_4h", "10327"),
-        # Miracle strategy
-        ("MIRACLE_MIN_NO_PRICE", "miracle_min_no_price", 0.90),
-        ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.999),
-        ("MIRACLE_MIN_IMPOSSIBILITY_SCORE", "miracle_min_impossibility_score", 0.70),
         # Risk scoring
         ("RISK_VERY_SHORT_DAYS", "risk_very_short_days", 2),
         ("RISK_SHORT_DAYS", "risk_short_days", 7),
@@ -743,34 +675,9 @@ async def apply_search_filters():
         ("RISK_MODERATE_LIQUIDITY", "risk_moderate_liquidity", 5000.0),
         ("RISK_COMPLEX_LEGS", "risk_complex_legs", 5),
         ("RISK_MULTIPLE_LEGS", "risk_multiple_legs", 3),
-        # Strategy enable/disable and strategy-specific thresholds
+        # BTC/ETH high-frequency strategy settings
         ("BTC_ETH_HF_ENABLED", "btc_eth_hf_enabled", True),
         ("BTC_ETH_HF_MAKER_MODE", "btc_eth_hf_maker_mode", True),
-        ("CROSS_PLATFORM_ENABLED", "cross_platform_enabled", True),
-        ("COMBINATORIAL_MIN_CONFIDENCE", "combinatorial_min_confidence", 0.75),
-        ("COMBINATORIAL_HIGH_CONFIDENCE", "combinatorial_high_confidence", 0.90),
-        ("BAYESIAN_CASCADE_ENABLED", "bayesian_cascade_enabled", True),
-        ("BAYESIAN_MIN_EDGE_PERCENT", "bayesian_min_edge_percent", 5.0),
-        ("BAYESIAN_PROPAGATION_DEPTH", "bayesian_propagation_depth", 3),
-        ("LIQUIDITY_VACUUM_ENABLED", "liquidity_vacuum_enabled", True),
-        (
-            "LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO",
-            "liquidity_vacuum_min_imbalance_ratio",
-            5.0,
-        ),
-        ("LIQUIDITY_VACUUM_MIN_DEPTH_USD", "liquidity_vacuum_min_depth_usd", 100.0),
-        ("ENTROPY_ARB_ENABLED", "entropy_arb_enabled", True),
-        ("ENTROPY_ARB_MIN_DEVIATION", "entropy_arb_min_deviation", 0.25),
-        ("EVENT_DRIVEN_ENABLED", "event_driven_enabled", True),
-        ("TEMPORAL_DECAY_ENABLED", "temporal_decay_enabled", True),
-        ("CORRELATION_ARB_ENABLED", "correlation_arb_enabled", True),
-        ("CORRELATION_ARB_MIN_CORRELATION", "correlation_arb_min_correlation", 0.7),
-        ("CORRELATION_ARB_MIN_DIVERGENCE", "correlation_arb_min_divergence", 0.05),
-        ("MARKET_MAKING_ENABLED", "market_making_enabled", True),
-        ("MARKET_MAKING_SPREAD_BPS", "market_making_spread_bps", 100.0),
-        ("MARKET_MAKING_MAX_INVENTORY_USD", "market_making_max_inventory_usd", 500.0),
-        ("STAT_ARB_ENABLED", "stat_arb_enabled", True),
-        ("STAT_ARB_MIN_EDGE", "stat_arb_min_edge", 0.05),
         # Scanner basics (already wired but also reloaded here for consistency)
         ("SCAN_INTERVAL_SECONDS", "scan_interval_seconds", 60),
         ("MIN_PROFIT_THRESHOLD", "min_profit_threshold", None),

@@ -22,8 +22,10 @@ from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.market_cache import market_cache_service
+from services.market_tradability import get_market_tradability_map
 from services.scanner import scanner as market_scanner
 from services.smart_wallet_pool import smart_wallet_pool
+from services.trader_data_access import get_trader_firehose_signals
 from services import shared_state
 from services.strategy_sdk import StrategySDK
 from services.wallet_intelligence import wallet_intelligence
@@ -381,10 +383,30 @@ async def _run_loop() -> None:
             confluence_limit = int(trader_intent_settings["confluence_limit"])
 
             confluence_scan_limit = max(250, confluence_limit * 6)
-            firehose_rows = await smart_wallet_pool.get_tracked_trader_firehose_signals(
+            firehose_rows = await get_trader_firehose_signals(
                 limit=confluence_scan_limit,
                 include_filtered=True,
+                include_source_context=True,
             )
+            if firehose_rows:
+                market_ids = [
+                    str(row.get("market_id") or "").strip().lower()
+                    for row in firehose_rows
+                    if isinstance(row, dict) and str(row.get("market_id") or "").strip()
+                ]
+                if market_ids:
+                    tradability_map = await get_market_tradability_map(market_ids)
+                    for row in firehose_rows:
+                        if not isinstance(row, dict):
+                            continue
+                        market_id = str(row.get("market_id") or "").strip().lower()
+                        if not market_id:
+                            continue
+                        if market_id in tradability_map:
+                            tradable = bool(tradability_map[market_id])
+                            row["is_tradeable"] = tradable
+                            if not tradable:
+                                row["is_active"] = False
             confluence_scanned = len(firehose_rows)
             deduped_by_stable_id: dict[str, Any] = {}
             deduped_opportunities: list[Any] = []

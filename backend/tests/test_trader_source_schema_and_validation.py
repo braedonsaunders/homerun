@@ -2,8 +2,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -12,15 +10,11 @@ if str(BACKEND_ROOT) not in sys.path:
 from models.database import Base
 from services.trader_orchestrator.config_schema import build_trader_config_schema
 from services.trader_orchestrator_state import _normalize_trader_payload
+from tests.postgres_test_db import build_postgres_session_factory
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "trader_source_schema.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "trader_source_schema")
 
 
 @pytest.mark.asyncio

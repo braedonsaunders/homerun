@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 from models import Market, Event, Opportunity, MispricingType
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float
@@ -83,26 +82,30 @@ class SettlementLagStrategy(BaseStrategy):
         "min_confidence": 0.45,
         "max_risk_score": 0.78,
         "min_liquidity": 25.0,
+        "max_days_to_resolution": 14,
+        "near_zero_threshold": 0.02,
+        "near_one_threshold": 0.95,
+        "min_sum_deviation": 0.03,
         "base_size_usd": 18.0,
         "max_size_usd": 150.0,
     }
 
-    # Thresholds — read from config (persisted in DB via Settings UI)
-    # Default NEAR_ZERO lowered from 0.05 to 0.02: many active markets trade at
-    # $0.04 on the longshot side; resolved markets are typically $0.001-$0.01.
+    # Thresholds are strategy-local and configurable through strategy config.
     @property
     def NEAR_ZERO_THRESHOLD(self):
-        return settings.SETTLEMENT_LAG_NEAR_ZERO if hasattr(settings, "SETTLEMENT_LAG_NEAR_ZERO") else 0.02
+        return max(0.001, min(0.5, to_float(self.config.get("near_zero_threshold", 0.02), 0.02)))
 
     @property
     def NEAR_ONE_THRESHOLD(self):
-        return settings.SETTLEMENT_LAG_NEAR_ONE if hasattr(settings, "SETTLEMENT_LAG_NEAR_ONE") else 0.95
+        return max(0.5, min(0.999, to_float(self.config.get("near_one_threshold", 0.95), 0.95)))
 
     @property
     def MIN_SUM_DEVIATION(self):
-        return (
-            settings.SETTLEMENT_LAG_MIN_SUM_DEVIATION if hasattr(settings, "SETTLEMENT_LAG_MIN_SUM_DEVIATION") else 0.03
-        )
+        return max(0.001, min(0.5, to_float(self.config.get("min_sum_deviation", 0.03), 0.03)))
+
+    @property
+    def MAX_DAYS_TO_RESOLUTION(self):
+        return max(0, int(to_float(self.config.get("max_days_to_resolution", 14), 14)))
 
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
 
@@ -159,7 +162,7 @@ class SettlementLagStrategy(BaseStrategy):
 
         total = yes_price + no_price
         now = utcnow()
-        max_days = settings.SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION
+        max_days = self.MAX_DAYS_TO_RESOLUTION
 
         # --- Gate: Resolution date must be near or past ---
         # If the market has a known resolution date far in the future,
@@ -290,7 +293,7 @@ class SettlementLagStrategy(BaseStrategy):
         # Check if ANY market in the event has a resolution date within the window.
         # If all markets resolve far in the future, this is NOT settlement lag.
         now = utcnow()
-        max_days = settings.SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION
+        max_days = self.MAX_DAYS_TO_RESOLUTION
         any_near_resolution = False
         any_overdue = False
         has_resolution_dates = False

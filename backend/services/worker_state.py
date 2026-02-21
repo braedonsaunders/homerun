@@ -44,8 +44,6 @@ def _is_retryable_db_error(exc: Exception) -> bool:
     return any(
         marker in message
         for marker in (
-            "database is locked",
-            "database table is locked",
             "deadlock detected",
             "serialization failure",
             "could not serialize access",

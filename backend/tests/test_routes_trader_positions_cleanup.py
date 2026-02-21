@@ -5,8 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -20,15 +19,11 @@ from services.trader_orchestrator_state import (
     get_open_position_count_for_trader,
     sync_trader_position_inventory,
 )
+from tests.postgres_test_db import build_postgres_session_factory
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "routes_trader_positions_cleanup.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "routes_trader_positions_cleanup")
 
 
 async def _seed_trader_with_order(session: AsyncSession) -> None:

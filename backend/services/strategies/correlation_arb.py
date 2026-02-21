@@ -20,7 +20,6 @@ from collections import deque
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from services.quality_filter import QualityFilterOverrides
 from utils.kelly import kelly_fraction
@@ -200,6 +199,7 @@ class CorrelationArbStrategy(BaseStrategy):
         "min_confidence": 0.40,
         "max_risk_score": 0.75,
         "min_correlation": 0.6,
+        "min_divergence": 0.05,
         "z_score_threshold": 2.0,
         "base_size_usd": 15.0,
         "max_size_usd": 120.0,
@@ -235,12 +235,10 @@ class CorrelationArbStrategy(BaseStrategy):
         self._market_cache: dict[str, Market] = {}
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:
-        if not settings.CORRELATION_ARB_ENABLED:
-            return []
-
         now = time.time()
-        min_corr = settings.CORRELATION_ARB_MIN_CORRELATION
-        min_divergence = max(0.0, float(settings.CORRELATION_ARB_MIN_DIVERGENCE))
+        min_corr = max(0.0, min(1.0, float(self.config.get("min_correlation", 0.6) or 0.6)))
+        min_divergence = max(0.0, float(self.config.get("min_divergence", 0.05) or 0.05))
+        z_score_threshold = max(0.0, float(self.config.get("z_score_threshold", _ZSCORE_THRESHOLD) or _ZSCORE_THRESHOLD))
 
         # Cross-cycle persistence via self.state
         price_history = self.state.setdefault("price_history", {})
@@ -362,7 +360,7 @@ class CorrelationArbStrategy(BaseStrategy):
 
                 zscore = (current_spread - mean_spread) / std_spread
 
-            if abs(zscore) < _ZSCORE_THRESHOLD:
+            if abs(zscore) < z_score_threshold:
                 continue  # Not diverged enough
             divergence = abs(current_spread - mean_spread)
             if divergence < min_divergence:

@@ -146,7 +146,6 @@ class StatArbStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__()
-        self.min_edge: float = settings.STAT_ARB_MIN_EDGE
         # Track previous prices for momentum signal across scans
         self._prev_prices: dict[str, float] = {}
 
@@ -463,11 +462,10 @@ class StatArbStrategy(BaseStrategy):
         """Detect statistical arbitrage opportunities.
 
         For each binary market, calculate all signals, compute composite
-        fair probability, and if the edge exceeds STAT_ARB_MIN_EDGE
+        fair probability, and if the edge exceeds the configured minimum
         create an opportunity.
         """
-        if not settings.STAT_ARB_ENABLED:
-            return []
+        min_edge = max(0.0, float(self.config.get("min_edge_percent", 5.0) or 5.0) / 100.0)
 
         opportunities: list[Opportunity] = []
 
@@ -520,7 +518,7 @@ class StatArbStrategy(BaseStrategy):
             edge = fair_prob - yes_price
 
             # Only trade if edge exceeds threshold
-            if abs(edge) < self.min_edge:
+            if abs(edge) < min_edge:
                 continue
 
             # Determine direction

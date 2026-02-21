@@ -4,8 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -13,15 +12,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from models.database import Base, TradeSignal, Trader, TraderOrder
 from services.trader_orchestrator import position_lifecycle
+from tests.postgres_test_db import build_postgres_session_factory
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "trader_position_lifecycle_resolution.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "trader_position_lifecycle_resolution")
 
 
 async def _seed_order(

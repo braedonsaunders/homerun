@@ -28,7 +28,7 @@ def _locked_exc() -> OperationalError:
     return OperationalError(
         "INSERT INTO simulation_accounts ...",
         {},
-        Exception("database is locked"),
+        Exception("deadlock detected"),
     )
 
 

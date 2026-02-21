@@ -60,8 +60,6 @@ class RetryableAsyncSession(AsyncSession):
     _COMMIT_RETRY_ATTEMPTS = 4
     _COMMIT_BASE_DELAY_SECONDS = 0.05
     _COMMIT_RETRYABLE_MESSAGES = (
-        "database is locked",
-        "database table is locked",
         "deadlock detected",
         "serialization failure",
         "could not serialize access",
@@ -2823,30 +2821,26 @@ _engine_kw: dict = {
 }
 
 _database_url = str(settings.DATABASE_URL or "").strip().lower()
-if _database_url.startswith("postgresql"):
-    _engine_kw.update(
-        {
-            "pool_size": max(1, int(settings.DATABASE_POOL_SIZE)),
-            "max_overflow": max(0, int(settings.DATABASE_MAX_OVERFLOW)),
-            "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT_SECONDS)),
-            "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS)),
-            "pool_use_lifo": True,
-        }
-    )
-    _engine_kw["connect_args"] = {
-        "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
-        "command_timeout": float(max(5.0, float(settings.DATABASE_POOL_TIMEOUT_SECONDS))),
-        "server_settings": {
-            "statement_timeout": str(max(1000, int(settings.DATABASE_STATEMENT_TIMEOUT_MS))),
-            "idle_in_transaction_session_timeout": str(
-                max(1000, int(settings.DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS))
-            ),
-        },
+if not _database_url.startswith("postgresql"):
+    raise ValueError(f"DATABASE_URL must use PostgreSQL; got {settings.DATABASE_URL!r}")
+
+_engine_kw.update(
+    {
+        "pool_size": max(1, int(settings.DATABASE_POOL_SIZE)),
+        "max_overflow": max(0, int(settings.DATABASE_MAX_OVERFLOW)),
+        "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT_SECONDS)),
+        "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS)),
+        "pool_use_lifo": True,
     }
-elif _database_url.startswith("sqlite"):
-    _engine_kw["connect_args"] = {
-        "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
-    }
+)
+_engine_kw["connect_args"] = {
+    "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
+    "command_timeout": float(max(5.0, float(settings.DATABASE_POOL_TIMEOUT_SECONDS))),
+    "server_settings": {
+        "statement_timeout": str(max(1000, int(settings.DATABASE_STATEMENT_TIMEOUT_MS))),
+        "idle_in_transaction_session_timeout": str(max(1000, int(settings.DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS))),
+    },
+}
 
 async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
 

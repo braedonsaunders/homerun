@@ -72,7 +72,6 @@ export function useDisplayedOpportunityRefresh({
       if (opportunitiesView === 'news') {
         invalidateQueryKeys(queryClient, [
           ['news-workflow-findings'],
-          ['news-workflow-intents'],
           ['news-workflow-status'],
         ])
       }

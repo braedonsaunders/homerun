@@ -1768,6 +1768,15 @@ class ArbitrageScanner:
         st = getattr(strategy, "strategy_type", "")
         return st if isinstance(st, str) else getattr(st, "value", "")
 
+    def _is_scanner_strategy_active(self, slug: str) -> bool:
+        target_slug = str(slug or "").strip().lower()
+        if not target_slug:
+            return False
+        for strategy in self._get_all_strategies():
+            if str(self._strategy_key(strategy) or "").strip().lower() == target_slug:
+                return True
+        return False
+
     @staticmethod
     def _default_mispricing_for_strategy(strategy_key: str) -> Optional[MispricingType]:
         slug = str(strategy_key or "").strip().lower()
@@ -1883,6 +1892,8 @@ class ArbitrageScanner:
         await self._set_activity("Catalog refresh: fetching Polymarket events and markets...")
 
         try:
+            await self._ensure_runtime_strategies_loaded()
+
             # Phase 1 — Fetch events + markets concurrently
             _phase_t = _time.monotonic()
             events, markets = await asyncio.gather(
@@ -1906,7 +1917,7 @@ class ArbitrageScanner:
                     extra_from_events += 1
 
             # Phase 2 — Fetch Kalshi markets
-            if settings.CROSS_PLATFORM_ENABLED:
+            if self._is_scanner_strategy_active("cross_platform"):
                 await self._set_activity("Catalog refresh: fetching Kalshi markets...")
                 _phase_t = _time.monotonic()
                 try:

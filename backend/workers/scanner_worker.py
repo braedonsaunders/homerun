@@ -5,6 +5,8 @@ Run from repo root: cd backend && python -m workers.scanner_worker
 Or from backend: python -m workers.scanner_worker
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os

@@ -87,8 +87,6 @@ def _is_retryable_db_error(exc: Exception) -> bool:
     return any(
         marker in message
         for marker in (
-            "database is locked",
-            "database table is locked",
             "deadlock detected",
             "serialization failure",
             "could not serialize access",
@@ -798,7 +796,7 @@ async def get_opportunities_from_db(
 
             opportunities = await market_scanner.refresh_opportunity_prices(
                 opportunities,
-                drop_stale=True,
+                drop_stale=False,
             )
         except Exception:
             pass

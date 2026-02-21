@@ -956,8 +956,13 @@ class PolymarketClient:
         end_dt = PolymarketClient._coerce_datetime(
             market_info.get("end_date") if market_info.get("end_date") is not None else market_info.get("endDate")
         )
-        if end_dt and end_dt <= ref_now:
-            return False
+        if end_dt:
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.replace(tzinfo=timezone.utc)
+            if end_dt <= ref_now:
+                return False
 
         winner = market_info.get("winner")
         if winner not in (None, ""):

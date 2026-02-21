@@ -10,7 +10,7 @@ with a write-through strategy: updates go to both in-memory dicts (for fast O(1)
 lookups on the hot path) and the SQL database (for persistence across restarts).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Optional
 
@@ -547,6 +547,11 @@ class MarketCacheService:
                 slug_norm = self._norm(row.slug)
                 referenced = key in referenced_ids
                 updated_at = row.updated_at or row.cached_at
+                if updated_at is not None:
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    else:
+                        updated_at = updated_at.astimezone(timezone.utc)
 
                 reason: Optional[str] = None
                 if not key:
