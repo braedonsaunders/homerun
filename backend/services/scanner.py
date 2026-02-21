@@ -101,6 +101,8 @@ class ArbitrageScanner:
         self._token_to_market_ids: dict[str, set[str]] = {}
         self._market_to_event_id: dict[str, str] = {}
         self._event_to_market_ids: dict[str, set[str]] = {}
+        self._market_id_to_condition_id: dict[str, str] = {}
+        self._condition_id_to_market_id: dict[str, str] = {}
 
         # Real yes/no price history for opportunity card sparklines.
         # market_id -> [{t: epoch_ms, yes: float, no: float}, ...]
@@ -249,8 +251,8 @@ class ArbitrageScanner:
         cutoff_ms = now_ms - int(self._market_history_retention_seconds * 1000)
 
         for market in markets:
-            market_id = getattr(market, "id", "")
-            if not market_id:
+            market_ids = self._market_id_candidates_from_market(market)
+            if not market_ids:
                 continue
             yes, no = self._extract_market_yes_no_prices(market, prices)
             if yes is None or no is None:
@@ -265,39 +267,38 @@ class ArbitrageScanner:
                 "yes": float(round(yes, 6)),
                 "no": float(round(no, 6)),
             }
-            history = self._market_price_history.setdefault(market_id, [])
-            if history:
-                last = history[-1]
-                if abs(last.get("yes", 0.0) - point["yes"]) < 1e-9 and abs(last.get("no", 0.0) - point["no"]) < 1e-9:
-                    last_t = float(last.get("t", 0.0) or 0.0)
-                    if (point["t"] - last_t) < self._market_history_sample_interval_ms:
-                        last["t"] = point["t"]
-                        continue
-            history.append(point)
+            for market_id in market_ids:
+                history = self._market_price_history.setdefault(market_id, [])
+                if history:
+                    last = history[-1]
+                    if abs(last.get("yes", 0.0) - point["yes"]) < 1e-9 and abs(last.get("no", 0.0) - point["no"]) < 1e-9:
+                        last_t = float(last.get("t", 0.0) or 0.0)
+                        if (point["t"] - last_t) < self._market_history_sample_interval_ms:
+                            last["t"] = point["t"]
+                            continue
+                history.append(point)
 
-            # Trim expired entries in O(n) via bisect-style scan + single slice delete,
-            # avoiding the O(n^2) cost of repeated list.pop(0).
-            trim_idx = 0
-            while trim_idx < len(history) and history[trim_idx].get("t", 0) < cutoff_ms:
-                trim_idx += 1
-            if trim_idx:
-                del history[:trim_idx]
-            if len(history) > self._market_history_max_points:
-                del history[: len(history) - self._market_history_max_points]
+                # Trim expired entries in O(n) via bisect-style scan + single slice delete,
+                # avoiding the O(n^2) cost of repeated list.pop(0).
+                trim_idx = 0
+                while trim_idx < len(history) and history[trim_idx].get("t", 0) < cutoff_ms:
+                    trim_idx += 1
+                if trim_idx:
+                    del history[:trim_idx]
+                if len(history) > self._market_history_max_points:
+                    del history[: len(history) - self._market_history_max_points]
 
     def _remember_market_tokens(self, markets: list) -> None:
         """Cache YES/NO token IDs per market for historical backfill calls."""
         for market in markets:
-            market_id = str(getattr(market, "id", "") or "")
-            if not market_id:
-                continue
             platform = str(getattr(market, "platform", "polymarket") or "polymarket")
             if platform != "polymarket":
                 continue
             token_pair = self._coerce_polymarket_token_pair(getattr(market, "clob_token_ids", None))
             if token_pair is None:
                 continue
-            self._market_token_ids[market_id] = token_pair
+            for market_id in self._market_id_candidates_from_market(market):
+                self._market_token_ids[market_id] = token_pair
 
     @staticmethod
     def _coerce_polymarket_token_pair(raw: object) -> Optional[tuple[str, str]]:
@@ -325,20 +326,68 @@ class ArbitrageScanner:
             return None
         return yes_token, no_token
 
+    @staticmethod
+    def _market_id_candidates_from_market(market: object) -> list[str]:
+        ids: list[str] = []
+        for raw in (
+            getattr(market, "id", ""),
+            getattr(market, "condition_id", ""),
+        ):
+            market_id = str(raw or "").strip()
+            if not market_id or market_id in ids:
+                continue
+            ids.append(market_id)
+        return ids
+
+    @staticmethod
+    def _market_id_candidates_from_payload(market: dict) -> list[str]:
+        ids: list[str] = []
+        for raw in (
+            market.get("id"),
+            market.get("condition_id"),
+            market.get("conditionId"),
+        ):
+            market_id = str(raw or "").strip()
+            if not market_id or market_id in ids:
+                continue
+            ids.append(market_id)
+        return ids
+
+    def _expand_market_id_aliases(self, market_ids: list[str]) -> list[str]:
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for market_id in market_ids:
+            mid = str(market_id or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            expanded.append(mid)
+            condition_id = self._market_id_to_condition_id.get(mid)
+            if condition_id and condition_id not in seen:
+                seen.add(condition_id)
+                expanded.append(condition_id)
+            canonical_market_id = self._condition_id_to_market_id.get(mid)
+            if canonical_market_id and canonical_market_id not in seen:
+                seen.add(canonical_market_id)
+                expanded.append(canonical_market_id)
+        return expanded
+
+    def _market_history_lookup_ids(self, market: dict) -> list[str]:
+        base_ids = self._market_id_candidates_from_payload(market)
+        return self._expand_market_id_aliases(base_ids)
+
     def _remember_market_tokens_from_opportunities(self, opportunities: list[Opportunity]) -> None:
         """Cache YES/NO token IDs from opportunity market dicts."""
         for opp in opportunities:
             for market in opp.markets:
-                market_id = str(market.get("id", "") or "")
-                if not market_id:
-                    continue
                 platform = str(market.get("platform", "polymarket") or "polymarket").lower()
                 if platform != "polymarket":
                     continue
                 token_pair = self._coerce_polymarket_token_pair(market.get("clob_token_ids"))
                 if token_pair is None:
                     continue
-                self._market_token_ids[market_id] = token_pair
+                for market_id in self._market_id_candidates_from_payload(market):
+                    self._market_token_ids[market_id] = token_pair
 
     def _rebuild_realtime_graph(self, events: list, markets: list) -> None:
         """Build token->market and event<->market routing maps from cached snapshot."""
@@ -346,12 +395,18 @@ class ArbitrageScanner:
         token_to_market_ids: dict[str, set[str]] = {}
         market_to_event_id: dict[str, str] = {}
         event_to_market_ids: dict[str, set[str]] = {}
+        market_id_to_condition_id: dict[str, str] = {}
+        condition_id_to_market_id: dict[str, str] = {}
 
         for market in markets:
             market_id = str(getattr(market, "id", "") or "")
             if not market_id:
                 continue
+            condition_id = str(getattr(market, "condition_id", "") or "").strip()
             market_by_id[market_id] = market
+            if condition_id and condition_id != market_id:
+                market_id_to_condition_id[market_id] = condition_id
+                condition_id_to_market_id[condition_id] = market_id
             for token_id in getattr(market, "clob_token_ids", None) or []:
                 token = str(token_id or "").strip()
                 if not token:
@@ -367,8 +422,13 @@ class ArbitrageScanner:
                 market_id = str(getattr(market, "id", "") or "")
                 if not market_id:
                     continue
+                condition_id = str(getattr(market, "condition_id", "") or "").strip()
                 mids.add(market_id)
                 market_to_event_id[market_id] = event_id
+                if condition_id and condition_id != market_id:
+                    market_to_event_id[condition_id] = event_id
+                    market_id_to_condition_id[market_id] = condition_id
+                    condition_id_to_market_id[condition_id] = market_id
                 if market_id not in market_by_id:
                     market_by_id[market_id] = market
                 for token_id in getattr(market, "clob_token_ids", None) or []:
@@ -383,6 +443,8 @@ class ArbitrageScanner:
         self._token_to_market_ids = token_to_market_ids
         self._market_to_event_id = market_to_event_id
         self._event_to_market_ids = event_to_market_ids
+        self._market_id_to_condition_id = market_id_to_condition_id
+        self._condition_id_to_market_id = condition_id_to_market_id
 
     @staticmethod
     def _collect_polymarket_tokens(markets: list) -> list[str]:
@@ -603,7 +665,18 @@ class ArbitrageScanner:
             self._cached_prices = {}
             self._market_price_history = {}
             self._market_token_ids = {}
+            self._market_id_to_condition_id = {}
+            self._condition_id_to_market_id = {}
             return
+
+        active_with_aliases = set(active_market_ids)
+        for market_id in list(active_market_ids):
+            condition_id = self._market_id_to_condition_id.get(market_id)
+            if condition_id:
+                active_with_aliases.add(condition_id)
+            canonical_market_id = self._condition_id_to_market_id.get(market_id)
+            if canonical_market_id:
+                active_with_aliases.add(canonical_market_id)
 
         self._cached_prices = {
             token_id: payload
@@ -613,18 +686,28 @@ class ArbitrageScanner:
         self._market_price_history = {
             market_id: history
             for market_id, history in self._market_price_history.items()
-            if market_id in active_market_ids
+            if market_id in active_with_aliases
         }
         self._market_token_ids = {
             market_id: token_pair
             for market_id, token_pair in self._market_token_ids.items()
-            if market_id in active_market_ids
+            if market_id in active_with_aliases
         }
-        self._market_history_backfill_done &= active_market_ids
+        self._market_id_to_condition_id = {
+            market_id: condition_id
+            for market_id, condition_id in self._market_id_to_condition_id.items()
+            if market_id in active_market_ids and condition_id in active_with_aliases
+        }
+        self._condition_id_to_market_id = {
+            condition_id: market_id
+            for condition_id, market_id in self._condition_id_to_market_id.items()
+            if market_id in active_market_ids and condition_id in active_with_aliases
+        }
+        self._market_history_backfill_done &= active_with_aliases
         self._market_history_backfill_attempt_ms = {
             market_id: ts
             for market_id, ts in self._market_history_backfill_attempt_ms.items()
-            if market_id in active_market_ids
+            if market_id in active_with_aliases
         }
 
     @staticmethod
@@ -1506,9 +1589,8 @@ class ArbitrageScanner:
         market_ids: set[str] = set()
         for opp in opportunities:
             for market in opp.markets:
-                mid = market.get("id", "")
-                if mid:
-                    market_ids.add(mid)
+                for market_id in self._market_history_lookup_ids(market):
+                    market_ids.add(market_id)
 
         out: dict[str, list[dict[str, float]]] = {}
         export_points = self._market_history_export_points if max_points is None else max_points
@@ -1569,9 +1651,12 @@ class ArbitrageScanner:
         needed_ids: set[str] = set()
         for opp in opportunities:
             for market in opp.markets:
-                mid = str(market.get("id", "") or "")
-                if mid and mid not in self._market_price_history:
-                    needed_ids.add(mid)
+                lookup_ids = self._market_history_lookup_ids(market)
+                if lookup_ids and any(mid in self._market_price_history for mid in lookup_ids):
+                    continue
+                for market_id in lookup_ids:
+                    if market_id not in self._market_price_history:
+                        needed_ids.add(market_id)
         if needed_ids:
             try:
                 await self._hydrate_history_from_db(needed_ids)
@@ -1600,10 +1685,11 @@ class ArbitrageScanner:
         attached = 0
         for opp in opportunities:
             for market in opp.markets:
-                market_id = str(market.get("id", "") or "")
-                if not market_id:
-                    continue
-                history = market_history.get(market_id, [])
+                history: list[dict[str, float]] = []
+                for market_id in self._market_history_lookup_ids(market):
+                    candidate = market_history.get(market_id, [])
+                    if len(candidate) > len(history):
+                        history = candidate
                 if len(history) < 2:
                     continue
                 market["price_history"] = history
@@ -1625,6 +1711,7 @@ class ArbitrageScanner:
                 return 0
             db_history = row.market_history_json if isinstance(row.market_history_json, dict) else {}
             fallback_history: dict[str, list[dict[str, float]]] = {}
+            history_alias_map: dict[str, str] = {}
             if isinstance(row.opportunities_json, list):
                 needed_market_ids = set(market_ids)
                 for item in row.opportunities_json:
@@ -1636,19 +1723,37 @@ class ArbitrageScanner:
                     for market in markets:
                         if not isinstance(market, dict):
                             continue
-                        market_id = str(market.get("id", "") or "")
-                        if not market_id or market_id not in needed_market_ids or market_id in fallback_history:
-                            continue
+                        market_id = str(market.get("id", "") or "").strip()
+                        condition_id = str(market.get("condition_id") or market.get("conditionId") or "").strip()
+                        if market_id and condition_id and market_id != condition_id:
+                            history_alias_map[market_id] = condition_id
+                            history_alias_map[condition_id] = market_id
                         history = market.get("price_history")
-                        if isinstance(history, list) and len(history) >= 2:
-                            fallback_history[market_id] = history
+                        if not isinstance(history, list) or len(history) < 2:
+                            continue
+                        for candidate in (market_id, condition_id):
+                            if not candidate:
+                                continue
+                            if candidate not in needed_market_ids:
+                                continue
+                            if candidate in fallback_history:
+                                continue
+                            fallback_history[candidate] = history
 
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         hydrated = 0
         for mid in market_ids:
             points = db_history.get(mid)
             if not isinstance(points, list) or len(points) < 2:
+                alias = history_alias_map.get(mid)
+                if alias:
+                    points = db_history.get(alias)
+            if not isinstance(points, list) or len(points) < 2:
                 points = fallback_history.get(mid)
+                if not isinstance(points, list) or len(points) < 2:
+                    alias = history_alias_map.get(mid)
+                    if alias:
+                        points = fallback_history.get(alias)
             if not isinstance(points, list) or len(points) < 2:
                 continue
             merged = self._merge_market_history_points(mid, points, now_ms)
@@ -2470,7 +2575,7 @@ class ArbitrageScanner:
                 self._opportunities = await self.refresh_opportunity_prices(
                     self._opportunities,
                     now=now,
-                    drop_stale=True,
+                    drop_stale=False,
                 )
                 if self._opportunities:
                     self._opportunities.sort(key=lambda opp: opp.roi_percent, reverse=True)
@@ -2728,6 +2833,55 @@ class ArbitrageScanner:
                 # Preserve original detection time and ID
                 new_opp.detected_at = existing.detected_at
                 new_opp.id = existing.id
+                if not new_opp.markets and existing.markets:
+                    new_opp.markets = [dict(m) if isinstance(m, dict) else m for m in existing.markets]
+                elif new_opp.markets and existing.markets:
+                    previous_by_id: dict[str, dict] = {}
+                    for market in existing.markets:
+                        if not isinstance(market, dict):
+                            continue
+                        for market_id in self._market_history_lookup_ids(market):
+                            if market_id and market_id not in previous_by_id:
+                                previous_by_id[market_id] = market
+                    merged_markets: list[dict] = []
+                    for market in new_opp.markets:
+                        if not isinstance(market, dict):
+                            continue
+                        previous = None
+                        for market_id in self._market_history_lookup_ids(market):
+                            candidate = previous_by_id.get(market_id)
+                            if candidate is not None:
+                                previous = candidate
+                                break
+                        if previous is None:
+                            merged_markets.append(market)
+                            continue
+                        merged_market = dict(previous)
+                        merged_market.update(market)
+                        previous_history = previous.get("price_history")
+                        current_history = market.get("price_history")
+                        if (
+                            (not isinstance(current_history, list) or len(current_history) < 2)
+                            and isinstance(previous_history, list)
+                            and len(previous_history) >= 2
+                        ):
+                            merged_market["price_history"] = previous_history
+                        merged_markets.append(merged_market)
+                    if merged_markets:
+                        new_opp.markets = merged_markets
+                if not new_opp.positions_to_take and existing.positions_to_take:
+                    new_opp.positions_to_take = [
+                        dict(position) if isinstance(position, dict) else position
+                        for position in existing.positions_to_take
+                    ]
+                if existing.event_id and not new_opp.event_id:
+                    new_opp.event_id = existing.event_id
+                if existing.event_slug and not new_opp.event_slug:
+                    new_opp.event_slug = existing.event_slug
+                if existing.event_title and not new_opp.event_title:
+                    new_opp.event_title = existing.event_title
+                if existing.category and not new_opp.category:
+                    new_opp.category = existing.category
                 # Preserve AI analysis if not freshly attached from DB
                 if existing.ai_analysis and not new_opp.ai_analysis:
                     new_opp.ai_analysis = existing.ai_analysis

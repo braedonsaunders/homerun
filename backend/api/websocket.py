@@ -13,6 +13,7 @@ from services.trader_orchestrator_state import (
 )
 from services.wallet_tracker import wallet_tracker
 from services.worker_state import list_worker_snapshots, read_worker_snapshot
+from services.ui_lock import UI_LOCK_SESSION_COOKIE, ui_lock_service
 from services.weather import shared_state as weather_shared_state
 from utils.market_urls import serialize_opportunity_with_links
 
@@ -125,6 +126,20 @@ async def handle_websocket(websocket: WebSocket):
         while True:
             # Wait for messages from client
             data = await websocket.receive_text()
+            token = websocket.cookies.get(UI_LOCK_SESSION_COOKIE)
+            unlocked = await ui_lock_service.is_token_unlocked(token)
+            if not unlocked:
+                status = await ui_lock_service.status(token)
+                if status.get("enabled"):
+                    await manager.send_personal(
+                        websocket,
+                        {
+                            "type": "ui_locked",
+                            "data": {"message": "UI lock is active.", "ui_lock": status},
+                        },
+                    )
+                    await websocket.close(code=4403)
+                    break
             message = json.loads(data)
 
             # Handle different message types

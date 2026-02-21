@@ -2,6 +2,7 @@ import asyncio
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -284,6 +285,96 @@ def test_edge_estimator_records_rejection_when_llm_not_used():
     assert finding.actionable is False
     rejection_reasons = finding.evidence.get("rejection_reasons", [])
     assert "llm_budget_exhausted" in rejection_reasons
+
+
+def test_edge_estimator_does_not_mark_rejected_findings_actionable_even_with_zero_thresholds():
+    estimator = EdgeEstimator()
+    event = ExtractedEvent(
+        event_type="election",
+        key_entities=["Nancy Mace"],
+        action="wins primary",
+        confidence=0.8,
+    )
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "market_id": "mkt_1",
+            "question": "Will Nancy Mace win the 2026 South Carolina Governor Republican primary election?",
+            "event_title": "SC Governor Primary",
+            "category": "Politics",
+            "yes_price": 0.42,
+            "no_price": 0.58,
+            "combined_score": 0.51,
+            "semantic_score": 0.34,
+            "keyword_score": 0.08,
+            "event_score": 1.0,
+            "slug": "sc-governor-primary",
+            "liquidity": 10000.0,
+        },
+    )()
+    reranked = RerankedCandidate(
+        candidate=candidate,
+        relevance=0.8,
+        rationale="Directly about candidate election odds.",
+        rerank_score=0.72,
+    )
+
+    findings = asyncio.run(
+        estimator.estimate_batch(
+            article_title="Nancy Mace surges in latest polling",
+            article_summary="New poll places Mace ahead in GOP primary.",
+            article_source="Test Source",
+            article_url="https://example.com/a",
+            article_id="art_1",
+            event=event,
+            reranked=[reranked],
+            min_edge_percent=0.0,
+            min_confidence=0.0,
+            allow_llm=False,
+            max_llm_calls=0,
+        )
+    )
+
+    assert len(findings) == 1
+    assert findings[0].actionable is False
+    rejection_reasons = findings[0].evidence.get("rejection_reasons", [])
+    assert "llm_budget_exhausted" in rejection_reasons
+
+
+def test_cached_row_to_finding_drops_actionable_for_rejected_zero_edge_rows():
+    row = SimpleNamespace(
+        id="finding_1",
+        article_id="article_1",
+        market_id="market_1",
+        article_title="Title",
+        article_source="Source",
+        article_url="https://example.com/a",
+        market_question="Will this resolve yes?",
+        market_price=0.42,
+        model_probability=0.42,
+        edge_percent=0.0,
+        direction="buy_yes",
+        confidence=0.0,
+        retrieval_score=0.4,
+        semantic_score=0.3,
+        keyword_score=0.1,
+        event_score=0.2,
+        rerank_score=0.5,
+        event_graph={},
+        evidence={"rejection_reasons": ["llm_unavailable_or_failed"]},
+        reasoning="Rejected before actionable edge.",
+        actionable=True,
+        created_at=datetime.now(timezone.utc),
+        signal_key="signal_1",
+        cache_key="cache_1",
+    )
+
+    finding = WorkflowOrchestrator._row_to_finding(row)
+
+    assert finding.actionable is False
+    assert finding.edge_percent == 0.0
+    assert finding.confidence == 0.0
 
 
 def test_local_model_mode_detection():

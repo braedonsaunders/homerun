@@ -48,8 +48,11 @@ import {
   clearOpportunities,
   getStrategies,
   getWorkersStatus,
+  getUILockStatus,
   pauseAllWorkers,
   resumeAllWorkers,
+  lockUILock,
+  sendUILockActivity,
   judgeOpportunitiesBulk,
   getSimulationAccounts,
   getNewsWorkflowFindings,
@@ -58,6 +61,7 @@ import {
   getSignalStats,
   Opportunity,
   WorkerStatus,
+  unlockUILock,
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
@@ -105,6 +109,7 @@ import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 import OpportunityEmptyState from './components/OpportunityEmptyState'
 import DataPanel, { DataView } from './components/DataPanel'
+import UILockScreen from './components/UILockScreen'
 
 type Tab = 'opportunities' | 'data' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
@@ -370,6 +375,142 @@ function App() {
   const analyzeMenuRef = useRef<HTMLDivElement>(null)
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
   const queryClient = useQueryClient()
+  const [localUiLocked, setLocalUiLocked] = useState(false)
+  const [uiUnlockError, setUiUnlockError] = useState<string | null>(null)
+  const lastInteractionAtRef = useRef<number>(Date.now())
+  const lastActivityPostAtRef = useRef<number>(0)
+  const idleLockTriggeredRef = useRef(false)
+
+  const {
+    data: uiLockStatus,
+    isLoading: uiLockStatusLoading,
+    refetch: refetchUiLockStatus,
+  } = useQuery({
+    queryKey: ['ui-lock-status'],
+    queryFn: getUILockStatus,
+    refetchInterval: 30000,
+  })
+
+  const uiUnlockMutation = useMutation({
+    mutationFn: (password: string) => unlockUILock(password),
+  })
+  const uiLockMutation = useMutation({
+    mutationFn: lockUILock,
+  })
+
+  const uiLockEnabled = uiLockStatus?.enabled ?? false
+  const uiLockTimeoutMinutes = uiLockStatus?.idle_timeout_minutes ?? 15
+  const uiLocked = localUiLocked || Boolean(uiLockStatus?.locked)
+  const uiLockStatusResolved = typeof uiLockStatus !== 'undefined'
+  const uiLockOverlayVisible = !uiLockStatusResolved || uiLocked
+
+  const handleForceLock = useCallback(() => {
+    if (!uiLockEnabled || idleLockTriggeredRef.current) return
+    idleLockTriggeredRef.current = true
+    setLocalUiLocked(true)
+    setUiUnlockError(null)
+    void uiLockMutation.mutateAsync().finally(() => {
+      void refetchUiLockStatus()
+    })
+  }, [refetchUiLockStatus, uiLockEnabled, uiLockMutation])
+
+  const postUiActivity = useCallback(async () => {
+    if (!uiLockEnabled || uiLocked) return
+    const now = Date.now()
+    if (now - lastActivityPostAtRef.current < 15000) return
+    lastActivityPostAtRef.current = now
+    try {
+      await sendUILockActivity()
+    } catch (error: any) {
+      if (error?.response?.status === 423) {
+        setLocalUiLocked(true)
+        void refetchUiLockStatus()
+      }
+    }
+  }, [refetchUiLockStatus, uiLockEnabled, uiLocked])
+
+  const handleUnlockUi = useCallback(async (password: string) => {
+    setUiUnlockError(null)
+    try {
+      await uiUnlockMutation.mutateAsync(password)
+      setLocalUiLocked(false)
+      idleLockTriggeredRef.current = false
+      lastInteractionAtRef.current = Date.now()
+      lastActivityPostAtRef.current = 0
+      await sendUILockActivity()
+      await refetchUiLockStatus()
+      window.dispatchEvent(new CustomEvent('ui-lock-unlocked'))
+      queryClient.invalidateQueries()
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail
+      setUiUnlockError(detail || error?.message || 'Unlock failed')
+      setLocalUiLocked(true)
+    }
+  }, [queryClient, refetchUiLockStatus, uiUnlockMutation])
+
+  useEffect(() => {
+    if (!uiLockEnabled || uiLocked) return
+    idleLockTriggeredRef.current = false
+    lastInteractionAtRef.current = Date.now()
+    lastActivityPostAtRef.current = 0
+
+    const markInteraction = () => {
+      lastInteractionAtRef.current = Date.now()
+      void postUiActivity()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        markInteraction()
+        void refetchUiLockStatus()
+      }
+    }
+
+    window.addEventListener('mousemove', markInteraction, { passive: true })
+    window.addEventListener('mousedown', markInteraction, { passive: true })
+    window.addEventListener('keydown', markInteraction)
+    window.addEventListener('touchstart', markInteraction, { passive: true })
+    window.addEventListener('focus', markInteraction)
+    document.addEventListener('visibilitychange', onVisibility)
+    markInteraction()
+
+    const timeoutMs = Math.max(1, uiLockTimeoutMinutes) * 60 * 1000
+    const idleTimer = window.setInterval(() => {
+      const idleMs = Date.now() - lastInteractionAtRef.current
+      if (idleMs >= timeoutMs) {
+        handleForceLock()
+      }
+    }, 1000)
+
+    return () => {
+      window.clearInterval(idleTimer)
+      window.removeEventListener('mousemove', markInteraction)
+      window.removeEventListener('mousedown', markInteraction)
+      window.removeEventListener('keydown', markInteraction)
+      window.removeEventListener('touchstart', markInteraction)
+      window.removeEventListener('focus', markInteraction)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [handleForceLock, postUiActivity, refetchUiLockStatus, uiLockEnabled, uiLockTimeoutMinutes, uiLocked])
+
+  useEffect(() => {
+    const onLockRequired = () => {
+      setLocalUiLocked(true)
+      setUiUnlockError(null)
+      void refetchUiLockStatus()
+    }
+    window.addEventListener('ui-lock-required', onLockRequired as EventListener)
+    return () => window.removeEventListener('ui-lock-required', onLockRequired as EventListener)
+  }, [refetchUiLockStatus])
+
+  useEffect(() => {
+    if (!uiLockStatus) return
+    if (!uiLockStatus.enabled || !uiLockStatus.locked) {
+      setLocalUiLocked(false)
+      setUiUnlockError(null)
+    } else {
+      setLocalUiLocked(true)
+    }
+  }, [uiLockStatus])
 
   // Open copilot with context
   const handleOpenCopilot = useCallback((contextType?: string, contextId?: string, label?: string) => {
@@ -2443,6 +2584,15 @@ function App() {
         <CryptoSettingsFlyout
           isOpen={cryptoSettingsOpen}
           onClose={() => setCryptoSettingsOpen(false)}
+        />
+
+        <UILockScreen
+          visible={uiLockOverlayVisible}
+          checking={!uiLockStatusResolved || uiLockStatusLoading}
+          timeoutMinutes={uiLockTimeoutMinutes}
+          unlocking={uiUnlockMutation.isPending}
+          error={uiUnlockError}
+          onUnlock={handleUnlockUi}
         />
       </div>
     </TooltipProvider>

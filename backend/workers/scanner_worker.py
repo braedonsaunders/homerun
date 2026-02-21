@@ -93,13 +93,16 @@ def _build_market_history_payload(opps: list) -> Optional[dict[str, list[dict[st
         for market in markets:
             if not isinstance(market, dict):
                 continue
-            market_id = str(market.get("id", "") or "").strip()
-            if not market_id or market_id in market_history:
-                continue
             points = market.get("price_history")
             if not isinstance(points, list) or len(points) < 2:
                 continue
-            market_history[market_id] = points
+            for market_id in (
+                str(market.get("id", "") or "").strip(),
+                str(market.get("condition_id") or market.get("conditionId") or "").strip(),
+            ):
+                if not market_id or market_id in market_history:
+                    continue
+                market_history[market_id] = points
 
     return market_history if market_history else None
 
@@ -163,15 +166,18 @@ async def _hydrate_scanner_pool_from_snapshot() -> int:
     restored_history_markets = 0
     for opp in restored:
         for market in opp.markets:
-            market_id = str(market.get("id", "") or "")
-            if not market_id:
-                continue
             history = market.get("price_history")
             if not isinstance(history, list) or not history:
                 continue
-            merged_len = scanner._merge_market_history_points(market_id, history, now_ms)
-            if merged_len >= 2:
-                restored_history_markets += 1
+            for market_id in (
+                str(market.get("id", "") or "").strip(),
+                str(market.get("condition_id") or market.get("conditionId") or "").strip(),
+            ):
+                if not market_id:
+                    continue
+                merged_len = scanner._merge_market_history_points(market_id, history, now_ms)
+                if merged_len >= 2:
+                    restored_history_markets += 1
     if isinstance(existing_status, dict):
         parsed_last_scan = _parse_iso_utc(existing_status.get("last_scan"))
         if parsed_last_scan is not None:

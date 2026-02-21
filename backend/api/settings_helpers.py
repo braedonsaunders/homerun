@@ -6,6 +6,7 @@ from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from models.database import AppSettings
+from utils.passwords import hash_password
 from utils.secrets import decrypt_secret, encrypt_secret
 
 SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
@@ -312,6 +313,14 @@ def trading_proxy_payload(settings: AppSettings) -> dict[str, Any]:
     }
 
 
+def ui_lock_payload(settings: AppSettings) -> dict[str, Any]:
+    return {
+        "enabled": bool(getattr(settings, "ui_lock_enabled", False)),
+        "idle_timeout_minutes": int(_with_default(getattr(settings, "ui_lock_idle_timeout_minutes", None), 15)),
+        "has_password": bool(getattr(settings, "ui_lock_password_hash", None)),
+    }
+
+
 def discovery_payload(settings: AppSettings) -> dict[str, Any]:
     return {
         "max_discovered_wallets": _with_default(
@@ -543,6 +552,10 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
     search_filters = getattr(request, "search_filters", None)
     trading_proxy = getattr(request, "trading_proxy", None)
     events = getattr(request, "events", None)
+    ui_lock = getattr(request, "ui_lock", None)
+
+    previous_ui_lock_enabled = bool(getattr(settings, "ui_lock_enabled", False))
+    previous_ui_lock_password_hash = getattr(settings, "ui_lock_password_hash", None)
 
     if polymarket:
         pm = polymarket
@@ -741,6 +754,30 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.trading_proxy_timeout = proxy.timeout
         settings.trading_proxy_require_vpn = proxy.require_vpn
 
+    if ui_lock is not None:
+        enabled = bool(getattr(ui_lock, "enabled", False))
+        timeout_minutes = int(getattr(ui_lock, "idle_timeout_minutes", 15) or 15)
+        timeout_minutes = max(1, min(timeout_minutes, 24 * 60))
+        clear_password = bool(getattr(ui_lock, "clear_password", False))
+        incoming_password = getattr(ui_lock, "password", None)
+
+        next_password_hash = getattr(settings, "ui_lock_password_hash", None)
+        if clear_password:
+            next_password_hash = None
+
+        if incoming_password is not None:
+            normalized = str(incoming_password).strip()
+            if not normalized:
+                raise ValueError("UI lock password cannot be empty.")
+            next_password_hash = hash_password(normalized)
+
+        if enabled and not next_password_hash:
+            raise ValueError("UI lock password is required when enabling UI lock.")
+
+        settings.ui_lock_enabled = enabled
+        settings.ui_lock_idle_timeout_minutes = timeout_minutes
+        settings.ui_lock_password_hash = next_password_hash
+
     if events is not None:
         current_raw = getattr(settings, "events_settings_json", None)
         current_config = current_raw if isinstance(current_raw, dict) else {}
@@ -800,9 +837,13 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             )
 
     settings.updated_at = utcnow()
+    ui_lock_password_changed = previous_ui_lock_password_hash != getattr(settings, "ui_lock_password_hash", None)
+    ui_lock_enabled_changed = previous_ui_lock_enabled != bool(getattr(settings, "ui_lock_enabled", False))
     return {
         "needs_llm_reinit": bool(llm),
         "needs_proxy_reinit": bool(trading_proxy),
         "needs_filter_reload": bool(search_filters) or bool(scanner),
         "needs_events_reload": events is not None,
+        "needs_ui_lock_reload": ui_lock is not None,
+        "reset_ui_lock_sessions": ui_lock_password_changed or ui_lock_enabled_changed,
     }

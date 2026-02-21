@@ -149,8 +149,10 @@ def _extract_market_context_from_finding(
     if finding is None:
         return {}
 
-    evidence = finding.evidence if isinstance(finding.evidence, dict) else {}
-    event_graph = finding.event_graph if isinstance(finding.event_graph, dict) else {}
+    evidence_raw = getattr(finding, "evidence", None)
+    event_graph_raw = getattr(finding, "event_graph", None)
+    evidence = evidence_raw if isinstance(evidence_raw, dict) else {}
+    event_graph = event_graph_raw if isinstance(event_graph_raw, dict) else {}
 
     for parent in (evidence, event_graph):
         market = parent.get("market")
@@ -453,9 +455,9 @@ def _resolve_finding_market_id_for_backfill(
     market_context: dict[str, Any],
 ) -> str:
     for raw_id in (
-        finding.market_id,
         market_context.get("condition_id"),
         market_context.get("conditionId"),
+        finding.market_id,
         market_context.get("id"),
         market_context.get("market_id"),
     ):
@@ -828,11 +830,17 @@ async def get_findings(
     if min_edge > 0:
         query = query.where(NewsWorkflowFinding.edge_percent >= min_edge)
 
+    actionable_filter = (
+        NewsWorkflowFinding.actionable.is_(True)
+        & (NewsWorkflowFinding.edge_percent > 0.0)
+        & (NewsWorkflowFinding.confidence > 0.0)
+    )
+
     if actionable_only:
-        query = query.where(NewsWorkflowFinding.actionable == True)  # noqa: E712
+        query = query.where(actionable_filter)
     elif not include_debug_rejections:
         query = query.where(
-            (NewsWorkflowFinding.actionable == True)  # noqa: E712
+            actionable_filter
             | (NewsWorkflowFinding.confidence > 0.0)
         )
 

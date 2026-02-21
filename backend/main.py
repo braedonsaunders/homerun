@@ -33,6 +33,7 @@ from api.routes_anomaly import anomaly_router
 from api.routes_trading import router as trading_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
+from api.routes_ui_lock import router as ui_lock_router
 from api.routes_ai import router as ai_router
 from api.routes_news import router as news_router
 from api.routes_discovery import discovery_router
@@ -72,6 +73,7 @@ from services.trader_orchestrator_state import (
 )
 from services.weather import shared_state as weather_shared_state
 from services.worker_state import list_worker_snapshots, read_worker_control
+from services.ui_lock import UI_LOCK_SESSION_COOKIE, ui_lock_service
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter, TokenBucket
 
@@ -717,6 +719,38 @@ app.add_middleware(
 )
 
 
+_UI_LOCK_EXEMPT_API_PATHS = {
+    "/api/ui-lock/status",
+    "/api/ui-lock/unlock",
+    "/api/ui-lock/lock",
+    "/api/ui-lock/activity",
+}
+
+
+@app.middleware("http")
+async def ui_lock_guard(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api"):
+        return await call_next(request)
+    if path in _UI_LOCK_EXEMPT_API_PATHS:
+        return await call_next(request)
+
+    token = request.cookies.get(UI_LOCK_SESSION_COOKIE)
+    unlocked = await ui_lock_service.is_token_unlocked(token)
+    if not unlocked:
+        status = await ui_lock_service.status(token)
+        if status.get("enabled"):
+            return JSONResponse(
+                status_code=423,
+                content={
+                    "detail": "UI lock is active.",
+                    "code": "ui_locked",
+                    "ui_lock": status,
+                },
+            )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def inbound_api_rate_limit(request: Request, call_next):
     if not bool(settings.API_RATE_LIMIT_ENABLED):
@@ -769,6 +803,7 @@ app.include_router(traders_router, prefix="/api", tags=["Traders"])
 app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
+app.include_router(ui_lock_router, prefix="/api", tags=["UI Lock"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
@@ -788,6 +823,20 @@ app.include_router(events_router, prefix="/api", tags=["Events"])
 # WebSocket endpoint
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    token = websocket.cookies.get(UI_LOCK_SESSION_COOKIE)
+    unlocked = await ui_lock_service.is_token_unlocked(token)
+    if not unlocked:
+        status = await ui_lock_service.status(token)
+        if status.get("enabled"):
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "type": "ui_locked",
+                    "data": {"message": "UI lock is active.", "ui_lock": status},
+                }
+            )
+            await websocket.close(code=4403)
+            return
     await handle_websocket(websocket)
 
 

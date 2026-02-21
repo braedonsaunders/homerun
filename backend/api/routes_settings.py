@@ -24,6 +24,7 @@ from api.settings_helpers import (
     search_filters_payload,
     trading_payload,
     trading_proxy_payload,
+    ui_lock_payload,
     events_payload,
 )
 
@@ -465,6 +466,21 @@ class TradingProxySettings(BaseModel):
     require_vpn: bool = Field(default=True, description="Block trades if VPN proxy is unreachable")
 
 
+class UILockSettings(BaseModel):
+    """Local UI lock settings."""
+
+    enabled: bool = Field(default=False, description="Require password unlock for the UI")
+    idle_timeout_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=1440,
+        description="Minutes of inactivity before the UI locks",
+    )
+    has_password: bool = Field(default=False, description="Whether a lock password is configured")
+    password: Optional[str] = Field(default=None, description="Set a new lock password")
+    clear_password: bool = Field(default=False, description="Clear existing lock password")
+
+
 class EventsSettings(BaseModel):
     """Events source and threshold configuration."""
 
@@ -613,6 +629,7 @@ class AllSettings(BaseModel):
     maintenance: MaintenanceSettings
     discovery: DiscoverySettings
     trading_proxy: TradingProxySettings
+    ui_lock: UILockSettings
     events: EventsSettings
     search_filters: SearchFilterSettings
     updated_at: Optional[str] = None
@@ -630,6 +647,7 @@ class UpdateSettingsRequest(BaseModel):
     maintenance: Optional[MaintenanceSettings] = None
     discovery: Optional[DiscoverySettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
+    ui_lock: Optional[UILockSettings] = None
     events: Optional[EventsSettings] = None
     search_filters: Optional[SearchFilterSettings] = None
 
@@ -672,6 +690,7 @@ async def get_settings():
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
             discovery=DiscoverySettings(**discovery_payload(settings)),
             trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
+            ui_lock=UILockSettings(**ui_lock_payload(settings)),
             events=EventsSettings(**events_payload(settings)),
             search_filters=SearchFilterSettings(**search_filters_payload(settings)),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
@@ -698,13 +717,20 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings = AppSettings(id="default")
                 session.add(settings)
 
-            update_flags = apply_update_request(settings, request)
+            try:
+                update_flags = apply_update_request(settings, request)
+            except ValueError as exc:
+                await session.rollback()
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
             await session.commit()
             updated_at = settings.updated_at.isoformat()
             needs_llm_reinit = update_flags["needs_llm_reinit"]
             needs_proxy_reinit = update_flags["needs_proxy_reinit"]
             needs_filter_reload = update_flags["needs_filter_reload"]
             needs_events_reload = update_flags["needs_events_reload"]
+            needs_ui_lock_reload = bool(update_flags.get("needs_ui_lock_reload"))
+            reset_ui_lock_sessions = bool(update_flags.get("reset_ui_lock_sessions"))
 
         # Re-initialize LLM manager OUTSIDE the DB session so initialize()
         # reads newly committed settings from a fresh transaction.
@@ -749,6 +775,18 @@ async def update_settings(request: UpdateSettingsRequest):
                     f"Failed to reload runtime settings overrides: {reinit_err}",
                 )
 
+        if needs_ui_lock_reload:
+            try:
+                from services.ui_lock import ui_lock_service
+
+                ui_lock_service.mark_settings_dirty()
+                if reset_ui_lock_sessions:
+                    await ui_lock_service.invalidate_all_sessions()
+            except Exception as reinit_err:
+                logger.error(
+                    f"Failed to refresh UI lock settings after update: {reinit_err}",
+                )
+
         logger.info("Settings updated successfully")
 
         return {
@@ -756,6 +794,8 @@ async def update_settings(request: UpdateSettingsRequest):
             "message": "Settings updated successfully",
             "updated_at": updated_at,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Failed to update settings", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -879,6 +919,19 @@ async def get_trading_proxy_settings():
 async def update_trading_proxy_settings(request: TradingProxySettings):
     """Update trading VPN/proxy settings only"""
     return await update_settings(UpdateSettingsRequest(trading_proxy=request))
+
+
+@router.get("/ui-lock")
+async def get_ui_lock_settings():
+    """Get local UI lock settings only"""
+    settings = await get_or_create_settings()
+    return UILockSettings(**ui_lock_payload(settings))
+
+
+@router.put("/ui-lock")
+async def update_ui_lock_settings(request: UILockSettings):
+    """Update local UI lock settings only"""
+    return await update_settings(UpdateSettingsRequest(ui_lock=request))
 
 
 @router.get("/search-filters")

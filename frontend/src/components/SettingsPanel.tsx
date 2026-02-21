@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
+  Lock,
   MessageSquare,
   DollarSign,
   Shield,
@@ -39,9 +40,10 @@ import {
   type DatabaseFlushTarget,
   type LLMModelOption,
   type DiscoverySettings,
+  type UILockSettings,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'vpn' | 'discovery' | 'maintenance'
+type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'security' | 'vpn' | 'discovery' | 'maintenance'
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   max_discovered_wallets: 20_000,
@@ -88,6 +90,12 @@ const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   pool_incremental_refresh_interval_seconds: 120,
   pool_activity_reconciliation_interval_seconds: 120,
   pool_recompute_interval_seconds: 60,
+}
+
+const DEFAULT_UI_LOCK_SETTINGS: UILockSettings = {
+  enabled: false,
+  idle_timeout_minutes: 15,
+  has_password: false,
 }
 
 const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefined): DiscoverySettings => {
@@ -222,6 +230,15 @@ export default function SettingsPanel({
     require_vpn: true
   })
 
+  const [uiLockForm, setUiLockForm] = useState({
+    enabled: DEFAULT_UI_LOCK_SETTINGS.enabled,
+    idle_timeout_minutes: DEFAULT_UI_LOCK_SETTINGS.idle_timeout_minutes,
+    has_password: DEFAULT_UI_LOCK_SETTINGS.has_password,
+    password: '',
+    confirm_password: '',
+    clear_password: false,
+  })
+
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -299,6 +316,15 @@ export default function SettingsPanel({
         })
       }
 
+      setUiLockForm({
+        enabled: settings.ui_lock?.enabled ?? DEFAULT_UI_LOCK_SETTINGS.enabled,
+        idle_timeout_minutes: settings.ui_lock?.idle_timeout_minutes ?? DEFAULT_UI_LOCK_SETTINGS.idle_timeout_minutes,
+        has_password: settings.ui_lock?.has_password ?? DEFAULT_UI_LOCK_SETTINGS.has_password,
+        password: '',
+        confirm_password: '',
+        clear_password: false,
+      })
+
     }
   }, [settings])
 
@@ -329,6 +355,7 @@ export default function SettingsPanel({
     mutationFn: updateSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['ui-lock-status'] })
       queryClient.invalidateQueries({ queryKey: ['ai-usage'] })
       queryClient.invalidateQueries({ queryKey: ['ai-status'] })
       setSaveMessage({ type: 'success', text: 'Settings saved successfully' })
@@ -429,6 +456,34 @@ export default function SettingsPanel({
           updates.notifications.telegram_bot_token = notificationsForm.telegram_bot_token
         }
         break
+      case 'security': {
+        const normalizedPassword = uiLockForm.password.trim()
+        const normalizedConfirm = uiLockForm.confirm_password.trim()
+        if (normalizedPassword && normalizedPassword !== normalizedConfirm) {
+          setSaveMessage({ type: 'error', text: 'UI lock passwords do not match' })
+          setTimeout(() => setSaveMessage(null), 5000)
+          return
+        }
+        if (uiLockForm.enabled && !uiLockForm.has_password && !normalizedPassword) {
+          setSaveMessage({ type: 'error', text: 'Set a password before enabling UI lock' })
+          setTimeout(() => setSaveMessage(null), 5000)
+          return
+        }
+        if (uiLockForm.enabled && uiLockForm.clear_password && !normalizedPassword) {
+          setSaveMessage({ type: 'error', text: 'Cannot clear password while UI lock remains enabled' })
+          setTimeout(() => setSaveMessage(null), 5000)
+          return
+        }
+        updates.ui_lock = {
+          enabled: uiLockForm.enabled,
+          idle_timeout_minutes: uiLockForm.idle_timeout_minutes,
+          clear_password: uiLockForm.clear_password,
+        } as Partial<UILockSettings>
+        if (normalizedPassword) {
+          updates.ui_lock.password = normalizedPassword
+        }
+        break
+      }
       case 'discovery':
         updates.discovery = discoveryForm
         break
@@ -505,6 +560,8 @@ export default function SettingsPanel({
         return llmForm.provider !== 'none' ? `${llmForm.provider}` : 'Disabled'
       case 'notifications':
         return notificationsForm.enabled ? 'Enabled' : 'Disabled'
+      case 'security':
+        return uiLockForm.enabled ? `Auto-lock ${uiLockForm.idle_timeout_minutes}m` : 'Disabled'
       case 'scanner':
         return `caps ${scannerForm.max_opportunities_total}/${scannerForm.max_opportunities_per_strategy}`
       case 'discovery':
@@ -526,6 +583,8 @@ export default function SettingsPanel({
         return llmForm.provider !== 'none' ? 'text-purple-400 bg-purple-500/10' : 'text-muted-foreground bg-muted'
       case 'notifications':
         return notificationsForm.enabled ? 'text-blue-400 bg-blue-500/10' : 'text-muted-foreground bg-muted'
+      case 'security':
+        return uiLockForm.enabled ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
       case 'scanner':
         return 'text-amber-400 bg-amber-500/10'
       case 'discovery':
@@ -545,6 +604,7 @@ export default function SettingsPanel({
     { id: 'llm', icon: Bot, label: 'AI / LLM Services', description: 'Configure AI providers' },
     { id: 'scanner', icon: Database, label: 'Scanner', description: 'Scan limits, thresholds, and pool caps' },
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
+    { id: 'security', icon: Lock, label: 'UI Lock', description: 'Local screen lock and inactivity timeout' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
@@ -1097,6 +1157,93 @@ export default function SettingsPanel({
                             {testTelegramMutation.data.message}
                           </Badge>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* UI Lock Settings */}
+                  {section.id === 'security' && (
+                    <div className="space-y-4">
+                      <Card className="bg-muted border-emerald-500/30">
+                        <CardContent className="flex items-center justify-between p-3">
+                          <div>
+                            <p className="font-medium text-sm">Enable UI Lock</p>
+                            <p className="text-xs text-muted-foreground">
+                              Locks the UI after inactivity while backend workers continue running.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={uiLockForm.enabled}
+                            onCheckedChange={(checked) => setUiLockForm((prev) => ({ ...prev, enabled: checked }))}
+                          />
+                        </CardContent>
+                      </Card>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Idle Timeout (minutes)</Label>
+                          <Input
+                            type="number"
+                            value={uiLockForm.idle_timeout_minutes}
+                            onChange={(e) => {
+                              const parsed = parseInt(e.target.value, 10)
+                              setUiLockForm((prev) => ({
+                                ...prev,
+                                idle_timeout_minutes: Number.isFinite(parsed) ? Math.max(1, Math.min(1440, parsed)) : 15,
+                              }))
+                            }}
+                            min={1}
+                            max={1440}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <p className="text-[11px] text-muted-foreground/70">
+                            Password configured: {uiLockForm.has_password ? 'Yes' : 'No'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <SecretInput
+                        label="Set New Password"
+                        value={uiLockForm.password}
+                        placeholder={uiLockForm.has_password ? 'Leave blank to keep existing' : 'Enter a password'}
+                        onChange={(value) => setUiLockForm((prev) => ({ ...prev, password: value }))}
+                        showSecret={showSecrets['ui_lock_password']}
+                        onToggle={() => toggleSecret('ui_lock_password')}
+                      />
+
+                      <SecretInput
+                        label="Confirm Password"
+                        value={uiLockForm.confirm_password}
+                        placeholder="Re-enter password"
+                        onChange={(value) => setUiLockForm((prev) => ({ ...prev, confirm_password: value }))}
+                        showSecret={showSecrets['ui_lock_confirm_password']}
+                        onToggle={() => toggleSecret('ui_lock_confirm_password')}
+                      />
+
+                      <Card className="bg-muted">
+                        <CardContent className="flex items-center justify-between p-3">
+                          <div>
+                            <p className="text-sm">Clear Stored Password</p>
+                            <p className="text-xs text-muted-foreground">
+                              Only use this when UI lock is disabled, or while setting a replacement password now.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={uiLockForm.clear_password}
+                            onCheckedChange={(checked) => setUiLockForm((prev) => ({ ...prev, clear_password: checked }))}
+                          />
+                        </CardContent>
+                      </Card>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('security')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
                       </div>
                     </div>
                   )}

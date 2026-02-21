@@ -228,7 +228,19 @@ class EdgeEstimator:
         for finding in results:
             if finding is None:
                 continue
-            if finding.edge_percent >= min_edge_percent and finding.confidence >= min_confidence:
+            rejection_reasons = (
+                finding.evidence.get("rejection_reasons")
+                if isinstance(finding.evidence, dict)
+                else None
+            )
+            has_rejection = isinstance(rejection_reasons, list) and len(rejection_reasons) > 0
+            if (
+                not has_rejection
+                and finding.edge_percent > 0.0
+                and finding.confidence > 0.0
+                and finding.edge_percent >= min_edge_percent
+                and finding.confidence >= min_confidence
+            ):
                 finding.actionable = True
             findings.append(finding)
 

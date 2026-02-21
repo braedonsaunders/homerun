@@ -15,7 +15,16 @@ api.interceptors.response.use(
     return response
   },
   (error) => {
-    console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`, error.response?.data)
+    const status = error?.response?.status
+    if (status === 423 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ui-lock-required'))
+    }
+    if (status !== 423) {
+      console.error(
+        `[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${status || error.message}`,
+        error.response?.data
+      )
+    }
     return Promise.reject(error)
   }
 )
@@ -2436,6 +2445,14 @@ export interface TradingProxySettings {
   require_vpn: boolean
 }
 
+export interface UILockSettings {
+  enabled: boolean
+  idle_timeout_minutes: number
+  has_password: boolean
+  password?: string | null
+  clear_password?: boolean
+}
+
 export interface EventsSettings {
   enabled: boolean
   interval_seconds: number
@@ -2494,6 +2511,7 @@ export interface AllSettings {
   maintenance: MaintenanceSettings
   discovery: DiscoverySettings
   trading_proxy: TradingProxySettings
+  ui_lock: UILockSettings
   events: EventsSettings
   search_filters: SearchFilterSettings
   updated_at: string | null
@@ -2509,6 +2527,7 @@ export interface UpdateSettingsRequest {
   maintenance?: Partial<MaintenanceSettings>
   discovery?: Partial<DiscoverySettings>
   trading_proxy?: Partial<TradingProxySettings>
+  ui_lock?: Partial<UILockSettings>
   events?: Partial<EventsSettings>
   search_filters?: Partial<SearchFilterSettings>
 }
@@ -2520,6 +2539,33 @@ export const getSettings = async (): Promise<AllSettings> => {
 
 export const updateSettings = async (settings: UpdateSettingsRequest): Promise<{ status: string; message: string; updated_at: string }> => {
   const { data } = await api.put('/settings', settings)
+  return unwrapApiData(data)
+}
+
+export interface UILockStatus {
+  enabled: boolean
+  locked: boolean
+  idle_timeout_minutes: number
+  has_password: boolean
+}
+
+export const getUILockStatus = async (): Promise<UILockStatus> => {
+  const { data } = await api.get('/ui-lock/status')
+  return unwrapApiData(data)
+}
+
+export const unlockUILock = async (password: string): Promise<{ status: string; message: string; locked: boolean }> => {
+  const { data } = await api.post('/ui-lock/unlock', { password })
+  return unwrapApiData(data)
+}
+
+export const lockUILock = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/ui-lock/lock')
+  return unwrapApiData(data)
+}
+
+export const sendUILockActivity = async (): Promise<{ status: string }> => {
+  const { data } = await api.post('/ui-lock/activity')
   return unwrapApiData(data)
 }
 

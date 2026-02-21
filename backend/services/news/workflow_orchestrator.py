@@ -520,6 +520,7 @@ class WorkflowOrchestrator:
             market_metadata_by_id = {
                 m["market_id"]: {
                     "id": m["market_id"],
+                    "condition_id": m.get("condition_id"),
                     "slug": m.get("slug"),
                     "event_slug": m.get("event_slug"),
                     "event_ticker": m.get("event_ticker"),
@@ -1073,6 +1074,7 @@ class WorkflowOrchestrator:
             infos.append(
                 {
                     "market_id": market_id,
+                    "condition_id": str(getattr(market, "condition_id", "") or "").strip(),
                     "question": question,
                     "event_title": str(event_meta.get("event_title") or ""),
                     "event_slug": event_slug or event_meta.get("event_slug"),
@@ -1156,6 +1158,7 @@ class WorkflowOrchestrator:
                 infos.append(
                     {
                         "market_id": market_id,
+                        "condition_id": str(m.get("condition_id") or m.get("conditionId") or "").strip(),
                         "question": question,
                         "event_title": str(getattr(opp, "event_title", "") or ""),
                         "event_slug": event_slug,
@@ -1418,6 +1421,11 @@ class WorkflowOrchestrator:
         ).strip()
         if not market_id:
             return
+        condition_id = str(market_metadata.get("condition_id") or market_metadata.get("conditionId") or "").strip()
+        token_ids_raw = market_metadata.get("token_ids") or market_metadata.get("tokenIds")
+        token_ids = []
+        if isinstance(token_ids_raw, list):
+            token_ids = [str(token_id).strip() for token_id in token_ids_raw if str(token_id or "").strip()]
 
         market_meta = {
             "id": market_id,
@@ -1428,6 +1436,10 @@ class WorkflowOrchestrator:
             "question": str(market_metadata.get("question") or getattr(finding, "market_question", "") or "").strip()
             or None,
         }
+        if condition_id:
+            market_meta["condition_id"] = condition_id
+        if token_ids:
+            market_meta["token_ids"] = token_ids
         if not any(v for k, v in market_meta.items() if k != "id"):
             return
 
@@ -1743,6 +1755,13 @@ class WorkflowOrchestrator:
     def _row_to_finding(row: NewsWorkflowFinding):
         from services.news.edge_estimator import WorkflowFinding
 
+        evidence = row.evidence if isinstance(row.evidence, dict) else {}
+        rejection_reasons = evidence.get("rejection_reasons")
+        has_rejection = isinstance(rejection_reasons, list) and len(rejection_reasons) > 0
+        edge_percent = float(row.edge_percent or 0.0)
+        confidence = float(row.confidence or 0.0)
+        actionable = bool(row.actionable) and edge_percent > 0.0 and confidence > 0.0 and not has_rejection
+
         return WorkflowFinding(
             id=row.id,
             article_id=row.article_id,
@@ -1753,18 +1772,18 @@ class WorkflowOrchestrator:
             market_question=row.market_question,
             market_price=float(row.market_price or 0.5),
             model_probability=float(row.model_probability or 0.5),
-            edge_percent=float(row.edge_percent or 0.0),
+            edge_percent=edge_percent,
             direction=row.direction or "buy_yes",
-            confidence=float(row.confidence or 0.0),
+            confidence=confidence,
             retrieval_score=float(row.retrieval_score or 0.0),
             semantic_score=float(row.semantic_score or 0.0),
             keyword_score=float(row.keyword_score or 0.0),
             event_score=float(row.event_score or 0.0),
             rerank_score=float(row.rerank_score or 0.0),
             event_graph=row.event_graph or {},
-            evidence=row.evidence or {},
+            evidence=evidence,
             reasoning=row.reasoning or "",
-            actionable=bool(row.actionable),
+            actionable=actionable,
             created_at=row.created_at,
             signal_key=row.signal_key,
             cache_key=row.cache_key,

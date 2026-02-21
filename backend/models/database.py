@@ -960,6 +960,11 @@ class AppSettings(Base):
     trading_proxy_timeout = Column(Float, default=30.0)
     trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
 
+    # Local UI lock settings
+    ui_lock_enabled = Column(Boolean, default=False)
+    ui_lock_password_hash = Column(String, nullable=True)
+    ui_lock_idle_timeout_minutes = Column(Integer, default=15)
+
     # Validation guardrails (auto strategy demotion/promotion)
     validation_guardrails_enabled = Column(Boolean, default=True)
     validation_min_samples = Column(Integer, default=25)

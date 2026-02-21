@@ -42,7 +42,7 @@
     "framer-motion": "^12.33.0",
     "jotai": "^2.17.1",
     "lightweight-charts": "^5.1.0",
-    "liveline": "^0.0.3",
+    "liveline": "^0.0.4",
     "lucide-react": "^0.303.0",
     "maplibre-gl": "^5.18.0",
     "react": "^18.2.0",

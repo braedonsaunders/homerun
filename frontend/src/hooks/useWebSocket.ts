@@ -13,6 +13,7 @@ let sharedConnected = false
 let sharedReconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let sharedReconnectAttempts = 0
 let sharedPingInterval: ReturnType<typeof setInterval> | null = null
+let sharedBlockedByUiLock = false
 const MAX_RECONNECT_DELAY = 10_000
 const BASE_RECONNECT_DELAY = 1_000
 const CLIENT_PING_INTERVAL_MS = 15_000
@@ -47,6 +48,7 @@ function notifyStatus(connected: boolean) {
 
 function sharedConnect(url: string) {
   if (disposed) return
+  if (sharedBlockedByUiLock) return
   if (sharedWs) {
     const state = sharedWs.readyState
     if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return
@@ -78,13 +80,19 @@ function sharedConnect(url: string) {
       }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (sharedWs !== ws) return
       sharedWs = null
       clearPingLoop()
       notifyStatus(false)
+      if (event.code === 4403) {
+        sharedBlockedByUiLock = true
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('ui-lock-required'))
+        }
+      }
       // Don't reconnect if all consumers have unmounted
-      if (disposed || mountedCount <= 0) return
+      if (disposed || mountedCount <= 0 || sharedBlockedByUiLock) return
       scheduleReconnect(url)
     }
 
@@ -116,6 +124,7 @@ function scheduleReconnect(url: string) {
 
 function sharedDisconnect() {
   disposed = true
+  sharedBlockedByUiLock = false
   if (sharedReconnectTimeout) {
     clearTimeout(sharedReconnectTimeout)
     sharedReconnectTimeout = null
@@ -151,6 +160,7 @@ export function useWebSocket(url: string) {
 
     const reconnectNow = () => {
       if (disposed || mountedCount <= 0) return
+      if (sharedBlockedByUiLock) return
       if (
         sharedWs &&
         (sharedWs.readyState === WebSocket.OPEN || sharedWs.readyState === WebSocket.CONNECTING)
@@ -174,11 +184,17 @@ export function useWebSocket(url: string) {
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener('focus', reconnectNow)
     window.addEventListener('online', reconnectNow)
+    const onUiLockUnlocked = () => {
+      sharedBlockedByUiLock = false
+      reconnectNow()
+    }
+    window.addEventListener('ui-lock-unlocked', onUiLockUnlocked)
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('focus', reconnectNow)
       window.removeEventListener('online', reconnectNow)
+      window.removeEventListener('ui-lock-unlocked', onUiLockUnlocked)
       listeners.delete(onMsg)
       statusListeners.delete(onStatus)
       mountedCount--
@@ -199,6 +215,7 @@ export function useWebSocket(url: string) {
 
   const reconnect = useCallback(() => {
     // Force a fresh connection
+    sharedBlockedByUiLock = false
     if (sharedWs) {
       try { sharedWs.close() } catch { /* ignore */ }
       sharedWs = null

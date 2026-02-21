@@ -138,6 +138,15 @@ def test_build_market_link_payload_handles_kalshi_ticker():
     assert payload["kalshi_url"] == payload["market_url"]
 
 
+def test_resolve_finding_market_id_for_backfill_prefers_condition_id():
+    finding = _finding(market_id="12345")
+    market_context = {"condition_id": "0xabc123"}
+
+    resolved = routes_news_workflow._resolve_finding_market_id_for_backfill(finding, market_context)
+
+    assert resolved == "0xabc123"
+
+
 @pytest.mark.asyncio
 async def test_load_shared_backfill_market_history_uses_scanner_attach(monkeypatch):
     yes_token = "123456789012345678901"

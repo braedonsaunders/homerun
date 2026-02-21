@@ -1191,6 +1191,7 @@ class BaseStrategy(ABC):
             outcome_prices = list(m.outcome_prices) if m.outcome_prices else []
             entry: dict = {
                 "id": m.id,
+                "condition_id": getattr(m, "condition_id", ""),
                 "slug": m.slug,
                 "question": m.question,
                 "group_item_title": getattr(m, "group_item_title", ""),

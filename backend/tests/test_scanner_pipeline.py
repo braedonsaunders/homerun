@@ -225,6 +225,68 @@ class TestScanPipeline:
         assert isinstance(scanner._last_scan, datetime)
 
     @pytest.mark.asyncio
+    async def test_full_snapshot_scan_keeps_existing_pool_when_no_new_full_results(
+        self,
+        mock_polymarket_client,
+    ):
+        """Heavy-lane scans that find nothing must not evict the existing opportunity pool."""
+        scanner = _build_scanner(mock_client=mock_polymarket_client)
+
+        token_yes = "tok_yes_" + "0" * 24
+        token_no = "tok_no_" + "0" * 24
+        market = Market(
+            id="m_full_1",
+            condition_id="c_full_1",
+            question="Will test market resolve yes?",
+            slug="test-full-1",
+            clob_token_ids=[token_yes, token_no],
+            outcome_prices=[0.48, 0.52],
+        )
+        scanner._cached_markets = [market]
+        scanner._cached_market_by_id = {market.id: market}
+        scanner._cached_events = []
+
+        seen_at = utcnow() - timedelta(hours=2)
+        scanner._opportunities = [
+            Opportunity(
+                strategy="basic",
+                title="Existing pool opportunity",
+                description="Should survive heavy lane with zero new detections",
+                total_cost=0.96,
+                expected_payout=1.0,
+                gross_profit=0.04,
+                fee=0.02,
+                net_profit=0.02,
+                roi_percent=2.08,
+                risk_score=0.3,
+                markets=[
+                    {
+                        "id": "m_full_1",
+                        "question": "Will test market resolve yes?",
+                        "yes_price": 0.48,
+                        "no_price": 0.52,
+                        "clob_token_ids": [token_yes, token_no],
+                    }
+                ],
+                last_seen_at=seen_at,
+                detected_at=seen_at,
+                mispricing_type=MispricingType.WITHIN_MARKET,
+            )
+        ]
+
+        with patch.object(scanner, "_ensure_runtime_strategies_loaded", new_callable=AsyncMock), \
+             patch.object(scanner, "_partition_market_refresh_strategies", return_value=(set(), {"full_only"})), \
+             patch.object(scanner, "_select_full_snapshot_markets", return_value=[market]), \
+             patch.object(scanner, "_snapshot_ws_prices", new_callable=AsyncMock, return_value={}), \
+             patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]), \
+             patch.object(scanner, "_set_activity", new_callable=AsyncMock):
+            results = await scanner.scan_full_snapshot_strategies(force=True)
+
+        assert len(results) == 1
+        assert len(scanner._opportunities) == 1
+        assert scanner._opportunities[0].markets[0]["id"] == "m_full_1"
+
+    @pytest.mark.asyncio
     async def test_refresh_catalog_reads_prices_from_redis(self, mock_polymarket_client):
         """refresh_catalog reads prices via _snapshot_ws_prices (Redis), not get_prices_batch."""
         # Token IDs must be >20 chars to pass the _collect_polymarket_tokens filter
@@ -463,6 +525,111 @@ class TestSharedPriceHistoryAttach:
         assert attached == 1
         assert "price_history" in opp.markets[0]
         assert len(opp.markets[0]["price_history"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_attach_price_history_uses_market_id_aliases(self):
+        scanner = _build_scanner(strategies=[])
+        scanner._market_price_history = {
+            "m_primary": [
+                {"t": 1.0, "yes": 0.45, "no": 0.55},
+                {"t": 2.0, "yes": 0.47, "no": 0.53},
+            ]
+        }
+        scanner._market_id_to_condition_id = {"m_primary": "0xcond_primary"}
+        scanner._condition_id_to_market_id = {"0xcond_primary": "m_primary"}
+        scanner._backfill_market_history_for_opportunities = AsyncMock(return_value=None)
+        scanner._persist_market_history_for_opportunities = AsyncMock(return_value=None)
+        scanner._hydrate_history_from_db = AsyncMock(return_value=0)
+
+        opp = Opportunity(
+            strategy="weather_edge",
+            title="Weather",
+            description="D",
+            total_cost=0.2,
+            expected_payout=0.5,
+            gross_profit=0.3,
+            fee=0.01,
+            net_profit=0.29,
+            roi_percent=145.0,
+            markets=[
+                {
+                    "id": "0xcond_primary",
+                    "condition_id": "0xcond_primary",
+                    "platform": "polymarket",
+                    "yes_price": 0.2,
+                    "no_price": 0.8,
+                }
+            ],
+            min_liquidity=1000.0,
+            max_position_size=10.0,
+            positions_to_take=[],
+        )
+
+        attached = await scanner.attach_price_history_to_opportunities([opp], timeout_seconds=None)
+
+        assert attached == 1
+        assert len(opp.markets[0].get("price_history") or []) == 2
+        assert scanner._hydrate_history_from_db.await_count == 0
+
+
+class TestOpportunityMerge:
+    def test_merge_opportunities_preserves_existing_markets_when_update_is_partial(self):
+        scanner = _build_scanner(strategies=[])
+        existing = Opportunity(
+            strategy="basic",
+            title="Original",
+            description="Original description",
+            total_cost=0.42,
+            expected_payout=1.0,
+            gross_profit=0.58,
+            fee=0.02,
+            net_profit=0.56,
+            roi_percent=133.3,
+            event_slug="event-one",
+            event_title="Event One",
+            category="politics",
+            markets=[
+                {
+                    "id": "m_1",
+                    "question": "Will this happen?",
+                    "yes_price": 0.42,
+                    "no_price": 0.58,
+                    "price_history": [
+                        {"t": 1.0, "yes": 0.4, "no": 0.6},
+                        {"t": 2.0, "yes": 0.42, "no": 0.58},
+                    ],
+                }
+            ],
+            positions_to_take=[{"market_id": "m_1", "outcome": "YES", "price": 0.42}],
+        )
+        scanner._opportunities = [existing]
+
+        update = Opportunity(
+            strategy="basic",
+            title="Updated",
+            description="Partial update",
+            total_cost=0.41,
+            expected_payout=1.0,
+            gross_profit=0.59,
+            fee=0.02,
+            net_profit=0.57,
+            roi_percent=139.0,
+            stable_id=existing.stable_id,
+            markets=[],
+            positions_to_take=[],
+        )
+
+        merged = scanner._merge_opportunities([update])
+        assert len(merged) == 1
+        merged_opp = merged[0]
+        assert merged_opp.id == existing.id
+        assert merged_opp.event_slug == "event-one"
+        assert merged_opp.event_title == "Event One"
+        assert merged_opp.category == "politics"
+        assert len(merged_opp.markets) == 1
+        assert merged_opp.markets[0]["id"] == "m_1"
+        assert len(merged_opp.markets[0]["price_history"]) == 2
+        assert len(merged_opp.positions_to_take) == 1
 
 
 # ---------------------------------------------------------------------------
