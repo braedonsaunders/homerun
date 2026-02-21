@@ -66,8 +66,6 @@ class SimulationService:
         return any(
             marker in message
             for marker in (
-                "database is locked",
-                "database table is locked",
                 "deadlock detected",
                 "serialization failure",
                 "could not serialize access",

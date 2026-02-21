@@ -4,8 +4,6 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 from utils.utcnow import utcnow
 
@@ -20,15 +18,11 @@ from services.trader_orchestrator_state import (  # noqa: E402
     record_signal_consumption,
     upsert_trader_signal_cursor,
 )
+from tests.postgres_test_db import build_postgres_session_factory  # noqa: E402
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "trader_signal_cursor.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "trader_signal_cursor")
 
 
 @pytest.mark.asyncio

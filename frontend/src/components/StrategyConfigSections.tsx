@@ -12,6 +12,7 @@ import {
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
 import { Button } from './ui/button'
+import { Switch } from './ui/switch'
 import StrategyConfigForm from './StrategyConfigForm'
 import {
   getPlugins,
@@ -78,6 +79,7 @@ function StrategyConfigCard({
 }) {
   const [open, setOpen] = useState(false)
   const [localConfig, setLocalConfig] = useState<Record<string, unknown>>({})
+  const [localEnabled, setLocalEnabled] = useState(Boolean(strategy.enabled))
   const [dirty, setDirty] = useState(false)
   const [saveMsg, setSaveMsg] = useState<{
     type: 'success' | 'error'
@@ -90,8 +92,9 @@ function StrategyConfigCard({
     // Strip internal _schema key
     delete cfg._schema
     setLocalConfig(cfg)
+    setLocalEnabled(Boolean(strategy.enabled))
     setDirty(false)
-  }, [strategy.config])
+  }, [strategy.config, strategy.enabled])
 
   const handleChange = useCallback((next: Record<string, unknown>) => {
     setLocalConfig(next)
@@ -99,8 +102,18 @@ function StrategyConfigCard({
   }, [])
 
   const saveMutation = useMutation({
-    mutationFn: (config: Record<string, unknown>) =>
-      updatePlugin(strategy.id, { config }),
+    mutationFn: ({
+      config,
+      enabled,
+    }: {
+      config: Record<string, unknown>
+      enabled: boolean
+    }) =>
+      updatePlugin(strategy.id, {
+        config,
+        enabled,
+        unlock_system: Boolean(strategy.is_system),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['plugins'] })
       setSaveMsg({ type: 'success', text: 'Saved' })
@@ -118,7 +131,10 @@ function StrategyConfigCard({
   })
 
   const handleSave = () => {
-    saveMutation.mutate(localConfig)
+    saveMutation.mutate({
+      config: localConfig,
+      enabled: localEnabled,
+    })
   }
 
   const fieldCount = strategy.config_schema?.param_fields?.length ?? 0
@@ -161,11 +177,20 @@ function StrategyConfigCard({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {!strategy.enabled && (
+          {!localEnabled && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-400">
               disabled
             </span>
           )}
+          <Switch
+            checked={localEnabled}
+            onClick={(e) => e.stopPropagation()}
+            onCheckedChange={(next) => {
+              setLocalEnabled(next)
+              setDirty(true)
+            }}
+            className="scale-75"
+          />
           {open ? (
             <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
           ) : (

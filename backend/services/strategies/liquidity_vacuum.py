@@ -21,10 +21,10 @@ from typing import Any, Optional
 
 
 from models import Market, Event, Opportunity
-from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, utcnow, make_aware
 from services.quality_filter import QualityFilterOverrides
 from utils.kelly import kelly_fraction
+from utils.converters import to_float
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
         "min_edge_percent": 3.0,
         "min_confidence": 0.40,
         "max_risk_score": 0.80,
-        "min_imbalance_ratio": 1.5,
+        "min_imbalance_ratio": 5.0,
+        "min_depth_usd": 100.0,
         "base_size_usd": 15.0,
         "max_size_usd": 120.0,
     }
@@ -80,8 +81,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__()
-        self.min_imbalance_ratio = settings.LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO
-        self.min_depth_usd = settings.LIQUIDITY_VACUUM_MIN_DEPTH_USD
+        self.min_imbalance_ratio = to_float(self.default_config.get("min_imbalance_ratio", 5.0), 5.0)
+        self.min_depth_usd = to_float(self.default_config.get("min_depth_usd", 100.0), 100.0)
 
     @staticmethod
     def _is_multileg_market(market: Market) -> bool:
@@ -105,8 +106,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
         markets: list[Market],
         prices: dict[str, dict],
     ) -> list[Opportunity]:
-        if not settings.LIQUIDITY_VACUUM_ENABLED:
-            return []
+        self.min_imbalance_ratio = max(1.0, to_float(self.config.get("min_imbalance_ratio", 5.0), 5.0))
+        self.min_depth_usd = max(0.0, to_float(self.config.get("min_depth_usd", 100.0), 100.0))
 
         opportunities: list[Opportunity] = []
 

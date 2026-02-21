@@ -28,15 +28,12 @@ import {
   clearNewsArticles,
   getNewsWorkflowStatus,
   getNewsWorkflowFindings,
-  getNewsWorkflowIntents,
   runNewsWorkflow,
   startNewsWorkflow,
   pauseNewsWorkflow,
-  skipNewsWorkflowIntent,
   NewsArticle,
   NewsSupportingArticle,
   NewsWorkflowFinding,
-  NewsTradeIntent,
 } from '../services/api'
 import {
   buildOutcomeFallbacks,
@@ -272,22 +269,6 @@ function resolveFindingMarketLinks(finding: NewsWorkflowFinding): MarketLink[] {
     marketUrl: cleanMarketText(marketContext.market_url || marketContext.url || finding.market_url) || null,
     polymarketUrl: finding.polymarket_url ?? null,
     kalshiUrl: finding.kalshi_url ?? null,
-    conditionId: cleanMarketText(marketContext.condition_id || marketContext.conditionId) || null,
-  })
-}
-
-function resolveIntentMarketLinks(intent: NewsTradeIntent): MarketLink[] {
-  const marketContext = asRecord(intent.metadata?.market) ?? {}
-
-  return resolveMarketLinks({
-    marketId: cleanMarketText(marketContext.id || marketContext.market_id || intent.market_id) || null,
-    marketSlug: cleanMarketText(marketContext.slug || marketContext.market_slug || intent.market_slug) || null,
-    eventSlug: cleanMarketText(marketContext.event_slug || marketContext.eventSlug || intent.market_event_slug) || null,
-    eventTicker: cleanMarketText(marketContext.event_ticker || marketContext.eventTicker || intent.market_event_ticker) || null,
-    platform: cleanMarketText(marketContext.platform || intent.market_platform) || null,
-    marketUrl: cleanMarketText(marketContext.market_url || marketContext.url || intent.market_url) || null,
-    polymarketUrl: intent.polymarket_url ?? null,
-    kalshiUrl: intent.kalshi_url ?? null,
     conditionId: cleanMarketText(marketContext.condition_id || marketContext.conditionId) || null,
   })
 }
@@ -943,117 +924,6 @@ function FindingCard({
   )
 }
 
-function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; onSkip: (id: string) => void; isSkipping: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  const marketLinks = useMemo(() => resolveIntentMarketLinks(intent), [intent])
-  const intentOutcomeLabels = useMemo(() => {
-    const market = intent.metadata?.market
-    if (!market) return []
-    return extractOutcomeLabels(
-      market.outcome_labels
-      ?? market.outcomes
-      ?? market.tokens
-    )
-  }, [intent.metadata?.market])
-  const intentDirectionLabel = (
-    intent.direction === 'buy_yes'
-      ? (intentOutcomeLabels[0] || 'Yes')
-      : (intentOutcomeLabels[1] || 'No')
-  )
-  const statusColors: Record<string, string> = {
-    pending: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-    submitted: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    executed: 'bg-green-500/10 text-green-400 border-green-500/20',
-    skipped: 'bg-muted/50 text-muted-foreground border-border',
-    expired: 'bg-red-500/10 text-red-400 border-red-500/20',
-  }
-  const supportingArticles: NewsSupportingArticle[] = (
-    Array.isArray(intent.metadata?.supporting_articles)
-      ? intent.metadata?.supporting_articles
-      : []
-  ).filter((article): article is NewsSupportingArticle => Boolean(article && article.title && article.url))
-  const articleCount = Number(intent.metadata?.supporting_article_count ?? supportingArticles.length ?? 0)
-
-  return (
-    <div className="px-3 py-3 hover:bg-muted/30 rounded-lg transition-colors">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground line-clamp-1">{intent.market_question}</p>
-          <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
-            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", intent.direction === 'buy_yes' ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20')}>
-              {`BUY ${compactOutcomeLabel(intentDirectionLabel, 18).toUpperCase()}`}
-            </Badge>
-            <span className="font-data">Edge: {intent.edge_percent.toFixed(1)}%</span>
-            <span className="font-data">Size: ${intent.suggested_size_usd.toFixed(0)}</span>
-            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", statusColors[intent.status] || '')}>
-              {intent.status}
-            </Badge>
-            {articleCount > 0 && (
-              <Badge variant="outline" className="text-[9px] h-4 px-1.5 bg-blue-500/10 text-blue-400 border-blue-500/20">
-                {articleCount} articles
-              </Badge>
-            )}
-          </div>
-          {marketLinks.length > 0 && (
-            <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-              {marketLinks.map((link) => (
-                <a
-                  key={`${intent.id}-${link.label}-${link.url}`}
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-border transition-colors"
-                >
-                  {link.label}
-                  <ExternalLink className="w-2.5 h-2.5" />
-                </a>
-              ))}
-            </div>
-          )}
-          {supportingArticles.length > 0 && (
-            <div className="mt-2">
-              <button
-                onClick={() => setExpanded((v) => !v)}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
-              >
-                {expanded ? 'Hide linked articles' : 'Show linked articles'}
-              </button>
-              {expanded && (
-                <div className="mt-1.5 space-y-1">
-                  {supportingArticles.slice(0, 5).map((article) => (
-                    <a
-                      key={`${article.article_id}-${article.url}`}
-                      href={article.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block text-[10px] text-muted-foreground hover:text-orange-400 transition-colors line-clamp-1"
-                    >
-                      {article.title}
-                      <ExternalLink className="w-2.5 h-2.5 inline ml-1" />
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        {intent.status === 'pending' && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 gap-1 text-muted-foreground hover:text-foreground"
-            onClick={() => onSkip(intent.id)}
-            disabled={isSkipping}
-          >
-            <X className="w-3 h-3" />
-            Skip
-          </Button>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function SourceBreakdownBar({ sources }: { sources: Record<string, number> }) {
   const entries = useMemo(
     () => Object.entries(sources).sort((a, b) => b[1] - a[1]),
@@ -1128,19 +998,11 @@ export default function NewsIntelligencePanel({
     enabled: mode !== 'feed' && subView === 'workflow',
   })
 
-  const { data: workflowIntentsData } = useQuery({
-    queryKey: ['news-workflow-intents'],
-    queryFn: () => getNewsWorkflowIntents({ limit: 50 }),
-    refetchInterval: isConnected ? false : 15000,
-    enabled: mode !== 'feed' && subView === 'workflow',
-  })
-
   const refreshMutation = useMutation({
     mutationFn: runNewsWorkflow,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] }),
-        queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] }),
         queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] }),
         queryClient.invalidateQueries({ queryKey: ['news-articles'] }),
         queryClient.invalidateQueries({ queryKey: ['news-feed-status'] }),
@@ -1148,7 +1010,6 @@ export default function NewsIntelligencePanel({
       await Promise.all([
         queryClient.refetchQueries({ queryKey: ['news-workflow-status'] }),
         queryClient.refetchQueries({ queryKey: ['news-workflow-findings'] }),
-        queryClient.refetchQueries({ queryKey: ['news-workflow-intents'] }),
         queryClient.refetchQueries({ queryKey: ['news-articles'] }),
         queryClient.refetchQueries({ queryKey: ['news-feed-status'] }),
       ])
@@ -1165,14 +1026,6 @@ export default function NewsIntelligencePanel({
   const pauseWorkflowMutation = useMutation({
     mutationFn: pauseNewsWorkflow,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
-    },
-  })
-
-  const skipIntentMutation = useMutation({
-    mutationFn: skipNewsWorkflowIntent,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
     },
   })
@@ -1430,25 +1283,6 @@ export default function NewsIntelligencePanel({
 
       {subView === 'workflow' && (
         <>
-          {(workflowIntentsData?.intents?.length ?? 0) > 0 && (
-            <div className="mb-4">
-              <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <Target className="w-3 h-3 text-purple-400" />
-                Trade Intents ({workflowIntentsData?.intents.length})
-              </div>
-              <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
-                {workflowIntentsData?.intents.map((intent) => (
-                  <IntentRow
-                    key={intent.id}
-                    intent={intent}
-                    onSkip={(id) => skipIntentMutation.mutate(id)}
-                    isSkipping={skipIntentMutation.isPending}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
           {findingsLoading || refreshMutation.isPending ? (
             <div className="flex flex-col items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mb-3" />

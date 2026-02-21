@@ -29,7 +29,6 @@ import threading
 import time
 from collections import OrderedDict, defaultdict
 from typing import Any, Optional
-from config import settings
 from models import Market, Event, Opportunity
 from services.data_events import DataEvent, EventType
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
@@ -437,6 +436,8 @@ class DependencyValidator:
         llm_confidence: float,
         heuristic_found: bool,
         share_context: bool,
+        medium_confidence_threshold: float = MEDIUM_CONFIDENCE,
+        high_confidence_threshold: float = HIGH_CONFIDENCE,
     ) -> tuple[list[Dependency], float, str]:
         """
         Run the full validation pipeline on a set of dependencies.
@@ -461,11 +462,9 @@ class DependencyValidator:
         price_consistent = self._price_sanity_check(dependencies, prices_a, prices_b)
 
         # Step 4: LLM confidence gate
-        medium_threshold = float(getattr(settings, "COMBINATORIAL_MIN_CONFIDENCE", MEDIUM_CONFIDENCE))
-        medium_threshold = max(0.0, min(1.0, medium_threshold))
+        medium_threshold = max(0.0, min(1.0, float(medium_confidence_threshold)))
         self.accuracy_tracker.set_base_threshold(medium_threshold)
-        high_threshold = float(getattr(settings, "COMBINATORIAL_HIGH_CONFIDENCE", HIGH_CONFIDENCE))
-        high_threshold = max(medium_threshold, min(1.0, high_threshold))
+        high_threshold = max(medium_threshold, min(1.0, float(high_confidence_threshold)))
 
         effective_threshold = self.accuracy_tracker.effective_threshold
         llm_passes = llm_confidence >= effective_threshold
@@ -852,6 +851,8 @@ class CombinatorialStrategy(BaseStrategy):
         "min_confidence": 0.42,
         "max_risk_score": 0.68,
         "min_markets": 2,
+        "medium_confidence_threshold": 0.75,
+        "high_confidence_threshold": 0.90,
         "base_size_usd": 20.0,
         "max_size_usd": 180.0,
     }
@@ -917,6 +918,23 @@ class CombinatorialStrategy(BaseStrategy):
 
         return opportunities
 
+    def _confidence_thresholds(self) -> tuple[float, float]:
+        medium_threshold = max(
+            0.0,
+            min(
+                1.0,
+                to_float(self.config.get("medium_confidence_threshold", MEDIUM_CONFIDENCE), MEDIUM_CONFIDENCE),
+            ),
+        )
+        high_threshold = max(
+            medium_threshold,
+            min(
+                1.0,
+                to_float(self.config.get("high_confidence_threshold", HIGH_CONFIDENCE), HIGH_CONFIDENCE),
+            ),
+        )
+        return medium_threshold, high_threshold
+
     async def on_event(self, event: DataEvent) -> list[Opportunity]:
         """Run bounded heuristic detection in scanner loops.
 
@@ -969,6 +987,7 @@ class CombinatorialStrategy(BaseStrategy):
 
         # --- Validation pipeline ---
         share_context = self._share_context(market_a.question.lower(), market_b.question.lower())
+        medium_threshold, high_threshold = self._confidence_thresholds()
         validated_deps, confidence, tier = self._validator.validate_dependencies(
             dependencies=dependencies,
             market_a_question=market_a.question,
@@ -978,6 +997,8 @@ class CombinatorialStrategy(BaseStrategy):
             llm_confidence=0.80,  # Heuristic-only path: raised so it can reach HIGH tier
             heuristic_found=True,  # Sync path is always heuristic
             share_context=share_context,
+            medium_confidence_threshold=medium_threshold,
+            high_confidence_threshold=high_threshold,
         )
 
         # Only proceed with HIGH or MEDIUM confidence
@@ -1453,6 +1474,7 @@ class CombinatorialStrategy(BaseStrategy):
             # --- Validation pipeline ---
             heuristic_found = heuristic_results.get((market_a.id, market_b.id), False)
             share_context = self._share_context(market_a.question.lower(), market_b.question.lower())
+            medium_threshold, high_threshold = self._confidence_thresholds()
 
             validated_deps, confidence, tier = self._validator.validate_dependencies(
                 dependencies=analysis.dependencies,
@@ -1463,6 +1485,8 @@ class CombinatorialStrategy(BaseStrategy):
                 llm_confidence=analysis.confidence,
                 heuristic_found=heuristic_found,
                 share_context=share_context,
+                medium_confidence_threshold=medium_threshold,
+                high_confidence_threshold=high_threshold,
             )
 
             # Only proceed with HIGH or MEDIUM confidence

@@ -4,8 +4,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -16,15 +15,11 @@ from services.data_source_catalog import BASE_SYSTEM_DATA_SOURCE_SEEDS, ensure_s
 from services.data_source_loader import validate_data_source_source
 from services.data_source_sdk import DataSourceSDK
 from services.strategy_sdk import StrategySDK
+from tests.postgres_test_db import build_postgres_session_factory
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "data_source_catalog_sdk.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "data_source_catalog_sdk")
 
 
 @pytest.mark.asyncio
@@ -335,7 +330,8 @@ async def test_data_source_sdk_applies_max_records_retention(tmp_path, monkeypat
         retention={"max_records": 3},
         enabled=True,
     )
-    assert created.get("retention") == {"max_records": 3}
+    created_retention = created.get("retention") or {}
+    assert int(created_retention.get("max_records") or 0) == 3
 
     run_result = await DataSourceSDK.run_source("retention_max_records_source", max_records=20)
     assert run_result.get("status") == "success"
@@ -392,7 +388,8 @@ async def test_data_source_sdk_applies_max_age_days_retention(tmp_path, monkeypa
         retention={"max_age_days": 7},
         enabled=True,
     )
-    assert created.get("retention") == {"max_age_days": 7}
+    created_retention = created.get("retention") or {}
+    assert int(created_retention.get("max_age_days") or 0) == 7
 
     run_result = await DataSourceSDK.run_source("retention_max_age_source", max_records=20)
     assert run_result.get("status") == "success"

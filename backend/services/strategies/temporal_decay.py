@@ -186,9 +186,6 @@ class TemporalDecayStrategy(BaseStrategy):
         ]
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:
-        if not settings.TEMPORAL_DECAY_ENABLED:
-            return []
-
         now = utcnow()
         scan_time = time.time()
         opportunities: list[Opportunity] = []

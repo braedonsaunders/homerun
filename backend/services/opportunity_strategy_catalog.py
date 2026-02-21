@@ -167,36 +167,192 @@ _COMMON_SCANNER_SCHEMA = {
     ]
 }
 
-_SCANNER_SCHEMA_WITH_MARKETS = {
+_SCANNER_SCHEMA_NEGRISK = {
     "param_fields": [
         *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
         {"key": "min_markets", "label": "Min Markets", "type": "integer", "min": 1},
+        {"key": "min_total_yes", "label": "Min Total YES", "type": "number", "min": 0.5, "max": 1},
+        {"key": "warn_total_yes", "label": "Warn Total YES", "type": "number", "min": 0.5, "max": 1},
+        {
+            "key": "election_min_total_yes",
+            "label": "Election Min Total YES",
+            "type": "number",
+            "min": 0.5,
+            "max": 1,
+        },
+        {
+            "key": "max_resolution_spread_days",
+            "label": "Max Resolution Spread (days)",
+            "type": "integer",
+            "min": 0,
+            "max": 365,
+        },
         *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
     ]
 }
 
-_SCANNER_SCHEMA_WITH_LIQUIDITY = {
+_SCANNER_SCHEMA_COMBINATORIAL = {
     "param_fields": [
         *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
-        {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+        {"key": "min_markets", "label": "Min Markets", "type": "integer", "min": 1},
+        {
+            "key": "medium_confidence_threshold",
+            "label": "Medium Confidence Threshold",
+            "type": "number",
+            "min": 0,
+            "max": 1,
+        },
+        {
+            "key": "high_confidence_threshold",
+            "label": "High Confidence Threshold",
+            "type": "number",
+            "min": 0,
+            "max": 1,
+        },
         *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
     ]
 }
 
-_SCANNER_SCHEMA_WITH_LIQ_HOLD = {
+_SCANNER_SCHEMA_SETTLEMENT_LAG = {
     "param_fields": [
         *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
         {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+        {
+            "key": "max_days_to_resolution",
+            "label": "Max Days To Resolution",
+            "type": "integer",
+            "min": 0,
+            "max": 365,
+        },
+        {"key": "near_zero_threshold", "label": "Near-Zero Threshold", "type": "number", "min": 0.001, "max": 0.5},
+        {"key": "near_one_threshold", "label": "Near-One Threshold", "type": "number", "min": 0.5, "max": 0.999},
+        {"key": "min_sum_deviation", "label": "Min Sum Deviation", "type": "number", "min": 0.001, "max": 0.5},
+        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
+    ]
+}
+
+_SCANNER_SCHEMA_CROSS_PLATFORM = {
+    "param_fields": [
+        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
+        {
+            "key": "min_spread_after_fees",
+            "label": "Min Spread After Fees",
+            "type": "number",
+            "min": 0,
+            "max": 1,
+        },
+        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
+    ]
+}
+
+_SCANNER_SCHEMA_BAYESIAN = {
+    "param_fields": [
+        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
+        {"key": "min_propagation_edge", "label": "Min Propagation Edge", "type": "number", "min": 0, "max": 1},
+        {
+            "key": "max_propagation_depth",
+            "label": "Max Propagation Depth",
+            "type": "integer",
+            "min": 1,
+            "max": 10,
+        },
+        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
+    ]
+}
+
+_SCANNER_SCHEMA_LIQUIDITY_VACUUM = {
+    "param_fields": [
+        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
+        {
+            "key": "min_imbalance_ratio",
+            "label": "Min Imbalance Ratio",
+            "type": "number",
+            "min": 1,
+            "max": 100,
+        },
+        {"key": "min_depth_usd", "label": "Min Depth (USD)", "type": "number", "min": 0},
+        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
+    ]
+}
+
+_SCANNER_SCHEMA_CORRELATION = {
+    "param_fields": [
+        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
+        {"key": "min_correlation", "label": "Min Correlation", "type": "number", "min": 0, "max": 1},
+        {"key": "min_divergence", "label": "Min Divergence", "type": "number", "min": 0, "max": 1},
+        {"key": "z_score_threshold", "label": "Z-Score Threshold", "type": "number", "min": 0},
+        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
+    ]
+}
+
+_SCANNER_SCHEMA_MARKET_MAKING = {
+    "param_fields": [
+        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
+        {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+        {"key": "min_volume_24h", "label": "Min Volume 24h", "type": "number", "min": 0},
+        {"key": "min_spread", "label": "Min Spread", "type": "number", "min": 0, "max": 1},
+        {"key": "max_spread", "label": "Max Spread", "type": "number", "min": 0, "max": 1},
+        {"key": "gamma", "label": "Risk Aversion (Gamma)", "type": "number", "min": 0.01, "max": 10},
+        {"key": "max_inventory_usd", "label": "Max Inventory (USD)", "type": "number", "min": 0},
         {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 1},
         *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
     ]
 }
 
 
-def _with_retention_schema(schema: dict | None) -> dict:
+_LABEL_ACRONYMS = {"api", "arb", "btc", "eth", "hf", "llm", "no", "roi", "sdk", "sol", "usd", "vpin", "xrp", "yes"}
+
+
+def _label_from_key(key: str) -> str:
+    parts = [part for part in str(key or "").split("_") if part]
+    labels: list[str] = []
+    for part in parts:
+        lowered = part.lower()
+        if lowered in _LABEL_ACRONYMS:
+            labels.append(lowered.upper())
+        else:
+            labels.append(part.capitalize())
+    return " ".join(labels) or str(key)
+
+
+def _infer_param_field(key: str, default_value: object) -> dict | None:
+    clean_key = str(key or "").strip()
+    if not clean_key or clean_key == "_schema":
+        return None
+
+    if isinstance(default_value, bool):
+        field_type = "boolean"
+    elif isinstance(default_value, int):
+        field_type = "integer"
+    elif isinstance(default_value, float):
+        field_type = "number"
+    elif isinstance(default_value, list):
+        field_type = "list"
+    elif isinstance(default_value, dict):
+        field_type = "json"
+    else:
+        field_type = "string"
+
+    return {"key": clean_key, "label": _label_from_key(clean_key), "type": field_type}
+
+
+def _with_retention_schema(schema: dict | None, default_config: dict | None = None) -> dict:
     merged = dict(schema or {})
-    param_fields = list(merged.get("param_fields") or [])
+    raw_param_fields = list(merged.get("param_fields") or [])
+    param_fields = [dict(field) for field in raw_param_fields if isinstance(field, dict)]
     existing_keys = {str(field.get("key") or "").strip() for field in param_fields if isinstance(field, dict)}
+
+    if isinstance(default_config, dict):
+        for key, default_value in default_config.items():
+            inferred = _infer_param_field(str(key), default_value)
+            if not isinstance(inferred, dict):
+                continue
+            inferred_key = str(inferred.get("key") or "").strip()
+            if not inferred_key or inferred_key in existing_keys:
+                continue
+            param_fields.append(inferred)
+            existing_keys.add(inferred_key)
+
     for field in list(StrategySDK.strategy_retention_config_schema().get("param_fields", [])):
         if not isinstance(field, dict):
             continue
@@ -205,6 +361,7 @@ def _with_retention_schema(schema: dict | None) -> dict:
             continue
         param_fields.append(dict(field))
         existing_keys.add(key)
+
     merged["param_fields"] = param_fields
     return merged
 
@@ -230,42 +387,42 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         source_key="scanner",
         import_module="services.strategies.negrisk",
         sort_order=20,
-        config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
+        config_schema=_SCANNER_SCHEMA_NEGRISK,
     ),
     SystemOpportunityStrategySeed(
         slug="combinatorial",
         source_key="scanner",
         import_module="services.strategies.combinatorial",
         sort_order=70,
-        config_schema=_SCANNER_SCHEMA_WITH_MARKETS,
+        config_schema=_SCANNER_SCHEMA_COMBINATORIAL,
     ),
     SystemOpportunityStrategySeed(
         slug="settlement_lag",
         source_key="scanner",
         import_module="services.strategies.settlement_lag",
         sort_order=80,
-        config_schema=_COMMON_SCANNER_SCHEMA,
+        config_schema=_SCANNER_SCHEMA_SETTLEMENT_LAG,
     ),
     SystemOpportunityStrategySeed(
         slug="cross_platform",
         source_key="scanner",
         import_module="services.strategies.cross_platform",
         sort_order=90,
-        config_schema=_COMMON_SCANNER_SCHEMA,
+        config_schema=_SCANNER_SCHEMA_CROSS_PLATFORM,
     ),
     SystemOpportunityStrategySeed(
         slug="bayesian_cascade",
         source_key="scanner",
         import_module="services.strategies.bayesian_cascade",
         sort_order=100,
-        config_schema=_COMMON_SCANNER_SCHEMA,
+        config_schema=_SCANNER_SCHEMA_BAYESIAN,
     ),
     SystemOpportunityStrategySeed(
         slug="liquidity_vacuum",
         source_key="scanner",
         import_module="services.strategies.liquidity_vacuum",
         sort_order=110,
-        config_schema=_COMMON_SCANNER_SCHEMA,
+        config_schema=_SCANNER_SCHEMA_LIQUIDITY_VACUUM,
     ),
     SystemOpportunityStrategySeed(
         slug="vpin_toxicity",
@@ -293,7 +450,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         source_key="scanner",
         import_module="services.strategies.correlation_arb",
         sort_order=150,
-        config_schema=_COMMON_SCANNER_SCHEMA,
+        config_schema=_SCANNER_SCHEMA_CORRELATION,
     ),
     SystemOpportunityStrategySeed(
         slug="term_premium",
@@ -314,7 +471,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         source_key="scanner",
         import_module="services.strategies.market_making",
         sort_order=160,
-        config_schema=_SCANNER_SCHEMA_WITH_LIQ_HOLD,
+        config_schema=_SCANNER_SCHEMA_MARKET_MAKING,
     ),
     SystemOpportunityStrategySeed(
         slug="bias_fader",
@@ -616,7 +773,7 @@ def build_system_opportunity_strategy_rows(*, now: datetime | None = None) -> li
                 "status": "unloaded",
                 "error_message": None,
                 "config": meta["default_config"],
-                "config_schema": _with_retention_schema(seed.config_schema),
+                "config_schema": _with_retention_schema(seed.config_schema, meta["default_config"]),
                 "aliases": [],
                 "version": 1,
                 "sort_order": seed.sort_order,

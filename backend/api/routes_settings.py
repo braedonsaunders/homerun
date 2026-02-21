@@ -515,9 +515,9 @@ class SearchFilterSettings(BaseModel):
     """Opportunity search filter thresholds — controls which opportunities are shown"""
 
     # Hard rejection filters
-    min_liquidity_hard: float = Field(default=200.0, ge=0, description="Hard reject below this liquidity ($)")
-    min_position_size: float = Field(default=25.0, ge=0, description="Reject if max position < this ($)")
-    min_absolute_profit: float = Field(default=5.0, ge=0, description="Reject if net profit on max position < this ($)")
+    min_liquidity_hard: float = Field(default=1000.0, ge=0, description="Hard reject below this liquidity ($)")
+    min_position_size: float = Field(default=50.0, ge=0, description="Reject if max position < this ($)")
+    min_absolute_profit: float = Field(default=10.0, ge=0, description="Reject if net profit on max position < this ($)")
     min_annualized_roi: float = Field(default=10.0, ge=0, description="Reject if annualized ROI < this %")
     max_resolution_months: int = Field(
         default=18,
@@ -526,55 +526,11 @@ class SearchFilterSettings(BaseModel):
         description="Reject if resolution > this many months away",
     )
     max_plausible_roi: float = Field(default=30.0, ge=1, description="ROI above this % rejected as false positive")
-    max_trade_legs: int = Field(default=8, ge=2, le=20, description="Maximum legs in a multi-leg trade")
+    max_trade_legs: int = Field(default=6, ge=2, le=20, description="Maximum legs in a multi-leg trade")
     min_liquidity_per_leg: float = Field(
         default=500.0,
         ge=0,
         description="Minimum liquidity required per leg in multi-leg trades ($)",
-    )
-
-    # NegRisk exhaustivity thresholds
-    negrisk_min_total_yes: float = Field(
-        default=0.95,
-        ge=0.5,
-        le=1.0,
-        description="Hard reject NegRisk if total YES < this",
-    )
-    negrisk_warn_total_yes: float = Field(default=0.97, ge=0.5, le=1.0, description="Warn if total YES below this")
-    negrisk_election_min_total_yes: float = Field(
-        default=0.97, ge=0.5, le=1.0, description="Stricter reject for election markets"
-    )
-    negrisk_max_resolution_spread_days: int = Field(
-        default=7,
-        ge=0,
-        le=365,
-        description="Max resolution date spread in NegRisk bundle (days)",
-    )
-
-    # Settlement lag
-    settlement_lag_max_days_to_resolution: int = Field(
-        default=14,
-        ge=0,
-        le=365,
-        description="Only detect settlement lag within this window (days)",
-    )
-    settlement_lag_near_zero: float = Field(
-        default=0.05,
-        ge=0.001,
-        le=0.5,
-        description="Price below this suggests resolved to NO",
-    )
-    settlement_lag_near_one: float = Field(
-        default=0.95,
-        ge=0.5,
-        le=0.999,
-        description="Price above this suggests resolved to YES",
-    )
-    settlement_lag_min_sum_deviation: float = Field(
-        default=0.03,
-        ge=0.001,
-        le=0.5,
-        description="Min deviation from 1.0 to be interesting",
     )
 
     # Risk scoring thresholds
@@ -637,115 +593,11 @@ class SearchFilterSettings(BaseModel):
     )
     btc_eth_thin_liquidity_usd: float = Field(default=500.0, ge=0, description="Below this = thin order book ($)")
 
-    # Miracle strategy
-    miracle_min_no_price: float = Field(default=0.90, ge=0.5, le=0.999, description="Only consider NO prices >= this")
-    miracle_max_no_price: float = Field(default=0.995, ge=0.9, le=1.0, description="Skip if NO already at this+")
-    miracle_min_impossibility_score: float = Field(
-        default=0.70,
-        ge=0.0,
-        le=1.0,
-        description="Min confidence event is impossible (0-1)",
-    )
-
     # BTC/ETH high-frequency enable
     btc_eth_hf_enabled: bool = Field(default=True, description="Enable BTC/ETH high-frequency strategy")
     btc_eth_hf_maker_mode: bool = Field(
         default=True,
         description="Use maker/limit execution for BTC/ETH high-frequency strategy",
-    )
-
-    # Cross-platform arbitrage
-    cross_platform_enabled: bool = Field(
-        default=True,
-        description="Enable cross-platform (Polymarket vs Kalshi) arbitrage",
-    )
-
-    # Combinatorial arbitrage
-    combinatorial_min_confidence: float = Field(
-        default=0.75,
-        ge=0.0,
-        le=1.0,
-        description="Min LLM confidence for combinatorial trades",
-    )
-    combinatorial_high_confidence: float = Field(
-        default=0.90,
-        ge=0.0,
-        le=1.0,
-        description="High confidence threshold for combinatorial",
-    )
-
-    # Bayesian cascade
-    bayesian_cascade_enabled: bool = Field(default=True, description="Enable Bayesian cascade strategy")
-    bayesian_min_edge_percent: float = Field(
-        default=5.0,
-        ge=0.0,
-        le=100.0,
-        description="Min expected-vs-actual price diff to flag (%)",
-    )
-    bayesian_propagation_depth: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Max hops through the dependency graph",
-    )
-
-    # Liquidity vacuum
-    liquidity_vacuum_enabled: bool = Field(default=True, description="Enable liquidity vacuum strategy")
-    liquidity_vacuum_min_imbalance_ratio: float = Field(
-        default=5.0,
-        ge=1.0,
-        le=100.0,
-        description="Min bid/ask imbalance ratio to trigger",
-    )
-    liquidity_vacuum_min_depth_usd: float = Field(default=100.0, ge=0, description="Min order book depth ($)")
-
-    # Entropy arbitrage
-    entropy_arb_enabled: bool = Field(default=True, description="Enable entropy arbitrage strategy")
-    entropy_arb_min_deviation: float = Field(
-        default=0.25,
-        ge=0.0,
-        le=2.0,
-        description="Min entropy deviation from expected decay",
-    )
-
-    # Event-driven arbitrage
-    event_driven_enabled: bool = Field(default=True, description="Enable event-driven arbitrage strategy")
-
-    # Temporal decay
-    temporal_decay_enabled: bool = Field(default=True, description="Enable temporal decay strategy")
-
-    # Correlation arbitrage
-    correlation_arb_enabled: bool = Field(default=True, description="Enable correlation arbitrage strategy")
-    correlation_arb_min_correlation: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description="Min correlation coefficient for pair detection",
-    )
-    correlation_arb_min_divergence: float = Field(
-        default=0.05,
-        ge=0.0,
-        le=1.0,
-        description="Min price divergence to trigger trade",
-    )
-
-    # Market making
-    market_making_enabled: bool = Field(default=True, description="Enable market making strategy")
-    market_making_spread_bps: float = Field(
-        default=100.0,
-        ge=10.0,
-        le=1000.0,
-        description="Min bid-ask spread in basis points",
-    )
-    market_making_max_inventory_usd: float = Field(default=500.0, ge=0, description="Max inventory per market ($)")
-
-    # Statistical arbitrage
-    stat_arb_enabled: bool = Field(default=True, description="Enable statistical arbitrage strategy")
-    stat_arb_min_edge: float = Field(
-        default=0.05,
-        ge=0.0,
-        le=1.0,
-        description="Min composite fair-value edge to trade",
     )
 
 

@@ -28,7 +28,8 @@ The database now runs versioned Alembic migrations on startup (`upgrade head`), 
 If you see an error like:
 
 ```
-sqlite3.OperationalError: no such column: copy_trading_configs.copy_mode
+sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError)
+<class 'asyncpg.exceptions.UndefinedColumnError'>: column copy_trading_configs.copy_mode does not exist
 ```
 
 This means your database was created with an older schema. Two options:

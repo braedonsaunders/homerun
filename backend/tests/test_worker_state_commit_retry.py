@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import String
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column
 
 from services.worker_state import _commit_with_retry
+from tests.postgres_test_db import build_postgres_session_factory
 
 Base = declarative_base()
 
@@ -18,14 +18,13 @@ class CommitRetryProbe(Base):
     value: Mapped[str] = mapped_column(String, nullable=False)
 
 
-def _make_sqlite_lock_error() -> OperationalError:
-    return OperationalError("COMMIT", {}, Exception("database is locked"))
+def _make_retryable_db_lock_error() -> OperationalError:
+    return OperationalError("COMMIT", {}, Exception("deadlock detected"))
 
 
 @pytest.mark.asyncio
 async def test_commit_with_retry_replays_dirty_updates_after_lock() -> None:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine, Session = await build_postgres_session_factory(Base, "worker_state_commit_retry_dirty")
 
     try:
         async with engine.begin() as conn:
@@ -46,7 +45,7 @@ async def test_commit_with_retry_replays_dirty_updates_after_lock() -> None:
             async def flaky_commit():
                 calls["count"] += 1
                 if calls["count"] == 1:
-                    raise _make_sqlite_lock_error()
+                    raise _make_retryable_db_lock_error()
                 return await original_commit()
 
             session.commit = flaky_commit  # type: ignore[method-assign]
@@ -62,8 +61,7 @@ async def test_commit_with_retry_replays_dirty_updates_after_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_commit_with_retry_replays_pending_insert_after_lock() -> None:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine, Session = await build_postgres_session_factory(Base, "worker_state_commit_retry_insert")
 
     try:
         async with engine.begin() as conn:
@@ -78,7 +76,7 @@ async def test_commit_with_retry_replays_pending_insert_after_lock() -> None:
             async def flaky_commit():
                 calls["count"] += 1
                 if calls["count"] == 1:
-                    raise _make_sqlite_lock_error()
+                    raise _make_retryable_db_lock_error()
                 return await original_commit()
 
             session.commit = flaky_commit  # type: ignore[method-assign]
@@ -94,8 +92,7 @@ async def test_commit_with_retry_replays_pending_insert_after_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_commit_with_retry_replays_pending_delete_after_lock() -> None:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine, Session = await build_postgres_session_factory(Base, "worker_state_commit_retry_delete")
 
     try:
         async with engine.begin() as conn:
@@ -116,7 +113,7 @@ async def test_commit_with_retry_replays_pending_delete_after_lock() -> None:
             async def flaky_commit():
                 calls["count"] += 1
                 if calls["count"] == 1:
-                    raise _make_sqlite_lock_error()
+                    raise _make_retryable_db_lock_error()
                 return await original_commit()
 
             session.commit = flaky_commit  # type: ignore[method-assign]

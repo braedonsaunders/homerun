@@ -70,6 +70,7 @@ class MarketMakingStrategy(BaseStrategy):
         "min_liquidity": 5000.0,
         "min_volume_24h": 1000.0,
         "gamma": 0.1,
+        "max_inventory_usd": 500.0,
         "base_size_usd": 50.0,
         "max_size_usd": 500.0,
     }
@@ -102,10 +103,6 @@ class MarketMakingStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__()
-        self.min_spread_bps = settings.MARKET_MAKING_SPREAD_BPS
-        self.max_inventory_usd = settings.MARKET_MAKING_MAX_INVENTORY_USD
-        self.min_liquidity = 1000.0  # Minimum $1000 liquidity
-        self.min_volume = 500.0  # Minimum trading volume
 
     @staticmethod
     def _is_multileg_market(market: Market) -> bool:
@@ -320,8 +317,12 @@ class MarketMakingStrategy(BaseStrategy):
 
         Returns ranked opportunities.
         """
-        if not settings.MARKET_MAKING_ENABLED:
-            return []
+        min_spread = max(0.0, to_float(self.config.get("min_spread", 0.03), 0.03))
+        max_spread = max(min_spread, to_float(self.config.get("max_spread", 0.18), 0.18))
+        min_liquidity = max(0.0, to_float(self.config.get("min_liquidity", 5000.0), 5000.0))
+        min_volume = max(0.0, to_float(self.config.get("min_volume_24h", 1000.0), 1000.0))
+        gamma = max(0.01, to_float(self.config.get("gamma", 0.1), 0.1))
+        max_inventory_usd = max(0.0, to_float(self.config.get("max_inventory_usd", 500.0), 500.0))
 
         opportunities: list[Opportunity] = []
 
@@ -343,11 +344,11 @@ class MarketMakingStrategy(BaseStrategy):
                 continue
 
             # --- Filter: minimum liquidity ---
-            if market.liquidity < self.min_liquidity:
+            if market.liquidity < min_liquidity:
                 continue
 
             # --- Filter: minimum volume ---
-            if market.volume < self.min_volume:
+            if market.volume < min_volume:
                 continue
 
             # --- Get live prices ---
@@ -362,10 +363,10 @@ class MarketMakingStrategy(BaseStrategy):
             # --- Calculate spread ---
             spread = self._calculate_spread(yes_price, no_price)
 
-            # Minimum spread filter (in terms of mid-price basis points)
-            mid_price = yes_price  # For YES side, mid_price is the YES price
-            min_spread_absolute = (self.min_spread_bps / 10000.0) * mid_price
-            if spread < min_spread_absolute:
+            # Strategy spread window controls both too-thin and too-wide books.
+            if spread < min_spread:
+                continue
+            if spread > max_spread:
                 continue
 
             # --- Inventory risk ---
@@ -395,7 +396,6 @@ class MarketMakingStrategy(BaseStrategy):
             sigma_sq = self._estimate_volatility(price_history_proxy)
 
             # Model parameters
-            gamma = 0.5  # Moderate risk aversion for prediction markets
             inventory = 0.0  # No carry-over inventory between scans
 
             # Time remaining: fraction of resolution window left (0-1)
@@ -467,7 +467,7 @@ class MarketMakingStrategy(BaseStrategy):
             # Position sizing (moved up for hard filter checks)
             max_position = min(
                 market.liquidity * 0.05,
-                self.max_inventory_usd,
+                max_inventory_usd,
             )
 
             # --- Hard filters (matching create_opportunity gate) ---

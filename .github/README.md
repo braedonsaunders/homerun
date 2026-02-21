@@ -50,7 +50,7 @@ cd homerun
 
 Open **http://localhost:3000**. The scanner starts immediately with a virtual $10k paper account.
 
-No `.env` file. No database setup. No API keys. SQLite is created automatically on first run.
+No `.env` file. No manual database setup. No API keys. The launcher provisions local Postgres automatically on first run.
 
 > **Windows?** Run `.\scripts\run.ps1` in PowerShell, or double-click `scripts\Homerun.bat`.
 
@@ -393,7 +393,7 @@ tui.py                           # Terminal UI (Textual + Rich)
 |-------|------------|
 | **Backend** | Python 3.10+ · FastAPI · SQLAlchemy 2.0 (async) · Pydantic |
 | **Frontend** | React 18 · TypeScript · Vite · TailwindCSS · shadcn/ui · Jotai · TanStack Query |
-| **Database** | SQLite (zero-config, auto-created) |
+| **Database** | PostgreSQL (launcher-managed local runtime) |
 | **Real-time** | WebSockets · Framer Motion |
 | **Trading** | Polymarket CLOB · Kalshi API · Polygon RPC |
 | **AI** | Multi-provider LLM (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio) · ReAct agent |

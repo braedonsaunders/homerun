@@ -71,7 +71,7 @@ homerun/
 │       └── lib/                # Utilities (cn, timestamps)
 ├── alembic/                    # Database migrations
 │   └── versions/               # Timestamped migration files
-├── data/                       # SQLite database (auto-created)
+├── data/                       # Postgres data dir (launcher-managed)
 ├── scripts/                    # Run/setup scripts and OS launchers
 │   ├── run.sh / run.ps1        # Application launchers
 │   ├── setup.sh / setup.ps1    # Environment setup
@@ -90,7 +90,7 @@ homerun/
 | Server | Uvicorn | 0.27.0 |
 | ORM | SQLAlchemy (async) | 2.0.25 |
 | Validation | Pydantic | 2.5.0 |
-| Database | SQLite | (via aiosqlite) |
+| Database | PostgreSQL | (via asyncpg) |
 | Frontend framework | React | 18.2.0 |
 | Language | TypeScript | 5.3.0 |
 | Build | Vite | 5.0.0 |
@@ -215,7 +215,7 @@ async def create_thing(request: CreateThingRequest):
     try:
         result = await some_service.create(name=request.name, value=request.value)
     except OperationalError as exc:
-        if simulation_service.is_sqlite_lock_error(exc):
+        if simulation_service.is_retryable_db_error(exc):
             raise HTTPException(status_code=503, detail="Database is busy; please retry.") from exc
         raise
     return {"id": result.id, "name": result.name}
@@ -224,7 +224,7 @@ async def create_thing(request: CreateThingRequest):
 Key conventions:
 - Request/response models are Pydantic `BaseModel` with `Field()` validation
 - HTTP errors use `HTTPException` with specific status codes (400, 404, 409, 503)
-- SQLite lock errors get 503 with retry hint
+- Retryable DB lock/serialization errors get 503 with retry hint
 - Exception chaining with `from exc`
 - Return plain dicts (FastAPI serializes to JSON)
 
@@ -247,18 +247,17 @@ async with AsyncSessionLocal() as session:
     await session.refresh(new_obj)
 ```
 
-SQLite lock retry pattern (use when writing):
+Postgres lock/serialization retry pattern (use when writing):
 ```python
 for attempt in range(RETRY_ATTEMPTS):
     async with AsyncSessionLocal() as session:
         try:
-            await session.execute(text(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}"))
             # ... do work ...
             await session.commit()
             return result
         except OperationalError as exc:
             await session.rollback()
-            if not is_sqlite_lock_error(exc) or attempt >= RETRY_ATTEMPTS - 1:
+            if not is_retryable_db_error(exc) or attempt >= RETRY_ATTEMPTS - 1:
                 raise
             delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
             await asyncio.sleep(delay)
@@ -304,7 +303,7 @@ def upgrade() -> None:
             op.add_column("target_table", col)
 
 def downgrade() -> None:
-    pass  # SQLite safety — no downgrade
+    pass  # Downgrades are disabled for safety
 ```
 
 Always check `_column_names` before adding columns (idempotent migrations).
@@ -383,7 +382,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 logger.info("Created account", account_id=account.id, capital=10000.0)
-logger.warning("SQLite lock; retrying", attempt=3, delay=0.8)
+logger.warning("DB lock/serialization error; retrying", attempt=3, delay=0.8)
 logger.error("Worker failed", exc_info=e)
 ```
 
@@ -495,7 +494,7 @@ Use `atomWithStorage` for anything that should survive page refresh. Use plain `
 
 ## Common Gotchas
 
-1. **SQLite locking** — All write operations must use the retry-with-backoff pattern. SQLite allows one writer at a time. Never hold a session open across an `await` that could take more than a few ms.
+1. **Postgres lock contention** — Write operations can fail transiently with deadlocks/serialization conflicts. Use bounded retry-with-backoff for retryable errors, and avoid long-lived transactions across slow awaits.
 
 2. **Timezone handling** — All datetimes are UTC. Use `datetime.now(timezone.utc)` or the `utcnow()` utility, never bare `datetime.utcnow()` (it returns naive datetimes). The frontend calls `normalizeUtcTimestampsInPlace` on all API responses to ensure consistent parsing.
 

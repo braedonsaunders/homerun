@@ -942,8 +942,10 @@ class CrossPlatformStrategy(BaseStrategy):
         fetches/uses cached Kalshi markets, finds matching pairs via text
         similarity, and calculates cross-platform arb for each pair.
         """
-        if not settings.CROSS_PLATFORM_ENABLED:
-            return []
+        min_spread_after_fees = max(
+            0.0,
+            float(self.config.get("min_spread_after_fees", CROSS_PLATFORM_MIN_NET_PROFIT) or CROSS_PLATFORM_MIN_NET_PROFIT),
+        )
 
         # Fetch (or use cached) Kalshi markets
         kalshi_markets = self._kalshi_cache.get_markets()
@@ -1051,7 +1053,7 @@ class CrossPlatformStrategy(BaseStrategy):
 
             # Minimum guaranteed profit filter — sub-$0.01 is not worth
             # the non-atomic cross-platform execution risk
-            if arb["net_profit"] < CROSS_PLATFORM_MIN_NET_PROFIT:
+            if arb["net_profit"] < min_spread_after_fees:
                 continue
 
             # Build positions list with both platform references

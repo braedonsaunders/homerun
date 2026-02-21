@@ -3,8 +3,6 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -20,18 +18,14 @@ from services.strategy_loader import (
     StrategyLoader as StrategyDBLoader,
     validate_strategy_source,
 )
+from tests.postgres_test_db import build_postgres_session_factory
 
 # Every seed slug that the unified catalog produces.
 REQUIRED_STRATEGY_SLUGS = {seed.slug for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS}
 
 
-async def _build_session_factory(tmp_path: Path):
-    db_path = tmp_path / "strategy_loader.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return engine, session_factory
+async def _build_session_factory(_tmp_path: Path):
+    return await build_postgres_session_factory(Base, "strategy_loader")
 
 
 def test_system_strategy_catalog_contains_required_keys():

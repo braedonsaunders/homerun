@@ -340,18 +340,48 @@ class StrategySDK:
         return "all"
 
     @staticmethod
+    def derive_trader_source_flags(
+        *,
+        from_pool: Any = None,
+        from_tracked_traders: Any = None,
+        from_trader_groups: Any = None,
+        qualified: Any = None,
+        pool_wallets: Any = None,
+        tracked_wallets: Any = None,
+        group_wallets: Any = None,
+    ) -> dict[str, bool]:
+        def _count(value: Any) -> int:
+            try:
+                parsed = int(float(value))
+            except Exception:
+                return 0
+            return max(0, parsed)
+
+        pool_count = _count(pool_wallets)
+        tracked_count = _count(tracked_wallets)
+        group_count = _count(group_wallets)
+
+        pool_flag = bool(from_pool) if from_pool is not None else pool_count > 0
+        tracked_flag = bool(from_tracked_traders) if from_tracked_traders is not None else tracked_count > 0
+        group_flag = bool(from_trader_groups) if from_trader_groups is not None else group_count > 0
+        qualified_flag = bool(qualified) if qualified is not None else (pool_flag or tracked_flag or group_flag)
+
+        return {
+            "from_pool": pool_flag,
+            "from_tracked_traders": tracked_flag,
+            "from_trader_groups": group_flag,
+            "qualified": qualified_flag,
+        }
+
+    @staticmethod
     def normalize_trader_source_flags(value: Any) -> dict[str, bool]:
         flags = value if isinstance(value, dict) else {}
-        from_pool = bool(flags.get("from_pool"))
-        from_tracked = bool(flags.get("from_tracked_traders"))
-        from_groups = bool(flags.get("from_trader_groups"))
-        qualified = bool(flags.get("qualified", from_pool or from_tracked or from_groups))
-        return {
-            "from_pool": from_pool,
-            "from_tracked_traders": from_tracked,
-            "from_trader_groups": from_groups,
-            "qualified": qualified,
-        }
+        return StrategySDK.derive_trader_source_flags(
+            from_pool=flags.get("from_pool"),
+            from_tracked_traders=flags.get("from_tracked_traders"),
+            from_trader_groups=flags.get("from_trader_groups"),
+            qualified=flags.get("qualified"),
+        )
 
     @staticmethod
     def infer_trader_side(signal: dict[str, Any]) -> str:

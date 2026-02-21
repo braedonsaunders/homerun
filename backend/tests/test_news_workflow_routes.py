@@ -2,6 +2,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -10,9 +13,13 @@ if str(BACKEND_ROOT) not in sys.path:
 from api import routes_news_workflow
 
 
-def _finding(*, evidence=None):
+def _finding(*, evidence=None, market_id="0xmarket", market_question="Will this resolve yes?", market_price=0.42, confidence=0.7):
     return SimpleNamespace(
         article_id="cluster:abc123",
+        market_id=market_id,
+        market_question=market_question,
+        market_price=market_price,
+        confidence=confidence,
         article_title="Primary article",
         article_url="https://example.com/primary",
         article_source="Primary Source",
@@ -129,3 +136,62 @@ def test_build_market_link_payload_handles_kalshi_ticker():
     assert payload["market_url"] == "https://kalshi.com/markets/kxelonmars/kxelonmars-99"
     assert payload["polymarket_url"] is None
     assert payload["kalshi_url"] == payload["market_url"]
+
+
+@pytest.mark.asyncio
+async def test_load_shared_backfill_market_history_uses_scanner_attach(monkeypatch):
+    yes_token = "123456789012345678901"
+    no_token = "123456789012345678902"
+    finding = _finding(
+        evidence={
+            "market": {
+                "condition_id": "0xmarket",
+                "token_ids": [yes_token, no_token],
+                "platform": "polymarket",
+            }
+        }
+    )
+
+    async def _attach_side_effect(opportunities, **_kwargs):
+        opportunities[0].markets[0]["price_history"] = [
+            {"t": 1.0, "yes": 0.41, "no": 0.59},
+            {"t": 2.0, "yes": 0.43, "no": 0.57},
+        ]
+        return 1
+
+    attach_mock = AsyncMock(side_effect=_attach_side_effect)
+    monkeypatch.setattr(
+        "services.scanner.scanner.attach_price_history_to_opportunities",
+        attach_mock,
+    )
+
+    history_map = await routes_news_workflow._load_shared_backfill_market_history([finding])
+
+    assert attach_mock.await_count == 1
+    args = attach_mock.await_args
+    assert args is not None
+    assert len(args.args) == 1
+    assert len(args.args[0]) == 1
+    assert args.kwargs.get("timeout_seconds") == 12.0
+    assert "now" in args.kwargs
+    assert args.args[0][0].strategy == "news_edge"
+    assert args.args[0][0].markets[0]["id"] == "0xmarket"
+    assert args.args[0][0].markets[0]["clob_token_ids"] == [yes_token, no_token]
+    assert "0xmarket" in history_map
+    assert len(history_map["0xmarket"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_load_shared_backfill_market_history_tolerates_attach_failure(monkeypatch):
+    finding = _finding()
+
+    attach_mock = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(
+        "services.scanner.scanner.attach_price_history_to_opportunities",
+        attach_mock,
+    )
+
+    history_map = await routes_news_workflow._load_shared_backfill_market_history([finding])
+
+    assert attach_mock.await_count == 1
+    assert history_map == {}

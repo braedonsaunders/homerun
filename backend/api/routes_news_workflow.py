@@ -423,6 +423,142 @@ async def _load_scanner_market_history(
     return history_map
 
 
+def _extract_market_token_ids_from_context(
+    market_context: dict[str, Any],
+) -> list[str]:
+    token_ids: list[str] = []
+    raw_token_ids = market_context.get("token_ids") or market_context.get("tokenIds")
+    if isinstance(raw_token_ids, list):
+        for raw_token_id in raw_token_ids:
+            token_id = str(raw_token_id or "").strip()
+            if token_id:
+                token_ids.append(token_id)
+
+    if len(token_ids) < 2:
+        tokens = market_context.get("tokens")
+        if isinstance(tokens, list):
+            for token in tokens:
+                if not isinstance(token, dict):
+                    continue
+                token_id = str(token.get("token_id") or token.get("tokenId") or token.get("id") or "").strip()
+                if token_id:
+                    token_ids.append(token_id)
+
+    ordered = list(dict.fromkeys(token_ids))
+    return ordered[:2]
+
+
+def _resolve_finding_market_id_for_backfill(
+    finding: NewsWorkflowFinding,
+    market_context: dict[str, Any],
+) -> str:
+    for raw_id in (
+        finding.market_id,
+        market_context.get("condition_id"),
+        market_context.get("conditionId"),
+        market_context.get("id"),
+        market_context.get("market_id"),
+    ):
+        normalized = normalize_market_id(raw_id)
+        if normalized:
+            return normalized
+    return ""
+
+
+async def _load_shared_backfill_market_history(
+    findings: list[NewsWorkflowFinding],
+) -> dict[str, list[dict[str, float]]]:
+    if not findings:
+        return {}
+
+    try:
+        from models.opportunity import Opportunity
+        from services.scanner import scanner as market_scanner
+    except Exception:
+        return {}
+
+    opportunities: list[Opportunity] = []
+    for finding in findings:
+        market_context = _extract_market_context_from_finding(finding)
+        market_id = _resolve_finding_market_id_for_backfill(finding, market_context)
+        if not market_id:
+            continue
+
+        platform = infer_market_platform(
+            {
+                "id": market_id,
+                "condition_id": _clean_market_text(market_context.get("condition_id") or market_context.get("conditionId")),
+                "slug": _clean_market_text(market_context.get("slug") or market_context.get("market_slug")),
+                "event_slug": _clean_market_text(market_context.get("event_slug") or market_context.get("eventSlug")),
+                "event_ticker": _clean_market_text(market_context.get("event_ticker") or market_context.get("eventTicker")),
+                "platform": _clean_market_text(market_context.get("platform")),
+            }
+        ) or "polymarket"
+
+        yes_price = _safe_float(finding.market_price)
+        no_price = (
+            float(round(1.0 - yes_price, 6))
+            if yes_price is not None and 0.0 <= yes_price <= 1.0
+            else None
+        )
+        token_ids = _extract_market_token_ids_from_context(market_context)
+
+        market_payload: dict[str, Any] = {
+            "id": market_id,
+            "platform": platform,
+        }
+        if yes_price is not None:
+            market_payload["yes_price"] = yes_price
+        if no_price is not None:
+            market_payload["no_price"] = no_price
+        if len(token_ids) >= 2:
+            market_payload["token_ids"] = token_ids
+            market_payload["clob_token_ids"] = token_ids
+
+        opportunities.append(
+            Opportunity(
+                strategy="news_edge",
+                title=str(finding.market_question or finding.article_title or market_id),
+                description="News workflow sparkline history hydration",
+                total_cost=0.0,
+                expected_payout=1.0,
+                gross_profit=0.0,
+                fee=0.0,
+                net_profit=0.0,
+                roi_percent=0.0,
+                risk_score=0.5,
+                confidence=max(0.0, min(1.0, _safe_float(finding.confidence) or 0.5)),
+                markets=[market_payload],
+                min_liquidity=0.0,
+                max_position_size=0.0,
+                positions_to_take=[],
+            )
+        )
+
+    if not opportunities:
+        return {}
+
+    try:
+        await market_scanner.attach_price_history_to_opportunities(
+            opportunities,
+            now=datetime.now(timezone.utc),
+            timeout_seconds=12.0,
+        )
+    except Exception:
+        return {}
+
+    history_map: dict[str, list[dict[str, float]]] = {}
+    for opportunity in opportunities:
+        for market in opportunity.markets:
+            market_id = normalize_market_id(market.get("id"))
+            if not market_id:
+                continue
+            normalized = normalize_binary_price_history(market.get("price_history"))
+            if len(normalized) >= 2:
+                history_map[market_id] = normalized
+    return history_map
+
+
 def _build_finding_market_snapshot(
     finding: NewsWorkflowFinding,
     market_history: dict[str, list[dict[str, float]]],
@@ -473,10 +609,7 @@ def _build_finding_market_snapshot(
     if current_no is None and current_yes is not None and 0.0 <= current_yes <= 1.0:
         current_no = float(1.0 - current_yes)
 
-    market_token_ids = []
-    raw_token_ids = market_context.get("token_ids") or market_context.get("tokenIds")
-    if isinstance(raw_token_ids, list):
-        market_token_ids = [str(token_id).strip() for token_id in raw_token_ids if str(token_id or "").strip()]
+    market_token_ids = _extract_market_token_ids_from_context(market_context)
 
     return {
         "price_history": history,
@@ -720,6 +853,9 @@ async def get_findings(
         cached_rows = article_result.scalars().all()
         article_cache_by_id = {row.article_id: row for row in cached_rows if row.article_id}
     market_history = await _load_scanner_market_history(session)
+    shared_history = await _load_shared_backfill_market_history(rows)
+    if shared_history:
+        market_history.update(shared_history)
 
     findings = []
     for r in rows:

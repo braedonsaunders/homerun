@@ -483,7 +483,7 @@ async def run_data_source(
         logger.error("Data source run failed", source_slug=source_slug, exc_info=exc)
 
         # The session transaction may be tainted (e.g. autoflush hit
-        # "database is locked").  Roll back so we can persist the error
+        # a transient transaction error). Roll back so we can persist the error
         # run row cleanly.
         try:
             await session.rollback()
