@@ -93,17 +93,38 @@ External APIs / RSS / Python Sources
 
 ## Quick Start
 
-### Prereqs
+### One-click launch
 
-- Python 3
-- Node.js
-- Docker or `redis-server` (setup script can bootstrap Redis runtime prerequisites)
+The fastest way to start Homerun — double-click the launcher for your OS:
 
-### Local dev (frontend + backend)
+| OS | File | How |
+|---|---|---|
+| macOS | `scripts/Homerun.command` | Double-click in Finder |
+| Windows | `scripts/Homerun.bat` | Double-click in Explorer |
+| Linux | `scripts/Homerun.desktop` | Double-click in file manager |
+
+The launcher automatically installs dependencies (Python venv, npm, Redis, Postgres) on first run, then opens the terminal UI. No manual setup required.
+
+### Shell launch
 
 ```bash
 git clone <your-repo-url>
 cd homerun
+./scripts/run.sh
+```
+
+`run.sh` detects missing or stale setup and runs `setup.sh` automatically. It starts Redis and Postgres (via Docker or local install), runs DB migrations, and launches the TUI.
+
+To run setup separately:
+
+```bash
+./scripts/setup.sh        # install all deps + bootstrap runtime prerequisites
+./scripts/run.sh           # start everything
+```
+
+### Local dev (frontend + backend)
+
+```bash
 make setup
 make dev
 ```
@@ -115,13 +136,13 @@ App endpoints:
 - FastAPI docs: `http://localhost:8000/docs`
 - WebSocket: `ws://localhost:8000/ws`
 
-### Terminal mode (TUI)
+### Prereqs
 
-```bash
-make run
-```
+The setup script installs most dependencies automatically. You only need:
 
-`make run` launches the Textual/Rich TUI (`tui.py`) and ensures Redis is up.
+- Python 3.10+ (setup will attempt to install via your package manager if missing)
+- Node.js
+- Docker **or** locally installed Redis + PostgreSQL (setup bootstraps these if absent)
 
 ## Wire Any Source Into Any Strategy
 
