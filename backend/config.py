@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     MAX_SLIPPAGE_PERCENT: float = 2.0  # Maximum acceptable slippage
 
     # Polygon Network (for on-chain operations)
-    POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+    POLYGON_RPC_URL: str = "https://rpc-mainnet.matic.quiknode.pro"
     POLYGON_WS_URL: str = "wss://polygon-bor-rpc.publicnode.com"
     CHAIN_ID: int = 137  # Polygon mainnet
 

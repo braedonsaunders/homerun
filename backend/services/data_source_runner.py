@@ -426,8 +426,11 @@ async def run_data_source(
         external_ids = sorted({record["external_id"] for record in normalized_rows if record.get("external_id")})
 
         existing_by_external_id: dict[str, DataSourceRecord] = {}
-        if external_ids:
-            with session.no_autoflush:
+        # Use no_autoflush for all reads and writes in this block so SQLAlchemy
+        # never tries to flush pending objects on a potentially-dead connection
+        # mid-operation. We flush explicitly at commit time.
+        with session.no_autoflush:
+            if external_ids:
                 existing_rows = (
                     (
                         await session.execute(
@@ -439,52 +442,52 @@ async def run_data_source(
                     .scalars()
                     .all()
                 )
-            existing_by_external_id = {str(row.external_id): row for row in existing_rows if row.external_id}
+                existing_by_external_id = {str(row.external_id): row for row in existing_rows if row.external_id}
 
-        ingested_at = _utcnow_naive()
-        for normalized in normalized_rows:
-            external_id = normalized.get("external_id")
-            existing = existing_by_external_id.get(str(external_id)) if external_id else None
+            ingested_at = _utcnow_naive()
+            for normalized in normalized_rows:
+                external_id = normalized.get("external_id")
+                existing = existing_by_external_id.get(str(external_id)) if external_id else None
 
-            if existing is not None:
-                existing.title = normalized.get("title")
-                existing.summary = normalized.get("summary")
-                existing.category = normalized.get("category")
-                existing.source = normalized.get("source")
-                existing.url = normalized.get("url")
-                existing.geotagged = bool(normalized.get("geotagged"))
-                existing.country_iso3 = normalized.get("country_iso3")
-                existing.latitude = normalized.get("latitude")
-                existing.longitude = normalized.get("longitude")
-                existing.observed_at = normalized.get("observed_at")
-                existing.ingested_at = ingested_at
-                existing.payload_json = normalized.get("payload_json")
-                existing.transformed_json = normalized.get("transformed_json")
-                existing.tags_json = normalized.get("tags_json")
-            else:
-                session.add(
-                    DataSourceRecord(
-                        id=uuid.uuid4().hex,
-                        data_source_id=source.id,
-                        source_slug=source_slug,
-                        external_id=normalized.get("external_id"),
-                        title=normalized.get("title"),
-                        summary=normalized.get("summary"),
-                        category=normalized.get("category"),
-                        source=normalized.get("source"),
-                        url=normalized.get("url"),
-                        geotagged=bool(normalized.get("geotagged")),
-                        country_iso3=normalized.get("country_iso3"),
-                        latitude=normalized.get("latitude"),
-                        longitude=normalized.get("longitude"),
-                        observed_at=normalized.get("observed_at"),
-                        ingested_at=ingested_at,
-                        payload_json=normalized.get("payload_json"),
-                        transformed_json=normalized.get("transformed_json"),
-                        tags_json=normalized.get("tags_json"),
+                if existing is not None:
+                    existing.title = normalized.get("title")
+                    existing.summary = normalized.get("summary")
+                    existing.category = normalized.get("category")
+                    existing.source = normalized.get("source")
+                    existing.url = normalized.get("url")
+                    existing.geotagged = bool(normalized.get("geotagged"))
+                    existing.country_iso3 = normalized.get("country_iso3")
+                    existing.latitude = normalized.get("latitude")
+                    existing.longitude = normalized.get("longitude")
+                    existing.observed_at = normalized.get("observed_at")
+                    existing.ingested_at = ingested_at
+                    existing.payload_json = normalized.get("payload_json")
+                    existing.transformed_json = normalized.get("transformed_json")
+                    existing.tags_json = normalized.get("tags_json")
+                else:
+                    session.add(
+                        DataSourceRecord(
+                            id=uuid.uuid4().hex,
+                            data_source_id=source.id,
+                            source_slug=source_slug,
+                            external_id=normalized.get("external_id"),
+                            title=normalized.get("title"),
+                            summary=normalized.get("summary"),
+                            category=normalized.get("category"),
+                            source=normalized.get("source"),
+                            url=normalized.get("url"),
+                            geotagged=bool(normalized.get("geotagged")),
+                            country_iso3=normalized.get("country_iso3"),
+                            latitude=normalized.get("latitude"),
+                            longitude=normalized.get("longitude"),
+                            observed_at=normalized.get("observed_at"),
+                            ingested_at=ingested_at,
+                            payload_json=normalized.get("payload_json"),
+                            transformed_json=normalized.get("transformed_json"),
+                            tags_json=normalized.get("tags_json"),
+                        )
                     )
-                )
-            upserted_count += 1
+                upserted_count += 1
 
         retention_pruned = await _apply_retention_policy(
             session,
@@ -559,20 +562,28 @@ async def run_data_source(
         # session is in an indeterminate post-rollback state and may be shared
         # with concurrent callers (e.g. asyncio.gather in feed_service). Using
         # it here risks "another operation is in progress" asyncpg errors.
-        try:
-            async with AsyncSessionLocal() as fresh_session:
-                src = await fresh_session.get(DataSource, source_id)
-                if src is not None:
-                    src.status = "error"
-                    src.error_message = error_message
-                fresh_session.add(error_run_row)
-                await fresh_session.commit()
-        except Exception as persist_exc:
-            logger.warning(
-                "Failed to persist error run row for %s: %s",
-                source_slug,
-                persist_exc,
-            )
+        # Retry up to 3 times in case pool_pre_ping doesn't catch a stale connection.
+        _persist_attempts = 3
+        for _attempt in range(_persist_attempts):
+            try:
+                async with AsyncSessionLocal() as fresh_session:
+                    src = await fresh_session.get(DataSource, source_id)
+                    if src is not None:
+                        src.status = "error"
+                        src.error_message = error_message
+                    fresh_session.add(error_run_row)
+                    await fresh_session.commit()
+                break
+            except Exception as persist_exc:
+                if _attempt < _persist_attempts - 1 and _is_retryable_db_disconnect_error(persist_exc):
+                    await asyncio.sleep(_db_disconnect_retry_delay(_attempt))
+                    continue
+                logger.warning(
+                    "Failed to persist error run row for %s: %s",
+                    source_slug,
+                    persist_exc,
+                )
+                break
 
         return {
             "run_id": error_run_row.id,
