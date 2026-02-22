@@ -490,6 +490,19 @@ class TradingService:
 
                 await self._restore_runtime_state()
                 await self._approve_clob_allowance()
+                # Probe all signature types to find which one has balance/allowance.
+                # This sets self._balance_signature_type and builder.sig_type so that
+                # orders are signed with the correct type (POLY_PROXY=1 for most wallets).
+                try:
+                    balance_info = await self.get_balance()
+                    if "error" not in balance_info:
+                        logger.info(
+                            "Balance probe complete: sig_type=%s balance=%s",
+                            self._balance_signature_type,
+                            balance_info.get("balance"),
+                        )
+                except Exception as _bal_exc:
+                    logger.warning("Balance probe during init failed (non-fatal): %s", _bal_exc)
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
                 return True
 
