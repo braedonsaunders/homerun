@@ -43,11 +43,15 @@ _DB_DISCONNECT_MARKERS = (
     "connectiondoesnotexist",
     "closed in the middle of operation",
     "transaction.rollback(): the underlying connection is closed",
+    "another operation",
+    "cannot switch to state",
 )
 
 
 def _is_db_disconnect_error(exc: Exception) -> bool:
-    if not isinstance(exc, (DBAPIError, InterfaceError, OperationalError)):
+    exc_module = type(exc).__module__ or ""
+    is_db_exc = isinstance(exc, (DBAPIError, InterfaceError, OperationalError)) or exc_module.startswith("asyncpg")
+    if not is_db_exc:
         return False
     full_msg = str(exc).lower()
     return any(marker in full_msg for marker in _DB_DISCONNECT_MARKERS)

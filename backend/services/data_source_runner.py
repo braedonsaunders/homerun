@@ -29,9 +29,10 @@ _DB_DISCONNECT_RETRY_BASE_DELAY_SECONDS = 0.2
 def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
     # DBAPIError is the base for InterfaceError and OperationalError, but also
     # wraps ConnectionDoesNotExistError which comes up as a plain DBAPIError.
-    if not isinstance(exc, (DBAPIError, OperationalError, InterfaceError)):
-        return False
-    markers = (
+    # asyncpg.InternalClientError ("cannot switch to state N; another operation
+    # is in progress") surfaces as a raw asyncpg exception (not wrapped by
+    # SQLAlchemy) when the connection is dead/corrupted — treat it the same way.
+    _disconnect_markers = (
         "connection is closed",
         "underlying connection is closed",
         "connection has been closed",
@@ -42,13 +43,20 @@ def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
         "connection was closed",
         "connectiondoesnotexist",
         "closed in the middle of operation",
+        "another operation",          # asyncpg InternalClientError state confusion
+        "cannot switch to state",     # asyncpg InternalClientError
     )
-    # Check orig first (direct asyncpg errors), then fall back to the full
-    # stringified exception which captures autoflush-wrapped InterfaceError
-    # where the real cause is nested in __cause__ or __context__.
+    # Raw asyncpg exceptions (InternalClientError, etc.) are not SQLAlchemy
+    # subclasses — check them by module name.
+    exc_module = type(exc).__module__ or ""
+    is_db_exc = isinstance(exc, (DBAPIError, OperationalError, InterfaceError)) or exc_module.startswith("asyncpg")
+    if not is_db_exc:
+        return False
+    # Check orig first (direct asyncpg errors), then the full stringified
+    # exception which captures autoflush-wrapped variants.
     orig_msg = str(getattr(exc, "orig", "") or "").lower()
     full_msg = str(exc).lower()
-    return any(marker in orig_msg or marker in full_msg for marker in markers)
+    return any(marker in orig_msg or marker in full_msg for marker in _disconnect_markers)
 
 
 def _db_disconnect_retry_delay(attempt: int) -> float:
