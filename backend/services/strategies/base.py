@@ -1036,6 +1036,7 @@ class BaseStrategy(ABC):
                     limit_price=limit_price if limit_price > 0 else None,
                     price_policy=str(position.get("price_policy") or config.get("price_policy") or "maker_limit"),
                     time_in_force=str(position.get("time_in_force") or config.get("time_in_force") or "GTC"),
+                    post_only=bool(position.get("post_only") or config.get("post_only", False)),
                     notional_weight=notional_weight,
                     min_fill_ratio=min_fill_ratio,
                     metadata={

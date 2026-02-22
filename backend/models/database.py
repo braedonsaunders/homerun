@@ -2645,6 +2645,7 @@ class ExecutionSessionLeg(Base):
     outcome = Column(String, nullable=True)
     price_policy = Column(String, nullable=False, default="maker_limit")
     time_in_force = Column(String, nullable=False, default="GTC")
+    post_only = Column(Boolean, nullable=False, default=False, server_default="false")
     target_price = Column(Float, nullable=True)
     requested_notional_usd = Column(Float, nullable=True)
     requested_shares = Column(Float, nullable=True)

@@ -1690,6 +1690,7 @@ async def create_execution_session(
                 outcome=str(leg.get("outcome") or "").strip() or None,
                 price_policy=str(leg.get("price_policy") or "maker_limit"),
                 time_in_force=str(leg.get("time_in_force") or "GTC"),
+                post_only=bool(leg.get("post_only", False)),
                 target_price=target_price,
                 requested_notional_usd=requested_notional,
                 requested_shares=requested_shares,

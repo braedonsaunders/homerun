@@ -58,6 +58,7 @@ class ExecutionLeg(BaseModel):
     limit_price: Optional[float] = None
     price_policy: str = "maker_limit"
     time_in_force: str = "GTC"
+    post_only: bool = False
     notional_weight: float = Field(default=1.0, gt=0.0)
     min_fill_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     metadata: dict = Field(default_factory=dict)

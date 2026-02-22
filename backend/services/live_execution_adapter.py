@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.polymarket import polymarket_client
-from services.trading import OrderSide, trading_service
+from services.trading import OrderSide, OrderType, trading_service
 from utils.converters import safe_float
 
 
@@ -47,6 +47,8 @@ async def execute_live_order(
     fallback_price: float | None = None,
     market_question: str | None = None,
     opportunity_id: str | None = None,
+    time_in_force: str = "GTC",
+    post_only: bool = False,
 ) -> LiveOrderExecution:
     normalized_token_id = str(token_id or "").strip()
     normalized_side = _normalize_side(side)
@@ -112,11 +114,18 @@ async def execute_live_order(
         )
 
     try:
+        try:
+            order_type = OrderType(time_in_force.strip().upper())
+        except ValueError:
+            order_type = OrderType.GTC
+
         order = await trading_service.place_order(
             token_id=normalized_token_id,
             side=normalized_side,
             price=resolved_price,
             size=requested_size,
+            order_type=order_type,
+            post_only=post_only,
             market_question=market_question,
             opportunity_id=opportunity_id,
         )

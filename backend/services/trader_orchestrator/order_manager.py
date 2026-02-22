@@ -336,6 +336,34 @@ def _simulate_paper_execution(
             notional_usd=0.0,
         )
 
+    post_only = bool(leg.get("post_only", False))
+    if post_only and adverse_pressure > 0.35:
+        return PaperExecutionResult(
+            status="failed",
+            effective_price=target_price,
+            error_message="Paper simulation: post_only order would have crossed the spread.",
+            payload={
+                "mode": "paper",
+                "submission": "simulated",
+                "paper_simulation": {
+                    "filled": False,
+                    "fill_probability": fill_probability,
+                    "fill_ratio": 0.0,
+                    "participation": participation,
+                    "liquidity_usd": liquidity,
+                    "volatility_factor": volatility,
+                    "adverse_pressure": adverse_pressure,
+                    "price_policy": price_policy,
+                    "time_in_force": time_in_force,
+                    "post_only": True,
+                    "rejection_reason": "would_cross_spread",
+                },
+                "leg": dict(leg),
+            },
+            shares=None,
+            notional_usd=0.0,
+        )
+
     impact_bps = (math.sqrt(participation) * 22.0) + (participation * 38.0)
     volatility_bps = volatility * 18.0
     adverse_bps = adverse_pressure * 15.0
@@ -564,6 +592,9 @@ async def submit_execution_leg(
             notional_usd=notional,
         )
 
+    time_in_force = str(leg.get("time_in_force") or "GTC").strip().upper()
+    post_only = bool(leg.get("post_only", False))
+
     execution = await execute_live_order(
         token_id=token_id,
         side=order_side,
@@ -571,6 +602,8 @@ async def submit_execution_leg(
         fallback_price=price,
         market_question=str(leg.get("market_question") or getattr(signal, "market_question", "") or ""),
         opportunity_id=str(getattr(signal, "id", "") or ""),
+        time_in_force=time_in_force,
+        post_only=post_only,
     )
 
     return LegSubmitResult(

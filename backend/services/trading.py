@@ -147,6 +147,7 @@ class OrderType(str, Enum):
     FOK = "FOK"  # Fill Or Kill
     GTD = "GTD"  # Good Till Date
     FAK = "FAK"  # Fill-and-Kill (immediate partial fill, cancel rest)
+    IOC = "IOC"  # Immediate Or Cancel (partial fill ok, cancel unfilled remainder)
 
 
 class OrderStatus(str, Enum):
@@ -1333,6 +1334,7 @@ class TradingService:
         price: float,
         size: float,
         order_type: OrderType = OrderType.GTC,
+        post_only: bool = False,
         market_question: Optional[str] = None,
         opportunity_id: Optional[str] = None,
     ) -> Order:
@@ -1344,7 +1346,9 @@ class TradingService:
             side: BUY or SELL
             price: Price per share (0-1)
             size: Number of shares
-            order_type: GTC, FOK, or GTD
+            order_type: GTC, FOK, GTD, FAK, or IOC
+            post_only: If True, order is rejected if it would immediately match.
+                       Only valid with GTC or GTD order types.
             market_question: Optional market question for reference
             opportunity_id: Optional opportunity ID this trade is from
 
@@ -1410,7 +1414,7 @@ class TradingService:
             signed_order = self._client.create_order(order_args)
 
             # Post order to CLOB
-            response = self._client.post_order(signed_order, order_type.value)
+            response = self._client.post_order(signed_order, order_type.value, post_only=post_only)
 
             if response.get("success"):
                 order.status = OrderStatus.OPEN
@@ -1458,6 +1462,7 @@ class TradingService:
         size: float,
         tier: int = 2,
         order_type: OrderType = OrderType.GTC,
+        post_only: bool = False,
         market_question: Optional[str] = None,
         opportunity_id: Optional[str] = None,
     ) -> Order:
@@ -1474,6 +1479,7 @@ class TradingService:
             size: Number of shares
             tier: Execution tier (1-4) for retry config
             order_type: Default order type
+            post_only: If True, reject if order would immediately match
             market_question: Optional market reference
             opportunity_id: Optional opportunity ID
         """
@@ -1499,6 +1505,7 @@ class TradingService:
                 price=adj_price,
                 size=adj_size,
                 order_type=ot,
+                post_only=post_only,
                 market_question=market_question,
                 opportunity_id=opportunity_id,
             )
