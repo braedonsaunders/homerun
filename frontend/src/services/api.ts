@@ -1302,7 +1302,10 @@ export const analyzeAndTrackWallet = async (params: {
 export interface TradingStatus {
   enabled: boolean
   initialized: boolean
+  authenticated: boolean
+  credentials_configured: boolean
   wallet_address: string | null
+  auth_error?: string | null
   stats: {
     total_trades: number
     winning_trades: number
@@ -1323,6 +1326,18 @@ export interface TradingStatus {
   }
 }
 
+export interface TradingVpnStatus {
+  proxy_enabled: boolean
+  proxy_url?: string | null
+  proxy_reachable: boolean
+  direct_ip?: string | null
+  proxy_ip?: string | null
+  vpn_active: boolean
+  error?: string
+  direct_ip_error?: string
+  proxy_ip_error?: string
+}
+
 export interface Order {
   id: string
   token_id: string
@@ -1338,8 +1353,29 @@ export interface Order {
   created_at: string
 }
 
+export interface CancelAllOrdersResult {
+  status: 'success' | 'partial_failure' | 'failed'
+  requested_count: number
+  cancelled_count: number
+  failed_count: number
+  failed_order_ids: string[]
+  message: string
+}
+
+export interface EmergencyStopTradingResult {
+  status: string
+  cancelled_orders: number
+  message: string
+  cancel_result: CancelAllOrdersResult
+}
+
 export const getTradingStatus = async (): Promise<TradingStatus> => {
   const { data } = await api.get('/trading/status')
+  return unwrapApiData(data)
+}
+
+export const getTradingVpnStatus = async (): Promise<TradingVpnStatus> => {
+  const { data } = await api.get('/trading/vpn-status')
   return unwrapApiData(data)
 }
 
@@ -1375,7 +1411,7 @@ export const cancelOrder = async (orderId: string): Promise<{ status: string; or
   return unwrapApiData(data)
 }
 
-export const cancelAllOrders = async (): Promise<{ status: string; cancelled_count: number }> => {
+export const cancelAllOrders = async (): Promise<CancelAllOrdersResult> => {
   const { data } = await api.delete('/trading/orders')
   return unwrapApiData(data)
 }
@@ -1399,7 +1435,7 @@ export const executeOpportunityLive = async (params: {
   return unwrapApiData(data)
 }
 
-export const emergencyStopTrading = async (): Promise<{ status: string; cancelled_orders: number; message: string }> => {
+export const emergencyStopTrading = async (): Promise<EmergencyStopTradingResult> => {
   const { data } = await api.post('/trading/emergency-stop')
   return unwrapApiData(data)
 }
@@ -1460,12 +1496,21 @@ export interface TradeSignal {
 export interface TraderDecisionCheck {
   id: string
   check_key: string
-  check_name: string
+  check_name?: string
   check_label: string
   passed: boolean
   score: number | null
   detail: string | null
-  message: string | null
+  message?: string | null
+  payload: Record<string, any>
+  created_at: string | null
+}
+
+export interface TraderDecisionFailedCheck {
+  check_key: string
+  check_label: string
+  detail: string | null
+  score: number | null
   payload: Record<string, any>
   created_at: string | null
 }
@@ -1767,7 +1812,7 @@ export interface TraderDecision {
   decision: string
   reason: string | null
   score: number | null
-  market_id: string
+  market_id: string | null
   market_question: string | null
   direction: string | null
   market_price: number | null
@@ -1775,11 +1820,15 @@ export interface TraderDecision {
   edge_percent: number | null
   confidence: number | null
   signal_score: number | null
+  signal_payload?: Record<string, any>
+  signal_strategy_context?: Record<string, any>
   event_id: string | null
   trace_id: string | null
   checks_summary: Record<string, any>
   risk_snapshot: Record<string, any>
   payload: Record<string, any>
+  failed_checks?: TraderDecisionFailedCheck[]
+  failed_check_count?: number
   created_at: string | null
 }
 
@@ -1856,8 +1905,14 @@ export interface TraderConfigSchema {
   default_strategy_key?: string
   strategies?: Array<Record<string, any>>
   shared_risk_fields: Array<Record<string, any>>
+  shared_risk_defaults?: Record<string, any>
+  shared_exit_fields?: Array<Record<string, any>>
   runtime_fields: Array<Record<string, any>>
   default_runtime_metadata?: Record<string, any>
+  trader_opportunity_filters_schema?: Record<string, any>
+  trader_opportunity_filters_defaults?: Record<string, any>
+  copy_trading_schema?: Record<string, any>
+  copy_trading_defaults?: Record<string, any>
 }
 
 export interface TraderStrategyDefinition {
@@ -1989,6 +2044,11 @@ export const deleteTrader = async (
   open_live_positions?: number
   open_paper_positions?: number
   open_other_positions?: number
+  open_live_orders?: number
+  open_paper_orders?: number
+  open_other_orders?: number
+  open_total_positions?: number
+  open_total_orders?: number
   message?: string
 }> => {
   const { data } = await api.delete(`/traders/${traderId}`, { params: options })
@@ -2015,7 +2075,12 @@ export const getTraderDecisions = async (
   params?: { decision?: string; limit?: number }
 ): Promise<TraderDecision[]> => {
   const { data } = await api.get(`/traders/${traderId}/decisions`, { params })
-  return data.decisions || []
+  const rows = Array.isArray(data.decisions) ? data.decisions : []
+  return rows.map((row: any) => ({
+    ...row,
+    failed_checks: Array.isArray(row?.failed_checks) ? row.failed_checks : [],
+    failed_check_count: Number(row?.failed_check_count || 0),
+  }))
 }
 
 export const getTraderOrders = async (
@@ -2059,7 +2124,21 @@ export const getTraderEvents = async (
 
 export const getTraderDecisionDetail = async (decisionId: string): Promise<TraderDecisionDetail> => {
   const { data } = await api.get(`/traders/decisions/${decisionId}`)
-  return unwrapApiData(data)
+  const normalized = unwrapApiData(data)
+  const checks = Array.isArray(normalized.checks) ? normalized.checks : []
+  normalized.checks = checks.map((check: any) => {
+    const label = String(check?.check_label || check?.check_name || check?.label || check?.check_key || 'Check')
+    const detail = check?.detail ?? check?.message ?? null
+    return {
+      ...check,
+      check_name: String(check?.check_name || label),
+      check_label: label,
+      detail,
+      message: detail,
+      payload: check && typeof check.payload === 'object' && check.payload !== null ? check.payload : {},
+    }
+  })
+  return normalized
 }
 
 export const getTraderTemplates = async (): Promise<TraderTemplate[]> => {
@@ -2651,6 +2730,11 @@ export const testPolymarketConnection = async (): Promise<{ status: string; mess
   return unwrapApiData(data)
 }
 
+export const testKalshiConnection = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/settings/test/kalshi')
+  return unwrapApiData(data)
+}
+
 export const testTelegramConnection = async (): Promise<{ status: string; message: string }> => {
   const { data } = await api.post('/settings/test/telegram')
   return unwrapApiData(data)
@@ -2720,26 +2804,6 @@ export interface ValidationOverview {
   jobs: ValidationJob[]
 }
 
-export interface BacktestRequest {
-  params?: Record<string, unknown>
-  save_parameter_set?: boolean
-  parameter_set_name?: string
-  activate_saved_set?: boolean
-}
-
-export interface OptimizationRequest {
-  method?: 'grid' | 'random'
-  param_ranges?: Record<string, unknown>
-  n_random_samples?: number
-  random_seed?: number
-  walk_forward?: boolean
-  n_windows?: number
-  train_ratio?: number
-  top_k?: number
-  save_best_as_active?: boolean
-  best_set_name?: string
-}
-
 export interface ValidationJob {
   id: string
   job_type: 'backtest' | 'optimize' | 'execution_simulation' | string
@@ -2784,136 +2848,6 @@ export const getValidationOverview = async (): Promise<ValidationOverview> => {
   return unwrapApiData(data)
 }
 
-export const runValidationBacktest = async (payload?: BacktestRequest): Promise<{
-  status: string
-  job_id: string
-}> => {
-  const { data } = await api.post('/validation/jobs/backtest', payload || {})
-  return unwrapApiData(data)
-}
-
-export const runValidationOptimization = async (payload?: OptimizationRequest): Promise<{
-  status: string
-  job_id: string
-}> => {
-  const { data } = await api.post('/validation/jobs/optimize', payload || {})
-  return unwrapApiData(data)
-}
-
-export interface ExecutionSimulationRequest {
-  strategy_key: string
-  source_key: string
-  market_provider?: 'polymarket' | 'kalshi' | string
-  market_ref?: string
-  market_id?: string
-  timeframe?: string
-  start_at?: string
-  end_at?: string
-  strategy_params?: Record<string, unknown>
-  market_scope?: Record<string, unknown>
-  default_notional_usd?: number
-  slippage_bps?: number
-  fee_bps?: number
-}
-
-export interface ExecutionSimRun {
-  id: string
-  job_id: string | null
-  strategy_key: string
-  source_key: string
-  status: string
-  market_scope: Record<string, unknown>
-  params: Record<string, unknown>
-  requested_start_at: string | null
-  requested_end_at: string | null
-  started_at: string | null
-  finished_at: string | null
-  summary: Record<string, unknown>
-  error_message: string | null
-  created_at: string | null
-  updated_at: string | null
-}
-
-export interface ExecutionSimEvent {
-  id: string
-  run_id: string
-  sequence: number
-  event_type: string
-  event_at: string | null
-  signal_id: string | null
-  market_id: string | null
-  direction: string | null
-  price: number | null
-  quantity: number | null
-  notional_usd: number | null
-  fees_usd: number | null
-  slippage_bps: number | null
-  realized_pnl_usd: number | null
-  unrealized_pnl_usd: number | null
-  payload: Record<string, unknown>
-  created_at: string | null
-}
-
-export const runExecutionSimulationJob = async (
-  payload: ExecutionSimulationRequest
-): Promise<{ status: string; job_id: string }> => {
-  const { data } = await api.post('/validation/simulator/jobs', payload)
-  return unwrapApiData(data)
-}
-
-export const getExecutionSimulationRuns = async (limit = 50): Promise<{ runs: ExecutionSimRun[] }> => {
-  const { data } = await api.get('/validation/simulator/runs', { params: { limit } })
-  return unwrapApiData(data)
-}
-
-export const getExecutionSimulationRun = async (runId: string): Promise<ExecutionSimRun> => {
-  const { data } = await api.get(`/validation/simulator/runs/${runId}`)
-  return unwrapApiData(data)
-}
-
-export const getExecutionSimulationEvents = async (
-  runId: string,
-  params?: { limit?: number; offset?: number }
-): Promise<{ events: ExecutionSimEvent[] }> => {
-  const { data } = await api.get(`/validation/simulator/runs/${runId}/events`, { params })
-  return unwrapApiData(data)
-}
-
-export const getValidationJobs = async (limit = 50): Promise<{ jobs: ValidationJob[] }> => {
-  const { data } = await api.get('/validation/jobs', { params: { limit } })
-  return unwrapApiData(data)
-}
-
-export const getValidationJob = async (jobId: string): Promise<ValidationJob> => {
-  const { data } = await api.get(`/validation/jobs/${jobId}`)
-  return unwrapApiData(data)
-}
-
-export const cancelValidationJob = async (jobId: string): Promise<{ status: string; job_id: string }> => {
-  const { data } = await api.post(`/validation/jobs/${jobId}/cancel`)
-  return unwrapApiData(data)
-}
-
-export const getValidationGuardrailConfig = async (): Promise<ValidationGuardrailConfig> => {
-  const { data } = await api.get('/validation/guardrails/config')
-  return unwrapApiData(data)
-}
-
-export const updateValidationGuardrailConfig = async (patch: Partial<ValidationGuardrailConfig>): Promise<ValidationGuardrailConfig> => {
-  const { data } = await api.put('/validation/guardrails/config', patch)
-  return unwrapApiData(data)
-}
-
-export const evaluateValidationGuardrails = async (): Promise<Record<string, unknown>> => {
-  const { data } = await api.post('/validation/guardrails/evaluate')
-  return unwrapApiData(data)
-}
-
-export const getValidationStrategyHealth = async (): Promise<{ strategy_health: ValidationStrategyHealth[] }> => {
-  const { data } = await api.get('/validation/strategy-health')
-  return unwrapApiData(data)
-}
-
 export const overrideValidationStrategy = async (
   strategyType: string,
   status: 'active' | 'demoted',
@@ -2927,30 +2861,6 @@ export const overrideValidationStrategy = async (
 
 export const clearValidationStrategyOverride = async (strategyType: string): Promise<Record<string, unknown>> => {
   const { data } = await api.delete(`/validation/strategy-health/${strategyType}/override`)
-  return unwrapApiData(data)
-}
-
-export const getOptimizationResults = async (topK = 50): Promise<{
-  count: number
-  results: Array<Record<string, unknown>>
-}> => {
-  const { data } = await api.get('/validation/optimization-results', { params: { top_k: topK } })
-  return unwrapApiData(data)
-}
-
-export const getValidationParameterSets = async (): Promise<{
-  count: number
-  parameter_sets: Array<Record<string, unknown>>
-}> => {
-  const { data } = await api.get('/validation/parameter-sets')
-  return unwrapApiData(data)
-}
-
-export const activateValidationParameterSet = async (setId: string): Promise<{
-  status: string
-  active_set_id: string
-}> => {
-  const { data } = await api.post(`/validation/parameter-sets/${setId}/activate`)
   return unwrapApiData(data)
 }
 
@@ -3511,8 +3421,6 @@ export interface UnifiedStrategy {
   config: Record<string, unknown>
   config_schema: Record<string, unknown> | null
   aliases: string[]
-  config_file_path?: string | null
-  config_file_exists?: boolean
   sort_order: number
   created_at: string | null
   updated_at: string | null

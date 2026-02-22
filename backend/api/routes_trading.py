@@ -109,10 +109,22 @@ class PositionResponse(BaseModel):
         )
 
 
+class CancelAllOrdersResponse(BaseModel):
+    status: str
+    requested_count: int
+    cancelled_count: int
+    failed_count: int
+    failed_order_ids: list[str]
+    message: str
+
+
 class TradingStatusResponse(BaseModel):
     enabled: bool
     initialized: bool
+    authenticated: bool
+    credentials_configured: bool
     wallet_address: Optional[str]
+    auth_error: Optional[str]
     stats: dict
     limits: dict
     vpn: dict
@@ -125,11 +137,50 @@ class TradingStatusResponse(BaseModel):
 async def get_trading_status():
     """Get trading service status and configuration"""
     stats = trading_service.get_stats()
+    initialized = trading_service.is_ready()
+    authenticated = initialized
+    credentials_configured = False
+    auth_error: Optional[str] = None
+    wallet_address = trading_service._get_wallet_address()
+
+    private_key, api_key, api_secret, api_passphrase, _ = await trading_service._resolve_polymarket_credentials()
+    credentials_configured = bool(private_key and api_key and api_secret and api_passphrase)
+
+    if not wallet_address and private_key:
+        try:
+            from eth_account import Account
+
+            wallet_address = Account.from_key(private_key).address
+        except Exception:
+            wallet_address = None
+
+    if not authenticated and credentials_configured:
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds
+
+            client = ClobClient(
+                host=settings.CLOB_API_URL,
+                key=private_key,
+                chain_id=settings.CHAIN_ID,
+                creds=ApiCreds(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    api_passphrase=api_passphrase,
+                ),
+            )
+            await asyncio.to_thread(client.get_orders)
+            authenticated = True
+        except Exception as exc:
+            auth_error = str(exc)
 
     return TradingStatusResponse(
         enabled=settings.TRADING_ENABLED,
-        initialized=trading_service.is_ready(),
-        wallet_address=trading_service._get_wallet_address(),
+        initialized=initialized,
+        authenticated=authenticated,
+        credentials_configured=credentials_configured,
+        wallet_address=wallet_address,
+        auth_error=auth_error,
         stats={
             "total_trades": stats.total_trades,
             "winning_trades": stats.winning_trades,
@@ -224,14 +275,14 @@ async def place_order(request: PlaceOrderRequest):
 @router.get("/orders", response_model=list[OrderResponse])
 async def get_orders(limit: int = 100, status: Optional[str] = None):
     """Get recent orders"""
-    orders = trading_service.get_orders(limit)
-
+    filter_status: Optional[OrderStatus] = None
     if status:
         try:
             filter_status = OrderStatus(status.lower())
-            orders = [o for o in orders if o.status == filter_status]
-        except ValueError:
-            pass
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid order status filter") from exc
+
+    orders = await trading_service.get_recent_orders(limit=limit, status=filter_status)
 
     return [OrderResponse.from_order(o) for o in orders]
 
@@ -262,11 +313,16 @@ async def cancel_order(order_id: str):
         raise HTTPException(status_code=400, detail="Failed to cancel order")
 
 
-@router.delete("/orders")
+@router.delete("/orders", response_model=CancelAllOrdersResponse)
 async def cancel_all_orders():
     """Cancel all open orders"""
-    count = await trading_service.cancel_all_orders()
-    return {"status": "success", "cancelled_count": count}
+    result = await trading_service.cancel_all_orders()
+    status = str(result.get("status") or "")
+    if status == "partial_failure":
+        raise HTTPException(status_code=409, detail=result)
+    if status == "failed":
+        raise HTTPException(status_code=502, detail=result)
+    return result
 
 
 @router.get("/positions", response_model=list[PositionResponse])
@@ -348,10 +404,31 @@ async def emergency_stop():
     logger.warning("EMERGENCY STOP triggered")
 
     # Cancel all open orders
-    cancelled_count = await trading_service.cancel_all_orders()
+    cancellation_result = await trading_service.cancel_all_orders()
+    cancellation_status = str(cancellation_result.get("status") or "")
+
+    if cancellation_status == "partial_failure":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "emergency_stop_partial_failure",
+                "message": "Emergency stop completed with cancellation failures.",
+                "cancel_result": cancellation_result,
+            },
+        )
+    if cancellation_status == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "status": "emergency_stop_failed",
+                "message": "Emergency stop failed to cancel open orders.",
+                "cancel_result": cancellation_result,
+            },
+        )
 
     return {
         "status": "emergency_stop_executed",
-        "cancelled_orders": cancelled_count,
+        "cancelled_orders": cancellation_result.get("cancelled_count", 0),
         "message": "All open orders cancelled. Trading service remains active.",
+        "cancel_result": cancellation_result,
     }

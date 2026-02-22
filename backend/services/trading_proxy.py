@@ -18,6 +18,7 @@ Usage:
   3. Use get_trading_http_client() for any async trading HTTP calls
 """
 
+import asyncio
 import httpx
 from dataclasses import dataclass
 from typing import Optional
@@ -30,6 +31,9 @@ logger = get_logger(__name__)
 # Cached proxy-aware clients
 _sync_proxy_client: Optional[httpx.Client] = None
 _async_proxy_client: Optional[httpx.AsyncClient] = None
+_sync_client_signature: Optional[tuple[bool, Optional[str], bool, float]] = None
+_async_client_signature: Optional[tuple[bool, Optional[str], bool, float]] = None
+_clob_patch_signature: Optional[tuple[bool, Optional[str], bool, float]] = None
 
 
 @dataclass
@@ -93,6 +97,15 @@ def _get_proxy_url() -> Optional[str]:
     return url
 
 
+def _config_signature(cfg: ProxyConfig) -> tuple[bool, Optional[str], bool, float]:
+    return (
+        bool(cfg.enabled),
+        (str(cfg.proxy_url).strip() if cfg.proxy_url else None),
+        bool(cfg.verify_ssl),
+        float(cfg.timeout or 30.0),
+    )
+
+
 def get_sync_proxy_client() -> httpx.Client:
     """
     Get a synchronous httpx.Client configured with the trading proxy.
@@ -100,11 +113,15 @@ def get_sync_proxy_client() -> httpx.Client:
     Used to replace py-clob-client's internal _http_client so that
     all order placement / cancellation goes through the VPN.
     """
-    global _sync_proxy_client
-    if _sync_proxy_client is not None and not _sync_proxy_client.is_closed:
-        return _sync_proxy_client
-
     cfg = _get_config()
+    signature = _config_signature(cfg)
+    global _sync_proxy_client, _sync_client_signature
+    if _sync_proxy_client is not None and not _sync_proxy_client.is_closed:
+        if _sync_client_signature == signature:
+            return _sync_proxy_client
+        _sync_proxy_client.close()
+        _sync_proxy_client = None
+
     proxy_url = _get_proxy_url()
     kwargs = {
         "http2": True,
@@ -121,6 +138,7 @@ def get_sync_proxy_client() -> httpx.Client:
         logger.info("Created sync trading client (no proxy)")
 
     _sync_proxy_client = httpx.Client(**kwargs)
+    _sync_client_signature = signature
     return _sync_proxy_client
 
 
@@ -131,11 +149,19 @@ def get_async_proxy_client() -> httpx.AsyncClient:
     Use this for any async HTTP calls that should go through the VPN
     (e.g., CLOB price checks during trade execution).
     """
-    global _async_proxy_client
-    if _async_proxy_client is not None and not _async_proxy_client.is_closed:
-        return _async_proxy_client
-
     cfg = _get_config()
+    signature = _config_signature(cfg)
+    global _async_proxy_client, _async_client_signature
+    if _async_proxy_client is not None and not _async_proxy_client.is_closed:
+        if _async_client_signature == signature:
+            return _async_proxy_client
+        old_client = _async_proxy_client
+        _async_proxy_client = None
+        try:
+            asyncio.create_task(old_client.aclose())
+        except Exception:
+            pass
+
     proxy_url = _get_proxy_url()
     kwargs = {
         "timeout": cfg.timeout,
@@ -151,6 +177,7 @@ def get_async_proxy_client() -> httpx.AsyncClient:
         logger.info("Created async trading client (no proxy)")
 
     _async_proxy_client = httpx.AsyncClient(**kwargs)
+    _async_client_signature = signature
     return _async_proxy_client
 
 
@@ -165,30 +192,35 @@ def patch_clob_client_proxy() -> bool:
     Returns True if patching succeeded, False otherwise.
     """
     cfg = _get_config()
-    if not cfg.enabled:
-        logger.debug("Trading proxy not enabled, skipping CLOB client patch")
-        return False
-
+    signature = _config_signature(cfg)
     proxy_url = _get_proxy_url()
-    if not proxy_url:
-        return False
+    patching_proxy = bool(proxy_url)
+    global _clob_patch_signature
 
     try:
         from py_clob_client.http_helpers import helpers as clob_helpers
 
-        # Close the existing client to free connections
-        if hasattr(clob_helpers, "_http_client") and clob_helpers._http_client:
+        existing = getattr(clob_helpers, "_http_client", None)
+        existing_closed = bool(getattr(existing, "is_closed", False)) if existing is not None else True
+        if _clob_patch_signature == signature and existing is not None and not existing_closed:
+            return True
+
+        if existing is not None:
             try:
-                clob_helpers._http_client.close()
+                existing.close()
             except Exception:
                 pass
 
-        # Replace with proxy-configured client
+        # Replace with configured transport (proxy when enabled, direct otherwise)
         clob_helpers._http_client = get_sync_proxy_client()
-        logger.info(
-            "Patched py-clob-client HTTP client with trading proxy",
-            proxy=_mask_proxy_url(proxy_url),
-        )
+        _clob_patch_signature = signature
+        if patching_proxy:
+            logger.info(
+                "Patched py-clob-client HTTP client with trading proxy",
+                proxy=_mask_proxy_url(proxy_url),
+            )
+        else:
+            logger.info("Patched py-clob-client HTTP client with direct transport")
         return True
 
     except ImportError:
@@ -293,11 +325,17 @@ async def reload_proxy_settings():
     await close()
     await _load_config_from_db()
     cfg = _get_config()
+    patched = patch_clob_client_proxy()
     if cfg.enabled and cfg.proxy_url:
-        patch_clob_client_proxy()
-        logger.info("Trading proxy reloaded from DB settings")
+        if patched:
+            logger.info("Trading proxy reloaded from DB settings")
+        else:
+            logger.warning("Trading proxy enabled but py-clob transport patch failed")
     else:
-        logger.info("Trading proxy disabled or not configured after reload")
+        if patched:
+            logger.info("Trading proxy disabled; py-clob transport restored to direct mode")
+        else:
+            logger.info("Trading proxy disabled or not configured after reload")
 
 
 def _mask_proxy_url(url: Optional[str]) -> Optional[str]:
@@ -320,10 +358,14 @@ def _mask_proxy_url(url: Optional[str]) -> Optional[str]:
 async def close():
     """Close proxy clients and free resources."""
     global _sync_proxy_client, _async_proxy_client
+    global _sync_client_signature, _async_client_signature, _clob_patch_signature
     if _async_proxy_client and not _async_proxy_client.is_closed:
         await _async_proxy_client.aclose()
         _async_proxy_client = None
     if _sync_proxy_client and not _sync_proxy_client.is_closed:
         _sync_proxy_client.close()
         _sync_proxy_client = None
+    _sync_client_signature = None
+    _async_client_signature = None
+    _clob_patch_signature = None
     logger.info("Trading proxy clients closed")

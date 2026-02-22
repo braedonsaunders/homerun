@@ -72,6 +72,7 @@ class VPINToxicityStrategy(BaseStrategy):
         "min_liquidity": 1000.0,
         "base_size_usd": 18.0,
         "max_size_usd": 160.0,
+        "take_profit_pct": 12.0,
     }
 
     def __init__(self) -> None:
@@ -369,6 +370,15 @@ class VPINToxicityStrategy(BaseStrategy):
                     close_price=current_price,
                 )
 
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 12.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 12.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------

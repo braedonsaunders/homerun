@@ -198,7 +198,6 @@ def _infer_strategy_type(capabilities: dict) -> str:
 def _strategy_to_dict(row: Strategy) -> dict:
     """Convert a Strategy ORM row to the API response dict."""
     capabilities = _detect_capabilities(row.source_code or "")
-    config_file_path = StrategySDK.get_strategy_config_path(row.slug)
     source_key = row.source_key or "scanner"
     normalized_config = _normalize_strategy_config_for_source(source_key, dict(row.config or {}))
     normalized_schema = _merge_config_schemas(
@@ -223,8 +222,6 @@ def _strategy_to_dict(row: Strategy) -> dict:
         "strategy_type": _infer_strategy_type(capabilities),
         "capabilities": capabilities,
         "aliases": [],
-        "config_file_path": config_file_path,
-        "config_file_exists": bool(StrategySDK.get_strategy_config_mtime_ns(row.slug)),
         "sort_order": row.sort_order or 0,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -1460,9 +1457,6 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=409, detail=f"A strategy with slug '{slug}' already exists.")
 
-        if not StrategySDK.write_strategy_config_file(slug, normalized_config):
-            raise HTTPException(status_code=500, detail=f"Failed to persist strategy config file for '{slug}'.")
-
         if req.enabled:
             try:
                 strategy_loader.load(slug, req.source_code, normalized_config or None)
@@ -1578,19 +1572,6 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
             row.enabled = req.enabled
             enabled_changed = True
 
-        if slug_changed and req.config is None:
-            if not StrategySDK.rename_strategy_config_file(original_slug, row.slug):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to rename strategy config file '{original_slug}' -> '{row.slug}'.",
-                )
-
-        if req.config is not None:
-            if slug_changed:
-                StrategySDK.delete_strategy_config_file(original_slug)
-            if not StrategySDK.write_strategy_config_file(row.slug, row.config or {}):
-                raise HTTPException(status_code=500, detail=f"Failed to persist strategy config file for '{row.slug}'.")
-
         if enabled_changed or code_changed or slug_changed:
             if slug_changed:
                 strategy_loader.unload(original_slug)
@@ -1623,7 +1604,6 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
 @router.delete("/{strategy_id}")
 async def delete_strategy(strategy_id: str):
     """Delete a strategy (with tombstone for system strategies)."""
-    deleted_slug: str | None = None
     async with AsyncSessionLocal() as session:
         row = await session.get(Strategy, strategy_id)
         if row is None:
@@ -1651,10 +1631,6 @@ async def delete_strategy(strategy_id: str):
             commit=False,
         )
         await session.commit()
-        deleted_slug = str(row.slug or "").strip().lower()
-
-    if deleted_slug:
-        StrategySDK.delete_strategy_config_file(deleted_slug)
 
     return {"status": "success", "message": "Strategy deleted"}
 
@@ -1723,8 +1699,6 @@ async def reset_strategy_to_factory_endpoint(strategy_id: str):
         # Reload into the unified loader after reset
         if result.get("status") in ("reset", "created"):
             await session.refresh(row)
-            if not StrategySDK.write_strategy_config_file(row.slug, row.config or {}):
-                raise HTTPException(status_code=500, detail=f"Failed to persist strategy config file for '{row.slug}'.")
             try:
                 strategy_loader.load(row.slug, row.source_code, row.config or None)
             except Exception:

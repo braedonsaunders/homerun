@@ -58,7 +58,7 @@ class CleanupRequest(BaseModel):
         default=30,
         ge=1,
         le=365,
-        description="Delete resolved trades older than this many days",
+        description="Delete terminal trades (resolved/closed/cancelled/failed) older than this many days",
     )
     open_trade_expiry_days: int = Field(
         default=90,
@@ -91,7 +91,7 @@ class DeleteTradesRequest(BaseModel):
     )
     statuses: Optional[list[str]] = Field(
         default=None,
-        description="Delete trades with these statuses (e.g., ['resolved_win', 'resolved_loss'])",
+        description="Delete trades with these statuses (e.g., ['closed_win', 'resolved_loss'])",
     )
     account_id: Optional[str] = Field(default=None, description="Only delete trades for this account")
     delete_all: bool = Field(default=False, description="Delete ALL trades (dangerous!)")
@@ -379,7 +379,7 @@ async def delete_trades(request: DeleteTradesRequest):
     Delete trades based on criteria.
 
     Options:
-    - older_than_days: Delete resolved trades older than X days
+    - older_than_days: Delete terminal trades older than X days
     - statuses: Delete trades with specific statuses
     - account_id: Only delete for specific account
     - delete_all: Delete ALL trades (requires confirm=True)
@@ -496,13 +496,13 @@ async def cleanup_resolved_only(
         default=30,
         ge=1,
         le=365,
-        description="Delete resolved trades older than this many days",
+        description="Delete terminal trades older than this many days",
     ),
 ):
     """
-    Quick cleanup of resolved trades only.
+    Quick cleanup of terminal trades only.
 
-    Deletes trades that are resolved (win/loss), cancelled, or failed.
+    Deletes trades that are resolved (win/loss), closed (win/loss), cancelled, or failed.
     Does NOT touch open trades.
     """
     try:

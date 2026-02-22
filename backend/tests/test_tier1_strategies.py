@@ -341,6 +341,13 @@ class TestNegRiskStrategy:
 
     def setup_method(self):
         self.strategy = NegRiskStrategy()
+        self.strategy.configure(
+            {
+                "min_total_yes": 0.5,
+                "election_min_total_yes": 0.5,
+                "warn_total_yes": 0.7,
+            }
+        )
 
     # --- NegRisk event detection ---
 

@@ -212,14 +212,55 @@ async def _run_loop() -> None:
                 timestamp=datetime.now(timezone.utc),
                 payload={"intents": intent_dicts},
             )
-            opportunities = await event_dispatcher.dispatch(weather_event)
+            dispatched_opportunities = await event_dispatcher.dispatch(weather_event)
+            deduped_dispatched_opportunities: list = []
+            seen_bridge_keys: set[str] = set()
+            for opp in dispatched_opportunities:
+                stable_id = str(getattr(opp, "stable_id", "") or "").strip()
+                opportunity_id = str(getattr(opp, "id", "") or "").strip()
+                strategy = str(getattr(opp, "strategy", "") or "").strip()
+                key = f"{strategy}:{stable_id or opportunity_id}"
+                if not key or key in seen_bridge_keys:
+                    continue
+                seen_bridge_keys.add(key)
+                deduped_dispatched_opportunities.append(opp)
             async with AsyncSessionLocal() as session:
                 emitted = await bridge_opportunities_to_signals(
                     session,
-                    opportunities,
+                    deduped_dispatched_opportunities,
                     source="weather",
                     sweep_missing=True,
                 )
+            try:
+                async with AsyncSessionLocal() as session:
+                    _, existing_status = await shared_state.read_weather_snapshot(session)
+                    stats_payload = dict(existing_status.get("stats") or {})
+                    cycle_stats = result.get("stats")
+                    if isinstance(cycle_stats, dict):
+                        stats_payload.update(cycle_stats)
+                    stats_payload["strategy_opportunities"] = len(deduped_dispatched_opportunities)
+                    stats_payload["signals_emitted_last_run"] = int(emitted)
+                    await shared_state.write_weather_snapshot(
+                        session,
+                        opportunities=sorted(
+                            deduped_dispatched_opportunities,
+                            key=lambda opp: float(getattr(opp, "roi_percent", 0.0) or 0.0),
+                            reverse=True,
+                        ),
+                        status={
+                            "running": True,
+                            "enabled": enabled and not paused,
+                            "interval_seconds": interval,
+                            "last_scan": datetime.now(timezone.utc).isoformat(),
+                            "current_activity": (
+                                "Weather strategy cycle complete: "
+                                f"{len(deduped_dispatched_opportunities)} opportunities from {len(intent_dicts)} intents."
+                            ),
+                        },
+                        stats=stats_payload,
+                    )
+            except Exception as snapshot_exc:
+                logger.warning("Weather strategy snapshot update failed: %s", snapshot_exc)
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
@@ -234,6 +275,7 @@ async def _run_loop() -> None:
                     stats={
                         "pending_intents": len(pending_rows),
                         "signals_emitted_last_run": int(emitted),
+                        "strategy_opportunities": len(deduped_dispatched_opportunities),
                         "cycle_result": result,
                     },
                 )

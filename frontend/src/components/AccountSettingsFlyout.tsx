@@ -20,6 +20,7 @@ import { Badge } from './ui/badge'
 import {
   getSettings,
   updateSettings,
+  testKalshiConnection,
   testPolymarketConnection,
 } from '../services/api'
 
@@ -116,6 +117,10 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
 
   const testPolymarketMutation = useMutation({
     mutationFn: testPolymarketConnection,
+  })
+
+  const testKalshiMutation = useMutation({
+    mutationFn: testKalshiConnection,
   })
 
   const handleSavePolymarket = () => {
@@ -332,6 +337,23 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
                   <Save className="w-3.5 h-3.5 mr-1.5" />
                   Save
                 </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => testKalshiMutation.mutate()}
+                  disabled={testKalshiMutation.isPending}
+                >
+                  <Zap className="w-3.5 h-3.5 mr-1.5" />
+                  Test Connection
+                </Button>
+                {testKalshiMutation.data && (
+                  <Badge variant={testKalshiMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                    "text-xs",
+                    testKalshiMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                  )}>
+                    {testKalshiMutation.data.message}
+                  </Badge>
+                )}
               </div>
             </div>
           </Card>

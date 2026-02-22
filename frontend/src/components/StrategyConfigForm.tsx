@@ -8,10 +8,13 @@ interface ParamField {
   key: string
   label: string
   type: string
+  format?: string
+  placeholder?: string
   min?: number
   max?: number
-  options?: string[]
+  options?: Array<string | { value?: string; label?: string }>
   item_schema?: Record<string, string>
+  properties?: ParamField[]
   description?: string
 }
 
@@ -200,6 +203,20 @@ function ConfigField({
   value: unknown
   onChange: (value: unknown) => void
 }) {
+  const enumOptions: Array<{ value: string; label: string }> = Array.isArray(field.options)
+    ? field.options
+      .map((option) => {
+        if (typeof option === 'string') {
+          const v = option.trim()
+          return v ? { value: v, label: v } : null
+        }
+        const v = String(option.value || '').trim()
+        if (!v) return null
+        const label = String(option.label || v).trim() || v
+        return { value: v, label }
+      })
+      .filter((option): option is { value: string; label: string } => Boolean(option))
+    : []
   switch (field.type) {
     case 'boolean':
       return (
@@ -217,14 +234,14 @@ function ConfigField({
       return (
         <div>
           <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
-          <Select value={String(value || '')} onValueChange={onChange}>
+          <Select value={String(value || enumOptions[0]?.value || '')} onValueChange={onChange}>
             <SelectTrigger className="mt-1 h-8 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {(field.options || []).map((opt) => (
-                <SelectItem key={opt} value={opt}>
-                  {opt}
+              {enumOptions.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -252,6 +269,41 @@ function ConfigField({
       )
 
     case 'array[string]':
+      if (enumOptions.length > 0) {
+        const selected = new Set(
+          Array.isArray(value)
+            ? value.map((item) => String(item || '').trim()).filter(Boolean)
+            : []
+        )
+        return (
+          <div className="col-span-2 xl:col-span-3">
+            <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {enumOptions.map((opt) => {
+                const isSelected = selected.has(opt.value)
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`h-6 px-2 text-[11px] rounded-md border ${isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-border text-foreground'}`}
+                    onClick={() => {
+                      const next = new Set(selected)
+                      if (isSelected) {
+                        next.delete(opt.value)
+                      } else {
+                        next.add(opt.value)
+                      }
+                      onChange(Array.from(next))
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      }
       return (
         <div>
           <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
@@ -270,14 +322,44 @@ function ConfigField({
         </div>
       )
 
+    case 'object': {
+      const properties = Array.isArray(field.properties) ? field.properties : []
+      const objectValue =
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : {}
+      return (
+        <div className="col-span-2 xl:col-span-3 rounded-md border border-border/70 p-2.5 space-y-2">
+          <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
+          <div className="grid gap-2 md:grid-cols-2">
+            {properties.map((property) => (
+              <ConfigField
+                key={`${field.key}.${property.key}`}
+                field={property}
+                value={objectValue[property.key]}
+                onChange={(nextPropertyValue) =>
+                  onChange({
+                    ...objectValue,
+                    [property.key]: nextPropertyValue,
+                  })
+                }
+              />
+            ))}
+          </div>
+        </div>
+      )
+    }
+
     case 'string':
       return (
         <div>
           <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
           <Input
+            type={field.format === 'time' ? 'time' : field.format === 'date' ? 'date' : 'text'}
             value={String(value || '')}
             onChange={(e) => onChange(e.target.value)}
             className="mt-1 h-8 text-xs"
+            placeholder={field.placeholder}
           />
         </div>
       )

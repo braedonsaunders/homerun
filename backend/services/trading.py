@@ -8,7 +8,7 @@ IMPORTANT: Real trading involves real money. Use with caution.
 
 Setup:
 1. Get API credentials from https://polymarket.com/settings/api-keys
-2. Set environment variables:
+2. Provide credentials in Settings (DB-backed) or environment variables:
    - POLYMARKET_PRIVATE_KEY
    - POLYMARKET_API_KEY
    - POLYMARKET_API_SECRET
@@ -18,13 +18,16 @@ Setup:
 
 import asyncio
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.utcnow import utcnow
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import dataclass, field
 from decimal import Decimal
 import uuid
+
+from sqlalchemy import delete, select
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from config import settings
 from services.pause_state import global_pause_state
@@ -36,16 +39,103 @@ from services.trading_proxy import (
     _load_config_from_db as load_proxy_config,
 )
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
+from utils.converters import safe_float
 
 logger = get_logger(__name__)
 
 ZERO = Decimal("0")
+USDC_BASE_UNITS = Decimal("1000000")
+POLYMARKET_SIGNATURE_TYPES = (0, 1, 2)
+DB_RETRY_ATTEMPTS = 3
+DB_RETRY_BASE_DELAY_SECONDS = 0.05
+DB_RETRY_MAX_DELAY_SECONDS = 0.3
 
 
 def _to_decimal(value) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _first_float(data: dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        parsed = safe_float(data.get(key))
+        if parsed is not None:
+            return float(parsed)
+    return None
+
+
+def _parse_collateral_amount(value: Any, *, assume_base_units: bool = False) -> Optional[float]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = Decimal(raw)
+    except Exception:
+        parsed_float = safe_float(value)
+        if parsed_float is None:
+            return None
+        return float(parsed_float)
+    if assume_base_units:
+        return float(parsed / USDC_BASE_UNITS)
+    return float(parsed)
+
+
+def _is_retryable_db_error(exc: Exception) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(
+        marker in message
+        for marker in (
+            "deadlock detected",
+            "serialization failure",
+            "could not serialize access",
+            "lock not available",
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
+        )
+    )
+
+
+def _db_retry_delay(attempt: int) -> float:
+    return min(DB_RETRY_BASE_DELAY_SECONDS * (2**attempt), DB_RETRY_MAX_DELAY_SECONDS)
+
+
+def _normalize_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_provider_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        normalized = _normalize_utc_datetime(value)
+        return normalized if normalized is not None else utcnow()
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp / 1000.0
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return utcnow()
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        normalized = _normalize_utc_datetime(parsed)
+        return normalized if normalized is not None else utcnow()
+    except Exception:
+        return utcnow()
 
 
 class OrderSide(str, Enum):
@@ -83,8 +173,8 @@ class Order:
     status: OrderStatus = OrderStatus.PENDING
     filled_size: float = 0.0
     average_fill_price: float = 0.0
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
     clob_order_id: Optional[str] = None
     error_message: Optional[str] = None
     market_question: Optional[str] = None
@@ -103,7 +193,7 @@ class Position:
     average_cost: float  # Average price paid
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass
@@ -132,12 +222,17 @@ class TradingService:
     def __init__(self):
         self._initialized = False
         self._client = None
+        self._wallet_address: Optional[str] = None
         self._orders: OrderedDict[str, Order] = OrderedDict()
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
         self._daily_volume_reset = utcnow().date()
         self._market_positions: OrderedDict[str, Decimal] = OrderedDict()  # token_id -> USD exposure
         self._stats_lock: Optional[asyncio.Lock] = None
+        self._init_lock: Optional[asyncio.Lock] = None
+        self._persist_lock: Optional[asyncio.Lock] = None
+        self._balance_signature_type: Optional[int] = None
+        self._runtime_state_loaded_for_wallet: Optional[str] = None
         self._daily_volume = ZERO
         self._daily_pnl = ZERO
         self._total_volume = ZERO
@@ -157,66 +252,134 @@ class TradingService:
             self._stats_lock = asyncio.Lock()
         return self._stats_lock
 
+    def _get_init_lock(self) -> asyncio.Lock:
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        return self._init_lock
+
+    def _get_persist_lock(self) -> asyncio.Lock:
+        if self._persist_lock is None:
+            self._persist_lock = asyncio.Lock()
+        return self._persist_lock
+
+    async def _load_db_polymarket_credentials(
+        self,
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        try:
+            from sqlalchemy import select
+            from models.database import AsyncSessionLocal, AppSettings
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None, None, None, None
+                return (
+                    decrypt_secret(row.polymarket_private_key) or None,
+                    decrypt_secret(row.polymarket_api_key) or None,
+                    decrypt_secret(row.polymarket_api_secret) or None,
+                    decrypt_secret(row.polymarket_api_passphrase) or None,
+                )
+        except Exception as e:
+            logger.error("Failed to load Polymarket credentials from DB", exc_info=e)
+            return None, None, None, None
+
+    async def _resolve_polymarket_credentials(
+        self,
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], str]:
+        db_creds = await self._load_db_polymarket_credentials()
+        env_creds = (
+            settings.POLYMARKET_PRIVATE_KEY,
+            settings.POLYMARKET_API_KEY,
+            settings.POLYMARKET_API_SECRET,
+            settings.POLYMARKET_API_PASSPHRASE,
+        )
+        if all(db_creds):
+            return (*db_creds, "db")
+        if all(env_creds):
+            return (*env_creds, "env")
+
+        mixed = tuple(db_value or env_value for db_value, env_value in zip(db_creds, env_creds))
+        if all(mixed):
+            private_key, api_key, api_secret, api_passphrase = mixed
+            return private_key, api_key, api_secret, api_passphrase, "mixed"
+        return None, None, None, None, "missing"
+
+    async def _sync_trading_transport(self) -> bool:
+        await load_proxy_config()
+        return patch_clob_client_proxy()
+
+    async def ensure_initialized(self) -> bool:
+        if self.is_ready():
+            await self._sync_trading_transport()
+            return True
+        return await self.initialize()
+
     async def initialize(self) -> bool:
         """
         Initialize the trading client with API credentials.
 
         Returns True if successfully initialized, False otherwise.
         """
-        if not settings.TRADING_ENABLED:
-            logger.warning("Trading is disabled. Set TRADING_ENABLED=true to enable.")
-            return False
+        init_lock = self._get_init_lock()
+        async with init_lock:
+            if not settings.TRADING_ENABLED:
+                logger.warning("Trading is disabled. Set TRADING_ENABLED=true to enable.")
+                return False
 
-        if not all(
-            [
-                settings.POLYMARKET_PRIVATE_KEY,
-                settings.POLYMARKET_API_KEY,
-                settings.POLYMARKET_API_SECRET,
-                settings.POLYMARKET_API_PASSPHRASE,
-            ]
-        ):
-            logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
-            return False
+            private_key, api_key, api_secret, api_passphrase, credential_source = await self._resolve_polymarket_credentials()
+            if not all([private_key, api_key, api_secret, api_passphrase]):
+                logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
+                return False
 
-        try:
-            # Import py-clob-client
-            from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiCreds
+            try:
+                # Import py-clob-client
+                from py_clob_client.client import ClobClient
+                from py_clob_client.clob_types import ApiCreds
+                from eth_account import Account
 
-            # Create API credentials
-            creds = ApiCreds(
-                api_key=settings.POLYMARKET_API_KEY,
-                api_secret=settings.POLYMARKET_API_SECRET,
-                api_passphrase=settings.POLYMARKET_API_PASSPHRASE,
-            )
+                # Create API credentials
+                creds = ApiCreds(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    api_passphrase=api_passphrase,
+                )
 
-            # Initialize client
-            self._client = ClobClient(
-                host=settings.CLOB_API_URL,
-                key=settings.POLYMARKET_PRIVATE_KEY,
-                chain_id=settings.CHAIN_ID,
-                creds=creds,
-            )
+                # Initialize client
+                self._client = ClobClient(
+                    host=settings.CLOB_API_URL,
+                    key=private_key,
+                    chain_id=settings.CHAIN_ID,
+                    creds=creds,
+                )
+                self._wallet_address = Account.from_key(private_key).address
+                self._initialized = True
 
-            # Route trading HTTP requests through VPN proxy if configured (DB settings)
-            proxy_cfg = await load_proxy_config()
-            if proxy_cfg.enabled:
+                proxy_cfg = await load_proxy_config()
                 patched = patch_clob_client_proxy()
-                if patched:
+                if patched and proxy_cfg.enabled and proxy_cfg.proxy_url:
                     logger.info("Trading requests will be routed through VPN proxy")
+                elif patched:
+                    logger.info("Trading requests will use direct connection")
                 else:
-                    logger.warning("Trading proxy enabled but patch failed — trades will use direct connection")
+                    logger.warning("Trading HTTP transport patch failed; using py-clob-client default transport")
 
-            self._initialized = True
-            logger.info("Trading service initialized successfully")
-            return True
+                await self._restore_runtime_state()
+                logger.info("Trading service initialized successfully", credential_source=credential_source)
+                return True
 
-        except ImportError:
-            logger.error("py-clob-client not installed. Run: pip install py-clob-client")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to initialize trading client: {e}")
-            return False
+            except ImportError:
+                logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+                self._initialized = False
+                self._client = None
+                self._wallet_address = None
+                return False
+            except Exception as e:
+                logger.error(f"Failed to initialize trading client: {e}")
+                self._initialized = False
+                self._client = None
+                self._wallet_address = None
+                return False
 
     def is_ready(self) -> bool:
         """Check if trading service is ready"""
@@ -251,6 +414,318 @@ class TradingService:
         self._orders.move_to_end(order.id)
         self._prune_order_cache()
 
+    def _runtime_state_id(self, wallet_address: str) -> str:
+        return f"wallet:{wallet_address.lower()}"
+
+    def _wallet_for_persistence(self) -> Optional[str]:
+        wallet = str(self._wallet_address or "").strip()
+        if wallet:
+            return wallet.lower()
+        derived = self._get_wallet_address()
+        if not derived:
+            return None
+        return str(derived).strip().lower()
+
+    async def _persist_orders(self, orders: list[Order]) -> None:
+        if not orders:
+            return
+        wallet = self._wallet_for_persistence()
+        if not wallet:
+            return
+
+        from models.database import AsyncSessionLocal, LiveTradingOrder
+
+        unique_orders: dict[str, Order] = {}
+        for order in orders:
+            unique_orders[str(order.id)] = order
+        order_ids = list(unique_orders)
+        if not order_ids:
+            return
+
+        persist_lock = self._get_persist_lock()
+        async with persist_lock:
+            for attempt in range(DB_RETRY_ATTEMPTS):
+                async with AsyncSessionLocal() as session:
+                    try:
+                        existing_result = await session.execute(
+                            select(LiveTradingOrder).where(LiveTradingOrder.id.in_(order_ids))
+                        )
+                        existing_rows = {row.id: row for row in existing_result.scalars().all()}
+                        for order in unique_orders.values():
+                            row = existing_rows.get(order.id)
+                            if row is None:
+                                row = LiveTradingOrder(id=order.id, wallet_address=wallet)
+                                session.add(row)
+                            created_at = _normalize_utc_datetime(order.created_at) or utcnow()
+                            updated_at = _normalize_utc_datetime(order.updated_at) or utcnow()
+                            row.wallet_address = wallet
+                            row.clob_order_id = str(order.clob_order_id or "").strip() or None
+                            row.token_id = str(order.token_id or "").strip()
+                            row.side = order.side.value
+                            row.price = float(order.price)
+                            row.size = float(order.size)
+                            row.order_type = order.order_type.value
+                            row.status = order.status.value
+                            row.filled_size = float(order.filled_size)
+                            row.average_fill_price = float(order.average_fill_price)
+                            row.market_question = order.market_question
+                            row.opportunity_id = order.opportunity_id
+                            row.error_message = order.error_message
+                            row.created_at = created_at
+                            row.updated_at = updated_at
+                        await session.commit()
+                        return
+                    except (OperationalError, InterfaceError) as exc:
+                        await session.rollback()
+                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        if not _is_retryable_db_error(exc) or is_last:
+                            logger.error("Failed to persist live trading orders", exc_info=exc)
+                            return
+                        await asyncio.sleep(_db_retry_delay(attempt))
+                    except Exception as exc:
+                        await session.rollback()
+                        logger.error("Failed to persist live trading orders", exc_info=exc)
+                        return
+
+    async def _persist_positions(self) -> None:
+        wallet = self._wallet_for_persistence()
+        if not wallet:
+            return
+
+        from models.database import AsyncSessionLocal, LiveTradingPosition
+
+        positions = list(self._positions.values())
+        persist_lock = self._get_persist_lock()
+        async with persist_lock:
+            for attempt in range(DB_RETRY_ATTEMPTS):
+                async with AsyncSessionLocal() as session:
+                    try:
+                        await session.execute(
+                            delete(LiveTradingPosition).where(LiveTradingPosition.wallet_address == wallet)
+                        )
+                        for position in positions:
+                            token_id = str(position.token_id or "").strip()
+                            if not token_id:
+                                continue
+                            row = LiveTradingPosition(
+                                id=f"{wallet}:{token_id}",
+                                wallet_address=wallet,
+                                token_id=token_id,
+                                market_id=str(position.market_id or "").strip(),
+                                market_question=position.market_question,
+                                outcome=position.outcome,
+                                size=float(position.size),
+                                average_cost=float(position.average_cost),
+                                current_price=float(position.current_price),
+                                unrealized_pnl=float(position.unrealized_pnl),
+                                created_at=_normalize_utc_datetime(position.created_at) or utcnow(),
+                                updated_at=utcnow(),
+                            )
+                            session.add(row)
+                        await session.commit()
+                        return
+                    except (OperationalError, InterfaceError) as exc:
+                        await session.rollback()
+                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        if not _is_retryable_db_error(exc) or is_last:
+                            logger.error("Failed to persist live trading positions", exc_info=exc)
+                            return
+                        await asyncio.sleep(_db_retry_delay(attempt))
+                    except Exception as exc:
+                        await session.rollback()
+                        logger.error("Failed to persist live trading positions", exc_info=exc)
+                        return
+
+    async def _persist_runtime_state(self) -> None:
+        wallet = self._wallet_for_persistence()
+        if not wallet:
+            return
+
+        from models.database import AsyncSessionLocal, LiveTradingRuntimeState
+
+        runtime_id = self._runtime_state_id(wallet)
+        last_trade_at = _normalize_utc_datetime(self._stats.last_trade_at)
+        daily_reset_at = datetime.combine(self._daily_volume_reset, datetime.min.time(), tzinfo=timezone.utc)
+        market_positions_json = {
+            str(token_id): str(exposure)
+            for token_id, exposure in self._market_positions.items()
+        }
+
+        persist_lock = self._get_persist_lock()
+        async with persist_lock:
+            for attempt in range(DB_RETRY_ATTEMPTS):
+                async with AsyncSessionLocal() as session:
+                    try:
+                        result = await session.execute(
+                            select(LiveTradingRuntimeState).where(LiveTradingRuntimeState.id == runtime_id)
+                        )
+                        row = result.scalar_one_or_none()
+                        if row is None:
+                            row = LiveTradingRuntimeState(id=runtime_id, wallet_address=wallet)
+                            session.add(row)
+
+                        row.wallet_address = wallet
+                        row.total_trades = int(self._stats.total_trades)
+                        row.winning_trades = int(self._stats.winning_trades)
+                        row.losing_trades = int(self._stats.losing_trades)
+                        row.total_volume = float(self._total_volume)
+                        row.total_pnl = float(self._total_pnl)
+                        row.daily_volume = float(self._daily_volume)
+                        row.daily_pnl = float(self._daily_pnl)
+                        row.open_positions = int(self._stats.open_positions)
+                        row.last_trade_at = last_trade_at
+                        row.daily_volume_reset_at = daily_reset_at
+                        row.market_positions_json = market_positions_json
+                        row.balance_signature_type = self._balance_signature_type
+                        row.updated_at = utcnow()
+                        await session.commit()
+                        return
+                    except (OperationalError, InterfaceError) as exc:
+                        await session.rollback()
+                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        if not _is_retryable_db_error(exc) or is_last:
+                            logger.error("Failed to persist live trading runtime state", exc_info=exc)
+                            return
+                        await asyncio.sleep(_db_retry_delay(attempt))
+                    except Exception as exc:
+                        await session.rollback()
+                        logger.error("Failed to persist live trading runtime state", exc_info=exc)
+                        return
+
+    async def _restore_runtime_state(self) -> None:
+        wallet = self._wallet_for_persistence()
+        if not wallet:
+            return
+        if self._runtime_state_loaded_for_wallet == wallet:
+            return
+
+        from models.database import (
+            AsyncSessionLocal,
+            LiveTradingOrder,
+            LiveTradingPosition,
+            LiveTradingRuntimeState,
+        )
+
+        persist_lock = self._get_persist_lock()
+        async with persist_lock:
+            for attempt in range(DB_RETRY_ATTEMPTS):
+                async with AsyncSessionLocal() as session:
+                    try:
+                        runtime_id = self._runtime_state_id(wallet)
+                        runtime_result = await session.execute(
+                            select(LiveTradingRuntimeState).where(LiveTradingRuntimeState.id == runtime_id)
+                        )
+                        runtime_row = runtime_result.scalar_one_or_none()
+
+                        self._orders.clear()
+                        orders_result = await session.execute(
+                            select(LiveTradingOrder)
+                            .where(LiveTradingOrder.wallet_address == wallet)
+                            .order_by(LiveTradingOrder.created_at.desc())
+                            .limit(self._max_order_history)
+                        )
+                        persisted_orders = list(orders_result.scalars().all())
+                        persisted_orders.reverse()
+                        for row in persisted_orders:
+                            side_raw = str(row.side or "").strip().upper()
+                            side = OrderSide.SELL if side_raw == OrderSide.SELL.value else OrderSide.BUY
+                            order_type_raw = str(row.order_type or "").strip().upper()
+                            try:
+                                order_type = OrderType(order_type_raw)
+                            except ValueError:
+                                order_type = OrderType.GTC
+                            status_raw = str(row.status or "").strip().lower()
+                            try:
+                                status = OrderStatus(status_raw)
+                            except ValueError:
+                                status = OrderStatus.PENDING
+                            order = Order(
+                                id=str(row.id),
+                                token_id=str(row.token_id or ""),
+                                side=side,
+                                price=float(safe_float(row.price, 0.0) or 0.0),
+                                size=float(safe_float(row.size, 0.0) or 0.0),
+                                order_type=order_type,
+                                status=status,
+                                filled_size=float(safe_float(row.filled_size, 0.0) or 0.0),
+                                average_fill_price=float(safe_float(row.average_fill_price, 0.0) or 0.0),
+                                created_at=_normalize_utc_datetime(row.created_at) or utcnow(),
+                                updated_at=_normalize_utc_datetime(row.updated_at) or utcnow(),
+                                clob_order_id=str(row.clob_order_id or "").strip() or None,
+                                error_message=row.error_message,
+                                market_question=row.market_question,
+                                opportunity_id=row.opportunity_id,
+                            )
+                            self._remember_order(order)
+
+                        self._positions.clear()
+                        positions_result = await session.execute(
+                            select(LiveTradingPosition).where(LiveTradingPosition.wallet_address == wallet)
+                        )
+                        for row in positions_result.scalars().all():
+                            token_id = str(row.token_id or "").strip()
+                            if not token_id:
+                                continue
+                            self._positions[token_id] = Position(
+                                token_id=token_id,
+                                market_id=str(row.market_id or ""),
+                                market_question=row.market_question or "Unknown",
+                                outcome=row.outcome or "",
+                                size=float(safe_float(row.size, 0.0) or 0.0),
+                                average_cost=float(safe_float(row.average_cost, 0.0) or 0.0),
+                                current_price=float(safe_float(row.current_price, 0.0) or 0.0),
+                                unrealized_pnl=float(safe_float(row.unrealized_pnl, 0.0) or 0.0),
+                                created_at=_normalize_utc_datetime(row.created_at) or utcnow(),
+                            )
+
+                        if runtime_row is not None:
+                            self._stats.total_trades = int(runtime_row.total_trades or 0)
+                            self._stats.winning_trades = int(runtime_row.winning_trades or 0)
+                            self._stats.losing_trades = int(runtime_row.losing_trades or 0)
+                            self._stats.total_volume = float(safe_float(runtime_row.total_volume, 0.0) or 0.0)
+                            self._stats.total_pnl = float(safe_float(runtime_row.total_pnl, 0.0) or 0.0)
+                            self._stats.daily_volume = float(safe_float(runtime_row.daily_volume, 0.0) or 0.0)
+                            self._stats.daily_pnl = float(safe_float(runtime_row.daily_pnl, 0.0) or 0.0)
+                            self._stats.open_positions = int(runtime_row.open_positions or len(self._positions))
+                            self._stats.last_trade_at = _normalize_utc_datetime(runtime_row.last_trade_at)
+                            self._total_volume = _to_decimal(runtime_row.total_volume or 0.0)
+                            self._total_pnl = _to_decimal(runtime_row.total_pnl or 0.0)
+                            self._daily_volume = _to_decimal(runtime_row.daily_volume or 0.0)
+                            self._daily_pnl = _to_decimal(runtime_row.daily_pnl or 0.0)
+                            daily_reset = _normalize_utc_datetime(runtime_row.daily_volume_reset_at)
+                            if daily_reset is not None:
+                                self._daily_volume_reset = daily_reset.date()
+                            self._market_positions.clear()
+                            if isinstance(runtime_row.market_positions_json, dict):
+                                for token_id, raw_exposure in runtime_row.market_positions_json.items():
+                                    token_key = str(token_id or "").strip()
+                                    if not token_key:
+                                        continue
+                                    exposure = safe_float(raw_exposure)
+                                    if exposure is None or exposure <= 0:
+                                        continue
+                                    self._market_positions[token_key] = _to_decimal(exposure)
+                                    self._market_positions.move_to_end(token_key)
+                                self._prune_market_positions()
+                            if runtime_row.balance_signature_type is not None:
+                                self._balance_signature_type = int(runtime_row.balance_signature_type)
+                        else:
+                            self._stats.open_positions = len(self._positions)
+
+                        self._runtime_state_loaded_for_wallet = wallet
+                        return
+                    except (OperationalError, InterfaceError) as exc:
+                        await session.rollback()
+                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        if not _is_retryable_db_error(exc) or is_last:
+                            logger.error("Failed to restore live trading runtime state", exc_info=exc)
+                            return
+                        await asyncio.sleep(_db_retry_delay(attempt))
+                    except Exception as exc:
+                        await session.rollback()
+                        logger.error("Failed to restore live trading runtime state", exc_info=exc)
+                        return
+
     def _prune_market_positions(self) -> None:
         while len(self._market_positions) > self._max_market_position_entries:
             self._market_positions.popitem(last=False)
@@ -279,6 +754,347 @@ class TradingService:
             self._daily_pnl = ZERO
             self._daily_volume_reset = today
             self._sync_stats_from_decimals()
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._persist_runtime_state())
+            except RuntimeError:
+                pass
+
+    def _extract_server_orders(self, response: Any) -> list[dict[str, Any]]:
+        if isinstance(response, list):
+            return [item for item in response if isinstance(item, dict)]
+        if isinstance(response, dict):
+            for key in ("orders", "data", "items", "results"):
+                items = response.get(key)
+                if isinstance(items, list):
+                    return [item for item in items if isinstance(item, dict)]
+            if "id" in response or "orderID" in response or "order_id" in response:
+                return [response]
+        return []
+
+    def _normalize_provider_order_status(self, status: Any) -> str:
+        status_key = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if status_key in {"filled", "matched", "executed", "complete", "completed"}:
+            return "filled"
+        if status_key in {"partial", "partially_filled", "partiallyfilled"}:
+            return "partially_filled"
+        if status_key in {"open", "live", "active", "working", "unmatched"}:
+            return "open"
+        if status_key in {"pending", "queued", "new", "received", "submitted"}:
+            return "pending"
+        if status_key in {"cancelled", "canceled", "killed", "void", "terminated"}:
+            return "cancelled"
+        if status_key in {"expired", "timed_out", "timeout"}:
+            return "expired"
+        if status_key in {"failed", "rejected", "error"}:
+            return "failed"
+        return status_key
+
+    def _snapshot_from_cached_order(self, order: Order) -> Optional[dict[str, Any]]:
+        clob_id = str(order.clob_order_id or "").strip()
+        if not clob_id:
+            return None
+        status_map = {
+            OrderStatus.PENDING: "pending",
+            OrderStatus.OPEN: "open",
+            OrderStatus.PARTIALLY_FILLED: "partially_filled",
+            OrderStatus.FILLED: "filled",
+            OrderStatus.CANCELLED: "cancelled",
+            OrderStatus.EXPIRED: "expired",
+            OrderStatus.FAILED: "failed",
+        }
+        normalized_status = status_map.get(order.status, "unknown")
+        filled_size = max(0.0, safe_float(order.filled_size, 0.0) or 0.0)
+        average_fill_price = safe_float(order.average_fill_price)
+        filled_notional_usd = None
+        if filled_size > 0 and average_fill_price is not None and average_fill_price > 0:
+            filled_notional_usd = filled_size * average_fill_price
+        return {
+            "clob_order_id": clob_id,
+            "normalized_status": normalized_status,
+            "raw_status": str(getattr(order.status, "value", order.status) or ""),
+            "size": max(0.0, safe_float(order.size, 0.0) or 0.0),
+            "filled_size": filled_size,
+            "remaining_size": max(0.0, (safe_float(order.size, 0.0) or 0.0) - filled_size),
+            "average_fill_price": float(average_fill_price) if average_fill_price is not None else None,
+            "limit_price": float(safe_float(order.price, 0.0) or 0.0),
+            "filled_notional_usd": float(filled_notional_usd) if filled_notional_usd is not None else None,
+            "raw": None,
+        }
+
+    def _parse_provider_order_snapshot(self, server_order: dict[str, Any]) -> Optional[dict[str, Any]]:
+        clob_order_id = str(
+            server_order.get("id") or server_order.get("orderID") or server_order.get("order_id") or ""
+        ).strip()
+        if not clob_order_id:
+            return None
+
+        normalized_status = self._normalize_provider_order_status(
+            server_order.get("status")
+            or server_order.get("state")
+            or server_order.get("order_status")
+            or server_order.get("orderState")
+        )
+        size = _first_float(server_order, "size", "original_size", "initial_size", "amount", "quantity")
+        filled_size = _first_float(
+            server_order,
+            "size_matched",
+            "sizeMatched",
+            "matched_size",
+            "filled_size",
+            "executed_size",
+            "filled",
+        )
+        remaining_size = _first_float(
+            server_order,
+            "size_remaining",
+            "remaining_size",
+            "unfilled_size",
+            "sizeRemaining",
+        )
+        if filled_size is None and size is not None and remaining_size is not None:
+            filled_size = max(0.0, size - remaining_size)
+        if filled_size is None:
+            filled_size = 0.0
+        if size is None and remaining_size is not None:
+            size = max(0.0, remaining_size + filled_size)
+
+        average_fill_price = _first_float(
+            server_order,
+            "avg_price",
+            "average_price",
+            "average_fill_price",
+            "avgFillPrice",
+            "matched_price",
+        )
+        limit_price = _first_float(server_order, "price", "limit_price", "limitPrice", "initial_price")
+        filled_notional_usd = _first_float(
+            server_order,
+            "filled_notional_usd",
+            "filled_notional",
+            "matched_notional",
+            "matched_amount",
+            "filled_value",
+            "executed_notional",
+        )
+        if filled_notional_usd is None and filled_size > 0 and average_fill_price is not None:
+            filled_notional_usd = filled_size * average_fill_price
+
+        return {
+            "clob_order_id": clob_order_id,
+            "normalized_status": normalized_status,
+            "raw_status": str(server_order.get("status") or server_order.get("state") or ""),
+            "size": float(size) if size is not None else None,
+            "filled_size": max(0.0, float(filled_size)),
+            "remaining_size": float(remaining_size) if remaining_size is not None else None,
+            "average_fill_price": float(average_fill_price) if average_fill_price is not None else None,
+            "limit_price": float(limit_price) if limit_price is not None else None,
+            "filled_notional_usd": float(filled_notional_usd) if filled_notional_usd is not None else None,
+            "raw": server_order,
+        }
+
+    def _apply_snapshot_to_order(self, order: Order, snapshot: dict[str, Any]) -> None:
+        normalized_status = str(snapshot.get("normalized_status") or "").strip().lower()
+        if normalized_status == "filled":
+            order.status = OrderStatus.FILLED
+        elif normalized_status == "partially_filled":
+            order.status = OrderStatus.PARTIALLY_FILLED
+        elif normalized_status == "open":
+            order.status = OrderStatus.OPEN
+        elif normalized_status == "pending":
+            order.status = OrderStatus.PENDING
+        elif normalized_status == "cancelled":
+            order.status = OrderStatus.CANCELLED
+        elif normalized_status == "expired":
+            order.status = OrderStatus.EXPIRED
+        elif normalized_status == "failed":
+            order.status = OrderStatus.FAILED
+
+        filled_size = safe_float(snapshot.get("filled_size"))
+        if filled_size is not None:
+            order.filled_size = max(0.0, float(filled_size))
+        average_fill_price = safe_float(snapshot.get("average_fill_price"))
+        if average_fill_price is not None and average_fill_price > 0:
+            order.average_fill_price = float(average_fill_price)
+        order.updated_at = utcnow()
+
+    async def get_order_snapshots_by_clob_ids(self, clob_order_ids: list[str]) -> dict[str, dict[str, Any]]:
+        requested = {str(order_id or "").strip() for order_id in clob_order_ids if str(order_id or "").strip()}
+        if not requested:
+            return {}
+
+        snapshots: dict[str, dict[str, Any]] = {}
+        for order in self._orders.values():
+            cached_snapshot = self._snapshot_from_cached_order(order)
+            if cached_snapshot is None:
+                continue
+            clob_id = str(cached_snapshot["clob_order_id"])
+            if clob_id in requested:
+                snapshots[clob_id] = cached_snapshot
+
+        if not self.is_ready():
+            return snapshots
+
+        try:
+            response = self._client.get_orders()
+            for server_order in self._extract_server_orders(response):
+                snapshot = self._parse_provider_order_snapshot(server_order)
+                if snapshot is None:
+                    continue
+                clob_id = str(snapshot["clob_order_id"])
+                if clob_id in requested:
+                    snapshots[clob_id] = snapshot
+        except Exception as exc:
+            logger.error("Failed to fetch open provider orders", exc_info=exc)
+
+        missing = requested.difference(snapshots.keys())
+        if missing and hasattr(self._client, "get_order"):
+            for clob_id in sorted(missing):
+                try:
+                    single_response = self._client.get_order(clob_id)
+                except Exception as exc:
+                    logger.debug("Provider single-order lookup failed", clob_order_id=clob_id, exc_info=exc)
+                    continue
+                for server_order in self._extract_server_orders(single_response):
+                    snapshot = self._parse_provider_order_snapshot(server_order)
+                    if snapshot is None:
+                        continue
+                    if str(snapshot["clob_order_id"]) == clob_id:
+                        snapshots[clob_id] = snapshot
+                        break
+
+        updated_orders: list[Order] = []
+        for order in self._orders.values():
+            clob_id = str(order.clob_order_id or "").strip()
+            if not clob_id:
+                continue
+            snapshot = snapshots.get(clob_id)
+            if snapshot is None:
+                continue
+            self._apply_snapshot_to_order(order, snapshot)
+            updated_orders.append(order)
+
+        if updated_orders:
+            await self._persist_orders(updated_orders)
+
+        return snapshots
+
+    async def _sync_provider_open_orders(self) -> list[Order]:
+        if not self.is_ready() and not await self.ensure_initialized():
+            return []
+
+        try:
+            provider_response = await asyncio.to_thread(self._client.get_orders)
+        except Exception as exc:
+            logger.error("Failed to fetch provider open orders", exc_info=exc)
+            return []
+
+        provider_orders = self._extract_server_orders(provider_response)
+        updated_orders: list[Order] = []
+        for server_order in provider_orders:
+            snapshot = self._parse_provider_order_snapshot(server_order)
+            if snapshot is None:
+                continue
+
+            clob_order_id = str(snapshot["clob_order_id"])
+            local_order: Optional[Order] = None
+            for cached in self._orders.values():
+                if str(cached.clob_order_id or "").strip() == clob_order_id:
+                    local_order = cached
+                    break
+
+            if local_order is None:
+                order_id = f"clob:{clob_order_id}"
+                token_id = str(
+                    server_order.get("asset_id")
+                    or server_order.get("asset")
+                    or server_order.get("token_id")
+                    or server_order.get("tokenId")
+                    or ""
+                ).strip()
+                if not token_id:
+                    token_id = clob_order_id
+                side_raw = str(
+                    server_order.get("side")
+                    or server_order.get("order_side")
+                    or server_order.get("direction")
+                    or "BUY"
+                ).strip().upper()
+                side = OrderSide.SELL if side_raw == OrderSide.SELL.value else OrderSide.BUY
+                order_type_raw = str(
+                    server_order.get("order_type")
+                    or server_order.get("orderType")
+                    or server_order.get("type")
+                    or "GTC"
+                ).strip().upper()
+                try:
+                    order_type = OrderType(order_type_raw)
+                except ValueError:
+                    order_type = OrderType.GTC
+
+                created_at = _parse_provider_datetime(
+                    server_order.get("created_at")
+                    or server_order.get("createdAt")
+                    or server_order.get("timestamp")
+                )
+                local_order = Order(
+                    id=order_id,
+                    token_id=token_id,
+                    side=side,
+                    price=float(snapshot.get("limit_price") or 0.0),
+                    size=float(snapshot.get("size") or snapshot.get("filled_size") or 0.0),
+                    order_type=order_type,
+                    status=OrderStatus.PENDING,
+                    created_at=created_at,
+                    updated_at=created_at,
+                    clob_order_id=clob_order_id,
+                    market_question=str(
+                        server_order.get("market_question")
+                        or server_order.get("question")
+                        or server_order.get("title")
+                        or ""
+                    )
+                    or None,
+                )
+                self._remember_order(local_order)
+
+            if not local_order.market_question:
+                local_order.market_question = str(
+                    server_order.get("market_question")
+                    or server_order.get("question")
+                    or server_order.get("title")
+                    or ""
+                ) or None
+            if local_order.size <= 0:
+                local_order.size = float(snapshot.get("size") or snapshot.get("filled_size") or 0.0)
+            if local_order.price <= 0:
+                local_order.price = float(snapshot.get("limit_price") or 0.0)
+
+            self._apply_snapshot_to_order(local_order, snapshot)
+            updated_orders.append(local_order)
+
+        if updated_orders:
+            await self._persist_orders(updated_orders)
+
+        return [
+            order
+            for order in self._orders.values()
+            if order.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING}
+        ]
+
+    async def get_recent_orders(
+        self,
+        limit: int = 100,
+        status: Optional[OrderStatus] = None,
+    ) -> list[Order]:
+        if not self.is_ready():
+            await self.ensure_initialized()
+
+        await self._sync_provider_open_orders()
+        orders = sorted(self._orders.values(), key=lambda x: x.created_at, reverse=True)
+        if status is not None:
+            orders = [order for order in orders if order.status == status]
+        return orders[: max(1, int(limit))]
 
     def _validate_order(
         self,
@@ -350,6 +1166,7 @@ class TradingService:
         # across API and worker containers.
         await global_pause_state.refresh_from_db(force=True)
 
+        reserved = False
         stats_lock = self._get_stats_lock()
         async with stats_lock:
             is_valid, error = self._validate_order(
@@ -365,7 +1182,12 @@ class TradingService:
             delta = size_usd if side == OrderSide.BUY else -size_usd
             self._apply_market_exposure_delta(token_id, delta)
             self._sync_stats_from_decimals()
+            reserved = True
+
+        if reserved:
+            await self._persist_runtime_state()
             return True, ""
+        return False, "Order reservation failed"
 
     async def _release_reservation(
         self,
@@ -381,6 +1203,7 @@ class TradingService:
             delta = -size_usd if side == OrderSide.BUY else size_usd
             self._apply_market_exposure_delta(token_id, delta)
             self._sync_stats_from_decimals()
+        await self._persist_runtime_state()
 
     async def place_order(
         self,
@@ -429,6 +1252,7 @@ class TradingService:
             order.status = OrderStatus.FAILED
             order.error_message = f"VPN check failed: {vpn_reason}"
             self._remember_order(order)
+            await self._persist_orders([order])
             logger.error(f"Trade blocked by VPN check: {vpn_reason}")
             return order
 
@@ -442,11 +1266,14 @@ class TradingService:
             order.status = OrderStatus.FAILED
             order.error_message = error
             self._remember_order(order)
+            await self._persist_orders([order])
             logger.warning(f"Order validation failed: {error}")
             return order
         reserved = True
 
         try:
+            await self._sync_trading_transport()
+
             # Build and sign order using py-clob-client
             from py_clob_client.clob_types import OrderArgs
             from py_clob_client.order_builder.constants import BUY, SELL
@@ -471,6 +1298,7 @@ class TradingService:
                 async with stats_lock:
                     self._stats.total_trades += 1
                     self._stats.last_trade_at = utcnow()
+                await self._persist_runtime_state()
                 logger.info(f"Order placed successfully: {order.clob_order_id}")
             else:
                 order.status = OrderStatus.FAILED
@@ -497,6 +1325,8 @@ class TradingService:
 
         order.updated_at = utcnow()
         self._remember_order(order)
+        await self._persist_orders([order])
+        await self._persist_runtime_state()
         return order
 
     async def place_order_with_chase(
@@ -585,76 +1415,164 @@ class TradingService:
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order"""
-        if order_id not in self._orders:
-            logger.warning(f"Order not found: {order_id}")
+        order_key = str(order_id or "").strip()
+        if not order_key:
             return False
 
-        order = self._orders[order_id]
-        if order.status not in [OrderStatus.OPEN, OrderStatus.PENDING]:
-            logger.warning(f"Cannot cancel order in status: {order.status}")
-            return False
-
-        if not order.clob_order_id:
-            order.status = OrderStatus.CANCELLED
-            order.updated_at = utcnow()
-            return True
-
-        try:
-            response = self._client.cancel(order.clob_order_id)
-            if response.get("canceled"):
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = utcnow()
-                logger.info(f"Order cancelled: {order_id}")
-                return True
-            else:
-                logger.error(f"Failed to cancel order: {response}")
+        local_order = self._orders.get(order_key)
+        if local_order is not None:
+            if local_order.status not in {OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED}:
+                logger.warning(f"Cannot cancel order in status: {local_order.status}")
                 return False
-        except Exception as e:
-            logger.error(f"Cancel order error: {e}")
+            clob_order_id = str(local_order.clob_order_id or "").strip()
+            if not clob_order_id:
+                local_order.status = OrderStatus.CANCELLED
+                local_order.updated_at = utcnow()
+                await self._persist_orders([local_order])
+                await self._persist_runtime_state()
+                return True
+        else:
+            clob_order_id = order_key
+
+        if not self.is_ready() and not await self.ensure_initialized():
+            logger.warning("Trading service not ready for order cancellation", order_id=order_key)
             return False
 
-    async def cancel_all_orders(self) -> int:
-        """Cancel all open orders. Returns count of cancelled orders."""
-        cancelled = 0
         try:
-            response = self._client.cancel_all()
-            cancelled = len(response.get("canceled", []))
+            response = await asyncio.to_thread(self._client.cancel, clob_order_id)
+        except Exception as exc:
+            logger.error("Cancel order error", order_id=order_key, clob_order_id=clob_order_id, exc_info=exc)
+            return False
 
-            # Update local order status
-            for order in self._orders.values():
-                if order.status in [OrderStatus.OPEN, OrderStatus.PENDING]:
-                    order.status = OrderStatus.CANCELLED
-                    order.updated_at = utcnow()
+        cancelled = False
+        if isinstance(response, dict):
+            canceled_field = response.get("canceled")
+            if isinstance(canceled_field, bool):
+                cancelled = canceled_field
+            elif isinstance(canceled_field, list):
+                for item in canceled_field:
+                    if isinstance(item, dict):
+                        if str(item.get("id") or item.get("orderID") or "").strip() == clob_order_id:
+                            cancelled = True
+                            break
+                    elif str(item or "").strip() == clob_order_id:
+                        cancelled = True
+                        break
+                if not cancelled and len(canceled_field) > 0:
+                    cancelled = True
+            elif isinstance(canceled_field, str):
+                cancelled = canceled_field.strip() == clob_order_id
+            if not cancelled and bool(response.get("success")):
+                cancelled = True
+            if not cancelled:
+                error_text = str(response.get("error") or response.get("errorMsg") or "").strip().lower()
+                if "already" in error_text and "cancel" in error_text:
+                    cancelled = True
+                elif "not found" in error_text:
+                    cancelled = True
+        elif isinstance(response, list):
+            cancelled = any(str(item or "").strip() == clob_order_id for item in response) or bool(response)
 
-            logger.info(f"Cancelled {cancelled} orders")
-        except Exception as e:
-            logger.error(f"Cancel all orders error: {e}")
+        if not cancelled:
+            logger.error("Failed to cancel order", order_id=order_key, clob_order_id=clob_order_id, response=response)
+            return False
 
-        return cancelled
+        now = utcnow()
+        changed_orders: list[Order] = []
+        if local_order is not None:
+            local_order.status = OrderStatus.CANCELLED
+            local_order.updated_at = now
+            changed_orders.append(local_order)
+        for order in self._orders.values():
+            if str(order.clob_order_id or "").strip() == clob_order_id:
+                order.status = OrderStatus.CANCELLED
+                order.updated_at = now
+                changed_orders.append(order)
+        if changed_orders:
+            await self._persist_orders(changed_orders)
+            await self._persist_runtime_state()
+        logger.info(f"Order cancelled: {order_key}")
+        return True
+
+    async def cancel_all_orders(self) -> dict[str, Any]:
+        """Cancel all open orders with per-order success/failure reporting."""
+        open_orders = await self.get_open_orders()
+        targets: list[str] = []
+        seen_targets: set[str] = set()
+        for order in open_orders:
+            target = str(order.clob_order_id or order.id or "").strip()
+            if not target or target in seen_targets:
+                continue
+            seen_targets.add(target)
+            targets.append(target)
+
+        if not targets:
+            return {
+                "status": "success",
+                "requested_count": 0,
+                "cancelled_count": 0,
+                "failed_count": 0,
+                "failed_order_ids": [],
+                "message": "No open orders to cancel.",
+            }
+
+        failed_order_ids: list[str] = []
+        cancelled_count = 0
+        for target in targets:
+            if await self.cancel_order(target):
+                cancelled_count += 1
+            else:
+                failed_order_ids.append(target)
+
+        failed_count = len(failed_order_ids)
+        if failed_count == 0:
+            status = "success"
+            message = f"Cancelled {cancelled_count} order(s)."
+        elif cancelled_count > 0:
+            status = "partial_failure"
+            message = (
+                f"Cancelled {cancelled_count} of {len(targets)} order(s); "
+                f"{failed_count} cancellation(s) failed."
+            )
+        else:
+            status = "failed"
+            message = f"Failed to cancel {failed_count} order(s)."
+
+        logger.info(
+            "Cancel-all completed",
+            status=status,
+            requested_count=len(targets),
+            cancelled_count=cancelled_count,
+            failed_count=failed_count,
+        )
+        return {
+            "status": status,
+            "requested_count": len(targets),
+            "cancelled_count": cancelled_count,
+            "failed_count": failed_count,
+            "failed_order_ids": failed_order_ids,
+            "message": message,
+        }
 
     async def get_open_orders(self) -> list[Order]:
         """Get all open orders"""
-        if not self.is_ready():
-            return [o for o in self._orders.values() if o.status == OrderStatus.OPEN]
+        await self._sync_provider_open_orders()
+        clob_ids = [
+            str(order.clob_order_id).strip()
+            for order in self._orders.values()
+            if str(order.clob_order_id or "").strip()
+        ]
+        if clob_ids:
+            try:
+                await self.get_order_snapshots_by_clob_ids(clob_ids)
+            except Exception as exc:
+                logger.error("Get orders error", exc_info=exc)
 
-        try:
-            response = self._client.get_orders()
-            # Update local orders with server state
-            for server_order in response:
-                clob_id = server_order.get("id")
-                for order in self._orders.values():
-                    if order.clob_order_id == clob_id:
-                        # Update fill status
-                        order.filled_size = float(server_order.get("size_matched", 0))
-                        if order.filled_size >= order.size:
-                            order.status = OrderStatus.FILLED
-                        elif order.filled_size > 0:
-                            order.status = OrderStatus.PARTIALLY_FILLED
-                        order.updated_at = utcnow()
-        except Exception as e:
-            logger.error(f"Get orders error: {e}")
-
-        return [o for o in self._orders.values() if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]]
+        return [
+            o
+            for o in self._orders.values()
+            if o.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING}
+        ]
 
     async def sync_positions(self) -> list[Position]:
         """Sync positions from Polymarket"""
@@ -688,6 +1606,8 @@ class TradingService:
                 self._positions[token_id] = position
 
             self._stats.open_positions = len(self._positions)
+            await self._persist_positions()
+            await self._persist_runtime_state()
 
         except Exception as e:
             logger.error(f"Sync positions error: {e}")
@@ -696,6 +1616,8 @@ class TradingService:
 
     def _get_wallet_address(self) -> Optional[str]:
         """Get wallet address from private key"""
+        if self._wallet_address:
+            return self._wallet_address
         if not settings.POLYMARKET_PRIVATE_KEY:
             return None
         try:
@@ -833,7 +1755,16 @@ class TradingService:
 
     def get_order(self, order_id: str) -> Optional[Order]:
         """Get order by ID"""
-        return self._orders.get(order_id)
+        key = str(order_id or "").strip()
+        if not key:
+            return None
+        direct = self._orders.get(key)
+        if direct is not None:
+            return direct
+        for order in self._orders.values():
+            if str(order.clob_order_id or "").strip() == key:
+                return order
+        return None
 
     def get_orders(self, limit: int = 100) -> list[Order]:
         """Get recent orders"""
@@ -850,16 +1781,143 @@ class TradingService:
             return {"error": "Trading not initialized"}
 
         try:
-            # Get USDC balance on Polygon
             address = self._get_wallet_address()
             if not address:
                 return {"error": "Could not derive wallet address"}
 
-            # This would need web3 integration to check actual balance
-            # For now, return placeholder
+            try:
+                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+                def build_balance_params(signature_type: int):
+                    return BalanceAllowanceParams(
+                        asset_type=AssetType.COLLATERAL,
+                        signature_type=signature_type,
+                    )
+            except Exception:
+
+                class _FallbackBalanceParams:
+                    def __init__(self, signature_type: int):
+                        self.asset_type = "COLLATERAL"
+                        self.signature_type = signature_type
+
+                def build_balance_params(signature_type: int):
+                    return _FallbackBalanceParams(signature_type)
+
+            async def fetch_balance_snapshot(signature_type: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+                params = build_balance_params(signature_type)
+                try:
+                    await asyncio.to_thread(self._client.update_balance_allowance, params)
+                except Exception as exc:
+                    logger.warning(
+                        "Balance allowance refresh failed; using cached values",
+                        signature_type=signature_type,
+                        exc_info=exc,
+                    )
+                try:
+                    payload = await asyncio.to_thread(self._client.get_balance_allowance, params)
+                except Exception as exc:
+                    logger.warning(
+                        "Balance allowance fetch failed",
+                        signature_type=signature_type,
+                        exc_info=exc,
+                    )
+                    return None, None
+                if not isinstance(payload, dict):
+                    return None, "Unexpected balance response"
+                assume_base_units = isinstance(payload.get("allowances"), dict)
+                balance = _parse_collateral_amount(
+                    payload.get("balance"),
+                    assume_base_units=assume_base_units,
+                )
+                if balance is None:
+                    return None, "Balance value missing from response"
+
+                allowance = _parse_collateral_amount(
+                    payload.get("allowance"),
+                    assume_base_units=assume_base_units,
+                )
+                allowances = payload.get("allowances")
+                if isinstance(allowances, dict) and allowances:
+                    max_allowance: Optional[float] = None
+                    for raw_allowance in allowances.values():
+                        parsed_allowance = _parse_collateral_amount(raw_allowance, assume_base_units=True)
+                        if parsed_allowance is None:
+                            continue
+                        if max_allowance is None or parsed_allowance > max_allowance:
+                            max_allowance = parsed_allowance
+                    if max_allowance is not None:
+                        allowance = max_allowance
+
+                if allowance is None:
+                    allowance = balance
+                available = max(0.0, min(balance, allowance))
+                reserved = max(0.0, balance - available)
+                return {
+                    "signature_type": signature_type,
+                    "balance": balance,
+                    "available": available,
+                    "reserved": reserved,
+                }, None
+
+            builder = getattr(self._client, "builder", None)
+            builder_signature_type = getattr(builder, "sig_type", None)
+            if not isinstance(builder_signature_type, int):
+                builder_signature_type = 0
+            primary_signature_type = (
+                self._balance_signature_type
+                if isinstance(self._balance_signature_type, int)
+                else builder_signature_type
+            )
+
+            primary_snapshot, primary_error = await fetch_balance_snapshot(primary_signature_type)
+            if primary_error:
+                return {"error": primary_error}
+
+            best_snapshot = primary_snapshot
+            needs_probe = (
+                primary_snapshot is None
+                or (
+                    primary_snapshot["balance"] <= 0.0
+                    and primary_snapshot["available"] <= 0.0
+                )
+            )
+
+            if needs_probe:
+                for signature_type in POLYMARKET_SIGNATURE_TYPES:
+                    if signature_type == primary_signature_type:
+                        continue
+                    candidate_snapshot, candidate_error = await fetch_balance_snapshot(signature_type)
+                    if candidate_error:
+                        return {"error": candidate_error}
+                    if candidate_snapshot is None:
+                        continue
+                    if best_snapshot is None:
+                        best_snapshot = candidate_snapshot
+                        continue
+                    if candidate_snapshot["balance"] > best_snapshot["balance"]:
+                        best_snapshot = candidate_snapshot
+                        continue
+                    if (
+                        candidate_snapshot["balance"] == best_snapshot["balance"]
+                        and candidate_snapshot["available"] > best_snapshot["available"]
+                    ):
+                        best_snapshot = candidate_snapshot
+
+            if best_snapshot is None:
+                return {"error": "Could not fetch balance from CLOB API"}
+
+            selected_signature_type = int(best_snapshot["signature_type"])
+            self._balance_signature_type = selected_signature_type
+            if builder is not None and getattr(builder, "sig_type", None) != selected_signature_type:
+                builder.sig_type = selected_signature_type
+
             return {
                 "address": address,
-                "usdc_balance": 0.0,  # Would need web3 call
+                "balance": best_snapshot["balance"],
+                "available": best_snapshot["available"],
+                "reserved": best_snapshot["reserved"],
+                "currency": "USDC",
+                "timestamp": utcnow().isoformat(),
                 "positions_value": sum(p.size * p.current_price for p in self._positions.values()),
             }
         except Exception as e:

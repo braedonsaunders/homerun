@@ -568,13 +568,15 @@ class TelegramNotifier:
         order_counts = {str(row[0] or "unknown").lower(): int(row[1] or 0) for row in order_rows}
         total_notional = float(sum(float(row[2] or 0.0) for row in order_rows))
 
-        resolved_pnl = float(
+        realized_pnl = float(
             (
                 await session.execute(
                     select(func.coalesce(func.sum(TraderOrder.actual_profit), 0.0)).where(
                         TraderOrder.updated_at >= start_naive,
                         TraderOrder.updated_at < end_naive,
-                        TraderOrder.status.in_(("resolved_win", "resolved_loss")),
+                        TraderOrder.status.in_(
+                            ("resolved_win", "resolved_loss", "closed_win", "closed_loss", "win", "loss")
+                        ),
                     )
                 )
             ).scalar()
@@ -607,7 +609,7 @@ class TelegramNotifier:
             f"{_bold('Decisions:')} {_escape_md(self._format_counts(decision_counts))}",
             f"{_bold('Orders:')} {_escape_md(self._format_counts(order_counts))}",
             f"{_bold('Notional:')} {_escape_md(_format_money(total_notional))}",
-            f"{_bold('Resolved P&L:')} {_escape_md(f'{resolved_pnl:+.2f}')}",
+            f"{_bold('Realized P&L:')} {_escape_md(f'{realized_pnl:+.2f}')}",
             f"{_bold('Issues:')} {_escape_md(str(issue_count))}",
         ]
 

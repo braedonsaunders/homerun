@@ -123,6 +123,35 @@ async def test_unconsumed_signals_default_to_pending_and_use_cursor(tmp_path):
             )
             assert after_consumption == []
 
+            s3.updated_at = s3.updated_at + timedelta(seconds=30)
+            await session.commit()
+
+            refreshed = await list_unconsumed_trade_signals(
+                session,
+                trader_id=trader_id,
+                sources=["crypto"],
+                cursor_created_at=cursor_created_at,
+                cursor_signal_id=cursor_signal_id,
+                limit=10,
+            )
+            assert [row.id for row in refreshed] == [s3.id]
+
+            await record_signal_consumption(
+                session,
+                trader_id=trader_id,
+                signal_id=s3.id,
+                outcome="selected",
+            )
+            refreshed_consumed = await list_unconsumed_trade_signals(
+                session,
+                trader_id=trader_id,
+                sources=["crypto"],
+                cursor_created_at=cursor_created_at,
+                cursor_signal_id=cursor_signal_id,
+                limit=10,
+            )
+            assert refreshed_consumed == []
+
             with_submitted = await list_unconsumed_trade_signals(
                 session,
                 trader_id=trader_id,

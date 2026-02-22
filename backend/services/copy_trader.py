@@ -1305,7 +1305,7 @@ class CopyTradingService:
             pnl = sell_value - entry_cost - fee
 
             # Close the position
-            position.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
+            position.status = TradeStatus.CLOSED_WIN if pnl > 0 else TradeStatus.CLOSED_LOSS
             position.current_price = sell_price
             position.unrealized_pnl = 0.0
 
@@ -1332,7 +1332,7 @@ class CopyTradingService:
                 )
                 sim_trade = trade_result.scalar_one_or_none()
                 if sim_trade:
-                    sim_trade.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
+                    sim_trade.status = TradeStatus.CLOSED_WIN if pnl > 0 else TradeStatus.CLOSED_LOSS
                     sim_trade.actual_payout = sell_value - fee
                     sim_trade.actual_pnl = pnl
                     sim_trade.fees_paid = fee
@@ -1356,7 +1356,7 @@ class CopyTradingService:
         from services.live_execution_adapter import execute_live_order
         from services.trading import trading_service
 
-        if not trading_service.is_ready():
+        if not await trading_service.ensure_initialized():
             logger.warning("Live trading not initialized, falling back to simulation")
             return None
 
@@ -1405,7 +1405,7 @@ class CopyTradingService:
         from services.live_execution_adapter import execute_live_order
         from services.trading import trading_service
 
-        if not trading_service.is_ready():
+        if not await trading_service.ensure_initialized():
             return None
 
         token_id = trade.get("asset", trade.get("assetId", ""))

@@ -386,3 +386,108 @@ class TestBucketEdgeStrategy:
         # High market price → buy NO
         high_yes = 0.50
         assert prob < high_yes
+
+
+class TestWeatherStrategyIntentHandling:
+    def test_distribution_ignores_siblings_missing_bucket_bounds(self):
+        from services.strategies.weather_distribution import WeatherDistributionStrategy
+
+        strategy = WeatherDistributionStrategy()
+        intent = {
+            "market_id": "market-current",
+            "market_question": "Will the high be between 6.5C and 7.5C?",
+            "yes_price": 0.45,
+            "no_price": 0.55,
+            "liquidity": 2000.0,
+            "clob_token_ids": ["yes-token", "no-token"],
+            "location": "London",
+            "operator": "between",
+            "bucket_low_c": 6.5,
+            "bucket_high_c": 7.5,
+            "consensus_value_c": 7.0,
+            "source_count": 3,
+            "source_spread_c": 1.0,
+            "model_agreement": 0.95,
+            "sibling_markets": [
+                {
+                    "market_id": "market-sibling-valid",
+                    "yes_price": 0.2,
+                    "no_price": 0.8,
+                    "bucket_low_c": 9.5,
+                    "bucket_high_c": 10.5,
+                    "clob_token_ids": ["sib-yes", "sib-no"],
+                },
+                {
+                    "market_id": "market-sibling-invalid",
+                    "yes_price": 0.5,
+                    "no_price": 0.5,
+                    "bucket_low_c": None,
+                    "bucket_high_c": None,
+                },
+            ],
+        }
+
+        normalized = strategy._normalize_intent(intent)
+        market = strategy._market_from_intent(normalized)
+        assert market is not None
+
+        opportunities = strategy.detect_from_intents([normalized], [market], [])
+        assert len(opportunities) == 1
+        assert opportunities[0].strategy == "weather_distribution"
+
+    @pytest.mark.asyncio
+    async def test_ensemble_edge_accepts_numeric_string_model_fields(self):
+        from datetime import datetime, timezone
+
+        from services.data_events import DataEvent
+        from services.strategies.weather_ensemble_edge import WeatherEnsembleEdgeStrategy
+
+        strategy = WeatherEnsembleEdgeStrategy()
+        intent = {
+            "market_id": "market-ensemble",
+            "market_question": "Will the high be between 6.5C and 7.5C?",
+            "yes_price": 0.4,
+            "no_price": 0.6,
+            "liquidity": 3000.0,
+            "clob_token_ids": ["yes-token", "no-token"],
+            "location": "London",
+            "operator": "between",
+            "bucket_low_c": 6.5,
+            "bucket_high_c": 7.5,
+            "consensus_value_c": 7.0,
+            "source_count": "3",
+            "source_spread_c": 0.5,
+            "model_agreement": "0.92",
+            "ensemble_members": None,
+            "market": {
+                "id": "market-ensemble",
+                "condition_id": "market-ensemble",
+                "question": "Will the high be between 6.5C and 7.5C?",
+                "slug": "market-ensemble",
+                "event_slug": "weather-event",
+                "clob_token_ids": ["yes-token", "no-token"],
+                "liquidity": 3000.0,
+                "volume": 500.0,
+                "platform": "polymarket",
+            },
+            "weather": {
+                "location": "London",
+                "operator": "between",
+                "threshold_c_low": 6.5,
+                "threshold_c_high": 7.5,
+                "consensus_value_c": 7.0,
+                "source_count": 3,
+                "source_spread_c": 0.5,
+                "model_agreement": 0.92,
+            },
+        }
+
+        event = DataEvent(
+            event_type="weather_update",
+            source="test",
+            timestamp=datetime.now(timezone.utc),
+            payload={"intents": [intent]},
+        )
+        opportunities = await strategy.on_event(event)
+        assert len(opportunities) == 1
+        assert opportunities[0].strategy == "weather_ensemble_edge"

@@ -831,6 +831,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         "max_risk_score": 0.80,
         "base_size_usd": 20.0,
         "max_size_usd": 150.0,
+        "take_profit_pct": 8.0,
     }
 
     def __init__(self) -> None:
@@ -2263,6 +2264,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             market_id = str(market.get("condition_id") or market.get("id") or "")
             if not market_id:
                 continue
+            typed_market = self._market_from_crypto_dict(market)
+            asset = self._detect_asset(typed_market) or _normalize_asset(
+                market.get("asset") or market.get("symbol") or market.get("coin")
+            )
+            timeframe = _normalize_timeframe(market.get("timeframe"))
+            if not timeframe:
+                timeframe = _normalize_timeframe(self._detect_timeframe(typed_market))
 
             up_price = self._float(market.get("up_price"))
             down_price = self._float(market.get("down_price"))
@@ -2381,10 +2389,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             side = "YES" if direction == "buy_yes" else "NO"
             slug = market.get("slug") or market_id
 
-            # Deserialize the crypto worker dict into a typed Market at the
-            # event boundary. All downstream logic sees a typed object.
-            typed_market = self._market_from_crypto_dict(market)
-
             opp = self.create_opportunity(
                 title=f"Crypto HF: {slug} {side}",
                 description=(
@@ -2404,6 +2408,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                             "signal_family": "crypto_multistrategy",
                             "strategy_origin": "crypto_worker",
                             "selected_direction": direction,
+                            "asset": asset,
+                            "timeframe": timeframe,
                             "regime": regime,
                             "oracle_available": has_oracle,
                             "dominant_strategy": dominant_strategy,
@@ -2424,6 +2430,18 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     f"Dominant: {dominant_strategy} ({dominant_weighted_edge:.1f}%)",
                     f"Oracle: {'available' if has_oracle else 'unavailable'}",
                 ]
+                opp.strategy_context = {
+                    "source_key": "crypto",
+                    "strategy_slug": self.strategy_type,
+                    "strategy_origin": "crypto_worker",
+                    "asset": asset,
+                    "timeframe": timeframe,
+                    "regime": regime,
+                    "selected_direction": direction,
+                    "oracle_available": has_oracle,
+                    "dominant_strategy": dominant_strategy,
+                    "execution_penalty_percent": round(execution_penalty, 6),
+                }
                 opportunities.append(opp)
 
         return opportunities

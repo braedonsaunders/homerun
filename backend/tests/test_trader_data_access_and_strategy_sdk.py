@@ -263,3 +263,44 @@ def test_strategy_sdk_news_filter_validation_and_defaults():
     assert validated["require_second_source"] is True
     assert validated["min_supporting_articles"] == 3
     assert validated["min_supporting_sources"] == 4
+
+
+def test_strategy_sdk_extract_trader_signal_wallets_reads_nested_context():
+    payload = {
+        "wallets": ["0x1111111111111111111111111111111111111111"],
+        "strategy_context": {
+            "wallet_addresses": ["0x2222222222222222222222222222222222222222"],
+            "firehose": {
+                "top_wallets": [
+                    {"address": "0x3333333333333333333333333333333333333333"},
+                ]
+            },
+        },
+    }
+
+    wallets = StrategySDK.extract_trader_signal_wallets(payload)
+    assert wallets == {
+        "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+    }
+
+
+def test_strategy_sdk_match_trader_signal_scope_uses_runtime_context():
+    signal = {
+        "strategy_context": {
+            "firehose": {
+                "wallets": [
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ]
+            }
+        }
+    }
+    scope_context = StrategySDK.build_trader_scope_runtime_context(
+        {"modes": ["pool"], "individual_wallets": [], "group_ids": []},
+        pool_wallets={"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    )
+
+    matched, payload = StrategySDK.match_trader_signal_scope(signal, scope_context)
+    assert matched is True
+    assert payload["matched_modes"] == ["pool"]

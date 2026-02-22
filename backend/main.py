@@ -68,6 +68,7 @@ from services import discovery_shared_state, shared_state
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
+    enforce_manual_start_on_startup,
     read_orchestrator_control,
     read_orchestrator_snapshot,
 )
@@ -401,6 +402,16 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "Failed to apply runtime settings overrides (using env/defaults)",
                 precedence=RUNTIME_SETTINGS_PRECEDENCE,
+                exc_info=exc,
+            )
+
+        try:
+            async with AsyncSessionLocal() as session:
+                await enforce_manual_start_on_startup(session)
+            logger.info("Trader orchestrator reset to manual-start mode at startup")
+        except Exception as exc:
+            logger.warning(
+                "Failed to reset trader orchestrator to manual-start mode at startup",
                 exc_info=exc,
             )
 

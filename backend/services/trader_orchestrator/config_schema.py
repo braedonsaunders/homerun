@@ -15,166 +15,10 @@ from services.trader_orchestrator.sources.registry import (
 from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
 )
+from services.strategy_sdk import StrategySDK
 from services.trader_orchestrator.templates import TRADER_TEMPLATES
 
 logger = logging.getLogger(__name__)
-
-
-_DEFAULT_METADATA = {
-    "cadence_profile": "custom",
-    "trading_window_utc": {"start": "00:00", "end": "23:59"},
-    "tags": [],
-    "notes": "",
-    "resume_policy": "resume_full",
-}
-
-_SHARED_RISK_FIELDS: list[dict[str, Any]] = [
-    {"key": "max_open_positions", "label": "Max Open Positions", "type": "integer", "min": 1, "max": 1000},
-    {"key": "max_open_orders", "label": "Max Open Orders", "type": "integer", "min": 1, "max": 2000},
-    {"key": "max_orders_per_cycle", "label": "Max Orders / Cycle", "type": "integer", "min": 1, "max": 1000},
-    {"key": "max_trade_notional_usd", "label": "Max Trade Notional (USD)", "type": "number", "min": 1},
-    {"key": "max_per_market_exposure_usd", "label": "Max Per-Market Exposure (USD)", "type": "number", "min": 1},
-    {"key": "max_daily_loss_usd", "label": "Max Daily Loss (USD)", "type": "number", "min": 1},
-    {"key": "cooldown_seconds", "label": "Cooldown (seconds)", "type": "integer", "min": 0},
-    {
-        "key": "max_unhedged_notional_usd",
-        "label": "Max Unhedged Notional (USD)",
-        "type": "number",
-        "min": 0,
-    },
-    {"key": "hedge_timeout_seconds", "label": "Hedge Timeout (seconds)", "type": "integer", "min": 1, "max": 3600},
-    {
-        "key": "session_timeout_seconds",
-        "label": "Session Timeout (seconds)",
-        "type": "integer",
-        "min": 1,
-        "max": 86400,
-    },
-    {"key": "max_reprice_attempts", "label": "Max Reprice Attempts", "type": "integer", "min": 0, "max": 50},
-    {"key": "leg_fill_tolerance_ratio", "label": "Leg Fill Tolerance Ratio", "type": "number", "min": 0, "max": 1},
-    {"key": "pair_lock", "label": "Pair Lock", "type": "boolean"},
-    {
-        "key": "execution_policy",
-        "label": "Execution Policy",
-        "type": "enum",
-        "options": [
-            "SINGLE_LEG",
-            "PARALLEL_MAKER",
-            "SEQUENTIAL_HEDGE",
-            "REPRICE_LOOP",
-            "TIMEBOX_EXIT",
-            "PAIR_LOCK",
-        ],
-    },
-]
-
-_SHARED_EXIT_FIELDS: list[dict[str, Any]] = [
-    {
-        "key": "take_profit_pct",
-        "label": "Take Profit (%)",
-        "type": "number",
-        "description": "Close position when profit exceeds this percentage",
-        "required": False,
-    },
-    {
-        "key": "stop_loss_pct",
-        "label": "Stop Loss (%)",
-        "type": "number",
-        "description": "Close position when loss exceeds this percentage",
-        "required": False,
-    },
-    {
-        "key": "trailing_stop_pct",
-        "label": "Trailing Stop (%)",
-        "type": "number",
-        "description": "Close if price falls this % below high water mark",
-        "required": False,
-    },
-    {
-        "key": "max_hold_minutes",
-        "label": "Max Hold (minutes)",
-        "type": "number",
-        "description": "Force close after this many minutes",
-        "required": False,
-    },
-    {
-        "key": "min_hold_minutes",
-        "label": "Min Hold (minutes)",
-        "type": "number",
-        "description": "Don't exit before this many minutes",
-        "required": False,
-    },
-    {
-        "key": "resolve_only",
-        "label": "Resolve Only",
-        "type": "boolean",
-        "description": "Only close on market resolution (ignore TP/SL)",
-        "required": False,
-    },
-]
-
-_RUNTIME_FIELDS: list[dict[str, Any]] = [
-    {
-        "key": "resume_policy",
-        "label": "Resume Policy",
-        "type": "enum",
-        "options": [
-            {
-                "value": "resume_full",
-                "label": "Resume Full",
-                "description": "Manage existing positions and continue processing new signals.",
-            },
-            {
-                "value": "manage_only",
-                "label": "Manage Existing Only",
-                "description": "Manage/exit existing positions without opening new positions.",
-            },
-            {
-                "value": "flatten_then_start",
-                "label": "Flatten Then Start",
-                "description": "Close existing positions first, then enable new entries.",
-            },
-        ],
-    },
-    {
-        "key": "trading_window_utc",
-        "label": "Trading Window (UTC)",
-        "type": "object",
-        "properties": [
-            {"key": "start", "type": "time_hhmm"},
-            {"key": "end", "type": "time_hhmm"},
-        ],
-    },
-]
-
-_TRADERS_SCOPE_FIELDS = [
-    {
-        "key": "traders_scope",
-        "label": "Traders Scope",
-        "type": "object",
-        "properties": [
-            {
-                "key": "modes",
-                "label": "Modes",
-                "type": "array[string]",
-                "options": ["tracked", "pool", "individual", "group"],
-                "required": True,
-            },
-            {
-                "key": "individual_wallets",
-                "label": "Individual Wallets",
-                "type": "array[string]",
-                "required_if_mode": "individual",
-            },
-            {
-                "key": "group_ids",
-                "label": "Group IDs",
-                "type": "array[string]",
-                "required_if_mode": "group",
-            },
-        ],
-    }
-]
 
 
 def _normalize_strategy_source_key(value: Any) -> str:
@@ -374,7 +218,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
         if adapter.key == "traders":
             default_config["traders_scope"] = dict(
                 (source_defaults.get("traders") or {}).get("traders_scope")
-                or {"modes": ["tracked", "pool"], "individual_wallets": [], "group_ids": []}
+                or StrategySDK.trader_scope_defaults()
             )
 
         sources.append(
@@ -387,15 +231,20 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
                 "default_strategy_key": default_strategy_key,
                 "strategy_options": strategy_options,
                 "default_config": default_config,
-                "scope_fields": list(_TRADERS_SCOPE_FIELDS if adapter.key == "traders" else []),
+                "scope_fields": StrategySDK.trader_scope_fields_schema() if adapter.key == "traders" else [],
             }
         )
 
     return {
-        "version": "2026-02-17",
+        "version": "2026-02-21",
         "sources": sources,
-        "shared_risk_fields": list(_SHARED_RISK_FIELDS),
-        "shared_exit_fields": list(_SHARED_EXIT_FIELDS),
-        "runtime_fields": list(_RUNTIME_FIELDS),
-        "default_runtime_metadata": dict(_DEFAULT_METADATA),
+        "shared_risk_fields": StrategySDK.trader_risk_fields_schema(),
+        "shared_risk_defaults": StrategySDK.trader_risk_defaults(),
+        "shared_exit_fields": [],
+        "runtime_fields": StrategySDK.trader_runtime_fields_schema(),
+        "default_runtime_metadata": StrategySDK.trader_runtime_defaults(),
+        "trader_opportunity_filters_schema": StrategySDK.trader_opportunity_filter_config_schema(),
+        "trader_opportunity_filters_defaults": StrategySDK.trader_opportunity_filter_defaults(),
+        "copy_trading_schema": StrategySDK.copy_trading_config_schema(),
+        "copy_trading_defaults": StrategySDK.copy_trading_defaults(),
     }

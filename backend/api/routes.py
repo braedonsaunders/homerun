@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from typing import Literal, Optional
+from fastapi.params import Param
+from typing import Any, Literal, Optional
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from utils.utcnow import utcnow, utcfromtimestamp
@@ -182,6 +183,32 @@ def _serialize_with_sub_strategy(opportunity: object) -> dict:
     return payload
 
 
+def _resolve_fastapi_param(value: Any) -> Any:
+    if isinstance(value, Param):
+        return value.default
+    return value
+
+
+def _coerce_float_param(value: Any, default: float) -> float:
+    resolved = _resolve_fastapi_param(value)
+    if resolved is None:
+        return default
+    try:
+        return float(resolved)
+    except Exception:
+        return default
+
+
+def _coerce_int_param(value: Any, default: int) -> int:
+    resolved = _resolve_fastapi_param(value)
+    if resolved is None:
+        return default
+    try:
+        return int(resolved)
+    except Exception:
+        return default
+
+
 async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str]:
     """Resolve strategy param to list of strategy type strings.
 
@@ -189,6 +216,7 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
         - Built-in strategy type: "basic", "negrisk", etc.
         - Execution strategy key: "slug"
     """
+    strategy_param = _resolve_fastapi_param(strategy_param)
     if not strategy_param:
         return []
     strategy_param = strategy_param.strip().lower()
@@ -210,6 +238,18 @@ async def _list_filtered_opportunities(
     sub_strategy: Optional[str],
     source: Literal["markets", "traders", "all"],
 ) -> list[Opportunity]:
+    min_profit = _coerce_float_param(min_profit, 0.0)
+    max_risk = _coerce_float_param(max_risk, 1.0)
+    min_liquidity = _coerce_float_param(min_liquidity, 0.0)
+    strategy = _resolve_fastapi_param(strategy)
+    search = _resolve_fastapi_param(search)
+    category = _resolve_fastapi_param(category)
+    sort_by = _resolve_fastapi_param(sort_by)
+    sort_dir = _resolve_fastapi_param(sort_dir) or "desc"
+    exclude_strategy = _resolve_fastapi_param(exclude_strategy)
+    sub_strategy = _resolve_fastapi_param(sub_strategy)
+    source = _resolve_fastapi_param(source) or "markets"
+
     strategies = await _resolve_strategy_to_filter(strategy)
     filter = OpportunityFilter(
         min_profit=min_profit / 100,
@@ -362,6 +402,8 @@ async def get_opportunity_ids(
         description="Opportunity source: markets, traders, all",
     ),
 ):
+    limit = _coerce_int_param(limit, 500)
+    offset = _coerce_int_param(offset, 0)
     opportunities = await _list_filtered_opportunities(
         session,
         min_profit=min_profit,

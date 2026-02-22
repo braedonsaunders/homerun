@@ -137,7 +137,7 @@ async def test_mark_to_market_updates_realized_pnl_and_status(tmp_path, monkeypa
             order = await session.get(TraderOrder, "order-1")
             assert result["updated"] == 1
             assert order is not None
-            assert order.status == "resolved_win"
+            assert order.status == "closed_win"
             assert pytest.approx(float(order.actual_profit or 0.0), rel=1e-9) == 30.0
     finally:
         await engine.dispose()

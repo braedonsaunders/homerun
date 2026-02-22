@@ -450,6 +450,7 @@ class BaseStrategy(ABC):
     def __init__(self):
         self.fee = settings.POLYMARKET_FEE
         self.min_profit = settings.MIN_PROFIT_THRESHOLD
+        self.config = dict(self.default_config)
         # Strategy state — persisted across detect() cycles
         self._state: dict = {}
 

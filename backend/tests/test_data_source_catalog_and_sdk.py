@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -403,7 +402,7 @@ async def test_data_source_sdk_applies_max_age_days_retention(tmp_path, monkeypa
 
 def test_events_seed_sources_are_self_contained():
     events_seeds = [seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.source_key == "events"]
-    assert len(events_seeds) == 6
+    assert len(events_seeds) == 13
     assert {seed.slug for seed in events_seeds} == {
         "events_acled",
         "events_gdelt_tensions",
@@ -411,6 +410,13 @@ def test_events_seed_sources_are_self_contained():
         "events_infrastructure",
         "events_gdelt_news",
         "events_usgs",
+        "events_ucdp_conflicts",
+        "events_trade_dependencies",
+        "events_chokepoint_reference",
+        "events_country_instability",
+        "events_airplanes_live",
+        "events_ais_ships",
+        "events_nasa_firms",
     }
 
     for seed in events_seeds:

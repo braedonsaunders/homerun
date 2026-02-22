@@ -82,7 +82,7 @@ async def execute_live_order(
             error_message="Order size must be greater than zero.",
             payload={**base_payload, "submission": "rejected"},
         )
-    if not trading_service.is_ready():
+    if not await trading_service.ensure_initialized():
         return LiveOrderExecution(
             status="failed",
             effective_price=None,

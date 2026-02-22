@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -159,6 +160,41 @@ def _extract_market_context_from_finding(
         if isinstance(market, dict):
             return market
     return {}
+
+
+def _merge_market_context(
+    base_context: dict[str, Any],
+    override_context: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(base_context, dict):
+        base_context = {}
+    if not isinstance(override_context, dict):
+        return dict(base_context)
+
+    merged = dict(base_context)
+    for key, value in override_context.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, list) and not value:
+            continue
+        if isinstance(value, dict) and not value:
+            continue
+        merged[key] = value
+    return merged
+
+
+def _merged_market_context_for_finding(
+    finding: NewsWorkflowFinding,
+    market_context_overrides: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    base_context = _extract_market_context_from_finding(finding)
+    if not isinstance(market_context_overrides, dict):
+        return base_context
+    finding_id = str(getattr(finding, "id", "") or "").strip()
+    override = market_context_overrides.get(finding_id) if finding_id else None
+    return _merge_market_context(base_context, override)
 
 
 def _build_market_link_payload(
@@ -380,8 +416,9 @@ def _extract_outcome_prices_from_market_context(market_context: dict[str, Any]) 
 
 def _history_candidates_for_finding(
     finding: NewsWorkflowFinding,
+    market_context: Optional[dict[str, Any]] = None,
 ) -> list[str]:
-    context = _extract_market_context_from_finding(finding)
+    context = market_context if isinstance(market_context, dict) else _extract_market_context_from_finding(finding)
     candidates: list[str] = []
 
     for raw_id in (
@@ -450,6 +487,98 @@ def _extract_market_token_ids_from_context(
     return ordered[:2]
 
 
+async def _resolve_market_context_overrides(
+    findings: list[NewsWorkflowFinding],
+) -> dict[str, dict[str, Any]]:
+    if not findings:
+        return {}
+
+    try:
+        from services.polymarket import polymarket_client
+    except Exception:
+        return {}
+
+    pending_by_event_slug: dict[str, list[tuple[str, str, str]]] = {}
+    for finding in findings:
+        finding_id = str(getattr(finding, "id", "") or "").strip()
+        if not finding_id:
+            continue
+        market_context = _extract_market_context_from_finding(finding)
+        if len(_extract_market_token_ids_from_context(market_context)) >= 2:
+            continue
+        event_slug = _clean_market_text(market_context.get("event_slug") or market_context.get("eventSlug"))
+        if not event_slug:
+            continue
+        market_id = normalize_market_id(
+            market_context.get("id")
+            or market_context.get("market_id")
+            or getattr(finding, "market_id", None)
+        ) or ""
+        market_slug = _clean_market_text(market_context.get("slug") or market_context.get("market_slug"))
+        pending_by_event_slug.setdefault(event_slug, []).append((finding_id, market_id, market_slug))
+
+    if not pending_by_event_slug:
+        return {}
+
+    semaphore = asyncio.Semaphore(6)
+
+    async def _fetch_event(slug: str) -> tuple[str, Any]:
+        async with semaphore:
+            try:
+                event = await polymarket_client.get_event_by_slug(slug)
+            except Exception:
+                event = None
+            return slug, event
+
+    overrides: dict[str, dict[str, Any]] = {}
+    fetched = await asyncio.gather(
+        *[_fetch_event(slug) for slug in pending_by_event_slug.keys()],
+        return_exceptions=True,
+    )
+    for item in fetched:
+        if isinstance(item, Exception):
+            continue
+        event_slug, event = item
+        if event is None:
+            continue
+
+        by_market_id: dict[str, dict[str, Any]] = {}
+        by_condition_id: dict[str, dict[str, Any]] = {}
+        by_slug: dict[str, dict[str, Any]] = {}
+        for market in getattr(event, "markets", []) or []:
+            market_id = normalize_market_id(getattr(market, "id", None))
+            condition_id = normalize_market_id(getattr(market, "condition_id", None))
+            market_slug = _clean_market_text(getattr(market, "slug", ""))
+            token_ids = [str(token_id).strip() for token_id in list(getattr(market, "clob_token_ids", []) or []) if str(token_id or "").strip()]
+            market_payload = {
+                "id": str(getattr(market, "id", "") or ""),
+                "condition_id": str(getattr(market, "condition_id", "") or ""),
+                "slug": market_slug or None,
+                "event_slug": event_slug,
+                "platform": "polymarket",
+                "question": str(getattr(market, "question", "") or "").strip() or None,
+                "token_ids": token_ids,
+                "clob_token_ids": token_ids,
+                "outcome_prices": list(getattr(market, "outcome_prices", []) or []),
+            }
+            if market_id:
+                by_market_id[market_id] = market_payload
+            if condition_id:
+                by_condition_id[condition_id] = market_payload
+            if market_slug:
+                by_slug[market_slug] = market_payload
+
+        for finding_id, market_id, market_slug in pending_by_event_slug.get(event_slug, []):
+            resolved = None
+            if market_id:
+                resolved = by_market_id.get(market_id) or by_condition_id.get(market_id)
+            if resolved is None and market_slug:
+                resolved = by_slug.get(market_slug)
+            if isinstance(resolved, dict):
+                overrides[finding_id] = resolved
+    return overrides
+
+
 def _resolve_finding_market_id_for_backfill(
     finding: NewsWorkflowFinding,
     market_context: dict[str, Any],
@@ -469,6 +598,8 @@ def _resolve_finding_market_id_for_backfill(
 
 async def _load_shared_backfill_market_history(
     findings: list[NewsWorkflowFinding],
+    *,
+    market_context_overrides: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, list[dict[str, float]]]:
     if not findings:
         return {}
@@ -481,7 +612,10 @@ async def _load_shared_backfill_market_history(
 
     opportunities: list[Opportunity] = []
     for finding in findings:
-        market_context = _extract_market_context_from_finding(finding)
+        market_context = _merged_market_context_for_finding(
+            finding,
+            market_context_overrides=market_context_overrides,
+        )
         market_id = _resolve_finding_market_id_for_backfill(finding, market_context)
         if not market_id:
             continue
@@ -545,6 +679,7 @@ async def _load_shared_backfill_market_history(
             opportunities,
             now=datetime.now(timezone.utc),
             timeout_seconds=12.0,
+            block_for_backfill=True,
         )
     except Exception:
         return {}
@@ -564,10 +699,12 @@ async def _load_shared_backfill_market_history(
 def _build_finding_market_snapshot(
     finding: NewsWorkflowFinding,
     market_history: dict[str, list[dict[str, float]]],
+    *,
+    market_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    market_context = _extract_market_context_from_finding(finding)
+    market_context = market_context if isinstance(market_context, dict) else _extract_market_context_from_finding(finding)
     history: list[dict[str, float]] = []
-    for candidate in _history_candidates_for_finding(finding):
+    for candidate in _history_candidates_for_finding(finding, market_context=market_context):
         points = market_history.get(candidate)
         if isinstance(points, list) and len(points) >= 2:
             history = points
@@ -830,10 +967,10 @@ async def get_findings(
     if min_edge > 0:
         query = query.where(NewsWorkflowFinding.edge_percent >= min_edge)
 
-    actionable_filter = (
-        NewsWorkflowFinding.actionable.is_(True)
-        & (NewsWorkflowFinding.edge_percent > 0.0)
-        & (NewsWorkflowFinding.confidence > 0.0)
+    actionable_filter = NewsWorkflowFinding.actionable.is_(True)
+    informative_filter = (
+        (NewsWorkflowFinding.edge_percent > 0.0)
+        | (NewsWorkflowFinding.confidence > 0.0)
     )
 
     if actionable_only:
@@ -841,7 +978,7 @@ async def get_findings(
     elif not include_debug_rejections:
         query = query.where(
             actionable_filter
-            | (NewsWorkflowFinding.confidence > 0.0)
+            | informative_filter
         )
 
     query = query.order_by(desc(NewsWorkflowFinding.created_at))
@@ -860,19 +997,31 @@ async def get_findings(
         )
         cached_rows = article_result.scalars().all()
         article_cache_by_id = {row.article_id: row for row in cached_rows if row.article_id}
+    market_context_overrides = await _resolve_market_context_overrides(rows)
     market_history = await _load_scanner_market_history(session)
-    shared_history = await _load_shared_backfill_market_history(rows)
+    shared_history = await _load_shared_backfill_market_history(
+        rows,
+        market_context_overrides=market_context_overrides,
+    )
     if shared_history:
         market_history.update(shared_history)
 
     findings = []
     for r in rows:
+        market_context = _merged_market_context_for_finding(
+            r,
+            market_context_overrides=market_context_overrides,
+        )
         supporting_articles = _build_supporting_articles_from_finding(r, article_cache_by_id=article_cache_by_id)
-        market_snapshot = _build_finding_market_snapshot(r, market_history)
+        market_snapshot = _build_finding_market_snapshot(
+            r,
+            market_history,
+            market_context=market_context,
+        )
         market_links = _build_market_link_payload(
             market_id=r.market_id,
             market_question=r.market_question,
-            market_context=_extract_market_context_from_finding(r),
+            market_context=market_context,
         )
         findings.append(
             {

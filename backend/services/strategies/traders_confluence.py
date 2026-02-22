@@ -80,6 +80,7 @@ class TradersConfluenceStrategy(BaseStrategy):
         "min_wallet_count": 2,
         "max_entry_price": 0.85,
         "risk_base_score": 0.40,
+        "take_profit_pct": 12.0,
         "firehose_require_active_signal": True,
         "firehose_require_tradable_market": True,
         "firehose_exclude_crypto_markets": False,
@@ -695,19 +696,44 @@ class TradersConfluenceStrategy(BaseStrategy):
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         source = str(getattr(signal, "source", "") or "").strip().lower()
+        strategy_context = payload.get("strategy_context") if isinstance(payload.get("strategy_context"), dict) else {}
+        if not strategy_context and isinstance(getattr(signal, "strategy_context_json", None), dict):
+            strategy_context = dict(getattr(signal, "strategy_context_json") or {})
+        firehose = strategy_context.get("firehose") if isinstance(strategy_context.get("firehose"), dict) else {}
 
         payload_channel = str(payload.get("traders_channel") or "").strip().lower()
-        if payload_channel:
+        if not payload_channel:
+            payload_channel = str(strategy_context.get("traders_channel") or "").strip().lower()
+        if not payload_channel:
+            payload_channel = str(firehose.get("signal_type") or "").strip().lower()
+
+        signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
+        strategy_slug = str(strategy_context.get("strategy_slug") or "").strip().lower()
+        if source == "traders" and strategy_slug == self.strategy_type:
+            channel = "confluence"
+        elif payload_channel in {"multi_wallet_buy", "multi_wallet_sell", "single_wallet_buy", "single_wallet_sell"}:
+            channel = "confluence"
+        elif payload_channel:
             channel = payload_channel
+        elif signal_type == "confluence":
+            channel = "confluence"
         else:
-            signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
-            if signal_type == "confluence":
-                channel = "confluence"
-            else:
-                channel = signal_type or "unknown"
+            channel = signal_type or "unknown"
 
         min_confluence_strength = to_confidence(params.get("min_confluence_strength", 0.55), 0.55)
-        confluence_strength = to_confidence(payload.get("strength", payload.get("conviction_score", 0.0)), 0.0)
+        confluence_strength = to_confidence(
+            payload.get(
+                "strength",
+                payload.get(
+                    "conviction_score",
+                    strategy_context.get(
+                        "confluence_strength",
+                        firehose.get("strength", firehose.get("conviction_score", 0.0)),
+                    ),
+                ),
+            ),
+            0.0,
+        )
 
         self._confluence_strength = confluence_strength
 
@@ -717,7 +743,12 @@ class TradersConfluenceStrategy(BaseStrategy):
 
         return [
             DecisionCheck("source", "Unified traders source", source_ok, detail="Requires source=traders."),
-            DecisionCheck("channel", "Supported traders channel", channel_ok, detail="Requires confluence channel."),
+            DecisionCheck(
+                "channel",
+                "Supported traders channel",
+                channel_ok,
+                detail=f"channel={channel}; requires confluence",
+            ),
             DecisionCheck(
                 "channel_threshold",
                 "Channel strength threshold",
@@ -742,6 +773,15 @@ class TradersConfluenceStrategy(BaseStrategy):
         """Traders confluence: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = self._effective_config().get("take_profit_pct", 12.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 12.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------

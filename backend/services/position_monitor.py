@@ -206,7 +206,7 @@ class PositionMonitor:
             pnl -= fee
 
         # Update position
-        position.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+        position.status = TradeStatus.CLOSED_WIN if is_win else TradeStatus.CLOSED_LOSS
         position.current_price = exit_price
         position.unrealized_pnl = 0  # Now realized
 
@@ -221,7 +221,7 @@ class PositionMonitor:
             )
             trade = trade_result.scalar_one_or_none()
             if trade:
-                trade.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+                trade.status = TradeStatus.CLOSED_WIN if is_win else TradeStatus.CLOSED_LOSS
                 trade.actual_pnl = pnl
                 trade.actual_payout = position.entry_cost + pnl
                 trade.fees_paid = fee

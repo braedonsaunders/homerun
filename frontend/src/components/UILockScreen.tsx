@@ -24,6 +24,18 @@ export default function UILockScreen({
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    if (!visible) return
+    const originalOverflow = document.body.style.overflow
+    const originalTouchAction = document.body.style.touchAction
+    document.body.style.overflow = 'hidden'
+    document.body.style.touchAction = 'none'
+    return () => {
+      document.body.style.overflow = originalOverflow
+      document.body.style.touchAction = originalTouchAction
+    }
+  }, [visible])
+
+  useEffect(() => {
     if (!visible || checking) return
     setPassword('')
     const timer = window.setTimeout(() => {
@@ -43,13 +55,13 @@ export default function UILockScreen({
     <AnimatePresence>
       {visible && (
         <motion.div
-          className="fixed inset-0 z-[140] overflow-hidden"
+          className="fixed inset-0 z-[320] overflow-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.25 }}
         >
-          <div className="absolute inset-0 bg-slate-950/96" />
+          <div className="absolute inset-0 bg-slate-950/64 backdrop-blur-[2px]" />
           <motion.div
             className="pointer-events-none absolute -top-24 left-[-8%] h-72 w-72 rounded-full bg-emerald-500/20 blur-3xl"
             initial={{ x: -40, y: -20, opacity: 0.4 }}

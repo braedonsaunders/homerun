@@ -26,7 +26,7 @@ from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy, DecisionCheck, ScoringWeights, SizingConfig, ExitDecision
 from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float, to_confidence
-from utils.signal_helpers import weather_metadata
+from utils.signal_helpers import weather_signal_context
 from services.weather.signal_engine import (
     compute_confidence,
 )
@@ -513,7 +513,7 @@ class BaseWeatherStrategy(BaseStrategy):
     _weather_source_spread_c: float = 0.0
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
-        weather = weather_metadata(payload)
+        weather = weather_signal_context(signal)
 
         min_agreement = to_confidence(params.get("min_model_agreement", 0.62), 0.62)
         min_source_count = max(1, int(to_float(params.get("min_source_count", 2), 2)))
@@ -521,7 +521,7 @@ class BaseWeatherStrategy(BaseStrategy):
         max_entry_price = max(0.05, min(0.98, to_float(params.get("max_entry_price", 0.8), 0.8)))
 
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)
-        agreement = to_confidence(weather.get("agreement", payload.get("model_agreement", 0.0)), 0.0)
+        agreement = to_confidence(weather.get("agreement", weather.get("model_agreement", 0.0)), 0.0)
         source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
         source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
 

@@ -73,7 +73,18 @@ clean: stop
 
 # Install backend only
 install-backend:
-	@cd backend && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+	@cd backend && \
+	PY_CMD="$$(for p in python3.13 python3.12 python3.11 python3.10 python3; do \
+		if command -v $$p >/dev/null 2>&1 && $$p -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 and 10 <= sys.version_info.minor <= 13 else 1)' >/dev/null 2>&1; then \
+			echo $$p; \
+			break; \
+		fi; \
+	done)"; \
+	if [ -z "$$PY_CMD" ]; then \
+		echo "Error: Python 3.10-3.13 is required for backend install."; \
+		exit 1; \
+	fi; \
+	$$PY_CMD -m venv venv && source venv/bin/activate && pip install -r requirements.txt && pip install -r requirements-trading.txt
 
 # Install frontend only
 install-frontend:

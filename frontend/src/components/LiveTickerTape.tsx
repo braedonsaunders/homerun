@@ -3,7 +3,6 @@ import { cn } from '../lib/utils'
 import {
   AlertTriangle,
   BarChart3,
-  Bot,
   TrendingUp,
   TrendingDown,
   Zap,
@@ -50,13 +49,6 @@ interface RealtimeMessage {
   data?: Record<string, unknown> | null
 }
 
-interface OrchestratorControl {
-  mode?: string
-  is_enabled?: boolean
-  is_paused?: boolean
-  kill_switch?: boolean
-}
-
 interface OrchestratorSnapshot {
   running: boolean
   enabled: boolean
@@ -75,7 +67,6 @@ interface TickerTapeProps {
   workerHealth: WorkerHealthSummary
   sourceCounts: SourceCounts
   signalTotals?: SignalTotals | null
-  orchestratorControl?: OrchestratorControl | null
   lastMessage?: RealtimeMessage | null
   activeStrategies?: number
   className?: string
@@ -87,7 +78,7 @@ interface TickerItem {
   value: string
   secondaryValue?: string
   change?: number
-  icon?: 'up' | 'down' | 'zap' | 'dollar' | 'shield' | 'clock' | 'activity' | 'target' | 'alert' | 'bot' | 'chart'
+  icon?: 'up' | 'down' | 'zap' | 'dollar' | 'shield' | 'clock' | 'activity' | 'target' | 'alert' | 'chart'
   badge?: string
   badgeColor?: string
 }
@@ -114,7 +105,6 @@ const ICON_MAP = {
   activity: Activity,
   target: Target,
   alert: AlertTriangle,
-  bot: Bot,
   chart: BarChart3,
 }
 
@@ -128,7 +118,6 @@ const ICON_COLOR_MAP: Record<string, string> = {
   activity: 'text-emerald-400',
   target: 'text-blue-400',
   alert: 'text-red-400',
-  bot: 'text-violet-400',
   chart: 'text-sky-400',
 }
 
@@ -353,7 +342,6 @@ export default function LiveTickerTape({
   workerHealth,
   sourceCounts,
   signalTotals,
-  orchestratorControl,
   lastMessage,
   activeStrategies,
   className,
@@ -436,11 +424,6 @@ export default function LiveTickerTape({
   const signalExecuted = normalizeCount(signalTotals?.executed)
   const signalFailed = normalizeCount(signalTotals?.failed)
 
-  const mode = String(orchestratorControl?.mode || 'paper').toUpperCase()
-  const killSwitch = Boolean(orchestratorControl?.kill_switch)
-  const orchestratorEnabled = Boolean(orchestratorControl?.is_enabled)
-  const orchestratorPaused = Boolean(orchestratorControl?.is_paused)
-  const orchestratorActive = orchestratorEnabled && !orchestratorPaused && !killSwitch
   const orchestratorDecisions = normalizeCount(orchestratorSnapshot?.decisions_count)
   const orchestratorOrders = normalizeCount(orchestratorSnapshot?.orders_count)
   const orchestratorOpenOrders = normalizeCount(orchestratorSnapshot?.open_orders)
@@ -542,16 +525,6 @@ export default function LiveTickerTape({
     }
 
     items.push({
-      id: 'orchestrator-mode',
-      label: 'ORCH',
-      value: `${mode} ${orchestratorActive ? 'ACTIVE' : 'PAUSED'}`,
-      icon: 'bot',
-      change: orchestratorActive ? 1 : -1,
-      badge: killSwitch ? 'KILL SWITCH' : undefined,
-      badgeColor: killSwitch ? 'text-red-400 bg-red-400/10' : undefined,
-    })
-
-    items.push({
       id: 'orchestrator-funnel',
       label: 'FUNNEL',
       value: `${compactCount(orchestratorDecisions)}\u2192${compactCount(orchestratorOrders)}`,
@@ -625,11 +598,8 @@ export default function LiveTickerTape({
     activeStrategies,
     globallyPaused,
     isConnected,
-    killSwitch,
     lastEvent,
     lastScan,
-    mode,
-    orchestratorActive,
     orchestratorConversion,
     orchestratorDailyPnl,
     orchestratorDecisions,

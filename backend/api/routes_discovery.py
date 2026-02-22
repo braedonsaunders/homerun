@@ -44,11 +44,8 @@ from services.worker_state import read_worker_snapshot
 from services.polymarket import polymarket_client
 from services.trader_data_access import (
     annotate_trader_signal_source_context,
-    get_strategy_filtered_trader_signals,
-    get_trader_confluence_signals as load_trader_confluence_signals,
-    get_trader_tags as load_trader_tags,
-    get_traders_by_tag as load_traders_by_tag,
 )
+from services.strategy_sdk import StrategySDK
 from utils.validation import validate_eth_address
 
 _safe_float = partial(safe_float, reject_nan_inf=True)
@@ -87,7 +84,7 @@ async def _load_tracked_trader_opportunities(
     limit: int,
     include_filtered: bool,
 ) -> list[dict[str, Any]]:
-    return await get_strategy_filtered_trader_signals(
+    return await StrategySDK.get_trader_strategy_signals(
         limit=limit,
         include_filtered=include_filtered,
     )
@@ -1406,7 +1403,7 @@ async def get_confluence_signals(
     among skilled traders.
     """
     try:
-        signals = await load_trader_confluence_signals(
+        signals = await StrategySDK.get_trader_confluence_signals(
             min_strength=min_strength,
             min_tier=min_tier,
             limit=limit,
@@ -2685,7 +2682,7 @@ async def get_all_tags():
     wallets currently carrying that tag.
     """
     try:
-        tags = await load_trader_tags()
+        tags = await StrategySDK.get_trader_tags()
         return {"tags": tags}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2703,7 +2700,7 @@ async def get_wallets_by_tag(
     sorted by rank score.
     """
     try:
-        wallets = await load_traders_by_tag(tag_name=tag_name, limit=limit)
+        wallets = await StrategySDK.get_traders_by_tag(tag_name=tag_name, limit=limit)
         return {"wallets": wallets}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -186,9 +186,7 @@ async def get_strategy_filtered_trader_opportunities(
 ) -> list[dict[str, Any]]:
     safe_limit = max(1, int(limit))
     firehose_scan_limit = max(250, safe_limit * 6)
-    from services.trader_data_access import get_trader_firehose_signals
-
-    firehose_rows = await get_trader_firehose_signals(
+    firehose_rows = await StrategySDK.get_trader_firehose_signals(
         limit=firehose_scan_limit,
         include_filtered=include_filtered,
         include_source_context=False,

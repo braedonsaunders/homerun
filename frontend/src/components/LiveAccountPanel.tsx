@@ -55,6 +55,7 @@ function PolymarketAccount() {
     queryFn: getTradingStatus,
     refetchInterval: 10000,
   })
+  const polymarketConnected = Boolean(tradingStatus?.authenticated ?? tradingStatus?.initialized)
 
   const { data: livePositions = [], isLoading } = useQuery({
     queryKey: ['live-positions'],
@@ -108,10 +109,10 @@ function PolymarketAccount() {
               variant="outline"
               className={cn(
                 "rounded-lg border-transparent px-3 py-1.5 text-xs font-medium",
-                tradingStatus?.initialized ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-muted-foreground"
+                polymarketConnected ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-muted-foreground"
               )}
             >
-              {tradingStatus?.initialized ? 'Connected' : 'Not Initialized'}
+              {polymarketConnected ? 'Connected' : 'Not Connected'}
             </Badge>
           </div>
         </div>

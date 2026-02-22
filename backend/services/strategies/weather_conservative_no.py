@@ -32,7 +32,7 @@ from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
 from utils.converters import to_float, to_confidence
-from utils.signal_helpers import weather_metadata
+from utils.signal_helpers import weather_signal_context
 from services.weather.signal_engine import (
     compute_confidence,
     ensemble_bucket_probability,
@@ -115,6 +115,35 @@ class WeatherConservativeNoStrategy(BaseStrategy):
                 normalized["bucket_low_c"] = weather_payload.get("threshold_c_low")
             if normalized.get("bucket_high_c") is None and weather_payload.get("threshold_c_high") is not None:
                 normalized["bucket_high_c"] = weather_payload.get("threshold_c_high")
+            threshold_raw = (
+                normalized.get("threshold_c")
+                if normalized.get("threshold_c") is not None
+                else weather_payload.get("threshold_c")
+            )
+            try:
+                threshold_c = float(threshold_raw) if threshold_raw is not None else None
+            except Exception:
+                threshold_c = None
+            if threshold_c is not None and (
+                normalized.get("bucket_low_c") is None or normalized.get("bucket_high_c") is None
+            ):
+                operator = str(
+                    normalized.get("operator")
+                    if normalized.get("operator") is not None
+                    else weather_payload.get("operator") or ""
+                ).strip().lower()
+                span_c = 25.0
+                if normalized.get("bucket_low_c") is None and normalized.get("bucket_high_c") is None:
+                    if operator in {"gt", "gte", ">", ">="}:
+                        normalized["bucket_low_c"] = threshold_c
+                        normalized["bucket_high_c"] = threshold_c + span_c
+                    else:
+                        normalized["bucket_low_c"] = threshold_c - span_c
+                        normalized["bucket_high_c"] = threshold_c
+                elif normalized.get("bucket_low_c") is None:
+                    normalized["bucket_low_c"] = threshold_c - span_c
+                elif normalized.get("bucket_high_c") is None:
+                    normalized["bucket_high_c"] = threshold_c + span_c
 
         market_payload = normalized.get("market")
         if isinstance(market_payload, dict):
@@ -473,6 +502,22 @@ class WeatherConservativeNoStrategy(BaseStrategy):
             confidence=confidence,
         )
         if opp is not None:
+            opp.strategy_context = {
+                "source_key": "weather",
+                "strategy_slug": self.strategy_type,
+                "weather": {
+                    "agreement": agreement,
+                    "model_agreement": agreement,
+                    "source_count": source_count,
+                    "source_spread_c": source_spread_c,
+                    "consensus_temp_c": consensus_temp,
+                    "market_implied_temp_c": market_temp,
+                    "model_probability": model_prob_no,
+                    "edge_percent": edge,
+                    "target_time": intent.get("target_time"),
+                    "distance_from_consensus_c": distance,
+                },
+            }
             opp.risk_factors = risk_factors
             opp.min_liquidity = min_liquidity
             opp.max_position_size = max_position
@@ -516,7 +561,7 @@ class WeatherConservativeNoStrategy(BaseStrategy):
     _weather_source_spread_c: float = 0.0
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
-        weather = weather_metadata(payload)
+        weather = weather_signal_context(signal)
 
         min_agreement = to_confidence(params.get("min_model_agreement", 0.62), 0.62)
         min_source_count = max(1, int(to_float(params.get("min_source_count", 2), 2)))
@@ -524,7 +569,7 @@ class WeatherConservativeNoStrategy(BaseStrategy):
         max_entry_price = max(0.05, min(0.98, to_float(params.get("max_entry_price", 0.8), 0.8)))
 
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)
-        agreement = to_confidence(weather.get("agreement", payload.get("model_agreement", 0.0)), 0.0)
+        agreement = to_confidence(weather.get("agreement", weather.get("model_agreement", 0.0)), 0.0)
         source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
         source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
 

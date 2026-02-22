@@ -258,6 +258,23 @@ async def get_weather_opportunities_from_db(
     for opp in opportunities:
         opp.title = _normalize_weather_edge_title(opp.title)
 
+    try:
+        if session.in_transaction():
+            await session.rollback()
+    except Exception:
+        pass
+
+    if opportunities:
+        try:
+            from services.scanner import scanner as market_scanner
+
+            opportunities = await market_scanner.refresh_opportunity_prices(
+                opportunities,
+                drop_stale=False,
+            )
+        except Exception:
+            pass
+
     if opportunities and exclude_near_resolution:
         now = datetime.now(timezone.utc)
         filtered: list[Opportunity] = []

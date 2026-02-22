@@ -33,6 +33,7 @@ from services.market_tradability import get_market_tradability_map
 
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
 SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
+SIGNAL_REACTIVATABLE_STATUSES = {"skipped", "expired", "failed"}
 
 
 def _utc_now() -> datetime:
@@ -116,6 +117,17 @@ def _payload_contains_stale_market_prices(payload: Any, now: datetime, max_age_s
         if age > max_age_seconds:
             return True
     return False
+
+
+def _signal_recently_refreshed(row: TradeSignal, now: datetime, max_age_seconds: float) -> bool:
+    refreshed_at = row.updated_at or row.created_at
+    if refreshed_at is None:
+        return False
+    if refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
+    else:
+        refreshed_at = refreshed_at.astimezone(timezone.utc)
+    return (now - refreshed_at).total_seconds() <= max_age_seconds
 
 
 def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None:
@@ -394,8 +406,9 @@ async def upsert_trade_signal(
             event_type="upsert_insert",
         )
     else:
-        # Terminal rows remain immutable to preserve auditability.
-        if row.status in SIGNAL_ACTIVE_STATUSES:
+        previous_status = str(row.status or "").strip().lower()
+        can_update_row = previous_status in SIGNAL_ACTIVE_STATUSES or previous_status in SIGNAL_REACTIVATABLE_STATUSES
+        if can_update_row:
             row.source_item_id = source_item_id
             row.signal_type = signal_type
             row.strategy_type = strategy_type
@@ -412,18 +425,26 @@ async def upsert_trade_signal(
             if quality_passed is not None:
                 row.quality_passed = quality_passed
                 row.quality_rejection_reasons = quality_rejection_reasons if quality_rejection_reasons else None
+            emission_event_type = "upsert_update"
+            emission_reason = None
+            if previous_status in SIGNAL_REACTIVATABLE_STATUSES:
+                row.status = "pending"
+                row.effective_price = None
+                emission_event_type = "upsert_reactivated"
+                emission_reason = f"reactivated_from:{previous_status}"
             row.updated_at = _utc_now()
             await _record_signal_emission(
                 session,
                 row,
-                event_type="upsert_update",
+                event_type=emission_event_type,
+                reason=emission_reason,
             )
         else:
             await _record_signal_emission(
                 session,
                 row,
                 event_type="upsert_ignored_terminal",
-                reason=f"terminal_status:{row.status}",
+                reason=f"terminal_status:{previous_status}",
             )
 
     if commit:
@@ -479,7 +500,11 @@ async def expire_stale_signals(session: AsyncSession, *, commit: bool = True) ->
             expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
         if expires_at is not None and expires_at < now_naive:
             expire_reason = "expires_at_passed"
-        elif _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds):
+        elif (
+            str(row.source or "").strip().lower() == "scanner"
+            and _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds)
+            and not _signal_recently_refreshed(row, now, max_price_age_seconds)
+        ):
             expire_reason = "market_price_stale"
         if expire_reason is None:
             continue
@@ -610,7 +635,12 @@ async def _expire_non_tradable_pending_signals(
         if row.status != "pending":
             output.append(row)
             continue
-        if _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds):
+        source_key = str(row.source or "").strip().lower()
+        if (
+            source_key == "scanner"
+            and _payload_contains_stale_market_prices(row.payload_json, now, max_price_age_seconds)
+            and not _signal_recently_refreshed(row, now, max_price_age_seconds)
+        ):
             row.status = "expired"
             row.updated_at = now
             await _record_signal_emission(

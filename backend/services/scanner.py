@@ -2270,7 +2270,7 @@ class ArbitrageScanner:
                         self._opportunities = await self.refresh_opportunity_prices(
                             self._opportunities,
                             now=now,
-                            drop_stale=True,
+                            drop_stale=False,
                         )
                         self._last_scan = now
                         self._last_fast_scan = now
@@ -2333,7 +2333,7 @@ class ArbitrageScanner:
                     self._opportunities = await self.refresh_opportunity_prices(
                         self._opportunities,
                         now=now,
-                        drop_stale=True,
+                        drop_stale=False,
                     )
                     self._last_scan = now
                     self._last_fast_scan = now
@@ -2364,7 +2364,7 @@ class ArbitrageScanner:
                     self._opportunities = await self.refresh_opportunity_prices(
                         self._opportunities,
                         now=now,
-                        drop_stale=True,
+                        drop_stale=False,
                     )
                     self._last_scan = now
                     self._last_fast_scan = now
@@ -2432,7 +2432,11 @@ class ArbitrageScanner:
                     await self._attach_ai_judgments(fast_opportunities)
                     self._opportunities = self._merge_opportunities(fast_opportunities)
 
-                self._opportunities = await self.refresh_opportunity_prices(self._opportunities, now=now, drop_stale=True)
+                self._opportunities = await self.refresh_opportunity_prices(
+                    self._opportunities,
+                    now=now,
+                    drop_stale=False,
+                )
                 if self._opportunities:
                     self._opportunities.sort(key=lambda opp: opp.roi_percent, reverse=True)
                     self._opportunities = self._apply_opportunity_caps(self._opportunities)

@@ -13,8 +13,17 @@ if str(BACKEND_ROOT) not in sys.path:
 from api import routes_news_workflow
 
 
-def _finding(*, evidence=None, market_id="0xmarket", market_question="Will this resolve yes?", market_price=0.42, confidence=0.7):
+def _finding(
+    *,
+    finding_id="finding-1",
+    evidence=None,
+    market_id="0xmarket",
+    market_question="Will this resolve yes?",
+    market_price=0.42,
+    confidence=0.7,
+):
     return SimpleNamespace(
+        id=finding_id,
         article_id="cluster:abc123",
         market_id=market_id,
         market_question=market_question,
@@ -204,3 +213,47 @@ async def test_load_shared_backfill_market_history_tolerates_attach_failure(monk
 
     assert attach_mock.await_count == 1
     assert history_map == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_context_overrides_fetches_event_slug_metadata(monkeypatch):
+    finding = _finding(
+        finding_id="finding-override",
+        market_id="678774",
+        evidence={
+            "market": {
+                "id": "678774",
+                "slug": "will-the-us-strike-5-countries-in-2026",
+                "event_slug": "how-many-different-countries-will-the-us-strike-in-2026",
+                "platform": "polymarket",
+            }
+        },
+    )
+    event = SimpleNamespace(
+        markets=[
+            SimpleNamespace(
+                id="678774",
+                condition_id="0xcond",
+                slug="will-the-us-strike-5-countries-in-2026",
+                question="Will the US strike 5 countries in 2026?",
+                clob_token_ids=["yes-token", "no-token"],
+                outcome_prices=[0.2, 0.8],
+            )
+        ]
+    )
+
+    get_event_mock = AsyncMock(return_value=event)
+    monkeypatch.setattr(
+        "services.polymarket.polymarket_client.get_event_by_slug",
+        get_event_mock,
+    )
+
+    overrides = await routes_news_workflow._resolve_market_context_overrides([finding])
+
+    assert get_event_mock.await_count == 1
+    assert "finding-override" in overrides
+    payload = overrides["finding-override"]
+    assert payload["id"] == "678774"
+    assert payload["condition_id"] == "0xcond"
+    assert payload["token_ids"] == ["yes-token", "no-token"]
+    assert payload["clob_token_ids"] == ["yes-token", "no-token"]

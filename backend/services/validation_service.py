@@ -333,7 +333,9 @@ class ValidationService:
             "sample_size": len(rows),
             "executed_or_open": 0,
             "failed": 0,
+            "closed": 0,
             "resolved": 0,
+            "terminal": 0,
             "failure_rate": 0.0,
             "avg_edge_percent": 0.0,
             "avg_confidence": 0.0,
@@ -353,7 +355,7 @@ class ValidationService:
         for source, strategy_type, status, mode, notional, actual_profit, edge, confidence in rows:
             source_key = str(source or "unknown")
             strategy_key = str(strategy_type or "unknown")
-            status_key = str(status or "unknown")
+            status_key = str(status or "unknown").strip().lower()
 
             if edge is not None:
                 edges.append(float(edge))
@@ -365,13 +367,19 @@ class ValidationService:
             is_failed = status_key == "failed"
             is_executed_or_open = status_key in {"submitted", "executed", "open"}
             is_resolved = status_key in {"resolved_win", "resolved_loss"}
+            is_closed = status_key in {"closed_win", "closed_loss"}
+            is_terminal = is_resolved or is_closed
 
             if is_executed_or_open:
                 summary["executed_or_open"] += 1
             if is_failed:
                 summary["failed"] += 1
+            if is_closed:
+                summary["closed"] += 1
             if is_resolved:
                 summary["resolved"] += 1
+            if is_terminal:
+                summary["terminal"] += 1
             summary["notional_total_usd"] += notional_value
             summary["realized_pnl_total"] += pnl_value
 
@@ -382,7 +390,9 @@ class ValidationService:
                     "total": 0,
                     "failed": 0,
                     "executed_or_open": 0,
+                    "closed": 0,
                     "resolved": 0,
+                    "terminal": 0,
                     "notional_total_usd": 0.0,
                     "realized_pnl_total": 0.0,
                     "modes": {},
@@ -391,7 +401,9 @@ class ValidationService:
             source_row["total"] += 1
             source_row["failed"] += int(is_failed)
             source_row["executed_or_open"] += int(is_executed_or_open)
+            source_row["closed"] += int(is_closed)
             source_row["resolved"] += int(is_resolved)
+            source_row["terminal"] += int(is_terminal)
             source_row["notional_total_usd"] += notional_value
             source_row["realized_pnl_total"] += pnl_value
             mode_key = str(mode or "unknown")
@@ -404,7 +416,9 @@ class ValidationService:
                     "total": 0,
                     "failed": 0,
                     "executed_or_open": 0,
+                    "closed": 0,
                     "resolved": 0,
+                    "terminal": 0,
                     "notional_total_usd": 0.0,
                     "realized_pnl_total": 0.0,
                 },
@@ -412,7 +426,9 @@ class ValidationService:
             strategy_row["total"] += 1
             strategy_row["failed"] += int(is_failed)
             strategy_row["executed_or_open"] += int(is_executed_or_open)
+            strategy_row["closed"] += int(is_closed)
             strategy_row["resolved"] += int(is_resolved)
+            strategy_row["terminal"] += int(is_terminal)
             strategy_row["notional_total_usd"] += notional_value
             strategy_row["realized_pnl_total"] += pnl_value
 

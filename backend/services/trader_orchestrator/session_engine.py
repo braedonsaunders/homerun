@@ -569,8 +569,15 @@ class ExecutionSessionEngine:
             if status_key not in {"open", "submitted"}:
                 continue
             provider_order_id = str(order.get("provider_order_id") or "").strip()
-            if provider_order_id:
-                await cancel_live_provider_order(provider_order_id)
+            provider_clob_order_id = str(order.get("provider_clob_order_id") or "").strip()
+            cancel_targets: list[str] = []
+            if provider_clob_order_id:
+                cancel_targets.append(provider_clob_order_id)
+            if provider_order_id and provider_order_id not in cancel_targets:
+                cancel_targets.append(provider_order_id)
+            for target in cancel_targets:
+                if await cancel_live_provider_order(target):
+                    break
 
         for leg in detail.get("legs", []):
             leg_status = str(leg.get("status") or "").strip().lower()

@@ -98,6 +98,8 @@ class RetryableAsyncSession(AsyncSession):
 class TradeStatus(enum.Enum):
     PENDING = "pending"
     OPEN = "open"
+    CLOSED_WIN = "closed_win"
+    CLOSED_LOSS = "closed_loss"
     RESOLVED_WIN = "resolved_win"
     RESOLVED_LOSS = "resolved_loss"
     CANCELLED = "cancelled"
@@ -1856,6 +1858,87 @@ class CrossPlatformEntity(Base):
         Index("idx_cross_platform_poly", "polymarket_address"),
         Index("idx_cross_platform_kalshi", "kalshi_username"),
         Index("idx_cross_platform_pnl", "combined_pnl"),
+    )
+
+
+class LiveTradingRuntimeState(Base):
+    """Durable runtime state for the live trading service."""
+
+    __tablename__ = "live_trading_runtime_state"
+
+    id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, unique=True, index=True)
+    total_trades = Column(Integer, nullable=False, default=0)
+    winning_trades = Column(Integer, nullable=False, default=0)
+    losing_trades = Column(Integer, nullable=False, default=0)
+    total_volume = Column(Float, nullable=False, default=0.0)
+    total_pnl = Column(Float, nullable=False, default=0.0)
+    daily_volume = Column(Float, nullable=False, default=0.0)
+    daily_pnl = Column(Float, nullable=False, default=0.0)
+    open_positions = Column(Integer, nullable=False, default=0)
+    last_trade_at = Column(DateTime, nullable=True)
+    daily_volume_reset_at = Column(DateTime, nullable=True)
+    market_positions_json = Column(JSON, default=dict)
+    balance_signature_type = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_live_trading_runtime_wallet", "wallet_address"),
+        Index("idx_live_trading_runtime_updated", "updated_at"),
+    )
+
+
+class LiveTradingOrder(Base):
+    """Durable order history for live trading."""
+
+    __tablename__ = "live_trading_orders"
+
+    id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    clob_order_id = Column(String, nullable=True, index=True)
+    token_id = Column(String, nullable=False, index=True)
+    side = Column(String, nullable=False)
+    price = Column(Float, nullable=False, default=0.0)
+    size = Column(Float, nullable=False, default=0.0)
+    order_type = Column(String, nullable=False, default="GTC")
+    status = Column(String, nullable=False, default="pending")
+    filled_size = Column(Float, nullable=False, default=0.0)
+    average_fill_price = Column(Float, nullable=False, default=0.0)
+    market_question = Column(Text, nullable=True)
+    opportunity_id = Column(String, nullable=True, index=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_live_trading_orders_wallet_created", "wallet_address", "created_at"),
+        Index("idx_live_trading_orders_wallet_status", "wallet_address", "status"),
+        Index("idx_live_trading_orders_wallet_clob", "wallet_address", "clob_order_id"),
+    )
+
+
+class LiveTradingPosition(Base):
+    """Durable snapshot of live positions for restart recovery."""
+
+    __tablename__ = "live_trading_positions"
+
+    id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    token_id = Column(String, nullable=False, index=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=True)
+    outcome = Column(String, nullable=True)
+    size = Column(Float, nullable=False, default=0.0)
+    average_cost = Column(Float, nullable=False, default=0.0)
+    current_price = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("wallet_address", "token_id", name="uq_live_trading_positions_wallet_token"),
+        Index("idx_live_trading_positions_wallet_market", "wallet_address", "market_id"),
     )
 
 

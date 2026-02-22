@@ -11,11 +11,9 @@ All methods are designed to be safe and handle missing data gracefully.
 
 from __future__ import annotations
 
-import json
+from datetime import date, datetime, timezone
 import logging
 import re
-import warnings
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -39,10 +37,11 @@ class StrategySDK:
         )
     """
 
-    _CONFIG_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{1,48}[a-z0-9]$")
     TRADER_TIER_CANONICAL = ("low", "medium", "high", "extreme")
     TRADER_SIDE_CANONICAL = ("all", "buy", "sell")
     TRADER_SOURCE_SCOPE_CANONICAL = ("all", "tracked", "pool")
+    TRADER_SCOPE_MODE_CANONICAL = ("tracked", "pool", "individual", "group")
+    TRADER_SCHEDULE_DAY_CANONICAL = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
     TRADER_FILTER_DEFAULTS: dict[str, Any] = {
         "min_confidence": 0.45,
         "min_tier": "low",
@@ -89,6 +88,301 @@ class StrategySDK:
                 "label": "Side Filter",
                 "type": "enum",
                 "options": ["all", "buy", "sell"],
+            },
+        ]
+    }
+    TRADER_SCOPE_DEFAULTS: dict[str, Any] = {
+        "modes": ["tracked", "pool"],
+        "individual_wallets": [],
+        "group_ids": [],
+    }
+    TRADER_SCOPE_FIELDS_SCHEMA: list[dict[str, Any]] = [
+        {
+            "key": "traders_scope",
+            "label": "Wallet Scope",
+            "type": "object",
+            "properties": [
+                {
+                    "key": "modes",
+                    "label": "Modes",
+                    "type": "array[string]",
+                    "options": ["tracked", "pool", "individual", "group"],
+                    "required": True,
+                },
+                {
+                    "key": "individual_wallets",
+                    "label": "Individual Wallets",
+                    "type": "array[string]",
+                },
+                {
+                    "key": "group_ids",
+                    "label": "Group IDs",
+                    "type": "array[string]",
+                },
+            ],
+        }
+    ]
+    TRADER_RUNTIME_DEFAULTS: dict[str, Any] = {
+        "cadence_profile": "custom",
+        "trading_schedule_utc": {
+            "enabled": False,
+            "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            "start_time": "00:00",
+            "end_time": "23:59",
+            "start_date": None,
+            "end_date": None,
+            "end_at": None,
+        },
+        "tags": [],
+        "notes": "",
+        "resume_policy": "resume_full",
+    }
+    TRADER_RUNTIME_FIELDS_SCHEMA: list[dict[str, Any]] = [
+        {
+            "key": "resume_policy",
+            "label": "Resume Policy",
+            "type": "enum",
+            "options": [
+                {
+                    "value": "resume_full",
+                    "label": "Resume Full",
+                },
+                {
+                    "value": "manage_only",
+                    "label": "Manage Existing Only",
+                },
+                {
+                    "value": "flatten_then_start",
+                    "label": "Flatten Then Start",
+                },
+            ],
+        },
+        {
+            "key": "trading_schedule_utc",
+            "label": "Trading Schedule (UTC)",
+            "type": "object",
+            "properties": [
+                {"key": "enabled", "label": "Enable Schedule", "type": "boolean"},
+                {
+                    "key": "days",
+                    "label": "Days",
+                    "type": "array[string]",
+                    "options": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                },
+                {
+                    "key": "start_time",
+                    "label": "Start Time (UTC)",
+                    "type": "string",
+                    "format": "time",
+                },
+                {
+                    "key": "end_time",
+                    "label": "End Time (UTC)",
+                    "type": "string",
+                    "format": "time",
+                },
+                {
+                    "key": "start_date",
+                    "label": "Start Date (UTC)",
+                    "type": "string",
+                    "format": "date",
+                },
+                {
+                    "key": "end_date",
+                    "label": "End Date (UTC)",
+                    "type": "string",
+                    "format": "date",
+                },
+                {
+                    "key": "end_at",
+                    "label": "End At (UTC ISO)",
+                    "type": "string",
+                    "format": "date-time",
+                    "placeholder": "2026-02-28T23:59:59Z",
+                },
+            ],
+        },
+        {"key": "cadence_profile", "label": "Cadence Profile", "type": "string"},
+        {"key": "tags", "label": "Tags", "type": "array[string]"},
+        {"key": "notes", "label": "Operator Notes", "type": "string"},
+    ]
+    TRADER_RISK_DEFAULTS: dict[str, Any] = {
+        "max_orders_per_cycle": 6,
+        "max_open_orders": 20,
+        "max_open_positions": 12,
+        "max_position_notional_usd": 350.0,
+        "max_gross_exposure_usd": 2000.0,
+        "max_trade_notional_usd": 350.0,
+        "max_daily_loss_usd": 300.0,
+        "max_daily_spend_usd": 2000.0,
+        "cooldown_seconds": 0,
+        "order_ttl_seconds": 1200,
+        "slippage_bps": 35.0,
+        "max_spread_bps": 75.0,
+        "retry_limit": 2,
+        "retry_backoff_ms": 250,
+        "allow_averaging": False,
+        "use_dynamic_sizing": True,
+        "halt_on_consecutive_losses": True,
+        "max_consecutive_losses": 4,
+        "circuit_breaker_drawdown_pct": 12.0,
+        "portfolio": {
+            "enabled": False,
+            "target_utilization_pct": 100.0,
+            "max_source_exposure_pct": 100.0,
+            "min_order_notional_usd": 10.0,
+        },
+    }
+    TRADER_RISK_FIELDS_SCHEMA: list[dict[str, Any]] = [
+        {"key": "max_open_positions", "label": "Max Open Positions", "type": "integer", "min": 1, "max": 1000},
+        {"key": "max_open_orders", "label": "Max Open Orders", "type": "integer", "min": 1, "max": 2000},
+        {"key": "max_orders_per_cycle", "label": "Max Orders / Cycle", "type": "integer", "min": 1, "max": 1000},
+        {"key": "max_trade_notional_usd", "label": "Max Trade Notional (USD)", "type": "number", "min": 1},
+        {"key": "max_position_notional_usd", "label": "Max Position Notional (USD)", "type": "number", "min": 1},
+        {"key": "max_gross_exposure_usd", "label": "Max Gross Exposure (USD)", "type": "number", "min": 1},
+        {"key": "max_daily_loss_usd", "label": "Max Daily Loss (USD)", "type": "number", "min": 1},
+        {"key": "max_daily_spend_usd", "label": "Max Daily Spend (USD)", "type": "number", "min": 1},
+        {"key": "cooldown_seconds", "label": "Cooldown (seconds)", "type": "integer", "min": 0},
+        {"key": "order_ttl_seconds", "label": "Order TTL (seconds)", "type": "integer", "min": 1, "max": 86400},
+        {"key": "slippage_bps", "label": "Slippage Guard (bps)", "type": "number", "min": 0, "max": 10000},
+        {"key": "max_spread_bps", "label": "Max Spread (bps)", "type": "number", "min": 0, "max": 10000},
+        {"key": "retry_limit", "label": "Retry Limit", "type": "integer", "min": 0, "max": 50},
+        {"key": "retry_backoff_ms", "label": "Retry Backoff (ms)", "type": "integer", "min": 0, "max": 60000},
+        {"key": "allow_averaging", "label": "Allow Averaging", "type": "boolean"},
+        {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean"},
+        {"key": "halt_on_consecutive_losses", "label": "Halt on Loss Streak", "type": "boolean"},
+        {"key": "max_consecutive_losses", "label": "Max Consecutive Losses", "type": "integer", "min": 0, "max": 1000},
+        {"key": "circuit_breaker_drawdown_pct", "label": "Circuit Breaker Drawdown (%)", "type": "number", "min": 0, "max": 100},
+        {
+            "key": "portfolio",
+            "label": "Portfolio Allocator",
+            "type": "object",
+            "properties": [
+                {"key": "enabled", "label": "Enabled", "type": "boolean"},
+                {
+                    "key": "target_utilization_pct",
+                    "label": "Target Gross Utilization (%)",
+                    "type": "number",
+                    "min": 1,
+                    "max": 100,
+                },
+                {
+                    "key": "max_source_exposure_pct",
+                    "label": "Max Source Exposure (%)",
+                    "type": "number",
+                    "min": 1,
+                    "max": 100,
+                },
+                {
+                    "key": "min_order_notional_usd",
+                    "label": "Min Allocated Order (USD)",
+                    "type": "number",
+                    "min": 1,
+                },
+            ],
+        },
+    ]
+    TRADER_OPPORTUNITY_FILTER_TIER_CANONICAL = ("WATCH", "HIGH", "EXTREME")
+    TRADER_OPPORTUNITY_FILTER_DEFAULTS: dict[str, Any] = {
+        "source_filter": "all",
+        "min_tier": "WATCH",
+        "side_filter": "all",
+        "confluence_limit": 50,
+        "individual_trade_limit": 40,
+        "individual_trade_min_confidence": 0.62,
+        "individual_trade_max_age_minutes": 180,
+    }
+    TRADER_OPPORTUNITY_FILTER_CONFIG_SCHEMA: dict[str, Any] = {
+        "param_fields": [
+            {
+                "key": "source_filter",
+                "label": "Source Filter",
+                "type": "enum",
+                "options": ["all", "tracked", "pool"],
+            },
+            {
+                "key": "min_tier",
+                "label": "Min Confluence Tier",
+                "type": "enum",
+                "options": ["WATCH", "HIGH", "EXTREME"],
+            },
+            {
+                "key": "side_filter",
+                "label": "Side Filter",
+                "type": "enum",
+                "options": ["all", "buy", "sell"],
+            },
+            {
+                "key": "confluence_limit",
+                "label": "Confluence Limit",
+                "type": "integer",
+                "min": 1,
+                "max": 200,
+            },
+            {
+                "key": "individual_trade_limit",
+                "label": "Individual Trade Limit",
+                "type": "integer",
+                "min": 1,
+                "max": 500,
+            },
+            {
+                "key": "individual_trade_min_confidence",
+                "label": "Min Confidence",
+                "type": "number",
+                "min": 0,
+                "max": 1,
+            },
+            {
+                "key": "individual_trade_max_age_minutes",
+                "label": "Max Age (minutes)",
+                "type": "integer",
+                "min": 1,
+                "max": 1440,
+            },
+        ]
+    }
+    COPY_TRADING_DEFAULTS: dict[str, Any] = {
+        "copy_mode_type": "disabled",
+        "individual_wallet": "",
+        "copy_trade_mode": "all_trades",
+        "max_position_size": 1000.0,
+        "proportional_sizing": False,
+        "proportional_multiplier": 1.0,
+        "copy_buys": True,
+        "copy_sells": True,
+        "copy_delay_seconds": 5,
+        "slippage_tolerance": 1.0,
+        "min_roi_threshold": 2.5,
+    }
+    COPY_TRADING_CONFIG_SCHEMA: dict[str, Any] = {
+        "param_fields": [
+            {
+                "key": "copy_mode_type",
+                "label": "Mode",
+                "type": "enum",
+                "options": ["disabled", "pool", "tracked_group", "individual"],
+            },
+            {"key": "individual_wallet", "label": "Wallet Address", "type": "string"},
+            {
+                "key": "copy_trade_mode",
+                "label": "Copy Mode",
+                "type": "enum",
+                "options": ["all_trades", "arb_only"],
+            },
+            {"key": "max_position_size", "label": "Max Position (USD)", "type": "number", "min": 10, "max": 1000000},
+            {"key": "copy_delay_seconds", "label": "Copy Delay (sec)", "type": "integer", "min": 0, "max": 300},
+            {"key": "slippage_tolerance", "label": "Slippage (%)", "type": "number", "min": 0, "max": 10},
+            {"key": "min_roi_threshold", "label": "Min ROI (%)", "type": "number", "min": 0, "max": 100},
+            {"key": "copy_buys", "label": "Copy Buys", "type": "boolean"},
+            {"key": "copy_sells", "label": "Copy Sells", "type": "boolean"},
+            {"key": "proportional_sizing", "label": "Proportional Sizing", "type": "boolean"},
+            {
+                "key": "proportional_multiplier",
+                "label": "Proportional Multiplier",
+                "type": "number",
+                "min": 0.01,
+                "max": 100,
             },
         ]
     }
@@ -258,27 +552,6 @@ class StrategySDK:
     }
 
     @staticmethod
-    def _normalize_strategy_slug(slug: str) -> str:
-        value = str(slug or "").strip().lower()
-        if not value:
-            return ""
-        if StrategySDK._CONFIG_SLUG_RE.match(value):
-            return value
-        value = re.sub(r"[^a-z0-9_]", "_", value)
-        value = value.strip("_")
-        if not value:
-            return ""
-        if not value[0].isalpha():
-            value = f"s_{value}"
-        if len(value) > 50:
-            value = value[:50].rstrip("_")
-        if value and not value[-1].isalnum():
-            value = f"{value}0"
-        if StrategySDK._CONFIG_SLUG_RE.match(value):
-            return value
-        return ""
-
-    @staticmethod
     def _coerce_bool(value: Any, default: bool) -> bool:
         if isinstance(value, bool):
             return value
@@ -308,6 +581,119 @@ class StrategySDK:
         except Exception:
             parsed = default
         return max(lo, min(hi, parsed))
+
+    @staticmethod
+    def _coerce_str(value: Any, default: str) -> str:
+        text = str(value or "").strip()
+        return text if text else str(default)
+
+    @staticmethod
+    def _coerce_hhmm(value: Any, default: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        parts = text.split(":")
+        if len(parts) < 2:
+            return default
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except Exception:
+            return default
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return default
+        return f"{hour:02d}:{minute:02d}"
+
+    @staticmethod
+    def _coerce_iso_date(value: Any) -> date | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            if "T" in text:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(timezone.utc)
+                return parsed.date()
+            return date.fromisoformat(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_iso_datetime_utc(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            if "T" in text:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            else:
+                parsed = datetime.fromisoformat(f"{text}T00:00:00")
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _normalize_schedule_day(value: Any) -> str | None:
+        token = str(value or "").strip().lower()
+        if not token:
+            return None
+        aliases = {
+            "monday": "mon",
+            "mon": "mon",
+            "tuesday": "tue",
+            "tue": "tue",
+            "wednesday": "wed",
+            "wed": "wed",
+            "thursday": "thu",
+            "thu": "thu",
+            "friday": "fri",
+            "fri": "fri",
+            "saturday": "sat",
+            "sat": "sat",
+            "sunday": "sun",
+            "sun": "sun",
+        }
+        if token in aliases:
+            return aliases[token]
+        if len(token) >= 3:
+            short = token[:3]
+            if short in StrategySDK.TRADER_SCHEDULE_DAY_CANONICAL:
+                return short
+        return None
+
+    @staticmethod
+    def _normalize_schedule_days(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return list(StrategySDK.TRADER_SCHEDULE_DAY_CANONICAL)
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            day = StrategySDK._normalize_schedule_day(raw)
+            if day is None or day in seen:
+                continue
+            seen.add(day)
+            out.append(day)
+        return out or list(StrategySDK.TRADER_SCHEDULE_DAY_CANONICAL)
+
+    @staticmethod
+    def _coerce_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            item = str(raw or "").strip()
+            if not item:
+                continue
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
 
     @staticmethod
     def normalize_trader_tier(value: Any, default: str = "low") -> str:
@@ -407,12 +793,174 @@ class StrategySDK:
         return normalized
 
     @staticmethod
+    def normalize_trader_wallet(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def extract_trader_signal_wallets(signal: Any) -> set[str]:
+        payload = signal if isinstance(signal, dict) else getattr(signal, "payload_json", None)
+        if not isinstance(payload, dict):
+            payload = {}
+
+        wallets: set[str] = set()
+        for raw in payload.get("wallets") or []:
+            normalized = StrategySDK.normalize_trader_wallet(raw)
+            if normalized:
+                wallets.add(normalized)
+        for raw in payload.get("wallet_addresses") or []:
+            normalized = StrategySDK.normalize_trader_wallet(raw)
+            if normalized:
+                wallets.add(normalized)
+        for item in payload.get("top_wallets") or []:
+            if not isinstance(item, dict):
+                continue
+            normalized = StrategySDK.normalize_trader_wallet(item.get("address"))
+            if normalized:
+                wallets.add(normalized)
+
+        strategy_context = payload.get("strategy_context")
+        if isinstance(strategy_context, dict):
+            for raw in strategy_context.get("wallets") or []:
+                normalized = StrategySDK.normalize_trader_wallet(raw)
+                if normalized:
+                    wallets.add(normalized)
+            for raw in strategy_context.get("wallet_addresses") or []:
+                normalized = StrategySDK.normalize_trader_wallet(raw)
+                if normalized:
+                    wallets.add(normalized)
+            for item in strategy_context.get("top_wallets") or []:
+                if not isinstance(item, dict):
+                    continue
+                normalized = StrategySDK.normalize_trader_wallet(item.get("address"))
+                if normalized:
+                    wallets.add(normalized)
+
+            firehose = strategy_context.get("firehose")
+            if isinstance(firehose, dict):
+                for raw in firehose.get("wallets") or []:
+                    normalized = StrategySDK.normalize_trader_wallet(raw)
+                    if normalized:
+                        wallets.add(normalized)
+                for raw in firehose.get("wallet_addresses") or []:
+                    normalized = StrategySDK.normalize_trader_wallet(raw)
+                    if normalized:
+                        wallets.add(normalized)
+                for item in firehose.get("top_wallets") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized = StrategySDK.normalize_trader_wallet(item.get("address"))
+                    if normalized:
+                        wallets.add(normalized)
+
+        return wallets
+
+    @staticmethod
+    def build_trader_scope_runtime_context(
+        traders_scope: Any,
+        *,
+        tracked_wallets: Any = None,
+        pool_wallets: Any = None,
+        group_wallets: Any = None,
+    ) -> dict[str, Any]:
+        cfg = StrategySDK.validate_trader_scope_config(traders_scope)
+
+        def _normalize_wallet_set(values: Any) -> set[str]:
+            if not isinstance(values, (list, tuple, set)):
+                return set()
+            out: set[str] = set()
+            for raw in values:
+                wallet = StrategySDK.normalize_trader_wallet(raw)
+                if wallet:
+                    out.add(wallet)
+            return out
+
+        return {
+            "modes": {str(mode or "").strip().lower() for mode in (cfg.get("modes") or []) if str(mode or "").strip()},
+            "individual_wallets": _normalize_wallet_set(cfg.get("individual_wallets") or []),
+            "group_ids": [
+                str(group_id or "").strip()
+                for group_id in (cfg.get("group_ids") or [])
+                if str(group_id or "").strip()
+            ],
+            "tracked_wallets": _normalize_wallet_set(tracked_wallets),
+            "pool_wallets": _normalize_wallet_set(pool_wallets),
+            "group_wallets": _normalize_wallet_set(group_wallets),
+        }
+
+    @staticmethod
+    def match_trader_signal_scope(signal: Any, scope_context: Any) -> tuple[bool, dict[str, Any]]:
+        context = scope_context if isinstance(scope_context, dict) else {}
+        wallets = StrategySDK.extract_trader_signal_wallets(signal)
+        modes = {
+            str(mode or "").strip().lower()
+            for mode in (context.get("modes") or set())
+            if str(mode or "").strip()
+        }
+        matched_modes: list[str] = []
+
+        if "tracked" in modes and wallets.intersection(context.get("tracked_wallets") or set()):
+            matched_modes.append("tracked")
+        if "pool" in modes and wallets.intersection(context.get("pool_wallets") or set()):
+            matched_modes.append("pool")
+        if "individual" in modes and wallets.intersection(context.get("individual_wallets") or set()):
+            matched_modes.append("individual")
+        if "group" in modes and wallets.intersection(context.get("group_wallets") or set()):
+            matched_modes.append("group")
+
+        payload = {
+            "signal_wallets": sorted(wallets),
+            "selected_modes": sorted(modes),
+            "matched_modes": sorted(matched_modes),
+        }
+        return bool(matched_modes), payload
+
+    @staticmethod
     def trader_filter_defaults() -> dict[str, Any]:
         return dict(StrategySDK.TRADER_FILTER_DEFAULTS)
 
     @staticmethod
     def trader_filter_config_schema() -> dict[str, Any]:
         return dict(StrategySDK.TRADER_FILTER_CONFIG_SCHEMA)
+
+    @staticmethod
+    def trader_scope_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_SCOPE_DEFAULTS)
+
+    @staticmethod
+    def trader_scope_fields_schema() -> list[dict[str, Any]]:
+        return [dict(field) for field in StrategySDK.TRADER_SCOPE_FIELDS_SCHEMA]
+
+    @staticmethod
+    def trader_runtime_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_RUNTIME_DEFAULTS)
+
+    @staticmethod
+    def trader_runtime_fields_schema() -> list[dict[str, Any]]:
+        return [dict(field) for field in StrategySDK.TRADER_RUNTIME_FIELDS_SCHEMA]
+
+    @staticmethod
+    def trader_risk_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_RISK_DEFAULTS)
+
+    @staticmethod
+    def trader_risk_fields_schema() -> list[dict[str, Any]]:
+        return [dict(field) for field in StrategySDK.TRADER_RISK_FIELDS_SCHEMA]
+
+    @staticmethod
+    def trader_opportunity_filter_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_OPPORTUNITY_FILTER_DEFAULTS)
+
+    @staticmethod
+    def trader_opportunity_filter_config_schema() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_OPPORTUNITY_FILTER_CONFIG_SCHEMA)
+
+    @staticmethod
+    def copy_trading_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.COPY_TRADING_DEFAULTS)
+
+    @staticmethod
+    def copy_trading_config_schema() -> dict[str, Any]:
+        return dict(StrategySDK.COPY_TRADING_CONFIG_SCHEMA)
 
     @staticmethod
     def pool_eligibility_defaults() -> dict[str, Any]:
@@ -615,6 +1163,197 @@ class StrategySDK:
         return StrategySDK.normalize_strategy_retention_config(cfg)
 
     @staticmethod
+    def validate_trader_scope_config(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.TRADER_SCOPE_DEFAULTS)
+        raw = config if isinstance(config, dict) else {}
+
+        modes: list[str] = []
+        seen_modes: set[str] = set()
+        for raw_mode in raw.get("modes") or []:
+            mode = str(raw_mode or "").strip().lower()
+            if not mode or mode in seen_modes or mode not in StrategySDK.TRADER_SCOPE_MODE_CANONICAL:
+                continue
+            seen_modes.add(mode)
+            modes.append(mode)
+        cfg["modes"] = modes or list(StrategySDK.TRADER_SCOPE_DEFAULTS["modes"])
+
+        wallets: list[str] = []
+        seen_wallets: set[str] = set()
+        for raw_wallet in raw.get("individual_wallets") or []:
+            wallet = str(raw_wallet or "").strip().lower()
+            if not wallet or wallet in seen_wallets:
+                continue
+            seen_wallets.add(wallet)
+            wallets.append(wallet)
+        cfg["individual_wallets"] = wallets
+
+        groups: list[str] = []
+        seen_groups: set[str] = set()
+        for raw_group in raw.get("group_ids") or []:
+            group_id = str(raw_group or "").strip()
+            if not group_id or group_id in seen_groups:
+                continue
+            seen_groups.add(group_id)
+            groups.append(group_id)
+        cfg["group_ids"] = groups
+        return cfg
+
+    @staticmethod
+    def validate_trader_runtime_metadata(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.TRADER_RUNTIME_DEFAULTS)
+        raw = config if isinstance(config, dict) else {}
+        cfg.update({str(k): v for k, v in raw.items() if str(k)})
+
+        resume_policy = str(cfg.get("resume_policy") or "resume_full").strip().lower()
+        if resume_policy not in {"resume_full", "manage_only", "flatten_then_start"}:
+            resume_policy = "resume_full"
+        cfg["resume_policy"] = resume_policy
+
+        trading_schedule = cfg.get("trading_schedule_utc")
+        schedule = trading_schedule if isinstance(trading_schedule, dict) else {}
+        schedule_enabled = StrategySDK._coerce_bool(schedule.get("enabled"), False)
+        schedule_days = StrategySDK._normalize_schedule_days(schedule.get("days"))
+        schedule_start_time = StrategySDK._coerce_hhmm(schedule.get("start_time"), "00:00")
+        schedule_end_time = StrategySDK._coerce_hhmm(schedule.get("end_time"), "23:59")
+        schedule_start_date = StrategySDK._coerce_iso_date(schedule.get("start_date"))
+        schedule_end_date = StrategySDK._coerce_iso_date(schedule.get("end_date"))
+        if (
+            schedule_start_date is not None
+            and schedule_end_date is not None
+            and schedule_start_date > schedule_end_date
+        ):
+            schedule_start_date, schedule_end_date = schedule_end_date, schedule_start_date
+        schedule_end_at = StrategySDK._coerce_iso_datetime_utc(schedule.get("end_at"))
+        cfg["trading_schedule_utc"] = {
+            "enabled": schedule_enabled,
+            "days": schedule_days,
+            "start_time": schedule_start_time,
+            "end_time": schedule_end_time,
+            "start_date": schedule_start_date.isoformat() if schedule_start_date is not None else None,
+            "end_date": schedule_end_date.isoformat() if schedule_end_date is not None else None,
+            "end_at": (
+                schedule_end_at.isoformat().replace("+00:00", "Z")
+                if schedule_end_at is not None
+                else None
+            ),
+        }
+
+        cfg["cadence_profile"] = StrategySDK._coerce_str(cfg.get("cadence_profile"), "custom")
+        cfg["tags"] = StrategySDK._coerce_string_list(cfg.get("tags"))
+        cfg["notes"] = StrategySDK._coerce_str(cfg.get("notes"), "")
+        return cfg
+
+    @staticmethod
+    def validate_trader_risk_config(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.TRADER_RISK_DEFAULTS)
+        raw = config if isinstance(config, dict) else {}
+        cfg.update({str(k): v for k, v in raw.items() if str(k) != "_schema"})
+
+        cfg["max_orders_per_cycle"] = StrategySDK._coerce_int(cfg.get("max_orders_per_cycle"), 6, 1, 1000)
+        cfg["max_open_orders"] = StrategySDK._coerce_int(cfg.get("max_open_orders"), 20, 1, 2000)
+        cfg["max_open_positions"] = StrategySDK._coerce_int(cfg.get("max_open_positions"), 12, 1, 1000)
+        cfg["max_position_notional_usd"] = StrategySDK._coerce_float(
+            cfg.get("max_position_notional_usd"), 350.0, 1.0, 10_000_000.0
+        )
+        cfg["max_gross_exposure_usd"] = StrategySDK._coerce_float(
+            cfg.get("max_gross_exposure_usd"), 2000.0, 1.0, 100_000_000.0
+        )
+        cfg["max_trade_notional_usd"] = StrategySDK._coerce_float(
+            cfg.get("max_trade_notional_usd"), 350.0, 1.0, 10_000_000.0
+        )
+        cfg["max_daily_loss_usd"] = StrategySDK._coerce_float(cfg.get("max_daily_loss_usd"), 300.0, 1.0, 100_000_000.0)
+        cfg["max_daily_spend_usd"] = StrategySDK._coerce_float(cfg.get("max_daily_spend_usd"), 2000.0, 1.0, 100_000_000.0)
+        cfg["cooldown_seconds"] = StrategySDK._coerce_int(cfg.get("cooldown_seconds"), 0, 0, 86_400)
+        cfg["order_ttl_seconds"] = StrategySDK._coerce_int(cfg.get("order_ttl_seconds"), 1200, 1, 86_400)
+        cfg["slippage_bps"] = StrategySDK._coerce_float(cfg.get("slippage_bps"), 35.0, 0.0, 10_000.0)
+        cfg["max_spread_bps"] = StrategySDK._coerce_float(cfg.get("max_spread_bps"), 75.0, 0.0, 10_000.0)
+        cfg["retry_limit"] = StrategySDK._coerce_int(cfg.get("retry_limit"), 2, 0, 50)
+        cfg["retry_backoff_ms"] = StrategySDK._coerce_int(cfg.get("retry_backoff_ms"), 250, 0, 60_000)
+        cfg["allow_averaging"] = StrategySDK._coerce_bool(cfg.get("allow_averaging"), False)
+        cfg["use_dynamic_sizing"] = StrategySDK._coerce_bool(cfg.get("use_dynamic_sizing"), True)
+        cfg["halt_on_consecutive_losses"] = StrategySDK._coerce_bool(cfg.get("halt_on_consecutive_losses"), True)
+        cfg["max_consecutive_losses"] = StrategySDK._coerce_int(cfg.get("max_consecutive_losses"), 4, 0, 1000)
+        cfg["circuit_breaker_drawdown_pct"] = StrategySDK._coerce_float(
+            cfg.get("circuit_breaker_drawdown_pct"), 12.0, 0.0, 100.0
+        )
+        default_portfolio = StrategySDK.TRADER_RISK_DEFAULTS.get("portfolio")
+        portfolio_cfg = dict(default_portfolio) if isinstance(default_portfolio, dict) else {}
+        raw_portfolio = cfg.get("portfolio")
+        if isinstance(raw_portfolio, dict):
+            portfolio_cfg.update({str(k): v for k, v in raw_portfolio.items() if str(k)})
+        cfg["portfolio"] = {
+            "enabled": StrategySDK._coerce_bool(portfolio_cfg.get("enabled"), False),
+            "target_utilization_pct": StrategySDK._coerce_float(
+                portfolio_cfg.get("target_utilization_pct"),
+                100.0,
+                1.0,
+                100.0,
+            ),
+            "max_source_exposure_pct": StrategySDK._coerce_float(
+                portfolio_cfg.get("max_source_exposure_pct"),
+                100.0,
+                1.0,
+                100.0,
+            ),
+            "min_order_notional_usd": StrategySDK._coerce_float(
+                portfolio_cfg.get("min_order_notional_usd"),
+                10.0,
+                1.0,
+                10_000_000.0,
+            ),
+        }
+        return cfg
+
+    @staticmethod
+    def validate_trader_opportunity_filter_config(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.TRADER_OPPORTUNITY_FILTER_DEFAULTS)
+        raw = config if isinstance(config, dict) else {}
+        cfg.update({str(k): v for k, v in raw.items() if str(k) != "_schema"})
+
+        cfg["source_filter"] = StrategySDK.normalize_trader_source_scope(cfg.get("source_filter"), default="all")
+        min_tier = str(cfg.get("min_tier") or "WATCH").strip().upper()
+        if min_tier not in StrategySDK.TRADER_OPPORTUNITY_FILTER_TIER_CANONICAL:
+            min_tier = "WATCH"
+        cfg["min_tier"] = min_tier
+        cfg["side_filter"] = StrategySDK.normalize_trader_side(cfg.get("side_filter"), default="all")
+        cfg["confluence_limit"] = StrategySDK._coerce_int(cfg.get("confluence_limit"), 50, 1, 200)
+        cfg["individual_trade_limit"] = StrategySDK._coerce_int(cfg.get("individual_trade_limit"), 40, 1, 500)
+        cfg["individual_trade_min_confidence"] = StrategySDK._coerce_float(
+            cfg.get("individual_trade_min_confidence"), 0.62, 0.0, 1.0
+        )
+        cfg["individual_trade_max_age_minutes"] = StrategySDK._coerce_int(
+            cfg.get("individual_trade_max_age_minutes"), 180, 1, 1440
+        )
+        return cfg
+
+    @staticmethod
+    def validate_copy_trading_config(config: Any) -> dict[str, Any]:
+        cfg = dict(StrategySDK.COPY_TRADING_DEFAULTS)
+        raw = config if isinstance(config, dict) else {}
+        cfg.update({str(k): v for k, v in raw.items() if str(k) != "_schema"})
+
+        mode = str(cfg.get("copy_mode_type") or "disabled").strip().lower()
+        if mode not in {"disabled", "pool", "tracked_group", "individual"}:
+            mode = "disabled"
+        cfg["copy_mode_type"] = mode
+        cfg["individual_wallet"] = StrategySDK._coerce_str(cfg.get("individual_wallet"), "")
+        copy_mode = str(cfg.get("copy_trade_mode") or "all_trades").strip().lower()
+        if copy_mode not in {"all_trades", "arb_only"}:
+            copy_mode = "all_trades"
+        cfg["copy_trade_mode"] = copy_mode
+        cfg["max_position_size"] = StrategySDK._coerce_float(cfg.get("max_position_size"), 1000.0, 10.0, 1_000_000.0)
+        cfg["copy_delay_seconds"] = StrategySDK._coerce_int(cfg.get("copy_delay_seconds"), 5, 0, 300)
+        cfg["slippage_tolerance"] = StrategySDK._coerce_float(cfg.get("slippage_tolerance"), 1.0, 0.0, 10.0)
+        cfg["min_roi_threshold"] = StrategySDK._coerce_float(cfg.get("min_roi_threshold"), 2.5, 0.0, 100.0)
+        cfg["copy_buys"] = StrategySDK._coerce_bool(cfg.get("copy_buys"), True)
+        cfg["copy_sells"] = StrategySDK._coerce_bool(cfg.get("copy_sells"), True)
+        cfg["proportional_sizing"] = StrategySDK._coerce_bool(cfg.get("proportional_sizing"), False)
+        cfg["proportional_multiplier"] = StrategySDK._coerce_float(
+            cfg.get("proportional_multiplier"), 1.0, 0.01, 100.0
+        )
+        return cfg
+
+    @staticmethod
     def validate_news_filter_config(config: Any) -> dict[str, Any]:
         cfg = dict(StrategySDK.NEWS_FILTER_DEFAULTS)
         if isinstance(config, dict):
@@ -628,116 +1367,6 @@ class StrategySDK:
         cfg["min_supporting_articles"] = StrategySDK._coerce_int(cfg.get("min_supporting_articles"), 2, 1, 10)
         cfg["min_supporting_sources"] = StrategySDK._coerce_int(cfg.get("min_supporting_sources"), 2, 1, 10)
         return StrategySDK.normalize_strategy_retention_config(cfg)
-
-    @staticmethod
-    def _strategy_config_dir() -> Path:
-        return Path(__file__).resolve().parents[1] / "strategy_configs"
-
-    @staticmethod
-    def _strategy_config_path(slug: str) -> Optional[Path]:
-        normalized = StrategySDK._normalize_strategy_slug(slug)
-        if not normalized:
-            return None
-        return StrategySDK._strategy_config_dir() / f"{normalized}.json"
-
-    @staticmethod
-    def get_strategy_config_path(slug: str) -> Optional[str]:
-        """Return the absolute JSON config path for a strategy slug."""
-        path = StrategySDK._strategy_config_path(slug)
-        if path is None:
-            return None
-        return str(path)
-
-    @staticmethod
-    def get_strategy_config_mtime_ns(slug: str) -> int:
-        """Return config file mtime (ns), or 0 when no file exists."""
-        path = StrategySDK._strategy_config_path(slug)
-        if path is None or not path.exists():
-            return 0
-        try:
-            return int(path.stat().st_mtime_ns)
-        except Exception:
-            return 0
-
-    @staticmethod
-    def read_strategy_config_file(slug: str) -> dict[str, Any]:
-        """Read JSON config overrides from backend/strategy_configs/<slug>.json.
-
-        .. deprecated::
-            File-based config overrides are no longer applied by the strategy
-            loader. Config is now managed exclusively via the DB (UI). This
-            function is retained for compatibility but has no effect on strategy
-            runtime config.
-        """
-        warnings.warn(
-            "read_strategy_config_file() is deprecated. Config is now managed exclusively via the DB. "
-            "File-based overrides are no longer applied by the strategy loader.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        path = StrategySDK._strategy_config_path(slug)
-        if path is None or not path.exists():
-            return {}
-        try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                return parsed
-            logger.warning("Strategy config file is not an object: %s", path)
-            return {}
-        except Exception as e:
-            logger.warning("Failed to read strategy config file %s: %s", path, e)
-            return {}
-
-    @staticmethod
-    def write_strategy_config_file(slug: str, config: dict[str, Any]) -> bool:
-        """Write config overrides to backend/strategy_configs/<slug>.json."""
-        path = StrategySDK._strategy_config_path(slug)
-        if path is None:
-            return False
-        payload = config if isinstance(config, dict) else {}
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            encoded = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
-            path.write_text(f"{encoded}\n", encoding="utf-8")
-            return True
-        except Exception as e:
-            logger.warning("Failed to write strategy config file %s: %s", path, e)
-            return False
-
-    @staticmethod
-    def rename_strategy_config_file(old_slug: str, new_slug: str) -> bool:
-        """Rename a strategy config file when strategy slug changes."""
-        old_path = StrategySDK._strategy_config_path(old_slug)
-        new_path = StrategySDK._strategy_config_path(new_slug)
-        if old_path is None or new_path is None or old_path == new_path:
-            return True
-        if not old_path.exists():
-            return True
-        try:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            old_path.replace(new_path)
-            return True
-        except Exception as e:
-            logger.warning(
-                "Failed to rename strategy config file %s -> %s: %s",
-                old_path,
-                new_path,
-                e,
-            )
-            return False
-
-    @staticmethod
-    def delete_strategy_config_file(slug: str) -> bool:
-        """Delete backend/strategy_configs/<slug>.json if it exists."""
-        path = StrategySDK._strategy_config_path(slug)
-        if path is None or not path.exists():
-            return True
-        try:
-            path.unlink()
-            return True
-        except Exception as e:
-            logger.warning("Failed to delete strategy config file %s: %s", path, e)
-            return False
 
     # ── Price helpers ──────────────────────────────────────────────
 

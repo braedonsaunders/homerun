@@ -41,6 +41,8 @@ import {
   reloadUnifiedStrategy,
   getUnifiedStrategyTemplate,
   getValidationOverview,
+  overrideValidationStrategy,
+  clearValidationStrategyOverride,
   UnifiedStrategy,
 } from '../services/api'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
@@ -338,6 +340,20 @@ function normalizeStrategySourceFilter(value: unknown): string {
   return normalizeSourceFilter(value) || 'scanner'
 }
 
+function normalizeMetricKey(value: unknown): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function healthStatusClass(status: string): string {
+  if (status === 'demoted') {
+    return 'border-red-500/30 bg-red-500/10 text-red-300'
+  }
+  if (status === 'active') {
+    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  }
+  return 'border-border/40 bg-background/40 text-muted-foreground'
+}
+
 // ==================== Main Component ====================
 
 export default function UnifiedStrategiesManager({
@@ -352,6 +368,7 @@ export default function UnifiedStrategiesManager({
   // UI toggles
   const [showSettings, setShowSettings] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
+  const [showHealth, setShowHealth] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
   const [showApiDocs, setShowApiDocs] = useState(false)
   const [showBacktest, setShowBacktest] = useState(false)
@@ -539,7 +556,16 @@ export default function UnifiedStrategiesManager({
   const flatFiltered = useMemo(() => Object.values(grouped).flat(), [grouped])
 
   const strategyPerformance = useMemo(() => {
-    const out: Record<string, { roi: number | null; winRate: number | null; sampleCount: number | null }> = {}
+    const out: Record<
+      string,
+      {
+        roi: number | null
+        winRate: number | null
+        sampleCount: number | null
+        realizedPnl: number | null
+        terminalCount: number | null
+      }
+    > = {}
     const strategyAccuracy = strategyTrackerQuery.data?.strategy_accuracy
     if (strategyAccuracy && typeof strategyAccuracy === 'object' && !Array.isArray(strategyAccuracy)) {
       for (const [strategyKey, raw] of Object.entries(strategyAccuracy as Record<string, unknown>)) {
@@ -554,6 +580,8 @@ export default function UnifiedStrategiesManager({
           roi: null,
           winRate: Number.isFinite(winRate) ? winRate * 100 : null,
           sampleCount: Number.isFinite(resolved) ? resolved : null,
+          realizedPnl: null,
+          terminalCount: null,
         }
       }
     }
@@ -573,6 +601,32 @@ export default function UnifiedStrategiesManager({
           roi: Number.isFinite(actualRoiMean) ? actualRoiMean : existing?.roi ?? null,
           winRate: existing?.winRate ?? null,
           sampleCount: Number.isFinite(sampleSize) ? sampleSize : existing?.sampleCount ?? null,
+          realizedPnl: existing?.realizedPnl ?? null,
+          terminalCount: existing?.terminalCount ?? null,
+        }
+      }
+    }
+
+    const orchestratorByStrategy = strategyTrackerQuery.data?.trader_orchestrator_execution_30d?.by_strategy
+    if (Array.isArray(orchestratorByStrategy)) {
+      for (const raw of orchestratorByStrategy) {
+        const row = raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw as Record<string, unknown>
+          : {}
+        const key = normalizeMetricKey(row.strategy_type)
+        if (!key || key === 'unknown') continue
+
+        const realizedPnl = Number(row.realized_pnl_total)
+        const terminalCount = Number(row.terminal)
+        const existing = out[key]
+        out[key] = {
+          roi: existing?.roi ?? null,
+          winRate: existing?.winRate ?? null,
+          sampleCount:
+            existing?.sampleCount ??
+            (Number.isFinite(terminalCount) ? terminalCount : null),
+          realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : existing?.realizedPnl ?? null,
+          terminalCount: Number.isFinite(terminalCount) ? terminalCount : existing?.terminalCount ?? null,
         }
       }
     }
@@ -580,10 +634,49 @@ export default function UnifiedStrategiesManager({
     return out
   }, [strategyTrackerQuery.data])
 
+  const strategyHealthRows = useMemo(() => {
+    const rows = [...(strategyTrackerQuery.data?.strategy_health || [])]
+    rows.sort((left, right) => {
+      const leftDemoted = left.status === 'demoted'
+      const rightDemoted = right.status === 'demoted'
+      if (leftDemoted !== rightDemoted) return leftDemoted ? -1 : 1
+      return right.sample_size - left.sample_size
+    })
+    return rows
+  }, [strategyTrackerQuery.data?.strategy_health])
+
+  const strategyHealthByKey = useMemo(() => {
+    const out: Record<string, (typeof strategyHealthRows)[number]> = {}
+    for (const row of strategyHealthRows) {
+      const key = normalizeMetricKey(row.strategy_type)
+      if (!key) continue
+      out[key] = row
+    }
+    return out
+  }, [strategyHealthRows])
+
+  const strategyHealthDemotedCount = useMemo(
+    () => strategyHealthRows.filter((row) => row.status === 'demoted').length,
+    [strategyHealthRows]
+  )
+
   const selectedStrategy = useMemo(
     () => catalog.find((s) => s.id === selectedStrategyId) || null,
     [selectedStrategyId, catalog]
   )
+
+  const selectedStrategyHealth = useMemo(() => {
+    if (!selectedStrategy) return null
+    const keys = uniqueStrings([
+      normalizeMetricKey(selectedStrategy.slug),
+      normalizeMetricKey(selectedStrategy.class_name),
+      ...(selectedStrategy.aliases || []).map((alias) => normalizeMetricKey(alias)),
+    ])
+    for (const key of keys) {
+      if (strategyHealthByKey[key]) return strategyHealthByKey[key]
+    }
+    return null
+  }, [selectedStrategy, strategyHealthByKey])
 
   const inferredClassName = useMemo(() => inferClassName(editorCode), [editorCode])
 
@@ -772,12 +865,43 @@ export default function UnifiedStrategiesManager({
     },
   })
 
+  const overrideStrategyMutation = useMutation({
+    mutationFn: ({
+      strategyType,
+      status,
+    }: {
+      strategyType: string
+      status: 'active' | 'demoted'
+    }) => overrideValidationStrategy(strategyType, status),
+    onSuccess: () => {
+      setEditorError(null)
+      queryClient.invalidateQueries({ queryKey: ['validation-overview'] })
+    },
+    onError: (error: unknown) => {
+      setEditorError(errorMessage(error, 'Failed to update strategy health override'))
+    },
+  })
+
+  const clearOverrideMutation = useMutation({
+    mutationFn: (strategyType: string) => clearValidationStrategyOverride(strategyType),
+    onSuccess: () => {
+      setEditorError(null)
+      queryClient.invalidateQueries({ queryKey: ['validation-overview'] })
+    },
+    onError: (error: unknown) => {
+      setEditorError(errorMessage(error, 'Failed to clear strategy health override'))
+    },
+  })
+
+  const healthBusy = overrideStrategyMutation.isPending || clearOverrideMutation.isPending
+
   const busy =
     saveMutation.isPending ||
     validateMutation.isPending ||
     reloadMutation.isPending ||
     cloneMutation.isPending ||
-    deleteMutation.isPending
+    deleteMutation.isPending ||
+    healthBusy
 
   // ── New draft ──
 
@@ -940,6 +1064,19 @@ export default function UnifiedStrategiesManager({
               </button>
             )}
           </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5">
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Health Rows</p>
+              <p className="mt-0.5 text-[11px] font-mono">{strategyHealthRows.length}</p>
+            </div>
+            <div className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5">
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Demoted</p>
+              <p className={cn('mt-0.5 text-[11px] font-mono', strategyHealthDemotedCount > 0 ? 'text-red-300' : 'text-emerald-300')}>
+                {strategyHealthDemotedCount}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Strategy list — grouped by source_key */}
@@ -963,10 +1100,23 @@ export default function UnifiedStrategiesManager({
                   {strategies.map((strategy) => {
                     const active = selectedStrategyId === strategy.id
                     const sColor = STATUS_COLORS[strategy.status] || STATUS_COLORS.draft
-                    const tracker = strategyPerformance[String(strategy.slug || '').trim().toLowerCase()]
+                    const metricKeys = uniqueStrings([
+                      normalizeMetricKey(strategy.slug),
+                      normalizeMetricKey(strategy.class_name),
+                      ...(strategy.aliases || []).map((alias) => normalizeMetricKey(alias)),
+                    ])
+                    const tracker = metricKeys
+                      .map((metricKey) => strategyPerformance[metricKey])
+                      .find((row) => row != null)
+                    const health = metricKeys
+                      .map((metricKey) => strategyHealthByKey[metricKey])
+                      .find((row) => row != null)
                     const roi = tracker?.roi ?? null
                     const winRate = tracker?.winRate ?? null
                     const sampleCount = tracker?.sampleCount ?? null
+                    const realizedPnl = tracker?.realizedPnl ?? null
+                    const healthAccuracy = Number(health?.directional_accuracy)
+                    const healthMae = Number(health?.mae_roi)
                     return (
                       <button
                         key={strategy.id}
@@ -991,12 +1141,27 @@ export default function UnifiedStrategiesManager({
                             <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0 h-4 border', sColor)}>
                               {strategy.status}
                             </Badge>
+                            {health && (
+                              <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0 h-4 border', healthStatusClass(health.status))}>
+                                {health.status}
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
                           {strategy.slug}
                         </p>
                         <div className="mt-1 flex items-center gap-2 text-[9px]">
+                          <span className={cn(
+                            'font-mono',
+                            realizedPnl == null
+                              ? 'text-muted-foreground/60'
+                              : realizedPnl >= 0
+                                ? 'text-emerald-400'
+                                : 'text-red-400'
+                          )}>
+                            P&L {realizedPnl == null ? '--' : `${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`}
+                          </span>
                           <span className={cn(
                             'font-mono',
                             roi == null
@@ -1013,6 +1178,16 @@ export default function UnifiedStrategiesManager({
                           <span className="text-muted-foreground/75">
                             N {sampleCount == null ? '--' : Math.round(sampleCount)}
                           </span>
+                          {health && (
+                            <span className="text-muted-foreground/75">
+                              Acc {Number.isFinite(healthAccuracy) ? `${(healthAccuracy * 100).toFixed(1)}%` : '--'}
+                            </span>
+                          )}
+                          {health && (
+                            <span className="text-muted-foreground/75">
+                              MAE {Number.isFinite(healthMae) ? healthMae.toFixed(2) : '--'}
+                            </span>
+                          )}
                         </div>
                         {strategy.capabilities && <CapabilityBadges capabilities={strategy.capabilities} />}
                       </button>
@@ -1219,7 +1394,7 @@ export default function UnifiedStrategiesManager({
 
             {/* ── Main editor content ── */}
             <div className="flex-1 min-h-0 flex flex-col">
-              {/* Collapsible Strategy Settings */}
+              {/* Collapsible Settings */}
               <div className="shrink-0 border-b border-border/50">
                 <button
                   type="button"
@@ -1232,7 +1407,7 @@ export default function UnifiedStrategiesManager({
                     <ChevronRight className="w-3 h-3" />
                   )}
                   <Settings2 className="w-3 h-3" />
-                  <span>Strategy Settings</span>
+                  <span>Settings</span>
                   <span className="ml-auto font-mono text-[10px] opacity-60">
                     {editorSlug || 'no-key'}
                   </span>
@@ -1310,34 +1485,8 @@ export default function UnifiedStrategiesManager({
                 )}
               </div>
 
-              {/* Code editor — takes remaining space */}
-              <div className="flex-1 min-h-0 flex flex-col">
-                <div className="px-4 py-2 flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-2">
-                    <Code2 className="w-3.5 h-3.5 text-violet-400" />
-                    <span className="text-xs font-medium">Source Code</span>
-                    <span className="text-[10px] text-muted-foreground font-mono">Python</span>
-                  </div>
-                  {inferredClassName && (
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      class {inferredClassName}
-                    </span>
-                  )}
-                </div>
-                <div className="flex-1 min-h-0 px-3 pb-2">
-                  <CodeEditor
-                    value={editorCode}
-                    onChange={setEditorCode}
-                    language="python"
-                    className="h-full"
-                    minHeight="100%"
-                    placeholder="Write your strategy source code here..."
-                  />
-                </div>
-              </div>
-
               {/* Collapsible Runtime Config section */}
-              <div className="shrink-0 border-t border-border/50">
+              <div className="shrink-0 border-b border-border/50">
                 <button
                   type="button"
                   onClick={() => setShowConfig((prev) => !prev)}
@@ -1358,11 +1507,6 @@ export default function UnifiedStrategiesManager({
                 </button>
                 {showConfig && (
                   <div className="px-3 pb-3 animate-in fade-in duration-200 space-y-3">
-                    {selectedStrategy?.config_file_path && (
-                      <div className="text-[10px] text-muted-foreground px-1">
-                        Config file: <span className="font-mono">{selectedStrategy.config_file_path}</span>
-                      </div>
-                    )}
                     {/* Dynamic config form when schema has param_fields */}
                     {configSchemaFields.length > 0 && !showRawJson && (
                       <>
@@ -1430,6 +1574,134 @@ export default function UnifiedStrategiesManager({
                     )}
                   </div>
                 )}
+              </div>
+
+              {/* Collapsible Health */}
+              <div className="shrink-0 border-b border-border/50">
+                <button
+                  type="button"
+                  onClick={() => setShowHealth((prev) => !prev)}
+                  className="w-full px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showHealth ? (
+                    <ChevronDown className="w-3 h-3" />
+                  ) : (
+                    <ChevronRight className="w-3 h-3" />
+                  )}
+                  <Settings2 className="w-3 h-3" />
+                  <span>Health</span>
+                  <span className="ml-auto font-mono text-[10px] opacity-60">
+                    {selectedStrategyHealth?.status || 'untracked'}
+                  </span>
+                </button>
+                {showHealth && (
+                  <div className="px-4 pb-3 space-y-3 animate-in fade-in duration-200">
+                    {selectedStrategyHealth ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline" className={cn('text-[10px] border', healthStatusClass(selectedStrategyHealth.status))}>
+                            {selectedStrategyHealth.status}
+                          </Badge>
+                          <span className="text-[10px] text-muted-foreground font-mono">
+                            N {selectedStrategyHealth.sample_size}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            Acc {Number.isFinite(Number(selectedStrategyHealth.directional_accuracy))
+                              ? `${(Number(selectedStrategyHealth.directional_accuracy) * 100).toFixed(1)}%`
+                              : '--'}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            MAE {Number.isFinite(Number(selectedStrategyHealth.mae_roi))
+                              ? Number(selectedStrategyHealth.mae_roi).toFixed(2)
+                              : '--'}
+                          </span>
+                          {selectedStrategyHealth.manual_override && (
+                            <Badge variant="outline" className="text-[10px] border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
+                              Manual override
+                            </Badge>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px]"
+                            disabled={healthBusy || selectedStrategyHealth.status === 'active'}
+                            onClick={() =>
+                              overrideStrategyMutation.mutate({
+                                strategyType: selectedStrategyHealth.strategy_type,
+                                status: 'active',
+                              })
+                            }
+                          >
+                            Activate
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px]"
+                            disabled={healthBusy || selectedStrategyHealth.status === 'demoted'}
+                            onClick={() =>
+                              overrideStrategyMutation.mutate({
+                                strategyType: selectedStrategyHealth.strategy_type,
+                                status: 'demoted',
+                              })
+                            }
+                          >
+                            Demote
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px]"
+                            disabled={healthBusy || !selectedStrategyHealth.manual_override}
+                            onClick={() => clearOverrideMutation.mutate(selectedStrategyHealth.strategy_type)}
+                          >
+                            Clear
+                          </Button>
+                        </div>
+
+                        {selectedStrategyHealth.last_reason && (
+                          <p className="text-[10px] text-muted-foreground">{selectedStrategyHealth.last_reason}</p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        No health telemetry exists yet for key <span className="font-mono">{selectedStrategy?.slug || editorSlug || 'unknown'}</span>.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Code editor — takes remaining space */}
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="px-4 py-2 flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Code2 className="w-3.5 h-3.5 text-violet-400" />
+                    <span className="text-xs font-medium">Source Code</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">Python</span>
+                  </div>
+                  {inferredClassName && (
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      class {inferredClassName}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 min-h-0 px-3 pb-2">
+                  <CodeEditor
+                    value={editorCode}
+                    onChange={setEditorCode}
+                    language="python"
+                    className="h-full"
+                    minHeight="100%"
+                    placeholder="Write your strategy source code here..."
+                  />
+                </div>
               </div>
             </div>
           </>

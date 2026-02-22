@@ -40,6 +40,8 @@ import {
 import type { SimulationAccount, SimulationPosition } from '../services/api'
 
 type DetailTab = 'overview' | 'holdings' | 'trades'
+const WIN_STATUSES = new Set(['resolved_win', 'closed_win'])
+const LOSS_STATUSES = new Set(['resolved_loss', 'closed_loss'])
 
 export default function SimulationPanel() {
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -124,7 +126,12 @@ export default function SimulationPanel() {
   const processedTrades = useMemo(() => {
     let filtered = [...trades]
     if (tradeFilter !== 'all') {
-      filtered = filtered.filter(t => t.status === tradeFilter)
+      filtered = filtered.filter((trade) => {
+        const status = String(trade.status || '').toLowerCase()
+        if (tradeFilter === 'won') return WIN_STATUSES.has(status)
+        if (tradeFilter === 'lost') return LOSS_STATUSES.has(status)
+        return status === tradeFilter
+      })
     }
     filtered.sort((a, b) => {
       let cmp = 0
@@ -144,8 +151,9 @@ export default function SimulationPanel() {
       map[t.strategy_type].trades++
       map[t.strategy_type].pnl += t.actual_pnl || 0
       map[t.strategy_type].cost += t.total_cost
-      if (t.status === 'resolved_win') map[t.strategy_type].wins++
-      if (t.status === 'resolved_loss') map[t.strategy_type].losses++
+      const status = String(t.status || '').toLowerCase()
+      if (WIN_STATUSES.has(status)) map[t.strategy_type].wins++
+      if (LOSS_STATUSES.has(status)) map[t.strategy_type].losses++
     })
     return map
   }, [trades])
@@ -586,8 +594,8 @@ export default function SimulationPanel() {
                       >
                         <option value="all">All Trades</option>
                         <option value="open">Open</option>
-                        <option value="resolved_win">Wins</option>
-                        <option value="resolved_loss">Losses</option>
+                        <option value="won">Wins</option>
+                        <option value="lost">Losses</option>
                         <option value="pending">Pending</option>
                       </select>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -820,6 +828,8 @@ function StatusBadge({ status }: { status: string }) {
     open: 'bg-blue-500/20 text-blue-400',
     resolved_win: 'bg-green-500/20 text-green-400',
     resolved_loss: 'bg-red-500/20 text-red-400',
+    closed_win: 'bg-green-500/20 text-green-400',
+    closed_loss: 'bg-red-500/20 text-red-400',
     pending: 'bg-yellow-500/20 text-yellow-400',
     cancelled: 'bg-gray-500/20 text-muted-foreground',
     failed: 'bg-red-500/20 text-red-400'

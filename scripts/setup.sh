@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 
 REDIS_ONLY=0
 POSTGRES_ONLY=0
+PYTHON_MIN_MINOR=10
+PYTHON_MAX_MINOR=13
 for arg in "$@"; do
     case "$arg" in
         --redis-only)
@@ -16,6 +18,52 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+python_version_supported() {
+    local python_cmd="$1"
+    "$python_cmd" -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 and $PYTHON_MIN_MINOR <= sys.version_info.minor <= $PYTHON_MAX_MINOR else 1)" >/dev/null 2>&1
+}
+
+find_supported_python() {
+    local candidate
+    for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && python_version_supported "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_supported_python() {
+    echo "No supported Python 3.10-3.13 interpreter found. Attempting automatic install..."
+
+    if command -v brew >/dev/null 2>&1; then
+        brew install python@3.13 || brew install python@3.12 || brew install python@3.11
+    elif command -v apt-get >/dev/null 2>&1; then
+        run_with_optional_sudo apt-get update
+        run_with_optional_sudo apt-get install -y python3.13 python3.13-venv || \
+            run_with_optional_sudo apt-get install -y python3.12 python3.12-venv || \
+            run_with_optional_sudo apt-get install -y python3.11 python3.11-venv || \
+            run_with_optional_sudo apt-get install -y python3 python3-venv
+    elif command -v dnf >/dev/null 2>&1; then
+        run_with_optional_sudo dnf install -y python3.13 || \
+            run_with_optional_sudo dnf install -y python3.12 || \
+            run_with_optional_sudo dnf install -y python3.11 || \
+            run_with_optional_sudo dnf install -y python3
+    elif command -v yum >/dev/null 2>&1; then
+        run_with_optional_sudo yum install -y python3.13 || \
+            run_with_optional_sudo yum install -y python3.12 || \
+            run_with_optional_sudo yum install -y python3.11 || \
+            run_with_optional_sudo yum install -y python3
+    elif command -v pacman >/dev/null 2>&1; then
+        run_with_optional_sudo pacman -Sy --noconfirm python
+    else
+        return 1
+    fi
+
+    find_supported_python >/dev/null 2>&1
+}
 
 run_with_optional_sudo() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -166,15 +214,21 @@ if [ "$POSTGRES_ONLY" -eq 1 ]; then
 fi
 
 # Check Python version
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 is required but not installed."
-    echo "On Mac: brew install python@3.11"
+PYTHON_CMD="$(find_supported_python || true)"
+if [ -z "$PYTHON_CMD" ]; then
+    install_supported_python || true
+    PYTHON_CMD="$(find_supported_python || true)"
+fi
+if [ -z "$PYTHON_CMD" ]; then
+    echo "Error: Python 3.10-3.13 is required for full Homerun setup."
+    if command -v python3 >/dev/null 2>&1; then
+        echo "Detected python3: $(python3 -c 'import platform; print(platform.python_version())')"
+    fi
+    echo "Install Python 3.12 or 3.11 (with venv support) and rerun setup."
     exit 1
 fi
-
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
-echo "Found Python $PYTHON_VERSION"
+PYTHON_VERSION="$($PYTHON_CMD -c 'import platform; print(platform.python_version())')"
+echo "Found Python $PYTHON_VERSION via $PYTHON_CMD"
 
 # Check Node.js
 if ! command -v node &> /dev/null; then
@@ -191,20 +245,43 @@ echo ""
 echo "Setting up backend..."
 cd backend
 
+if [ -d "venv" ]; then
+    if [ ! -x "venv/bin/python" ]; then
+        echo "Existing backend/venv is missing Python. Recreating virtual environment..."
+        rm -rf venv
+    elif ! venv/bin/python -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 and $PYTHON_MIN_MINOR <= sys.version_info.minor <= $PYTHON_MAX_MINOR else 1)" >/dev/null 2>&1; then
+        EXISTING_VENV_PYTHON_VERSION="$(venv/bin/python -c 'import platform; print(platform.python_version())' 2>/dev/null || echo "unknown")"
+        echo "Existing backend/venv uses unsupported Python $EXISTING_VENV_PYTHON_VERSION. Recreating virtual environment..."
+        rm -rf venv
+    fi
+fi
+
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
-    python3 -m venv venv
+    "$PYTHON_CMD" -m venv venv
 fi
 
 echo "Activating virtual environment..."
 source venv/bin/activate
 
+VENV_PYTHON_VERSION="$(python -c 'import platform; print(platform.python_version())')"
+if ! python -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 and $PYTHON_MIN_MINOR <= sys.version_info.minor <= $PYTHON_MAX_MINOR else 1)" >/dev/null 2>&1; then
+    echo "Error: backend virtualenv uses Python $VENV_PYTHON_VERSION but 3.10-3.13 is required."
+    echo "Delete backend/venv and rerun setup."
+    exit 1
+fi
+
 echo "Installing Python dependencies..."
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
+if ! python -c "import socksio" >/dev/null 2>&1; then
+    echo "Error: SOCKS5 proxy support dependency 'socksio' is missing after install."
+    echo "Run: pip install \"httpx[socks]>=0.27.0,<1.0\""
+    exit 1
+fi
 
 # Check for OpenSSL/LibreSSL compatibility and attempt fix
-SSL_LIB=$(python3 -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>/dev/null || echo "unknown")
+SSL_LIB=$(python -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>/dev/null || echo "unknown")
 if echo "$SSL_LIB" | grep -qi "libressl"; then
     echo ""
     echo "Detected $SSL_LIB (macOS default)."
@@ -212,15 +289,12 @@ if echo "$SSL_LIB" | grep -qi "libressl"; then
     pip install -q pyopenssl cryptography 2>/dev/null || echo "  (pyopenssl install skipped - non-critical)"
 fi
 
-# Try to install trading dependencies (requires Python 3.10+)
-if [ "$PYTHON_MINOR" -ge 10 ]; then
-    echo "Installing trading dependencies..."
-    pip install -q -r requirements-trading.txt 2>/dev/null || echo "  (trading deps skipped - optional)"
-else
-    echo ""
-    echo "Note: Python 3.10+ required for live trading."
-    echo "      Paper trading and scanning will work fine."
-    echo "      Upgrade Python to enable live trading: brew install python@3.11"
+echo "Installing trading dependencies..."
+pip install -q -r requirements-trading.txt
+if ! python -c "import py_clob_client, eth_account" >/dev/null 2>&1; then
+    echo "Error: trading dependencies are missing after install."
+    echo "Expected imports: py_clob_client, eth_account"
+    exit 1
 fi
 
 cd ..
@@ -257,10 +331,10 @@ ensure_postgres_runtime
 if [ -x "backend/venv/bin/python" ]; then
     FINGERPRINT_PY_VERSION="$(backend/venv/bin/python -c 'import platform; print(platform.python_version())')"
 else
-    FINGERPRINT_PY_VERSION="$(python3 -c 'import platform; print(platform.python_version())')"
+    FINGERPRINT_PY_VERSION="$($PYTHON_CMD -c 'import platform; print(platform.python_version())')"
 fi
 
-SETUP_FINGERPRINT_PY_VERSION="$FINGERPRINT_PY_VERSION" python3 - <<'PY'
+SETUP_FINGERPRINT_PY_VERSION="$FINGERPRINT_PY_VERSION" "$PYTHON_CMD" - <<'PY'
 import hashlib
 import json
 import os

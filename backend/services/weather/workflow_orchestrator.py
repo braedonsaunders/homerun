@@ -850,6 +850,21 @@ class WeatherWorkflowOrchestrator:
                     "platform": "polymarket",
                 }
             ],
+            strategy_context={
+                "source_key": "weather",
+                "strategy_slug": "weather_edge",
+                "weather": {
+                    "agreement": signal.model_agreement,
+                    "model_agreement": signal.model_agreement,
+                    "source_count": signal.source_count,
+                    "source_spread_c": signal.source_spread_c,
+                    "consensus_temp_c": signal.consensus_temperature_c,
+                    "market_implied_temp_c": signal.market_implied_temperature_c,
+                    "model_probability": signal.model_probability,
+                    "edge_percent": signal.edge_percent,
+                    "target_time": parsed.target_time.isoformat(),
+                },
+            },
         )
 
     def _source_probability_summary(self, forecast, signal: WeatherSignal) -> str:

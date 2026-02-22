@@ -135,6 +135,12 @@ async def test_run_weather_workflow_executes_immediately(monkeypatch):
     )
     emit_mock = AsyncMock(return_value=2)
     monkeypatch.setattr(routes_weather_workflow, "emit_weather_intent_signals", emit_mock)
+    sync_snapshot_mock = AsyncMock()
+    monkeypatch.setattr(
+        routes_weather_workflow,
+        "_sync_strategy_weather_snapshot",
+        sync_snapshot_mock,
+    )
     clear_request_mock = AsyncMock()
     monkeypatch.setattr(
         routes_weather_workflow.shared_state,
@@ -154,6 +160,7 @@ async def test_run_weather_workflow_executes_immediately(monkeypatch):
     run_cycle_mock.assert_awaited_once_with(fake_session)
     list_intents_mock.assert_awaited_once_with(fake_session, status_filter="pending", limit=2000)
     emit_mock.assert_awaited_once()
+    sync_snapshot_mock.assert_awaited_once()
     clear_request_mock.assert_awaited_once_with(fake_session)
 
 

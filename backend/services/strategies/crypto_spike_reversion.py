@@ -48,6 +48,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         "max_abs_move_2h": 14.0,
         "base_size_usd": 20.0,
         "max_size_usd": 120.0,
+        "take_profit_pct": 8.0,
     }
 
     async def on_event(self, event: DataEvent) -> list:
@@ -185,13 +186,16 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         )
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
-        """Tight exit for spike reversion — short hold with trailing stop.
-
-        TP/SL/trailing/max-hold defaults are applied via position.config, which
-        the lifecycle layer populates from strategy_exit_config in the signal
-        payload. Strategy-level defaults are set in default_config and applied
-        at configuration time.
-        """
+        """Tight exit for spike reversion — short hold with explicit TP default."""
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 8.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 8.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------

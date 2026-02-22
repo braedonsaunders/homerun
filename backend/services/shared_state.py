@@ -15,18 +15,6 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-SQL_IN_CLAUSE_CHUNK_SIZE = 900
-
-
-def _chunked_in(column, values, chunk_size: int = SQL_IN_CLAUSE_CHUNK_SIZE):
-    values = list(values)
-    if len(values) <= chunk_size:
-        return column.in_(values)
-    clauses = []
-    for i in range(0, len(values), chunk_size):
-        clauses.append(column.in_(values[i : i + chunk_size]))
-    return or_(*clauses)
-
 from models.database import (
     ScannerControl,
     ScannerSnapshot,
@@ -38,6 +26,18 @@ from models.opportunity import Opportunity, OpportunityFilter
 from services.event_bus import event_bus
 from services.market_tradability import get_market_tradability_map
 from utils.utcnow import utcnow
+
+SQL_IN_CLAUSE_CHUNK_SIZE = 900
+
+
+def _chunked_in(column, values, chunk_size: int = SQL_IN_CLAUSE_CHUNK_SIZE):
+    values = list(values)
+    if len(values) <= chunk_size:
+        return column.in_(values)
+    clauses = []
+    for i in range(0, len(values), chunk_size):
+        clauses.append(column.in_(values[i : i + chunk_size]))
+    return or_(*clauses)
 
 logger = logging.getLogger(__name__)
 

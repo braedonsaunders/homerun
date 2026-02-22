@@ -135,3 +135,46 @@ async def test_event_dispatcher_cross_instance_dispatch_reaches_subscribed_strat
     assert inbound.market_id == "mkt-1"
     assert inbound.token_id == "tok-1"
     assert inbound.new_price == pytest.approx(0.43)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", [EventType.MARKET_RESOLVED, EventType.TRADE_EXECUTION])
+async def test_event_dispatcher_cross_instance_fanout_includes_resolution_and_trade_events(monkeypatch, event_type):
+    fake_streams = _InMemoryRedisStreams()
+    monkeypatch.setattr(event_dispatcher_module, "redis_streams", fake_streams)
+
+    sender = event_dispatcher_module.EventDispatcher()
+    receiver = event_dispatcher_module.EventDispatcher()
+    received: list[DataEvent] = []
+    received_event = asyncio.Event()
+
+    async def _handler(event: DataEvent) -> list:
+        received.append(event)
+        received_event.set()
+        return []
+
+    receiver.subscribe("strategy.lifecycle", event_type, _handler)
+    await sender.start()
+    await receiver.start()
+
+    outbound = DataEvent(
+        event_type=event_type,
+        source="ws_feed",
+        timestamp=utcnow().astimezone(timezone.utc),
+        market_id="mkt-2",
+        token_id="tok-2",
+        payload={"winner": "YES"} if event_type == EventType.MARKET_RESOLVED else {"price": 0.72, "size": 55.0},
+    )
+    try:
+        await sender.dispatch(outbound)
+        await asyncio.wait_for(received_event.wait(), timeout=1.5)
+    finally:
+        await sender.stop()
+        await receiver.stop()
+
+    assert len(received) == 1
+    inbound = received[0]
+    assert inbound.event_type == event_type
+    assert inbound.source == "ws_feed"
+    assert inbound.market_id == "mkt-2"
+    assert inbound.token_id == "tok-2"

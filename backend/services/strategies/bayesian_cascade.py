@@ -300,6 +300,7 @@ class BayesianCascadeStrategy(BaseStrategy):
         "max_propagation_depth": 3,
         "base_size_usd": 15.0,
         "max_size_usd": 120.0,
+        "take_profit_pct": 12.0,
     }
 
     pipeline_defaults = {
@@ -806,6 +807,15 @@ class BayesianCascadeStrategy(BaseStrategy):
         """Bayesian cascade: standard TP/SL exit."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 12.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 12.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------

@@ -158,6 +158,7 @@ class TemporalDecayStrategy(BaseStrategy):
         "shock_target_certainty": 0.96,
         "base_size_usd": 16.0,
         "max_size_usd": 140.0,
+        "take_profit_pct": 10.0,
     }
 
     # Composable evaluate pipeline: score = edge*0.60 + conf*30 - risk*8
@@ -834,9 +835,18 @@ class TemporalDecayStrategy(BaseStrategy):
         return max(1.0, min(max_size, size))
 
     def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
-        """Temporal decay: exit when time target passes or standard TP/SL."""
+        """Temporal decay: lock gains with a default TP when no exit config is supplied."""
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
+        config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = self.config.get("take_profit_pct", 10.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 10.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------

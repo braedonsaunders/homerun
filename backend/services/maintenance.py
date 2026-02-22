@@ -176,6 +176,8 @@ class MaintenanceService:
                 SimulationTrade.resolved_at < cutoff_date,
                 SimulationTrade.status.in_(
                     [
+                        TradeStatus.CLOSED_WIN,
+                        TradeStatus.CLOSED_LOSS,
                         TradeStatus.RESOLVED_WIN,
                         TradeStatus.RESOLVED_LOSS,
                         TradeStatus.CANCELLED,

@@ -401,11 +401,25 @@ export default function PositionsPanel() {
     })
   }, [simulationPayload.positions])
 
+  const accountNameById = useMemo(() => {
+    return new Map(accounts.map((account) => [account.id, account.name]))
+  }, [accounts])
+
+  const simulationCoverageKeys = useMemo(() => {
+    const keys = new Set<string>()
+    simulationPayload.positions.forEach((position) => {
+      const key = `${position.accountId}:${position.market_id}:${normalizeDirection(position.side)}`
+      keys.add(key)
+    })
+    return keys
+  }, [simulationPayload.positions])
+
   const autotraderPaperRows = useMemo<PositionRow[]>(() => {
     const buckets = new Map<string, {
       marketId: string
       marketQuestion: string
       side: string
+      linkedAccountId: string | null
       costBasis: number
       weightedEntry: number
       weightedSize: number
@@ -425,16 +439,24 @@ export default function PositionsPanel() {
       const side = normalizeDirection(order.direction)
       const notional = Math.abs(toNumber(order.notional_usd))
       const entryPrice = toNumber(order.effective_price ?? order.entry_price)
-      const key = `${marketId}:${side}`
       const payload = (order.payload && typeof order.payload === 'object')
         ? order.payload as Record<string, unknown>
         : {}
+      const simulationLedger = (payload.simulation_ledger && typeof payload.simulation_ledger === 'object')
+        ? payload.simulation_ledger as Record<string, unknown>
+        : null
+      const linkedAccountId = readString(simulationLedger?.account_id)
+      const bucketScope = linkedAccountId || 'unassigned'
+      const key = `${bucketScope}:${marketId}:${side}`
+
+      if (selectedSandboxAccount && linkedAccountId !== selectedSandboxAccount) return
 
       if (!buckets.has(key)) {
         buckets.set(key, {
           marketId,
           marketQuestion: readString(order.market_question) || marketId,
           side,
+          linkedAccountId,
           costBasis: 0,
           weightedEntry: 0,
           weightedSize: 0,
@@ -451,6 +473,11 @@ export default function PositionsPanel() {
       const bucket = buckets.get(key)
       if (!bucket) return
 
+      if (!bucket.linkedAccountId && linkedAccountId) {
+        bucket.linkedAccountId = linkedAccountId
+      }
+
+      if (notional <= 0) return
       bucket.costBasis += notional
       if (entryPrice > 0 && notional > 0) {
         bucket.weightedEntry += entryPrice * notional
@@ -465,14 +492,26 @@ export default function PositionsPanel() {
     })
 
     return Array.from(buckets.entries())
-      .map<PositionRow>(([key, bucket]) => {
+      .map<PositionRow | null>(([key, bucket]) => {
+        if (bucket.costBasis <= 0) return null
+
+        if (bucket.linkedAccountId) {
+          const coverageKey = `${bucket.linkedAccountId}:${bucket.marketId}:${bucket.side}`
+          if (simulationCoverageKeys.has(coverageKey)) {
+            return null
+          }
+        }
+
         const entryPrice = bucket.costBasis > 0 ? bucket.weightedEntry / bucket.costBasis : null
         const size = bucket.weightedSize > 0 ? bucket.weightedSize : null
+        const accountLabel = bucket.linkedAccountId
+          ? (accountNameById.get(bucket.linkedAccountId) || 'Autotrader (Paper)')
+          : 'Autotrader (Paper)'
         return {
           key: `paper:${key}`,
           venue: 'autotrader-paper',
           venueLabel: 'Autotrader Paper',
-          accountLabel: 'Autotrader (Paper)',
+          accountLabel,
           marketId: bucket.marketId,
           marketQuestion: bucket.marketQuestion,
           side: bucket.side,
@@ -489,8 +528,9 @@ export default function PositionsPanel() {
           markMode: 'entry_estimate',
         }
       })
+      .filter((row): row is PositionRow => row !== null)
       .sort((left, right) => right.marketValue - left.marketValue)
-  }, [traderOrders])
+  }, [accountNameById, selectedSandboxAccount, simulationCoverageKeys, traderOrders])
 
   const polymarketLiveRows = useMemo<PositionRow[]>(() => {
     return polymarketLivePositions.map((position) => {
@@ -636,9 +676,9 @@ export default function PositionsPanel() {
     const totalCostBasis = sortedRows.reduce((sum, row) => sum + row.costBasis, 0)
     const totalMarketValue = sortedRows.reduce((sum, row) => sum + row.marketValue, 0)
     const markableRows = sortedRows.filter((row) => row.unrealizedPnl !== null)
+    const markableCostBasis = markableRows.reduce((sum, row) => sum + row.costBasis, 0)
     const totalUnrealizedPnl = markableRows.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0)
-    const pnlPercent = totalCostBasis > 0 ? (totalUnrealizedPnl / totalCostBasis) * 100 : 0
-    const estimatedRows = sortedRows.filter((row) => row.markMode === 'entry_estimate').length
+    const pnlPercent = markableCostBasis > 0 ? (totalUnrealizedPnl / markableCostBasis) * 100 : 0
     const markCoverage = sortedRows.length > 0 ? (markableRows.length / sortedRows.length) * 100 : 0
 
     const yesExposure = sortedRows
@@ -656,12 +696,6 @@ export default function PositionsPanel() {
       null
     )
 
-    const worstPnlPosition = markableRows.reduce<PositionRow | null>((worst, row) => {
-      if (!worst) return row
-      if ((row.unrealizedPnl ?? 0) < (worst.unrealizedPnl ?? 0)) return row
-      return worst
-    }, null)
-
     const concentrationHhi = totalMarketValue > 0
       ? sortedRows.reduce((sum, row) => {
           const weight = row.marketValue / totalMarketValue
@@ -669,28 +703,18 @@ export default function PositionsPanel() {
         }, 0)
       : 0
 
-    const effectivePositions = concentrationHhi > 0 ? 1 / concentrationHhi : 0
-    const staleRows = sortedRows.filter((row) => {
-      const ts = toTimestamp(row.openedAt)
-      return ts > 0 && (Date.now() - ts) > 24 * 60 * 60 * 1000
-    }).length
-
     return {
       totalCostBasis,
       totalMarketValue,
       totalUnrealizedPnl,
       pnlPercent,
-      estimatedRows,
       markCoverage,
       yesExposure,
       noExposure,
       otherExposure,
       directionalNet,
       largestPosition,
-      worstPnlPosition,
       concentrationHhi,
-      effectivePositions,
-      staleRows,
     }
   }, [sortedRows])
 

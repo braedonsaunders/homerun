@@ -78,6 +78,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
         "max_spread": 0.07,
         "min_liquidity": 2500.0,
         "max_opportunities": 40,
+        "take_profit_pct": 8.0,
     }
 
     def __init__(self) -> None:
@@ -468,6 +469,14 @@ class FlashCrashReversionStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 8.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 8.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         ctx = getattr(position, "strategy_context", None) or {}
         current_price = market_state.get("current_price")
         age_minutes = float(getattr(position, "age_minutes", 0) or 0)

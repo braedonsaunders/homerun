@@ -261,6 +261,12 @@ class NewsEdgeStrategy(BaseStrategy):
         market_meta = payload.get("market")
         if not isinstance(market_meta, dict):
             market_meta = {}
+        raw_token_ids = market_meta.get("token_ids")
+        if not isinstance(raw_token_ids, list):
+            raw_token_ids = payload.get("token_ids")
+        if not isinstance(raw_token_ids, list):
+            raw_token_ids = []
+        token_ids = [str(token_id).strip() for token_id in raw_token_ids if str(token_id or "").strip()]
         liquidity = NewsEdgeStrategy._coerce_float(
             payload.get("liquidity") or payload.get("market_liquidity") or market_meta.get("liquidity"),
             500.0,
@@ -268,11 +274,12 @@ class NewsEdgeStrategy(BaseStrategy):
         platform = str(payload.get("platform") or market_meta.get("platform") or "polymarket").strip() or "polymarket"
         return Market(
             id=market_id,
-            condition_id=market_id,
+            condition_id=str(market_meta.get("condition_id") or market_id),
             question=question,
             slug=payload.get("market_slug") or market_meta.get("slug") or market_id,
             event_slug=payload.get("event_slug") or market_meta.get("event_slug") or "",
             outcome_prices=[yes_price, no_price],
+            clob_token_ids=token_ids,
             liquidity=liquidity,
             platform=platform,
         )

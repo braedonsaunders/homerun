@@ -31,6 +31,36 @@ class _SequencedClient:
         return {"success": False, "errorMsg": "simulated failure"}
 
 
+class _ProviderSnapshotClient:
+    def __init__(self):
+        self.cancel_calls: list[str] = []
+
+    def get_orders(self):
+        return [
+            {
+                "id": "clob-1",
+                "status": "partially_filled",
+                "size": "100",
+                "size_matched": "25",
+                "avg_price": "0.44",
+                "price": "0.45",
+            }
+        ]
+
+    def get_order(self, clob_order_id: str):
+        return {
+            "id": clob_order_id,
+            "status": "filled",
+            "size": "30",
+            "size_matched": "30",
+            "avg_price": "0.52",
+        }
+
+    def cancel(self, clob_order_id: str):
+        self.cancel_calls.append(clob_order_id)
+        return {"canceled": [clob_order_id]}
+
+
 def _install_fake_clob_modules(monkeypatch) -> None:
     py_clob_client = types.ModuleType("py_clob_client")
     clob_types = types.ModuleType("py_clob_client.clob_types")
@@ -166,3 +196,35 @@ def test_order_cache_is_bounded():
 
     assert len(service._orders) == 3
     assert "open-1" in service._orders
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_accepts_provider_clob_id(monkeypatch):
+    _configure_limits(monkeypatch)
+    service = TradingService()
+    service._initialized = True
+    client = _ProviderSnapshotClient()
+    service._client = client
+
+    cancelled = await service.cancel_order("clob-provider-1")
+
+    assert cancelled is True
+    assert client.cancel_calls == ["clob-provider-1"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_snapshots_parses_provider_fill_values(monkeypatch):
+    _configure_limits(monkeypatch)
+    service = TradingService()
+    service._initialized = True
+    service._client = _ProviderSnapshotClient()
+
+    snapshots = await service.get_order_snapshots_by_clob_ids(["clob-1", "clob-2"])
+
+    assert set(snapshots.keys()) == {"clob-1", "clob-2"}
+    assert snapshots["clob-1"]["normalized_status"] == "partially_filled"
+    assert snapshots["clob-1"]["filled_size"] == pytest.approx(25.0)
+    assert snapshots["clob-1"]["average_fill_price"] == pytest.approx(0.44)
+    assert snapshots["clob-1"]["filled_notional_usd"] == pytest.approx(11.0)
+    assert snapshots["clob-2"]["normalized_status"] == "filled"
+    assert snapshots["clob-2"]["filled_notional_usd"] == pytest.approx(15.6)

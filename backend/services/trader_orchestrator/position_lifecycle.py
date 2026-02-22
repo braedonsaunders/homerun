@@ -174,9 +174,84 @@ def _state_price_floor(value: Optional[float]) -> Optional[float]:
     return value
 
 
+def _status_for_close(*, pnl: float, close_trigger: Optional[str]) -> str:
+    trigger = str(close_trigger or "").strip().lower()
+    is_resolution = trigger in {"resolution", "resolution_inferred"}
+    if is_resolution:
+        return "resolved_win" if pnl >= 0 else "resolved_loss"
+    return "closed_win" if pnl >= 0 else "closed_loss"
+
+
 def _extract_position_state(payload: dict[str, Any]) -> dict[str, Any]:
     state = payload.get("position_state")
     return state if isinstance(state, dict) else {}
+
+
+def _first_float_from_candidates(candidates: list[Any], keys: tuple[str, ...]) -> Optional[float]:
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in keys:
+            parsed = safe_float(candidate.get(key))
+            if parsed is not None:
+                return float(parsed)
+    return None
+
+
+def _extract_live_fill_metrics(payload: dict[str, Any]) -> tuple[float, float, Optional[float]]:
+    provider_reconciliation = payload.get("provider_reconciliation")
+    if not isinstance(provider_reconciliation, dict):
+        provider_reconciliation = {}
+    snapshot = provider_reconciliation.get("snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    candidates: list[Any] = [provider_reconciliation, snapshot, payload]
+    filled_size = max(
+        0.0,
+        _first_float_from_candidates(
+            candidates,
+            (
+                "filled_size",
+                "size_matched",
+                "sizeMatched",
+                "matched_size",
+                "filled_shares",
+                "executed_size",
+            ),
+        )
+        or 0.0,
+    )
+    average_fill_price = _first_float_from_candidates(
+        candidates,
+        (
+            "average_fill_price",
+            "avg_fill_price",
+            "avg_price",
+            "avgFillPrice",
+            "matched_price",
+            "price",
+            "limit_price",
+        ),
+    )
+    filled_notional = max(
+        0.0,
+        _first_float_from_candidates(
+            candidates,
+            (
+                "filled_notional_usd",
+                "filled_notional",
+                "matched_notional",
+                "matched_amount",
+                "executed_notional",
+            ),
+        )
+        or 0.0,
+    )
+    if filled_notional <= 0.0 and filled_size > 0.0 and average_fill_price is not None and average_fill_price > 0:
+        filled_notional = filled_size * average_fill_price
+    if filled_size <= 0.0 and filled_notional > 0.0 and average_fill_price is not None and average_fill_price > 0:
+        filled_size = filled_notional / average_fill_price
+    return filled_notional, filled_size, average_fill_price
 
 
 async def load_market_info_for_orders(orders: list[TraderOrder]) -> dict[str, Optional[dict[str, Any]]]:
@@ -187,9 +262,16 @@ async def load_market_info_for_orders(orders: list[TraderOrder]) -> dict[str, Op
     async def _fetch(market_id: str) -> tuple[str, Optional[dict[str, Any]]]:
         info: Optional[dict[str, Any]] = None
         if market_id.startswith("0x"):
-            info = await polymarket_client.get_market_by_condition_id(market_id)
+            # Lifecycle decisions must use fresh market metadata so terminal
+            # resolution state (closed/winner/outcome prices) is not blocked
+            # by stale in-memory cache entries in long-lived workers.
+            info = await polymarket_client.get_market_by_condition_id(market_id, force_refresh=True)
+            if info is None:
+                info = await polymarket_client.get_market_by_condition_id(market_id)
         if info is None:
-            info = await polymarket_client.get_market_by_token_id(market_id)
+            info = await polymarket_client.get_market_by_token_id(market_id, force_refresh=True)
+            if info is None:
+                info = await polymarket_client.get_market_by_token_id(market_id)
         return market_id, info
 
     pairs = await asyncio.gather(*[_fetch(market_id) for market_id in market_ids], return_exceptions=True)
@@ -267,7 +349,7 @@ async def reconcile_paper_positions(
     held = 0
     skipped = 0
     total_realized_pnl = 0.0
-    by_status = {"resolved_win": 0, "resolved_loss": 0}
+    by_status = {"resolved_win": 0, "resolved_loss": 0, "closed_win": 0, "closed_loss": 0}
     skipped_reasons: dict[str, int] = {}
     details: list[dict[str, Any]] = []
     state_updates = 0
@@ -487,7 +569,7 @@ async def reconcile_paper_positions(
         quantity = notional / entry_price
         proceeds = quantity * close_price
         pnl = proceeds - notional
-        next_status = "resolved_win" if pnl >= 0 else "resolved_loss"
+        next_status = _status_for_close(pnl=pnl, close_trigger=close_trigger)
 
         simulation_close: dict[str, Any] | None = None
         simulation_ledger = payload.get("simulation_ledger")
@@ -679,16 +761,23 @@ async def reconcile_live_positions(
     held = 0
     skipped = 0
     total_realized_pnl = 0.0
-    by_status: dict[str, int] = {"resolved_win": 0, "resolved_loss": 0}
+    by_status: dict[str, int] = {"resolved_win": 0, "resolved_loss": 0, "closed_win": 0, "closed_loss": 0}
     skipped_reasons: dict[str, int] = {}
     details: list[dict[str, Any]] = []
     state_updates = 0
 
     for row in candidates:
-        entry_price = safe_float(row.effective_price)
+        payload = dict(row.payload_json or {})
+        filled_notional, filled_size, fill_price = _extract_live_fill_metrics(payload)
+        status_key = str(row.status or "").strip().lower()
+        if status_key in {"open", "submitted"} and filled_notional <= 0.0 and filled_size <= 0.0:
+            skipped += 1
+            skipped_reasons["awaiting_fill"] = int(skipped_reasons.get("awaiting_fill", 0)) + 1
+            continue
+        entry_price = fill_price if fill_price is not None and fill_price > 0 else safe_float(row.effective_price)
         if entry_price is None or entry_price <= 0:
             entry_price = safe_float(row.entry_price)
-        notional = safe_float(row.notional_usd) or 0.0
+        notional = filled_notional if filled_notional > 0.0 else (safe_float(row.notional_usd) or 0.0)
         outcome_idx = _direction_outcome_index(row.direction)
         if outcome_idx is None or entry_price is None or entry_price <= 0 or notional <= 0:
             skipped += 1
@@ -731,7 +820,6 @@ async def reconcile_live_positions(
             age_minutes = max(0.0, (now - age_anchor).total_seconds() / 60.0)
         min_hold_passed = age_minutes is None or age_minutes >= min_hold_minutes
 
-        payload = dict(row.payload_json or {})
         position_state = _extract_position_state(payload)
         prev_high = safe_float(position_state.get("highest_price"))
         prev_low = safe_float(position_state.get("lowest_price"))
@@ -873,6 +961,8 @@ async def reconcile_live_positions(
                     close_trigger = "market_inactive"
                     price_source = current_price_source
 
+        close_is_resolution = close_trigger in {"resolution", "resolution_inferred"}
+
         if close_price is None:
             state_changed = False
             if current_price is not None:
@@ -893,16 +983,15 @@ async def reconcile_live_positions(
             held += 1
             continue
 
-        quantity = notional / entry_price
+        quantity = filled_size if filled_size > 0.0 else (notional / entry_price if entry_price > 0 else 0.0)
+        cost_basis = filled_notional if filled_notional > 0.0 else notional
+        if quantity <= 0.0 or cost_basis <= 0.0:
+            skipped += 1
+            skipped_reasons["invalid_fill_state"] = int(skipped_reasons.get("invalid_fill_state", 0)) + 1
+            continue
         proceeds = quantity * close_price
-        pnl = proceeds - notional
-        next_status = "resolved_win" if pnl >= 0 else "resolved_loss"
-
-        # NOTE: No simulation ledger interaction for live positions.
-        # Live positions settle against real exchange state.
-
-        total_realized_pnl += pnl
-        by_status[next_status] = int(by_status.get(next_status, 0)) + 1
+        pnl = proceeds - cost_basis
+        next_status = _status_for_close(pnl=pnl, close_trigger=close_trigger)
 
         detail = {
             "order_id": row.id,
@@ -914,8 +1003,10 @@ async def reconcile_live_positions(
             "close_trigger": close_trigger,
             "market_tradable": market_tradable,
             "notional_usd": notional,
+            "cost_basis_usd": cost_basis,
+            "filled_size": filled_size,
+            "filled_notional_usd": filled_notional,
             "quantity": quantity,
-            "realized_pnl": pnl,
             "next_status": next_status,
             "age_minutes": age_minutes,
             "min_hold_minutes": min_hold_minutes,
@@ -923,6 +1014,37 @@ async def reconcile_live_positions(
             "highest_price_seen": _state_price_floor(highest_price),
             "lowest_price_seen": _state_price_floor(lowest_price),
         }
+
+        if not close_is_resolution:
+            detail["next_status"] = str(row.status or "").strip().lower()
+            detail["realized_pnl"] = None
+            detail["hypothetical_pnl"] = pnl
+            details.append(detail)
+            would_close += 1
+
+            if not dry_run:
+                payload["position_state"] = next_state
+                payload["pending_live_exit"] = {
+                    "triggered_at": now.isoformat() + "Z",
+                    "close_trigger": close_trigger,
+                    "close_price": close_price,
+                    "price_source": price_source,
+                    "market_tradable": market_tradable,
+                    "hypothetical_pnl": pnl,
+                    "age_minutes": age_minutes,
+                    "reason": reason,
+                }
+                row.payload_json = payload
+                row.updated_at = now
+                state_updates += 1
+            held += 1
+            continue
+
+        # NOTE: No simulation ledger interaction for live positions.
+        # Live positions settle against real exchange state.
+        total_realized_pnl += pnl
+        by_status[next_status] = int(by_status.get(next_status, 0)) + 1
+        detail["realized_pnl"] = pnl
         details.append(detail)
         would_close += 1
 
@@ -938,6 +1060,10 @@ async def reconcile_live_positions(
             "price_source": price_source,
             "close_trigger": close_trigger,
             "realized_pnl": pnl,
+            "cost_basis_usd": cost_basis,
+            "settlement_proceeds_usd": proceeds,
+            "filled_size": filled_size,
+            "filled_notional_usd": filled_notional,
             "market_tradable": market_tradable,
             "age_minutes": age_minutes,
             "closed_at": now.isoformat() + "Z",

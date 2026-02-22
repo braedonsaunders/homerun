@@ -6,8 +6,11 @@ adding execution simulator components under `services.simulation.*`.
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import importlib.util
 from pathlib import Path
+
+from config import settings as _settings
 
 
 def _load_legacy_module():
@@ -27,8 +30,8 @@ SimulationService = _legacy.SimulationService
 SlippageModel = _legacy.SlippageModel
 simulation_service = _legacy.simulation_service
 AsyncSessionLocal = _legacy.AsyncSessionLocal
-settings = _legacy.settings
-asyncio = _legacy.asyncio
+settings = getattr(_legacy, "settings", _settings)
+asyncio = getattr(_legacy, "asyncio", _asyncio)
 
 from .execution_simulator import ExecutionSimulator, execution_simulator
 from .fill_models import FillConfig, FillModel

@@ -341,11 +341,11 @@ class TestSmartWalletPoolChurnGuard:
 class TestConfluenceDetectorThresholds:
     def test_tier_thresholds_follow_watch_high_extreme(self):
         detector = ConfluenceDetector()
-        assert detector._tier_for_count(5) == "WATCH"
-        assert detector._tier_for_count(9) == "WATCH"
-        assert detector._tier_for_count(10) == "HIGH"
-        assert detector._tier_for_count(14) == "HIGH"
-        assert detector._tier_for_count(15) == "EXTREME"
+        assert detector._tier_for_count(3) == "WATCH"
+        assert detector._tier_for_count(4) == "HIGH"
+        assert detector._tier_for_count(5) == "HIGH"
+        assert detector._tier_for_count(6) == "EXTREME"
+        assert detector._tier_for_count(12) == "EXTREME"
 
     def test_conviction_score_clamped_and_directional(self):
         detector = ConfluenceDetector()

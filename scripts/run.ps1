@@ -518,9 +518,24 @@ function Cleanup-StartedPostgres {
 
 function Test-NeedsSetup {
     if (-not (Test-Path "backend\venv")) { return $true }
+    if (-not (Test-Path "backend\venv\Scripts\python.exe")) { return $true }
     if (-not (Test-Path "frontend\node_modules")) { return $true }
     if (-not (Test-Path "scripts\tooling\node_modules")) { return $true }
     if (-not (Test-Path ".setup-stamp.json")) { return $true }
+
+    $venvPython = "backend\venv\Scripts\python.exe"
+    try {
+        & $venvPython -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 and 10 <= sys.version_info.minor <= 13 else 1)" *> $null
+        if ($LASTEXITCODE -ne 0) { return $true }
+    } catch {
+        return $true
+    }
+    try {
+        & $venvPython -c "import py_clob_client, eth_account" *> $null
+        if ($LASTEXITCODE -ne 0) { return $true }
+    } catch {
+        return $true
+    }
 
     try {
         $stamp = Get-Content ".setup-stamp.json" -Raw | ConvertFrom-Json
@@ -534,10 +549,7 @@ function Test-NeedsSetup {
         return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 
-    $fingerprintPython = "python"
-    if (Test-Path "backend\venv\Scripts\python.exe") {
-        $fingerprintPython = "backend\venv\Scripts\python.exe"
-    }
+    $fingerprintPython = "backend\venv\Scripts\python.exe"
 
     $pythonVersion = (& $fingerprintPython -c "import platform; print(platform.python_version())")
     if ($stamp.python_version -ne $pythonVersion) { return $true }

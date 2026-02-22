@@ -6,7 +6,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
 from models.database import (
     SimulationAccount,
     SimulationPosition,
@@ -303,6 +302,8 @@ class SimulationService:
         strategy_type: Optional[str] = None,
         token_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
+        execution_fee_usd: Optional[float] = None,
+        execution_slippage_usd: Optional[float] = None,
         session: AsyncSession = None,
         commit: bool = True,
     ) -> dict[str, Any]:
@@ -314,6 +315,8 @@ class SimulationService:
         try:
             normalized_notional = float(notional_usd or 0.0)
             normalized_entry_price = float(entry_price or 0.0)
+            normalized_entry_fee = max(0.0, float(execution_fee_usd or 0.0))
+            normalized_entry_slippage = max(0.0, float(execution_slippage_usd or 0.0))
             if normalized_notional <= 0:
                 raise ValueError("Paper fill notional must be greater than 0.")
             if normalized_entry_price <= 0:
@@ -323,12 +326,13 @@ class SimulationService:
             if account is None:
                 raise ValueError(f"Paper account not found: {account_id}")
 
+            required_capital = normalized_notional + normalized_entry_fee
             available_capital = float(account.current_capital or 0.0)
-            if normalized_notional > available_capital:
+            if required_capital > available_capital:
                 raise ValueError(
                     (
                         "Insufficient paper capital for autotrader fill: "
-                        f"required=${normalized_notional:.2f} available=${available_capital:.2f}"
+                        f"required=${required_capital:.2f} available=${available_capital:.2f}"
                     )
                 )
 
@@ -348,6 +352,8 @@ class SimulationService:
                 "price": normalized_entry_price,
                 "quantity": quantity,
                 "notional_usd": normalized_notional,
+                "entry_fee_usd": normalized_entry_fee,
+                "entry_slippage_usd": normalized_entry_slippage,
                 "source": "trader_orchestrator",
                 "trader_id": str(trader_id or ""),
                 "signal_id": str(signal_id or ""),
@@ -367,11 +373,12 @@ class SimulationService:
                 opportunity_id=str(signal_id or ""),
                 strategy_type=str(strategy_type or "trader_orchestrator"),
                 positions_data=[position_payload],
-                total_cost=normalized_notional,
+                total_cost=required_capital,
                 expected_profit=normalized_notional * (edge_percent / 100.0),
-                slippage=0.0,
+                slippage=normalized_entry_slippage,
                 status=TradeStatus.OPEN,
                 copied_from_wallet=None,
+                fees_paid=normalized_entry_fee,
                 executed_at=now,
             )
             session.add(trade)
@@ -386,7 +393,7 @@ class SimulationService:
                 side=side,
                 quantity=quantity,
                 entry_price=normalized_entry_price,
-                entry_cost=normalized_notional,
+                entry_cost=required_capital,
                 current_price=normalized_entry_price,
                 unrealized_pnl=0.0,
                 status=TradeStatus.OPEN,
@@ -394,7 +401,7 @@ class SimulationService:
             )
             session.add(position)
 
-            account.current_capital = float(account.current_capital or 0.0) - normalized_notional
+            account.current_capital = float(account.current_capital or 0.0) - required_capital
             account.total_trades = int(account.total_trades or 0) + 1
 
             if commit:
@@ -409,7 +416,10 @@ class SimulationService:
                 "market_id": market_id_value,
                 "direction": str(direction or ""),
                 "entry_price": normalized_entry_price,
-                "entry_cost": normalized_notional,
+                "entry_notional_usd": normalized_notional,
+                "entry_fee_usd": normalized_entry_fee,
+                "entry_slippage_usd": normalized_entry_slippage,
+                "entry_cost": required_capital,
                 "quantity": quantity,
                 "opened_at": now.isoformat() + "Z",
             }
@@ -431,6 +441,7 @@ class SimulationService:
         close_trigger: Optional[str] = None,
         price_source: Optional[str] = None,
         reason: Optional[str] = None,
+        close_fee_usd: Optional[float] = None,
         session: AsyncSession = None,
         commit: bool = True,
     ) -> dict[str, Any]:
@@ -461,18 +472,37 @@ class SimulationService:
                     "trade_status": trade.status.value,
                     "actual_payout": float(trade.actual_payout or 0.0),
                     "actual_pnl": float(trade.actual_pnl or 0.0),
+                    "fees_paid": float(trade.fees_paid or 0.0),
                     "resolved_at": trade.resolved_at.isoformat() + "Z" if trade.resolved_at else None,
                 }
 
-            proceeds = float(position.quantity or 0.0) * normalized_close_price
-            pnl = proceeds - float(position.entry_cost or 0.0)
-            resolved_status = TradeStatus.RESOLVED_WIN if pnl >= 0 else TradeStatus.RESOLVED_LOSS
+            entry_cost = float(position.entry_cost or trade.total_cost or 0.0)
+            gross_proceeds = float(position.quantity or 0.0) * normalized_close_price
+            gross_pnl = gross_proceeds - entry_cost
+            explicit_close_fee = max(0.0, float(close_fee_usd or 0.0))
+            winner_fee = max(0.0, gross_pnl) * self.POLYMARKET_FEE
+            total_close_fee = explicit_close_fee + winner_fee
+            proceeds = max(0.0, gross_proceeds - total_close_fee)
+            pnl = proceeds - entry_cost
+            close_trigger_key = str(close_trigger or "").strip().lower()
+            is_resolution = close_trigger_key in {"resolution", "resolution_inferred"}
+            terminal_status = (
+                TradeStatus.RESOLVED_WIN
+                if is_resolution and pnl >= 0
+                else TradeStatus.RESOLVED_LOSS
+                if is_resolution
+                else TradeStatus.CLOSED_WIN
+                if pnl >= 0
+                else TradeStatus.CLOSED_LOSS
+            )
             now = utcnow()
+            prior_fees_paid = float(trade.fees_paid or 0.0)
+            total_fees_paid = prior_fees_paid + total_close_fee
 
-            trade.status = resolved_status
+            trade.status = terminal_status
             trade.actual_payout = proceeds
             trade.actual_pnl = pnl
-            trade.fees_paid = 0.0
+            trade.fees_paid = total_fees_paid
             trade.resolved_at = now
 
             positions_data = trade.positions_data if isinstance(trade.positions_data, list) else []
@@ -483,6 +513,11 @@ class SimulationService:
                         "close_price": normalized_close_price,
                         "close_trigger": str(close_trigger or ""),
                         "price_source": str(price_source or ""),
+                        "gross_payout": gross_proceeds,
+                        "gross_pnl": gross_pnl,
+                        "winner_fee_usd": winner_fee,
+                        "close_fee_usd": explicit_close_fee,
+                        "total_close_fee_usd": total_close_fee,
                         "realized_pnl": pnl,
                         "resolved_at": now.isoformat() + "Z",
                     }
@@ -490,7 +525,7 @@ class SimulationService:
                 positions_data[0] = first_leg
                 trade.positions_data = positions_data
 
-            position.status = resolved_status
+            position.status = terminal_status
             position.current_price = normalized_close_price
             position.unrealized_pnl = 0.0
 
@@ -509,9 +544,14 @@ class SimulationService:
             return {
                 "closed": True,
                 "already_closed": False,
-                "trade_status": resolved_status.value,
+                "trade_status": terminal_status.value,
                 "actual_payout": proceeds,
                 "actual_pnl": pnl,
+                "gross_payout_usd": gross_proceeds,
+                "gross_pnl_usd": gross_pnl,
+                "winner_fee_usd": winner_fee,
+                "close_fee_usd": explicit_close_fee,
+                "fees_paid": total_fees_paid,
                 "close_price": normalized_close_price,
                 "close_trigger": str(close_trigger or ""),
                 "price_source": str(price_source or ""),

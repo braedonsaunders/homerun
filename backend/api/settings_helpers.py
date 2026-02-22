@@ -6,6 +6,7 @@ from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from models.database import AppSettings
+from services.strategy_sdk import StrategySDK
 from utils.passwords import hash_password
 from utils.secrets import decrypt_secret, encrypt_secret
 
@@ -49,6 +50,8 @@ SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
     "btc_eth_hf_maker_mode": True,
 }
 
+_TRADER_OPPS_DEFAULTS = StrategySDK.trader_opportunity_filter_defaults()
+_POOL_DEFAULTS = StrategySDK.pool_eligibility_defaults()
 DISCOVERY_SETTINGS_DEFAULTS: dict[str, Any] = {
     "max_discovered_wallets": 20_000,
     "maintenance_enabled": True,
@@ -61,39 +64,39 @@ DISCOVERY_SETTINGS_DEFAULTS: dict[str, Any] = {
     "delay_between_wallets": 0.15,
     "max_markets_per_run": 100,
     "max_wallets_per_market": 50,
-    "trader_opps_source_filter": "all",
-    "trader_opps_min_tier": "WATCH",
-    "trader_opps_side_filter": "all",
-    "trader_opps_confluence_limit": 50,
-    "trader_opps_insider_limit": 40,
-    "trader_opps_insider_min_confidence": 0.62,
-    "trader_opps_insider_max_age_minutes": 180,
+    "trader_opps_source_filter": _TRADER_OPPS_DEFAULTS["source_filter"],
+    "trader_opps_min_tier": _TRADER_OPPS_DEFAULTS["min_tier"],
+    "trader_opps_side_filter": _TRADER_OPPS_DEFAULTS["side_filter"],
+    "trader_opps_confluence_limit": _TRADER_OPPS_DEFAULTS["confluence_limit"],
+    "trader_opps_insider_limit": _TRADER_OPPS_DEFAULTS["individual_trade_limit"],
+    "trader_opps_insider_min_confidence": _TRADER_OPPS_DEFAULTS["individual_trade_min_confidence"],
+    "trader_opps_insider_max_age_minutes": _TRADER_OPPS_DEFAULTS["individual_trade_max_age_minutes"],
     "pool_recompute_mode": "quality_only",
-    "pool_target_size": 500,
-    "pool_min_size": 400,
-    "pool_max_size": 600,
-    "pool_active_window_hours": 72,
-    "pool_inactive_rising_retention_hours": 336,
-    "pool_selection_score_floor": 0.55,
-    "pool_max_hourly_replacement_rate": 0.15,
-    "pool_replacement_score_cutoff": 0.05,
-    "pool_max_cluster_share": 0.08,
-    "pool_high_conviction_threshold": 0.72,
-    "pool_insider_priority_threshold": 0.62,
-    "pool_min_eligible_trades": 50,
-    "pool_max_eligible_anomaly": 0.5,
-    "pool_core_min_win_rate": 0.60,
-    "pool_core_min_sharpe": 1.0,
-    "pool_core_min_profit_factor": 1.5,
-    "pool_rising_min_win_rate": 0.55,
-    "pool_slo_min_analyzed_pct": 95.0,
-    "pool_slo_min_profitable_pct": 80.0,
-    "pool_leaderboard_wallet_trade_sample": 160,
-    "pool_incremental_wallet_trade_sample": 80,
-    "pool_full_sweep_interval_seconds": 1800,
-    "pool_incremental_refresh_interval_seconds": 120,
-    "pool_activity_reconciliation_interval_seconds": 120,
-    "pool_recompute_interval_seconds": 60,
+    "pool_target_size": _POOL_DEFAULTS["target_pool_size"],
+    "pool_min_size": _POOL_DEFAULTS["min_pool_size"],
+    "pool_max_size": _POOL_DEFAULTS["max_pool_size"],
+    "pool_active_window_hours": _POOL_DEFAULTS["active_window_hours"],
+    "pool_inactive_rising_retention_hours": _POOL_DEFAULTS["inactive_rising_retention_hours"],
+    "pool_selection_score_floor": _POOL_DEFAULTS["selection_score_quality_target_floor"],
+    "pool_max_hourly_replacement_rate": _POOL_DEFAULTS["max_hourly_replacement_rate"],
+    "pool_replacement_score_cutoff": _POOL_DEFAULTS["replacement_score_cutoff"],
+    "pool_max_cluster_share": _POOL_DEFAULTS["max_cluster_share"],
+    "pool_high_conviction_threshold": _POOL_DEFAULTS["high_conviction_threshold"],
+    "pool_insider_priority_threshold": _POOL_DEFAULTS["insider_priority_threshold"],
+    "pool_min_eligible_trades": _POOL_DEFAULTS["min_eligible_trades"],
+    "pool_max_eligible_anomaly": _POOL_DEFAULTS["max_eligible_anomaly"],
+    "pool_core_min_win_rate": _POOL_DEFAULTS["core_min_win_rate"],
+    "pool_core_min_sharpe": _POOL_DEFAULTS["core_min_sharpe"],
+    "pool_core_min_profit_factor": _POOL_DEFAULTS["core_min_profit_factor"],
+    "pool_rising_min_win_rate": _POOL_DEFAULTS["rising_min_win_rate"],
+    "pool_slo_min_analyzed_pct": _POOL_DEFAULTS["slo_min_analyzed_pct"],
+    "pool_slo_min_profitable_pct": _POOL_DEFAULTS["slo_min_profitable_pct"],
+    "pool_leaderboard_wallet_trade_sample": _POOL_DEFAULTS["leaderboard_wallet_trade_sample"],
+    "pool_incremental_wallet_trade_sample": _POOL_DEFAULTS["incremental_wallet_trade_sample"],
+    "pool_full_sweep_interval_seconds": _POOL_DEFAULTS["full_sweep_interval_seconds"],
+    "pool_incremental_refresh_interval_seconds": _POOL_DEFAULTS["incremental_refresh_interval_seconds"],
+    "pool_activity_reconciliation_interval_seconds": _POOL_DEFAULTS["activity_reconciliation_interval_seconds"],
+    "pool_recompute_interval_seconds": _POOL_DEFAULTS["pool_recompute_interval_seconds"],
 }
 
 EVENTS_DEFAULTS: dict[str, Any] = {
@@ -137,11 +140,62 @@ def _with_default(value: Any, default: Any) -> Any:
     return default if value is None else value
 
 
-def _normalize_trader_opps_source_filter(value: Any) -> str:
-    normalized = str(value or "all").strip().lower()
-    if normalized in {"tracked", "pool", "all"}:
-        return normalized
-    return "all"
+def _normalize_discovery_pool_config(values: dict[str, Any]) -> dict[str, Any]:
+    sdk_input = {
+        "target_pool_size": values.get("pool_target_size"),
+        "min_pool_size": values.get("pool_min_size"),
+        "max_pool_size": values.get("pool_max_size"),
+        "active_window_hours": values.get("pool_active_window_hours"),
+        "inactive_rising_retention_hours": values.get("pool_inactive_rising_retention_hours"),
+        "selection_score_quality_target_floor": values.get("pool_selection_score_floor"),
+        "max_hourly_replacement_rate": values.get("pool_max_hourly_replacement_rate"),
+        "replacement_score_cutoff": values.get("pool_replacement_score_cutoff"),
+        "max_cluster_share": values.get("pool_max_cluster_share"),
+        "high_conviction_threshold": values.get("pool_high_conviction_threshold"),
+        "insider_priority_threshold": values.get("pool_insider_priority_threshold"),
+        "min_eligible_trades": values.get("pool_min_eligible_trades"),
+        "max_eligible_anomaly": values.get("pool_max_eligible_anomaly"),
+        "core_min_win_rate": values.get("pool_core_min_win_rate"),
+        "core_min_sharpe": values.get("pool_core_min_sharpe"),
+        "core_min_profit_factor": values.get("pool_core_min_profit_factor"),
+        "rising_min_win_rate": values.get("pool_rising_min_win_rate"),
+        "slo_min_analyzed_pct": values.get("pool_slo_min_analyzed_pct"),
+        "slo_min_profitable_pct": values.get("pool_slo_min_profitable_pct"),
+        "leaderboard_wallet_trade_sample": values.get("pool_leaderboard_wallet_trade_sample"),
+        "incremental_wallet_trade_sample": values.get("pool_incremental_wallet_trade_sample"),
+        "full_sweep_interval_seconds": values.get("pool_full_sweep_interval_seconds"),
+        "incremental_refresh_interval_seconds": values.get("pool_incremental_refresh_interval_seconds"),
+        "activity_reconciliation_interval_seconds": values.get("pool_activity_reconciliation_interval_seconds"),
+        "pool_recompute_interval_seconds": values.get("pool_recompute_interval_seconds"),
+    }
+    normalized = StrategySDK.validate_pool_eligibility_config(sdk_input)
+    return {
+        "pool_target_size": normalized["target_pool_size"],
+        "pool_min_size": normalized["min_pool_size"],
+        "pool_max_size": normalized["max_pool_size"],
+        "pool_active_window_hours": normalized["active_window_hours"],
+        "pool_inactive_rising_retention_hours": normalized["inactive_rising_retention_hours"],
+        "pool_selection_score_floor": normalized["selection_score_quality_target_floor"],
+        "pool_max_hourly_replacement_rate": normalized["max_hourly_replacement_rate"],
+        "pool_replacement_score_cutoff": normalized["replacement_score_cutoff"],
+        "pool_max_cluster_share": normalized["max_cluster_share"],
+        "pool_high_conviction_threshold": normalized["high_conviction_threshold"],
+        "pool_insider_priority_threshold": normalized["insider_priority_threshold"],
+        "pool_min_eligible_trades": normalized["min_eligible_trades"],
+        "pool_max_eligible_anomaly": normalized["max_eligible_anomaly"],
+        "pool_core_min_win_rate": normalized["core_min_win_rate"],
+        "pool_core_min_sharpe": normalized["core_min_sharpe"],
+        "pool_core_min_profit_factor": normalized["core_min_profit_factor"],
+        "pool_rising_min_win_rate": normalized["rising_min_win_rate"],
+        "pool_slo_min_analyzed_pct": normalized["slo_min_analyzed_pct"],
+        "pool_slo_min_profitable_pct": normalized["slo_min_profitable_pct"],
+        "pool_leaderboard_wallet_trade_sample": normalized["leaderboard_wallet_trade_sample"],
+        "pool_incremental_wallet_trade_sample": normalized["incremental_wallet_trade_sample"],
+        "pool_full_sweep_interval_seconds": normalized["full_sweep_interval_seconds"],
+        "pool_incremental_refresh_interval_seconds": normalized["incremental_refresh_interval_seconds"],
+        "pool_activity_reconciliation_interval_seconds": normalized["activity_reconciliation_interval_seconds"],
+        "pool_recompute_interval_seconds": normalized["pool_recompute_interval_seconds"],
+    }
 
 
 def _coerce_typed(value: Any, default: Any) -> Any:
@@ -322,6 +376,142 @@ def ui_lock_payload(settings: AppSettings) -> dict[str, Any]:
 
 
 def discovery_payload(settings: AppSettings) -> dict[str, Any]:
+    trader_filters = StrategySDK.validate_trader_opportunity_filter_config(
+        {
+            "source_filter": _with_default(
+                settings.discovery_trader_opps_source_filter,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_source_filter"],
+            ),
+            "min_tier": _with_default(
+                settings.discovery_trader_opps_min_tier,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_min_tier"],
+            ),
+            "side_filter": _with_default(
+                settings.discovery_trader_opps_side_filter,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_side_filter"],
+            ),
+            "confluence_limit": _with_default(
+                settings.discovery_trader_opps_confluence_limit,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_confluence_limit"],
+            ),
+            "individual_trade_limit": _with_default(
+                settings.discovery_trader_opps_insider_limit,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_limit"],
+            ),
+            "individual_trade_min_confidence": _with_default(
+                settings.discovery_trader_opps_insider_min_confidence,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_min_confidence"],
+            ),
+            "individual_trade_max_age_minutes": _with_default(
+                settings.discovery_trader_opps_insider_max_age_minutes,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_max_age_minutes"],
+            ),
+        }
+    )
+    pool_settings = _normalize_discovery_pool_config(
+        {
+            "pool_target_size": _with_default(
+                settings.discovery_pool_target_size,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_target_size"],
+            ),
+            "pool_min_size": _with_default(
+                settings.discovery_pool_min_size,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_min_size"],
+            ),
+            "pool_max_size": _with_default(
+                settings.discovery_pool_max_size,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_max_size"],
+            ),
+            "pool_active_window_hours": _with_default(
+                settings.discovery_pool_active_window_hours,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_active_window_hours"],
+            ),
+            "pool_inactive_rising_retention_hours": _with_default(
+                settings.discovery_pool_inactive_rising_retention_hours,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_inactive_rising_retention_hours"],
+            ),
+            "pool_selection_score_floor": _with_default(
+                settings.discovery_pool_selection_score_floor,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_selection_score_floor"],
+            ),
+            "pool_max_hourly_replacement_rate": _with_default(
+                settings.discovery_pool_max_hourly_replacement_rate,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_max_hourly_replacement_rate"],
+            ),
+            "pool_replacement_score_cutoff": _with_default(
+                settings.discovery_pool_replacement_score_cutoff,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_replacement_score_cutoff"],
+            ),
+            "pool_max_cluster_share": _with_default(
+                settings.discovery_pool_max_cluster_share,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_max_cluster_share"],
+            ),
+            "pool_high_conviction_threshold": _with_default(
+                settings.discovery_pool_high_conviction_threshold,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_high_conviction_threshold"],
+            ),
+            "pool_insider_priority_threshold": _with_default(
+                settings.discovery_pool_insider_priority_threshold,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_insider_priority_threshold"],
+            ),
+            "pool_min_eligible_trades": _with_default(
+                settings.discovery_pool_min_eligible_trades,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_min_eligible_trades"],
+            ),
+            "pool_max_eligible_anomaly": _with_default(
+                settings.discovery_pool_max_eligible_anomaly,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_max_eligible_anomaly"],
+            ),
+            "pool_core_min_win_rate": _with_default(
+                settings.discovery_pool_core_min_win_rate,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_win_rate"],
+            ),
+            "pool_core_min_sharpe": _with_default(
+                settings.discovery_pool_core_min_sharpe,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_sharpe"],
+            ),
+            "pool_core_min_profit_factor": _with_default(
+                settings.discovery_pool_core_min_profit_factor,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_profit_factor"],
+            ),
+            "pool_rising_min_win_rate": _with_default(
+                settings.discovery_pool_rising_min_win_rate,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_rising_min_win_rate"],
+            ),
+            "pool_slo_min_analyzed_pct": _with_default(
+                settings.discovery_pool_slo_min_analyzed_pct,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_analyzed_pct"],
+            ),
+            "pool_slo_min_profitable_pct": _with_default(
+                settings.discovery_pool_slo_min_profitable_pct,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_profitable_pct"],
+            ),
+            "pool_leaderboard_wallet_trade_sample": _with_default(
+                settings.discovery_pool_leaderboard_wallet_trade_sample,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_leaderboard_wallet_trade_sample"],
+            ),
+            "pool_incremental_wallet_trade_sample": _with_default(
+                settings.discovery_pool_incremental_wallet_trade_sample,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_wallet_trade_sample"],
+            ),
+            "pool_full_sweep_interval_seconds": _with_default(
+                settings.discovery_pool_full_sweep_interval_seconds,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_full_sweep_interval_seconds"],
+            ),
+            "pool_incremental_refresh_interval_seconds": _with_default(
+                settings.discovery_pool_incremental_refresh_interval_seconds,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_refresh_interval_seconds"],
+            ),
+            "pool_activity_reconciliation_interval_seconds": _with_default(
+                settings.discovery_pool_activity_reconciliation_interval_seconds,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_activity_reconciliation_interval_seconds"],
+            ),
+            "pool_recompute_interval_seconds": _with_default(
+                settings.discovery_pool_recompute_interval_seconds,
+                DISCOVERY_SETTINGS_DEFAULTS["pool_recompute_interval_seconds"],
+            ),
+        }
+    )
     return {
         "max_discovered_wallets": _with_default(
             settings.discovery_max_discovered_wallets,
@@ -367,140 +557,18 @@ def discovery_payload(settings: AppSettings) -> dict[str, Any]:
             settings.discovery_max_wallets_per_market,
             DISCOVERY_SETTINGS_DEFAULTS["max_wallets_per_market"],
         ),
-        "trader_opps_source_filter": _normalize_trader_opps_source_filter(
-            _with_default(
-                settings.discovery_trader_opps_source_filter,
-                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_source_filter"],
-            )
-        ),
-        "trader_opps_min_tier": _with_default(
-            settings.discovery_trader_opps_min_tier,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_min_tier"],
-        ),
-        "trader_opps_side_filter": _with_default(
-            settings.discovery_trader_opps_side_filter,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_side_filter"],
-        ),
-        "trader_opps_confluence_limit": _with_default(
-            settings.discovery_trader_opps_confluence_limit,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_confluence_limit"],
-        ),
-        "trader_opps_insider_limit": _with_default(
-            settings.discovery_trader_opps_insider_limit,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_limit"],
-        ),
-        "trader_opps_insider_min_confidence": _with_default(
-            settings.discovery_trader_opps_insider_min_confidence,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_min_confidence"],
-        ),
-        "trader_opps_insider_max_age_minutes": _with_default(
-            settings.discovery_trader_opps_insider_max_age_minutes,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_max_age_minutes"],
-        ),
+        "trader_opps_source_filter": trader_filters["source_filter"],
+        "trader_opps_min_tier": trader_filters["min_tier"],
+        "trader_opps_side_filter": trader_filters["side_filter"],
+        "trader_opps_confluence_limit": trader_filters["confluence_limit"],
+        "trader_opps_insider_limit": trader_filters["individual_trade_limit"],
+        "trader_opps_insider_min_confidence": trader_filters["individual_trade_min_confidence"],
+        "trader_opps_insider_max_age_minutes": trader_filters["individual_trade_max_age_minutes"],
         "pool_recompute_mode": _with_default(
             settings.discovery_pool_recompute_mode,
             DISCOVERY_SETTINGS_DEFAULTS["pool_recompute_mode"],
         ),
-        "pool_target_size": _with_default(
-            settings.discovery_pool_target_size,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_target_size"],
-        ),
-        "pool_min_size": _with_default(
-            settings.discovery_pool_min_size,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_min_size"],
-        ),
-        "pool_max_size": _with_default(
-            settings.discovery_pool_max_size,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_max_size"],
-        ),
-        "pool_active_window_hours": _with_default(
-            settings.discovery_pool_active_window_hours,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_active_window_hours"],
-        ),
-        "pool_inactive_rising_retention_hours": _with_default(
-            settings.discovery_pool_inactive_rising_retention_hours,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_inactive_rising_retention_hours"],
-        ),
-        "pool_selection_score_floor": _with_default(
-            settings.discovery_pool_selection_score_floor,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_selection_score_floor"],
-        ),
-        "pool_max_hourly_replacement_rate": _with_default(
-            settings.discovery_pool_max_hourly_replacement_rate,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_max_hourly_replacement_rate"],
-        ),
-        "pool_replacement_score_cutoff": _with_default(
-            settings.discovery_pool_replacement_score_cutoff,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_replacement_score_cutoff"],
-        ),
-        "pool_max_cluster_share": _with_default(
-            settings.discovery_pool_max_cluster_share,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_max_cluster_share"],
-        ),
-        "pool_high_conviction_threshold": _with_default(
-            settings.discovery_pool_high_conviction_threshold,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_high_conviction_threshold"],
-        ),
-        "pool_insider_priority_threshold": _with_default(
-            settings.discovery_pool_insider_priority_threshold,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_insider_priority_threshold"],
-        ),
-        "pool_min_eligible_trades": _with_default(
-            settings.discovery_pool_min_eligible_trades,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_min_eligible_trades"],
-        ),
-        "pool_max_eligible_anomaly": _with_default(
-            settings.discovery_pool_max_eligible_anomaly,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_max_eligible_anomaly"],
-        ),
-        "pool_core_min_win_rate": _with_default(
-            settings.discovery_pool_core_min_win_rate,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_win_rate"],
-        ),
-        "pool_core_min_sharpe": _with_default(
-            settings.discovery_pool_core_min_sharpe,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_sharpe"],
-        ),
-        "pool_core_min_profit_factor": _with_default(
-            settings.discovery_pool_core_min_profit_factor,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_profit_factor"],
-        ),
-        "pool_rising_min_win_rate": _with_default(
-            settings.discovery_pool_rising_min_win_rate,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_rising_min_win_rate"],
-        ),
-        "pool_slo_min_analyzed_pct": _with_default(
-            settings.discovery_pool_slo_min_analyzed_pct,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_analyzed_pct"],
-        ),
-        "pool_slo_min_profitable_pct": _with_default(
-            settings.discovery_pool_slo_min_profitable_pct,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_profitable_pct"],
-        ),
-        "pool_leaderboard_wallet_trade_sample": _with_default(
-            settings.discovery_pool_leaderboard_wallet_trade_sample,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_leaderboard_wallet_trade_sample"],
-        ),
-        "pool_incremental_wallet_trade_sample": _with_default(
-            settings.discovery_pool_incremental_wallet_trade_sample,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_wallet_trade_sample"],
-        ),
-        "pool_full_sweep_interval_seconds": _with_default(
-            settings.discovery_pool_full_sweep_interval_seconds,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_full_sweep_interval_seconds"],
-        ),
-        "pool_incremental_refresh_interval_seconds": _with_default(
-            settings.discovery_pool_incremental_refresh_interval_seconds,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_refresh_interval_seconds"],
-        ),
-        "pool_activity_reconciliation_interval_seconds": _with_default(
-            settings.discovery_pool_activity_reconciliation_interval_seconds,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_activity_reconciliation_interval_seconds"],
-        ),
-        "pool_recompute_interval_seconds": _with_default(
-            settings.discovery_pool_recompute_interval_seconds,
-            DISCOVERY_SETTINGS_DEFAULTS["pool_recompute_interval_seconds"],
-        ),
+        **pool_settings,
     }
 
 
@@ -650,22 +718,6 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.max_daily_trade_volume = trade.max_daily_trade_volume
         settings.max_open_positions = trade.max_open_positions
         settings.max_slippage_percent = trade.max_slippage_percent
-        settings.btc_eth_hf_series_btc_15m = trade.btc_eth_hf_series_btc_15m
-        settings.btc_eth_hf_series_eth_15m = trade.btc_eth_hf_series_eth_15m
-        settings.btc_eth_hf_series_sol_15m = trade.btc_eth_hf_series_sol_15m
-        settings.btc_eth_hf_series_xrp_15m = trade.btc_eth_hf_series_xrp_15m
-        settings.btc_eth_hf_series_btc_5m = trade.btc_eth_hf_series_btc_5m
-        settings.btc_eth_hf_series_eth_5m = trade.btc_eth_hf_series_eth_5m
-        settings.btc_eth_hf_series_sol_5m = trade.btc_eth_hf_series_sol_5m
-        settings.btc_eth_hf_series_xrp_5m = trade.btc_eth_hf_series_xrp_5m
-        settings.btc_eth_hf_series_btc_1h = trade.btc_eth_hf_series_btc_1h
-        settings.btc_eth_hf_series_eth_1h = trade.btc_eth_hf_series_eth_1h
-        settings.btc_eth_hf_series_sol_1h = trade.btc_eth_hf_series_sol_1h
-        settings.btc_eth_hf_series_xrp_1h = trade.btc_eth_hf_series_xrp_1h
-        settings.btc_eth_hf_series_btc_4h = trade.btc_eth_hf_series_btc_4h
-        settings.btc_eth_hf_series_eth_4h = trade.btc_eth_hf_series_eth_4h
-        settings.btc_eth_hf_series_sol_4h = trade.btc_eth_hf_series_sol_4h
-        settings.btc_eth_hf_series_xrp_4h = trade.btc_eth_hf_series_xrp_4h
 
     if maintenance:
         maint = maintenance
@@ -692,51 +744,81 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.discovery_delay_between_wallets = discovery.delay_between_wallets
         settings.discovery_max_markets_per_run = discovery.max_markets_per_run
         settings.discovery_max_wallets_per_market = discovery.max_wallets_per_market
-        settings.discovery_trader_opps_source_filter = _normalize_trader_opps_source_filter(
-            discovery.trader_opps_source_filter
+        trader_filters = StrategySDK.validate_trader_opportunity_filter_config(
+            {
+                "source_filter": discovery.trader_opps_source_filter,
+                "min_tier": discovery.trader_opps_min_tier,
+                "side_filter": discovery.trader_opps_side_filter,
+                "confluence_limit": discovery.trader_opps_confluence_limit,
+                "individual_trade_limit": discovery.trader_opps_insider_limit,
+                "individual_trade_min_confidence": discovery.trader_opps_insider_min_confidence,
+                "individual_trade_max_age_minutes": discovery.trader_opps_insider_max_age_minutes,
+            }
         )
-        settings.discovery_trader_opps_min_tier = (
-            str(discovery.trader_opps_min_tier or "WATCH").strip().upper() or "WATCH"
-        )
-        settings.discovery_trader_opps_side_filter = (
-            str(discovery.trader_opps_side_filter or "all").strip().lower() or "all"
-        )
-        settings.discovery_trader_opps_confluence_limit = discovery.trader_opps_confluence_limit
-        settings.discovery_trader_opps_insider_limit = discovery.trader_opps_insider_limit
-        settings.discovery_trader_opps_insider_min_confidence = discovery.trader_opps_insider_min_confidence
-        settings.discovery_trader_opps_insider_max_age_minutes = discovery.trader_opps_insider_max_age_minutes
+        settings.discovery_trader_opps_source_filter = trader_filters["source_filter"]
+        settings.discovery_trader_opps_min_tier = trader_filters["min_tier"]
+        settings.discovery_trader_opps_side_filter = trader_filters["side_filter"]
+        settings.discovery_trader_opps_confluence_limit = trader_filters["confluence_limit"]
+        settings.discovery_trader_opps_insider_limit = trader_filters["individual_trade_limit"]
+        settings.discovery_trader_opps_insider_min_confidence = trader_filters["individual_trade_min_confidence"]
+        settings.discovery_trader_opps_insider_max_age_minutes = trader_filters["individual_trade_max_age_minutes"]
         settings.discovery_pool_recompute_mode = (
             str(discovery.pool_recompute_mode or "quality_only").strip().lower() or "quality_only"
         )
-        settings.discovery_pool_target_size = discovery.pool_target_size
-        settings.discovery_pool_min_size = discovery.pool_min_size
-        settings.discovery_pool_max_size = discovery.pool_max_size
-        settings.discovery_pool_active_window_hours = discovery.pool_active_window_hours
-        settings.discovery_pool_inactive_rising_retention_hours = discovery.pool_inactive_rising_retention_hours
-        settings.discovery_pool_selection_score_floor = discovery.pool_selection_score_floor
-        settings.discovery_pool_max_hourly_replacement_rate = discovery.pool_max_hourly_replacement_rate
-        settings.discovery_pool_replacement_score_cutoff = discovery.pool_replacement_score_cutoff
-        settings.discovery_pool_max_cluster_share = discovery.pool_max_cluster_share
-        settings.discovery_pool_high_conviction_threshold = discovery.pool_high_conviction_threshold
-        settings.discovery_pool_insider_priority_threshold = discovery.pool_insider_priority_threshold
-        settings.discovery_pool_min_eligible_trades = discovery.pool_min_eligible_trades
-        settings.discovery_pool_max_eligible_anomaly = discovery.pool_max_eligible_anomaly
-        settings.discovery_pool_core_min_win_rate = discovery.pool_core_min_win_rate
-        settings.discovery_pool_core_min_sharpe = discovery.pool_core_min_sharpe
-        settings.discovery_pool_core_min_profit_factor = discovery.pool_core_min_profit_factor
-        settings.discovery_pool_rising_min_win_rate = discovery.pool_rising_min_win_rate
-        settings.discovery_pool_slo_min_analyzed_pct = discovery.pool_slo_min_analyzed_pct
-        settings.discovery_pool_slo_min_profitable_pct = discovery.pool_slo_min_profitable_pct
-        settings.discovery_pool_leaderboard_wallet_trade_sample = discovery.pool_leaderboard_wallet_trade_sample
-        settings.discovery_pool_incremental_wallet_trade_sample = discovery.pool_incremental_wallet_trade_sample
-        settings.discovery_pool_full_sweep_interval_seconds = discovery.pool_full_sweep_interval_seconds
-        settings.discovery_pool_incremental_refresh_interval_seconds = (
-            discovery.pool_incremental_refresh_interval_seconds
+        pool_settings = _normalize_discovery_pool_config(
+            {
+                "pool_target_size": discovery.pool_target_size,
+                "pool_min_size": discovery.pool_min_size,
+                "pool_max_size": discovery.pool_max_size,
+                "pool_active_window_hours": discovery.pool_active_window_hours,
+                "pool_inactive_rising_retention_hours": discovery.pool_inactive_rising_retention_hours,
+                "pool_selection_score_floor": discovery.pool_selection_score_floor,
+                "pool_max_hourly_replacement_rate": discovery.pool_max_hourly_replacement_rate,
+                "pool_replacement_score_cutoff": discovery.pool_replacement_score_cutoff,
+                "pool_max_cluster_share": discovery.pool_max_cluster_share,
+                "pool_high_conviction_threshold": discovery.pool_high_conviction_threshold,
+                "pool_insider_priority_threshold": discovery.pool_insider_priority_threshold,
+                "pool_min_eligible_trades": discovery.pool_min_eligible_trades,
+                "pool_max_eligible_anomaly": discovery.pool_max_eligible_anomaly,
+                "pool_core_min_win_rate": discovery.pool_core_min_win_rate,
+                "pool_core_min_sharpe": discovery.pool_core_min_sharpe,
+                "pool_core_min_profit_factor": discovery.pool_core_min_profit_factor,
+                "pool_rising_min_win_rate": discovery.pool_rising_min_win_rate,
+                "pool_slo_min_analyzed_pct": discovery.pool_slo_min_analyzed_pct,
+                "pool_slo_min_profitable_pct": discovery.pool_slo_min_profitable_pct,
+                "pool_leaderboard_wallet_trade_sample": discovery.pool_leaderboard_wallet_trade_sample,
+                "pool_incremental_wallet_trade_sample": discovery.pool_incremental_wallet_trade_sample,
+                "pool_full_sweep_interval_seconds": discovery.pool_full_sweep_interval_seconds,
+                "pool_incremental_refresh_interval_seconds": discovery.pool_incremental_refresh_interval_seconds,
+                "pool_activity_reconciliation_interval_seconds": discovery.pool_activity_reconciliation_interval_seconds,
+                "pool_recompute_interval_seconds": discovery.pool_recompute_interval_seconds,
+            }
         )
-        settings.discovery_pool_activity_reconciliation_interval_seconds = (
-            discovery.pool_activity_reconciliation_interval_seconds
-        )
-        settings.discovery_pool_recompute_interval_seconds = discovery.pool_recompute_interval_seconds
+        settings.discovery_pool_target_size = pool_settings["pool_target_size"]
+        settings.discovery_pool_min_size = pool_settings["pool_min_size"]
+        settings.discovery_pool_max_size = pool_settings["pool_max_size"]
+        settings.discovery_pool_active_window_hours = pool_settings["pool_active_window_hours"]
+        settings.discovery_pool_inactive_rising_retention_hours = pool_settings["pool_inactive_rising_retention_hours"]
+        settings.discovery_pool_selection_score_floor = pool_settings["pool_selection_score_floor"]
+        settings.discovery_pool_max_hourly_replacement_rate = pool_settings["pool_max_hourly_replacement_rate"]
+        settings.discovery_pool_replacement_score_cutoff = pool_settings["pool_replacement_score_cutoff"]
+        settings.discovery_pool_max_cluster_share = pool_settings["pool_max_cluster_share"]
+        settings.discovery_pool_high_conviction_threshold = pool_settings["pool_high_conviction_threshold"]
+        settings.discovery_pool_insider_priority_threshold = pool_settings["pool_insider_priority_threshold"]
+        settings.discovery_pool_min_eligible_trades = pool_settings["pool_min_eligible_trades"]
+        settings.discovery_pool_max_eligible_anomaly = pool_settings["pool_max_eligible_anomaly"]
+        settings.discovery_pool_core_min_win_rate = pool_settings["pool_core_min_win_rate"]
+        settings.discovery_pool_core_min_sharpe = pool_settings["pool_core_min_sharpe"]
+        settings.discovery_pool_core_min_profit_factor = pool_settings["pool_core_min_profit_factor"]
+        settings.discovery_pool_rising_min_win_rate = pool_settings["pool_rising_min_win_rate"]
+        settings.discovery_pool_slo_min_analyzed_pct = pool_settings["pool_slo_min_analyzed_pct"]
+        settings.discovery_pool_slo_min_profitable_pct = pool_settings["pool_slo_min_profitable_pct"]
+        settings.discovery_pool_leaderboard_wallet_trade_sample = pool_settings["pool_leaderboard_wallet_trade_sample"]
+        settings.discovery_pool_incremental_wallet_trade_sample = pool_settings["pool_incremental_wallet_trade_sample"]
+        settings.discovery_pool_full_sweep_interval_seconds = pool_settings["pool_full_sweep_interval_seconds"]
+        settings.discovery_pool_incremental_refresh_interval_seconds = pool_settings["pool_incremental_refresh_interval_seconds"]
+        settings.discovery_pool_activity_reconciliation_interval_seconds = pool_settings["pool_activity_reconciliation_interval_seconds"]
+        settings.discovery_pool_recompute_interval_seconds = pool_settings["pool_recompute_interval_seconds"]
 
     if search_filters:
         sf = search_filters

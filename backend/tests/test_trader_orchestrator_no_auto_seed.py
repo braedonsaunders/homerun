@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -15,10 +14,15 @@ from models.database import Base, Trader
 from services.trader_orchestrator_state import (
     create_trader,
     delete_trader,
+    enforce_manual_start_on_startup,
     get_orchestrator_overview,
+    read_orchestrator_snapshot,
+    update_orchestrator_control,
     update_trader,
+    write_orchestrator_snapshot,
 )
 from tests.postgres_test_db import build_postgres_session_factory
+from utils.utcnow import utcnow
 from workers import trader_orchestrator_worker
 
 
@@ -93,7 +97,7 @@ async def test_worker_loop_does_not_seed_default_traders(tmp_path, monkeypatch):
         async def _cancel_sleep(_interval: float):
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(trader_orchestrator_worker.asyncio, "sleep", _cancel_sleep)
+        monkeypatch.setattr(trader_orchestrator_worker, "_worker_sleep", _cancel_sleep)
 
         with pytest.raises(asyncio.CancelledError):
             await trader_orchestrator_worker.run_worker_loop()
@@ -163,5 +167,41 @@ async def test_update_trader_rejects_unknown_strategy_key(tmp_path):
                         ],
                     },
                 )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_enforces_manual_orchestrator_start(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            started = await update_orchestrator_control(
+                session,
+                is_enabled=True,
+                is_paused=False,
+                mode="live",
+                requested_run_at=utcnow(),
+            )
+            await write_orchestrator_snapshot(
+                session,
+                running=True,
+                enabled=True,
+                current_activity="Cycle decisions=1 orders=1",
+                interval_seconds=int(started.get("run_interval_seconds") or 5),
+                last_run_at=utcnow(),
+            )
+
+            control = await enforce_manual_start_on_startup(session)
+            snapshot = await read_orchestrator_snapshot(session)
+
+        assert control["is_enabled"] is False
+        assert control["is_paused"] is True
+        assert control["mode"] == "paper"
+        assert control["requested_run_at"] is None
+        assert snapshot["running"] is False
+        assert snapshot["enabled"] is False
+        assert snapshot["interval_seconds"] == int(control.get("run_interval_seconds") or 5)
+        assert snapshot["current_activity"] == "Stopped on startup; manual start required"
     finally:
         await engine.dispose()

@@ -4,11 +4,14 @@ Settings API Routes
 Endpoints for managing application settings.
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 from sqlalchemy import select
+from config import settings as runtime_settings
 from models.database import AsyncSessionLocal, AppSettings
 from utils.logger import get_logger
 from utils.secrets import decrypt_secret
@@ -954,18 +957,123 @@ async def update_search_filter_settings(request: SearchFilterSettings):
 async def test_polymarket_connection():
     """Test Polymarket API connection with stored credentials"""
     try:
-        settings = await get_or_create_settings()
+        app_settings = await get_or_create_settings()
+        private_key = decrypt_secret(app_settings.polymarket_private_key)
+        api_key = decrypt_secret(app_settings.polymarket_api_key)
+        api_secret = decrypt_secret(app_settings.polymarket_api_secret)
+        api_passphrase = decrypt_secret(app_settings.polymarket_api_passphrase)
 
-        if not decrypt_secret(settings.polymarket_api_key):
-            return {"status": "error", "message": "Polymarket API key not configured"}
+        missing: list[str] = []
+        if not private_key:
+            missing.append("private_key")
+        if not api_key:
+            missing.append("api_key")
+        if not api_secret:
+            missing.append("api_secret")
+        if not api_passphrase:
+            missing.append("api_passphrase")
+        if missing:
+            return {
+                "status": "error",
+                "message": f"Missing Polymarket credentials: {', '.join(missing)}",
+            }
 
-        # TODO: Implement actual API test
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+
+        client = ClobClient(
+            host=runtime_settings.CLOB_API_URL,
+            key=private_key,
+            chain_id=runtime_settings.CHAIN_ID,
+            creds=ApiCreds(
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+            ),
+        )
+        response = await asyncio.to_thread(client.get_orders)
+
+        open_orders_count: Optional[int] = None
+        if isinstance(response, list):
+            open_orders_count = len(response)
+        elif isinstance(response, dict):
+            orders = response.get("orders")
+            if not isinstance(orders, list):
+                orders = response.get("data")
+            if isinstance(orders, list):
+                open_orders_count = len(orders)
+
+        wallet_address: Optional[str] = None
+        try:
+            from eth_account import Account
+
+            wallet_address = Account.from_key(private_key).address
+        except Exception:
+            wallet_address = None
         return {
             "status": "success",
-            "message": "Polymarket credentials are configured (connection test not implemented)",
+            "message": "Polymarket API authentication succeeded",
+            "wallet_address": wallet_address,
+            "open_orders_count": open_orders_count,
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": f"Polymarket API authentication failed: {e}"}
+
+
+@router.post("/test/kalshi")
+async def test_kalshi_connection():
+    """Test Kalshi API connection with stored credentials"""
+    client = None
+    try:
+        app_settings = await get_or_create_settings()
+        email = str(app_settings.kalshi_email or "").strip() or None
+        password = decrypt_secret(app_settings.kalshi_password)
+        api_key = decrypt_secret(app_settings.kalshi_api_key)
+
+        if not api_key and not (email and password):
+            return {
+                "status": "error",
+                "message": "Missing Kalshi credentials: provide api_key or email/password",
+            }
+
+        from services.kalshi_client import KalshiClient
+
+        client = KalshiClient()
+        auth_method = "api_key" if api_key else "email_password"
+        authenticated = await client.initialize_auth(
+            email=email,
+            password=password,
+            api_key=api_key,
+        )
+        if not authenticated:
+            return {
+                "status": "error",
+                "message": "Kalshi API authentication failed: invalid credentials",
+            }
+
+        balance = await client.get_balance()
+        if balance is None:
+            return {
+                "status": "error",
+                "message": "Kalshi API authentication failed: unable to fetch account balance",
+            }
+
+        return {
+            "status": "success",
+            "message": "Kalshi API authentication succeeded",
+            "auth_method": auth_method,
+            "balance": balance.get("balance"),
+            "available": balance.get("available"),
+            "currency": balance.get("currency"),
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Kalshi API authentication failed: {e}"}
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 
 @router.post("/test/telegram")

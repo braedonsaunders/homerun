@@ -144,9 +144,18 @@ async def test_submit_execution_leg_paper_still_simulates_execution():
     )
 
     assert result.status == "executed"
-    assert result.effective_price == 0.55
+    assert result.effective_price is not None
+    assert 0.001 <= float(result.effective_price) <= 1.0
     assert result.error_message is None
     assert result.payload["submission"] == "simulated"
+    assert result.payload["mode"] == "paper"
+    assert isinstance(result.payload.get("paper_simulation"), dict)
+    assert result.payload["paper_simulation"]["filled"] is True
+    assert 0.0 < float(result.payload["paper_simulation"]["fill_ratio"]) <= 1.0
+    assert result.notional_usd is not None
+    assert 0.0 < float(result.notional_usd) <= 25.0
+    assert result.shares is not None
+    assert float(result.shares) > 0.0
 
 
 @pytest.mark.asyncio

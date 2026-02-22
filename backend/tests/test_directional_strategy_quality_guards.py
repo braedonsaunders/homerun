@@ -158,6 +158,69 @@ def test_temporal_decay_certainty_shock_detects_no_surge_after_yes_crash():
     assert opp.expected_payout < 1.0
 
 
+def test_temporal_decay_should_exit_applies_default_take_profit():
+    strategy = TemporalDecayStrategy()
+
+    class _Position:
+        pass
+
+    position = _Position()
+    position.entry_price = 0.50
+    position.current_price = 0.56
+    position.highest_price = 0.56
+    position.lowest_price = 0.50
+    position.age_minutes = 30.0
+    position.pnl_percent = 12.0
+    position.strategy_context = {}
+    position.config = {}
+    position.outcome_idx = 0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.56,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Take profit hit" in decision.reason
+    assert position.config["take_profit_pct"] == 10.0
+
+
+def test_temporal_decay_should_exit_respects_configured_take_profit():
+    strategy = TemporalDecayStrategy()
+
+    class _Position:
+        pass
+
+    position = _Position()
+    position.entry_price = 0.50
+    position.current_price = 0.56
+    position.highest_price = 0.56
+    position.lowest_price = 0.50
+    position.age_minutes = 30.0
+    position.pnl_percent = 12.0
+    position.strategy_context = {}
+    position.config = {"take_profit_pct": 15.0}
+    position.outcome_idx = 0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.56,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+        },
+    )
+
+    assert decision.action == "hold"
+    assert position.config["take_profit_pct"] == 15.0
+
+
 def test_market_making_skips_multileg_contracts():
     strategy = MarketMakingStrategy()
     market = _make_market(

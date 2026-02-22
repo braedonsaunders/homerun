@@ -26,6 +26,7 @@ EventHandler = Callable[[DataEvent], Awaitable[list]]
 _REDIS_FANOUT_EVENT_TYPES = frozenset(
     {
         EventType.PRICE_CHANGE,
+        EventType.MARKET_RESOLVED,
         EventType.CRYPTO_UPDATE,
         EventType.WEATHER_UPDATE,
         EventType.TRADER_ACTIVITY,
@@ -33,6 +34,7 @@ _REDIS_FANOUT_EVENT_TYPES = frozenset(
         EventType.NEWS_EVENT,
         EventType.EVENTS_UPDATE,
         EventType.DATA_SOURCE_UPDATE,
+        EventType.TRADE_EXECUTION,
     }
 )
 

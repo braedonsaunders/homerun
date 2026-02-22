@@ -25,7 +25,6 @@ from services.market_cache import market_cache_service
 from services.market_tradability import get_market_tradability_map
 from services.scanner import scanner as market_scanner
 from services.smart_wallet_pool import smart_wallet_pool
-from services.trader_data_access import get_trader_firehose_signals
 from services import shared_state
 from services.strategy_sdk import StrategySDK
 from services.wallet_intelligence import wallet_intelligence
@@ -383,7 +382,7 @@ async def _run_loop() -> None:
             confluence_limit = int(trader_intent_settings["confluence_limit"])
 
             confluence_scan_limit = max(250, confluence_limit * 6)
-            firehose_rows = await get_trader_firehose_signals(
+            firehose_rows = await StrategySDK.get_trader_firehose_signals(
                 limit=confluence_scan_limit,
                 include_filtered=True,
                 include_source_context=True,
@@ -457,6 +456,12 @@ async def _run_loop() -> None:
                     logger.warning("Sparkline backfill for trader opps failed: %s", exc)
 
             async with AsyncSessionLocal() as session:
+                emitted = await bridge_opportunities_to_signals(
+                    session,
+                    deduped_opportunities,
+                    source="traders",
+                    sweep_missing=True,
+                )
                 await shared_state.write_traders_snapshot(
                     session,
                     deduped_opportunities,
@@ -468,12 +473,6 @@ async def _run_loop() -> None:
                         "current_activity": "Tracked traders strategy cycle complete.",
                         "strategies": strategies_used,
                     },
-                )
-                emitted = await bridge_opportunities_to_signals(
-                    session,
-                    deduped_opportunities,
-                    source="traders",
-                    sweep_missing=True,
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)

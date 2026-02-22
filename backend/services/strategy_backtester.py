@@ -819,7 +819,7 @@ async def run_evaluate_backtest(
         from datetime import datetime, timezone
         from services.trader_orchestrator.decision_gates import (
             apply_platform_decision_gates,
-            is_within_trading_window_utc,
+            is_within_trading_schedule_utc,
         )
         from services.trader_orchestrator.risk_manager import evaluate_risk
 
@@ -838,8 +838,8 @@ async def run_evaluate_backtest(
             else {}
         )
         platform_metadata = (
-            {"trading_window_utc": platform_overrides.get("trading_window_utc")}
-            if isinstance(platform_overrides.get("trading_window_utc"), dict)
+            {"trading_schedule_utc": platform_overrides.get("trading_schedule_utc")}
+            if isinstance(platform_overrides.get("trading_schedule_utc"), dict)
             else {}
         )
         platform_allow_averaging = bool(platform_overrides.get("allow_averaging", False))
@@ -906,12 +906,13 @@ async def run_evaluate_backtest(
                     runtime_signal=sig,
                     strategy=None,
                     checks_payload=checks_payload,
-                    trading_window_ok=is_within_trading_window_utc(platform_metadata, datetime.now(timezone.utc)),
-                    trading_window_config=platform_metadata.get("trading_window_utc"),
+                    trading_schedule_ok=is_within_trading_schedule_utc(platform_metadata, datetime.now(timezone.utc)),
+                    trading_schedule_config=platform_metadata.get("trading_schedule_utc"),
                     global_limits=platform_global_risk,
                     effective_risk_limits=platform_risk_limits,
                     allow_averaging=platform_allow_averaging,
                     open_market_ids=platform_open_market_ids,
+                    portfolio_allocator=None,
                     risk_evaluator=_backtest_risk_evaluator,
                     invoke_hooks=False,
                 )

@@ -392,23 +392,31 @@ async def _latest_instability_by_country(
     )
     latest: dict[str, tuple[Any, Optional[Any]]] = {}
     for row in signal_rows:
-        meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-        iso3 = _normalize_country_value(str(row.iso3 or row.country or ""))
+        metadata = getattr(row, "metadata_json", None)
+        meta = metadata if isinstance(metadata, dict) else {}
+        iso3 = _normalize_country_value(str(getattr(row, "iso3", "") or getattr(row, "country", "") or ""))
         if len(iso3) != 3:
             continue
         components = meta.get("components")
         if not isinstance(components, dict):
-            components = {}
+            row_components = getattr(row, "components", None)
+            components = row_components if isinstance(row_components, dict) else {}
         contributing = meta.get("contributing_signals")
         if "contributing_signals" not in components and isinstance(contributing, list):
             components["contributing_signals"] = contributing
+        severity = getattr(row, "severity", None)
+        if severity is None:
+            raw_score = getattr(row, "score", 0.0)
+        else:
+            raw_score = float(severity) * 100.0
+        computed_at = getattr(row, "detected_at", None) or getattr(row, "computed_at", None)
         signal_row = SimpleNamespace(
-            country=str(row.country or iso3),
+            country=str(getattr(row, "country", "") or iso3),
             iso3=iso3,
-            score=round(float(row.severity or 0.0) * 100.0, 1),
-            trend=str(meta.get("trend") or "stable"),
+            score=round(float(raw_score or 0.0), 1),
+            trend=str(meta.get("trend") or getattr(row, "trend", "stable")),
             components=components,
-            computed_at=row.detected_at,
+            computed_at=computed_at,
         )
         if iso3 not in latest:
             latest[iso3] = (signal_row, None)
@@ -439,11 +447,12 @@ async def _latest_tension_pairs(
     )
     latest: dict[str, tuple[Any, Optional[Any]]] = {}
     for row in signal_rows:
-        meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-        a = str(meta.get("country_a") or "").strip().upper()
-        b = str(meta.get("country_b") or "").strip().upper()
+        metadata = getattr(row, "metadata_json", None)
+        meta = metadata if isinstance(metadata, dict) else {}
+        a = str(meta.get("country_a") or getattr(row, "country_a", "")).strip().upper()
+        b = str(meta.get("country_b") or getattr(row, "country_b", "")).strip().upper()
         if not a or not b:
-            raw_pair = str(row.country or "").strip().upper()
+            raw_pair = str(getattr(row, "country", "") or "").strip().upper()
             if "-" in raw_pair:
                 parts = [part.strip() for part in raw_pair.split("-", 1)]
                 if len(parts) == 2:
@@ -451,28 +460,35 @@ async def _latest_tension_pairs(
         if not a or not b:
             continue
         score = meta.get("tension_score")
+        if score is None:
+            score = getattr(row, "tension_score", None)
         try:
-            tension_score = float(score) if score is not None else float(row.severity or 0.0) * 100.0
+            tension_score = float(score) if score is not None else float(getattr(row, "severity", 0.0) or 0.0) * 100.0
         except Exception:
-            tension_score = float(row.severity or 0.0) * 100.0
+            tension_score = float(getattr(row, "severity", 0.0) or 0.0) * 100.0
         avg_goldstein = meta.get("avg_goldstein_scale")
+        if avg_goldstein is None:
+            avg_goldstein = getattr(row, "avg_goldstein_scale", None)
         try:
             avg_goldstein_scale = float(avg_goldstein) if avg_goldstein is not None else None
         except Exception:
             avg_goldstein_scale = None
         event_count_raw = meta.get("event_count")
+        if event_count_raw is None:
+            event_count_raw = getattr(row, "event_count", 0)
         try:
             event_count = int(event_count_raw or 0)
         except Exception:
             event_count = 0
+        computed_at = getattr(row, "detected_at", None) or getattr(row, "computed_at", None)
         signal_row = SimpleNamespace(
             country_a=a,
             country_b=b,
             tension_score=round(tension_score, 1),
             event_count=event_count,
             avg_goldstein_scale=avg_goldstein_scale,
-            trend=str(meta.get("trend") or "stable"),
-            computed_at=row.detected_at,
+            trend=str(meta.get("trend") or getattr(row, "trend", "stable")),
+            computed_at=computed_at,
         )
         key = _normalized_tension_pair_key(a, b)
         if not key:

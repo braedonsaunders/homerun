@@ -304,12 +304,12 @@ async def test_ensure_system_seed_rewrites_arbitrage_opportunity_imports(tmp_pat
             )
             session.add(
                 Strategy(
-                    id="legacy-contradiction",
-                    slug="contradiction",
+                    id="legacy-basic-imports",
+                    slug="basic",
                     source_key="scanner",
-                    name="Contradiction",
+                    name="Basic Arbitrage",
                     description="Legacy import row",
-                    class_name="ContradictionStrategy",
+                    class_name="BasicArbStrategy",
                     source_code=legacy_source,
                     config={},
                     config_schema={},
@@ -325,7 +325,7 @@ async def test_ensure_system_seed_rewrites_arbitrage_opportunity_imports(tmp_pat
             changed = await ensure_system_opportunity_strategies_seeded(session)
             assert changed >= 1
 
-            row = (await session.execute(select(Strategy).where(Strategy.slug == "contradiction"))).scalars().one()
+            row = (await session.execute(select(Strategy).where(Strategy.slug == "basic"))).scalars().one()
             assert "ArbitrageOpportunity" not in (row.source_code or "")
             assert "from models import Market, Event, Opportunity" in (row.source_code or "")
             assert int(row.version or 0) == 2

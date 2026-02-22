@@ -45,6 +45,60 @@ async def emit_weather_intent_signals(session: AsyncSession, opportunities: list
     )
 
 
+def _dedupe_opportunities(opportunities: list) -> list:
+    deduped: list = []
+    seen_keys: set[str] = set()
+    for opportunity in opportunities:
+        stable_id = str(getattr(opportunity, "stable_id", "") or "").strip()
+        opportunity_id = str(getattr(opportunity, "id", "") or "").strip()
+        strategy = str(getattr(opportunity, "strategy", "") or "").strip()
+        key = f"{strategy}:{stable_id or opportunity_id}"
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(opportunity)
+    return deduped
+
+
+async def _sync_strategy_weather_snapshot(
+    session: AsyncSession,
+    opportunities: list,
+    *,
+    cycle_result: dict[str, object],
+    intent_count: int,
+    emitted_count: int,
+) -> None:
+    try:
+        _, existing_status = await shared_state.read_weather_snapshot(session)
+        stats_payload = dict(existing_status.get("stats") or {})
+    except Exception:
+        stats_payload = {}
+    cycle_stats = cycle_result.get("stats")
+    if isinstance(cycle_stats, dict):
+        stats_payload.update(cycle_stats)
+    stats_payload["strategy_opportunities"] = len(opportunities)
+    stats_payload["signals_emitted_last_run"] = int(emitted_count)
+
+    await shared_state.write_weather_snapshot(
+        session,
+        opportunities=sorted(
+            opportunities,
+            key=lambda opp: float(getattr(opp, "roi_percent", 0.0) or 0.0),
+            reverse=True,
+        ),
+        status={
+            "running": True,
+            "enabled": True,
+            "last_scan": datetime.now(timezone.utc).isoformat(),
+            "current_activity": (
+                "Weather strategy cycle complete: "
+                f"{len(opportunities)} opportunities from {intent_count} intents."
+            ),
+        },
+        stats=stats_payload,
+    )
+
+
 def _read_row_value(row: object, key: str):
     if isinstance(row, dict):
         return row.get(key)
@@ -128,8 +182,15 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
             timestamp=datetime.now(timezone.utc),
             payload={"intents": intent_dicts},
         )
-        opportunities = await event_dispatcher.dispatch(weather_event)
+        opportunities = _dedupe_opportunities(await event_dispatcher.dispatch(weather_event))
         emitted = await emit_weather_intent_signals(session, opportunities)
+        await _sync_strategy_weather_snapshot(
+            session,
+            opportunities,
+            cycle_result=result,
+            intent_count=len(intent_dicts),
+            emitted_count=emitted,
+        )
         # Clear any previously queued manual run requests to avoid duplicate
         # immediate reruns by the background weather worker loop.
         await shared_state.clear_weather_scan_request(session)

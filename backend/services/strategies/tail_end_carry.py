@@ -76,6 +76,7 @@ class TailEndCarryStrategy(BaseStrategy):
         "min_repricing_buffer": 0.015,
         "repricing_weight": 0.45,
         "max_opportunities": 35,
+        "take_profit_pct": 8.0,
     }
 
     def __init__(self) -> None:
@@ -410,6 +411,12 @@ class TailEndCarryStrategy(BaseStrategy):
             return self.default_exit_check(position, market_state)
         config = getattr(position, "config", None) or {}
         config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 8.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 8.0
+        config.setdefault("take_profit_pct", default_tp)
         config.setdefault("trailing_stop_pct", 3.0)
         config.setdefault("resolve_only", False)
         position.config = config

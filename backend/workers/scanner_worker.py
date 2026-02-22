@@ -653,6 +653,7 @@ async def _run_scan_loop() -> None:
                         source="scanner",
                         quality_reports=scanner.quality_reports,
                         sweep_missing=True,
+                        refresh_prices=False,
                     )
                     await clear_scan_request(session)
                     await write_worker_snapshot(

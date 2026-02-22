@@ -188,22 +188,117 @@ if ($PostgresOnly) {
     exit 0
 }
 
-# Check Python
-try {
-    $pythonVersion = python --version 2>&1
-    Write-Host "Found $pythonVersion"
-    $versionMatch = [regex]::Match($pythonVersion, '(\d+)\.(\d+)')
-    $major = [int]$versionMatch.Groups[1].Value
-    $minor = [int]$versionMatch.Groups[2].Value
-    if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 10)) {
-        Write-Host "Warning: Python 3.10+ recommended. You have $pythonVersion" -ForegroundColor Yellow
+$pythonMinMinor = 10
+$pythonMaxMinor = 13
+
+function Test-PythonVersionSupported {
+    param(
+        [string]$Command,
+        [string[]]$PrefixArgs = @()
+    )
+
+    if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) {
+        return $false
     }
-} catch {
-    Write-Host "Error: Python is required but not found in PATH." -ForegroundColor Red
-    Write-Host "Download from https://www.python.org/downloads/" -ForegroundColor Yellow
-    Write-Host "Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
+
+    try {
+        & $Command @PrefixArgs -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 and $pythonMinMinor <= sys.version_info.minor <= $pythonMaxMinor else 1)" *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Get-PythonVersionString {
+    param(
+        [string]$Command,
+        [string[]]$PrefixArgs = @()
+    )
+
+    try {
+        return (& $Command @PrefixArgs -c "import platform; print(platform.python_version())")
+    } catch {
+        return $null
+    }
+}
+
+function Get-SupportedPythonCandidate {
+    $candidates = @(
+        @{ command = "py"; prefix = @("-3.13") },
+        @{ command = "py"; prefix = @("-3.12") },
+        @{ command = "py"; prefix = @("-3.11") },
+        @{ command = "py"; prefix = @("-3.10") },
+        @{ command = "python3.13"; prefix = @() },
+        @{ command = "python3.12"; prefix = @() },
+        @{ command = "python3.11"; prefix = @() },
+        @{ command = "python3.10"; prefix = @() },
+        @{ command = "python"; prefix = @() }
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-PythonVersionSupported -Command $candidate.command -PrefixArgs $candidate.prefix) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Install-SupportedPython {
+    Write-Host "No supported Python 3.10-3.13 interpreter found. Attempting automatic install..." -ForegroundColor Cyan
+
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        foreach ($id in @("Python.Python.3.13", "Python.Python.3.12", "Python.Python.3.11")) {
+            try {
+                winget install --id $id --exact --silent --accept-source-agreements --accept-package-agreements *> $null
+                if (Get-SupportedPythonCandidate) {
+                    return $true
+                }
+            } catch {
+            }
+        }
+    }
+
+    $choco = Get-Command choco -ErrorAction SilentlyContinue
+    if ($choco) {
+        foreach ($pkg in @("python312", "python311", "python")) {
+            try {
+                choco install $pkg -y *> $null
+                if (Get-SupportedPythonCandidate) {
+                    return $true
+                }
+            } catch {
+            }
+        }
+    }
+
+    return $false
+}
+
+$pythonCandidate = Get-SupportedPythonCandidate
+if (-not $pythonCandidate) {
+    Install-SupportedPython | Out-Null
+    $pythonCandidate = Get-SupportedPythonCandidate
+}
+if (-not $pythonCandidate) {
+    Write-Host "Error: Python 3.10-3.13 is required for full Homerun setup." -ForegroundColor Red
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $detected = python --version 2>&1
+        Write-Host "Detected python: $detected" -ForegroundColor Yellow
+    }
+    Write-Host "Install Python 3.12 or 3.11 and rerun setup." -ForegroundColor Yellow
     exit 1
 }
+
+$pythonCommand = [string]$pythonCandidate.command
+$pythonPrefixArgs = [string[]]$pythonCandidate.prefix
+$pythonVersion = Get-PythonVersionString -Command $pythonCommand -PrefixArgs $pythonPrefixArgs
+$pythonCommandLabel = if ($pythonPrefixArgs.Count -gt 0) {
+    "$pythonCommand $($pythonPrefixArgs -join ' ')"
+} else {
+    $pythonCommand
+}
+Write-Host "Found Python $pythonVersion via $pythonCommandLabel"
 
 # Check Node.js
 try {
@@ -221,30 +316,76 @@ Write-Host "Setting up backend..." -ForegroundColor Cyan
 
 Push-Location backend
 
+if (Test-Path "venv") {
+    $venvPython = ".\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "Existing backend\\venv is missing Python. Recreating virtual environment..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force "venv"
+    } else {
+        try {
+            $venvVersionRaw = & $venvPython --version 2>&1
+            $venvMatch = [regex]::Match($venvVersionRaw, '(\d+)\.(\d+)')
+            $venvMajor = [int]$venvMatch.Groups[1].Value
+            $venvMinor = [int]$venvMatch.Groups[2].Value
+            if ($venvMajor -ne 3 -or $venvMinor -lt $pythonMinMinor -or $venvMinor -gt $pythonMaxMinor) {
+                Write-Host "Existing backend\\venv uses unsupported Python $venvVersionRaw. Recreating virtual environment..." -ForegroundColor Yellow
+                Remove-Item -Recurse -Force "venv"
+            }
+        } catch {
+            Write-Host "Existing backend\\venv could not be validated. Recreating virtual environment..." -ForegroundColor Yellow
+            if (Test-Path "venv") {
+                Remove-Item -Recurse -Force "venv"
+            }
+        }
+    }
+}
+
 if (-not (Test-Path "venv")) {
     Write-Host "Creating Python virtual environment..."
-    python -m venv venv
+    & $pythonCommand @pythonPrefixArgs -m venv venv
 }
 
 Write-Host "Activating virtual environment..."
 & .\venv\Scripts\Activate.ps1
 
+try {
+    $activePythonVersion = python --version 2>&1
+    $activeMatch = [regex]::Match($activePythonVersion, '(\d+)\.(\d+)')
+    $activeMajor = [int]$activeMatch.Groups[1].Value
+    $activeMinor = [int]$activeMatch.Groups[2].Value
+    if ($activeMajor -ne 3 -or $activeMinor -lt $pythonMinMinor -or $activeMinor -gt $pythonMaxMinor) {
+        Write-Host "Error: backend virtualenv uses unsupported Python $activePythonVersion (requires 3.10-3.13)." -ForegroundColor Red
+        Write-Host "Delete backend\\venv and rerun setup." -ForegroundColor Yellow
+        exit 1
+    }
+} catch {
+    Write-Host "Error: failed to verify backend virtualenv Python version." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "Installing Python dependencies..."
 pip install --quiet --upgrade pip
 pip install --quiet -r requirements.txt
+try {
+    python -c "import socksio" | Out-Null
+} catch {
+    Write-Host "Error: SOCKS5 proxy support dependency 'socksio' is missing after install." -ForegroundColor Red
+    Write-Host "Run: pip install `"httpx[socks]>=0.27.0,<1.0`"" -ForegroundColor Yellow
+    exit 1
+}
 
-# Try trading dependencies
-if ($minor -ge 10) {
-    Write-Host "Installing trading dependencies..."
-    try {
-        pip install --quiet -r requirements-trading.txt 2>$null
-    } catch {
-        Write-Host "  (trading deps skipped - optional)" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host ""
-    Write-Host "Note: Python 3.10+ required for live trading." -ForegroundColor Yellow
-    Write-Host "      Paper trading and scanning will work fine."
+Write-Host "Installing trading dependencies..."
+pip install --quiet -r requirements-trading.txt
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Error: Failed to install trading dependencies from requirements-trading.txt." -ForegroundColor Red
+    exit 1
+}
+try {
+    python -c "import py_clob_client, eth_account" | Out-Null
+} catch {
+    Write-Host "Error: trading dependencies are missing after install." -ForegroundColor Red
+    Write-Host "Expected imports: py_clob_client, eth_account" -ForegroundColor Yellow
+    exit 1
 }
 
 Pop-Location

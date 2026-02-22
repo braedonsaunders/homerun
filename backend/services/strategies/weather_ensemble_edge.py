@@ -30,7 +30,7 @@ from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
 from utils.converters import to_float, to_confidence
-from utils.signal_helpers import weather_metadata
+from utils.signal_helpers import weather_signal_context
 from services.weather.signal_engine import (
     compute_confidence,
     ensemble_bucket_probability,
@@ -112,6 +112,35 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
                 normalized["bucket_low_c"] = weather_payload.get("threshold_c_low")
             if normalized.get("bucket_high_c") is None and weather_payload.get("threshold_c_high") is not None:
                 normalized["bucket_high_c"] = weather_payload.get("threshold_c_high")
+            threshold_raw = (
+                normalized.get("threshold_c")
+                if normalized.get("threshold_c") is not None
+                else weather_payload.get("threshold_c")
+            )
+            try:
+                threshold_c = float(threshold_raw) if threshold_raw is not None else None
+            except Exception:
+                threshold_c = None
+            if threshold_c is not None and (
+                normalized.get("bucket_low_c") is None or normalized.get("bucket_high_c") is None
+            ):
+                operator = str(
+                    normalized.get("operator")
+                    if normalized.get("operator") is not None
+                    else weather_payload.get("operator") or ""
+                ).strip().lower()
+                span_c = 25.0
+                if normalized.get("bucket_low_c") is None and normalized.get("bucket_high_c") is None:
+                    if operator in {"gt", "gte", ">", ">="}:
+                        normalized["bucket_low_c"] = threshold_c
+                        normalized["bucket_high_c"] = threshold_c + span_c
+                    else:
+                        normalized["bucket_low_c"] = threshold_c - span_c
+                        normalized["bucket_high_c"] = threshold_c
+                elif normalized.get("bucket_low_c") is None:
+                    normalized["bucket_low_c"] = threshold_c - span_c
+                elif normalized.get("bucket_high_c") is None:
+                    normalized["bucket_high_c"] = threshold_c + span_c
 
         market_payload = normalized.get("market")
         if isinstance(market_payload, dict):
@@ -391,8 +420,19 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
             return None
 
         # --- 7. Confidence ---
-        agreement_proxy = ensemble_fraction if used_ensemble else 0.5
-        source_count = 1 if used_ensemble else 0
+        model_agreement = to_float(intent.get("model_agreement"), -1.0)
+        if model_agreement < 0:
+            model_agreement = None
+        if model_agreement is None:
+            model_agreement = ensemble_fraction if used_ensemble else 0.0
+        if model_agreement > 1.0:
+            model_agreement = model_agreement / 100.0
+        model_agreement = max(0.0, min(1.0, float(model_agreement)))
+
+        agreement_proxy = ensemble_fraction if used_ensemble else model_agreement
+        source_count = max(0, int(to_float(intent.get("source_count"), 0.0)))
+        if source_count <= 0 and used_ensemble:
+            source_count = max(1, ensemble_count)
         source_spread_c = float(intent.get("source_spread_c") or 0)
         confidence = compute_confidence(agreement_proxy, model_prob, source_count, source_spread_c)
 
@@ -428,6 +468,10 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
                     "used_ensemble": used_ensemble,
                     "ensemble_count": ensemble_count,
                     "ensemble_fraction": ensemble_fraction,
+                    "agreement": model_agreement,
+                    "model_agreement": model_agreement,
+                    "source_count": source_count,
+                    "source_spread_c": source_spread_c,
                     "model_probability": model_prob,
                     "bucket_low_c": bucket_low,
                     "bucket_high_c": bucket_high,
@@ -466,6 +510,19 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
             confidence=confidence,
         )
         if opp is not None:
+            opp.strategy_context = {
+                "source_key": "weather",
+                "strategy_slug": self.strategy_type,
+                "weather": {
+                    "agreement": model_agreement,
+                    "model_agreement": model_agreement,
+                    "source_count": source_count,
+                    "source_spread_c": source_spread_c,
+                    "ensemble_count": ensemble_count,
+                    "ensemble_fraction": ensemble_fraction,
+                    "used_ensemble": used_ensemble,
+                },
+            }
             opp.risk_factors = risk_factors
             opp.min_liquidity = min_liquidity
             opp.max_position_size = max_position
@@ -509,7 +566,7 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
     _weather_source_spread_c: float = 0.0
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
-        weather = weather_metadata(payload)
+        weather = weather_signal_context(signal)
 
         min_agreement = to_confidence(params.get("min_model_agreement", 0.62), 0.62)
         min_source_count = max(1, int(to_float(params.get("min_source_count", 2), 2)))
@@ -517,7 +574,7 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
         max_entry_price = max(0.05, min(0.98, to_float(params.get("max_entry_price", 0.8), 0.8)))
 
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)
-        agreement = to_confidence(weather.get("agreement", payload.get("model_agreement", 0.0)), 0.0)
+        agreement = to_confidence(weather.get("agreement", weather.get("model_agreement", 0.0)), 0.0)
         source_count = max(0, int(to_float(weather.get("source_count", 0), 0)))
         source_spread_c = max(0.0, to_float(weather.get("source_spread_c", 0.0), 0.0))
 

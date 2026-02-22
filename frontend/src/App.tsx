@@ -48,6 +48,13 @@ import {
   clearOpportunities,
   getStrategies,
   getWorkersStatus,
+  getTradingVpnStatus,
+  getTradingStatus,
+  getTradingPositions,
+  getTradingBalance,
+  getKalshiStatus,
+  getKalshiPositions,
+  getKalshiBalance,
   getUILockStatus,
   pauseAllWorkers,
   resumeAllWorkers,
@@ -708,11 +715,17 @@ function App() {
     refetchInterval: isConnected ? false : 5000,
   })
 
+  const {
+    data: tradingVpnStatus,
+    error: tradingVpnStatusError,
+    isLoading: tradingVpnStatusLoading,
+  } = useQuery({
+    queryKey: ['trading-vpn-status'],
+    queryFn: getTradingVpnStatus,
+    refetchInterval: 30000,
+  })
+
   const workers = workersData?.workers || []
-  const traderOrchestratorWorker = useMemo(
-    () => workers.find((worker) => worker.worker_name === 'trader_orchestrator'),
-    [workers],
-  )
   const trackedTradersWorker = useMemo(
     () => workers.find((worker) => worker.worker_name === 'tracked_traders'),
     [workers],
@@ -773,6 +786,70 @@ function App() {
     }
   }, [workers])
 
+  const tradingVpnHealth = useMemo(() => {
+    if (tradingVpnStatusLoading && !tradingVpnStatus) {
+      return {
+        state: 'CHECKING',
+        tone: 'amber' as WorkerHealthTone,
+        detail: 'Checking trading VPN status.',
+      }
+    }
+
+    if (tradingVpnStatusError) {
+      return {
+        state: 'ERROR',
+        tone: 'red' as WorkerHealthTone,
+        detail: tradingVpnStatusError instanceof Error ? tradingVpnStatusError.message : 'VPN status request failed.',
+      }
+    }
+
+    if (!tradingVpnStatus) {
+      return {
+        state: 'UNKNOWN',
+        tone: 'amber' as WorkerHealthTone,
+        detail: 'Trading VPN status unavailable.',
+      }
+    }
+
+    if (!tradingVpnStatus.proxy_enabled) {
+      return {
+        state: 'OFF',
+        tone: 'amber' as WorkerHealthTone,
+        detail: 'Trading proxy disabled in settings.',
+      }
+    }
+
+    if (!tradingVpnStatus.proxy_reachable) {
+      return {
+        state: 'DOWN',
+        tone: 'red' as WorkerHealthTone,
+        detail: String(tradingVpnStatus.proxy_ip_error || tradingVpnStatus.error || 'Proxy unreachable.'),
+      }
+    }
+
+    if (tradingVpnStatus.vpn_active) {
+      return {
+        state: 'ACTIVE',
+        tone: 'green' as WorkerHealthTone,
+        detail: tradingVpnStatus.proxy_ip ? `Trading through ${tradingVpnStatus.proxy_ip}` : 'Proxy reachable and active.',
+      }
+    }
+
+    if (tradingVpnStatus.proxy_ip && tradingVpnStatus.direct_ip) {
+      return {
+        state: 'WARN',
+        tone: 'amber' as WorkerHealthTone,
+        detail: `Proxy IP matches direct IP (${tradingVpnStatus.proxy_ip}).`,
+      }
+    }
+
+    return {
+      state: 'WARN',
+      tone: 'amber' as WorkerHealthTone,
+      detail: 'Proxy reachable but VPN may not be active.',
+    }
+  }, [tradingVpnStatus, tradingVpnStatusError, tradingVpnStatusLoading])
+
   const globallyPaused = useMemo(() => {
     if (workers.length === 0) {
       return Boolean(status && !status.enabled)
@@ -798,7 +875,111 @@ function App() {
     queryFn: getSimulationAccounts,
   })
 
+  const isLiveAccountSelected = selectedAccountId?.startsWith('live:') ?? false
+  const selectedLivePlatform = selectedAccountId === 'live:kalshi' ? 'kalshi' : 'polymarket'
+
+  const { data: headerTradingStatus } = useQuery({
+    queryKey: ['trading-status'],
+    queryFn: getTradingStatus,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'polymarket',
+    refetchInterval: 10000,
+    retry: false,
+  })
+
+  const { data: headerTradingPositions = [] } = useQuery({
+    queryKey: ['live-positions'],
+    queryFn: getTradingPositions,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'polymarket' && !!headerTradingStatus?.initialized,
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const { data: headerTradingBalance } = useQuery({
+    queryKey: ['trading-balance'],
+    queryFn: getTradingBalance,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'polymarket' && !!headerTradingStatus?.initialized,
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const { data: headerKalshiStatus } = useQuery({
+    queryKey: ['kalshi-status'],
+    queryFn: getKalshiStatus,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'kalshi',
+    refetchInterval: 10000,
+    retry: false,
+  })
+
+  const { data: headerKalshiPositions = [] } = useQuery({
+    queryKey: ['kalshi-positions'],
+    queryFn: getKalshiPositions,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'kalshi' && !!headerKalshiStatus?.authenticated,
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const { data: headerKalshiBalance } = useQuery({
+    queryKey: ['kalshi-balance'],
+    queryFn: getKalshiBalance,
+    enabled: isLiveAccountSelected && selectedLivePlatform === 'kalshi' && !!headerKalshiStatus?.authenticated,
+    refetchInterval: 15000,
+    retry: false,
+  })
+
   const selectedAccount = sandboxAccounts.find(a => a.id === selectedAccountId)
+  const headerStats = useMemo(() => {
+    if (!isLiveAccountSelected) {
+      const balance = selectedAccount?.current_capital ?? 0
+      const pnl = selectedAccount?.total_pnl ?? 0
+      const roi = selectedAccount?.roi_percent ?? 0
+      const positions = selectedAccount?.open_positions ?? 0
+      return { balance, pnl, roi, positions }
+    }
+
+    if (selectedLivePlatform === 'kalshi') {
+      const liveBalance = headerKalshiBalance?.balance ?? headerKalshiStatus?.balance?.balance ?? 0
+      const livePositions = headerKalshiPositions.length
+      const livePnl = headerKalshiPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl || 0), 0)
+      const liveCostBasis = headerKalshiPositions.reduce(
+        (sum, position) => sum + Number(position.size || 0) * Number(position.average_cost || 0),
+        0,
+      )
+      const liveRoi = liveCostBasis > 0 ? (livePnl / liveCostBasis) * 100 : 0
+      return {
+        balance: liveBalance,
+        pnl: livePnl,
+        roi: liveRoi,
+        positions: livePositions,
+      }
+    }
+
+    const liveBalance = headerTradingBalance?.balance ?? 0
+    const livePositions = headerTradingPositions.length
+    const livePnl = headerTradingPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl || 0), 0)
+    const liveCostBasis = headerTradingPositions.reduce(
+      (sum, position) => sum + Number(position.size || 0) * Number(position.average_cost || 0),
+      0,
+    )
+    const liveRoi = liveCostBasis > 0 ? (livePnl / liveCostBasis) * 100 : 0
+    return {
+      balance: liveBalance,
+      pnl: livePnl,
+      roi: liveRoi,
+      positions: livePositions,
+    }
+  }, [
+    isLiveAccountSelected,
+    selectedLivePlatform,
+    selectedAccount?.current_capital,
+    selectedAccount?.total_pnl,
+    selectedAccount?.roi_percent,
+    selectedAccount?.open_positions,
+    headerKalshiBalance?.balance,
+    headerKalshiStatus?.balance?.balance,
+    headerKalshiPositions,
+    headerTradingBalance?.balance,
+    headerTradingPositions,
+  ])
   const strategyTypesBySourceKey = useMemo(() => {
     const grouped: Record<string, string[]> = {}
     for (const strategy of strategies) {
@@ -1273,7 +1454,7 @@ function App() {
     }},
   ], [globallyPaused, scanMutation, setShortcutsHelpOpen])
 
-  useKeyboardShortcuts(shortcuts)
+  useKeyboardShortcuts(shortcuts, !uiLockOverlayVisible)
 
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
 
@@ -1353,22 +1534,22 @@ function App() {
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <Wallet className="w-3 h-3 text-blue-400" />
               <span className="text-muted-foreground">Balance</span>
-              <FlashNumber value={selectedAccount?.current_capital ?? 0} prefix="$" decimals={2} className="font-data font-semibold text-foreground data-glow-blue" />
+              <FlashNumber value={headerStats.balance} prefix="$" decimals={2} className="font-data font-semibold text-foreground data-glow-blue" />
             </div>
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <TrendingUp className="w-3 h-3 text-green-400" />
               <span className="text-muted-foreground">PnL</span>
-              <FlashNumber value={selectedAccount?.total_pnl ?? 0} prefix="$" decimals={2} className={cn("font-data font-semibold", (selectedAccount?.total_pnl ?? 0) >= 0 ? "text-green-400" : "text-red-400")} />
+              <FlashNumber value={headerStats.pnl} prefix="$" decimals={2} className={cn("font-data font-semibold", headerStats.pnl >= 0 ? "text-green-400" : "text-red-400")} />
             </div>
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <DollarSign className="w-3 h-3 text-yellow-400" />
               <span className="text-muted-foreground">ROI</span>
-              <FlashNumber value={selectedAccount?.roi_percent ?? 0} suffix="%" decimals={1} className={cn("font-data font-semibold", (selectedAccount?.roi_percent ?? 0) >= 0 ? "text-green-400" : "text-red-400")} />
+              <FlashNumber value={headerStats.roi} suffix="%" decimals={1} className={cn("font-data font-semibold", headerStats.roi >= 0 ? "text-green-400" : "text-red-400")} />
             </div>
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <Activity className="w-3 h-3 text-purple-400" />
               <span className="text-muted-foreground">Positions</span>
-              <AnimatedNumber value={selectedAccount?.open_positions ?? 0} decimals={0} className="font-data font-semibold text-foreground" />
+              <AnimatedNumber value={headerStats.positions} decimals={0} className="font-data font-semibold text-foreground" />
             </div>
           </div>
 
@@ -1485,7 +1666,7 @@ function App() {
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  aria-label="Worker health status"
+                  aria-label="Worker and VPN status"
                   className="h-8 w-8 rounded-md border border-border/60 bg-card/60 hover:bg-card/90 transition-colors flex items-center justify-center cursor-help"
                 >
                   <span className={cn("h-2.5 w-2.5 rounded-full", WORKER_TONE_CLASS[workerHealth.overallTone])} />
@@ -1500,6 +1681,16 @@ function App() {
                     </span>
                   </div>
                   <div className="space-y-1">
+                    <div className="rounded-md border border-border/40 bg-background/70 px-2 py-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="flex items-center gap-1.5">
+                          <span className={cn("h-1.5 w-1.5 rounded-full", WORKER_TONE_CLASS[tradingVpnHealth.tone])} />
+                          <span>Trading VPN</span>
+                        </span>
+                        <span className="font-data text-muted-foreground">{tradingVpnHealth.state}</span>
+                      </div>
+                      <p className="mt-1 text-[10px] text-muted-foreground truncate">{tradingVpnHealth.detail}</p>
+                    </div>
                     {workerHealth.rows.map((worker) => (
                       <div key={worker.workerName} className="rounded-md border border-border/40 bg-background/70 px-2 py-1.5">
                         <div className="flex items-center justify-between text-[11px]">
@@ -1560,7 +1751,6 @@ function App() {
             crypto: cryptoCount,
           }}
           signalTotals={signalTotals}
-          orchestratorControl={traderOrchestratorWorker?.control || null}
           lastMessage={lastMessage}
           activeStrategies={strategies.length}
         />

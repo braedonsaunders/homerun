@@ -43,11 +43,9 @@ import {
   TableHeader,
   TableRow,
 } from './ui/table'
-import ValidationEnginePanel from './ValidationEnginePanel'
 
 type ViewMode = 'simulation' | 'live' | 'all'
 type TimeRange = '7d' | '30d' | '90d' | 'all'
-type PerformanceSubTab = 'overview' | 'validation'
 
 type UnifiedTrade = {
   id: string
@@ -71,6 +69,12 @@ type StrategyRollup = {
   pnl: number
   sandboxTrades: number
   liveTrades: number
+}
+
+type LiveTraderOrder = TraderOrder & {
+  executed_at: string
+  total_cost: number
+  strategy: string
 }
 
 const VIEW_MODE_OPTIONS: Array<{ id: ViewMode; label: string }> = [
@@ -126,9 +130,11 @@ function formatDateLabel(dateStr: string): string {
 function getTradeStatusClass(status: string): string {
   switch (status.toLowerCase()) {
     case 'resolved_win':
+    case 'closed_win':
     case 'win':
       return 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
     case 'resolved_loss':
+    case 'closed_loss':
     case 'loss':
       return 'bg-red-100 text-red-800 border-red-300 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30'
     case 'resolved':
@@ -145,7 +151,6 @@ function getTradeStatusClass(status: string): string {
 }
 
 export default function PerformancePanel() {
-  const [activeSubTab, setActiveSubTab] = useState<PerformanceSubTab>('overview')
   const [viewMode, setViewMode] = useState<ViewMode>('all')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
@@ -153,13 +158,17 @@ export default function PerformancePanel() {
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
-    enabled: activeSubTab === 'overview',
   })
+
+  const simulationAccountKey = useMemo(
+    () => accounts.map((account) => account.id).sort().join('|'),
+    [accounts]
+  )
 
   const { data: orchestratorStats } = useQuery({
     queryKey: ['trader-orchestrator-stats'],
     queryFn: getTraderOrchestratorStats,
-    enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
+    enabled: viewMode === 'live' || viewMode === 'all',
   })
 
   const {
@@ -167,11 +176,12 @@ export default function PerformancePanel() {
     isLoading: simTradesLoading,
     refetch: refetchSimTrades,
   } = useQuery({
-    queryKey: ['all-simulation-trades', selectedAccount],
+    queryKey: ['all-simulation-trades', selectedAccount, simulationAccountKey],
     queryFn: async () => {
       if (selectedAccount) {
         const rows = await getAccountTrades(selectedAccount, 250)
-        return rows.map((row) => ({ ...row, accountName: 'Selected account' }))
+        const accountName = accounts.find((account) => account.id === selectedAccount)?.name || 'Selected account'
+        return rows.map((row) => ({ ...row, accountName }))
       }
 
       const responses = await Promise.all(
@@ -188,25 +198,34 @@ export default function PerformancePanel() {
         .flat()
         .sort((left, right) => new Date(right.executed_at).getTime() - new Date(left.executed_at).getTime())
     },
-    enabled: activeSubTab === 'overview' && accounts.length > 0 && (viewMode === 'simulation' || viewMode === 'all'),
+    enabled: accounts.length > 0 && (viewMode === 'simulation' || viewMode === 'all'),
   })
 
   const {
     data: autoTrades = [],
     isLoading: autoTradesLoading,
     refetch: refetchAutoTrades,
-  } = useQuery({
+  } = useQuery<LiveTraderOrder[]>({
     queryKey: ['trader-orders'],
     queryFn: async () => {
       const rows = await getAllTraderOrders(250)
-      return rows.map((row: TraderOrder) => ({
-        ...row,
-        executed_at: row.executed_at || row.created_at || new Date().toISOString(),
-        total_cost: Number(row.notional_usd || 0),
-        strategy: String(row.source || 'unknown'),
-      }))
+      const normalizedRows: LiveTraderOrder[] = []
+      rows.forEach((row) => {
+        if (String(row.mode || '').toLowerCase() !== 'live') return
+
+        const executedAt = row.executed_at || row.created_at
+        if (!executedAt) return
+
+        normalizedRows.push({
+          ...row,
+          executed_at: executedAt,
+          total_cost: Number(row.notional_usd || 0),
+          strategy: String(row.source || 'unknown'),
+        })
+      })
+      return normalizedRows
     },
-    enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
+    enabled: viewMode === 'live' || viewMode === 'all',
   })
 
   const isLoading = accountsLoading || simTradesLoading || autoTradesLoading
@@ -251,9 +270,9 @@ export default function PerformancePanel() {
           status,
           executedAt: trade.executed_at,
           accountName: (trade as SimulationTrade & { accountName?: string }).accountName,
-          isResolved: status === 'resolved_win' || status === 'resolved_loss',
-          isWin: status === 'resolved_win',
-          isLoss: status === 'resolved_loss',
+          isResolved: ['resolved_win', 'resolved_loss', 'closed_win', 'closed_loss'].includes(status),
+          isWin: status === 'resolved_win' || status === 'closed_win',
+          isLoss: status === 'resolved_loss' || status === 'closed_loss',
         })
       })
     }
@@ -262,7 +281,15 @@ export default function PerformancePanel() {
       filteredAutoTrades.forEach((trade) => {
         const status = String(trade.status || 'unknown').toLowerCase()
         const pnl = typeof trade.actual_profit === 'number' ? trade.actual_profit : null
-        const isResolved = ['resolved', 'win', 'loss', 'resolved_win', 'resolved_loss'].includes(status)
+        const isResolved = [
+          'resolved',
+          'win',
+          'loss',
+          'resolved_win',
+          'resolved_loss',
+          'closed_win',
+          'closed_loss',
+        ].includes(status)
         rows.push({
           id: `live-${trade.id}`,
           source: 'live',
@@ -272,8 +299,8 @@ export default function PerformancePanel() {
           status,
           executedAt: trade.executed_at,
           isResolved,
-          isWin: (pnl ?? 0) > 0 || status === 'win' || status === 'resolved_win',
-          isLoss: (pnl ?? 0) < 0 || status === 'loss' || status === 'resolved_loss',
+          isWin: (pnl ?? 0) > 0 || status === 'win' || status === 'resolved_win' || status === 'closed_win',
+          isLoss: (pnl ?? 0) < 0 || status === 'loss' || status === 'resolved_loss' || status === 'closed_loss',
         })
       })
     }
@@ -418,39 +445,13 @@ export default function PerformancePanel() {
     <div className="h-full min-h-0 flex flex-col gap-1.5">
       {/* Control Strip */}
       <div className="shrink-0 space-y-2">
-        {/* Row 1: Title + view toggle + refresh */}
+        {/* Row 1: Title + refresh */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-cyan-300" />
               Performance
             </h2>
-            <div className="flex items-center gap-1 rounded-md border border-border/60 bg-card/50 p-0.5">
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('overview')}
-                className={cn(
-                  'h-6 rounded px-2.5 text-xs transition-colors',
-                  activeSubTab === 'overview'
-                    ? 'bg-cyan-500/15 text-cyan-200 font-medium'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                Overview
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSubTab('validation')}
-                className={cn(
-                  'h-6 rounded px-2.5 text-xs transition-colors',
-                  activeSubTab === 'validation'
-                    ? 'bg-emerald-500/15 text-emerald-200 font-medium'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                Validation
-              </button>
-            </div>
             <Badge variant="outline" className="text-[10px] border-border/50">
               {summary.totalTrades} trades
             </Badge>
@@ -461,244 +462,234 @@ export default function PerformancePanel() {
           </Button>
         </div>
 
-        {/* Row 2: Scope + time range + account (overview only) */}
-        {activeSubTab === 'overview' && (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1">
-              {VIEW_MODE_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setViewMode(option.id)}
-                  className={cn(
-                    'h-7 rounded-md border px-2.5 text-xs transition-colors',
-                    viewMode === option.id
-                      ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
-                      : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="w-px h-5 bg-border/50" />
-
-            <div className="flex items-center gap-1">
-              {RANGE_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setTimeRange(option.id)}
-                  className={cn(
-                    'h-7 rounded-md border px-2.5 text-xs transition-colors',
-                    timeRange === option.id
-                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100'
-                      : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-
-            {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
-              <>
-                <div className="w-px h-5 bg-border/50" />
-                <select
-                  value={selectedAccount || ''}
-                  onChange={(event) => setSelectedAccount(event.target.value || null)}
-                  className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
-                >
-                  <option value="">All accounts</option>
-                  {accounts.map((account: SimulationAccount) => (
-                    <option key={account.id} value={account.id}>{account.name}</option>
-                  ))}
-                </select>
-              </>
-            )}
+        {/* Row 2: Scope + time range + account */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1">
+            {VIEW_MODE_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setViewMode(option.id)}
+                className={cn(
+                  'h-7 rounded-md border px-2.5 text-xs transition-colors',
+                  viewMode === option.id
+                    ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-100'
+                    : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
-        )}
+
+          <div className="w-px h-5 bg-border/50" />
+
+          <div className="flex items-center gap-1">
+            {RANGE_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setTimeRange(option.id)}
+                className={cn(
+                  'h-7 rounded-md border px-2.5 text-xs transition-colors',
+                  timeRange === option.id
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100'
+                    : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
+          {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
+            <>
+              <div className="w-px h-5 bg-border/50" />
+              <select
+                value={selectedAccount || ''}
+                onChange={(event) => setSelectedAccount(event.target.value || null)}
+                className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
+              >
+                <option value="">All accounts</option>
+                {accounts.map((account: SimulationAccount) => (
+                  <option key={account.id} value={account.id}>{account.name}</option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Metric Strip (overview only) */}
-      {activeSubTab === 'overview' && (
-        <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
-          <MetricChip
-            label="P&L"
-            value={formatSignedCurrency(summary.totalPnl, true)}
-            detail={formatCurrency(summary.totalPnl)}
-            icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
-            valueClassName={summary.totalPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
-          />
-          <MetricChip
-            label="ROI"
-            value={formatPercent(summary.roi)}
-            detail={`on ${formatCurrency(summary.totalCost, true)}`}
-            icon={Target}
-            valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
-          />
-          <MetricChip
-            label="Win Rate"
-            value={formatPercent(summary.winRate)}
-            detail={`${summary.wins}W / ${summary.losses}L`}
-            icon={Activity}
-            valueClassName={summary.winRate >= 50 ? 'text-emerald-300' : 'text-amber-300'}
-          />
-          <MetricChip
-            label="Open"
-            value={String(summary.openTrades)}
-            detail={`${summary.resolvedTrades} resolved`}
-            icon={Calendar}
-          />
-          <MetricChip
-            label="Avg P&L"
-            value={formatSignedCurrency(summary.avgPnl)}
-            icon={summary.avgPnl >= 0 ? ArrowUpRight : ArrowDownRight}
-            valueClassName={summary.avgPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
-          />
-          <MetricChip
-            label="Drawdown"
-            value={formatCurrency(maxDrawdown, true)}
-            detail={Number.isFinite(summary.profitFactor) ? `PF ${summary.profitFactor === Infinity ? '∞' : summary.profitFactor.toFixed(2)}` : ''}
-            icon={TrendingDown}
-            valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
-          />
-        </div>
-      )}
+      {/* Metric Strip */}
+      <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
+        <MetricChip
+          label="P&L"
+          value={formatSignedCurrency(summary.totalPnl, true)}
+          detail={formatCurrency(summary.totalPnl)}
+          icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
+          valueClassName={summary.totalPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
+        />
+        <MetricChip
+          label="ROI"
+          value={formatPercent(summary.roi)}
+          detail={`on ${formatCurrency(summary.totalCost, true)}`}
+          icon={Target}
+          valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
+        />
+        <MetricChip
+          label="Win Rate"
+          value={formatPercent(summary.winRate)}
+          detail={`${summary.wins}W / ${summary.losses}L`}
+          icon={Activity}
+          valueClassName={summary.winRate >= 50 ? 'text-emerald-300' : 'text-amber-300'}
+        />
+        <MetricChip
+          label="Open"
+          value={String(summary.openTrades)}
+          detail={`${summary.resolvedTrades} closed`}
+          icon={Calendar}
+        />
+        <MetricChip
+          label="Avg P&L"
+          value={formatSignedCurrency(summary.avgPnl)}
+          icon={summary.avgPnl >= 0 ? ArrowUpRight : ArrowDownRight}
+          valueClassName={summary.avgPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
+        />
+        <MetricChip
+          label="Drawdown"
+          value={formatCurrency(maxDrawdown, true)}
+          detail={Number.isFinite(summary.profitFactor) ? `PF ${summary.profitFactor === Infinity ? '∞' : summary.profitFactor.toFixed(2)}` : ''}
+          icon={TrendingDown}
+          valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
+        />
+      </div>
 
       {/* Main content */}
-      {activeSubTab === 'overview' ? (
-        <div className="flex-1 min-h-0 flex flex-col gap-2">
-          {/* Chart + Leaderboard */}
-          <div className="shrink-0 h-[260px] grid gap-2 xl:grid-cols-12">
-            <div className="xl:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
-              <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
-                <p className="text-xs font-semibold flex items-center gap-1.5">
-                  <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
-                  Cumulative P&L
-                </p>
-                {orchestratorStats?.last_trade_at && (
-                  <span className="text-[10px] text-muted-foreground">
-                    last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
-                  </span>
-                )}
-              </div>
-              <div className="flex-1 min-h-0">
-                {cumulativePnlData.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                    No trade history in range.
-                  </div>
-                ) : (
-                  <PerformancePnlChart data={cumulativePnlData} viewMode={viewMode} />
-                )}
-              </div>
+      <div className="flex-1 min-h-0 flex flex-col gap-2">
+        {/* Chart + Leaderboard */}
+        <div className="shrink-0 h-[260px] grid gap-2 xl:grid-cols-12">
+          <div className="xl:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
+            <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
+              <p className="text-xs font-semibold flex items-center gap-1.5">
+                <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
+                Cumulative P&L
+              </p>
+              {orchestratorStats?.last_trade_at && (
+                <span className="text-[10px] text-muted-foreground">
+                  last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
+                </span>
+              )}
             </div>
-
-            <div className="xl:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
-              <p className="shrink-0 text-xs font-semibold mb-2">Strategy Leaderboard</p>
-              <ScrollArea className="flex-1 min-h-0">
-                <div className="space-y-1.5 pr-2">
-                  {strategyLeaderboard.length === 0 ? (
-                    <div className="text-xs text-muted-foreground text-center py-4">No strategy activity.</div>
-                  ) : (
-                    strategyLeaderboard.slice(0, 12).map((row) => {
-                      const winRate = row.wins + row.losses > 0 ? (row.wins / (row.wins + row.losses)) * 100 : 0
-                      return (
-                        <div key={row.strategy} className="rounded border border-border/50 bg-background/30 px-2 py-1.5">
-                          <div className="flex items-center justify-between gap-1">
-                            <p className="truncate text-xs">{row.strategy}</p>
-                            <p className={cn('text-[11px] font-mono', row.pnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
-                              {formatSignedCurrency(row.pnl, true)}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5">
-                            <span>{row.trades}t</span>
-                            <span>{formatPercent(winRate)}</span>
-                            <span>{row.liveTrades}L/{row.sandboxTrades}S</span>
-                          </div>
-                        </div>
-                      )
-                    })
-                  )}
+            <div className="flex-1 min-h-0">
+              {cumulativePnlData.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                  No trade history in range.
                 </div>
-              </ScrollArea>
+              ) : (
+                <PerformancePnlChart data={cumulativePnlData} viewMode={viewMode} />
+              )}
             </div>
           </div>
 
-          {/* Trade Tape — fills remaining space */}
-          <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
-            <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
-              <p className="text-xs font-semibold">Trade Tape</p>
-              <span className="text-[10px] text-muted-foreground">{unifiedTrades.length} trades</span>
-            </div>
+          <div className="xl:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
+            <p className="shrink-0 text-xs font-semibold mb-2">Strategy Leaderboard</p>
             <ScrollArea className="flex-1 min-h-0">
-              <Table>
-                <TableHeader>
-                  <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
-                    <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Timestamp</TableHead>
-                    <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Source</TableHead>
-                    <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Strategy</TableHead>
-                    <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Status</TableHead>
-                    <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">Cost</TableHead>
-                    <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">P&L</TableHead>
-                    <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Account</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {unifiedTrades.slice(0, 150).map((trade) => (
-                    <TableRow key={trade.id} className="border-border/40">
-                      <TableCell className="py-1.5 font-mono text-[11px] text-muted-foreground">
-                        {new Date(trade.executedAt).toLocaleString()}
-                      </TableCell>
-                      <TableCell className="py-1.5">
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            'text-[9px] uppercase',
-                            trade.source === 'sandbox'
-                              ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
-                              : 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200'
-                          )}
-                        >
-                          {trade.source}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="py-1.5 text-xs">{trade.strategy}</TableCell>
-                      <TableCell className="py-1.5">
-                        <Badge variant="outline" className={cn('text-[9px] uppercase', getTradeStatusClass(trade.status))}>
-                          {trade.status.replace(/_/g, ' ')}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="py-1.5 text-right font-mono text-[11px]">{formatCurrency(trade.cost)}</TableCell>
-                      <TableCell className={cn(
-                        'py-1.5 text-right font-mono text-[11px]',
-                        (trade.pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'
-                      )}>
-                        {trade.pnl == null ? '—' : formatSignedCurrency(trade.pnl)}
-                      </TableCell>
-                      <TableCell className="py-1.5 text-[11px] text-muted-foreground">
-                        {trade.accountName || (trade.source === 'live' ? 'Orchestrator' : '—')}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {unifiedTrades.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
-                        No trades for this view and range.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+              <div className="space-y-1.5 pr-2">
+                {strategyLeaderboard.length === 0 ? (
+                  <div className="text-xs text-muted-foreground text-center py-4">No strategy activity.</div>
+                ) : (
+                  strategyLeaderboard.slice(0, 12).map((row) => {
+                    const winRate = row.wins + row.losses > 0 ? (row.wins / (row.wins + row.losses)) * 100 : 0
+                    return (
+                      <div key={row.strategy} className="rounded border border-border/50 bg-background/30 px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="truncate text-xs">{row.strategy}</p>
+                          <p className={cn('text-[11px] font-mono', row.pnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+                            {formatSignedCurrency(row.pnl, true)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5">
+                          <span>{row.trades}t</span>
+                          <span>{formatPercent(winRate)}</span>
+                          <span>{row.liveTrades}L/{row.sandboxTrades}S</span>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
             </ScrollArea>
           </div>
         </div>
-      ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <ValidationEnginePanel />
+
+        {/* Trade Tape — fills remaining space */}
+        <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
+          <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
+            <p className="text-xs font-semibold">Trade Tape</p>
+            <span className="text-[10px] text-muted-foreground">{unifiedTrades.length} trades</span>
+          </div>
+          <ScrollArea className="flex-1 min-h-0">
+            <Table>
+              <TableHeader>
+                <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Timestamp</TableHead>
+                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Source</TableHead>
+                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Strategy</TableHead>
+                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Status</TableHead>
+                  <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">Cost</TableHead>
+                  <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">P&L</TableHead>
+                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Account</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {unifiedTrades.slice(0, 150).map((trade) => (
+                  <TableRow key={trade.id} className="border-border/40">
+                    <TableCell className="py-1.5 font-mono text-[11px] text-muted-foreground">
+                      {new Date(trade.executedAt).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="py-1.5">
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'text-[9px] uppercase',
+                          trade.source === 'sandbox'
+                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                            : 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200'
+                        )}
+                      >
+                        {trade.source}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="py-1.5 text-xs">{trade.strategy}</TableCell>
+                    <TableCell className="py-1.5">
+                      <Badge variant="outline" className={cn('text-[9px] uppercase', getTradeStatusClass(trade.status))}>
+                        {trade.status.replace(/_/g, ' ')}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="py-1.5 text-right font-mono text-[11px]">{formatCurrency(trade.cost)}</TableCell>
+                    <TableCell className={cn(
+                      'py-1.5 text-right font-mono text-[11px]',
+                      (trade.pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'
+                    )}>
+                      {trade.pnl == null ? '—' : formatSignedCurrency(trade.pnl)}
+                    </TableCell>
+                    <TableCell className="py-1.5 text-[11px] text-muted-foreground">
+                      {trade.accountName || (trade.source === 'live' ? 'Orchestrator' : '—')}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {unifiedTrades.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
+                      No trades for this view and range.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </ScrollArea>
         </div>
-      )}
+      </div>
     </div>
   )
 }

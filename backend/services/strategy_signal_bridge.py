@@ -33,6 +33,7 @@ async def bridge_opportunities_to_signals(
     quality_filter_pipeline: Optional[Any] = None,
     quality_reports: Optional[dict] = None,
     sweep_missing: bool = False,
+    refresh_prices: bool = True,
 ) -> int:
     """Convert Opportunity objects into TradeSignal rows.
 
@@ -55,6 +56,17 @@ async def bridge_opportunities_to_signals(
     Returns the number of signals upserted.
     """
     now = utcnow()
+    if opportunities and refresh_prices:
+        try:
+            from services.scanner import scanner as market_scanner
+
+            opportunities = await market_scanner.refresh_opportunity_prices(
+                opportunities,
+                now=now,
+                drop_stale=False,
+            )
+        except Exception:
+            pass
     emitted = 0
     keep_dedupe_keys: set[str] = set()
 

@@ -11,6 +11,8 @@ env/
 backend/venv/
 backend/venv*/
 backend/.venv/
+backend/.venv-ci/
+backend/.venv-ci*/
 .setup-stamp.json
 *.egg-info/
 dist/

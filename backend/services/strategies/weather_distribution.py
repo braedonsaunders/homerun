@@ -32,7 +32,7 @@ from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
 from utils.converters import to_float
-from utils.signal_helpers import weather_metadata, hours_to_target
+from utils.signal_helpers import weather_signal_context, hours_to_target
 from services.weather.signal_engine import (
     ensemble_bucket_probability,
     compute_confidence,
@@ -119,6 +119,35 @@ class WeatherDistributionStrategy(BaseStrategy):
                 normalized["bucket_low_c"] = weather_payload.get("threshold_c_low")
             if normalized.get("bucket_high_c") is None and weather_payload.get("threshold_c_high") is not None:
                 normalized["bucket_high_c"] = weather_payload.get("threshold_c_high")
+            threshold_raw = (
+                normalized.get("threshold_c")
+                if normalized.get("threshold_c") is not None
+                else weather_payload.get("threshold_c")
+            )
+            try:
+                threshold_c = float(threshold_raw) if threshold_raw is not None else None
+            except Exception:
+                threshold_c = None
+            if threshold_c is not None and (
+                normalized.get("bucket_low_c") is None or normalized.get("bucket_high_c") is None
+            ):
+                operator = str(
+                    normalized.get("operator")
+                    if normalized.get("operator") is not None
+                    else weather_payload.get("operator") or ""
+                ).strip().lower()
+                span_c = 25.0
+                if normalized.get("bucket_low_c") is None and normalized.get("bucket_high_c") is None:
+                    if operator in {"gt", "gte", ">", ">="}:
+                        normalized["bucket_low_c"] = threshold_c
+                        normalized["bucket_high_c"] = threshold_c + span_c
+                    else:
+                        normalized["bucket_low_c"] = threshold_c - span_c
+                        normalized["bucket_high_c"] = threshold_c
+                elif normalized.get("bucket_low_c") is None:
+                    normalized["bucket_low_c"] = threshold_c - span_c
+                elif normalized.get("bucket_high_c") is None:
+                    normalized["bucket_high_c"] = threshold_c + span_c
 
         market_payload = normalized.get("market")
         if isinstance(market_payload, dict):
@@ -319,12 +348,31 @@ class WeatherDistributionStrategy(BaseStrategy):
 
         all_buckets = [current_bucket]
         for sib in sibling_markets:
+            low_raw = sib.get("bucket_low_c")
+            high_raw = sib.get("bucket_high_c")
+            if low_raw is None or high_raw is None:
+                continue
+            try:
+                low = float(low_raw)
+                high = float(high_raw)
+            except Exception:
+                continue
+            if high <= low:
+                continue
+            try:
+                sib_yes = float(sib.get("yes_price", 0.5))
+            except Exception:
+                sib_yes = 0.5
+            try:
+                sib_no = float(sib.get("no_price", 0.5))
+            except Exception:
+                sib_no = 0.5
             all_buckets.append(
                 {
-                    "bucket_low_c": float(sib.get("bucket_low_c", 0)),
-                    "bucket_high_c": float(sib.get("bucket_high_c", 0)),
-                    "yes_price": float(sib.get("yes_price", 0.5)),
-                    "no_price": float(sib.get("no_price", 0.5)),
+                    "bucket_low_c": low,
+                    "bucket_high_c": high,
+                    "yes_price": sib_yes,
+                    "no_price": sib_no,
                     "market_id": sib.get("market_id"),
                     "clob_token_ids": sib.get("clob_token_ids"),
                     "is_current": False,
@@ -533,6 +581,22 @@ class WeatherDistributionStrategy(BaseStrategy):
             confidence=confidence,
         )
         if opp is not None:
+            opp.strategy_context = {
+                "source_key": "weather",
+                "strategy_slug": self.strategy_type,
+                "weather": {
+                    "agreement": agreement,
+                    "model_agreement": agreement,
+                    "source_count": source_count,
+                    "source_spread_c": source_spread_c,
+                    "consensus_temp_c": consensus_temp,
+                    "market_implied_temp_c": market_temp,
+                    "model_probability": model_prob,
+                    "edge_percent": edge_percent,
+                    "target_time": intent.get("target_time"),
+                    "used_ensemble": bool(ensemble_members),
+                },
+            }
             opp.risk_factors = risk_factors
             opp.min_liquidity = min_liquidity
             opp.max_position_size = max_position
@@ -576,7 +640,7 @@ class WeatherDistributionStrategy(BaseStrategy):
     _dist_source_spread_c: float = 0.0
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
-        weather = weather_metadata(payload)
+        weather = weather_signal_context(signal)
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
         source_ok = source in {"weather"}

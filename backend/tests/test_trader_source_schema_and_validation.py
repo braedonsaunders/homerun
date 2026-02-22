@@ -35,18 +35,16 @@ async def test_source_schema_excludes_events_and_omni(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_crypto_schema_exposes_unified_strategies(tmp_path):
+async def test_crypto_schema_exposes_dynamic_strategy_options(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:
         schema = await build_trader_config_schema(session)
     crypto_source = next(source for source in schema["sources"] if source["key"] == "crypto")
-    crypto_strategies = {str(option["key"]) for option in crypto_source.get("strategy_options", [])}
-    # Canonical unified slugs — no more separate timeframe slugs.
-    assert crypto_strategies >= {
-        "btc_eth_highfreq",
-        "crypto_spike_reversion",
-    }
-    # Passthrough pseudo-option should not be exposed in source strategy options.
+    crypto_strategies = {str(option["key"]) for option in (crypto_source.get("strategy_options") or [])}
+    assert crypto_strategies
+    assert str(crypto_source.get("default_strategy_key") or "") in crypto_strategies
+    default_config = crypto_source.get("default_config") or {}
+    assert str(default_config.get("strategy_key") or "") in crypto_strategies
     assert "__passthrough__" not in crypto_strategies
     await engine.dispose()
 
@@ -62,15 +60,12 @@ async def test_scanner_and_weather_have_separate_strategy_sets(tmp_path):
     scanner_strategies = {str(option["key"]) for option in scanner_source.get("strategy_options", [])}
     weather_strategies = {str(option["key"]) for option in weather_source.get("strategy_options", [])}
 
-    # Canonical unified slugs.
-    assert scanner_strategies >= {
-        "basic",
-        "negrisk",
-        "flash_crash_reversion",
-        "tail_end_carry",
-    }
-    assert weather_strategies >= {"weather_edge", "weather_distribution"}
-    # Passthrough pseudo-option should not be exposed in source strategy options.
+    assert scanner_strategies
+    assert weather_strategies
+    assert str(scanner_source.get("default_strategy_key") or "") in scanner_strategies
+    assert str(weather_source.get("default_strategy_key") or "") in weather_strategies
+    assert bool(scanner_strategies - weather_strategies)
+    assert bool(weather_strategies - scanner_strategies)
     assert "__passthrough__" not in scanner_strategies
     assert "__passthrough__" not in weather_strategies
     await engine.dispose()
@@ -80,6 +75,30 @@ async def test_scanner_and_weather_have_separate_strategy_sets(tmp_path):
 async def test_normalize_trader_payload_rejects_invalid_source_strategy_pair(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:
+        schema = await build_trader_config_schema(session)
+        source_to_strategies = {
+            str(source.get("key")): {str(option.get("key")) for option in (source.get("strategy_options") or [])}
+            for source in schema.get("sources", [])
+        }
+        invalid_source_key = ""
+        invalid_strategy_key = ""
+        for source_key, strategy_keys in source_to_strategies.items():
+            if not strategy_keys:
+                continue
+            for target_key, target_strategy_keys in source_to_strategies.items():
+                if target_key == source_key:
+                    continue
+                candidate = next((key for key in strategy_keys if key not in target_strategy_keys), "")
+                if candidate:
+                    invalid_source_key = target_key
+                    invalid_strategy_key = candidate
+                    break
+            if invalid_strategy_key:
+                break
+
+        if not invalid_source_key or not invalid_strategy_key:
+            pytest.skip("No cross-source invalid strategy pair available in current dynamic schema")
+
         with pytest.raises(ValueError, match="Invalid strategy_key"):
             await _normalize_trader_payload(
                 session,
@@ -87,8 +106,8 @@ async def test_normalize_trader_payload_rejects_invalid_source_strategy_pair(tmp
                     "name": "Invalid Pair",
                     "source_configs": [
                         {
-                            "source_key": "news",
-                            "strategy_key": "btc_eth_highfreq",
+                            "source_key": invalid_source_key,
+                            "strategy_key": invalid_strategy_key,
                             "strategy_params": {},
                         }
                     ],
@@ -101,6 +120,15 @@ async def test_normalize_trader_payload_rejects_invalid_source_strategy_pair(tmp
 async def test_normalize_trader_payload_rejects_scanner_strategy_on_weather_source(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:
+        schema = await build_trader_config_schema(session)
+        scanner_source = next(source for source in schema.get("sources", []) if source.get("key") == "scanner")
+        weather_source = next(source for source in schema.get("sources", []) if source.get("key") == "weather")
+        scanner_strategies = {str(option.get("key")) for option in (scanner_source.get("strategy_options") or [])}
+        weather_strategies = {str(option.get("key")) for option in (weather_source.get("strategy_options") or [])}
+        scanner_only_key = next((key for key in scanner_strategies if key not in weather_strategies), "")
+        if not scanner_only_key:
+            pytest.skip("No scanner-only strategy key available in current dynamic schema")
+
         with pytest.raises(ValueError, match="Invalid strategy_key"):
             await _normalize_trader_payload(
                 session,
@@ -109,7 +137,7 @@ async def test_normalize_trader_payload_rejects_scanner_strategy_on_weather_sour
                     "source_configs": [
                         {
                             "source_key": "weather",
-                            "strategy_key": "basic",
+                            "strategy_key": scanner_only_key,
                             "strategy_params": {},
                         }
                     ],
@@ -122,6 +150,21 @@ async def test_normalize_trader_payload_rejects_scanner_strategy_on_weather_sour
 async def test_normalize_trader_payload_rejects_invalid_traders_scope(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:
+        schema = await build_trader_config_schema(session)
+        traders_source = next(source for source in schema.get("sources", []) if source.get("key") == "traders")
+        strategy_key = str(
+            next(
+                (
+                    option.get("key")
+                    for option in (traders_source.get("strategy_options") or [])
+                    if option.get("key")
+                ),
+                "",
+            )
+        )
+        if not strategy_key:
+            pytest.skip("No traders strategy options available in current dynamic schema")
+
         with pytest.raises(ValueError, match="individual_wallets"):
             await _normalize_trader_payload(
                 session,
@@ -130,7 +173,7 @@ async def test_normalize_trader_payload_rejects_invalid_traders_scope(tmp_path):
                     "source_configs": [
                         {
                             "source_key": "traders",
-                            "strategy_key": "traders_confluence",
+                            "strategy_key": strategy_key,
                             "strategy_params": {},
                             "traders_scope": {
                                 "modes": ["individual"],

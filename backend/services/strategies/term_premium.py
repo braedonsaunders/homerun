@@ -96,6 +96,7 @@ class TermPremiumStrategy(BaseStrategy):
         "max_size_usd": 150.0,
         "convergence_exit_threshold": 0.02,  # exit when within 2% of true_prob
         "drawdown_exit_threshold": 0.10,  # exit on 10% price drop from entry
+        "take_profit_pct": 10.0,
     }
 
     def __init__(self) -> None:
@@ -365,6 +366,14 @@ class TermPremiumStrategy(BaseStrategy):
 
         entry_price = float(getattr(position, "entry_price", 0) or 0)
         config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 10.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 10.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         convergence_threshold = float(config.get("convergence_exit_threshold", 0.02) or 0.02)
         drawdown_threshold = float(config.get("drawdown_exit_threshold", 0.10) or 0.10)
 

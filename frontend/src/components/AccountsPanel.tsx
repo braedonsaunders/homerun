@@ -258,10 +258,11 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
   const polymarketSnapshot = useMemo<LiveVenueSnapshot>(() => {
     const exposure = tradingPositions.reduce((sum, pos) => sum + pos.size * pos.current_price, 0)
     const unrealizedPnl = tradingPositions.reduce((sum, pos) => sum + pos.unrealized_pnl, 0)
+    const connected = Boolean(tradingStatus?.authenticated ?? tradingStatus?.initialized)
     return {
       id: 'polymarket',
       label: 'Polymarket',
-      connected: Boolean(tradingStatus?.initialized),
+      connected,
       accountLabel: tradingStatus?.wallet_address
         ? `${tradingStatus.wallet_address.slice(0, 8)}...${tradingStatus.wallet_address.slice(-6)}`
         : 'No wallet',
@@ -271,7 +272,14 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
       openPositions: tradingPositions.length,
       unrealizedPnl,
     }
-  }, [tradingStatus?.initialized, tradingStatus?.wallet_address, tradingBalance?.balance, tradingBalance?.available, tradingPositions])
+  }, [
+    tradingStatus?.authenticated,
+    tradingStatus?.initialized,
+    tradingStatus?.wallet_address,
+    tradingBalance?.balance,
+    tradingBalance?.available,
+    tradingPositions,
+  ])
 
   const kalshiSnapshot = useMemo<LiveVenueSnapshot>(() => {
     const exposure = kalshiPositions.reduce((sum, pos) => sum + pos.size * pos.current_price, 0)

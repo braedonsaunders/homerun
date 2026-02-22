@@ -73,6 +73,7 @@ class MarketMakingStrategy(BaseStrategy):
         "max_inventory_usd": 500.0,
         "base_size_usd": 50.0,
         "max_size_usd": 500.0,
+        "take_profit_pct": 8.0,
     }
 
     pipeline_defaults = {
@@ -590,6 +591,14 @@ class MarketMakingStrategy(BaseStrategy):
         if market_state.get("is_resolved"):
             return self.default_exit_check(position, market_state)
         config = getattr(position, "config", None) or {}
+        config = dict(config)
+        configured_tp = (getattr(self, "config", None) or {}).get("take_profit_pct", 8.0)
+        try:
+            default_tp = float(configured_tp)
+        except (TypeError, ValueError):
+            default_tp = 8.0
+        config.setdefault("take_profit_pct", default_tp)
+        position.config = config
         age_minutes = float(getattr(position, "age_minutes", 0) or 0)
         max_hold = float(config.get("max_hold_minutes", 240) or 240)
         if age_minutes > max_hold:

@@ -390,6 +390,9 @@ needs_setup() {
     if [ ! -d "backend/venv" ]; then
         return 0
     fi
+    if [ ! -x "backend/venv/bin/python" ]; then
+        return 0
+    fi
     if [ ! -d "frontend/node_modules" ]; then
         return 0
     fi
@@ -397,6 +400,13 @@ needs_setup() {
         return 0
     fi
     if [ ! -f ".setup-stamp.json" ]; then
+        return 0
+    fi
+
+    if ! backend/venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 and 10 <= sys.version_info.minor <= 13 else 1)' >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! backend/venv/bin/python -c "import py_clob_client, eth_account" >/dev/null 2>&1; then
         return 0
     fi
 
