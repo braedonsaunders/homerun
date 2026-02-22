@@ -252,7 +252,13 @@ class StrategySDK:
         {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean"},
         {"key": "halt_on_consecutive_losses", "label": "Halt on Loss Streak", "type": "boolean"},
         {"key": "max_consecutive_losses", "label": "Max Consecutive Losses", "type": "integer", "min": 0, "max": 1000},
-        {"key": "circuit_breaker_drawdown_pct", "label": "Circuit Breaker Drawdown (%)", "type": "number", "min": 0, "max": 100},
+        {
+            "key": "circuit_breaker_drawdown_pct",
+            "label": "Circuit Breaker Drawdown (%)",
+            "type": "number",
+            "min": 0,
+            "max": 100,
+        },
         {
             "key": "portfolio",
             "label": "Portfolio Allocator",
@@ -878,9 +884,7 @@ class StrategySDK:
             "modes": {str(mode or "").strip().lower() for mode in (cfg.get("modes") or []) if str(mode or "").strip()},
             "individual_wallets": _normalize_wallet_set(cfg.get("individual_wallets") or []),
             "group_ids": [
-                str(group_id or "").strip()
-                for group_id in (cfg.get("group_ids") or [])
-                if str(group_id or "").strip()
+                str(group_id or "").strip() for group_id in (cfg.get("group_ids") or []) if str(group_id or "").strip()
             ],
             "tracked_wallets": _normalize_wallet_set(tracked_wallets),
             "pool_wallets": _normalize_wallet_set(pool_wallets),
@@ -891,11 +895,7 @@ class StrategySDK:
     def match_trader_signal_scope(signal: Any, scope_context: Any) -> tuple[bool, dict[str, Any]]:
         context = scope_context if isinstance(scope_context, dict) else {}
         wallets = StrategySDK.extract_trader_signal_wallets(signal)
-        modes = {
-            str(mode or "").strip().lower()
-            for mode in (context.get("modes") or set())
-            if str(mode or "").strip()
-        }
+        modes = {str(mode or "").strip().lower() for mode in (context.get("modes") or set()) if str(mode or "").strip()}
         matched_modes: list[str] = []
 
         if "tracked" in modes and wallets.intersection(context.get("tracked_wallets") or set()):
@@ -989,9 +989,7 @@ class StrategySDK:
         cfg["max_hourly_replacement_rate"] = StrategySDK._coerce_float(
             cfg.get("max_hourly_replacement_rate"), 0.15, 0.0, 1.0
         )
-        cfg["replacement_score_cutoff"] = StrategySDK._coerce_float(
-            cfg.get("replacement_score_cutoff"), 0.05, 0.0, 1.0
-        )
+        cfg["replacement_score_cutoff"] = StrategySDK._coerce_float(cfg.get("replacement_score_cutoff"), 0.05, 0.0, 1.0)
         cfg["max_cluster_share"] = StrategySDK._coerce_float(cfg.get("max_cluster_share"), 0.08, 0.01, 1.0)
         cfg["high_conviction_threshold"] = StrategySDK._coerce_float(
             cfg.get("high_conviction_threshold"), 0.72, 0.0, 1.0
@@ -1006,9 +1004,7 @@ class StrategySDK:
         cfg["core_min_profit_factor"] = StrategySDK._coerce_float(cfg.get("core_min_profit_factor"), 1.2, 0.0, 20.0)
         cfg["rising_min_win_rate"] = StrategySDK._coerce_float(cfg.get("rising_min_win_rate"), 0.50, 0.0, 1.0)
         cfg["slo_min_analyzed_pct"] = StrategySDK._coerce_float(cfg.get("slo_min_analyzed_pct"), 95.0, 0.0, 100.0)
-        cfg["slo_min_profitable_pct"] = StrategySDK._coerce_float(
-            cfg.get("slo_min_profitable_pct"), 80.0, 0.0, 100.0
-        )
+        cfg["slo_min_profitable_pct"] = StrategySDK._coerce_float(cfg.get("slo_min_profitable_pct"), 80.0, 0.0, 100.0)
         cfg["leaderboard_wallet_trade_sample"] = StrategySDK._coerce_int(
             cfg.get("leaderboard_wallet_trade_sample"), 160, 1, 5000
         )
@@ -1231,11 +1227,7 @@ class StrategySDK:
             "end_time": schedule_end_time,
             "start_date": schedule_start_date.isoformat() if schedule_start_date is not None else None,
             "end_date": schedule_end_date.isoformat() if schedule_end_date is not None else None,
-            "end_at": (
-                schedule_end_at.isoformat().replace("+00:00", "Z")
-                if schedule_end_at is not None
-                else None
-            ),
+            "end_at": (schedule_end_at.isoformat().replace("+00:00", "Z") if schedule_end_at is not None else None),
         }
 
         cfg["cadence_profile"] = StrategySDK._coerce_str(cfg.get("cadence_profile"), "custom")
@@ -1262,7 +1254,9 @@ class StrategySDK:
             cfg.get("max_trade_notional_usd"), 350.0, 1.0, 10_000_000.0
         )
         cfg["max_daily_loss_usd"] = StrategySDK._coerce_float(cfg.get("max_daily_loss_usd"), 300.0, 1.0, 100_000_000.0)
-        cfg["max_daily_spend_usd"] = StrategySDK._coerce_float(cfg.get("max_daily_spend_usd"), 2000.0, 1.0, 100_000_000.0)
+        cfg["max_daily_spend_usd"] = StrategySDK._coerce_float(
+            cfg.get("max_daily_spend_usd"), 2000.0, 1.0, 100_000_000.0
+        )
         cfg["cooldown_seconds"] = StrategySDK._coerce_int(cfg.get("cooldown_seconds"), 0, 0, 86_400)
         cfg["order_ttl_seconds"] = StrategySDK._coerce_int(cfg.get("order_ttl_seconds"), 1200, 1, 86_400)
         cfg["slippage_bps"] = StrategySDK._coerce_float(cfg.get("slippage_bps"), 35.0, 0.0, 10_000.0)
@@ -1348,9 +1342,7 @@ class StrategySDK:
         cfg["copy_buys"] = StrategySDK._coerce_bool(cfg.get("copy_buys"), True)
         cfg["copy_sells"] = StrategySDK._coerce_bool(cfg.get("copy_sells"), True)
         cfg["proportional_sizing"] = StrategySDK._coerce_bool(cfg.get("proportional_sizing"), False)
-        cfg["proportional_multiplier"] = StrategySDK._coerce_float(
-            cfg.get("proportional_multiplier"), 1.0, 0.01, 100.0
-        )
+        cfg["proportional_multiplier"] = StrategySDK._coerce_float(cfg.get("proportional_multiplier"), 1.0, 0.01, 100.0)
         return cfg
 
     @staticmethod
@@ -2014,6 +2006,7 @@ class StrategySDK:
             ]
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).debug("get_news_for_market failed: %s", e)
             return []
 

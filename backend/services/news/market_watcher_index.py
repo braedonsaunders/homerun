@@ -242,9 +242,7 @@ class MarketWatcherIndex:
                 if shared is not None:
                     self._model = shared
                     self._initialized = True
-                    logger.info(
-                        "Market watcher index sharing model with semantic_matcher"
-                    )
+                    logger.info("Market watcher index sharing model with semantic_matcher")
                     return True
             except Exception:
                 pass  # Fall through to standalone load

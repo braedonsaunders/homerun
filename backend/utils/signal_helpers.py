@@ -36,13 +36,7 @@ def _extract_position_context(payload: dict[str, Any]) -> dict[str, dict[str, An
         if isinstance(raw_position.get("_crypto_context"), dict):
             crypto_context.update(raw_position.get("_crypto_context") or {})
         if raw_position.get("_highfreq_metadata"):
-            highfreq_context.update(
-                {
-                    key: value
-                    for key, value in raw_position.items()
-                    if key != "_highfreq_metadata"
-                }
-            )
+            highfreq_context.update({key: value for key, value in raw_position.items() if key != "_highfreq_metadata"})
     return {
         "crypto": crypto_context,
         "highfreq": highfreq_context,

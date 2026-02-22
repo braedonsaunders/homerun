@@ -39,6 +39,7 @@ def _chunked_in(column, values, chunk_size: int = SQL_IN_CLAUSE_CHUNK_SIZE):
         clauses.append(column.in_(values[i : i + chunk_size]))
     return or_(*clauses)
 
+
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_ID = "latest"
@@ -235,9 +236,7 @@ async def write_market_catalog(
         except Exception:
             pass
 
-    result = await session.execute(
-        select(MarketCatalog).where(MarketCatalog.id == CATALOG_ID)
-    )
+    result = await session.execute(select(MarketCatalog).where(MarketCatalog.id == CATALOG_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = MarketCatalog(id=CATALOG_ID)
@@ -260,9 +259,7 @@ async def read_market_catalog(
     from models.database import MarketCatalog
     from models.market import Event, Market
 
-    result = await session.execute(
-        select(MarketCatalog).where(MarketCatalog.id == CATALOG_ID)
-    )
+    result = await session.execute(select(MarketCatalog).where(MarketCatalog.id == CATALOG_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return [], [], {"updated_at": None, "error": None}

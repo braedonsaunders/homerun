@@ -509,11 +509,12 @@ async def _resolve_market_context_overrides(
         event_slug = _clean_market_text(market_context.get("event_slug") or market_context.get("eventSlug"))
         if not event_slug:
             continue
-        market_id = normalize_market_id(
-            market_context.get("id")
-            or market_context.get("market_id")
-            or getattr(finding, "market_id", None)
-        ) or ""
+        market_id = (
+            normalize_market_id(
+                market_context.get("id") or market_context.get("market_id") or getattr(finding, "market_id", None)
+            )
+            or ""
+        )
         market_slug = _clean_market_text(market_context.get("slug") or market_context.get("market_slug"))
         pending_by_event_slug.setdefault(event_slug, []).append((finding_id, market_id, market_slug))
 
@@ -549,7 +550,11 @@ async def _resolve_market_context_overrides(
             market_id = normalize_market_id(getattr(market, "id", None))
             condition_id = normalize_market_id(getattr(market, "condition_id", None))
             market_slug = _clean_market_text(getattr(market, "slug", ""))
-            token_ids = [str(token_id).strip() for token_id in list(getattr(market, "clob_token_ids", []) or []) if str(token_id or "").strip()]
+            token_ids = [
+                str(token_id).strip()
+                for token_id in list(getattr(market, "clob_token_ids", []) or [])
+                if str(token_id or "").strip()
+            ]
             market_payload = {
                 "id": str(getattr(market, "id", "") or ""),
                 "condition_id": str(getattr(market, "condition_id", "") or ""),
@@ -620,23 +625,28 @@ async def _load_shared_backfill_market_history(
         if not market_id:
             continue
 
-        platform = infer_market_platform(
-            {
-                "id": market_id,
-                "condition_id": _clean_market_text(market_context.get("condition_id") or market_context.get("conditionId")),
-                "slug": _clean_market_text(market_context.get("slug") or market_context.get("market_slug")),
-                "event_slug": _clean_market_text(market_context.get("event_slug") or market_context.get("eventSlug")),
-                "event_ticker": _clean_market_text(market_context.get("event_ticker") or market_context.get("eventTicker")),
-                "platform": _clean_market_text(market_context.get("platform")),
-            }
-        ) or "polymarket"
+        platform = (
+            infer_market_platform(
+                {
+                    "id": market_id,
+                    "condition_id": _clean_market_text(
+                        market_context.get("condition_id") or market_context.get("conditionId")
+                    ),
+                    "slug": _clean_market_text(market_context.get("slug") or market_context.get("market_slug")),
+                    "event_slug": _clean_market_text(
+                        market_context.get("event_slug") or market_context.get("eventSlug")
+                    ),
+                    "event_ticker": _clean_market_text(
+                        market_context.get("event_ticker") or market_context.get("eventTicker")
+                    ),
+                    "platform": _clean_market_text(market_context.get("platform")),
+                }
+            )
+            or "polymarket"
+        )
 
         yes_price = _safe_float(finding.market_price)
-        no_price = (
-            float(round(1.0 - yes_price, 6))
-            if yes_price is not None and 0.0 <= yes_price <= 1.0
-            else None
-        )
+        no_price = float(round(1.0 - yes_price, 6)) if yes_price is not None and 0.0 <= yes_price <= 1.0 else None
         token_ids = _extract_market_token_ids_from_context(market_context)
 
         market_payload: dict[str, Any] = {
@@ -702,7 +712,9 @@ def _build_finding_market_snapshot(
     *,
     market_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    market_context = market_context if isinstance(market_context, dict) else _extract_market_context_from_finding(finding)
+    market_context = (
+        market_context if isinstance(market_context, dict) else _extract_market_context_from_finding(finding)
+    )
     history: list[dict[str, float]] = []
     for candidate in _history_candidates_for_finding(finding, market_context=market_context):
         points = market_history.get(candidate)
@@ -968,18 +980,12 @@ async def get_findings(
         query = query.where(NewsWorkflowFinding.edge_percent >= min_edge)
 
     actionable_filter = NewsWorkflowFinding.actionable.is_(True)
-    informative_filter = (
-        (NewsWorkflowFinding.edge_percent > 0.0)
-        | (NewsWorkflowFinding.confidence > 0.0)
-    )
+    informative_filter = (NewsWorkflowFinding.edge_percent > 0.0) | (NewsWorkflowFinding.confidence > 0.0)
 
     if actionable_only:
         query = query.where(actionable_filter)
     elif not include_debug_rejections:
-        query = query.where(
-            actionable_filter
-            | informative_filter
-        )
+        query = query.where(actionable_filter | informative_filter)
 
     query = query.order_by(desc(NewsWorkflowFinding.created_at))
 

@@ -57,6 +57,7 @@ def _iter_chunks(values: list[Any], chunk_size: int = IN_CLAUSE_CHUNK_SIZE):
         if chunk:
             yield chunk
 
+
 # All pool eligibility defaults now live in StrategySDK.POOL_ELIGIBILITY_DEFAULTS.
 _SDK = StrategySDK.POOL_ELIGIBILITY_DEFAULTS
 

@@ -814,8 +814,12 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.discovery_pool_leaderboard_wallet_trade_sample = pool_settings["pool_leaderboard_wallet_trade_sample"]
         settings.discovery_pool_incremental_wallet_trade_sample = pool_settings["pool_incremental_wallet_trade_sample"]
         settings.discovery_pool_full_sweep_interval_seconds = pool_settings["pool_full_sweep_interval_seconds"]
-        settings.discovery_pool_incremental_refresh_interval_seconds = pool_settings["pool_incremental_refresh_interval_seconds"]
-        settings.discovery_pool_activity_reconciliation_interval_seconds = pool_settings["pool_activity_reconciliation_interval_seconds"]
+        settings.discovery_pool_incremental_refresh_interval_seconds = pool_settings[
+            "pool_incremental_refresh_interval_seconds"
+        ]
+        settings.discovery_pool_activity_reconciliation_interval_seconds = pool_settings[
+            "pool_activity_reconciliation_interval_seconds"
+        ]
         settings.discovery_pool_recompute_interval_seconds = pool_settings["pool_recompute_interval_seconds"]
 
     if search_filters:

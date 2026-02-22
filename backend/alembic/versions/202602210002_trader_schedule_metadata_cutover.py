@@ -83,9 +83,7 @@ def upgrade() -> None:
         normalized = _normalize_metadata(metadata_json)
         if normalized == metadata_json:
             continue
-        bind.execute(
-            traders.update().where(traders.c.id == trader_id).values(metadata_json=normalized)
-        )
+        bind.execute(traders.update().where(traders.c.id == trader_id).values(metadata_json=normalized))
 
 
 def downgrade() -> None:

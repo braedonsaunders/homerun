@@ -124,11 +124,15 @@ class WeatherEnsembleEdgeStrategy(BaseStrategy):
             if threshold_c is not None and (
                 normalized.get("bucket_low_c") is None or normalized.get("bucket_high_c") is None
             ):
-                operator = str(
-                    normalized.get("operator")
-                    if normalized.get("operator") is not None
-                    else weather_payload.get("operator") or ""
-                ).strip().lower()
+                operator = (
+                    str(
+                        normalized.get("operator")
+                        if normalized.get("operator") is not None
+                        else weather_payload.get("operator") or ""
+                    )
+                    .strip()
+                    .lower()
+                )
                 span_c = 25.0
                 if normalized.get("bucket_low_c") is None and normalized.get("bucket_high_c") is None:
                     if operator in {"gt", "gte", ">", ">="}:

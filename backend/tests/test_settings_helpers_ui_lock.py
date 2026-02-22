@@ -50,4 +50,3 @@ def test_apply_update_request_ui_lock_with_password_without_scrypt(monkeypatch):
     assert verify_password("local-pass", settings.ui_lock_password_hash) is True
     assert flags["needs_ui_lock_reload"] is True
     assert flags["reset_ui_lock_sessions"] is True
-

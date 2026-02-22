@@ -183,8 +183,10 @@ class TestScanPipeline:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=all_opps), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=all_opps),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 
@@ -202,7 +204,8 @@ class TestScanPipeline:
         _seed_scanner_cache(scanner)
 
         with patch.object(
-            scanner, "_dispatch_market_refresh",
+            scanner,
+            "_dispatch_market_refresh",
             new_callable=AsyncMock,
             side_effect=RuntimeError("dispatch boom"),
         ):
@@ -217,8 +220,10 @@ class TestScanPipeline:
 
         assert scanner._last_scan is None
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]), \
-             patch("services.scanner.quality_filter"):
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]),
+            patch("services.scanner.quality_filter"),
+        ):
             await scanner.scan_fast()
 
         assert scanner._last_scan is not None
@@ -274,12 +279,14 @@ class TestScanPipeline:
             )
         ]
 
-        with patch.object(scanner, "_ensure_runtime_strategies_loaded", new_callable=AsyncMock), \
-             patch.object(scanner, "_partition_market_refresh_strategies", return_value=(set(), {"full_only"})), \
-             patch.object(scanner, "_select_full_snapshot_markets", return_value=[market]), \
-             patch.object(scanner, "_snapshot_ws_prices", new_callable=AsyncMock, return_value={}), \
-             patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]), \
-             patch.object(scanner, "_set_activity", new_callable=AsyncMock):
+        with (
+            patch.object(scanner, "_ensure_runtime_strategies_loaded", new_callable=AsyncMock),
+            patch.object(scanner, "_partition_market_refresh_strategies", return_value=(set(), {"full_only"})),
+            patch.object(scanner, "_select_full_snapshot_markets", return_value=[market]),
+            patch.object(scanner, "_snapshot_ws_prices", new_callable=AsyncMock, return_value={}),
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]),
+            patch.object(scanner, "_set_activity", new_callable=AsyncMock),
+        ):
             results = await scanner.scan_full_snapshot_strategies(force=True)
 
         assert len(results) == 1
@@ -309,7 +316,8 @@ class TestScanPipeline:
         )
 
         with patch.object(
-            scanner, "_snapshot_ws_prices",
+            scanner,
+            "_snapshot_ws_prices",
             new_callable=AsyncMock,
             return_value={tok_a: {"mid": 0.61}, tok_b: {"mid": 0.39}},
         ) as mock_ws_prices:
@@ -355,8 +363,10 @@ class TestMispricingClassification:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 
@@ -381,8 +391,10 @@ class TestMispricingClassification:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 
@@ -407,8 +419,10 @@ class TestMispricingClassification:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 
@@ -433,8 +447,10 @@ class TestMispricingClassification:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[opp]),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 
@@ -887,8 +903,10 @@ class TestScannerStatus:
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]), \
-             patch("services.scanner.quality_filter"):
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]),
+            patch("services.scanner.quality_filter"),
+        ):
             await scanner.scan_fast()
 
         status = scanner.get_status()
@@ -986,8 +1004,12 @@ class TestScannerCallbacks:
         callback = AsyncMock()
         scanner.add_callback(callback)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[sample_opportunity]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(
+                scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[sample_opportunity]
+            ),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             await scanner.scan_fast()
 
@@ -1007,8 +1029,10 @@ class TestScannerCallbacks:
         scanner.add_callback(cb1)
         scanner.add_callback(cb2)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]), \
-             patch("services.scanner.quality_filter"):
+        with (
+            patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[]),
+            patch("services.scanner.quality_filter"),
+        ):
             await scanner.scan_fast()
 
         cb1.assert_awaited_once()
@@ -1024,8 +1048,12 @@ class TestScannerCallbacks:
         scanner.add_callback(bad_cb)
         scanner.add_callback(good_cb)
 
-        with patch.object(scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[sample_opportunity]), \
-             patch("services.scanner.quality_filter") as mock_qf:
+        with (
+            patch.object(
+                scanner, "_dispatch_market_refresh", new_callable=AsyncMock, return_value=[sample_opportunity]
+            ),
+            patch("services.scanner.quality_filter") as mock_qf,
+        ):
             mock_qf.evaluate_opportunity = MagicMock(return_value=_make_quality_pass())
             results = await scanner.scan_fast()
 

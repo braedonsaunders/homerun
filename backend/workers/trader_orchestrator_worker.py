@@ -324,9 +324,7 @@ def _allocate_portfolio_notional(
             f"({allocated_size:.2f} < {min_order_notional:.2f})"
         )
     elif allocated_size < requested_size:
-        reason = (
-            f"Portfolio capped: allocated {allocated_size:.2f} from requested {requested_size:.2f}"
-        )
+        reason = f"Portfolio capped: allocated {allocated_size:.2f} from requested {requested_size:.2f}"
 
     return {
         "allowed": bool(allowed),
@@ -536,9 +534,7 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
 async def _build_traders_scope_context(session: Any, traders_scope: dict[str, Any]) -> dict[str, Any]:
     normalized_scope = StrategySDK.validate_trader_scope_config(traders_scope)
     modes = {
-        str(mode or "").strip().lower()
-        for mode in (normalized_scope.get("modes") or [])
-        if str(mode or "").strip()
+        str(mode or "").strip().lower() for mode in (normalized_scope.get("modes") or []) if str(mode or "").strip()
     }
     tracked_wallets: set[str] = set()
     pool_wallets: set[str] = set()
@@ -703,10 +699,14 @@ async def _run_terminal_stale_order_watchdog(session: Any, *, now: datetime | No
 
     status_key_expr = func.lower(func.coalesce(TraderOrder.status, ""))
     candidates = (
-        await session.execute(
-            select(TraderOrder).where(status_key_expr.in_(tuple(_PAPER_ACTIVE_ORDER_STATUSES))).limit(2000)
+        (
+            await session.execute(
+                select(TraderOrder).where(status_key_expr.in_(tuple(_PAPER_ACTIVE_ORDER_STATUSES))).limit(2000)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not candidates:
         return {"checked": True, "stale": 0, "alerted": 0}
 

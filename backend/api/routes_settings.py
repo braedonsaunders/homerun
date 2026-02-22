@@ -535,7 +535,9 @@ class SearchFilterSettings(BaseModel):
     # Hard rejection filters
     min_liquidity_hard: float = Field(default=1000.0, ge=0, description="Hard reject below this liquidity ($)")
     min_position_size: float = Field(default=50.0, ge=0, description="Reject if max position < this ($)")
-    min_absolute_profit: float = Field(default=10.0, ge=0, description="Reject if net profit on max position < this ($)")
+    min_absolute_profit: float = Field(
+        default=10.0, ge=0, description="Reject if net profit on max position < this ($)"
+    )
     min_annualized_roi: float = Field(default=10.0, ge=0, description="Reject if annualized ROI < this %")
     max_resolution_months: int = Field(
         default=18,

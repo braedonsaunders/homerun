@@ -203,13 +203,17 @@ class TradersConfluenceStrategy(BaseStrategy):
 
     @staticmethod
     def _is_crypto_market(signal: dict) -> bool:
-        merged_text = " ".join(
-            [
-                str(signal.get("market_question") or ""),
-                str(signal.get("market_slug") or ""),
-                str(signal.get("market_id") or ""),
-            ]
-        ).strip().lower()
+        merged_text = (
+            " ".join(
+                [
+                    str(signal.get("market_question") or ""),
+                    str(signal.get("market_slug") or ""),
+                    str(signal.get("market_id") or ""),
+                ]
+            )
+            .strip()
+            .lower()
+        )
         if not merged_text:
             return False
         return any(hint in merged_text for hint in _CRYPTO_MARKET_HINTS)

@@ -392,9 +392,7 @@ async def test_bridge_refreshes_prices_before_upsert(monkeypatch, tmp_path):
             )
             assert emitted == 1
 
-            rows = (
-                (await session.execute(select(TradeSignal).where(TradeSignal.source == "weather"))).scalars().all()
-            )
+            rows = (await session.execute(select(TradeSignal).where(TradeSignal.source == "weather"))).scalars().all()
             assert len(rows) == 1
             row = rows[0]
             assert row.entry_price == pytest.approx(0.61)

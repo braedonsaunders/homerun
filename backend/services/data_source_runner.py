@@ -43,8 +43,8 @@ def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
         "connection was closed",
         "connectiondoesnotexist",
         "closed in the middle of operation",
-        "another operation",          # asyncpg InternalClientError state confusion
-        "cannot switch to state",     # asyncpg InternalClientError
+        "another operation",  # asyncpg InternalClientError state confusion
+        "cannot switch to state",  # asyncpg InternalClientError
     )
     # Raw asyncpg exceptions (InternalClientError, etc.) are not SQLAlchemy
     # subclasses — check them by module name.
@@ -589,6 +589,7 @@ async def run_data_source(
                 if _is_retryable_db_disconnect_error(persist_exc):
                     try:
                         from models.database import recover_pool
+
                         await recover_pool()
                     except Exception:
                         pass

@@ -304,10 +304,7 @@ async def delete_trader_route(
         }
 
     if (
-        open_live_positions > 0
-        or open_other_positions > 0
-        or open_live_orders > 0
-        or open_other_orders > 0
+        open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0
     ) and action != TraderDeleteAction.force_delete:
         raise HTTPException(
             status_code=409,

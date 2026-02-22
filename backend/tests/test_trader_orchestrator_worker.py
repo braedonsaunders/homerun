@@ -426,15 +426,23 @@ def test_is_terminal_market_state_detects_closed_winner_and_settled_prices(monke
     assert trader_orchestrator_worker._is_terminal_market_state({"closed": True}, now=now) is True
     assert trader_orchestrator_worker._is_terminal_market_state({"winner": "Yes"}, now=now) is True
 
-    monkeypatch.setattr(trader_orchestrator_worker.polymarket_client, "is_market_tradable", lambda *_args, **_kwargs: False)
-    assert trader_orchestrator_worker._is_terminal_market_state(
-        {"closed": False, "outcome_prices": [1.0, 0.0]},
-        now=now,
-    ) is True
-    assert trader_orchestrator_worker._is_terminal_market_state(
-        {"closed": False, "outcome_prices": [0.61, 0.39]},
-        now=now,
-    ) is False
+    monkeypatch.setattr(
+        trader_orchestrator_worker.polymarket_client, "is_market_tradable", lambda *_args, **_kwargs: False
+    )
+    assert (
+        trader_orchestrator_worker._is_terminal_market_state(
+            {"closed": False, "outcome_prices": [1.0, 0.0]},
+            now=now,
+        )
+        is True
+    )
+    assert (
+        trader_orchestrator_worker._is_terminal_market_state(
+            {"closed": False, "outcome_prices": [0.61, 0.39]},
+            now=now,
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -469,7 +477,9 @@ async def test_terminal_stale_order_watchdog_respects_alert_cooldown(monkeypatch
         "load_market_info_for_orders",
         AsyncMock(return_value={"market-1": {"closed": True, "outcome_prices": [1.0, 0.0]}}),
     )
-    monkeypatch.setattr(trader_orchestrator_worker.polymarket_client, "is_market_tradable", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        trader_orchestrator_worker.polymarket_client, "is_market_tradable", lambda *_args, **_kwargs: False
+    )
 
     trader_orchestrator_worker._terminal_stale_order_last_checked_at = None
     trader_orchestrator_worker._terminal_stale_order_alert_last_emitted.clear()
@@ -518,8 +528,12 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_globally_paused(monke
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _SessionContext())
-    monkeypatch.setattr(trader_orchestrator_worker, "_ensure_orchestrator_cycle_lock_owner", AsyncMock(return_value=True))
-    monkeypatch.setattr(trader_orchestrator_worker, "_release_orchestrator_cycle_lock_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        trader_orchestrator_worker, "_ensure_orchestrator_cycle_lock_owner", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker, "_release_orchestrator_cycle_lock_owner", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(trader_orchestrator_worker, "ensure_all_strategies_seeded", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "refresh_strategy_runtime_if_needed", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "expire_stale_signals", AsyncMock(return_value=None))

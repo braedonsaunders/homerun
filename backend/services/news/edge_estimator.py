@@ -229,9 +229,7 @@ class EdgeEstimator:
             if finding is None:
                 continue
             rejection_reasons = (
-                finding.evidence.get("rejection_reasons")
-                if isinstance(finding.evidence, dict)
-                else None
+                finding.evidence.get("rejection_reasons") if isinstance(finding.evidence, dict) else None
             )
             has_rejection = isinstance(rejection_reasons, list) and len(rejection_reasons) > 0
             if (

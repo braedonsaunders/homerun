@@ -89,7 +89,9 @@ class ConfigValidator:
 
         # Trading credentials (optional - warns if partially configured)
         has_private_key = bool(settings.POLYMARKET_PRIVATE_KEY)
-        has_api_creds = bool(settings.POLYMARKET_API_KEY and settings.POLYMARKET_API_SECRET and settings.POLYMARKET_API_PASSPHRASE)
+        has_api_creds = bool(
+            settings.POLYMARKET_API_KEY and settings.POLYMARKET_API_SECRET and settings.POLYMARKET_API_PASSPHRASE
+        )
         if has_private_key and not has_api_creds:
             self._add_warning(result, "POLYMARKET_PRIVATE_KEY set but API credentials (KEY/SECRET/PASSPHRASE) missing")
         elif has_api_creds and not has_private_key:

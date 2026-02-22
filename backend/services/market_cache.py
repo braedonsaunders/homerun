@@ -44,6 +44,7 @@ MARKET_CACHE_REFERENCE_LOOKBACK_DAYS = 45
 MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS = 7
 MARKET_CACHE_MAX_ENTRIES_PER_SLUG = 3
 
+
 def _utcnow_naive() -> datetime:
     return utcnow().replace(tzinfo=None)
 

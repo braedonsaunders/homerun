@@ -217,8 +217,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
         }
         if adapter.key == "traders":
             default_config["traders_scope"] = dict(
-                (source_defaults.get("traders") or {}).get("traders_scope")
-                or StrategySDK.trader_scope_defaults()
+                (source_defaults.get("traders") or {}).get("traders_scope") or StrategySDK.trader_scope_defaults()
             )
 
         sources.append(

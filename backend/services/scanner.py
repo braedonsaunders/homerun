@@ -32,7 +32,8 @@ from sqlalchemy.exc import OperationalError
 # Persistent single-thread executor for news prefetch embedding work.
 # PyTorch/FAISS use thread-local state; a dedicated thread avoids segfaults.
 _NEWS_PREFETCH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="news_prefetch",
+    max_workers=1,
+    thread_name_prefix="news_prefetch",
 )
 
 
@@ -271,7 +272,10 @@ class ArbitrageScanner:
                 history = self._market_price_history.setdefault(market_id, [])
                 if history:
                     last = history[-1]
-                    if abs(last.get("yes", 0.0) - point["yes"]) < 1e-9 and abs(last.get("no", 0.0) - point["no"]) < 1e-9:
+                    if (
+                        abs(last.get("yes", 0.0) - point["yes"]) < 1e-9
+                        and abs(last.get("no", 0.0) - point["no"]) < 1e-9
+                    ):
                         last_t = float(last.get("t", 0.0) or 0.0)
                         if (point["t"] - last_t) < self._market_history_sample_interval_ms:
                             last["t"] = point["t"]
@@ -505,7 +509,12 @@ class ArbitrageScanner:
                     continue
                 bba = feed_mgr.cache.get_best_bid_ask(token_id)
                 if bba is None:
-                    prices[token_id] = {"mid": float(mid), "bid": float(mid), "ask": float(mid), "ts": float(time.time())}
+                    prices[token_id] = {
+                        "mid": float(mid),
+                        "bid": float(mid),
+                        "ask": float(mid),
+                        "ts": float(time.time()),
+                    }
                 else:
                     bid, ask = bba
                     prices[token_id] = {
@@ -641,6 +650,7 @@ class ArbitrageScanner:
             capped_events.append(event)
 
         if event_cap > 0 and len(capped_events) > event_cap:
+
             def _event_priority_key(event_obj: object) -> tuple[int, float, float]:
                 mkts = list(getattr(event_obj, "markets", None) or [])
                 return (
@@ -656,7 +666,9 @@ class ArbitrageScanner:
                 for event in capped_events
                 for market in list(getattr(event, "markets", None) or [])
             }
-            capped_markets = [market for market in capped_markets if str(getattr(market, "id", "") or "") in kept_market_ids]
+            capped_markets = [
+                market for market in capped_markets if str(getattr(market, "id", "") or "") in kept_market_ids
+            ]
 
         return capped_events, capped_markets
 
@@ -945,10 +957,7 @@ class ArbitrageScanner:
                     if not isinstance(position, dict):
                         continue
                     market_id = str(
-                        position.get("market_id")
-                        or position.get("market")
-                        or position.get("id")
-                        or ""
+                        position.get("market_id") or position.get("market") or position.get("id") or ""
                     ).strip()
                     if not market_id or market_id not in market_price_lookup:
                         continue
@@ -1312,16 +1321,12 @@ class ArbitrageScanner:
                     else:
                         polymarket_candidates.append(market_id)
                 if (
-                    len(polymarket_candidates)
-                    + len(kalshi_candidates)
-                    + len(missing_polymarket_candidates)
+                    len(polymarket_candidates) + len(kalshi_candidates) + len(missing_polymarket_candidates)
                     >= self._market_history_backfill_max_markets
                 ):
                     break
             if (
-                len(polymarket_candidates)
-                + len(kalshi_candidates)
-                + len(missing_polymarket_candidates)
+                len(polymarket_candidates) + len(kalshi_candidates) + len(missing_polymarket_candidates)
                 >= self._market_history_backfill_max_markets
             ):
                 break
@@ -1591,9 +1596,7 @@ class ArbitrageScanner:
 
         async with AsyncSessionLocal() as session:
             try:
-                result = await session.execute(
-                    select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-                )
+                result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
                 row = result.scalar_one_or_none()
                 if row is None:
                     return
@@ -1650,11 +1653,7 @@ class ArbitrageScanner:
         def _last_ts(hist: list[dict[str, float]]) -> float:
             return float(hist[-1].get("t", 0)) if hist else 0.0
 
-        candidates = [
-            (mid, hist)
-            for mid, hist in self._market_price_history.items()
-            if len(hist) >= 2
-        ]
+        candidates = [(mid, hist) for mid, hist in self._market_price_history.items() if len(hist) >= 2]
         candidates.sort(key=lambda pair: _last_ts(pair[1]), reverse=True)
 
         out: dict[str, list[dict[str, float]]] = {}
@@ -1735,9 +1734,7 @@ class ArbitrageScanner:
         from sqlalchemy import select
 
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-            )
+            result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
             row = result.scalar_one_or_none()
             if row is None:
                 return 0
@@ -2152,9 +2149,7 @@ class ArbitrageScanner:
                 f"[{utcnow().isoformat()}] Catalog refresh complete: "
                 f"{len(events)} events, {len(markets)} markets in {duration:.1f}s"
             )
-            await self._set_activity(
-                f"Catalog refresh complete — {len(events)} events, {len(markets)} markets"
-            )
+            await self._set_activity(f"Catalog refresh complete — {len(events)} events, {len(markets)} markets")
             return len(markets)
 
         except Exception as e:
@@ -2276,7 +2271,9 @@ class ArbitrageScanner:
                     affected_market_ids = self._resolve_affected_market_ids(reactive_tokens)
                     self._last_reactive_batch_markets = len(affected_market_ids)
                     candidate_markets = [
-                        self._cached_market_by_id[mid] for mid in affected_market_ids if mid in self._cached_market_by_id
+                        self._cached_market_by_id[mid]
+                        for mid in affected_market_ids
+                        if mid in self._cached_market_by_id
                     ]
                     candidate_markets = [m for m in candidate_markets if self._is_market_active(m, now)]
                     if not candidate_markets:
@@ -2324,7 +2321,8 @@ class ArbitrageScanner:
                 if targeted_condition_ids:
                     _target_set = {cid.lower() for cid in targeted_condition_ids}
                     candidate_markets = [
-                        m for m in self._cached_markets
+                        m
+                        for m in self._cached_markets
                         if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
                     ]
                     candidate_markets = [m for m in candidate_markets if self._is_market_active(m, now)]
@@ -2333,7 +2331,9 @@ class ArbitrageScanner:
                 elif not reactive_mode:
                     timer_cap = max(10, int(settings.REALTIME_SCAN_MAX_BATCH_MARKETS or 800))
                     if len(candidate_markets) > timer_cap:
-                        candidate_markets = sorted(candidate_markets, key=self._market_priority_key, reverse=True)[:timer_cap]
+                        candidate_markets = sorted(candidate_markets, key=self._market_priority_key, reverse=True)[
+                            :timer_cap
+                        ]
                         affected_market_ids = [str(getattr(m, "id", "") or "") for m in candidate_markets]
 
                 candidate_token_ids = self._collect_live_token_ids(candidate_markets)
@@ -2357,7 +2357,9 @@ class ArbitrageScanner:
                 self._apply_live_prices_to_markets(candidate_markets, merged_prices)
                 self._update_market_price_history(candidate_markets, merged_prices, now)
 
-                changed_markets = await loop.run_in_executor(None, self._prioritizer.get_changed_markets, candidate_markets)
+                changed_markets = await loop.run_in_executor(
+                    None, self._prioritizer.get_changed_markets, candidate_markets
+                )
                 if not changed_markets:
                     print(f"  All {len(candidate_markets)} candidate markets unchanged, skipping strategies")
                     await self._set_activity(f"Fast scan: {len(candidate_markets)} markets unchanged, skipping")
@@ -2437,7 +2439,9 @@ class ArbitrageScanner:
                 fast_filtered: list = []
                 for opp in fast_opportunities:
                     strategy_instance = strategy_loader.get_instance(opp.strategy)
-                    overrides = getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
+                    overrides = (
+                        getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
+                    )
                     report = quality_filter.evaluate_opportunity(opp, overrides=overrides)
                     fast_quality_reports[opp.stable_id or opp.id] = report
                     if report.passed:
@@ -2532,7 +2536,9 @@ class ArbitrageScanner:
                     return self._opportunities
 
                 if targeted_condition_ids:
-                    target_set = {str(cid or "").strip().lower() for cid in targeted_condition_ids if str(cid or "").strip()}
+                    target_set = {
+                        str(cid or "").strip().lower() for cid in targeted_condition_ids if str(cid or "").strip()
+                    }
                     full_snapshot_markets = [
                         market
                         for market in self._cached_markets
@@ -2593,7 +2599,9 @@ class ArbitrageScanner:
                 full_filtered: list[Opportunity] = []
                 for opp in full_opportunities:
                     strategy_instance = strategy_loader.get_instance(opp.strategy)
-                    overrides = getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
+                    overrides = (
+                        getattr(strategy_instance, "quality_filter_overrides", None) if strategy_instance else None
+                    )
                     report = quality_filter.evaluate_opportunity(opp, overrides=overrides)
                     full_quality_reports[opp.stable_id or opp.id] = report
                     if report.passed:

@@ -332,11 +332,7 @@ class NewsFeedService:
             or _parse_datetime(row.get("published_at"))
             or _parse_datetime(payload.get("published"))
         )
-        fetched_at = (
-            _parse_datetime(row.get("fetched_at"))
-            or _parse_datetime(payload.get("fetched_at"))
-            or utcnow()
-        )
+        fetched_at = _parse_datetime(row.get("fetched_at")) or _parse_datetime(payload.get("fetched_at")) or utcnow()
 
         if feed_source == "gdelt":
             summary = self._pick_gdelt_summary(row)

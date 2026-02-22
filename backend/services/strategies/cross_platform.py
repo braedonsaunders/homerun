@@ -944,7 +944,9 @@ class CrossPlatformStrategy(BaseStrategy):
         """
         min_spread_after_fees = max(
             0.0,
-            float(self.config.get("min_spread_after_fees", CROSS_PLATFORM_MIN_NET_PROFIT) or CROSS_PLATFORM_MIN_NET_PROFIT),
+            float(
+                self.config.get("min_spread_after_fees", CROSS_PLATFORM_MIN_NET_PROFIT) or CROSS_PLATFORM_MIN_NET_PROFIT
+            ),
         )
 
         # Fetch (or use cached) Kalshi markets

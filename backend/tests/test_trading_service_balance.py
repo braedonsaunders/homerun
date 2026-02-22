@@ -30,11 +30,7 @@ class _BalanceClient:
 
     def get_balance_allowance(self, params=None):
         self.get_calls += 1
-        if (
-            isinstance(self.payload, dict)
-            and self.payload
-            and all(isinstance(key, int) for key in self.payload)
-        ):
+        if isinstance(self.payload, dict) and self.payload and all(isinstance(key, int) for key in self.payload):
             signature_type = int(getattr(params, "signature_type", -1))
             if signature_type in self.payload:
                 return self.payload[signature_type]
@@ -153,7 +149,12 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
     service._client = _BalanceClient(
         {
             0: {"balance": "0", "allowances": {"exchange": "0"}},
-            1: {"balance": "72675329", "allowances": {"exchange": "115792089237316195423570985008687907853269984665640564039457584007913129639935"}},
+            1: {
+                "balance": "72675329",
+                "allowances": {
+                    "exchange": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                },
+            },
             2: {"balance": "0", "allowances": {"exchange": "0"}},
         },
         builder_sig_type=0,

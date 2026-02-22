@@ -337,7 +337,9 @@ def apply_platform_decision_gates(
             )
             if invoke_hooks and strategy is not None:
                 if hasattr(strategy, "on_blocked"):
-                    strategy.on_blocked(runtime_signal, BlockReason.RISK_GROSS_EXPOSURE, {"portfolio": portfolio_snapshot})
+                    strategy.on_blocked(
+                        runtime_signal, BlockReason.RISK_GROSS_EXPOSURE, {"portfolio": portfolio_snapshot}
+                    )
         elif allocated_size_usd < size_usd:
             original_size = size_usd
             size_usd = allocated_size_usd

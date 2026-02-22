@@ -85,10 +85,7 @@ def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:
             state = sa_inspect(obj)
         except Exception:
             continue
-        primary_keys = {
-            str(column.key): deepcopy(getattr(obj, str(column.key)))
-            for column in state.mapper.primary_key
-        }
+        primary_keys = {str(column.key): deepcopy(getattr(obj, str(column.key))) for column in state.mapper.primary_key}
         if not primary_keys:
             continue
         values: dict[str, Any] = {}
@@ -106,10 +103,7 @@ def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:
             state = sa_inspect(obj)
         except Exception:
             continue
-        primary_keys = {
-            str(column.key): deepcopy(getattr(obj, str(column.key)))
-            for column in state.mapper.primary_key
-        }
+        primary_keys = {str(column.key): deepcopy(getattr(obj, str(column.key))) for column in state.mapper.primary_key}
         if not primary_keys:
             continue
         pending_deleted.append((type(obj), primary_keys))
@@ -218,6 +212,7 @@ def _read_peak_rss_bytes() -> Optional[int]:
         return None
     try:
         import resource
+
         peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss or 0)
     except Exception:
         return None

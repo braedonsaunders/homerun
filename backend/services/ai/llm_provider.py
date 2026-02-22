@@ -1902,7 +1902,9 @@ class LLMManager:
                                     configured_model == _provider_default_models[LLMProvider.OPENAI]
                                     and default_provider == LLMProvider.OPENAI
                                 )
-                                log_fn = logger.warning if (configured_model and not uses_openai_default) else logger.info
+                                log_fn = (
+                                    logger.warning if (configured_model and not uses_openai_default) else logger.info
+                                )
                                 log_fn(
                                     "Selected model '%s' requires provider %s which is not configured. "
                                     "Falling back to '%s' (%s).",

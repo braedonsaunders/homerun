@@ -80,7 +80,6 @@ _COUNTRY_NAMES = {
 }
 
 
-
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -178,9 +177,7 @@ async def _data_source_status_by_slug(session: AsyncSession, source_slug: str | 
         .first()
     )
     total_records = (
-        await session.execute(
-            select(func.count(DataSourceRecord.id)).where(DataSourceRecord.source_slug == slug)
-        )
+        await session.execute(select(func.count(DataSourceRecord.id)).where(DataSourceRecord.source_slug == slug))
     ).scalar() or 0
     run_status = str(latest_run.status or "").strip().lower() if latest_run is not None else ""
     run_error = str(latest_run.error_message or "").strip() if latest_run is not None else ""
@@ -1443,19 +1440,23 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     # not just the events worker's snapshot.  Story and custom sources are keyed by
     # their full slug so the frontend can look them up directly.
     all_sources = (
-        await session.execute(
-            select(DataSource)
-            .where(DataSource.enabled == True)  # noqa: E712
-            .order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
+        (
+            await session.execute(
+                select(DataSource)
+                .where(DataSource.enabled == True)  # noqa: E712
+                .order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for src in all_sources:
         slug = str(src.slug or "").strip().lower()
         if not slug:
             continue
         # Events sources already have health from the worker snapshot — skip them
         # unless the worker hasn't reported yet.
-        health_key = slug[len("events_"):] if slug.startswith("events_") else slug
+        health_key = slug[len("events_") :] if slug.startswith("events_") else slug
         if health_key in merged_sources:
             continue
         merged_sources[slug] = await _data_source_status_by_slug(session, slug)

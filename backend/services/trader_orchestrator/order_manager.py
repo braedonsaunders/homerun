@@ -375,9 +375,7 @@ def _simulate_paper_execution(
     )
     slippage_factor = slippage_bps / 10_000.0
 
-    effective_price = (
-        target_price * (1.0 + slippage_factor if is_buy else max(0.0, 1.0 - slippage_factor))
-    )
+    effective_price = target_price * (1.0 + slippage_factor if is_buy else max(0.0, 1.0 - slippage_factor))
     effective_price = _clamp(effective_price, lo=_MIN_EXECUTION_PRICE, hi=0.9999)
 
     filled_notional = max(0.0, notional_usd * fill_ratio)

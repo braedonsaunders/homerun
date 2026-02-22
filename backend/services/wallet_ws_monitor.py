@@ -713,7 +713,9 @@ class WalletWebSocketMonitor:
                 if rpc_error is not None:
                     last_error = RuntimeError(f"RPC error from endpoint {endpoint}: {rpc_error}")
                     now = time.monotonic()
-                    if (now - self._rpc_last_endpoint_failure_log_at) >= self._rpc_endpoint_failure_log_interval_seconds:
+                    if (
+                        now - self._rpc_last_endpoint_failure_log_at
+                    ) >= self._rpc_endpoint_failure_log_interval_seconds:
                         self._rpc_last_endpoint_failure_log_at = now
                         logger.warning(
                             "RPC endpoint returned error",

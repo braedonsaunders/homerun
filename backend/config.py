@@ -9,6 +9,7 @@ warnings.filterwarnings(
     message="urllib3 v2 only supports OpenSSL 1.1.1+.*",
 )
 
+
 class Settings(BaseSettings):
     # API Base URLs
     GAMMA_API_URL: str = "https://gamma-api.polymarket.com"

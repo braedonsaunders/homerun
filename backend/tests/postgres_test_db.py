@@ -104,8 +104,7 @@ async def build_postgres_session_factory(
         drop_conn = await asyncpg.connect(admin_asyncpg_url, timeout=10)
         try:
             await drop_conn.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = $1 AND pid <> pg_backend_pid()",
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
                 database_name,
             )
             await drop_conn.execute(f"DROP DATABASE IF EXISTS {_quote_ident(database_name)}")

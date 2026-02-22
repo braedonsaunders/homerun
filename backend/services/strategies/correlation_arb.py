@@ -239,7 +239,9 @@ class CorrelationArbStrategy(BaseStrategy):
         now = time.time()
         min_corr = max(0.0, min(1.0, float(self.config.get("min_correlation", 0.6) or 0.6)))
         min_divergence = max(0.0, float(self.config.get("min_divergence", 0.05) or 0.05))
-        z_score_threshold = max(0.0, float(self.config.get("z_score_threshold", _ZSCORE_THRESHOLD) or _ZSCORE_THRESHOLD))
+        z_score_threshold = max(
+            0.0, float(self.config.get("z_score_threshold", _ZSCORE_THRESHOLD) or _ZSCORE_THRESHOLD)
+        )
 
         # Cross-cycle persistence via self.state
         price_history = self.state.setdefault("price_history", {})

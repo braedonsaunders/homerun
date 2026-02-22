@@ -32,6 +32,7 @@ def _chunked_in(column, values: list, chunk_size: int = IN_CLAUSE_CHUNK_SIZE):
         clauses.append(column.in_(values[i : i + chunk_size]))
     return or_(*clauses)
 
+
 logger = get_logger("insider_detector")
 
 

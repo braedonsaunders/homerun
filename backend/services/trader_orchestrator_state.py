@@ -1171,7 +1171,9 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
     open_other_orders = int(open_order_summary.get("other", 0))
     open_total_orders = int(open_order_summary.get("total", 0))
 
-    if (open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0) and not force:
+    if (
+        open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0
+    ) and not force:
         raise ValueError(
             f"Trader {trader_id} has live/unknown exposure: "
             f"{open_live_positions} live open position(s), "
@@ -2356,7 +2358,9 @@ async def reconcile_live_provider_orders(
             updated_session_orders += 1
             leg_state_updates[str(session_order_row.leg_id)] = {
                 "status": mapped_status,
-                "filled_notional_usd": float(next_notional if mapped_status in {"submitted", "open", "executed"} else 0.0),
+                "filled_notional_usd": float(
+                    next_notional if mapped_status in {"submitted", "open", "executed"} else 0.0
+                ),
                 "filled_shares": float(filled_size),
                 "avg_fill_price": float(avg_fill_price) if avg_fill_price is not None and avg_fill_price > 0 else None,
                 "provider_order_id": provider_order_id,
@@ -2408,7 +2412,9 @@ async def reconcile_live_provider_orders(
 
     if commit and (updated_orders > 0 or updated_session_orders > 0 or updated_legs > 0 or tagged_payload_updates > 0):
         await _commit_with_retry(session)
-    elif not commit and (updated_orders > 0 or updated_session_orders > 0 or updated_legs > 0 or tagged_payload_updates > 0):
+    elif not commit and (
+        updated_orders > 0 or updated_session_orders > 0 or updated_legs > 0 or tagged_payload_updates > 0
+    ):
         await session.flush()
 
     return {
@@ -2456,8 +2462,10 @@ async def sync_trader_position_inventory(
         row_notional = safe_float(row.notional_usd, 0.0) or 0.0
         notional = _live_active_notional(row.mode, row.status, row_notional, payload)
         _, _, fill_price = _extract_live_fill_metrics(payload)
-        entry_price = fill_price if fill_price is not None and fill_price > 0 else (
-            safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0)
+        entry_price = (
+            fill_price
+            if fill_price is not None and fill_price > 0
+            else (safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0))
         )
         if notional <= 0.0:
             continue
@@ -3380,25 +3388,25 @@ async def list_serialized_trader_decisions(
     signal_ids = sorted({str(row.signal_id).strip() for row in rows if str(row.signal_id or "").strip()})
     signals_by_id: dict[str, TradeSignal] = {}
     if signal_ids:
-        signal_rows = (
-            await session.execute(
-                select(TradeSignal).where(TradeSignal.id.in_(signal_ids))
-            )
-        ).scalars().all()
+        signal_rows = (await session.execute(select(TradeSignal).where(TradeSignal.id.in_(signal_ids)))).scalars().all()
         signals_by_id = {str(signal_row.id): signal_row for signal_row in signal_rows}
 
     failed_checks_by_decision: dict[str, list[dict[str, Any]]] = {}
     if decision_ids:
         failed_check_rows = (
-            await session.execute(
-                select(TraderDecisionCheck)
-                .where(
-                    TraderDecisionCheck.decision_id.in_(decision_ids),
-                    TraderDecisionCheck.passed.is_(False),
+            (
+                await session.execute(
+                    select(TraderDecisionCheck)
+                    .where(
+                        TraderDecisionCheck.decision_id.in_(decision_ids),
+                        TraderDecisionCheck.passed.is_(False),
+                    )
+                    .order_by(TraderDecisionCheck.created_at.asc())
                 )
-                .order_by(TraderDecisionCheck.created_at.asc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for check_row in failed_check_rows:
             decision_key = str(check_row.decision_id or "").strip()
             if not decision_key:

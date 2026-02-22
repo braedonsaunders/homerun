@@ -51,4 +51,3 @@ def test_hash_password_rejects_empty_input():
         assert str(exc) == "Password cannot be empty."
         return
     raise AssertionError("Expected ValueError for empty password")
-

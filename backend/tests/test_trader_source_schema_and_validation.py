@@ -154,11 +154,7 @@ async def test_normalize_trader_payload_rejects_invalid_traders_scope(tmp_path):
         traders_source = next(source for source in schema.get("sources", []) if source.get("key") == "traders")
         strategy_key = str(
             next(
-                (
-                    option.get("key")
-                    for option in (traders_source.get("strategy_options") or [])
-                    if option.get("key")
-                ),
+                (option.get("key") for option in (traders_source.get("strategy_options") or []) if option.get("key")),
                 "",
             )
         )

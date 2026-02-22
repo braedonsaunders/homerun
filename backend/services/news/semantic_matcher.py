@@ -365,6 +365,7 @@ class SemanticMatcher:
         # Gather embedded articles from the feed store
         try:
             from services.news.feed_service import news_feed_service
+
             articles = news_feed_service.get_articles(
                 max_age_hours=getattr(settings, "NEWS_ARTICLE_TTL_HOURS", 168),
             )
@@ -378,7 +379,9 @@ class SemanticMatcher:
             with self._lock:
                 try:
                     q_emb = self._model.encode(
-                        [query], show_progress_bar=False, normalize_embeddings=True,
+                        [query],
+                        show_progress_bar=False,
+                        normalize_embeddings=True,
                     )
                     q_vec = np.array(q_emb, dtype=np.float32)
                     if q_vec.ndim == 1:
@@ -402,13 +405,15 @@ class SemanticMatcher:
                 if score < threshold:
                     continue
                 a = embedded[int(idx)]
-                results.append({
-                    "title": a.title,
-                    "source": a.source or "",
-                    "score": score,
-                    "published_at": str(a.published_at or a.fetched_at or ""),
-                    "summary": a.summary or "",
-                })
+                results.append(
+                    {
+                        "title": a.title,
+                        "source": a.source or "",
+                        "score": score,
+                        "published_at": str(a.published_at or a.fetched_at or ""),
+                        "summary": a.summary or "",
+                    }
+                )
             return results
 
         # TF-IDF fallback (works even without ML deps)

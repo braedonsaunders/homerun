@@ -91,8 +91,7 @@ async def _sync_strategy_weather_snapshot(
             "enabled": True,
             "last_scan": datetime.now(timezone.utc).isoformat(),
             "current_activity": (
-                "Weather strategy cycle complete: "
-                f"{len(opportunities)} opportunities from {intent_count} intents."
+                f"Weather strategy cycle complete: {len(opportunities)} opportunities from {intent_count} intents."
             ),
         },
         stats=stats_payload,

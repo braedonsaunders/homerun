@@ -113,7 +113,7 @@ def test_signal_strategy_context_falls_back_to_payload_strategy_context():
                     "model_agreement": 0.73,
                     "source_count": 2,
                     "source_spread_c": 2.2,
-                }
+                },
             }
         },
         strategy_context_json=None,
