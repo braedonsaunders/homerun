@@ -29,19 +29,21 @@ _DB_DISCONNECT_RETRY_BASE_DELAY_SECONDS = 0.2
 def _is_retryable_db_disconnect_error(exc: Exception) -> bool:
     if not isinstance(exc, (OperationalError, InterfaceError)):
         return False
-    message = str(getattr(exc, "orig", exc)).lower()
-    return any(
-        marker in message
-        for marker in (
-            "connection is closed",
-            "underlying connection is closed",
-            "connection has been closed",
-            "closed the connection unexpectedly",
-            "terminating connection",
-            "connection reset by peer",
-            "broken pipe",
-        )
+    markers = (
+        "connection is closed",
+        "underlying connection is closed",
+        "connection has been closed",
+        "closed the connection unexpectedly",
+        "terminating connection",
+        "connection reset by peer",
+        "broken pipe",
     )
+    # Check orig first (direct asyncpg errors), then fall back to the full
+    # stringified exception which captures autoflush-wrapped InterfaceError
+    # where the real cause is nested in __cause__ or __context__.
+    orig_msg = str(getattr(exc, "orig", "") or "").lower()
+    full_msg = str(exc).lower()
+    return any(marker in orig_msg or marker in full_msg for marker in markers)
 
 
 def _db_disconnect_retry_delay(attempt: int) -> float:

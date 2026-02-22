@@ -308,6 +308,40 @@ class TradingService:
         await load_proxy_config()
         return patch_clob_client_proxy()
 
+    async def _approve_clob_allowance(self) -> None:
+        """Approve USDC spending allowance for the CLOB exchange contract.
+
+        Polymarket's CLOB API rejects orders with 'not enough balance / allowance'
+        if the ERC-20 allowance hasn't been approved on-chain for each signature
+        type. This is a one-time (or periodic) on-chain transaction. We call it
+        for all signature types at init time so orders succeed immediately.
+        """
+        if not self.is_ready():
+            return
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            def build_params(sig_type: int) -> BalanceAllowanceParams:
+                return BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=sig_type,
+                )
+        except Exception:
+            logger.warning("Could not import BalanceAllowanceParams; skipping allowance approval")
+            return
+
+        for sig_type in POLYMARKET_SIGNATURE_TYPES:
+            try:
+                params = build_params(sig_type)
+                await asyncio.to_thread(self._client.update_balance_allowance, params)
+                logger.info("CLOB allowance approved", signature_type=sig_type)
+            except Exception as exc:
+                logger.warning(
+                    "CLOB allowance approval failed for signature_type=%d (non-fatal)",
+                    sig_type,
+                    exc_info=exc,
+                )
+
     async def ensure_initialized(self) -> bool:
         if self.is_ready():
             await self._sync_trading_transport()
@@ -360,6 +394,7 @@ class TradingService:
                     logger.warning("Trading HTTP transport patch failed; using py-clob-client default transport")
 
                 await self._restore_runtime_state()
+                await self._approve_clob_allowance()
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
                 return True
 
