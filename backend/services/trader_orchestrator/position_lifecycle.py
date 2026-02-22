@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -18,6 +18,8 @@ logger = logging.getLogger("position_lifecycle")
 
 PAPER_ACTIVE_STATUSES = {"submitted", "executed", "open"}
 LIVE_ACTIVE_STATUSES = {"submitted", "executed", "open"}
+_FAILED_EXIT_MAX_RETRIES = 5
+_FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS = 15
 
 
 def _safe_bool(value: Any, default: bool = False) -> bool:
@@ -768,6 +770,158 @@ async def reconcile_live_positions(
 
     for row in candidates:
         payload = dict(row.payload_json or {})
+
+        # ── Failed exit retry logic ────────────────────────────────────
+        # If a previous cycle recorded a pending_live_exit that failed,
+        # retry submitting the sell order (with cooldown & max retries).
+        pending_exit = payload.get("pending_live_exit")
+        if isinstance(pending_exit, dict) and pending_exit.get("status") == "failed":
+            retry_count = int(pending_exit.get("retry_count", 0) or 0)
+            last_attempt_iso = pending_exit.get("last_attempt_at") or pending_exit.get("triggered_at")
+            last_attempt_dt = None
+            if isinstance(last_attempt_iso, str):
+                try:
+                    last_attempt_dt = datetime.fromisoformat(last_attempt_iso.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    pass
+            seconds_since_attempt = (
+                (now - last_attempt_dt).total_seconds() if last_attempt_dt is not None else float("inf")
+            )
+
+            if retry_count >= _FAILED_EXIT_MAX_RETRIES:
+                # Retries exhausted — terminal close at mark price.
+                current_mark = safe_float(
+                    (payload.get("position_state") or {}).get("last_mark_price")
+                )
+                _fill_not, _fill_sz, _fill_px = _extract_live_fill_metrics(payload)
+                _ep = _fill_px if _fill_px and _fill_px > 0 else safe_float(row.effective_price)
+                if _ep is None or _ep <= 0:
+                    _ep = safe_float(row.entry_price)
+                _not = _fill_not if _fill_not > 0 else (safe_float(row.notional_usd) or 0.0)
+                _qty = _fill_sz if _fill_sz > 0 else (_not / _ep if _ep and _ep > 0 else 0.0)
+                cp = current_mark if current_mark is not None else (_ep or 0.0)
+                _pnl = (_qty * cp) - _not if _qty > 0 and _not > 0 else 0.0
+                ns = _status_for_close(pnl=_pnl, close_trigger="failed_exit_exhausted")
+                if not dry_run:
+                    row.status = ns
+                    row.actual_profit = _pnl
+                    row.updated_at = now
+                    pending_exit["status"] = "exhausted"
+                    pending_exit["exhausted_at"] = now.isoformat() + "Z"
+                    payload["pending_live_exit"] = pending_exit
+                    payload["position_close"] = {
+                        "close_price": cp,
+                        "price_source": "mark_on_exhaustion",
+                        "close_trigger": "failed_exit_exhausted",
+                        "realized_pnl": _pnl,
+                        "closed_at": now.isoformat() + "Z",
+                        "reason": reason,
+                        "retry_count": retry_count,
+                    }
+                    row.payload_json = payload
+                    closed += 1
+                total_realized_pnl += _pnl
+                by_status[ns] = int(by_status.get(ns, 0)) + 1
+                would_close += 1
+                details.append({
+                    "order_id": row.id,
+                    "market_id": row.market_id,
+                    "close_trigger": "failed_exit_exhausted",
+                    "close_price": cp,
+                    "realized_pnl": _pnl,
+                    "next_status": ns,
+                    "retry_count": retry_count,
+                })
+                continue
+
+            if seconds_since_attempt < _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS:
+                # Cooldown not elapsed — hold, don't spam.
+                held += 1
+                continue
+
+            # Retry: refresh allowance and re-place exit order
+            token_id = str(getattr(row, "token_id", None) or "").strip()
+            _fill_not_r, _fill_sz_r, _ = _extract_live_fill_metrics(payload)
+            exit_size = _fill_sz_r if _fill_sz_r > 0 else 0.0
+            exit_price = safe_float(pending_exit.get("close_price")) or 0.01
+
+            if token_id and exit_size > 0:
+                try:
+                    from services.live_execution_adapter import execute_live_order
+
+                    exec_result = await execute_live_order(
+                        token_id=token_id,
+                        side="SELL",
+                        size=exit_size,
+                        fallback_price=exit_price,
+                        time_in_force="FOK",
+                    )
+                    if exec_result.status in {"filled", "placed", "live"}:
+                        logger.info(
+                            "Exit retry succeeded for order=%s attempt=%d status=%s",
+                            row.id, retry_count + 1, exec_result.status,
+                        )
+                        if not dry_run:
+                            pending_exit["status"] = "submitted"
+                            pending_exit["retry_count"] = retry_count + 1
+                            pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                            pending_exit["exit_order_id"] = exec_result.order_id
+                            payload["pending_live_exit"] = pending_exit
+                            row.payload_json = payload
+                            row.updated_at = now
+                            state_updates += 1
+                        held += 1
+                        continue
+                    else:
+                        logger.warning(
+                            "Exit retry failed for order=%s attempt=%d error=%s",
+                            row.id, retry_count + 1, exec_result.error_message,
+                        )
+                        if not dry_run:
+                            pending_exit["status"] = "failed"
+                            pending_exit["retry_count"] = retry_count + 1
+                            pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                            pending_exit["last_error"] = str(exec_result.error_message or "unknown")
+                            payload["pending_live_exit"] = pending_exit
+                            row.payload_json = payload
+                            row.updated_at = now
+                            state_updates += 1
+                        held += 1
+                        continue
+                except Exception as exc:
+                    logger.warning(
+                        "Exit retry exception for order=%s attempt=%d: %s",
+                        row.id, retry_count + 1, exc,
+                    )
+                    if not dry_run:
+                        pending_exit["status"] = "failed"
+                        pending_exit["retry_count"] = retry_count + 1
+                        pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                        pending_exit["last_error"] = str(exc)
+                        payload["pending_live_exit"] = pending_exit
+                        row.payload_json = payload
+                        row.updated_at = now
+                        state_updates += 1
+                    held += 1
+                    continue
+            else:
+                # No token_id or size — can't retry, mark exhausted
+                if not dry_run:
+                    pending_exit["status"] = "exhausted"
+                    pending_exit["exhausted_at"] = now.isoformat() + "Z"
+                    pending_exit["last_error"] = "missing token_id or fill_size"
+                    payload["pending_live_exit"] = pending_exit
+                    row.payload_json = payload
+                    row.updated_at = now
+                    state_updates += 1
+                held += 1
+                continue
+
+        # If pending_live_exit is in-flight (submitted), skip normal processing
+        if isinstance(pending_exit, dict) and pending_exit.get("status") in {"submitted", "pending"}:
+            held += 1
+            continue
+
         filled_notional, filled_size, fill_price = _extract_live_fill_metrics(payload)
         status_key = str(row.status or "").strip().lower()
         if status_key in {"open", "submitted"} and filled_notional <= 0.0 and filled_size <= 0.0:
@@ -1024,7 +1178,7 @@ async def reconcile_live_positions(
 
             if not dry_run:
                 payload["position_state"] = next_state
-                payload["pending_live_exit"] = {
+                exit_record: dict[str, Any] = {
                     "triggered_at": now.isoformat() + "Z",
                     "close_trigger": close_trigger,
                     "close_price": close_price,
@@ -1033,7 +1187,56 @@ async def reconcile_live_positions(
                     "hypothetical_pnl": pnl,
                     "age_minutes": age_minutes,
                     "reason": reason,
+                    "retry_count": 0,
+                    "status": "pending",
                 }
+
+                # Immediately attempt to place the sell order
+                token_id = str(getattr(row, "token_id", None) or "").strip()
+                exit_size = filled_size if filled_size > 0.0 else quantity
+                if token_id and exit_size > 0:
+                    try:
+                        from services.live_execution_adapter import execute_live_order
+
+                        exec_result = await execute_live_order(
+                            token_id=token_id,
+                            side="SELL",
+                            size=exit_size,
+                            fallback_price=close_price,
+                            time_in_force="FOK",
+                        )
+                        if exec_result.status in {"filled", "placed", "live"}:
+                            exit_record["status"] = "submitted"
+                            exit_record["exit_order_id"] = exec_result.order_id
+                            exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                            logger.info(
+                                "Exit order placed for order=%s trigger=%s status=%s",
+                                row.id, close_trigger, exec_result.status,
+                            )
+                        else:
+                            exit_record["status"] = "failed"
+                            exit_record["last_error"] = str(exec_result.error_message or "unknown")
+                            exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                            exit_record["retry_count"] = 1
+                            logger.warning(
+                                "Exit order failed for order=%s trigger=%s error=%s",
+                                row.id, close_trigger, exec_result.error_message,
+                            )
+                    except Exception as exc:
+                        exit_record["status"] = "failed"
+                        exit_record["last_error"] = str(exc)
+                        exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                        exit_record["retry_count"] = 1
+                        logger.warning(
+                            "Exit order exception for order=%s trigger=%s: %s",
+                            row.id, close_trigger, exc,
+                        )
+                else:
+                    exit_record["status"] = "failed"
+                    exit_record["last_error"] = "missing token_id or fill_size"
+                    exit_record["retry_count"] = 1
+
+                payload["pending_live_exit"] = exit_record
                 row.payload_json = payload
                 row.updated_at = now
                 state_updates += 1

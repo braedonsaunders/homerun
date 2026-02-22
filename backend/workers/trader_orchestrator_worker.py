@@ -27,7 +27,6 @@ from services.trader_orchestrator.live_market_context import (
 from services.trader_orchestrator.session_engine import ExecutionSessionEngine
 from services.trader_orchestrator.position_lifecycle import (
     load_market_info_for_orders,
-    reconcile_live_positions,
     reconcile_paper_positions,
 )
 from services.polymarket import polymarket_client
@@ -46,6 +45,7 @@ from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_loader import strategy_loader
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.strategy_sdk import StrategySDK
+from services.event_bus import event_bus
 from services.trader_orchestrator_state import (
     ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     cleanup_trader_open_orders,
@@ -60,15 +60,16 @@ from services.trader_orchestrator_state import (
     get_unrealized_pnl,
     get_last_resolved_loss_at,
     get_market_exposure,
+    get_open_order_count_for_trader,
     get_trader_source_exposure,
     get_open_market_ids_for_trader,
     get_open_position_count_for_trader,
     get_trader_signal_cursor,
     list_traders,
     list_unconsumed_trade_signals,
-    reconcile_live_provider_orders,
     read_orchestrator_control,
     record_signal_consumption,
+    set_trader_paused,
     sync_trader_position_inventory,
     update_orchestrator_control,
     upsert_trader_signal_cursor,
@@ -89,9 +90,22 @@ _ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE = 32
 _ORCHESTRATOR_CYCLE_LOCK_KEY = 0x54524F5243485354  # "TRORCHST"
 _orchestrator_lock_session: Any | None = None
 _TRADER_IDLE_MAINTENANCE_INTERVAL_SECONDS = 60
+_HIGH_FREQUENCY_CRYPTO_LOOP_INTERVAL_SECONDS = 0.25
+_STANDARD_MAX_SIGNALS_PER_CYCLE = 500
+_STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE = 200
+_HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE = 5000
+_HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
+_HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
 _TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 15
 _trader_cycle_heartbeat_last_emitted: dict[str, datetime] = {}
+_ORCHESTRATOR_TRIGGER_QUEUE_MAXSIZE = 8192
+_ORCHESTRATOR_TRIGGER_EVENTS = frozenset(
+    {
+        "trade_signal_batch",
+        "trade_signal_emission",
+    }
+)
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
@@ -101,6 +115,17 @@ _terminal_stale_order_alert_last_emitted: dict[str, datetime] = {}
 
 async def _worker_sleep(interval_seconds: float) -> None:
     await asyncio.sleep(interval_seconds)
+
+
+async def _wait_for_runtime_trigger(
+    trigger_queue: asyncio.Queue[dict[str, Any]],
+    timeout_seconds: float,
+) -> dict[str, Any] | None:
+    timeout = max(0.05, float(timeout_seconds))
+    try:
+        return await asyncio.wait_for(trigger_queue.get(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
 
 
 def _session_dialect_name(session: Any) -> str:
@@ -183,6 +208,28 @@ def _is_due(trader: dict[str, Any], now: datetime) -> bool:
     if last_run is None:
         return True
     return (now - last_run.astimezone(timezone.utc)).total_seconds() >= interval
+
+
+def _is_high_frequency_crypto_trader(trader: dict[str, Any]) -> bool:
+    source_configs = _normalize_source_configs(trader)
+    if not source_configs:
+        return False
+    return "crypto" in _query_sources_for_configs(source_configs)
+
+
+def _runtime_trigger_matches_trader(
+    trader: dict[str, Any],
+    trigger_event: dict[str, Any] | None,
+) -> bool:
+    if not trigger_event:
+        return False
+    source = str(trigger_event.get("source") or "").strip().lower()
+    if not source:
+        return True
+    source_configs = _normalize_source_configs(trader)
+    if not source_configs:
+        return False
+    return source in _query_sources_for_configs(source_configs)
 
 
 def _checks_to_payload(checks: list[Any]) -> list[dict[str, Any]]:
@@ -434,6 +481,113 @@ def _query_sources_for_configs(source_configs: dict[str, dict[str, Any]]) -> lis
     if not source_configs:
         return []
     return sorted(source_configs.keys())
+
+
+def _normalize_crypto_asset(value: Any) -> str:
+    asset = str(value or "").strip().upper()
+    if asset == "XBT":
+        return "BTC"
+    return asset
+
+
+def _normalize_crypto_timeframe(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    compact = raw.replace("_", "").replace("-", "").replace(" ", "")
+    mapping = {
+        "5m": "5m",
+        "5min": "5m",
+        "5minute": "5m",
+        "5minutes": "5m",
+        "15m": "15m",
+        "15min": "15m",
+        "15minute": "15m",
+        "15minutes": "15m",
+        "1h": "1h",
+        "1hr": "1h",
+        "1hour": "1h",
+        "60m": "1h",
+        "60min": "1h",
+        "4h": "4h",
+        "4hr": "4h",
+        "4hour": "4h",
+        "240m": "4h",
+        "240min": "4h",
+    }
+    return mapping.get(compact, compact)
+
+
+def _normalize_crypto_scope_values(raw: Any, normalizer) -> set[str]:
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    elif isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    else:
+        values = []
+    normalized: set[str] = set()
+    for item in values:
+        value = normalizer(item)
+        if value:
+            normalized.add(value)
+    return normalized
+
+
+def _crypto_signal_dimensions(signal: Any) -> tuple[str, str]:
+    strategy_context = getattr(signal, "strategy_context_json", None)
+    payload = getattr(signal, "payload_json", None)
+    context = strategy_context if isinstance(strategy_context, dict) else {}
+    body = payload if isinstance(payload, dict) else {}
+
+    asset_raw = (
+        context.get("asset")
+        or context.get("coin")
+        or context.get("symbol")
+        or body.get("asset")
+        or body.get("coin")
+        or body.get("symbol")
+    )
+    timeframe_raw = (
+        context.get("timeframe")
+        or context.get("cadence")
+        or context.get("interval")
+        or body.get("timeframe")
+        or body.get("cadence")
+        or body.get("interval")
+    )
+    return _normalize_crypto_asset(asset_raw), _normalize_crypto_timeframe(timeframe_raw)
+
+
+def _crypto_signal_in_scope(signal: Any, source_config: dict[str, Any]) -> bool:
+    strategy_params = dict(source_config.get("strategy_params") or {})
+    include_assets = _normalize_crypto_scope_values(
+        strategy_params.get("include_assets"),
+        _normalize_crypto_asset,
+    )
+    exclude_assets = _normalize_crypto_scope_values(
+        strategy_params.get("exclude_assets"),
+        _normalize_crypto_asset,
+    )
+    include_timeframes = _normalize_crypto_scope_values(
+        strategy_params.get("include_timeframes"),
+        _normalize_crypto_timeframe,
+    )
+    exclude_timeframes = _normalize_crypto_scope_values(
+        strategy_params.get("exclude_timeframes"),
+        _normalize_crypto_timeframe,
+    )
+
+    asset, timeframe = _crypto_signal_dimensions(signal)
+
+    if include_assets and (not asset or asset not in include_assets):
+        return False
+    if asset and asset in exclude_assets:
+        return False
+    if include_timeframes and (not timeframe or timeframe not in include_timeframes):
+        return False
+    if timeframe and timeframe in exclude_timeframes:
+        return False
+    return True
 
 
 def _signal_wallets(signal: Any) -> set[str]:
@@ -790,9 +944,10 @@ async def _run_trader_once(
     control: dict[str, Any],
     *,
     process_signals: bool = True,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     decisions_written = 0
     orders_written = 0
+    processed_signals = 0
 
     async with AsyncSessionLocal() as session:
         trader_id = str(trader["id"])
@@ -834,7 +989,7 @@ async def _run_trader_once(
                 session,
                 trader_id=trader_id,
                 sources=sources,
-                statuses=["pending"],
+                statuses=["pending", "selected", "submitted"],
                 cursor_created_at=cursor_created_at,
                 cursor_signal_id=cursor_signal_id,
                 limit=1,
@@ -918,37 +1073,10 @@ async def _run_trader_once(
                     },
                 )
         elif run_mode == "live":
-            await reconcile_live_provider_orders(
-                session,
-                trader_id=trader_id,
-                commit=True,
-            )
-            force_flatten = resume_policy == "flatten_then_start"
-            lifecycle_result = await reconcile_live_positions(
-                session,
-                trader_id=trader_id,
-                trader_params=default_strategy_params,
-                dry_run=False,
-                force_mark_to_market=force_flatten,
-                reason="worker_flatten_then_start" if force_flatten else "worker_lifecycle",
-            )
-            closed_positions = int(lifecycle_result.get("closed", 0))
-            if closed_positions > 0:
-                await create_trader_event(
-                    session,
-                    trader_id=trader_id,
-                    event_type="live_positions_closed",
-                    source="worker",
-                    message=f"Closed {closed_positions} live position(s)",
-                    payload={
-                        "matched": lifecycle_result.get("matched"),
-                        "closed": closed_positions,
-                        "held": lifecycle_result.get("held"),
-                        "skipped": lifecycle_result.get("skipped"),
-                        "total_realized_pnl": lifecycle_result.get("total_realized_pnl"),
-                        "by_status": lifecycle_result.get("by_status"),
-                    },
-                )
+            # Live order/position reconciliation is handled by
+            # workers.trader_reconciliation_worker so this loop stays focused
+            # on strategy selection and execution.
+            pass
         await sync_trader_position_inventory(
             session,
             trader_id=trader_id,
@@ -975,6 +1103,12 @@ async def _run_trader_once(
             trader_id,
             mode=run_mode,
         )
+        open_order_count = await get_open_order_count_for_trader(
+            session,
+            trader_id,
+            mode=run_mode,
+        )
+        effective_open_positions = max(open_positions, open_order_count)
         open_market_ids = await get_open_market_ids_for_trader(
             session,
             trader_id,
@@ -1010,14 +1144,26 @@ async def _run_trader_once(
 
         if not effective_process_signals:
             await _persist_trader_cycle_heartbeat(session, trader_id)
-            return 0, 0
+            return 0, 0, processed_signals
 
+        is_high_frequency_trader = _is_high_frequency_crypto_trader(trader)
+        max_signals_cap = (
+            _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE if is_high_frequency_trader else _STANDARD_MAX_SIGNALS_PER_CYCLE
+        )
+        default_max_signals = (
+            _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE
+            if is_high_frequency_trader
+            else _STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE
+        )
+        default_scan_batch_size = (
+            _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE if is_high_frequency_trader else default_max_signals
+        )
         max_signals_per_cycle = int(
             max(
                 1,
                 min(
-                    500,
-                    safe_int(default_strategy_params.get("max_signals_per_cycle"), 200),
+                    max_signals_cap,
+                    safe_int(default_strategy_params.get("max_signals_per_cycle"), default_max_signals),
                 ),
             )
         )
@@ -1025,11 +1171,15 @@ async def _run_trader_once(
             max(
                 1,
                 min(
-                    500,
-                    safe_int(default_strategy_params.get("scan_batch_size"), max_signals_per_cycle),
+                    max_signals_cap,
+                    safe_int(
+                        default_strategy_params.get("scan_batch_size"),
+                        min(default_scan_batch_size, max_signals_per_cycle),
+                    ),
                 ),
             )
         )
+        scan_batch_size = min(scan_batch_size, max_signals_per_cycle)
         control_settings = control.get("settings") or {}
         enable_live_market_context = bool(control_settings.get("enable_live_market_context", True))
         history_window_seconds = int(
@@ -1139,6 +1289,92 @@ async def _run_trader_once(
                 cooldown_active = True
                 cooldown_remaining_seconds = int((cooldown_until - now_naive).total_seconds())
 
+        # Circuit breaker: auto-pause trader and trigger safe exit of open positions
+        halt_on_losses = bool(effective_risk_limits.get("halt_on_consecutive_losses", False))
+        max_consecutive_losses_limit = max(1, safe_int(effective_risk_limits.get("max_consecutive_losses"), 4))
+        if halt_on_losses and trader_loss_streak >= max_consecutive_losses_limit:
+            await set_trader_paused(session, trader_id, True)
+            await create_trader_event(
+                session,
+                trader_id=trader_id,
+                event_type="circuit_breaker_pause",
+                source="worker",
+                message=(
+                    f"Circuit breaker: auto-paused after {trader_loss_streak} consecutive losses "
+                    f"(limit={max_consecutive_losses_limit})"
+                ),
+                payload={
+                    "trader_loss_streak": trader_loss_streak,
+                    "max_consecutive_losses": max_consecutive_losses_limit,
+                    "action": "auto_pause",
+                },
+            )
+            logger.warning(
+                "Circuit breaker auto-paused trader %s after %d consecutive losses (limit=%d)",
+                trader_id,
+                trader_loss_streak,
+                max_consecutive_losses_limit,
+            )
+
+            if run_mode == "live":
+                from services.trader_orchestrator.position_lifecycle import reconcile_live_positions
+                try:
+                    safe_exit_result = await reconcile_live_positions(
+                        session,
+                        trader_id=trader_id,
+                        trader_params=default_strategy_params,
+                        dry_run=False,
+                        force_mark_to_market=True,
+                        reason="circuit_breaker_safe_exit",
+                    )
+                    safe_exit_closed = int(safe_exit_result.get("closed", 0))
+                    if safe_exit_closed > 0:
+                        await create_trader_event(
+                            session,
+                            trader_id=trader_id,
+                            event_type="circuit_breaker_safe_exit",
+                            source="worker",
+                            message=f"Circuit breaker safe exit: closed {safe_exit_closed} position(s)",
+                            payload=safe_exit_result,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Circuit breaker safe exit failed for trader %s: %s",
+                        trader_id,
+                        exc,
+                        exc_info=exc,
+                    )
+            elif run_mode == "paper":
+                try:
+                    safe_exit_result = await reconcile_paper_positions(
+                        session,
+                        trader_id=trader_id,
+                        trader_params=default_strategy_params,
+                        dry_run=False,
+                        force_mark_to_market=True,
+                        reason="circuit_breaker_safe_exit",
+                    )
+                    safe_exit_closed = int(safe_exit_result.get("closed", 0))
+                    if safe_exit_closed > 0:
+                        await create_trader_event(
+                            session,
+                            trader_id=trader_id,
+                            event_type="circuit_breaker_safe_exit",
+                            source="worker",
+                            message=f"Circuit breaker safe exit: closed {safe_exit_closed} paper position(s)",
+                            payload=safe_exit_result,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Circuit breaker safe exit failed for trader %s: %s",
+                        trader_id,
+                        exc,
+                        exc_info=exc,
+                    )
+
+            await _persist_trader_cycle_heartbeat(session, trader_id)
+            return 0, 0, processed_signals
+
         traders_scope_context: dict[str, Any] | None = None
         traders_source_config = source_configs.get("traders")
         if traders_source_config is not None:
@@ -1146,8 +1382,6 @@ async def _run_trader_once(
                 session,
                 dict(traders_source_config.get("traders_scope") or {}),
             )
-
-        processed_signals = 0
 
         # Kill switch is the very first gate: short-circuit before any signal
         # fetching, live-market context building, or risk evaluation.
@@ -1157,7 +1391,7 @@ async def _run_trader_once(
                 trader_id,
             )
             await _persist_trader_cycle_heartbeat(session, trader_id)
-            return 0, 0
+            return 0, 0, processed_signals
 
         while processed_signals < max_signals_per_cycle:
             batch_limit = min(scan_batch_size, max_signals_per_cycle - processed_signals)
@@ -1169,13 +1403,48 @@ async def _run_trader_once(
                     session,
                     trader_id=trader_id,
                     sources=sources,
-                    statuses=["pending"],
+                    statuses=["pending", "selected", "submitted"],
                     cursor_created_at=cursor_created_at,
                     cursor_signal_id=cursor_signal_id,
                     limit=batch_limit,
                 )
             if not signals:
                 break
+
+            scoped_signals: list[Any] = []
+            prefiltered = 0
+            for signal in signals:
+                signal_source = normalize_source_key(getattr(signal, "source", ""))
+                source_config = source_configs.get(signal_source)
+                if signal_source != "crypto" or source_config is None or _crypto_signal_in_scope(signal, source_config):
+                    scoped_signals.append(signal)
+                    continue
+                signal_id = str(signal.id)
+                signal_ts = _signal_cursor_timestamp(signal)
+                await record_signal_consumption(
+                    session,
+                    trader_id=trader_id,
+                    signal_id=signal_id,
+                    outcome="skipped",
+                    reason="Signal excluded by crypto scope filters",
+                    commit=False,
+                )
+                await upsert_trader_signal_cursor(
+                    session,
+                    trader_id=trader_id,
+                    last_signal_created_at=signal_ts,
+                    last_signal_id=signal_id,
+                    commit=False,
+                )
+                cursor_created_at = signal_ts
+                cursor_signal_id = signal_id
+                processed_signals += 1
+                prefiltered += 1
+            if prefiltered > 0:
+                await _commit_with_retry(session)
+            if not scoped_signals:
+                continue
+            signals = scoped_signals
 
             live_contexts: dict[str, dict[str, Any]] = {}
             if enable_live_market_context:
@@ -1501,7 +1770,7 @@ async def _run_trader_once(
                         "cooldown_seconds": cooldown_seconds,
                         "cooldown_active": cooldown_active,
                         "cooldown_remaining_seconds": cooldown_remaining_seconds,
-                        "trader_open_positions": open_positions,
+                        "trader_open_positions": effective_open_positions,
                         "trading_schedule_ok": trading_schedule_ok,
                     }
 
@@ -1525,14 +1794,14 @@ async def _run_trader_once(
                             "cooldown_seconds": cooldown_seconds,
                             "cooldown_active": cooldown_active,
                             "cooldown_remaining_seconds": cooldown_remaining_seconds,
-                            "trader_open_positions": open_positions,
+                            "trader_open_positions": effective_open_positions,
                         }
 
                         def _evaluate_runtime_risk(size_for_eval: float):
                             risk_result = evaluate_risk(
                                 size_usd=size_for_eval,
                                 gross_exposure_usd=gross_exposure,
-                                trader_open_positions=open_positions,
+                                trader_open_positions=effective_open_positions,
                                 market_exposure_usd=market_exposure,
                                 global_limits=global_limits,
                                 trader_limits=effective_risk_limits,
@@ -1694,17 +1963,55 @@ async def _run_trader_once(
                                 "open",
                             }:
                                 orders_written += 1
-                        else:
-                            normalized_order_status = str(submit_result.status or "").strip().lower()
-                            order_status = normalized_order_status
-                            orders_written += int(submit_result.orders_written or 0)
-
-                            if normalized_order_status in {"completed", "working", "hedging", "partial"}:
+                            if normalized_order_status in {
+                                "executed",
+                                "completed",
+                                "working",
+                                "hedging",
+                                "partial",
+                                "open",
+                                "submitted",
+                            }:
                                 open_positions = await get_open_position_count_for_trader(
                                     session,
                                     trader_id,
                                     mode=run_mode,
                                 )
+                                open_order_count = await get_open_order_count_for_trader(
+                                    session,
+                                    trader_id,
+                                    mode=run_mode,
+                                )
+                                effective_open_positions = max(open_positions, open_order_count)
+                                opened_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
+                                if opened_market_id:
+                                    open_market_ids.add(opened_market_id)
+                                intra_cycle_committed_usd += size_usd
+                        else:
+                            normalized_order_status = str(submit_result.status or "").strip().lower()
+                            order_status = normalized_order_status
+                            orders_written += int(submit_result.orders_written or 0)
+
+                            if normalized_order_status in {
+                                "executed",
+                                "completed",
+                                "working",
+                                "hedging",
+                                "partial",
+                                "open",
+                                "submitted",
+                            }:
+                                open_positions = await get_open_position_count_for_trader(
+                                    session,
+                                    trader_id,
+                                    mode=run_mode,
+                                )
+                                open_order_count = await get_open_order_count_for_trader(
+                                    session,
+                                    trader_id,
+                                    mode=run_mode,
+                                )
+                                effective_open_positions = max(open_positions, open_order_count)
                                 opened_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
                                 if opened_market_id:
                                     open_market_ids.add(opened_market_id)
@@ -1845,7 +2152,7 @@ async def _run_trader_once(
                 )
             await _persist_trader_cycle_heartbeat(session, trader_id)
 
-    return decisions_written, orders_written
+    return decisions_written, orders_written, processed_signals
 
 
 async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
@@ -1945,7 +2252,7 @@ async def _run_trader_once_with_timeout(
     *,
     process_signals: bool,
     timeout_seconds: float,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     timeout = max(1.0, float(timeout_seconds))
     trader_id = str(trader.get("id") or "")
     try:
@@ -1982,7 +2289,7 @@ async def _run_trader_once_with_timeout(
                     )
             except Exception as exc:
                 logger.warning("Failed to persist trader timeout event: %s", exc)
-        return 0, 0
+        return 0, 0, 0
     except OperationalError as exc:
         if not _is_retryable_db_error(exc):
             raise
@@ -1991,7 +2298,7 @@ async def _run_trader_once_with_timeout(
             trader_id,
             process_signals,
         )
-        return 0, 0
+        return 0, 0, 0
 
 
 async def run_worker_loop() -> None:
@@ -2004,12 +2311,48 @@ async def run_worker_loop() -> None:
     except Exception as exc:
         logger.warning("Orchestrator strategy startup sync failed: %s", exc)
 
+    trigger_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_ORCHESTRATOR_TRIGGER_QUEUE_MAXSIZE)
+    runtime_trigger_event: dict[str, Any] | None = None
+
+    async def _on_runtime_event(event_type: str, data: dict[str, Any]) -> None:
+        if event_type not in _ORCHESTRATOR_TRIGGER_EVENTS:
+            return
+        payload = data if isinstance(data, dict) else {}
+        if event_type == "trade_signal_emission":
+            status_key = str(payload.get("status") or "").strip().lower()
+            emission_key = str(payload.get("event_type") or "").strip().lower()
+            if status_key != "pending" and emission_key not in {"upsert_insert", "upsert_update", "upsert_reactivated"}:
+                return
+        if event_type == "trade_signal_batch":
+            batch_event_key = str(payload.get("event_type") or "").strip().lower()
+            batch_trigger = str(payload.get("trigger") or "").strip().lower()
+            if batch_event_key and batch_event_key not in {"upsert_insert", "upsert_update", "upsert_reactivated"}:
+                if batch_trigger != "strategy_signal_bridge":
+                    return
+        try:
+            trigger_queue.put_nowait(
+                {
+                    "event_type": str(event_type),
+                    "source": str(payload.get("source") or "").strip().lower(),
+                }
+            )
+        except asyncio.QueueFull:
+            logger.warning(
+                "Orchestrator runtime trigger queue full; dropping event",
+                extra={"event_type": event_type},
+            )
+
+    await event_bus.start()
+    event_bus.subscribe("*", _on_runtime_event)
+
     try:
         while True:
             cycle_interval = ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
             sleep_seconds = 2
             skip_cycle = False
-            force_cycle = False
+            manual_force_cycle = False
+            cycle_trigger = runtime_trigger_event
+            runtime_trigger_event = None
             manage_only_cycle = False
             manage_only_reasons: list[str] = []
             mode = "paper"
@@ -2088,18 +2431,27 @@ async def run_worker_loop() -> None:
                             ),
                         )
                     )
-                    force_cycle = _parse_iso(control.get("requested_run_at")) is not None
+                    manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
 
                     if not control.get("is_enabled"):
-                        await _write_orchestrator_snapshot_best_effort(
-                            session,
-                            running=False,
-                            enabled=False,
-                            current_activity="Disabled",
-                            interval_seconds=cycle_interval,
-                            stats=await compute_orchestrator_metrics(session),
+                        traders = await list_traders(session)
+                        has_active_traders = any(
+                            bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
+                            for trader in traders
                         )
-                        skip_cycle = True
+                        if has_active_traders:
+                            manage_only_cycle = True
+                            manage_only_reasons.append("global_disabled")
+                        else:
+                            await _write_orchestrator_snapshot_best_effort(
+                                session,
+                                running=False,
+                                enabled=False,
+                                current_activity="Disabled",
+                                interval_seconds=cycle_interval,
+                                stats=await compute_orchestrator_metrics(session),
+                            )
+                            skip_cycle = True
 
                     if not skip_cycle and bool(control.get("is_paused")):
                         manage_only_cycle = True
@@ -2165,29 +2517,51 @@ async def run_worker_loop() -> None:
                                 )
                                 skip_cycle = True
 
-                        if not skip_cycle:
-                            traders = await list_traders(session)
+                    if not skip_cycle and not traders:
+                        traders = await list_traders(session)
 
                 if skip_cycle:
-                    await _worker_sleep(sleep_seconds)
+                    runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
                     continue
 
                 total_decisions = 0
                 total_orders = 0
+                total_processed_signals = 0
                 now = datetime.now(timezone.utc)
+                high_frequency_trader_ids: set[str] = set()
+                high_frequency_crypto_active = False
                 for trader in traders:
+                    trader_id = str(trader.get("id") or "")
+                    if not trader_id:
+                        continue
+                    if not _is_high_frequency_crypto_trader(trader):
+                        continue
+                    high_frequency_trader_ids.add(trader_id)
+                    if bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False)):
+                        high_frequency_crypto_active = True
+
+                if high_frequency_crypto_active and not manage_only_cycle:
+                    sleep_seconds = min(
+                        float(sleep_seconds),
+                        _HIGH_FREQUENCY_CRYPTO_LOOP_INTERVAL_SECONDS,
+                    )
+                for trader in traders:
+                    trader_id = str(trader.get("id") or "")
                     if not trader.get("is_enabled", True):
                         continue
 
                     is_paused = bool(trader.get("is_paused", False))
-                    due = force_cycle or _is_due(trader, now)
+                    runtime_trigger_for_trader = _runtime_trigger_matches_trader(trader, cycle_trigger)
+                    due = manual_force_cycle or runtime_trigger_for_trader or _is_due(trader, now)
+                    if trader_id in high_frequency_trader_ids and not manage_only_cycle and not is_paused:
+                        due = True
                     process_signals_for_trader = True
                     if manage_only_cycle or is_paused or not due:
                         process_signals_for_trader = False
 
                     if mode not in ("paper", "live"):
                         continue
-                    decisions, orders = await _run_trader_once_with_timeout(
+                    decisions, orders, processed_signals = await _run_trader_once_with_timeout(
                         trader,
                         control,
                         process_signals=process_signals_for_trader,
@@ -2195,17 +2569,36 @@ async def run_worker_loop() -> None:
                     )
                     total_decisions += decisions
                     total_orders += orders
+                    total_processed_signals += processed_signals
 
                 async with AsyncSessionLocal() as session:
-                    if force_cycle and not manage_only_cycle:
+                    if manual_force_cycle and not manage_only_cycle:
                         await update_orchestrator_control(session, requested_run_at=None)
                     metrics = await compute_orchestrator_metrics(session)
                     metrics["decisions_last_cycle"] = total_decisions
                     metrics["orders_last_cycle"] = total_orders
-                    activity = f"Cycle decisions={total_decisions} orders={total_orders}"
+                    metrics["signals_processed_last_cycle"] = total_processed_signals
+                    trigger_label = (
+                        str(cycle_trigger.get("event_type") or "").strip().lower()
+                        if isinstance(cycle_trigger, dict)
+                        else ""
+                    ) or ("requested_run" if manual_force_cycle else "scheduled")
+                    metrics["cycle_trigger"] = trigger_label
+                    open_orders = int(metrics.get("open_orders", 0) or 0)
+                    activity = (
+                        f"Cycle[{trigger_label}] signals={total_processed_signals} "
+                        f"decisions={total_decisions} orders={total_orders}"
+                    )
                     if manage_only_cycle:
                         reasons = ",".join(manage_only_reasons) if manage_only_reasons else "gated"
-                        activity = f"Manage-only cycle ({reasons}) decisions={total_decisions} orders={total_orders}"
+                        activity = (
+                            f"Manage-only[{trigger_label}] ({reasons}) signals={total_processed_signals} "
+                            f"decisions={total_decisions} orders={total_orders}"
+                        )
+                    elif total_processed_signals == 0 and total_decisions == 0 and total_orders == 0 and open_orders > 0:
+                        activity = f"Cycle[{trigger_label}] monitoring open orders={open_orders} (no new pending signals)"
+                    elif high_frequency_crypto_active and total_processed_signals == 0:
+                        activity = f"Cycle[{trigger_label}] high-frequency crypto monitor active (no new pending signals)"
                     await _write_orchestrator_snapshot_best_effort(
                         session,
                         running=True,
@@ -2216,7 +2609,7 @@ async def run_worker_loop() -> None:
                         stats=metrics,
                     )
 
-                await _worker_sleep(sleep_seconds)
+                runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
             except Exception as exc:
                 logger.exception("Trader orchestrator worker cycle failed: %s", exc)
                 try:
@@ -2238,8 +2631,9 @@ async def run_worker_loop() -> None:
                         "Failed to persist orchestrator worker error state",
                         error=str(snapshot_exc),
                     )
-                await _worker_sleep(2)
+                runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, 2)
     finally:
+        event_bus.unsubscribe("*", _on_runtime_event)
         await _release_orchestrator_cycle_lock_owner()
 
 
