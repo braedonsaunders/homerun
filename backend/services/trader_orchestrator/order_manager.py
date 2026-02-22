@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.live_execution_adapter import execute_live_order
+from services.polymarket import polymarket_client
 from services.trading import trading_service
 from utils.converters import safe_float
 
@@ -426,6 +427,33 @@ def _simulate_paper_execution(
     )
 
 
+async def _fetch_token_id_from_market(market_id: str, outcome: str) -> str | None:
+    """Live fallback: query the Polymarket CLOB/Gamma API for token IDs by market condition_id."""
+    condition_id = market_id.strip()
+    if not condition_id:
+        return None
+    try:
+        market_info = await polymarket_client.get_market_by_condition_id(condition_id)
+    except Exception:
+        return None
+    if not isinstance(market_info, dict):
+        return None
+
+    for key in ("clobTokenIds", "clob_token_ids", "token_ids", "tokenIds"):
+        raw = market_info.get(key)
+        if isinstance(raw, list) and raw:
+            token_ids = [str(t).strip() for t in raw if str(t).strip() and len(str(t).strip()) > 20]
+            if not token_ids:
+                continue
+            outcome_lower = outcome.strip().lower()
+            if outcome_lower == "yes" and len(token_ids) >= 1:
+                return token_ids[0]
+            if outcome_lower == "no" and len(token_ids) >= 2:
+                return token_ids[1]
+            return token_ids[0]
+    return None
+
+
 async def submit_execution_leg(
     *,
     mode: str,
@@ -511,6 +539,14 @@ async def submit_execution_leg(
         payload=payload,
         live_context=live_context,
     )
+    if not token_id:
+        market_id_for_lookup = str(leg.get("market_id") or "").strip()
+        outcome_for_lookup = str(leg.get("outcome") or "").strip()
+        if market_id_for_lookup and outcome_for_lookup:
+            token_id = await _fetch_token_id_from_market(market_id_for_lookup, outcome_for_lookup)
+            if token_id:
+                token_source = "polymarket_api_fallback"
+                token_attempts.append(token_source)
     if not token_id:
         return LegSubmitResult(
             leg_id=leg_id,

@@ -2239,6 +2239,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             except (ValueError, TypeError):
                 pass
 
+        raw_token_ids = d.get("clob_token_ids") or []
+        clob_token_ids = [str(t).strip() for t in raw_token_ids if str(t).strip() and len(str(t).strip()) > 20]
+
         return Market(
             id=market_id,
             condition_id=market_id,
@@ -2249,6 +2252,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             liquidity=liquidity,
             end_date=end_date,
             platform="polymarket",
+            clob_token_ids=clob_token_ids,
         )
 
     def _detect_from_crypto_markets(self, markets: list[dict]) -> list[Opportunity]:
@@ -2389,6 +2393,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             side = "YES" if direction == "buy_yes" else "NO"
             slug = market.get("slug") or market_id
 
+            token_idx = 0 if direction == "buy_yes" else 1
+            token_ids = typed_market.clob_token_ids or []
+            position_token_id = token_ids[token_idx] if len(token_ids) > token_idx else None
+
             opp = self.create_opportunity(
                 title=f"Crypto HF: {slug} {side}",
                 description=(
@@ -2402,6 +2410,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                         "action": "BUY",
                         "outcome": side,
                         "price": entry_price,
+                        "token_id": position_token_id,
                         # Carry crypto-specific context through positions payload
                         "_crypto_context": {
                             "signal_version": "crypto_worker_v2",
