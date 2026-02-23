@@ -112,3 +112,31 @@ def test_oracle_history_payload_uses_stable_tail_window(monkeypatch):
     assert len(second_payload) == crypto_worker._ORACLE_HISTORY_PAYLOAD_POINTS
     assert second_payload[0] == {"t": 102, "p": 102.0}
     assert second_payload[-1] == {"t": 181, "p": 181.0}
+
+
+def test_build_crypto_market_payload_includes_fetched_at(monkeypatch):
+    class _FakeMarket:
+        asset = "BTC"
+        slug = "btc-window"
+
+        def to_dict(self):
+            return {"asset": "BTC", "slug": "btc-window", "clob_token_ids": []}
+
+    fake_service = SimpleNamespace(
+        _price_to_beat={},
+        _update_price_to_beat=lambda _markets: None,
+    )
+    fake_feed = SimpleNamespace(
+        get_price=lambda _asset: None,
+        get_prices_by_source=lambda _asset: {},
+    )
+
+    monkeypatch.setattr(crypto_worker, "get_crypto_service", lambda: fake_service)
+    monkeypatch.setattr(crypto_worker, "get_chainlink_feed", lambda: fake_feed)
+
+    payload = crypto_worker._build_crypto_market_payload([_FakeMarket()])
+
+    assert len(payload) == 1
+    fetched_at = payload[0].get("fetched_at")
+    assert isinstance(fetched_at, str)
+    assert fetched_at.endswith("Z")

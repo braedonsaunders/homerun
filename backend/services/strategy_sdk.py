@@ -518,6 +518,11 @@ class StrategySDK:
         "stop_loss_activation_seconds_1h": 300.0,
         "stop_loss_activation_seconds_4h": 900.0,
         "trailing_stop_pct": 3.0,
+        "trailing_stop_activation_profit_pct": 4.0,
+        "trailing_stop_activation_profit_pct_5m": 4.0,
+        "trailing_stop_activation_profit_pct_15m": 6.0,
+        "trailing_stop_activation_profit_pct_1h": 8.0,
+        "trailing_stop_activation_profit_pct_4h": 10.0,
         "min_hold_minutes": 1.0,
         "max_hold_minutes": 60,
         "resolve_only": False,
@@ -663,6 +668,41 @@ class StrategySDK:
             {
                 "key": "trailing_stop_pct",
                 "label": "Trailing Stop (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "trailing_stop_activation_profit_pct",
+                "label": "Trailing Arm Profit (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "trailing_stop_activation_profit_pct_5m",
+                "label": "Trailing Arm Profit 5m (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "trailing_stop_activation_profit_pct_15m",
+                "label": "Trailing Arm Profit 15m (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "trailing_stop_activation_profit_pct_1h",
+                "label": "Trailing Arm Profit 1h (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "trailing_stop_activation_profit_pct_4h",
+                "label": "Trailing Arm Profit 4h (%)",
                 "type": "number",
                 "min": 0,
                 "max": 100,
@@ -2544,3 +2584,18 @@ class StrategySDK:
         except Exception as e:
             logger.warning("StrategySDK.get_traders_by_tag failed: %s", e)
             return []
+
+    @staticmethod
+    def get_whale_cohorts() -> list[dict]:
+        from services.wallet_intelligence import wallet_intelligence
+
+        return list(wallet_intelligence.cohort_analyzer._cached_cohorts)
+
+    @staticmethod
+    def get_market_regime(market_id: str) -> dict:
+        from services.market_regime import market_regime_classifier
+
+        return {
+            "regime": market_regime_classifier.get_regime(market_id),
+            "params": market_regime_classifier.get_regime_params(market_id),
+        }

@@ -21,6 +21,7 @@ The strategy identifies ideal market-making candidates:
 from __future__ import annotations
 
 import math
+from collections import deque
 from datetime import datetime
 from typing import Any, Optional
 
@@ -74,6 +75,9 @@ class MarketMakingStrategy(BaseStrategy):
         "base_size_usd": 50.0,
         "max_size_usd": 500.0,
         "take_profit_pct": 8.0,
+        "inventory_skew_gamma": 0.1,
+        "vol_spread_multiplier": 2.0,
+        "vol_lookback_periods": 20,
     }
 
     pipeline_defaults = {
@@ -303,6 +307,60 @@ class MarketMakingStrategy(BaseStrategy):
         variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
         return max(0.001, variance)
 
+    def _get_inventory(self, market_id: str) -> float:
+        inventories = self.state.get("inventories", {})
+        return float(inventories.get(market_id, 0.0))
+
+    def _update_vol_history(self, market_id: str, price: float, lookback: int) -> None:
+        vol_history = self.state.setdefault("vol_history", {})
+        if market_id not in vol_history:
+            vol_history[market_id] = deque(maxlen=lookback)
+        buf = vol_history[market_id]
+        if isinstance(buf, deque) and buf.maxlen != lookback:
+            old = list(buf)
+            vol_history[market_id] = deque(old, maxlen=lookback)
+            buf = vol_history[market_id]
+        buf.append(price)
+
+    def _realized_vol(self, market_id: str) -> float:
+        vol_history = self.state.get("vol_history", {})
+        buf = vol_history.get(market_id)
+        if buf is None or len(buf) < 2:
+            return 0.0
+        prices = list(buf)
+        returns = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        return math.sqrt(max(0.0, variance))
+
+    def _avg_vol(self) -> float:
+        vol_history = self.state.get("vol_history", {})
+        vols = []
+        for mid, buf in vol_history.items():
+            if buf is not None and len(buf) >= 2:
+                prices = list(buf)
+                returns = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+                mean_r = sum(returns) / len(returns)
+                variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+                vols.append(math.sqrt(max(0.0, variance)))
+        if not vols:
+            return 0.01
+        return max(0.001, sum(vols) / len(vols))
+
+    def _compute_inventory_skew(
+        self, inventory: float, max_inventory: float, gamma: float, base_spread: float
+    ) -> float:
+        if max_inventory <= 0:
+            return 0.0
+        return gamma * (inventory / max_inventory) * base_spread
+
+    def _compute_vol_adjusted_spread(
+        self, base_spread: float, realized_vol: float, avg_vol: float, vol_multiplier: float
+    ) -> float:
+        if avg_vol <= 0:
+            return base_spread
+        return base_spread * (1.0 + vol_multiplier * realized_vol / avg_vol)
+
     def detect(
         self,
         events: list[Event],
@@ -324,6 +382,9 @@ class MarketMakingStrategy(BaseStrategy):
         min_volume = max(0.0, to_float(self.config.get("min_volume_24h", 1000.0), 1000.0))
         gamma = max(0.01, to_float(self.config.get("gamma", 0.1), 0.1))
         max_inventory_usd = max(0.0, to_float(self.config.get("max_inventory_usd", 500.0), 500.0))
+        inv_skew_gamma = max(0.0, to_float(self.config.get("inventory_skew_gamma", 0.1), 0.1))
+        vol_multiplier = max(0.0, to_float(self.config.get("vol_spread_multiplier", 2.0), 2.0))
+        vol_lookback = max(2, int(to_float(self.config.get("vol_lookback_periods", 20), 20)))
 
         opportunities: list[Opportunity] = []
 
@@ -380,31 +441,20 @@ class MarketMakingStrategy(BaseStrategy):
             # ----------------------------------------------------------
             # Avellaneda-Stoikov model: compute reservation price and
             # optimal spread to decide quoting levels.
-            #
-            # We treat each market independently with zero starting
-            # inventory (q=0) since we have no carry-over state between
-            # scans.  The model still provides useful guidance:
-            #   - The optimal spread tells us how wide to quote given
-            #     current volatility and time-to-resolution.
-            #   - If the actual spread exceeds the A-S optimal spread,
-            #     the opportunity is extra attractive (spread_dislocation).
             # ----------------------------------------------------------
 
-            # Build a price history proxy from outcome_prices snapshot.
-            # In production this would use tick history; here we use
-            # the single observation and fall back to the default variance.
-            price_history_proxy: list[float] = [yes_price]
-            sigma_sq = self._estimate_volatility(price_history_proxy)
+            self._update_vol_history(market.id, yes_price, vol_lookback)
 
-            # Model parameters
-            inventory = 0.0  # No carry-over inventory between scans
+            price_history = list(self.state.get("vol_history", {}).get(market.id, []))
+            sigma_sq = self._estimate_volatility(price_history)
+
+            inventory = self._get_inventory(market.id)
 
             # Time remaining: fraction of resolution window left (0-1)
             time_remaining = 1.0
             if market.end_date:
                 resolution_aware = make_aware(market.end_date)
                 total_seconds = max(1.0, (resolution_aware - utcnow()).total_seconds())
-                # Cap at 90 days worth of seconds for normalization
                 time_remaining = min(1.0, total_seconds / (90.0 * 86400.0))
 
             # Reservation price: A-S inventory-adjusted fair value
@@ -423,41 +473,35 @@ class MarketMakingStrategy(BaseStrategy):
                 time_remaining=time_remaining,
             )
 
+            # --- Volatility-based spread widening ---
+            realized_vol = self._realized_vol(market.id)
+            avg_vol = self._avg_vol()
+            effective_spread = self._compute_vol_adjusted_spread(spread, realized_vol, avg_vol, vol_multiplier)
+
+            # --- Inventory skew ---
+            skew = self._compute_inventory_skew(inventory, max_inventory_usd, inv_skew_gamma, effective_spread)
+
             # --- Fair value and quote prices ---
-            # Use the reservation price as the quoting centre instead of
-            # the raw mid, so that quotes are inventory-aware.
             fair_value = reservation
-            half_spread = spread / 2.0
-            buy_price = round(fair_value - half_spread, 4)
-            sell_price = round(fair_value + half_spread, 4)
+            half_spread = effective_spread / 2.0
+            buy_price = round(fair_value - half_spread - skew, 4)
+            sell_price = round(fair_value + half_spread - skew, 4)
 
             # Ensure prices are valid (within 0-1 range)
             if buy_price <= 0 or sell_price >= 1.0:
                 continue
 
-            # --- Spread dislocation: passive entry via bid ---
-            # When the actual spread is wider than the A-S optimal spread,
-            # the market is dislocated.  We use the bid (buy_price) as entry
-            # and set a target partway up the spread (capture_fraction).
-            # capture_fraction = 0.0 means pure bid entry, 1.0 means full
-            # spread capture.  We target 60% of the excess spread.
-            spread_dislocation = spread - as_optimal_spread
+            spread_dislocation = effective_spread - as_optimal_spread
             capture_fraction = 0.6
             if spread_dislocation > 0:
-                # Passive entry: aim to capture a fraction of the excess
                 passive_target = round(buy_price + capture_fraction * spread_dislocation, 4)
             else:
-                passive_target = sell_price  # No dislocation, normal target
+                passive_target = sell_price
 
-            # --- Profit calculation ---
-            # Market making profit: if both sides fill, we earn the spread.
-            # Maker fee on Polymarket is 0%, so the full spread is profit.
-            # total_cost = buy_price (capital needed to buy the YES side)
-            # expected_payout = sell_price (revenue when we sell the YES side)
             total_cost = buy_price
             expected_payout = sell_price
-            gross_profit = expected_payout - total_cost  # = spread
-            fee = 0.0  # Makers pay 0% on Polymarket
+            gross_profit = expected_payout - total_cost
+            fee = 0.0
             net_profit = gross_profit - fee
             roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
 
@@ -515,9 +559,6 @@ class MarketMakingStrategy(BaseStrategy):
             if market_platform not in {"polymarket", "kalshi"}:
                 market_platform = "kalshi" if str(getattr(market, "id", "")).upper().startswith("KX") else "polymarket"
 
-            # --- Build the opportunity via create_opportunity() ---
-            # Description includes Avellaneda-Stoikov metrics so downstream
-            # consumers can audit the model's quoting rationale.
             as_spread_label = (
                 f"A-S optimal {as_optimal_spread:.1%}"
                 if as_optimal_spread < 1.0
@@ -528,12 +569,18 @@ class MarketMakingStrategy(BaseStrategy):
                 if spread_dislocation > 0
                 else ""
             )
+            skew_label = f" | Skew {skew:+.4f}" if abs(skew) > 1e-6 else ""
+            vol_label = (
+                f" | Vol spread {effective_spread:.1%} (base {spread:.1%})"
+                if abs(effective_spread - spread) > 1e-6
+                else ""
+            )
 
             opp = self.create_opportunity(
                 title=f"MM: {market.question[:60]}",
                 description=(
                     f"Market make YES @ bid ${buy_price:.3f} / ask ${sell_price:.3f} | "
-                    f"Spread {spread:.1%} ({as_spread_label}){dislocation_label} | "
+                    f"Spread {effective_spread:.1%} ({as_spread_label}){dislocation_label}{skew_label}{vol_label} | "
                     f"Reservation ${reservation:.3f} | Inv risk {inv_risk:.0%}"
                 ),
                 total_cost=total_cost,
@@ -547,9 +594,16 @@ class MarketMakingStrategy(BaseStrategy):
             )
             if opp is not None:
                 opp.risk_factors = risk_factors
-                # Inject condition_id into the market dict (not included by create_opportunity base enrichment)
                 if opp.markets:
                     opp.markets[0]["condition_id"] = market.condition_id
+                opp.strategy_context["inventory"] = inventory
+                opp.strategy_context["inventory_skew"] = skew
+                opp.strategy_context["realized_vol"] = realized_vol
+                opp.strategy_context["avg_vol"] = avg_vol
+                opp.strategy_context["base_spread"] = spread
+                opp.strategy_context["effective_spread"] = effective_spread
+                opp.strategy_context["adjusted_bid"] = buy_price
+                opp.strategy_context["adjusted_ask"] = sell_price
 
             opportunities.append(opp)
 

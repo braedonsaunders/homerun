@@ -10,6 +10,7 @@ Provides code-level backtesting for all three strategy phases:
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 import traceback
 from copy import deepcopy
@@ -564,6 +565,304 @@ async def _run_ohlc_replay_detection(
         markets_replayed=len(market_state),
         step_errors=step_errors,
     )
+
+
+# ---------------------------------------------------------------------------
+# Parameter sweep + walk-forward validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GridConfigResult:
+    params: dict[str, Any] = field(default_factory=dict)
+    num_opportunities: int = 0
+    avg_roi: float = 0.0
+    total_roi: float = 0.0
+    quality_pass_rate: float = 0.0
+
+    def composite_score(self) -> float:
+        return self.total_roi * self.quality_pass_rate
+
+
+@dataclass
+class ParameterSweepResult:
+    success: bool = False
+    grid_results: list[dict[str, Any]] = field(default_factory=list)
+    best_params: dict[str, Any] = field(default_factory=dict)
+    best_train_score: float = 0.0
+    best_test_score: float = 0.0
+    train_ratio: float = 0.75
+    total_configs_tested: int = 0
+    sweep_time_ms: float = 0.0
+    runtime_error: Optional[str] = None
+    runtime_traceback: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _score_opportunities(opportunities: list[Any]) -> GridConfigResult:
+    if not opportunities:
+        return GridConfigResult()
+
+    serialized = _serialize_opportunities(opportunities)
+    reports = _build_quality_reports(opportunities)
+
+    total_roi = 0.0
+    for opp in serialized:
+        total_roi += float(opp.get("roi_percent", 0.0) or 0.0)
+
+    num = len(serialized)
+    avg_roi = total_roi / num if num > 0 else 0.0
+    passed = sum(1 for r in reports if r.get("passed", False))
+    quality_pass_rate = passed / num if num > 0 else 0.0
+
+    return GridConfigResult(
+        num_opportunities=num,
+        avg_roi=round(avg_roi, 4),
+        total_roi=round(total_roi, 4),
+        quality_pass_rate=round(quality_pass_rate, 4),
+    )
+
+
+async def _fetch_market_data() -> tuple[list[Any], list[Any], dict[str, dict]]:
+    events = None
+    markets = None
+    prices = None
+
+    if (
+        hasattr(scanner, "_cached_events")
+        and scanner._cached_events
+        and hasattr(scanner, "_cached_markets")
+        and scanner._cached_markets
+    ):
+        events = list(scanner._cached_events)
+        markets = list(scanner._cached_markets)
+        prices = (
+            dict(scanner._cached_prices) if hasattr(scanner, "_cached_prices") and scanner._cached_prices else {}
+        )
+
+    if not events or not markets:
+        from services.polymarket import polymarket_client
+
+        events_raw, markets_raw = await asyncio.gather(
+            polymarket_client.get_all_events(closed=False),
+            polymarket_client.get_all_markets(active=True),
+        )
+        events = events_raw
+        markets = markets_raw
+        prices = await _fetch_prices_for_markets(markets, token_cap=2000, batch_size=250)
+
+    return events, markets, prices or {}
+
+
+async def _detect_for_config(
+    source_code: str,
+    slug: str,
+    config: dict[str, Any],
+    events: list[Any],
+    markets: list[Any],
+    base_prices: dict[str, dict],
+    replay_markets: list[Any],
+    history_by_market: dict[str, dict[int, tuple[float, float]]],
+    timeline: list[int],
+) -> list[Any]:
+    loader = StrategyLoader()
+    bt_slug = f"_sweep_{slug}_{int(time.time() * 1000)}"
+    try:
+        loaded = loader.load(bt_slug, source_code, config)
+        strategy = loaded.instance
+
+        opportunities = await _run_detect_once(
+            strategy, events, markets, base_prices, timeout_seconds=30.0
+        )
+
+        if not opportunities and timeline and history_by_market:
+            replay_run = await _run_ohlc_replay_detection(
+                strategy,
+                events,
+                markets,
+                base_prices=base_prices,
+                lookback_hours=_DEFAULT_REPLAY_LOOKBACK_HOURS,
+                timeframe=_DEFAULT_REPLAY_TIMEFRAME,
+                max_markets=_DEFAULT_REPLAY_MAX_MARKETS,
+                max_steps=_DEFAULT_REPLAY_MAX_STEPS,
+            )
+            if replay_run.opportunities:
+                opportunities = replay_run.opportunities
+
+        return opportunities or []
+    finally:
+        try:
+            loader.unload(bt_slug)
+        except Exception:
+            pass
+
+
+async def run_parameter_sweep(
+    source_code: str,
+    slug: str = "_sweep_preview",
+    param_grid: Optional[dict[str, list[Any]]] = None,
+    train_ratio: float = 0.75,
+    top_k: int = 10,
+) -> ParameterSweepResult:
+    result = ParameterSweepResult(train_ratio=train_ratio)
+    sweep_start = time.monotonic()
+
+    if not param_grid:
+        result.runtime_error = "param_grid is required and must not be empty"
+        result.sweep_time_ms = (time.monotonic() - sweep_start) * 1000
+        return result
+
+    validation = validate_strategy_source(source_code)
+    if not validation["valid"]:
+        result.runtime_error = "Strategy validation failed: " + "; ".join(validation.get("errors", []))
+        result.sweep_time_ms = (time.monotonic() - sweep_start) * 1000
+        return result
+
+    param_names = list(param_grid.keys())
+    value_lists = [param_grid[n] for n in param_names]
+    all_combos = list(itertools.product(*value_lists))
+    result.total_configs_tested = len(all_combos)
+
+    try:
+        events, markets, base_prices = await _fetch_market_data()
+    except Exception as e:
+        result.runtime_error = f"Failed to fetch market data: {e}"
+        result.runtime_traceback = traceback.format_exc()
+        result.sweep_time_ms = (time.monotonic() - sweep_start) * 1000
+        return result
+
+    replay_markets = _select_replay_markets(markets, max_markets=_DEFAULT_REPLAY_MAX_MARKETS)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    step_ms = _timeframe_to_seconds(_DEFAULT_REPLAY_TIMEFRAME) * 1000
+    start_ms = now_ms - (_DEFAULT_REPLAY_LOOKBACK_HOURS * 3600 * 1000)
+
+    history_by_market: dict[str, dict[int, tuple[float, float]]] = {}
+    to_fetch: list[Any] = []
+    for market in replay_markets:
+        market_id = str(getattr(market, "id", "") or "")
+        if not market_id:
+            continue
+        cached = _history_from_scanner_cache(market_id, start_ms=start_ms, end_ms=now_ms, step_ms=step_ms)
+        if len(cached) >= 2:
+            history_by_market[market_id] = cached
+        else:
+            to_fetch.append(market)
+
+    if to_fetch:
+        semaphore = asyncio.Semaphore(8)
+
+        async def _fetch_one(market_row: Any) -> tuple[str, dict[int, tuple[float, float]]]:
+            market_id = str(getattr(market_row, "id", "") or "")
+            async with semaphore:
+                try:
+                    points = await _history_from_polymarket_api(
+                        market_row, start_ms=start_ms, end_ms=now_ms, step_ms=step_ms
+                    )
+                except Exception:
+                    points = {}
+            return market_id, points
+
+        fetched = await asyncio.gather(*[_fetch_one(m) for m in to_fetch])
+        for market_id, points in fetched:
+            if market_id and len(points) >= 2:
+                history_by_market[market_id] = points
+
+    timeline = sorted({ts for pts in history_by_market.values() for ts in pts.keys()})
+
+    # Split timeline into train/test for walk-forward
+    split_idx = max(1, int(len(timeline) * train_ratio))
+    train_timeline = timeline[:split_idx]
+    test_timeline = timeline[split_idx:]
+
+    # Run grid search on train window
+    grid_scores: list[tuple[dict[str, Any], GridConfigResult]] = []
+
+    for combo in all_combos:
+        config = dict(zip(param_names, combo))
+
+        try:
+            opps = await _detect_for_config(
+                source_code=source_code,
+                slug=slug,
+                config=config,
+                events=events,
+                markets=markets,
+                base_prices=base_prices,
+                replay_markets=replay_markets,
+                history_by_market=history_by_market,
+                timeline=train_timeline,
+            )
+        except Exception:
+            opps = []
+
+        scored = _score_opportunities(opps)
+        scored.params = config
+        grid_scores.append((config, scored))
+
+        result.grid_results.append({
+            "params": config,
+            "num_opportunities": scored.num_opportunities,
+            "avg_roi": scored.avg_roi,
+            "total_roi": scored.total_roi,
+            "quality_pass_rate": scored.quality_pass_rate,
+        })
+
+        await asyncio.sleep(0)
+
+    # Rank by composite metric (ROI * quality_pass_rate)
+    grid_scores.sort(key=lambda x: x[1].composite_score(), reverse=True)
+
+    if not grid_scores:
+        result.runtime_error = "No configurations produced results"
+        result.sweep_time_ms = (time.monotonic() - sweep_start) * 1000
+        return result
+
+    # Take top_k and validate on held-out test window
+    top_candidates = grid_scores[:min(top_k, len(grid_scores))]
+
+    best_config = top_candidates[0][0]
+    best_train = top_candidates[0][1].composite_score()
+    best_test = 0.0
+
+    if test_timeline:
+        best_test_score_so_far = -float("inf")
+        for config, train_scored in top_candidates:
+            try:
+                test_opps = await _detect_for_config(
+                    source_code=source_code,
+                    slug=slug,
+                    config=config,
+                    events=events,
+                    markets=markets,
+                    base_prices=base_prices,
+                    replay_markets=replay_markets,
+                    history_by_market=history_by_market,
+                    timeline=test_timeline,
+                )
+            except Exception:
+                test_opps = []
+
+            test_scored = _score_opportunities(test_opps)
+            test_composite = test_scored.composite_score()
+
+            if test_composite > best_test_score_so_far:
+                best_test_score_so_far = test_composite
+                best_config = config
+                best_train = train_scored.composite_score()
+                best_test = test_composite
+
+            await asyncio.sleep(0)
+    else:
+        best_test = best_train
+
+    result.best_params = best_config
+    result.best_train_score = round(best_train, 4)
+    result.best_test_score = round(best_test, 4)
+    result.success = True
+    result.sweep_time_ms = (time.monotonic() - sweep_start) * 1000
+    return result
 
 
 async def run_strategy_backtest(

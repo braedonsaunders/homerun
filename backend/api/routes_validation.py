@@ -96,6 +96,17 @@ class CodeBacktestRequest(BaseModel):
     replay_max_steps: int = Field(default=72, ge=1, le=500)
 
 
+class CodeBacktestOptimizeRequest(BaseModel):
+    source_code: str = Field(min_length=10)
+    slug: str = Field(default="_sweep_preview", min_length=1, max_length=128)
+    param_grid: dict[str, list[Any]] = Field(
+        ...,
+        description="Dict mapping config param names to lists of values to sweep",
+    )
+    train_ratio: float = Field(default=0.75, gt=0.1, lt=0.95)
+    top_k: int = Field(default=10, ge=1, le=200)
+
+
 def _get_combinatorial_validation_stats() -> dict[str, Any]:
     for strategy in strategy_loader.get_all_instances():
         st = getattr(strategy, "strategy_type", None)
@@ -357,6 +368,20 @@ async def run_exit_backtest_endpoint(req: CodeBacktestRequest):
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,
+    )
+    return result.to_dict()
+
+
+@router.post("/code-backtest/optimize")
+async def run_code_backtest_optimize(req: CodeBacktestOptimizeRequest):
+    from services.strategy_backtester import run_parameter_sweep
+
+    result = await run_parameter_sweep(
+        source_code=req.source_code,
+        slug=req.slug,
+        param_grid=req.param_grid,
+        train_ratio=req.train_ratio,
+        top_k=req.top_k,
     )
     return result.to_dict()
 

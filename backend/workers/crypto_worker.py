@@ -26,6 +26,7 @@ from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.event_bus import event_bus
+from services.market_regime import market_regime_classifier
 from services.worker_state import (
     clear_worker_run_request,
     ensure_worker_control,
@@ -392,9 +393,12 @@ def _build_crypto_market_payload(
     svc._update_price_to_beat(markets)
 
     payload: list[dict] = []
-    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    fetched_at = utcnow()
+    fetched_at_iso = fetched_at.isoformat().replace("+00:00", "Z")
+    now_ms = fetched_at.timestamp() * 1000
     for market in markets:
         row = market.to_dict()
+        row["fetched_at"] = fetched_at_iso
         oracle = feed.get_price(market.asset)
         if oracle:
             row["oracle_price"] = oracle.price
@@ -425,6 +429,13 @@ def _build_crypto_market_payload(
         row["price_to_beat"] = svc._price_to_beat.get(market.slug)
         row["oracle_history"] = _oracle_history_payload(market.asset)
         _overlay_ws_prices_on_market_row(row, market, ws_prices or {})
+
+        if oracle:
+            market_regime_classifier.update(market.slug, float(oracle.price), fetched_at)
+        regime = market_regime_classifier.get_regime(market.slug)
+        row["regime"] = regime
+        row["regime_params"] = market_regime_classifier.get_regime_params(market.slug)
+
         payload.append(row)
 
     return payload

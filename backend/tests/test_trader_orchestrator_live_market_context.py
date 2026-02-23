@@ -163,6 +163,147 @@ async def test_build_live_signal_contexts_derives_model_probability_from_weather
     assert ctx["live_edge_percent"] == pytest.approx(15.0)
 
 
+@pytest.mark.asyncio
+async def test_build_live_signal_contexts_uses_payload_market_hints_when_signal_market_id_is_non_lookup(
+    monkeypatch,
+):
+    signal_market_id = "Bitcoin Up or Down - February 23, 9AM ET"
+    condition_id = "0x" + ("3" * 64)
+    yes_token = "33333333333333333333333333333333333333333333333333333333333333333"
+    no_token = "44444444444444444444444444444444444444444444444444444444444444444"
+
+    async def _fake_market_lookup(market_id: str):
+        assert market_id == condition_id
+        return {
+            "condition_id": condition_id,
+            "question": signal_market_id,
+            "token_ids": [yes_token, no_token],
+            "outcomes": ["Yes", "No"],
+        }
+
+    async def _fake_prices_batch(token_ids: list[str]):
+        assert set(token_ids) == {yes_token, no_token}
+        return {
+            yes_token: {"mid": 0.08},
+            no_token: {"mid": 0.92},
+        }
+
+    async def _fake_history(*args, **kwargs):
+        del args, kwargs
+        return []
+
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_market_by_condition_id",
+        _fake_market_lookup,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_prices_batch",
+        _fake_prices_batch,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_prices_history",
+        _fake_history,
+    )
+
+    signal = SimpleNamespace(
+        id="sig_payload_hint",
+        market_id=signal_market_id,
+        market_question=signal_market_id,
+        source="scanner",
+        direction="buy_no",
+        entry_price=0.95,
+        edge_percent=5.0,
+        payload_json={
+            "markets": [
+                {
+                    "id": "1407632",
+                    "condition_id": condition_id,
+                    "clob_token_ids": [yes_token, no_token],
+                    "outcome_labels": ["Yes", "No"],
+                }
+            ]
+        },
+    )
+
+    contexts = await build_live_signal_contexts([signal])
+    ctx = contexts["sig_payload_hint"]
+    assert ctx["market_id"] == signal_market_id.lower()
+    assert ctx["condition_id"] == condition_id
+    assert ctx["available"] is True
+    assert ctx["selected_outcome"] == "no"
+    assert ctx["selected_token_id"] == no_token
+    assert ctx["live_selected_price"] == pytest.approx(0.92)
+
+
+@pytest.mark.asyncio
+async def test_build_live_signal_contexts_falls_back_to_payload_tokens_when_market_lookup_fails(
+    monkeypatch,
+):
+    signal_market_id = "unresolvable-market-name"
+    yes_token = "55555555555555555555555555555555555555555555555555555555555555555"
+    no_token = "66666666666666666666666666666666666666666666666666666666666666666"
+
+    async def _fake_market_lookup(_market_id: str):
+        return None
+
+    async def _fake_market_trades(*args, **kwargs):
+        del args, kwargs
+        return []
+
+    async def _fake_prices_batch(token_ids: list[str]):
+        assert set(token_ids) == {yes_token, no_token}
+        return {
+            no_token: {"mid": 0.88},
+        }
+
+    async def _fake_history(*args, **kwargs):
+        del args, kwargs
+        return []
+
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_market_by_condition_id",
+        _fake_market_lookup,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_market_trades",
+        _fake_market_trades,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_prices_batch",
+        _fake_prices_batch,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_prices_history",
+        _fake_history,
+    )
+
+    signal = SimpleNamespace(
+        id="sig_market_lookup_fails",
+        market_id=signal_market_id,
+        market_question="Fallback token hint path",
+        source="scanner",
+        direction="buy_no",
+        entry_price=0.9,
+        edge_percent=3.0,
+        payload_json={
+            "markets": [
+                {
+                    "id": "1407632",
+                    "clob_token_ids": [yes_token, no_token],
+                    "outcome_labels": ["Yes", "No"],
+                }
+            ]
+        },
+    )
+
+    contexts = await build_live_signal_contexts([signal])
+    ctx = contexts["sig_market_lookup_fails"]
+    assert ctx["available"] is True
+    assert ctx["selected_outcome"] == "no"
+    assert ctx["selected_token_id"] == no_token
+    assert ctx["live_selected_price"] == pytest.approx(0.88)
+
+
 def test_runtime_trade_signal_view_overrides_runtime_fields():
     base = SimpleNamespace(
         id="sig_runtime",

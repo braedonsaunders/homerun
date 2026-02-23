@@ -203,6 +203,13 @@ def _parse_datetime_utc(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _to_iso_utc(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _get_component_edge(payload: dict[str, Any], direction: str, mode: str) -> float:
     component_edges = payload.get("component_edges")
     if not isinstance(component_edges, dict):
@@ -894,6 +901,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         "stop_loss_activation_seconds_15m": 120.0,
         "stop_loss_activation_seconds_1h": 300.0,
         "stop_loss_activation_seconds_4h": 900.0,
+        "trailing_stop_activation_profit_pct": 4.0,
+        "trailing_stop_activation_profit_pct_5m": 4.0,
+        "trailing_stop_activation_profit_pct_15m": 6.0,
+        "trailing_stop_activation_profit_pct_1h": 8.0,
+        "trailing_stop_activation_profit_pct_4h": 10.0,
         "preplace_take_profit_exit": True,
         "enforce_min_exit_notional": False,
         "live_window_required": True,
@@ -2140,11 +2152,31 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             or live_context_age_seconds <= max_live_context_age_seconds
         )
 
-        signal_created_at = getattr(signal, "created_at", None)
+        signal_timestamp_used = _parse_datetime_utc(
+            _first_present(
+                live_market.get("signal_updated_at"),
+                live_market.get("updated_at"),
+                live_market.get("fetched_at"),
+                payload.get("signal_updated_at"),
+                payload.get("signal_emitted_at"),
+                payload.get("live_market_fetched_at"),
+                getattr(signal, "updated_at", None),
+                getattr(signal, "created_at", None),
+            )
+        )
+        signal_created_at = _parse_datetime_utc(getattr(signal, "created_at", None))
+        signal_updated_at = _parse_datetime_utc(getattr(signal, "updated_at", None))
         signal_age_seconds: Optional[float] = None
-        if isinstance(signal_created_at, datetime):
-            signal_created_utc = signal_created_at if signal_created_at.tzinfo else signal_created_at.replace(tzinfo=timezone.utc)
-            signal_age_seconds = max(0.0, (datetime.now(timezone.utc) - signal_created_utc.astimezone(timezone.utc)).total_seconds())
+        if isinstance(signal_timestamp_used, datetime):
+            signal_ts_utc = (
+                signal_timestamp_used
+                if signal_timestamp_used.tzinfo
+                else signal_timestamp_used.replace(tzinfo=timezone.utc)
+            )
+            signal_age_seconds = max(
+                0.0,
+                (datetime.now(timezone.utc) - signal_ts_utc.astimezone(timezone.utc)).total_seconds(),
+            )
         max_signal_age_seconds = max(1.0, to_float(params.get("max_signal_age_seconds", 35.0), 35.0))
         signal_fresh_ok = signal_age_seconds is None or signal_age_seconds <= max_signal_age_seconds
 
@@ -2182,7 +2214,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             f"seconds_left={signal_seconds_left if signal_seconds_left >= 0 else 'unknown'}"
         )
         signal_freshness_detail = (
-            f"age={signal_age_seconds:.1f}s max={max_signal_age_seconds:.1f}s"
+            f"age={signal_age_seconds:.1f}s max={max_signal_age_seconds:.1f}s "
+            f"timestamp={_to_iso_utc(signal_timestamp_used)}"
             if signal_age_seconds is not None
             else "signal timestamp unavailable"
         )
@@ -2463,6 +2496,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             "min_seconds_left_for_entry": float(min_seconds_left_for_entry),
             "signal_age_seconds": signal_age_seconds,
             "max_signal_age_seconds": float(max_signal_age_seconds),
+            "signal_timestamp_used": _to_iso_utc(signal_timestamp_used),
+            "signal_created_at": _to_iso_utc(signal_created_at),
+            "signal_updated_at": _to_iso_utc(signal_updated_at),
             "liquidity_usd": signal_liquidity_usd,
             "min_liquidity_usd": float(min_liquidity_usd),
             "spread": signal_spread,
@@ -2549,6 +2585,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             "1h": 300.0,
             "4h": 900.0,
         }
+        default_trailing_activation_profit_by_timeframe = {
+            "5m": 4.0,
+            "15m": 6.0,
+            "1h": 8.0,
+            "4h": 10.0,
+        }
         default_min_hold_by_timeframe = {
             "5m": 0.25,
             "15m": 0.5,
@@ -2569,6 +2611,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             default_stop_loss_activation_by_timeframe.get(timeframe, 90.0),
         )
         config.setdefault("trailing_stop_pct", 3.0)
+        config.setdefault(
+            "trailing_stop_activation_profit_pct",
+            default_trailing_activation_profit_by_timeframe.get(timeframe, 4.0),
+        )
         config.setdefault("min_hold_minutes", default_min_hold_by_timeframe.get(timeframe, 1.0))
         config.setdefault("max_hold_minutes", default_max_hold_by_timeframe.get(timeframe, 60.0))
         if timeframe:
@@ -2578,6 +2624,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "stop_loss_policy",
                 "stop_loss_activation_seconds",
                 "trailing_stop_pct",
+                "trailing_stop_activation_profit_pct",
                 "min_hold_minutes",
                 "max_hold_minutes",
             ):
@@ -2833,6 +2880,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                             "price_to_beat": price_to_beat,
                             "oracle_price": oracle_price,
                             "execution_penalty_percent": round(execution_penalty, 6),
+                            "live_market_fetched_at": str(
+                                market.get("fetched_at")
+                                or market.get("snapshot_fetched_at")
+                                or ""
+                            ).strip()
+                            or None,
                         },
                     }
                 ],
@@ -2872,6 +2925,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "price_to_beat": price_to_beat,
                     "oracle_price": oracle_price,
                     "execution_penalty_percent": round(execution_penalty, 6),
+                    "live_market_fetched_at": str(
+                        market.get("fetched_at")
+                        or market.get("snapshot_fetched_at")
+                        or ""
+                    ).strip()
+                    or None,
                 }
                 opportunities.append(opp)
 

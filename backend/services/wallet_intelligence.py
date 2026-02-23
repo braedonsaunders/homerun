@@ -1,11 +1,12 @@
 """
 Wallet Intelligence Layer for Homerun Arbitrage Scanner.
 
-Four subsystems:
-  1. ConfluenceDetector  - Multi-wallet convergence on the same market
-  2. EntityClusterer     - Groups wallets that likely belong to the same entity
-  3. WalletTagger        - Auto-classifies wallets with behavioral tags
-  4. CrossPlatformTracker - Tracks traders across Polymarket and Kalshi
+Five subsystems:
+  1. ConfluenceDetector    - Multi-wallet convergence on the same market
+  2. EntityClusterer       - Groups wallets that likely belong to the same entity
+  3. WalletTagger          - Auto-classifies wallets with behavioral tags
+  4. CrossPlatformTracker  - Tracks traders across Polymarket and Kalshi
+  5. WhaleCohortAnalyzer   - Pairwise co-trading network graph between smart wallets
 
 Orchestrated by the WalletIntelligence class, which runs all subsystems
 on a configurable schedule.
@@ -14,9 +15,11 @@ on a configurable schedule.
 import asyncio
 import math
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
+from itertools import combinations
 from utils.utcnow import utcnow
-from typing import Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import and_, select, text, update, func, or_
 
@@ -1637,6 +1640,269 @@ class CrossPlatformTracker:
 
 
 # ============================================================================
+#  SUBSYSTEM 5: Whale Co-Trading Network Graph (Priority 8)
+# ============================================================================
+
+
+class WhaleCohortAnalyzer:
+
+    MAX_WALLETS = 500
+    MIN_SHARED_MARKETS = 3
+    MIN_COMBINED_SCORE = 0.5
+    LOOKBACK_DAYS = 30
+    TIMING_WINDOW_SECONDS = 3600  # 1 hour
+
+    def __init__(self):
+        self._cached_cohorts: List[dict] = []
+
+    async def analyze_cohorts(self) -> List[dict]:
+        wallets = await self._get_smart_wallets()
+        if len(wallets) < 2:
+            logger.info("Not enough wallets for cohort analysis", count=len(wallets))
+            self._cached_cohorts = []
+            return []
+
+        addresses = [w["address"] for w in wallets]
+        rollups = await self._fetch_rollups(addresses)
+        if not rollups:
+            logger.info("No rollup data for cohort analysis")
+            self._cached_cohorts = []
+            return []
+
+        participation = self._build_participation_matrix(rollups)
+
+        pair_scores = self._compute_pairwise_scores(participation)
+
+        cohorts = self._find_cohorts(pair_scores, participation)
+
+        self._cached_cohorts = cohorts
+        logger.info("Whale cohort analysis complete", cohorts=len(cohorts))
+        return cohorts
+
+    async def get_cohorts(self) -> List[dict]:
+        return list(self._cached_cohorts)
+
+    async def _get_smart_wallets(self) -> List[dict]:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(DiscoveredWallet)
+                .where(
+                    or_(
+                        DiscoveredWallet.rank_score >= 0.20,
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                    )
+                )
+                .order_by(DiscoveredWallet.composite_score.desc())
+                .limit(self.MAX_WALLETS)
+            )
+            discovered = list(result.scalars().all())
+
+            wallet_map: Dict[str, dict] = {}
+            for w in discovered:
+                address = str(w.address or "").strip().lower()
+                if not address:
+                    continue
+                wallet_map[address] = {"address": address}
+
+            tracked_rows = await session.execute(select(TrackedWallet.address))
+            for (address_raw,) in tracked_rows.all():
+                address = str(address_raw or "").strip().lower()
+                if not address:
+                    continue
+                wallet_map.setdefault(address, {"address": address})
+
+        return list(wallet_map.values())[:self.MAX_WALLETS]
+
+    async def _fetch_rollups(self, addresses: List[str]) -> List[WalletActivityRollup]:
+        cutoff = utcnow() - timedelta(days=self.LOOKBACK_DAYS)
+        rollups: List[WalletActivityRollup] = []
+        async with AsyncSessionLocal() as session:
+            for chunk in _iter_chunks(addresses):
+                result = await session.execute(
+                    select(WalletActivityRollup).where(
+                        WalletActivityRollup.wallet_address.in_(chunk),
+                        WalletActivityRollup.traded_at >= cutoff,
+                    )
+                )
+                rollups.extend(result.scalars().all())
+        return rollups
+
+    def _normalize_side(self, raw: Optional[str]) -> str:
+        side = (raw or "").upper().strip()
+        if side in ("BUY", "YES"):
+            return "BUY"
+        if side in ("SELL", "NO"):
+            return "SELL"
+        return side
+
+    def _build_participation_matrix(
+        self, rollups: List[WalletActivityRollup]
+    ) -> Dict[str, Dict[str, dict]]:
+        matrix: Dict[str, Dict[str, dict]] = defaultdict(dict)
+        for r in rollups:
+            addr = (r.wallet_address or "").strip().lower()
+            if not addr or not r.market_id:
+                continue
+            side = self._normalize_side(r.side)
+            if side not in ("BUY", "SELL"):
+                continue
+            ts = r.traded_at
+            existing = matrix[addr].get(r.market_id)
+            if existing is None:
+                matrix[addr][r.market_id] = {"side": side, "timestamps": [ts] if ts else []}
+            else:
+                existing["timestamps"].append(ts) if ts else None
+                if existing["side"] != side:
+                    existing["side"] = side
+        return dict(matrix)
+
+    def _compute_pairwise_scores(
+        self, participation: Dict[str, Dict[str, dict]]
+    ) -> Dict[Tuple[str, str], dict]:
+        wallets = list(participation.keys())
+        pair_scores: Dict[Tuple[str, str], dict] = {}
+
+        max_shared = 1
+
+        # First pass: find all pairs with enough shared markets and track max
+        candidate_pairs: List[Tuple[str, str, Set[str]]] = []
+        for w_a, w_b in combinations(wallets, 2):
+            markets_a = set(participation[w_a].keys())
+            markets_b = set(participation[w_b].keys())
+            shared = markets_a & markets_b
+            if len(shared) < self.MIN_SHARED_MARKETS:
+                continue
+            candidate_pairs.append((w_a, w_b, shared))
+            if len(shared) > max_shared:
+                max_shared = len(shared)
+
+        for w_a, w_b, shared in candidate_pairs:
+            shared_count = len(shared)
+
+            # Direction agreement
+            agree = 0
+            for m in shared:
+                if participation[w_a][m]["side"] == participation[w_b][m]["side"]:
+                    agree += 1
+            direction_agreement = agree / shared_count
+
+            # Timing correlation
+            timing_scores: List[float] = []
+            for m in shared:
+                ts_a = participation[w_a][m]["timestamps"]
+                ts_b = participation[w_b][m]["timestamps"]
+                timing_scores.append(self._timing_proximity(ts_a, ts_b))
+            timing_correlation = sum(timing_scores) / len(timing_scores) if timing_scores else 0.0
+
+            # Normalize shared market count (log scale against max)
+            shared_markets_norm = min(math.log(shared_count + 1) / math.log(max_shared + 1), 1.0)
+
+            combined = (
+                shared_markets_norm * 0.3
+                + direction_agreement * 0.4
+                + timing_correlation * 0.3
+            )
+
+            if combined > self.MIN_COMBINED_SCORE:
+                pair_scores[(w_a, w_b)] = {
+                    "shared_markets": shared_count,
+                    "direction_agreement_pct": round(direction_agreement, 4),
+                    "timing_correlation": round(timing_correlation, 4),
+                    "combined_score": round(combined, 4),
+                }
+
+        return pair_scores
+
+    def _timing_proximity(self, ts_a: List[datetime], ts_b: List[datetime]) -> float:
+        if not ts_a or not ts_b:
+            return 0.0
+
+        valid_a = sorted([t for t in ts_a if t is not None])
+        valid_b = sorted([t for t in ts_b if t is not None])
+        if not valid_a or not valid_b:
+            return 0.0
+
+        matched = 0
+        b_idx = 0
+        window = self.TIMING_WINDOW_SECONDS
+
+        for a_ts in valid_a:
+            while b_idx < len(valid_b) and (valid_b[b_idx] - a_ts).total_seconds() < -window:
+                b_idx += 1
+            check_idx = b_idx
+            while check_idx < len(valid_b) and (valid_b[check_idx] - a_ts).total_seconds() <= window:
+                if abs((valid_b[check_idx] - a_ts).total_seconds()) <= window:
+                    matched += 1
+                    break
+                check_idx += 1
+
+        return matched / len(valid_a)
+
+    def _find_cohorts(
+        self,
+        pair_scores: Dict[Tuple[str, str], dict],
+        participation: Dict[str, Dict[str, dict]],
+    ) -> List[dict]:
+        # Build adjacency from qualifying pairs
+        adj: Dict[str, Set[str]] = defaultdict(set)
+        for (w_a, w_b) in pair_scores:
+            adj[w_a].add(w_b)
+            adj[w_b].add(w_a)
+
+        # Find connected components via BFS
+        visited: Set[str] = set()
+        components: List[List[str]] = []
+        for node in adj:
+            if node in visited:
+                continue
+            component: List[str] = []
+            queue = [node]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                component.append(current)
+                for neighbor in adj[current]:
+                    if neighbor not in visited:
+                        queue.append(neighbor)
+            if len(component) >= 2:
+                components.append(component)
+
+        cohorts: List[dict] = []
+        for members in components:
+            scores: List[float] = []
+            direction_agreements: List[float] = []
+            total_shared = 0
+            for w_a, w_b in combinations(members, 2):
+                key = (w_a, w_b) if (w_a, w_b) in pair_scores else (w_b, w_a)
+                if key in pair_scores:
+                    ps = pair_scores[key]
+                    scores.append(ps["combined_score"])
+                    direction_agreements.append(ps["direction_agreement_pct"])
+                    total_shared += ps["shared_markets"]
+
+            if not scores:
+                continue
+
+            all_markets: Set[str] = set()
+            for w in members:
+                if w in participation:
+                    all_markets.update(participation[w].keys())
+
+            pair_count = len(list(combinations(members, 2)))
+            cohorts.append({
+                "wallet_addresses": sorted(members),
+                "avg_combined_score": round(sum(scores) / len(scores), 4),
+                "shared_market_count": total_shared // max(pair_count, 1),
+                "direction_agreement": round(sum(direction_agreements) / len(direction_agreements), 4),
+            })
+
+        cohorts.sort(key=lambda c: c["avg_combined_score"], reverse=True)
+        return cohorts
+
+
+# ============================================================================
 #  MAIN ORCHESTRATOR
 # ============================================================================
 
@@ -1649,6 +1915,7 @@ class WalletIntelligence:
         self.clusterer = EntityClusterer()
         self.tagger = WalletTagger()
         self.cross_platform = CrossPlatformTracker()
+        self.cohort_analyzer = WhaleCohortAnalyzer()
         self._running = False
 
     async def initialize(self):
@@ -1683,6 +1950,12 @@ class WalletIntelligence:
             await self.cross_platform.scan_cross_platform()
         except Exception as e:
             logger.error("Cross-platform scan failed", error=str(e))
+
+        # Phase 5: Whale cohort analysis (pairwise co-trading network)
+        try:
+            await self.cohort_analyzer.analyze_cohorts()
+        except Exception as e:
+            logger.error("Whale cohort analysis failed", error=str(e))
 
         logger.info("Intelligence analysis complete")
 

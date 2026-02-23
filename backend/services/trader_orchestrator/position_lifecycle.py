@@ -904,7 +904,9 @@ async def reconcile_paper_positions(
                         pos_view.lowest_price = lowest_price
                         pos_view.age_minutes = age_minutes
                         pos_view.pnl_percent = pnl_pct
-                        pos_view.strategy_context = payload.get("strategy_context", {})
+                        if "strategy_context" not in payload:
+                            payload["strategy_context"] = {}
+                        pos_view.strategy_context = payload["strategy_context"]
                         pos_view.config = payload.get("strategy_exit_config", {})
                         pos_view.outcome_idx = outcome_idx
 
@@ -918,7 +920,10 @@ async def reconcile_paper_positions(
                         }
 
                         exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
-                        if exit_decision is not None and getattr(exit_decision, "action", None) == "close":
+                        exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
+                        if exit_action == "close":
+                            strategy_exit = exit_decision
+                        elif exit_action == "reduce":
                             strategy_exit = exit_decision
                     except Exception as exc:
                         logger.warning(
@@ -926,6 +931,15 @@ async def reconcile_paper_positions(
                             strategy_slug,
                             exc,
                         )
+
+                if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
+                    if not dry_run:
+                        payload["position_state"] = next_state
+                        row.payload_json = payload
+                        row.updated_at = now
+                        state_updates += 1
+                    held += 1
+                    continue
 
                 if strategy_exit is not None:
                     close_price = strategy_exit.close_price if strategy_exit.close_price is not None else current_price
@@ -2280,7 +2294,9 @@ async def reconcile_live_positions(
                             pos_view.lowest_price = lowest_price
                             pos_view.age_minutes = age_minutes
                             pos_view.pnl_percent = pnl_pct
-                            pos_view.strategy_context = payload.get("strategy_context", {})
+                            if "strategy_context" not in payload:
+                                payload["strategy_context"] = {}
+                            pos_view.strategy_context = payload["strategy_context"]
                             pos_view.config = payload.get("strategy_exit_config", {})
                             pos_view.outcome_idx = outcome_idx
 
@@ -2294,7 +2310,10 @@ async def reconcile_live_positions(
                             }
 
                             exit_decision = loaded.instance.should_exit(pos_view, market_state_dict)
-                            if exit_decision is not None and getattr(exit_decision, "action", None) == "close":
+                            exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
+                            if exit_action == "close":
+                                strategy_exit = exit_decision
+                            elif exit_action == "reduce":
                                 strategy_exit = exit_decision
                         except Exception as exc:
                             logger.warning(
@@ -2302,6 +2321,15 @@ async def reconcile_live_positions(
                                 strategy_slug,
                                 exc,
                             )
+
+                if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
+                    if not dry_run:
+                        payload["position_state"] = next_state
+                        row.payload_json = payload
+                        row.updated_at = now
+                        state_updates += 1
+                    held += 1
+                    continue
 
                 active_take_profit_limit = (
                     isinstance(pending_exit, dict)

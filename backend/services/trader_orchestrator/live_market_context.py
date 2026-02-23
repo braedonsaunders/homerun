@@ -149,6 +149,8 @@ def _extract_yes_no_tokens(market_info: dict[str, Any]) -> tuple[Optional[str], 
 
     outcomes = market_info.get("outcomes")
     if not isinstance(outcomes, list):
+        outcomes = market_info.get("outcome_labels") or market_info.get("outcomeLabels")
+    if not isinstance(outcomes, list):
         outcomes = []
 
     yes_index: Optional[int] = None
@@ -172,6 +174,19 @@ def _extract_yes_no_tokens(market_info: dict[str, Any]) -> tuple[Optional[str], 
     if no_token is None and len(tokens) > 1:
         no_token = tokens[1]
     return yes_token, no_token
+
+
+def _extract_signal_market_hint(signal: Any) -> dict[str, Any]:
+    payload = getattr(signal, "payload_json", None)
+    if not isinstance(payload, dict):
+        return {}
+    markets = payload.get("markets")
+    if not isinstance(markets, list):
+        return {}
+    for market in markets:
+        if isinstance(market, dict):
+            return market
+    return {}
 
 
 def _normalize_history_points(
@@ -329,16 +344,23 @@ async def build_live_signal_contexts(
 ) -> dict[str, dict[str, Any]]:
     """Fetch live market prices + movement context for a set of trade signals."""
     signal_rows: list[dict[str, Any]] = []
+    market_hints_by_lookup_id: dict[str, dict[str, Any]] = {}
     for signal in signals:
         signal_id = str(getattr(signal, "id", "") or "").strip()
-        market_id = _normalize_identifier(getattr(signal, "market_id", ""))
-        if not signal_id or not market_id:
+        signal_market_id = _normalize_identifier(getattr(signal, "market_id", ""))
+        market_hint = _extract_signal_market_hint(signal)
+        hinted_condition_id = _normalize_identifier(market_hint.get("condition_id") or market_hint.get("conditionId"))
+        market_lookup_id = hinted_condition_id or signal_market_id
+        if not signal_id or not market_lookup_id:
             continue
         direction = str(getattr(signal, "direction", "") or "").strip().lower()
+        if market_hint and market_lookup_id not in market_hints_by_lookup_id:
+            market_hints_by_lookup_id[market_lookup_id] = market_hint
         signal_rows.append(
             {
                 "signal_id": signal_id,
-                "market_id": market_id,
+                "signal_market_id": signal_market_id,
+                "market_lookup_id": market_lookup_id,
                 "direction": direction,
                 "signal": signal,
             }
@@ -346,7 +368,7 @@ async def build_live_signal_contexts(
     if not signal_rows:
         return {}
 
-    market_ids = sorted({row["market_id"] for row in signal_rows})
+    market_ids = sorted({row["market_lookup_id"] for row in signal_rows})
     market_infos: dict[str, Optional[dict[str, Any]]] = {}
     market_sem = asyncio.Semaphore(max(1, int(max_market_concurrency)))
 
@@ -364,6 +386,9 @@ async def build_live_signal_contexts(
     for market_id in market_ids:
         info = market_infos.get(market_id) or {}
         yes_token, no_token = _extract_yes_no_tokens(info)
+        if yes_token is None and no_token is None:
+            hinted = market_hints_by_lookup_id.get(market_id) or {}
+            yes_token, no_token = _extract_yes_no_tokens(hinted)
         # Fallback if market id itself is already a token id.
         if yes_token is None and no_token is None and _is_token_id(market_id):
             yes_token = market_id
@@ -397,7 +422,7 @@ async def build_live_signal_contexts(
     selected_token_by_signal: dict[str, Optional[str]] = {}
     for row in signal_rows:
         signal_id = row["signal_id"]
-        market_id = row["market_id"]
+        market_id = row["market_lookup_id"]
         direction = row["direction"]
         yes_token, no_token = yes_no_tokens_by_market.get(market_id, (None, None))
 
@@ -446,7 +471,8 @@ async def build_live_signal_contexts(
     for row in signal_rows:
         signal = row["signal"]
         signal_id = row["signal_id"]
-        market_id = row["market_id"]
+        market_id = row["market_lookup_id"]
+        signal_market_id = row["signal_market_id"]
         direction = row["direction"]
 
         market_info = market_infos.get(market_id) or {}
@@ -499,7 +525,7 @@ async def build_live_signal_contexts(
         contexts[signal_id] = {
             "available": bool(selected_live is not None),
             "fetched_at": fetched_at_iso,
-            "market_id": market_id,
+            "market_id": signal_market_id or market_id,
             "condition_id": _normalize_identifier(market_info.get("condition_id") or market_id),
             "market_question": (
                 str(market_info.get("question") or getattr(signal, "market_question", "") or "").strip()

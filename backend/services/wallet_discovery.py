@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import statistics
 from datetime import datetime, timedelta
 from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
@@ -31,6 +32,7 @@ from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
 from services.smart_wallet_pool import smart_wallet_pool
 from services.pause_state import global_pause_state
+from utils.fifo_pnl import compute_fifo_pnl_multi_market
 from utils.logger import get_logger
 
 logger = get_logger("wallet_discovery")
@@ -400,6 +402,94 @@ class WalletDiscoveryEngine:
             "_market_pnls": [],
         }
 
+    def _enrich_stats_with_fifo(self, stats: dict, trades: list[dict]) -> dict:
+        if not trades:
+            return stats
+
+        trades_by_market: dict[str, list[dict]] = {}
+        for t in trades:
+            mid = (
+                t.get("market")
+                or t.get("condition_id")
+                or t.get("asset")
+                or ""
+            )
+            if not mid:
+                continue
+            trades_by_market.setdefault(mid, []).append(t)
+
+        if not trades_by_market:
+            return stats
+
+        fifo_results = compute_fifo_pnl_multi_market(trades_by_market)
+
+        total_winning = 0
+        total_losing = 0
+        total_realized = 0.0
+        total_hold_seconds = 0.0
+        total_closed_lots = 0
+        fifo_market_pnls: list[float] = []
+        fifo_market_rois: list[float] = []
+
+        for _key, result in fifo_results.items():
+            total_winning += result.winning_lots
+            total_losing += result.losing_lots
+            total_realized += result.total_realized_pnl
+            total_closed_lots += len(result.closed_lots)
+            total_hold_seconds += result.avg_hold_seconds * len(
+                result.closed_lots
+            )
+
+            if result.closed_lots:
+                mpnl = sum(
+                    c.realized_pnl
+                    for c in result.closed_lots
+                    if c.realized_pnl is not None
+                )
+                fifo_market_pnls.append(mpnl)
+                mcost = sum(
+                    c.entry_price * c.size for c in result.closed_lots
+                )
+                if mcost > 0:
+                    fifo_market_rois.append((mpnl / mcost) * 100.0)
+
+        if total_closed_lots > 0:
+            stats["wins"] = total_winning
+            stats["losses"] = total_losing
+            closed_total = total_winning + total_losing
+            stats["win_rate"] = (
+                total_winning / closed_total if closed_total > 0 else 0.0
+            )
+            stats["avg_hold_time_hours"] = (
+                (total_hold_seconds / total_closed_lots) / 3600.0
+            )
+            stats["_market_pnls"] = fifo_market_pnls
+            if fifo_market_rois:
+                stats["_market_rois"] = fifo_market_rois
+                stats["avg_roi"] = (
+                    sum(fifo_market_rois) / len(fifo_market_rois)
+                )
+                stats["max_roi"] = max(fifo_market_rois)
+                stats["min_roi"] = min(fifo_market_rois)
+                stats["roi_std"] = (
+                    self._std_dev(fifo_market_rois)
+                    if len(fifo_market_rois) > 1
+                    else 0.0
+                )
+
+        stats["fifo_realized_pnl"] = total_realized
+        stats["fifo_closed_lots"] = total_closed_lots
+        stats["fifo_open_lots"] = sum(
+            len(r.open_lots) for r in fifo_results.values()
+        )
+        stats["fifo_accuracy"] = (
+            total_winning / total_closed_lots
+            if total_closed_lots > 0
+            else 0.0
+        )
+
+        return stats
+
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
         try:
@@ -709,55 +799,196 @@ class WalletDiscoveryEngine:
     # ------------------------------------------------------------------
 
     def _calculate_rank_score(self, metrics: dict) -> float:
-        """
-        Calculate a composite score for leaderboard ranking.
-
-        Weighted formula:
-            30% normalized Sharpe ratio   (clamped 0-5 -> 0-1)
-            25% normalized profit factor  (clamped 0-10 -> 0-1)
-            20% win rate                  (already 0-1)
-            15% normalized total PnL      (log scale, clamped)
-            10% consistency               (1 - normalized drawdown)
-
-        Returns a score in [0, 1].
-        """
-        # -- Sharpe component (30%) --
         sharpe = metrics.get("sharpe_ratio")
         if sharpe is None or not math.isfinite(sharpe):
-            sharpe_norm = 0.5  # Default to middle if unavailable
+            sharpe_norm = 0.5
         else:
             sharpe_norm = max(0.0, min(sharpe / 5.0, 1.0))
 
-        # -- Profit factor component (25%) --
         pf = metrics.get("profit_factor")
         if pf is None or not math.isfinite(pf):
             pf_norm = 0.5
         else:
             pf_norm = max(0.0, min(pf / 10.0, 1.0))
 
-        # -- Win rate component (20%) --
         win_rate = metrics.get("win_rate", 0.0)
         wr_norm = max(0.0, min(win_rate, 1.0))
 
-        # -- PnL component (15%, log scale) --
         total_pnl = metrics.get("total_pnl", 0.0)
         if total_pnl > 0:
-            # log10 scale: $10 -> 1, $100 -> 2, $1000 -> 3, etc.
-            # Normalize to 0-1 by dividing by 5 (covers up to $100k)
             pnl_norm = max(0.0, min(math.log10(total_pnl + 1) / 5.0, 1.0))
         else:
             pnl_norm = 0.0
 
-        # -- Consistency component (10%) --
         max_dd = metrics.get("max_drawdown")
         if max_dd is not None and math.isfinite(max_dd):
             consistency_norm = max(0.0, 1.0 - min(max_dd, 1.0))
         else:
             consistency_norm = 0.5
 
-        rank_score = 0.30 * sharpe_norm + 0.25 * pf_norm + 0.20 * wr_norm + 0.15 * pnl_norm + 0.10 * consistency_norm
+        timing_skill = metrics.get("timing_skill_composite", 0.5)
+        timing_norm = max(0.0, min(timing_skill, 1.0))
+
+        execution_quality = metrics.get("execution_quality_score", 0.5)
+        execution_norm = max(0.0, min(execution_quality, 1.0))
+
+        rank_score = (
+            0.195 * sharpe_norm
+            + 0.1625 * pf_norm
+            + 0.13 * wr_norm
+            + 0.0975 * pnl_norm
+            + 0.065 * consistency_norm
+            + 0.20 * timing_norm
+            + 0.15 * execution_norm
+        )
 
         return max(0.0, min(rank_score, 1.0))
+
+    # ------------------------------------------------------------------
+    # 4b. Timing Skill
+    # ------------------------------------------------------------------
+
+    def _compute_timing_skill(self, positions: list[dict]) -> dict:
+        WINDOWS = [
+            ("timing_5m", 5),
+            ("timing_30m", 30),
+            ("timing_4h", 240),
+            ("timing_24h", 1440),
+        ]
+        WEIGHTS = {"timing_5m": 0.35, "timing_30m": 0.30, "timing_4h": 0.20, "timing_24h": 0.15}
+        DEFAULT = {"timing_5m": 0.5, "timing_30m": 0.5, "timing_4h": 0.5, "timing_24h": 0.5, "timing_skill_composite": 0.5}
+
+        closed = [p for p in positions if isinstance(p, dict) and self._to_float(p.get("realizedPnl")) != 0.0]
+        if len(closed) < MIN_TRADES_FOR_ANALYSIS:
+            return DEFAULT
+
+        favorable_counts: dict[str, int] = {key: 0 for key, _ in WINDOWS}
+        total_counted: dict[str, int] = {key: 0 for key, _ in WINDOWS}
+
+        for pos in closed:
+            entry_price = self._to_float(pos.get("avgPrice", pos.get("avg_price", 0)))
+            exit_price = self._to_float(pos.get("exitPrice", pos.get("exit_price", 0)))
+            realized_pnl = self._to_float(pos.get("realizedPnl", 0))
+            initial_value = self._to_float(pos.get("initialValue", 0))
+            size = self._to_float(pos.get("size", 0))
+
+            if entry_price <= 0:
+                continue
+
+            if exit_price <= 0 and initial_value > 0 and size > 0:
+                exit_price = (initial_value + realized_pnl) / size
+            if exit_price <= 0:
+                continue
+
+            is_buy = realized_pnl > 0 if exit_price > entry_price else realized_pnl <= 0
+            price_delta = exit_price - entry_price
+
+            hold_minutes = 0.0
+            start_ts = self._parse_timestamp(pos.get("startTimestamp", pos.get("createdAt", pos.get("created_at"))))
+            end_ts = self._parse_timestamp(pos.get("endTimestamp", pos.get("closedAt", pos.get("closed_at"))))
+            if start_ts and end_ts and end_ts > start_ts:
+                hold_minutes = (end_ts - start_ts).total_seconds() / 60.0
+            if hold_minutes <= 0:
+                hold_duration_hours = self._to_float(pos.get("holdDuration", pos.get("hold_duration_hours", 0)))
+                hold_minutes = hold_duration_hours * 60.0
+            if hold_minutes <= 0:
+                hold_minutes = 1440.0
+
+            for key, window_minutes in WINDOWS:
+                if hold_minutes <= 0:
+                    continue
+
+                if hold_minutes <= window_minutes:
+                    interpolated_price = exit_price
+                else:
+                    fraction = window_minutes / hold_minutes
+                    interpolated_price = entry_price + price_delta * fraction
+
+                movement = interpolated_price - entry_price
+                if is_buy:
+                    favorable = movement > 0
+                else:
+                    favorable = movement < 0
+
+                total_counted[key] += 1
+                if favorable:
+                    favorable_counts[key] += 1
+
+        result = {}
+        for key, _ in WINDOWS:
+            if total_counted[key] > 0:
+                result[key] = favorable_counts[key] / total_counted[key]
+            else:
+                result[key] = 0.5
+
+        composite = sum(result[key] * WEIGHTS[key] for key in WEIGHTS)
+        result["timing_skill_composite"] = composite
+        return result
+
+    # ------------------------------------------------------------------
+    # 4c. Execution Quality
+    # ------------------------------------------------------------------
+
+    def _compute_execution_quality(self, positions: list[dict]) -> dict:
+        DEFAULT = {"avg_slippage_bps": 0.0, "median_slippage_bps": 0.0, "execution_quality_score": 0.5}
+
+        slippages: list[float] = []
+        for pos in positions:
+            if not isinstance(pos, dict):
+                continue
+
+            fill_price = self._to_float(pos.get("avgPrice", pos.get("avg_price", 0)))
+            if fill_price <= 0:
+                continue
+
+            mid_price = 0.0
+            yes_price = self._to_float(pos.get("yesPrice", pos.get("yes_price", 0)))
+            no_price = self._to_float(pos.get("noPrice", pos.get("no_price", 0)))
+            if yes_price > 0 and no_price > 0:
+                outcome = str(pos.get("outcome", pos.get("outcome_index", ""))).strip().upper()
+                if outcome in ("NO", "1"):
+                    mid_price = no_price
+                else:
+                    mid_price = yes_price
+            elif yes_price > 0:
+                mid_price = yes_price
+            elif no_price > 0:
+                mid_price = no_price
+
+            if mid_price <= 0:
+                bid = self._to_float(pos.get("bestBid", pos.get("bid", 0)))
+                ask = self._to_float(pos.get("bestAsk", pos.get("ask", 0)))
+                if bid > 0 and ask > 0:
+                    mid_price = (bid + ask) / 2.0
+                elif bid > 0:
+                    mid_price = bid
+                elif ask > 0:
+                    mid_price = ask
+
+            if mid_price <= 0:
+                initial_value = self._to_float(pos.get("initialValue", 0))
+                size = self._to_float(pos.get("size", 0))
+                if initial_value > 0 and size > 0:
+                    mid_price = initial_value / size
+
+            if mid_price <= 0:
+                continue
+
+            slippage_bps = abs(fill_price - mid_price) / mid_price * 10000.0
+            slippages.append(slippage_bps)
+
+        if len(slippages) < MIN_TRADES_FOR_ANALYSIS:
+            return DEFAULT
+
+        avg_slippage = sum(slippages) / len(slippages)
+        median_slippage = statistics.median(slippages)
+        execution_quality_score = 1.0 - min(1.0, avg_slippage / 100.0)
+
+        return {
+            "avg_slippage_bps": avg_slippage,
+            "median_slippage_bps": median_slippage,
+            "execution_quality_score": max(0.0, min(1.0, execution_quality_score)),
+        }
 
     # ------------------------------------------------------------------
     # 5. Strategy & Classification Helpers
@@ -914,6 +1145,7 @@ class WalletDiscoveryEngine:
             closed_position_payload,
         ):
             stats = engine._calculate_trade_stats(trade_list, position_list)
+            stats = engine._enrich_stats_with_fifo(stats, trade_list)
             stats = engine._build_accuracy_first_stats(
                 base_stats=stats,
                 pnl_snapshot=pnl_snapshot_payload,
@@ -930,12 +1162,16 @@ class WalletDiscoveryEngine:
             rolling = engine._calculate_rolling_windows(trade_list, now_inner)
             strategies = engine._detect_strategies(trade_list)
             classification = engine._classify_wallet(stats, risk_metrics)
+            timing_skill = engine._compute_timing_skill(closed_position_payload)
+            execution_quality = engine._compute_execution_quality(closed_position_payload)
             rank_input = {
                 "sharpe_ratio": risk_metrics["sharpe_ratio"],
                 "profit_factor": risk_metrics["profit_factor"],
                 "win_rate": stats["win_rate"],
                 "total_pnl": stats["total_pnl"],
                 "max_drawdown": risk_metrics["max_drawdown"],
+                "timing_skill_composite": timing_skill["timing_skill_composite"],
+                "execution_quality_score": execution_quality["execution_quality_score"],
             }
             rank_score = engine._calculate_rank_score(rank_input)
             return (
@@ -946,6 +1182,8 @@ class WalletDiscoveryEngine:
                 classification,
                 rank_score,
                 now_inner,
+                timing_skill,
+                execution_quality,
             )
 
         (
@@ -956,6 +1194,8 @@ class WalletDiscoveryEngine:
             classification,
             rank_score,
             now,
+            timing_skill,
+            execution_quality,
         ) = await asyncio.to_thread(
             _compute_profile,
             self,
@@ -1014,6 +1254,17 @@ class WalletDiscoveryEngine:
             "tags": classification["tags"],
             # Ranking
             "rank_score": rank_score,
+            # Extended metrics
+            "metrics_json": {
+                "timing_skill": timing_skill,
+                "execution_quality": execution_quality,
+                "fifo": {
+                    "realized_pnl": stats.get("fifo_realized_pnl", 0.0),
+                    "closed_lots": stats.get("fifo_closed_lots", 0),
+                    "open_lots": stats.get("fifo_open_lots", 0),
+                    "accuracy": stats.get("fifo_accuracy", 0.0),
+                },
+            },
         }
 
     # ------------------------------------------------------------------
@@ -2305,6 +2556,8 @@ class WalletDiscoveryEngine:
             "insider_last_scored_at": (w.insider_last_scored_at.isoformat() if w.insider_last_scored_at else None),
             "insider_metrics": w.insider_metrics_json,
             "insider_reasons": w.insider_reasons_json or [],
+            # Extended metrics
+            "metrics": w.metrics_json,
         }
 
     @staticmethod

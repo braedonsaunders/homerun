@@ -196,3 +196,51 @@ def test_btc_highfreq_stop_loss_timeframe_override_is_applied():
     assert "Stop loss deferred" in decision.reason
     assert position.config["stop_loss_policy"] == "near_close_only"
     assert position.config["stop_loss_activation_seconds"] == 20
+
+
+def test_btc_highfreq_trailing_stop_waits_for_activation_profit():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position()
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.highest_price = 0.515  # +3.0% gain; below 5m default arm threshold (4%)
+    position.current_price = 0.495  # Below trailing trigger if armed
+    position.age_minutes = 1.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.495,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert decision.action == "hold"
+    assert position.config["trailing_stop_activation_profit_pct"] == 4.0
+
+
+def test_btc_highfreq_trailing_stop_arms_after_activation_profit():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position()
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.highest_price = 0.53  # +6.0% gain; above 5m default arm threshold (4%)
+    position.current_price = 0.513  # <= trailing trigger (0.5141)
+    position.age_minutes = 1.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.513,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Trailing stop" in decision.reason

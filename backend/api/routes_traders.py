@@ -202,7 +202,7 @@ async def create_trader_route(
 
 
 @router.get("/orders/all")
-async def get_all_trader_orders(
+async def get_all_trader_orders_all(
     status: Optional[str] = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
     session: AsyncSession = Depends(get_db_session),

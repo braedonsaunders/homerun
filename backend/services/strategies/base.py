@@ -69,6 +69,21 @@ class ExitDecision:
 
 
 @dataclass
+class ScaleOutTarget:
+    trigger_bps: float
+    exit_fraction: float
+
+
+@dataclass
+class ScaleOutConfig:
+    targets: list
+    trailing_stop_bps: float = 80.0
+    near_resolution_exit: bool = True
+    near_resolution_hours: float = 24.0
+    near_resolution_spread_widen_bps: float = 50.0
+
+
+@dataclass
 class ScoringWeights:
     """Declarative scoring formula for the composable evaluate pipeline.
 
@@ -346,6 +361,7 @@ class BaseStrategy(ABC):
     # compute_score(), and compute_size() hooks.
     scoring_weights: ScoringWeights | None = None
     sizing_config: SizingConfig | None = None
+    scale_out_config: Optional[ScaleOutConfig] = None
 
     # Strategy-specific fallback defaults for pipeline params.
     # These are used when the param is not provided by the orchestrator.
@@ -949,6 +965,58 @@ class BaseStrategy(ABC):
 
         pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
 
+        # Scale-out partial exits (before TP/SL so partial exits fire first)
+        soc = self.scale_out_config
+        if soc is not None:
+            ctx = getattr(position, "strategy_context", None)
+            if not isinstance(ctx, dict):
+                ctx = {}
+                position.strategy_context = ctx
+            targets_hit: list = ctx.get("_scale_out_targets_hit", [])
+            all_targets_hit = len(targets_hit) >= len(soc.targets)
+
+            if not all_targets_hit:
+                for idx, target in enumerate(soc.targets):
+                    if idx in targets_hit:
+                        continue
+                    if pnl_pct * 100 >= target.trigger_bps:
+                        targets_hit.append(idx)
+                        ctx["_scale_out_targets_hit"] = targets_hit
+                        return ExitDecision(
+                            "reduce",
+                            f"Scale-out target {idx + 1} hit ({pnl_pct:.1f}% >= {target.trigger_bps / 100:.1f}%)",
+                            close_price=current_price,
+                            reduce_fraction=target.exit_fraction,
+                        )
+
+            if all_targets_hit:
+                # Trailing stop on remainder after all targets hit
+                peak_price = ctx.get("_scale_out_peak_price", current_price)
+                if current_price > peak_price:
+                    peak_price = current_price
+                ctx["_scale_out_peak_price"] = peak_price
+
+                if peak_price > entry_price and soc.trailing_stop_bps > 0:
+                    trailing_trigger = peak_price * (1.0 - soc.trailing_stop_bps / 10000.0)
+                    if current_price <= trailing_trigger:
+                        return ExitDecision(
+                            "close",
+                            f"Scale-out trailing stop ({current_price:.4f} <= {trailing_trigger:.4f})",
+                            close_price=current_price,
+                        )
+
+                # Near-resolution exit
+                if soc.near_resolution_exit:
+                    seconds_left = self._seconds_left_for_position(position, market_state)
+                    if seconds_left is not None and seconds_left <= soc.near_resolution_hours * 3600.0:
+                        spread_change_bps = abs(current_price - entry_price) / entry_price * 10000.0 if entry_price > 0 else 0.0
+                        if spread_change_bps >= soc.near_resolution_spread_widen_bps:
+                            return ExitDecision(
+                                "close",
+                                f"Near-resolution exit ({seconds_left / 3600.0:.1f}h left, spread {spread_change_bps:.0f}bps)",
+                                close_price=current_price,
+                            )
+
         # Take profit
         tp = config.get("take_profit_pct")
         if tp is not None and pnl_pct >= float(tp):
@@ -979,6 +1047,13 @@ class BaseStrategy(ABC):
         # Trailing stop
         trailing = config.get("trailing_stop_pct")
         highest = float(getattr(position, "highest_price", 0) or 0)
+        if trailing is not None and float(trailing) > 0 and highest > entry_price:
+            trailing_activation_profit_pct = to_float(config.get("trailing_stop_activation_profit_pct"), 0.0)
+            if trailing_activation_profit_pct is None:
+                trailing_activation_profit_pct = 0.0
+            highest_gain_pct = ((highest - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
+            if highest_gain_pct < float(trailing_activation_profit_pct):
+                trailing = None
         if trailing is not None and float(trailing) > 0 and highest > entry_price:
             trigger_price = highest * (1.0 - float(trailing) / 100.0)
             if current_price <= trigger_price:

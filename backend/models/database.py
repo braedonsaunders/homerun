@@ -1649,6 +1649,9 @@ class DiscoveredWallet(Base):
     insider_metrics_json = Column(JSON, nullable=True)
     insider_reasons_json = Column(JSON, default=list)
 
+    # Extended metrics (timing skill, execution quality, etc.)
+    metrics_json = Column(JSON, nullable=True)
+
     __table_args__ = (
         Index("idx_discovered_rank", "rank_score"),
         Index("idx_discovered_pnl", "total_pnl"),

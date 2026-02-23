@@ -73,6 +73,8 @@ def test_crypto_highfreq_scope_schema_contains_include_exclude_fields():
     assert "stop_loss_activation_seconds" in keys
     assert "stop_loss_activation_seconds_5m" in keys
     assert "trailing_stop_pct" in keys
+    assert "trailing_stop_activation_profit_pct" in keys
+    assert "trailing_stop_activation_profit_pct_5m" in keys
     assert "min_hold_minutes" in keys
     assert "max_hold_minutes" in keys
     assert "resolve_only" in keys
@@ -92,6 +94,8 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["max_oracle_age_seconds"] == 20.0
     assert defaults["require_oracle_for_directional"] is True
     assert defaults["min_seconds_left_for_entry_5m"] == 35.0
+    assert defaults["trailing_stop_activation_profit_pct"] == 4.0
+    assert defaults["trailing_stop_activation_profit_pct_5m"] == 4.0
     assert defaults["enforce_min_exit_notional"] is False
 
 

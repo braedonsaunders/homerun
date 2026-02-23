@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
 
 
-def _signal(*, created_at: datetime) -> SimpleNamespace:
+def _signal(*, created_at: datetime, updated_at: datetime | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         id="sig-1",
         source="crypto",
@@ -21,6 +21,7 @@ def _signal(*, created_at: datetime) -> SimpleNamespace:
         edge_percent=8.0,
         confidence=0.8,
         created_at=created_at,
+        updated_at=updated_at or created_at,
         payload_json={
             "strategy_origin": "crypto_worker",
             "asset": "BTC",
@@ -100,6 +101,37 @@ def test_evaluate_blocks_stale_signal_age():
     freshness = _check_by_key(decision, "signal_freshness")
     assert freshness.passed is False
     assert "max=15.0s" in str(freshness.detail)
+
+
+def test_evaluate_uses_signal_updated_at_for_freshness():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=180),
+        updated_at=datetime.now(timezone.utc) - timedelta(seconds=3),
+    )
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "max_signal_age_seconds": 35,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+            },
+        },
+    )
+
+    freshness = _check_by_key(decision, "signal_freshness")
+    assert freshness.passed is True
+    assert decision.payload["signal_age_seconds"] is not None
+    assert decision.payload["signal_age_seconds"] < 35
 
 
 def test_evaluate_blocks_stale_live_market_context():
