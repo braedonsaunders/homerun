@@ -59,6 +59,115 @@ async def test_submit_execution_leg_live_uses_execution_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_submit_execution_leg_live_prefers_live_context_price_over_stale_leg_limit(monkeypatch):
+    execution_mock = AsyncMock(
+        return_value=LiveOrderExecution(
+            status="open",
+            effective_price=0.88,
+            error_message=None,
+            payload={"order_id": "ord-live-price"},
+            order_id="ord-live-price",
+        )
+    )
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    signal = SimpleNamespace(
+        id="sig-live-price",
+        market_id="123456789012345678",
+        direction="buy_yes",
+        entry_price=0.57,
+        market_question="Will price refresh happen?",
+        payload_json={"selected_token_id": "123456789012345678901"},
+        live_context={
+            "selected_outcome": "yes",
+            "selected_token_id": "123456789012345678901",
+            "yes_token_id": "123456789012345678901",
+            "no_token_id": "223456789012345678901",
+            "live_selected_price": 0.88,
+            "live_yes_price": 0.88,
+            "live_no_price": 0.12,
+        },
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="live",
+        signal=signal,
+        leg={
+            "leg_id": "leg_1",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": 0.57,
+        },
+        notional_usd=57.0,
+    )
+
+    assert result.status == "open"
+    execution_mock.assert_awaited_once()
+    submit_kwargs = execution_mock.await_args.kwargs
+    assert submit_kwargs["fallback_price"] == pytest.approx(0.88, rel=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_submit_execution_leg_live_resolves_outcome_specific_token_and_price(monkeypatch):
+    execution_mock = AsyncMock(
+        return_value=LiveOrderExecution(
+            status="open",
+            effective_price=0.88,
+            error_message=None,
+            payload={"order_id": "ord-outcome-token"},
+            order_id="ord-outcome-token",
+        )
+    )
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    yes_token = "333333333333333333333"
+    no_token = "444444444444444444444"
+    signal = SimpleNamespace(
+        id="sig-outcome-token",
+        market_id="123456789012345678",
+        direction="buy_no",
+        entry_price=0.12,
+        market_question="Will outcome mapping hold?",
+        payload_json={
+            "selected_token_id": no_token,
+            "yes_token_id": yes_token,
+            "no_token_id": no_token,
+        },
+        live_context={
+            "selected_outcome": "no",
+            "selected_token_id": no_token,
+            "yes_token_id": yes_token,
+            "no_token_id": no_token,
+            "live_selected_price": 0.12,
+            "live_yes_price": 0.88,
+            "live_no_price": 0.12,
+        },
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="live",
+        signal=signal,
+        leg={
+            "leg_id": "leg_yes",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": 0.12,
+        },
+        notional_usd=44.0,
+    )
+
+    assert result.status == "open"
+    execution_mock.assert_awaited_once()
+    submit_kwargs = execution_mock.await_args.kwargs
+    assert submit_kwargs["token_id"] == yes_token
+    assert submit_kwargs["fallback_price"] == pytest.approx(0.88, rel=1e-9)
+
+
+@pytest.mark.asyncio
 async def test_submit_execution_leg_live_fails_without_token_id():
     signal = SimpleNamespace(
         id="sig-2",

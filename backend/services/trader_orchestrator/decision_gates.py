@@ -120,6 +120,149 @@ def _runtime_signal_seconds_left(runtime_payload: Any) -> float | None:
     return None
 
 
+_TIMEFRAME_PARAM_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "1m": ("1m", "1min"),
+    "3m": ("3m", "3min"),
+    "5m": ("5m", "5min"),
+    "15m": ("15m", "15min"),
+    "1h": ("1h", "1hr", "60m"),
+    "4h": ("4h", "4hr", "240m"),
+}
+
+
+def _normalize_timeframe(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    compact = raw.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"1m", "1min", "1minute", "1minutes"}:
+        return "1m"
+    if compact in {"3m", "3min", "3minute", "3minutes"}:
+        return "3m"
+    if compact in {"5m", "5min", "5minute", "5minutes"}:
+        return "5m"
+    if compact in {"15m", "15min", "15minute", "15minutes"}:
+        return "15m"
+    if compact in {"1h", "1hr", "1hour", "60m", "60min"}:
+        return "1h"
+    if compact in {"4h", "4hr", "4hour", "240m", "240min"}:
+        return "4h"
+    return raw
+
+
+def _parse_timeframe_minutes(value: Any) -> float | None:
+    normalized = _normalize_timeframe(value)
+    if not normalized:
+        return None
+    if normalized.endswith("m"):
+        parsed = safe_float(normalized[:-1], None)
+        if parsed is None or parsed <= 0:
+            return None
+        return float(parsed)
+    if normalized.endswith("h"):
+        parsed = safe_float(normalized[:-1], None)
+        if parsed is None or parsed <= 0:
+            return None
+        return float(parsed) * 60.0
+    return None
+
+
+def _timeframe_param_value(params: dict[str, Any], base_key: str, timeframe: str) -> Any:
+    normalized = _normalize_timeframe(timeframe)
+    if not normalized:
+        return None
+    for suffix in _TIMEFRAME_PARAM_SUFFIXES.get(normalized, (normalized,)):
+        key = f"{base_key}_{suffix}"
+        if key in params:
+            return params.get(key)
+    return None
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        values = list(value)
+    elif isinstance(value, str):
+        values = [part.strip() for part in value.split(",")]
+    else:
+        values = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        token = str(raw or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _resolve_market_data_age_budget_ms(strategy_params: dict[str, Any], timeframe: str) -> int:
+    default_budget = max(50, int(safe_float(getattr(settings, "EXECUTION_MARKET_DATA_MAX_AGE_MS", 1200), 1200.0)))
+    candidate = _timeframe_param_value(strategy_params, "max_market_data_age_ms", timeframe)
+    if candidate is None:
+        candidate = strategy_params.get("max_market_data_age_ms")
+    parsed = safe_float(candidate, float(default_budget))
+    if parsed is None:
+        return default_budget
+    return max(50, min(300_000, int(parsed)))
+
+
+def _runtime_signal_market_data_context(runtime_signal: Any) -> dict[str, Any]:
+    payload = getattr(runtime_signal, "payload_json", None)
+    payload = payload if isinstance(payload, dict) else {}
+    strategy_context = payload.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    live_market = payload.get("live_market")
+    live_market = live_market if isinstance(live_market, dict) else {}
+
+    timeframe = _normalize_timeframe(
+        payload.get("timeframe")
+        or strategy_context.get("timeframe")
+        or live_market.get("timeframe")
+        or live_market.get("cadence")
+        or live_market.get("interval")
+    )
+    source = str(
+        getattr(runtime_signal, "source", None)
+        or payload.get("source")
+        or strategy_context.get("source")
+        or ""
+    ).strip().lower()
+
+    age_ms = safe_float(
+        payload.get("market_data_age_ms")
+        or strategy_context.get("market_data_age_ms")
+        or live_market.get("market_data_age_ms"),
+        None,
+    )
+    if age_ms is not None and age_ms < 0:
+        age_ms = None
+
+    observed_at = _parse_datetime_utc(
+        payload.get("source_observed_at")
+        or strategy_context.get("source_observed_at")
+        or live_market.get("source_observed_at")
+        or payload.get("live_market_fetched_at")
+        or strategy_context.get("live_market_fetched_at")
+        or live_market.get("fetched_at")
+        or payload.get("signal_updated_at")
+        or live_market.get("signal_updated_at")
+        or getattr(runtime_signal, "updated_at", None)
+        or getattr(runtime_signal, "created_at", None)
+    )
+
+    if age_ms is None and observed_at is not None:
+        age_ms = max(
+            0.0,
+            (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+        )
+
+    return {
+        "source": source,
+        "timeframe": timeframe,
+        "age_ms": age_ms,
+        "observed_at": observed_at.isoformat().replace("+00:00", "Z") if observed_at is not None else None,
+    }
+
+
 def _normalize_schedule_days(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -264,14 +407,20 @@ def apply_platform_decision_gates(
     portfolio_allocator: Callable[[float], dict[str, Any]] | None,
     risk_evaluator: Callable[[float], tuple[Any, dict[str, Any]]] | None,
     invoke_hooks: bool,
+    pending_live_exit_count: int = 0,
+    pending_live_exit_summary: dict[str, Any] | None = None,
     strategy_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     final_decision = str(getattr(decision_obj, "decision", "failed") or "failed")
     final_reason = str(getattr(decision_obj, "reason", "") or "")
     score = getattr(decision_obj, "score", None)
     size_usd = float(max(1.0, safe_float(getattr(decision_obj, "size_usd", None), 10.0)))
+    params = dict(strategy_params or {})
+    pending_exit_count = max(0, int(pending_live_exit_count or 0))
+    pending_exit_summary = dict(pending_live_exit_summary or {})
     risk_snapshot: dict[str, Any] = {}
     platform_gates: list[dict[str, Any]] = []
+    market_data_context = _runtime_signal_market_data_context(runtime_signal)
 
     if final_decision == "selected":
         if trading_schedule_ok:
@@ -353,6 +502,238 @@ def apply_platform_decision_gates(
         )
 
     if final_decision == "selected":
+        freshness_enforced = _coerce_bool(params.get("enforce_market_data_freshness"), True)
+        required_sources = _normalize_text_list(
+            params.get("require_market_data_age_for_sources", ["crypto"])
+        )
+        source = str(market_data_context.get("source") or "")
+        timeframe = str(market_data_context.get("timeframe") or "")
+        age_ms = safe_float(market_data_context.get("age_ms"), None)
+        observed_at = market_data_context.get("observed_at")
+        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe)
+        age_required = bool(source and source in set(required_sources))
+
+        checks_payload.append(
+            {
+                "check_key": "market_data_freshness",
+                "check_label": "Market data freshness",
+                "passed": (
+                    not freshness_enforced
+                    or (age_ms is not None and age_ms <= max_age_ms)
+                    or (age_ms is None and not age_required)
+                ),
+                "score": age_ms,
+                "detail": (
+                    "Freshness gate disabled by strategy config"
+                    if not freshness_enforced
+                    else (
+                        f"age_ms={age_ms:.0f} max={max_age_ms} source={source or 'unknown'} "
+                        f"timeframe={timeframe or 'unknown'}"
+                        if age_ms is not None
+                        else (
+                            f"age unavailable; source={source or 'unknown'} required={age_required}"
+                        )
+                    )
+                ),
+                "payload": {
+                    "source": source or None,
+                    "timeframe": timeframe or None,
+                    "age_ms": age_ms,
+                    "max_age_ms": max_age_ms,
+                    "observed_at": observed_at,
+                    "age_required": age_required,
+                    "required_sources": required_sources,
+                    "freshness_enforced": freshness_enforced,
+                },
+            }
+        )
+
+        freshness_passed = (
+            (not freshness_enforced)
+            or (age_ms is not None and age_ms <= max_age_ms)
+            or (age_ms is None and not age_required)
+        )
+        if freshness_passed:
+            platform_gates.append(
+                {
+                    "gate": "market_data_freshness",
+                    "status": "passed" if freshness_enforced else "skipped",
+                    "detail": (
+                        f"age_ms={age_ms:.0f} max={max_age_ms}"
+                        if freshness_enforced and age_ms is not None
+                        else (
+                            "Freshness gate disabled by strategy config"
+                            if not freshness_enforced
+                            else "Age unavailable but optional for this source"
+                        )
+                    ),
+                }
+            )
+        else:
+            final_decision = "blocked"
+            final_reason = (
+                f"Market data freshness gate blocked: source={source or 'unknown'} "
+                f"age_ms={age_ms if age_ms is not None else 'unknown'} max={max_age_ms}"
+            )
+            platform_gates.append(
+                {
+                    "gate": "market_data_freshness",
+                    "status": "blocked",
+                    "detail": final_reason,
+                }
+            )
+            if invoke_hooks and strategy is not None:
+                if hasattr(strategy, "on_blocked"):
+                    strategy.on_blocked(
+                        runtime_signal,
+                        BlockReason.SIGNAL_EXPIRED,
+                        {
+                            "market_data_context": market_data_context,
+                            "max_age_ms": max_age_ms,
+                            "required_sources": required_sources,
+                        },
+                    )
+    else:
+        platform_gates.append(
+            {
+                "gate": "market_data_freshness",
+                "status": "skipped",
+                "detail": f"Skipped because decision is '{final_decision}'",
+            }
+        )
+
+    if final_decision == "selected":
+        signal_direction = str(getattr(runtime_signal, "direction", "") or "").strip().lower()
+        source = str(market_data_context.get("source") or "").strip().lower()
+        timeframe = str(market_data_context.get("timeframe") or "").strip().lower()
+        timeframe_minutes = _parse_timeframe_minutes(timeframe)
+        min_timeframe_minutes = safe_float(
+            params.get("live_directional_min_timeframe_minutes")
+            if params.get("live_directional_min_timeframe_minutes") is not None
+            else params.get("directional_min_timeframe_minutes"),
+            None,
+        )
+        if min_timeframe_minutes is None:
+            min_timeframe_minutes = _parse_timeframe_minutes(
+                params.get("live_directional_min_timeframe")
+                if params.get("live_directional_min_timeframe") is not None
+                else params.get("directional_min_timeframe", "5m")
+            )
+        if min_timeframe_minutes is None:
+            min_timeframe_minutes = 5.0
+        min_timeframe_minutes = max(1.0, float(min_timeframe_minutes))
+
+        directional_gate_enabled = _coerce_bool(params.get("enforce_live_directional_timeframe"), True)
+        if params.get("enforce_directional_timeframe") is not None:
+            directional_gate_enabled = _coerce_bool(
+                params.get("enforce_directional_timeframe"),
+                directional_gate_enabled,
+            )
+        is_directional_signal = signal_direction in {
+            "buy_yes",
+            "buy_no",
+            "buy",
+            "sell",
+            "yes",
+            "no",
+            "long",
+            "short",
+            "up",
+            "down",
+        }
+        should_enforce_directional_gate = (
+            directional_gate_enabled
+            and is_directional_signal
+            and source == "crypto"
+        )
+        directional_gate_passed = (
+            (not should_enforce_directional_gate)
+            or (
+                timeframe_minutes is not None
+                and timeframe_minutes + 1e-9 >= min_timeframe_minutes
+            )
+        )
+        checks_payload.append(
+            {
+                "check_key": "directional_min_timeframe",
+                "check_label": "Directional minimum timeframe",
+                "passed": directional_gate_passed,
+                "score": timeframe_minutes,
+                "detail": (
+                    (
+                        f"timeframe={timeframe} ({timeframe_minutes:.0f}m) "
+                        f">= required {min_timeframe_minutes:.0f}m"
+                    )
+                    if should_enforce_directional_gate and timeframe_minutes is not None and directional_gate_passed
+                    else (
+                        f"timeframe={timeframe or 'unknown'} below required {min_timeframe_minutes:.0f}m"
+                        if should_enforce_directional_gate
+                        else "Gate not applicable for this signal"
+                    )
+                ),
+                "payload": {
+                    "enabled": directional_gate_enabled,
+                    "applied": should_enforce_directional_gate,
+                    "source": source or None,
+                    "direction": signal_direction or None,
+                    "timeframe": timeframe or None,
+                    "timeframe_minutes": timeframe_minutes,
+                    "min_timeframe_minutes": min_timeframe_minutes,
+                },
+            }
+        )
+        if should_enforce_directional_gate and not directional_gate_passed:
+            final_decision = "blocked"
+            final_reason = (
+                f"Directional timeframe guard blocked: timeframe={timeframe or 'unknown'} "
+                f"requires >= {min_timeframe_minutes:.0f}m"
+            )
+            platform_gates.append(
+                {
+                    "gate": "directional_min_timeframe",
+                    "status": "blocked",
+                    "detail": final_reason,
+                }
+            )
+            if invoke_hooks and strategy is not None:
+                if hasattr(strategy, "on_blocked"):
+                    strategy.on_blocked(
+                        runtime_signal,
+                        BlockReason.SIGNAL_EXPIRED,
+                        {
+                            "source": source,
+                            "direction": signal_direction,
+                            "timeframe": timeframe,
+                            "timeframe_minutes": timeframe_minutes,
+                            "min_timeframe_minutes": min_timeframe_minutes,
+                        },
+                    )
+        else:
+            platform_gates.append(
+                {
+                    "gate": "directional_min_timeframe",
+                    "status": (
+                        "passed"
+                        if should_enforce_directional_gate
+                        else "skipped"
+                    ),
+                    "detail": (
+                        f"Directional signal timeframe satisfied ({timeframe or 'unknown'})"
+                        if should_enforce_directional_gate
+                        else "Skipped for non-directional/non-crypto signal"
+                    ),
+                }
+            )
+    else:
+        platform_gates.append(
+            {
+                "gate": "directional_min_timeframe",
+                "status": "skipped",
+                "detail": f"Skipped because decision is '{final_decision}'",
+            }
+        )
+
+    if final_decision == "selected":
         min_order_size_usd = max(0.01, safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0))
         entry_price = safe_float(getattr(runtime_signal, "entry_price", None), None)
         runtime_payload = getattr(runtime_signal, "payload_json", None)
@@ -365,7 +746,6 @@ def apply_platform_decision_gates(
             if entry_price is None or entry_price <= 0.0:
                 entry_price = safe_float(runtime_payload.get("entry_price"), None)
 
-        params = dict(strategy_params or {})
         min_exit_guard_enabled = _coerce_bool(params.get("enforce_min_exit_notional"), True)
         stop_loss_pct = safe_float(params.get("live_stop_loss_pct"), None)
         if stop_loss_pct is None:
@@ -669,6 +1049,147 @@ def apply_platform_decision_gates(
                     if risk_evaluator is None
                     else f"Skipped because decision is '{final_decision}'"
                 ),
+            }
+        )
+
+    if final_decision == "selected":
+        pending_exit_guard_passed = pending_exit_count <= 0
+        checks_payload.append(
+            {
+                "check_key": "pending_live_exit_guard",
+                "check_label": "Pending live exits clear",
+                "passed": pending_exit_guard_passed,
+                "score": float(pending_exit_count),
+                "detail": (
+                    "No non-terminal pending live exits detected"
+                    if pending_exit_guard_passed
+                    else f"{pending_exit_count} non-terminal pending live exit(s) detected"
+                ),
+                "payload": {
+                    "count": pending_exit_count,
+                    "statuses": dict(pending_exit_summary.get("statuses") or {}),
+                    "order_ids": list(pending_exit_summary.get("order_ids") or []),
+                    "market_ids": list(pending_exit_summary.get("market_ids") or []),
+                    "signal_ids": list(pending_exit_summary.get("signal_ids") or []),
+                    "identities": list(pending_exit_summary.get("identities") or []),
+                    "identity_keys": list(pending_exit_summary.get("identity_keys") or []),
+                },
+            }
+        )
+        if pending_exit_guard_passed:
+            platform_gates.append(
+                {
+                    "gate": "pending_live_exit_guard",
+                    "status": "passed",
+                    "detail": "No pending live exits",
+                }
+            )
+        else:
+            final_decision = "blocked"
+            final_reason = (
+                f"Pending live exit guard blocked: {pending_exit_count} pending close order(s) still in-flight"
+            )
+            platform_gates.append(
+                {
+                    "gate": "pending_live_exit_guard",
+                    "status": "blocked",
+                    "detail": final_reason,
+                }
+            )
+            if invoke_hooks and strategy is not None:
+                if hasattr(strategy, "on_blocked"):
+                    strategy.on_blocked(
+                        runtime_signal,
+                        BlockReason.RISK_OPEN_POSITIONS,
+                        {"pending_live_exit": pending_exit_summary},
+                    )
+    else:
+        platform_gates.append(
+            {
+                "gate": "pending_live_exit_guard",
+                "status": "skipped",
+                "detail": f"Skipped because decision is '{final_decision}'",
+            }
+        )
+
+    if final_decision == "selected":
+        signal_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
+        signal_direction = str(getattr(runtime_signal, "direction", "") or "").strip().lower()
+        signal_id = str(getattr(runtime_signal, "id", "") or "").strip()
+        matching_pending_identity: dict[str, Any] | None = None
+        identities = pending_exit_summary.get("identities")
+        if isinstance(identities, list):
+            for item in identities:
+                if not isinstance(item, dict):
+                    continue
+                item_market_id = str(item.get("market_id") or "").strip()
+                item_direction = str(item.get("direction") or "").strip().lower()
+                item_signal_id = str(item.get("signal_id") or "").strip()
+                if not item_market_id or not item_direction:
+                    continue
+                if item_market_id != signal_market_id or item_direction != signal_direction:
+                    continue
+                if item_signal_id and signal_id and item_signal_id != signal_id:
+                    continue
+                matching_pending_identity = {
+                    "order_id": str(item.get("order_id") or "").strip() or None,
+                    "market_id": item_market_id,
+                    "direction": item_direction,
+                    "signal_id": item_signal_id or None,
+                    "status": str(item.get("status") or "").strip().lower() or None,
+                }
+                break
+        identity_guard_passed = matching_pending_identity is None
+        checks_payload.append(
+            {
+                "check_key": "pending_live_exit_identity_guard",
+                "check_label": "Pending live exit identity clear",
+                "passed": identity_guard_passed,
+                "score": None,
+                "detail": (
+                    "No matching non-terminal pending live exit identity"
+                    if identity_guard_passed
+                    else "Matching pending live exit identity is still in-flight"
+                ),
+                "payload": {
+                    "signal_market_id": signal_market_id or None,
+                    "signal_direction": signal_direction or None,
+                    "signal_id": signal_id or None,
+                    "match": matching_pending_identity,
+                },
+            }
+        )
+        if identity_guard_passed:
+            platform_gates.append(
+                {
+                    "gate": "pending_live_exit_identity_guard",
+                    "status": "passed",
+                    "detail": "No matching pending live exit identity",
+                }
+            )
+        else:
+            final_decision = "blocked"
+            final_reason = "Pending live exit identity guard: matching market/direction exit still pending"
+            platform_gates.append(
+                {
+                    "gate": "pending_live_exit_identity_guard",
+                    "status": "blocked",
+                    "detail": final_reason,
+                }
+            )
+            if invoke_hooks and strategy is not None:
+                if hasattr(strategy, "on_blocked"):
+                    strategy.on_blocked(
+                        runtime_signal,
+                        BlockReason.RISK_OPEN_POSITIONS,
+                        {"pending_live_exit_identity": matching_pending_identity},
+                    )
+    else:
+        platform_gates.append(
+            {
+                "gate": "pending_live_exit_identity_guard",
+                "status": "skipped",
+                "detail": f"Skipped because decision is '{final_decision}'",
             }
         )
 

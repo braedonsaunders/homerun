@@ -97,6 +97,7 @@ interface PositionRow {
   marketId: string
   marketQuestion: string
   side: string
+  sideLabel: string
   status: string | null
   size: number | null
   entryPrice: number | null
@@ -181,6 +182,8 @@ function formatRelativeTime(value: string | null): string {
 function normalizeDirection(raw: string | null | undefined): string {
   const direction = String(raw || '').trim().toUpperCase()
   if (!direction) return 'N/A'
+  if (direction === 'BUY_YES' || direction === 'SELL_YES') return 'YES'
+  if (direction === 'BUY_NO' || direction === 'SELL_NO') return 'NO'
   if (direction === 'BUY' || direction === 'LONG' || direction === 'UP') return 'YES'
   if (direction === 'SELL' || direction === 'SHORT' || direction === 'DOWN') return 'NO'
   return direction
@@ -196,10 +199,8 @@ function isNoSide(side: string): boolean {
   return normalized === 'NO' || normalized === 'SELL' || normalized === 'SHORT' || normalized === 'DOWN'
 }
 
-function sideBadgeClass(side: string): string {
-  if (isYesSide(side)) return 'bg-green-500/20 text-green-300 border-transparent'
-  if (isNoSide(side)) return 'bg-red-500/20 text-red-300 border-transparent'
-  return 'bg-muted text-muted-foreground border-transparent'
+function sideBadgeClass(): string {
+  return 'border-border/80 bg-muted/60 text-muted-foreground'
 }
 
 function venueBadgeClass(venue: PositionVenue): string {
@@ -374,6 +375,7 @@ export default function PositionsPanel() {
       const costBasis = position.entry_cost
       const unrealizedPnl = position.unrealized_pnl
       const pnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0
+      const side = normalizeDirection(position.side)
       return {
         key: `sim:${position.accountId}:${position.id}`,
         venue: 'sandbox',
@@ -381,7 +383,8 @@ export default function PositionsPanel() {
         accountLabel: position.accountName,
         marketId: position.market_id,
         marketQuestion: position.market_question,
-        side: normalizeDirection(position.side),
+        side,
+        sideLabel: side,
         status: position.status,
         size: position.quantity,
         entryPrice: position.entry_price,
@@ -419,6 +422,7 @@ export default function PositionsPanel() {
       marketId: string
       marketQuestion: string
       side: string
+      sideLabel: string
       linkedAccountId: string | null
       costBasis: number
       weightedEntry: number
@@ -436,7 +440,8 @@ export default function PositionsPanel() {
       const marketId = readString(order.market_id) || ''
       if (!marketId) return
 
-      const side = normalizeDirection(order.direction)
+      const side = normalizeDirection(order.direction_side ?? order.direction)
+      const sideLabel = readString(order.direction_label) || side
       const notional = Math.abs(toNumber(order.notional_usd))
       const entryPrice = toNumber(order.effective_price ?? order.entry_price)
       const payload = (order.payload && typeof order.payload === 'object')
@@ -456,6 +461,7 @@ export default function PositionsPanel() {
           marketId,
           marketQuestion: readString(order.market_question) || marketId,
           side,
+          sideLabel,
           linkedAccountId,
           costBasis: 0,
           weightedEntry: 0,
@@ -475,6 +481,9 @@ export default function PositionsPanel() {
 
       if (!bucket.linkedAccountId && linkedAccountId) {
         bucket.linkedAccountId = linkedAccountId
+      }
+      if (bucket.sideLabel === bucket.side && sideLabel !== side) {
+        bucket.sideLabel = sideLabel
       }
 
       if (notional <= 0) return
@@ -515,6 +524,7 @@ export default function PositionsPanel() {
           marketId: bucket.marketId,
           marketQuestion: bucket.marketQuestion,
           side: bucket.side,
+          sideLabel: bucket.sideLabel,
           status: bucket.status,
           size,
           entryPrice,
@@ -538,6 +548,7 @@ export default function PositionsPanel() {
       const marketValue = position.size * position.current_price
       const unrealizedPnl = position.unrealized_pnl
       const pnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0
+      const side = normalizeDirection(position.outcome)
       return {
         key: `pm-live:${position.market_id}:${position.token_id}:${position.outcome}`,
         venue: 'polymarket-live',
@@ -545,7 +556,8 @@ export default function PositionsPanel() {
         accountLabel: 'Polymarket',
         marketId: position.market_id,
         marketQuestion: position.market_question,
-        side: normalizeDirection(position.outcome),
+        side,
+        sideLabel: side,
         status: 'open',
         size: position.size,
         entryPrice: position.average_cost,
@@ -571,6 +583,7 @@ export default function PositionsPanel() {
       const marketValue = position.size * position.current_price
       const unrealizedPnl = position.unrealized_pnl
       const pnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0
+      const side = normalizeDirection(position.outcome)
       return {
         key: `kalshi-live:${position.market_id}:${position.token_id}:${position.outcome}`,
         venue: 'kalshi-live',
@@ -578,7 +591,8 @@ export default function PositionsPanel() {
         accountLabel: 'Kalshi',
         marketId: position.market_id,
         marketQuestion: position.market_question,
-        side: normalizeDirection(position.outcome),
+        side,
+        sideLabel: side,
         status: 'open',
         size: position.size,
         entryPrice: position.average_cost,
@@ -615,7 +629,7 @@ export default function PositionsPanel() {
 
     return baseRows.filter((row) => {
       if (query) {
-        const haystack = `${row.marketQuestion} ${row.marketId} ${row.accountLabel} ${row.venueLabel} ${row.side}`.toLowerCase()
+        const haystack = `${row.marketQuestion} ${row.marketId} ${row.accountLabel} ${row.venueLabel} ${row.side} ${row.sideLabel}`.toLowerCase()
         if (!haystack.includes(query)) return false
       }
 
@@ -1026,8 +1040,8 @@ export default function PositionsPanel() {
                         </TableCell>
 
                         <TableCell className="px-2 py-1.5 text-center">
-                          <Badge className={cn('rounded border px-1.5 py-0 text-[10px] uppercase', sideBadgeClass(row.side))}>
-                            {row.side}
+                          <Badge className={cn('rounded border px-1.5 py-0 text-[10px] uppercase', sideBadgeClass())}>
+                            {row.sideLabel}
                           </Badge>
                         </TableCell>
 

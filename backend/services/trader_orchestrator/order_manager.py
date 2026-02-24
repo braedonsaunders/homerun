@@ -85,8 +85,6 @@ def _resolve_token_id_for_leg(
             candidates.append((source, normalized))
 
     _append("leg.token_id", leg.get("token_id"))
-    _append("live_context.selected_token_id", live_context.get("selected_token_id"))
-    _append("payload.selected_token_id", payload.get("selected_token_id"))
 
     outcome = str(leg.get("outcome") or "").strip().lower()
     side = str(leg.get("side") or "buy").strip().lower()
@@ -96,8 +94,10 @@ def _resolve_token_id_for_leg(
     elif outcome == "no":
         _append("live_context.no_token_id", live_context.get("no_token_id"))
         _append("payload.no_token_id", payload.get("no_token_id"))
-    elif side == "buy":
+
+    if side == "buy":
         _append("live_context.selected_token_id", live_context.get("selected_token_id"))
+        _append("payload.selected_token_id", payload.get("selected_token_id"))
 
     token_ids = live_context.get("token_ids")
     if not isinstance(token_ids, list):
@@ -114,13 +114,57 @@ def _resolve_token_id_for_leg(
     return None, None, [entry[0] for entry in candidates]
 
 
+def _resolve_live_price_for_leg(leg: dict[str, Any], live_context: dict[str, Any]) -> float | None:
+    if not isinstance(live_context, dict):
+        return None
+
+    selected_price = safe_float(live_context.get("live_selected_price"), None)
+    yes_price = safe_float(live_context.get("live_yes_price"), None)
+    no_price = safe_float(live_context.get("live_no_price"), None)
+
+    def _valid(price: float | None) -> bool:
+        return price is not None and price > 0
+
+    leg_token = _normalize_id(leg.get("token_id"))
+    selected_token = _normalize_id(live_context.get("selected_token_id"))
+    yes_token = _normalize_id(live_context.get("yes_token_id"))
+    no_token = _normalize_id(live_context.get("no_token_id"))
+    outcome = str(leg.get("outcome") or "").strip().lower()
+    selected_outcome = str(live_context.get("selected_outcome") or "").strip().lower()
+
+    if leg_token:
+        if selected_token and leg_token == selected_token and _valid(selected_price):
+            return selected_price
+        if yes_token and leg_token == yes_token and _valid(yes_price):
+            return yes_price
+        if no_token and leg_token == no_token and _valid(no_price):
+            return no_price
+
+    if outcome == "yes":
+        if _valid(yes_price):
+            return yes_price
+        if selected_outcome == "yes" and _valid(selected_price):
+            return selected_price
+    if outcome == "no":
+        if _valid(no_price):
+            return no_price
+        if selected_outcome == "no" and _valid(selected_price):
+            return selected_price
+
+    if not outcome and not leg_token and _valid(selected_price):
+        return selected_price
+    return None
+
+
 def _resolve_leg_price(leg: dict[str, Any], signal: Any, live_context: dict[str, Any]) -> float | None:
+    live_price = _resolve_live_price_for_leg(leg, live_context)
+    if live_price is not None and live_price > 0:
+        return live_price
+
     limit_price = safe_float(leg.get("limit_price"), None)
     if limit_price is not None and limit_price > 0:
         return limit_price
-    live_price = safe_float(live_context.get("live_selected_price"), None)
-    if live_price is not None and live_price > 0:
-        return live_price
+
     signal_price = safe_float(getattr(signal, "entry_price", None), None)
     if signal_price is not None and signal_price > 0:
         return signal_price

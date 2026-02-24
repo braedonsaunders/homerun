@@ -259,12 +259,78 @@ function buildKalshiSearchUrl(query: NullableString): string | null {
   return `${KALSHI_BASE_URL}/markets?search=${encodeURIComponent(text)}`
 }
 
+function cleanOptionalText(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text || null
+}
+
+function cleanAbsoluteUrlFromUnknown(value: unknown): string | null {
+  const text = cleanOptionalText(value)
+  if (!text) return null
+  return cleanAbsoluteUrl(text)
+}
+
 // Shared resolver for trader/order rows where payloads are often sparse and
 // direct API URLs may be stale. Canonical builders are preferred first.
 export function getTraderOrderPlatformLinks(input: TraderOrderLinkInput): OpportunityPlatformLinks {
   const payload = toRecord(input.payload)
-  const marketId = cleanSegment(input.marketId)
-  const marketQuestion = cleanSegment(input.marketQuestion)
+  const legPayload = toRecord(payload.leg)
+  const liveMarket = toRecord(payload.live_market || payload.liveMarket)
+  const marketId = cleanSegment(
+    String(
+      input.marketId
+      || payload.market_id
+      || payload.marketId
+      || legPayload.market_id
+      || legPayload.marketId
+      || liveMarket.market_id
+      || liveMarket.marketId
+      || ''
+    )
+  )
+  const marketQuestion = cleanSegment(
+    String(
+      input.marketQuestion
+      || payload.market_question
+      || payload.marketQuestion
+      || legPayload.market_question
+      || legPayload.marketQuestion
+      || liveMarket.market_question
+      || liveMarket.marketQuestion
+      || ''
+    )
+  )
+  const rawMarkets = Array.isArray(payload.markets) ? payload.markets : []
+  let matchedMarketPayload: Record<string, unknown> = {}
+  if (rawMarkets.length > 0) {
+    const normalizedMarketId = marketId.toLowerCase()
+    for (const rawMarket of rawMarkets) {
+      const market = toRecord(rawMarket)
+      if (Object.keys(market).length === 0) continue
+      if (!marketId) {
+        matchedMarketPayload = market
+        break
+      }
+      const candidates = [
+        cleanOptionalText(market.id),
+        cleanOptionalText(market.market_id),
+        cleanOptionalText(market.marketId),
+        cleanOptionalText(market.slug),
+        cleanOptionalText(market.market_slug),
+        cleanOptionalText(market.marketSlug),
+        cleanOptionalText(market.ticker),
+        cleanOptionalText(market.condition_id),
+        cleanOptionalText(market.conditionId),
+      ]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.toLowerCase())
+      if (candidates.includes(normalizedMarketId)) {
+        matchedMarketPayload = market
+        break
+      }
+    }
+  }
   const payloadPlatform = cleanSegment(
     String(
       payload.platform
@@ -272,6 +338,9 @@ export function getTraderOrderPlatformLinks(input: TraderOrderLinkInput): Opport
       || payload.execution_platform
       || payload.market_platform
       || payload.source_platform
+      || legPayload.platform
+      || liveMarket.platform
+      || matchedMarketPayload.platform
       || ''
     )
   ).toLowerCase()
@@ -281,17 +350,166 @@ export function getTraderOrderPlatformLinks(input: TraderOrderLinkInput): Opport
     : inferMarketPlatform({
         platform: sourcePlatform || payloadPlatform || undefined,
         marketId,
-        marketSlug: String(payload.market_slug || payload.slug || ''),
-        conditionId: String(payload.condition_id || payload.conditionId || (isConditionId(marketId) ? marketId : '') || ''),
-        eventTicker: String(payload.event_ticker || payload.eventTicker || ''),
+        marketSlug: String(
+          payload.market_slug
+          || payload.marketSlug
+          || payload.slug
+          || legPayload.market_slug
+          || legPayload.marketSlug
+          || legPayload.slug
+          || liveMarket.market_slug
+          || liveMarket.marketSlug
+          || liveMarket.slug
+          || matchedMarketPayload.market_slug
+          || matchedMarketPayload.marketSlug
+          || matchedMarketPayload.slug
+          || ''
+        ),
+        conditionId: String(
+          payload.condition_id
+          || payload.conditionId
+          || legPayload.condition_id
+          || legPayload.conditionId
+          || liveMarket.condition_id
+          || liveMarket.conditionId
+          || matchedMarketPayload.condition_id
+          || matchedMarketPayload.conditionId
+          || (isConditionId(marketId) ? marketId : '')
+          || ''
+        ),
+        eventTicker: String(
+          payload.event_ticker
+          || payload.eventTicker
+          || legPayload.event_ticker
+          || legPayload.eventTicker
+          || liveMarket.event_ticker
+          || liveMarket.eventTicker
+          || matchedMarketPayload.event_ticker
+          || matchedMarketPayload.eventTicker
+          || ''
+        ),
       })
 
-  const eventSlug = String(payload.event_slug || '').trim() || null
-  const marketSlug = String(payload.market_slug || payload.slug || '').trim() || null
-  const conditionId = String(payload.condition_id || payload.conditionId || (isConditionId(marketId) ? marketId : '') || '').trim() || null
-  const marketTicker = String(payload.market_ticker || payload.kalshi_ticker || payload.ticker || '').trim() || null
-  const eventTicker = String(payload.event_ticker || payload.eventTicker || '').trim() || null
-  const seriesTicker = String(payload.series_ticker || payload.seriesTicker || '').trim() || null
+  const eventSlug = cleanOptionalText(
+    payload.event_slug
+    || payload.eventSlug
+    || legPayload.event_slug
+    || legPayload.eventSlug
+    || liveMarket.event_slug
+    || liveMarket.eventSlug
+    || matchedMarketPayload.event_slug
+    || matchedMarketPayload.eventSlug
+  )
+  const marketSlug = cleanOptionalText(
+    payload.market_slug
+    || payload.marketSlug
+    || payload.slug
+    || legPayload.market_slug
+    || legPayload.marketSlug
+    || legPayload.slug
+    || liveMarket.market_slug
+    || liveMarket.marketSlug
+    || liveMarket.slug
+    || matchedMarketPayload.market_slug
+    || matchedMarketPayload.marketSlug
+    || matchedMarketPayload.slug
+  )
+  const conditionId = cleanOptionalText(
+    payload.condition_id
+    || payload.conditionId
+    || legPayload.condition_id
+    || legPayload.conditionId
+    || liveMarket.condition_id
+    || liveMarket.conditionId
+    || matchedMarketPayload.condition_id
+    || matchedMarketPayload.conditionId
+    || (isConditionId(marketId) ? marketId : '')
+  )
+  const marketTicker = cleanOptionalText(
+    payload.market_ticker
+    || payload.marketTicker
+    || payload.kalshi_ticker
+    || payload.ticker
+    || legPayload.market_ticker
+    || legPayload.marketTicker
+    || legPayload.kalshi_ticker
+    || legPayload.ticker
+    || liveMarket.market_ticker
+    || liveMarket.marketTicker
+    || liveMarket.kalshi_ticker
+    || liveMarket.ticker
+    || matchedMarketPayload.market_ticker
+    || matchedMarketPayload.marketTicker
+    || matchedMarketPayload.kalshi_ticker
+    || matchedMarketPayload.ticker
+    || (isLikelyKalshiTicker(marketId) ? marketId : '')
+  )
+  const eventTicker = cleanOptionalText(
+    payload.event_ticker
+    || payload.eventTicker
+    || legPayload.event_ticker
+    || legPayload.eventTicker
+    || liveMarket.event_ticker
+    || liveMarket.eventTicker
+    || matchedMarketPayload.event_ticker
+    || matchedMarketPayload.eventTicker
+  )
+  const seriesTicker = cleanOptionalText(
+    payload.series_ticker
+    || payload.seriesTicker
+    || legPayload.series_ticker
+    || legPayload.seriesTicker
+    || liveMarket.series_ticker
+    || liveMarket.seriesTicker
+    || matchedMarketPayload.series_ticker
+    || matchedMarketPayload.seriesTicker
+  )
+
+  let directPolymarketUrl = (
+    cleanAbsoluteUrlFromUnknown(payload.polymarket_url)
+    || cleanAbsoluteUrlFromUnknown(payload.polymarketUrl)
+    || cleanAbsoluteUrlFromUnknown(legPayload.polymarket_url)
+    || cleanAbsoluteUrlFromUnknown(legPayload.polymarketUrl)
+    || cleanAbsoluteUrlFromUnknown(liveMarket.polymarket_url)
+    || cleanAbsoluteUrlFromUnknown(liveMarket.polymarketUrl)
+    || cleanAbsoluteUrlFromUnknown(matchedMarketPayload.polymarket_url)
+    || cleanAbsoluteUrlFromUnknown(matchedMarketPayload.polymarketUrl)
+  )
+  let directKalshiUrl = (
+    cleanAbsoluteUrlFromUnknown(payload.kalshi_url)
+    || cleanAbsoluteUrlFromUnknown(payload.kalshiUrl)
+    || cleanAbsoluteUrlFromUnknown(legPayload.kalshi_url)
+    || cleanAbsoluteUrlFromUnknown(legPayload.kalshiUrl)
+    || cleanAbsoluteUrlFromUnknown(liveMarket.kalshi_url)
+    || cleanAbsoluteUrlFromUnknown(liveMarket.kalshiUrl)
+    || cleanAbsoluteUrlFromUnknown(matchedMarketPayload.kalshi_url)
+    || cleanAbsoluteUrlFromUnknown(matchedMarketPayload.kalshiUrl)
+  )
+  const genericUrlCandidates = [
+    payload.market_url,
+    payload.marketUrl,
+    payload.url,
+    legPayload.market_url,
+    legPayload.marketUrl,
+    legPayload.url,
+    liveMarket.market_url,
+    liveMarket.marketUrl,
+    liveMarket.url,
+    matchedMarketPayload.market_url,
+    matchedMarketPayload.marketUrl,
+    matchedMarketPayload.url,
+  ]
+  for (const candidate of genericUrlCandidates) {
+    const url = cleanAbsoluteUrlFromUnknown(candidate)
+    if (!url) continue
+    const lowered = url.toLowerCase()
+    if (!directPolymarketUrl && lowered.includes('polymarket.com')) {
+      directPolymarketUrl = url
+    }
+    if (!directKalshiUrl && lowered.includes('kalshi.com')) {
+      directKalshiUrl = url
+    }
+  }
 
   let polymarketUrl = buildPolymarketMarketUrl({
     eventSlug,
@@ -305,12 +523,14 @@ export function getTraderOrderPlatformLinks(input: TraderOrderLinkInput): Opport
     eventSlug,
     seriesTicker,
   })
+  if (!polymarketUrl) polymarketUrl = directPolymarketUrl
+  if (!kalshiUrl) kalshiUrl = directKalshiUrl
 
   if (!polymarketUrl && inferredPlatform !== 'kalshi') {
-    polymarketUrl = buildPolymarketSearchUrl(marketQuestion || marketSlug || eventSlug)
+    polymarketUrl = buildPolymarketSearchUrl(marketQuestion || marketSlug || eventSlug || marketId)
   }
   if (!kalshiUrl && inferredPlatform === 'kalshi') {
-    kalshiUrl = buildKalshiSearchUrl(marketQuestion || marketTicker || eventTicker)
+    kalshiUrl = buildKalshiSearchUrl(marketQuestion || marketTicker || eventTicker || marketId)
   }
 
   const marketLinks: OpportunityLinkEntry[] = []

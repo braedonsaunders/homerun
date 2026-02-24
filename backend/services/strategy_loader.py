@@ -72,6 +72,8 @@ class MyCustomStrategy(BaseStrategy):
     opportunity_ttl_minutes = 45  # None = use global default
     allow_deduplication = True
     binary_only = True
+    accepted_signal_strategy_types = []  # Optional additional strategy_type inputs for evaluate()
+    requires_live_market_context = False  # Optional live-market enrichment hint for orchestrator
 
     default_config = {
         # Detection params

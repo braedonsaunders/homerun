@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     # WebSocket Feed Settings
     WS_FEED_ENABLED: bool = True  # Enable real-time WebSocket price feeds
     WS_RECONNECT_MAX_DELAY: float = 60.0  # Max reconnect backoff seconds
-    WS_PRICE_STALE_SECONDS: float = 30.0  # Mark prices stale after this
+    WS_PRICE_STALE_SECONDS: float = 30.0  # UI/discovery staleness budget for cached prices
+    WS_EXECUTION_PRICE_STALE_SECONDS: float = 1.0  # Trader execution staleness budget for cached prices
+    EXECUTION_MARKET_DATA_MAX_AGE_MS: int = 1200  # Hard freshness gate before trader decisions
     WS_HEARTBEAT_INTERVAL: float = 15.0  # Ping interval to keep connection alive
 
     # Scanner Settings

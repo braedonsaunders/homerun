@@ -2168,6 +2168,267 @@ async def get_traders_overview(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@discovery_router.get("/traders/network")
+async def get_traders_network_graph(
+    min_pair_score: float = Query(default=0.55, ge=0.0, le=1.0),
+    limit_wallets: int = Query(default=180, ge=20, le=500),
+    include_groups: bool = Query(default=True),
+    include_clusters: bool = Query(default=True),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Return a trader entity network graph for interactive graph visualization."""
+    try:
+        min_pair_score = float(_resolve_query_default(min_pair_score))
+        limit_wallets = int(_resolve_query_default(limit_wallets))
+        include_groups = _resolve_query_bool(include_groups)
+        include_clusters = _resolve_query_bool(include_clusters)
+
+        base_graph = await wallet_intelligence.cohort_analyzer.get_network_graph()
+        base_nodes = [dict(node) for node in (base_graph.get("nodes") or []) if isinstance(node, dict)]
+        if not base_nodes:
+            await wallet_intelligence.cohort_analyzer.analyze_cohorts()
+            base_graph = await wallet_intelligence.cohort_analyzer.get_network_graph()
+            base_nodes = [dict(node) for node in (base_graph.get("nodes") or []) if isinstance(node, dict)]
+
+        base_edges = [dict(edge) for edge in (base_graph.get("edges") or []) if isinstance(edge, dict)]
+        base_cohorts = [dict(cohort) for cohort in (base_graph.get("cohorts") or []) if isinstance(cohort, dict)]
+
+        wallet_nodes = [node for node in base_nodes if str(node.get("kind") or "") == "wallet"]
+        if not wallet_nodes:
+            return {
+                "generated_at": base_graph.get("generated_at"),
+                "lookback_days": int(base_graph.get("lookback_days") or 0),
+                "min_pair_score": min_pair_score,
+                "limit_wallets": limit_wallets,
+                "summary": {
+                    "wallet_nodes": 0,
+                    "cluster_nodes": 0,
+                    "group_nodes": 0,
+                    "co_trade_edges": 0,
+                    "cluster_membership_edges": 0,
+                    "group_membership_edges": 0,
+                    "components": 0,
+                    "density": 0.0,
+                },
+                "nodes": [],
+                "edges": [],
+                "cohorts": [],
+                "actions": {
+                    "wallet": ["analyze", "track", "untrack", "add_to_group", "create_group_from_neighbors"],
+                    "group": ["track_members", "delete_group"],
+                },
+            }
+
+        wallet_nodes_sorted = sorted(
+            wallet_nodes,
+            key=lambda node: (
+                int(node.get("degree") or 0),
+                float(node.get("composite_score") or 0.0),
+                float(node.get("rank_score") or 0.0),
+            ),
+            reverse=True,
+        )
+        selected_wallet_nodes = [dict(node) for node in wallet_nodes_sorted[:limit_wallets]]
+        selected_wallet_ids = {str(node.get("id") or "") for node in selected_wallet_nodes}
+        selected_wallet_ids.discard("")
+
+        co_trade_edges = [
+            edge
+            for edge in base_edges
+            if str(edge.get("kind") or "") == "co_trade"
+            and float(edge.get("combined_score") or edge.get("weight") or 0.0) >= min_pair_score
+            and str(edge.get("source") or "") in selected_wallet_ids
+            and str(edge.get("target") or "") in selected_wallet_ids
+        ]
+
+        cluster_edges = []
+        cluster_node_ids: set[str] = set()
+        if include_clusters:
+            cluster_edges = [
+                edge
+                for edge in base_edges
+                if str(edge.get("kind") or "") == "cluster_membership"
+                and str(edge.get("target") or "") in selected_wallet_ids
+            ]
+            cluster_node_ids = {str(edge.get("source") or "") for edge in cluster_edges if str(edge.get("source") or "")}
+
+        node_by_id = {str(node.get("id") or ""): node for node in base_nodes if str(node.get("id") or "")}
+        cluster_nodes = [dict(node_by_id[node_id]) for node_id in cluster_node_ids if node_id in node_by_id]
+        cluster_nodes.sort(
+            key=lambda node: int(node.get("member_count") or 0),
+            reverse=True,
+        )
+
+        group_nodes: list[dict] = []
+        group_edges: list[dict] = []
+        if include_groups:
+            groups = await _fetch_group_payload(
+                session=session,
+                include_members=True,
+                member_limit=500,
+            )
+            for group in groups:
+                group_id = str(group.get("id") or "").strip()
+                if not group_id:
+                    continue
+                members = [
+                    str(member.get("wallet_address") or "").strip().lower()
+                    for member in (group.get("members") or [])
+                    if isinstance(member, dict)
+                ]
+                members = [address for address in members if address]
+                linked_wallet_ids = [
+                    f"wallet:{address}"
+                    for address in members
+                    if f"wallet:{address}" in selected_wallet_ids
+                ]
+                if not linked_wallet_ids:
+                    continue
+
+                node_id = f"group:{group_id}"
+                group_nodes.append(
+                    {
+                        "id": node_id,
+                        "kind": "group",
+                        "group_id": group_id,
+                        "label": str(group.get("name") or f"Group {group_id[:8]}"),
+                        "description": group.get("description"),
+                        "source_type": group.get("source_type"),
+                        "member_count": int(group.get("member_count") or 0),
+                        "linked_wallet_count": len(linked_wallet_ids),
+                        "auto_track_members": bool(group.get("auto_track_members")),
+                        "member_wallet_addresses": members,
+                    }
+                )
+                for wallet_node_id in linked_wallet_ids:
+                    group_edges.append(
+                        {
+                            "id": f"edge:group:{group_id}:{wallet_node_id}",
+                            "kind": "group_membership",
+                            "source": node_id,
+                            "target": wallet_node_id,
+                            "weight": 1.0,
+                        }
+                    )
+
+        edges = co_trade_edges + cluster_edges + group_edges
+        nodes = selected_wallet_nodes + cluster_nodes + group_nodes
+
+        co_trade_degree: dict[str, int] = defaultdict(int)
+        group_links: dict[str, int] = defaultdict(int)
+        cluster_links: dict[str, int] = defaultdict(int)
+        for edge in edges:
+            edge_kind = str(edge.get("kind") or "")
+            source = str(edge.get("source") or "")
+            target = str(edge.get("target") or "")
+            if edge_kind == "co_trade":
+                if source in selected_wallet_ids:
+                    co_trade_degree[source] += 1
+                if target in selected_wallet_ids:
+                    co_trade_degree[target] += 1
+            elif edge_kind == "group_membership":
+                if target in selected_wallet_ids:
+                    group_links[target] += 1
+            elif edge_kind == "cluster_membership":
+                if target in selected_wallet_ids:
+                    cluster_links[target] += 1
+
+        for node in nodes:
+            if str(node.get("kind") or "") != "wallet":
+                continue
+            node_id = str(node.get("id") or "")
+            node["co_trade_degree"] = int(co_trade_degree.get(node_id, 0))
+            node["group_links"] = int(group_links.get(node_id, 0))
+            node["cluster_links"] = int(cluster_links.get(node_id, 0))
+            node["degree"] = int(
+                co_trade_degree.get(node_id, 0)
+                + group_links.get(node_id, 0)
+                + cluster_links.get(node_id, 0)
+            )
+
+        visible_wallet_addresses = {
+            str(node.get("address") or "").strip().lower()
+            for node in nodes
+            if str(node.get("kind") or "") == "wallet" and str(node.get("address") or "").strip()
+        }
+        visible_cohorts: list[dict] = []
+        for cohort in base_cohorts:
+            members = [
+                str(address).strip().lower()
+                for address in (cohort.get("wallet_addresses") or [])
+                if str(address).strip().lower() in visible_wallet_addresses
+            ]
+            if len(members) < 2:
+                continue
+            item = dict(cohort)
+            item["visible_wallet_addresses"] = members
+            item["visible_wallet_count"] = len(members)
+            visible_cohorts.append(item)
+        visible_cohorts.sort(
+            key=lambda cohort: float(cohort.get("avg_combined_score") or 0.0),
+            reverse=True,
+        )
+
+        node_ids = {str(node.get("id") or "") for node in nodes if str(node.get("id") or "")}
+        adjacency: dict[str, set[str]] = defaultdict(set)
+        for edge in edges:
+            source = str(edge.get("source") or "")
+            target = str(edge.get("target") or "")
+            if source in node_ids and target in node_ids:
+                adjacency[source].add(target)
+                adjacency[target].add(source)
+
+        visited: set[str] = set()
+        components = 0
+        for node_id in node_ids:
+            if node_id in visited:
+                continue
+            components += 1
+            queue = [node_id]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                for neighbor in adjacency[current]:
+                    if neighbor not in visited:
+                        queue.append(neighbor)
+
+        wallet_count = len([node for node in nodes if str(node.get("kind") or "") == "wallet"])
+        co_trade_edge_count = len(co_trade_edges)
+        density = 0.0
+        if wallet_count > 1:
+            density = (2.0 * co_trade_edge_count) / (wallet_count * (wallet_count - 1))
+
+        return {
+            "generated_at": base_graph.get("generated_at"),
+            "lookback_days": int(base_graph.get("lookback_days") or 0),
+            "min_pair_score": min_pair_score,
+            "limit_wallets": limit_wallets,
+            "summary": {
+                "wallet_nodes": wallet_count,
+                "cluster_nodes": len([node for node in nodes if str(node.get("kind") or "") == "cluster"]),
+                "group_nodes": len([node for node in nodes if str(node.get("kind") or "") == "group"]),
+                "co_trade_edges": co_trade_edge_count,
+                "cluster_membership_edges": len(cluster_edges),
+                "group_membership_edges": len(group_edges),
+                "components": components,
+                "density": round(density, 4),
+            },
+            "nodes": nodes,
+            "edges": edges,
+            "cohorts": visible_cohorts,
+            "actions": {
+                "wallet": ["analyze", "track", "untrack", "add_to_group", "create_group_from_neighbors"],
+                "group": ["track_members", "delete_group"],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== TRADER GROUPS ====================
 
 

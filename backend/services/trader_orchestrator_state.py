@@ -34,6 +34,7 @@ from models.database import (
 )
 from utils.logger import get_logger
 from services.event_bus import event_bus
+from services.market_cache import CachedMarket
 from services.redis_streams import redis_streams
 from services.worker_state import (
     DB_RETRY_ATTEMPTS,
@@ -58,6 +59,7 @@ from services.trader_orchestrator.templates import (
 from utils.utcnow import utcnow
 from utils.secrets import decrypt_secret
 from utils.converters import safe_float, safe_int, to_iso
+from utils.market_urls import build_polymarket_market_url
 
 logger = get_logger(__name__)
 
@@ -69,6 +71,12 @@ OPEN_ORDER_STATUSES = {"submitted", "executed", "open"}
 PAPER_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
 LIVE_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
 CLEANUP_ELIGIBLE_ORDER_STATUSES = {"submitted", "executed", "open"}
+PENDING_LIVE_EXIT_TERMINAL_STATUSES = {
+    "filled",
+    "superseded_resolution",
+    "superseded_external",
+    "cancelled",
+}
 LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS = 8.0
 REALIZED_WIN_ORDER_STATUSES = {"resolved_win", "closed_win", "win"}
 REALIZED_LOSS_ORDER_STATUSES = {"resolved_loss", "closed_loss", "loss"}
@@ -110,6 +118,30 @@ def _normalize_status_key(status: Any) -> str:
     return str(status or "").strip().lower()
 
 
+def _normalize_condition_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) != 66 or not text.startswith("0x"):
+        return ""
+    body = text[2:]
+    if not body:
+        return ""
+    for char in body:
+        if char not in "0123456789abcdef":
+            return ""
+    return text
+
+
+def _extract_order_condition_id(row: TraderOrder) -> str:
+    payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+    return (
+        _normalize_condition_id(payload.get("condition_id"))
+        or _normalize_condition_id(payload.get("conditionId"))
+        or _normalize_condition_id(payload.get("market_id"))
+        or _normalize_condition_id(payload.get("marketId"))
+        or _normalize_condition_id(row.market_id)
+    )
+
+
 def _active_statuses_for_mode(mode: Any) -> set[str]:
     mode_key = _normalize_mode_key(mode)
     if mode_key == "paper":
@@ -136,6 +168,241 @@ def _position_identity_key(mode: Any, market_id: Any, direction: Any) -> tuple[s
         str(market_id or "").strip(),
         str(direction or "").strip().lower(),
     )
+
+
+def _normalize_crypto_asset(value: Any) -> str:
+    asset = str(value or "").strip().upper()
+    if asset == "XBT":
+        return "BTC"
+    return asset
+
+
+def _normalize_crypto_timeframe(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    compact = raw.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"5m", "5min", "5minute", "5minutes"}:
+        return "5m"
+    if compact in {"15m", "15min", "15minute", "15minutes"}:
+        return "15m"
+    if compact in {"1h", "1hr", "1hour", "60m", "60min"}:
+        return "1h"
+    if compact in {"4h", "4hr", "4hour", "240m", "240min"}:
+        return "4h"
+    return raw
+
+
+def _extract_asset_timeframe_from_payload(payload: Any) -> tuple[str, str]:
+    payload_dict = payload if isinstance(payload, dict) else {}
+    strategy_context = payload_dict.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    live_market = payload_dict.get("live_market")
+    live_market = live_market if isinstance(live_market, dict) else {}
+    position_state = payload_dict.get("position_state")
+    position_state = position_state if isinstance(position_state, dict) else {}
+
+    candidates = [payload_dict, strategy_context, live_market, position_state]
+
+    asset = ""
+    timeframe = ""
+    for candidate in candidates:
+        if not asset:
+            asset = _normalize_crypto_asset(
+                candidate.get("asset")
+                or candidate.get("coin")
+                or candidate.get("symbol")
+            )
+        if not timeframe:
+            timeframe = _normalize_crypto_timeframe(
+                candidate.get("timeframe")
+                or candidate.get("cadence")
+                or candidate.get("interval")
+            )
+        if asset and timeframe:
+            break
+    return asset, timeframe
+
+
+def _position_cap_scope_key(
+    *,
+    position_cap_scope: str,
+    mode: Any,
+    market_id: Any,
+    direction: Any,
+    payload: Any,
+) -> tuple[str, str, str] | None:
+    mode_key = _normalize_mode_key(mode)
+    market_key = str(market_id or "").strip()
+    if not market_key:
+        return None
+    direction_key = str(direction or "").strip().lower() or "__unknown__"
+    scope = str(position_cap_scope or "market_direction").strip().lower()
+    if scope == "market":
+        return mode_key, market_key, "__market__"
+    if scope == "asset_timeframe":
+        asset, timeframe = _extract_asset_timeframe_from_payload(payload)
+        asset_key = asset or f"market:{market_key}"
+        timeframe_key = timeframe or "__unknown_timeframe__"
+        return mode_key, asset_key, timeframe_key
+    return mode_key, market_key, direction_key
+
+
+def _normalize_direction_side(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    token = raw.replace("-", "_").replace(" ", "_")
+    if token in {"yes", "buy_yes", "sell_yes", "buy", "long", "up"}:
+        return "YES"
+    if token in {"no", "buy_no", "sell_no", "sell", "short", "down"}:
+        return "NO"
+    if token.startswith("buy_yes") or token.startswith("sell_yes"):
+        return "YES"
+    if token.startswith("buy_no") or token.startswith("sell_no"):
+        return "NO"
+    return None
+
+
+def _extract_outcome_labels(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    labels: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            label = str(
+                item.get("label")
+                or item.get("outcome")
+                or item.get("name")
+                or item.get("title")
+                or item.get("value")
+                or ""
+            ).strip()
+        else:
+            label = str(item or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _extract_market_outcome_labels(market: dict[str, Any]) -> list[str]:
+    for key in ("outcome_labels", "outcomeLabels", "outcomes", "labels"):
+        labels = _extract_outcome_labels(market.get(key))
+        if labels:
+            return labels
+    return _extract_outcome_labels(market.get("tokens"))
+
+
+def _find_signal_market(signal_payload: dict[str, Any], market_id: str) -> Optional[dict[str, Any]]:
+    raw_markets = signal_payload.get("markets")
+    if not isinstance(raw_markets, list):
+        return None
+    normalized_market_id = str(market_id or "").strip().lower()
+    first_market: Optional[dict[str, Any]] = None
+    market_dict_count = 0
+    for raw_market in raw_markets:
+        if not isinstance(raw_market, dict):
+            continue
+        market_dict_count += 1
+        if first_market is None:
+            first_market = raw_market
+        if not normalized_market_id:
+            continue
+        for candidate in (
+            raw_market.get("id"),
+            raw_market.get("market_id"),
+            raw_market.get("condition_id"),
+            raw_market.get("conditionId"),
+            raw_market.get("slug"),
+            raw_market.get("market_slug"),
+            raw_market.get("ticker"),
+        ):
+            candidate_text = str(candidate or "").strip().lower()
+            if candidate_text and candidate_text == normalized_market_id:
+                return raw_market
+    if market_dict_count == 1:
+        return first_market
+    return None
+
+
+def _resolve_direction_label_from_signal(
+    signal_payload: dict[str, Any],
+    *,
+    market_id: str,
+    direction_side: str,
+) -> Optional[str]:
+    if direction_side not in {"YES", "NO"}:
+        return None
+    labels: list[str] = []
+    matched_market = _find_signal_market(signal_payload, market_id)
+    if isinstance(matched_market, dict):
+        labels = _extract_market_outcome_labels(matched_market)
+    if not labels:
+        for key in ("outcome_labels", "outcomeLabels", "outcomes", "labels"):
+            labels = _extract_outcome_labels(signal_payload.get(key))
+            if labels:
+                break
+    index = 0 if direction_side == "YES" else 1
+    if len(labels) <= index:
+        return None
+    label = str(labels[index] or "").strip()
+    return label or None
+
+
+def _resolve_direction_label_from_payload(payload: dict[str, Any]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    leg = payload.get("leg")
+    if isinstance(leg, dict):
+        for key in ("outcome_label", "outcomeLabel", "outcome_name", "outcomeName"):
+            label = str(leg.get(key) or "").strip()
+            if label:
+                return label
+        outcome = str(leg.get("outcome") or "").strip()
+        if outcome and _normalize_direction_side(outcome) is None:
+            return outcome
+    for key in ("outcome_label", "outcomeLabel"):
+        label = str(payload.get(key) or "").strip()
+        if label:
+            return label
+    outcome = str(payload.get("outcome") or "").strip()
+    if outcome and _normalize_direction_side(outcome) is None:
+        return outcome
+    return None
+
+
+def _resolve_direction_presentation(
+    *,
+    direction: Any,
+    payload: Optional[dict[str, Any]] = None,
+    signal_payload: Optional[dict[str, Any]] = None,
+    market_id: Any = None,
+) -> tuple[Optional[str], str]:
+    payload_obj = payload if isinstance(payload, dict) else {}
+    signal_payload_obj = signal_payload if isinstance(signal_payload, dict) else {}
+    direction_side = _normalize_direction_side(direction)
+    leg = payload_obj.get("leg")
+    leg = leg if isinstance(leg, dict) else {}
+    leg_outcome_side = _normalize_direction_side(leg.get("outcome"))
+    if leg_outcome_side:
+        direction_side = leg_outcome_side
+    direction_label = _resolve_direction_label_from_payload(payload_obj)
+    if not direction_label and direction_side:
+        resolved_market_id = str(
+            market_id
+            or leg.get("market_id")
+            or payload_obj.get("market_id")
+            or ""
+        ).strip()
+        direction_label = _resolve_direction_label_from_signal(
+            signal_payload_obj,
+            market_id=resolved_market_id,
+            direction_side=direction_side,
+        )
+    if not direction_label and direction_side:
+        direction_label = direction_side
+    if not direction_label:
+        raw_direction = str(direction or "").strip()
+        direction_label = raw_direction.upper() if raw_direction else "N/A"
+    return direction_side, direction_label
 
 
 def _first_float_from_dicts(candidates: list[Any], keys: tuple[str, ...]) -> Optional[float]:
@@ -348,15 +615,16 @@ def _sync_order_runtime_payload(
         provider_reconciliation["mapped_status"] = mapped_status_key
 
     if _is_terminal_order_status(status_key):
-        active_provider_statuses = {"open", "submitted", "pending", "placing", "working", "partially_filled", "partial"}
-        if not snapshot_status_key or snapshot_status_key in active_provider_statuses:
-            provider_reconciliation["snapshot_status"] = status_key
-            snapshot_status_key = status_key
-
-        terminal_mapped_status = "cancelled" if status_key in {"cancelled", "failed", "expired"} else "executed"
-        provider_reconciliation["mapped_status"] = terminal_mapped_status
+        if not snapshot_status_key:
+            snapshot_status_key = mapped_status_key or status_key
+            provider_reconciliation["snapshot_status"] = snapshot_status_key
+        if not mapped_status_key:
+            mapped_status_key = "cancelled" if status_key in {"cancelled", "failed", "expired"} else "executed"
+            provider_reconciliation["mapped_status"] = mapped_status_key
         provider_reconciliation["reconciled_at"] = to_iso(now)
-        provider_snapshot["normalized_status"] = terminal_mapped_status
+
+    if snapshot_status_key:
+        provider_snapshot["normalized_status"] = snapshot_status_key
         provider_reconciliation["snapshot"] = provider_snapshot
     elif mapped_status_key:
         provider_snapshot["normalized_status"] = mapped_status_key
@@ -467,10 +735,6 @@ def _normalize_strategy_params(value: Any, source_key: str) -> dict[str, Any]:
     return StrategySDK.normalize_strategy_retention_config(out)
 
 
-def _normalize_traders_scope(value: Any) -> dict[str, Any]:
-    return StrategySDK.validate_trader_scope_config(value)
-
-
 def _validate_traders_scope(scope: dict[str, Any]) -> None:
     modes = list(scope.get("modes") or [])
     if not modes:
@@ -499,8 +763,6 @@ def _normalize_source_config(raw: Any) -> dict[str, Any]:
         "strategy_key": strategy_key,
         "strategy_params": strategy_params,
     }
-    if source_key == "traders":
-        normalized["traders_scope"] = _normalize_traders_scope(item.get("traders_scope"))
     return normalized
 
 
@@ -549,7 +811,8 @@ async def _validate_source_configs(
         strategy_key = _normalize_strategy_key(source_config.get("strategy_key"))
         await _validate_source_strategy_pair(session, source_key, strategy_key)
         if source_key == "traders":
-            _validate_traders_scope(_normalize_traders_scope(source_config.get("traders_scope")))
+            strategy_params = dict(source_config.get("strategy_params") or {})
+            _validate_traders_scope(StrategySDK.validate_trader_scope_config(strategy_params.get("traders_scope")))
 
 
 def _normalize_or_backfill_source_configs(
@@ -733,11 +996,20 @@ def _serialize_decision_with_signal(
             None,
         )
 
+    direction_side, direction_label = _resolve_direction_presentation(
+        direction=direction,
+        payload=row.payload_json if isinstance(row.payload_json, dict) else {},
+        signal_payload=signal_payload_full if isinstance(signal_payload_full, dict) else {},
+        market_id=market_id,
+    )
+
     serialized.update(
         {
             "market_id": market_id,
             "market_question": market_question,
             "direction": direction,
+            "direction_side": direction_side,
+            "direction_label": direction_label,
             "market_price": market_price,
             "model_probability": model_probability,
             "edge_percent": edge_percent,
@@ -750,7 +1022,11 @@ def _serialize_decision_with_signal(
     return serialized
 
 
-def _serialize_order(row: TraderOrder) -> dict[str, Any]:
+def _serialize_order(
+    row: TraderOrder,
+    signal: TradeSignal | None = None,
+    cached_market: CachedMarket | None = None,
+) -> dict[str, Any]:
     payload = dict(row.payload_json or {})
     provider_reconciliation = payload.get("provider_reconciliation")
     if not isinstance(provider_reconciliation, dict):
@@ -761,6 +1037,23 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
     position_state = payload.get("position_state")
     if not isinstance(position_state, dict):
         position_state = {}
+    position_close = payload.get("position_close")
+    if not isinstance(position_close, dict):
+        position_close = {}
+    pending_live_exit = payload.get("pending_live_exit")
+    if not isinstance(pending_live_exit, dict):
+        pending_live_exit = {}
+    close_trigger = str(
+        position_close.get("close_trigger")
+        or pending_live_exit.get("close_trigger")
+        or ""
+    ).strip()
+    close_reason = str(
+        position_close.get("reason")
+        or pending_live_exit.get("reason")
+        or row.reason
+        or ""
+    ).strip()
     filled_notional_usd, filled_shares, average_fill_price = _extract_live_fill_metrics(payload)
     price_anchor = average_fill_price
     if price_anchor is None or price_anchor <= 0:
@@ -808,6 +1101,90 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
             serialized_provider_reconciliation["snapshot_status"] = provider_snapshot_status
         serialized_payload["provider_reconciliation"] = serialized_provider_reconciliation
 
+    cached_market_payload = (
+        cached_market.extra_data
+        if cached_market is not None and isinstance(cached_market.extra_data, dict)
+        else {}
+    )
+    cached_market_slug = str(
+        cached_market_payload.get("slug")
+        or (cached_market.slug if cached_market is not None else "")
+        or ""
+    ).strip()
+    cached_event_slug = str(
+        cached_market_payload.get("event_slug")
+        or cached_market_payload.get("eventSlug")
+        or ""
+    ).strip()
+    cached_condition_id = str(
+        cached_market_payload.get("condition_id")
+        or cached_market_payload.get("conditionId")
+        or (cached_market.condition_id if cached_market is not None else "")
+        or ""
+    ).strip()
+    cached_market_id = str(cached_market_payload.get("id") or "").strip()
+
+    existing_condition_id = str(
+        serialized_payload.get("condition_id")
+        or serialized_payload.get("conditionId")
+        or ""
+    ).strip()
+    condition_id = existing_condition_id or cached_condition_id or _extract_order_condition_id(row)
+    if condition_id:
+        serialized_payload["condition_id"] = condition_id
+
+    market_slug = str(
+        serialized_payload.get("market_slug")
+        or serialized_payload.get("marketSlug")
+        or serialized_payload.get("slug")
+        or ""
+    ).strip()
+    if not market_slug:
+        market_slug = cached_market_slug
+    if market_slug:
+        serialized_payload["market_slug"] = market_slug
+        if not str(serialized_payload.get("slug") or "").strip():
+            serialized_payload["slug"] = market_slug
+
+    event_slug = str(
+        serialized_payload.get("event_slug")
+        or serialized_payload.get("eventSlug")
+        or ""
+    ).strip()
+    if not event_slug:
+        event_slug = cached_event_slug
+    if event_slug:
+        serialized_payload["event_slug"] = event_slug
+
+    existing_market_url = str(
+        serialized_payload.get("market_url")
+        or serialized_payload.get("marketUrl")
+        or serialized_payload.get("url")
+        or ""
+    ).strip()
+    existing_polymarket_url = str(
+        serialized_payload.get("polymarket_url")
+        or serialized_payload.get("polymarketUrl")
+        or ""
+    ).strip()
+    market_url = existing_market_url or existing_polymarket_url
+    if not market_url:
+        market_url = (
+            build_polymarket_market_url(
+                event_slug=event_slug or None,
+                market_slug=market_slug or None,
+                market_id=cached_market_id or row.market_id,
+                condition_id=condition_id or row.market_id,
+            )
+            or ""
+        ).strip()
+    if market_url:
+        if not existing_market_url:
+            serialized_payload["market_url"] = market_url
+            serialized_payload["url"] = market_url
+        if not existing_polymarket_url and "polymarket.com" in market_url.lower():
+            serialized_payload["polymarket_url"] = market_url
+
     mark_updated_at = str(
         position_state.get("last_marked_at")
         or provider_reconciliation.get("reconciled_at")
@@ -818,6 +1195,14 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
     if status_key in {"submitted", "open", "executed"} and current_price is not None and current_price > 0 and quantity > 0:
         unrealized_pnl = (quantity * current_price) - filled_notional_display
 
+    signal_payload = signal.payload_json if signal is not None and isinstance(signal.payload_json, dict) else {}
+    direction_side, direction_label = _resolve_direction_presentation(
+        direction=row.direction,
+        payload=payload,
+        signal_payload=signal_payload,
+        market_id=row.market_id,
+    )
+
     return {
         "id": row.id,
         "trader_id": row.trader_id,
@@ -827,6 +1212,8 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
         "market_id": row.market_id,
         "market_question": row.market_question,
         "direction": row.direction,
+        "direction_side": direction_side,
+        "direction_label": direction_label,
         "mode": row.mode,
         "status": row.status,
         "notional_usd": row.notional_usd,
@@ -846,6 +1233,8 @@ def _serialize_order(row: TraderOrder) -> dict[str, Any]:
         "confidence": row.confidence,
         "actual_profit": row.actual_profit,
         "reason": row.reason,
+        "close_trigger": close_trigger or None,
+        "close_reason": close_reason or None,
         "payload": serialized_payload,
         "error_message": row.error_message,
         "event_id": row.event_id,
@@ -2229,11 +2618,16 @@ async def list_unconsumed_trade_signals(
     trader_id: str,
     sources: Optional[list[str]] = None,
     statuses: Optional[list[str]] = None,
+    strategy_types_by_source: Optional[dict[str, Any]] = None,
     cursor_created_at: Optional[datetime] = None,
     cursor_signal_id: Optional[str] = None,
     limit: int = 200,
 ) -> list[TradeSignal]:
     now = _now().replace(tzinfo=None)
+    normalized_cursor_created_at = cursor_created_at
+    if isinstance(normalized_cursor_created_at, datetime) and normalized_cursor_created_at.tzinfo is not None:
+        normalized_cursor_created_at = normalized_cursor_created_at.astimezone(timezone.utc).replace(tzinfo=None)
+    normalized_cursor_signal_id = str(cursor_signal_id or "").strip()
     signal_sort_ts = func.coalesce(TradeSignal.updated_at, TradeSignal.created_at)
     latest_consumed_at = (
         select(func.max(TraderSignalConsumption.consumed_at))
@@ -2256,6 +2650,16 @@ async def list_unconsumed_trade_signals(
         .order_by(signal_sort_ts.asc(), TradeSignal.id.asc())
         .limit(max(1, min(limit, 5000)))
     )
+    if normalized_cursor_created_at is not None:
+        if normalized_cursor_signal_id:
+            query = query.where(
+                or_(
+                    signal_sort_ts > normalized_cursor_created_at,
+                    and_(signal_sort_ts == normalized_cursor_created_at, TradeSignal.id > normalized_cursor_signal_id),
+                )
+            )
+        else:
+            query = query.where(signal_sort_ts > normalized_cursor_created_at)
     normalized_statuses = (
         [str(status or "").strip().lower() for status in statuses if str(status or "").strip()]
         if statuses is not None
@@ -2270,7 +2674,42 @@ async def list_unconsumed_trade_signals(
         normalized_sources = [str(source).strip().lower() for source in sources if str(source).strip()]
         if not normalized_sources:
             return []
-        query = query.where(TradeSignal.source.in_(normalized_sources))
+        query = query.where(func.lower(func.coalesce(TradeSignal.source, "")).in_(normalized_sources))
+
+    normalized_strategy_types_by_source: dict[str, list[str]] = {}
+    if isinstance(strategy_types_by_source, dict):
+        for raw_source, raw_strategy_types in strategy_types_by_source.items():
+            source_key = str(raw_source or "").strip().lower()
+            if not source_key:
+                continue
+            if isinstance(raw_strategy_types, str):
+                candidates = [raw_strategy_types]
+            elif isinstance(raw_strategy_types, (list, tuple, set)):
+                candidates = list(raw_strategy_types)
+            else:
+                candidates = []
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for raw_strategy in candidates:
+                strategy_type = str(raw_strategy or "").strip().lower()
+                if not strategy_type or strategy_type in seen:
+                    continue
+                seen.add(strategy_type)
+                normalized.append(strategy_type)
+            if normalized:
+                normalized_strategy_types_by_source[source_key] = normalized
+    if normalized_strategy_types_by_source:
+        source_strategy_clauses = []
+        for source_key, allowed_strategy_types in normalized_strategy_types_by_source.items():
+            source_strategy_clauses.append(
+                and_(
+                    func.lower(func.coalesce(TradeSignal.source, "")) == source_key,
+                    func.lower(func.coalesce(TradeSignal.strategy_type, "")).in_(allowed_strategy_types),
+                )
+            )
+        if not source_strategy_clauses:
+            return []
+        query = query.where(or_(*source_strategy_clauses))
     return list((await session.execute(query)).scalars().all())
 
 
@@ -2540,10 +2979,6 @@ async def reconcile_live_provider_orders(
         previous_notional = max(0.0, abs(safe_float(order.notional_usd, 0.0) or 0.0))
         previous_effective_price = safe_float(order.effective_price)
         order_status_to_persist = mapped_status
-        if mapped_status == "executed":
-            order_mode = str(getattr(order, "mode", "") or "").strip().lower()
-            if order_mode == "live":
-                order_status_to_persist = "open"
 
         if mapped_status in {"submitted", "open"}:
             next_notional = max(0.0, filled_notional_usd)
@@ -2986,9 +3421,19 @@ async def get_open_position_count_for_trader(
     session: AsyncSession,
     trader_id: str,
     mode: Optional[str] = None,
+    position_cap_scope: str | None = None,
 ) -> int:
+    scope = str(position_cap_scope or "market_direction").strip().lower()
+    if scope not in {"market_direction", "market", "asset_timeframe"}:
+        scope = "market_direction"
+
     position_query = (
-        select(func.count(TraderPosition.id))
+        select(
+            TraderPosition.mode,
+            TraderPosition.market_id,
+            TraderPosition.direction,
+            TraderPosition.payload_json,
+        )
         .where(TraderPosition.trader_id == trader_id)
         .where(func.lower(func.coalesce(TraderPosition.status, "")) == ACTIVE_POSITION_STATUS)
     )
@@ -2998,13 +3443,26 @@ async def get_open_position_count_for_trader(
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
         else:
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
-    position_count = int((await session.execute(position_query)).scalar() or 0)
+    position_rows = (await session.execute(position_query)).all()
+    active_position_keys: set[tuple[str, str, str]] = set()
+    for row in position_rows:
+        key = _position_cap_scope_key(
+            position_cap_scope=scope,
+            mode=(mode if mode is not None else row.mode),
+            market_id=row.market_id,
+            direction=row.direction,
+            payload=row.payload_json,
+        )
+        if key is not None:
+            active_position_keys.add(key)
 
     order_query = select(
         TraderOrder.mode,
         TraderOrder.status,
         TraderOrder.market_id,
         TraderOrder.direction,
+        TraderOrder.notional_usd,
+        TraderOrder.payload_json,
     ).where(TraderOrder.trader_id == trader_id)
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
@@ -3019,13 +3477,22 @@ async def get_open_position_count_for_trader(
         row_mode = _normalize_mode_key(mode if mode is not None else row.mode)
         if not _is_active_order_status(row_mode, row.status):
             continue
-        market_id = str(row.market_id or "").strip()
-        if not market_id:
+        row_payload = dict(row.payload_json or {})
+        row_notional = safe_float(row.notional_usd, 0.0) or 0.0
+        active_notional = _live_active_notional(row_mode, row.status, row_notional, row_payload)
+        if active_notional <= 0.0:
             continue
-        direction = str(row.direction or "").strip().lower() or "__unknown__"
-        active_order_position_keys.add((row_mode, market_id, direction))
+        key = _position_cap_scope_key(
+            position_cap_scope=scope,
+            mode=row_mode,
+            market_id=row.market_id,
+            direction=row.direction,
+            payload=row_payload,
+        )
+        if key is not None:
+            active_order_position_keys.add(key)
 
-    return max(position_count, len(active_order_position_keys))
+    return max(len(active_position_keys), len(active_order_position_keys))
 
 
 async def get_open_market_ids_for_trader(
@@ -3161,12 +3628,117 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
     return summary
 
 
+def _pending_live_exit_is_non_terminal(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status_key = _normalize_status_key(value.get("status"))
+    return status_key not in PENDING_LIVE_EXIT_TERMINAL_STATUSES
+
+
+async def get_pending_live_exit_summary_for_trader(
+    session: AsyncSession,
+    trader_id: str,
+    mode: str = "live",
+) -> dict[str, Any]:
+    mode_key = _normalize_mode_key(mode)
+    if mode_key != "live":
+        return {
+            "count": 0,
+            "order_ids": [],
+            "market_ids": [],
+            "signal_ids": [],
+            "statuses": {},
+            "identities": [],
+            "identity_keys": [],
+        }
+
+    rows = (
+        await session.execute(
+            select(
+                TraderOrder.id,
+                TraderOrder.status,
+                TraderOrder.market_id,
+                TraderOrder.direction,
+                TraderOrder.signal_id,
+                TraderOrder.payload_json,
+            )
+            .where(TraderOrder.trader_id == trader_id)
+            .where(func.lower(func.coalesce(TraderOrder.mode, "")) == "live")
+        )
+    ).all()
+
+    order_ids: list[str] = []
+    market_ids: set[str] = set()
+    signal_ids: set[str] = set()
+    statuses: dict[str, int] = {}
+    identities: list[dict[str, Any]] = []
+    identity_keys: set[str] = set()
+    for row in rows:
+        if not _is_active_order_status("live", row.status):
+            continue
+        payload = dict(row.payload_json or {})
+        pending_live_exit = payload.get("pending_live_exit")
+        if not _pending_live_exit_is_non_terminal(pending_live_exit):
+            continue
+        order_id = str(row.id or "").strip()
+        market_id = str(row.market_id or "").strip()
+        direction = str(row.direction or "").strip().lower()
+        signal_id = str(row.signal_id or "").strip()
+        status_key = _normalize_status_key((pending_live_exit or {}).get("status")) or "unknown"
+        statuses[status_key] = int(statuses.get(status_key, 0)) + 1
+        if order_id:
+            order_ids.append(order_id)
+        if market_id:
+            market_ids.add(market_id)
+        if signal_id:
+            signal_ids.add(signal_id)
+        identities.append(
+            {
+                "order_id": order_id or None,
+                "market_id": market_id or None,
+                "direction": direction or None,
+                "signal_id": signal_id or None,
+                "status": status_key,
+            }
+        )
+        if market_id and direction:
+            identity_keys.add(f"{market_id}|{direction}|{signal_id or '*'}")
+
+    return {
+        "count": len(order_ids),
+        "order_ids": order_ids,
+        "market_ids": sorted(market_ids),
+        "signal_ids": sorted(signal_ids),
+        "statuses": statuses,
+        "identities": identities,
+        "identity_keys": sorted(identity_keys),
+    }
+
+
+def _order_has_fill(row: TraderOrder) -> bool:
+    mode_key = _normalize_mode_key(row.mode)
+    status_key = _normalize_status_key(row.status)
+    payload = dict(row.payload_json or {})
+    row_notional = max(0.0, abs(safe_float(row.notional_usd, 0.0) or 0.0))
+
+    if mode_key == "live":
+        filled_notional_usd, filled_shares, _ = _extract_live_fill_metrics(payload)
+        if filled_notional_usd > 0.0 or filled_shares > 0.0:
+            return True
+        return status_key == "executed" and row_notional > 0.0
+
+    return row_notional > 0.0
+
+
 async def cleanup_trader_open_orders(
     session: AsyncSession,
     *,
     trader_id: str,
     scope: str = "paper",
     max_age_hours: Optional[int] = None,
+    max_age_seconds: Optional[float] = None,
+    source: Optional[str] = None,
+    require_unfilled: bool = False,
     dry_run: bool = False,
     target_status: str = "cancelled",
     reason: Optional[str] = None,
@@ -3181,8 +3753,11 @@ async def cleanup_trader_open_orders(
 
     query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
     rows = list((await session.execute(query)).scalars().all())
+    source_filter = normalize_source_key(source) if source is not None else ""
     cutoff: Optional[datetime] = None
-    if max_age_hours is not None:
+    if max_age_seconds is not None:
+        cutoff = _now() - timedelta(seconds=max(1.0, float(max_age_seconds)))
+    elif max_age_hours is not None:
         cutoff = _now() - timedelta(hours=max(1, int(max_age_hours)))
 
     candidates: list[TraderOrder] = []
@@ -3190,13 +3765,20 @@ async def cleanup_trader_open_orders(
         mode_key = _normalize_mode_key(row.mode)
         if mode_key not in allowed_modes:
             continue
+        if source_filter and normalize_source_key(row.source) != source_filter:
+            continue
 
         status_key = _normalize_status_key(row.status)
         if status_key not in CLEANUP_ELIGIBLE_ORDER_STATUSES:
             continue
+        if require_unfilled and _order_has_fill(row):
+            continue
 
         if cutoff is not None:
-            age_anchor = row.executed_at or row.updated_at or row.created_at
+            if require_unfilled:
+                age_anchor = row.created_at or row.updated_at or row.executed_at
+            else:
+                age_anchor = row.executed_at or row.updated_at or row.created_at
             if age_anchor is None or age_anchor > cutoff:
                 continue
 
@@ -3352,6 +3934,9 @@ async def cleanup_trader_open_orders(
         "trader_id": trader_id,
         "scope": scope_key,
         "max_age_hours": max_age_hours,
+        "max_age_seconds": max_age_seconds,
+        "source": source_filter or None,
+        "require_unfilled": bool(require_unfilled),
         "dry_run": bool(dry_run),
         "target_status": target_status,
         "matched": len(candidates),
@@ -3918,15 +4503,45 @@ async def list_serialized_trader_orders(
     status: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    return [
-        _serialize_order(row)
-        for row in await list_trader_orders(
-            session,
-            trader_id=trader_id,
-            status=status,
-            limit=limit,
+    rows = await list_trader_orders(
+        session,
+        trader_id=trader_id,
+        status=status,
+        limit=limit,
+    )
+    signal_ids = sorted({str(row.signal_id).strip() for row in rows if str(row.signal_id or "").strip()})
+    signals_by_id: dict[str, TradeSignal] = {}
+    if signal_ids:
+        signal_rows = (
+            await session.execute(
+                select(TradeSignal).where(TradeSignal.id.in_(signal_ids))
+            )
+        ).scalars().all()
+        signals_by_id = {str(signal_row.id): signal_row for signal_row in signal_rows}
+    condition_ids_for_rows = [_extract_order_condition_id(row) for row in rows]
+    condition_ids = sorted({condition_id for condition_id in condition_ids_for_rows if condition_id})
+    cached_markets_by_condition_id: dict[str, CachedMarket] = {}
+    if condition_ids:
+        cached_market_rows = (
+            await session.execute(
+                select(CachedMarket).where(func.lower(CachedMarket.condition_id).in_(condition_ids))
+            )
+        ).scalars().all()
+        for cached_market in cached_market_rows:
+            key = _normalize_condition_id(cached_market.condition_id)
+            if key:
+                cached_markets_by_condition_id[key] = cached_market
+
+    serialized_rows: list[dict[str, Any]] = []
+    for row, condition_id in zip(rows, condition_ids_for_rows):
+        serialized_rows.append(
+            _serialize_order(
+                row,
+                signals_by_id.get(str(row.signal_id or "")),
+                cached_markets_by_condition_id.get(condition_id),
+            )
         )
-    ]
+    return serialized_rows
 
 
 async def list_serialized_trader_events(

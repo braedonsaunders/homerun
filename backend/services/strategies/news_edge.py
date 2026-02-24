@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from config import settings
@@ -198,6 +199,46 @@ class NewsEdgeStrategy(BaseStrategy):
             return set()
         return {str(reason).strip().lower() for reason in reasons if str(reason).strip()}
 
+    @staticmethod
+    def _parse_dt(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    @classmethod
+    def _extract_signal_age_minutes(cls, payload: dict[str, Any]) -> float | None:
+        explicit_age = cls._coerce_optional_float(
+            payload.get("age_minutes")
+            or payload.get("news_age_minutes")
+            or payload.get("minutes_since_published")
+            or payload.get("article_age_minutes")
+        )
+        if explicit_age is not None and explicit_age >= 0:
+            return float(explicit_age)
+
+        now = datetime.now(timezone.utc)
+        for key in (
+            "article_published_at",
+            "published_at",
+            "created_at",
+            "detected_at",
+            "updated_at",
+        ):
+            parsed = cls._parse_dt(payload.get(key))
+            if parsed is None:
+                continue
+            age = (now - parsed).total_seconds() / 60.0
+            if age >= 0:
+                return float(age)
+        return None
+
     def _passes_filters(self, payload: dict[str, Any]) -> bool:
         cfg = self._config
         edge_percent = self._coerce_float(payload.get("edge_percent"), 0.0)
@@ -217,6 +258,10 @@ class NewsEdgeStrategy(BaseStrategy):
         if source_count < min_sources:
             return False
         if bool(cfg.get("require_second_source", False)) and source_count < 2:
+            return False
+        max_signal_age_minutes = max(1.0, float(cfg.get("max_signal_age_minutes", 60.0) or 60.0))
+        signal_age_minutes = self._extract_signal_age_minutes(payload)
+        if signal_age_minutes is not None and signal_age_minutes > max_signal_age_minutes:
             return False
         if bool(cfg.get("require_verifier", False)):
             rejection_reasons = self._extract_rejection_reasons(payload)
@@ -311,6 +356,8 @@ class NewsEdgeStrategy(BaseStrategy):
         target_price = max(0.0, min(1.0, target_price))
         if target_price <= 0.0 and entry_price > 0.0:
             target_price = max(0.0, min(1.0, entry_price + (edge_percent / 100.0)))
+        platform = str(payload.get("platform") or "polymarket").strip().lower() or "polymarket"
+        fee_adjusted_edge = self.fee_adjusted_edge_pct(edge_percent, entry_price, platform=platform)
 
         metadata = {
             k: v
@@ -352,7 +399,7 @@ class NewsEdgeStrategy(BaseStrategy):
             ],
             is_guaranteed=False,
             skip_fee_model=True,
-            custom_roi_percent=edge_percent,
+            custom_roi_percent=fee_adjusted_edge,
             custom_risk_score=1.0 - confidence,
             confidence=confidence,
         )
@@ -562,10 +609,11 @@ class NewsEdgeStrategy(BaseStrategy):
         # Expected profit = target_price - entry_price (per $1 of shares).
         expected_payout = target_price
         total_cost = entry_price
-        gross_profit = expected_payout - total_cost
-        fee = expected_payout * self.fee
-        net_profit = gross_profit - fee
-        roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+        roi = self.fee_adjusted_edge_pct(
+            edge.edge_percent,
+            entry_price,
+            platform=str(getattr(market, "platform", "polymarket") or "polymarket"),
+        )
 
         if roi < settings.NEWS_MIN_EDGE_PERCENT / 2:
             return None
@@ -800,7 +848,7 @@ class NewsEdgeStrategy(BaseStrategy):
             return self.default_exit_check(position, market_state)
         config = getattr(position, "config", None) or {}
         age_minutes = float(getattr(position, "age_minutes", 0) or 0)
-        max_hold = float(config.get("max_hold_minutes", 240) or 240)
+        max_hold = float(config.get("max_hold_minutes", 60) or 60)
         if age_minutes > max_hold:
             current_price = market_state.get("current_price")
             return ExitDecision("close", f"News cycle decay ({age_minutes:.0f} min)", close_price=current_price)

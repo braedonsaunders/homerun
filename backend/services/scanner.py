@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import time
@@ -78,6 +79,7 @@ class ArbitrageScanner:
         self._activity_callbacks: List[Callable] = []
         self._scan_task: Optional[asyncio.Task] = None
         self._scan_lock: asyncio.Lock = asyncio.Lock()
+        self._full_snapshot_lane_lock: asyncio.Lock = asyncio.Lock()
 
         # Live scanning activity line (streamed to frontend via WebSocket)
         self._current_activity: str = "Idle"
@@ -2515,25 +2517,39 @@ class ArbitrageScanner:
     ) -> list[Opportunity]:
         """Run only full-snapshot MARKET_DATA_REFRESH strategies on a bounded market set."""
         cycle_started = time.monotonic()
-        async with self._scan_lock:
+        async with self._full_snapshot_lane_lock:
             now = datetime.now(timezone.utc)
-            if not force and not targeted_condition_ids and not self._full_snapshot_strategy_due(now):
-                return self._opportunities
 
-            if not self._cached_markets:
-                await self._hydrate_catalog_from_db()
-                if not self._cached_markets:
+            def _clone_model(value: object) -> object:
+                if hasattr(value, "model_copy"):
+                    try:
+                        return value.model_copy(deep=True)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                return copy.deepcopy(value)
+
+            async with self._scan_lock:
+                if not force and not targeted_condition_ids and not self._full_snapshot_strategy_due(now):
                     return self._opportunities
 
-            self._full_snapshot_strategy_running = True
-            self._last_full_snapshot_strategy_error = None
+                if not self._cached_markets:
+                    await self._hydrate_catalog_from_db()
+                    if not self._cached_markets:
+                        return self._opportunities
+
+                self._full_snapshot_strategy_running = True
+                self._last_full_snapshot_strategy_error = None
+                cached_events_snapshot = [_clone_model(event) for event in self._cached_events]
+                cached_markets_snapshot = [_clone_model(market) for market in self._cached_markets]
 
             try:
                 await self._ensure_runtime_strategies_loaded()
                 _, full_slugs = self._partition_market_refresh_strategies()
-                self._last_full_snapshot_strategy_count = len(full_slugs)
+                async with self._scan_lock:
+                    self._last_full_snapshot_strategy_count = len(full_slugs)
                 if not full_slugs:
-                    return self._opportunities
+                    async with self._scan_lock:
+                        return self._opportunities
 
                 if targeted_condition_ids:
                     target_set = {
@@ -2541,19 +2557,28 @@ class ArbitrageScanner:
                     }
                     full_snapshot_markets = [
                         market
-                        for market in self._cached_markets
+                        for market in cached_markets_snapshot
                         if str(getattr(market, "condition_id", getattr(market, "id", "")) or "").lower() in target_set
                         and self._is_market_active(market, now)
                     ]
                 else:
-                    full_snapshot_markets = self._select_full_snapshot_markets(now, [], [])
+                    cap = int(getattr(settings, "SCANNER_FULL_SNAPSHOT_MAX_MARKETS", 0) or 0)
+                    full_snapshot_markets = [
+                        market for market in cached_markets_snapshot if self._is_market_active(market, now)
+                    ]
+                    full_snapshot_markets.sort(key=self._market_priority_key, reverse=True)
+                    if cap > 0 and len(full_snapshot_markets) > cap:
+                        full_snapshot_markets = full_snapshot_markets[:cap]
 
                 if not full_snapshot_markets:
-                    self._last_full_snapshot_strategy_market_count = 0
-                    self._last_full_snapshot_strategy_opportunity_count = 0
-                    return self._opportunities
+                    async with self._scan_lock:
+                        self._last_full_snapshot_strategy_market_count = 0
+                        self._last_full_snapshot_strategy_opportunity_count = 0
+                        return self._opportunities
 
-                self._last_full_snapshot_strategy_market_count = len(full_snapshot_markets)
+                async with self._scan_lock:
+                    self._last_full_snapshot_strategy_market_count = len(full_snapshot_markets)
+
                 await self._set_activity(
                     f"Heavy lane: running full-snapshot strategies on {len(full_snapshot_markets)} markets..."
                 )
@@ -2562,9 +2587,7 @@ class ArbitrageScanner:
                 full_snapshot_prices: dict[str, dict] = {}
                 if token_ids:
                     full_snapshot_prices = await self._snapshot_ws_prices(token_ids)
-                self._cached_prices.update(full_snapshot_prices)
                 self._apply_live_prices_to_markets(full_snapshot_markets, full_snapshot_prices)
-                self._update_market_price_history(full_snapshot_markets, full_snapshot_prices, now)
 
                 market_ids = [str(getattr(market, "id", "") or "") for market in full_snapshot_markets]
                 full_event = DataEvent(
@@ -2578,7 +2601,7 @@ class ArbitrageScanner:
                         "affected_market_count": len(market_ids),
                     },
                     markets=full_snapshot_markets,
-                    events=list(self._cached_events),
+                    events=cached_events_snapshot,
                     prices=dict(full_snapshot_prices),
                     scan_mode="full_snapshot_heavy",
                     changed_market_ids=market_ids,
@@ -2606,28 +2629,37 @@ class ArbitrageScanner:
                     full_quality_reports[opp.stable_id or opp.id] = report
                     if report.passed:
                         full_filtered.append(opp)
-                self._quality_reports.update(full_quality_reports)
 
                 full_filtered.sort(key=lambda item: item.roi_percent, reverse=True)
                 full_filtered = self._apply_opportunity_caps(full_filtered)
-                self._last_full_snapshot_strategy_opportunity_count = len(full_filtered)
 
                 if full_filtered:
                     await self._attach_ai_judgments(full_filtered)
-                    self._opportunities = self._merge_opportunities(full_filtered)
 
-                self._opportunities = await self.refresh_opportunity_prices(
-                    self._opportunities,
+                async with self._scan_lock:
+                    self._cached_prices.update(full_snapshot_prices)
+                    self._update_market_price_history(full_snapshot_markets, full_snapshot_prices, now)
+                    self._quality_reports.update(full_quality_reports)
+                    self._last_full_snapshot_strategy_opportunity_count = len(full_filtered)
+                    if full_filtered:
+                        self._opportunities = self._merge_opportunities(full_filtered)
+                    opportunities_snapshot = [_clone_model(opp) for opp in self._opportunities]
+
+                refreshed_opportunities = await self.refresh_opportunity_prices(
+                    opportunities_snapshot,
                     now=now,
                     drop_stale=False,
                 )
-                if self._opportunities:
-                    self._opportunities.sort(key=lambda opp: opp.roi_percent, reverse=True)
-                    self._opportunities = self._apply_opportunity_caps(self._opportunities)
-                    self._queue_market_history_backfill(self._opportunities)
+                if refreshed_opportunities:
+                    refreshed_opportunities.sort(key=lambda opp: opp.roi_percent, reverse=True)
+                    refreshed_opportunities = self._apply_opportunity_caps(refreshed_opportunities)
 
-                self._last_scan = now
-                self._last_full_snapshot_strategy_scan = now
+                async with self._scan_lock:
+                    self._opportunities = refreshed_opportunities
+                    if self._opportunities:
+                        self._queue_market_history_backfill(self._opportunities)
+                    self._last_scan = now
+                    self._last_full_snapshot_strategy_scan = now
 
                 for callback in self._scan_callbacks:
                     try:
@@ -2638,17 +2670,20 @@ class ArbitrageScanner:
                 await self._set_activity(
                     f"Heavy lane complete — {len(full_filtered)} opportunities ({len(full_snapshot_markets)} markets)"
                 )
-                return self._opportunities
+                async with self._scan_lock:
+                    return self._opportunities
             except Exception as exc:
-                self._last_full_snapshot_strategy_error = str(exc)
+                async with self._scan_lock:
+                    self._last_full_snapshot_strategy_error = str(exc)
                 await self._set_activity(f"Heavy lane error: {exc}")
                 raise
             finally:
-                self._full_snapshot_strategy_running = False
-                self._last_full_snapshot_strategy_duration_seconds = round(
-                    max(0.0, time.monotonic() - cycle_started),
-                    3,
-                )
+                async with self._scan_lock:
+                    self._full_snapshot_strategy_running = False
+                    self._last_full_snapshot_strategy_duration_seconds = round(
+                        max(0.0, time.monotonic() - cycle_started),
+                        3,
+                    )
 
     async def _prefetch_news_matches(self, events, markets, prices):
         """Pre-fetch news articles and run semantic matching (no LLM calls).

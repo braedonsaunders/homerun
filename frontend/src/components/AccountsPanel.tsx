@@ -95,6 +95,8 @@ function formatSignedPct(value: number): string {
 function normalizeDirection(raw: string | null | undefined): string {
   const direction = String(raw || '').trim().toUpperCase()
   if (!direction) return 'N/A'
+  if (direction === 'BUY_YES' || direction === 'SELL_YES') return 'YES'
+  if (direction === 'BUY_NO' || direction === 'SELL_NO') return 'NO'
   if (direction === 'BUY' || direction === 'LONG' || direction === 'UP') return 'YES'
   if (direction === 'SELL' || direction === 'SHORT' || direction === 'DOWN') return 'NO'
   return direction
@@ -201,7 +203,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     for (const order of openPaperOrders) {
       const marketId = String(order.market_id || '').trim()
       if (!marketId) continue
-      const side = normalizeDirection(order.direction)
+      const side = normalizeDirection(order.direction_side ?? order.direction)
       positionKeys.add(`${marketId}:${side}`)
       exposureUsd += Math.abs(Number(order.notional_usd || 0))
     }

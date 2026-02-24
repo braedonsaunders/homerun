@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -8,6 +9,18 @@ from services.trader_orchestrator.live_market_context import (
     RuntimeTradeSignalView,
     build_live_signal_contexts,
 )
+
+
+@pytest.fixture(autouse=True)
+def _patch_ws_price_sources(monkeypatch):
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.redis_price_cache.read_prices",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.get_feed_manager",
+        lambda: SimpleNamespace(_started=False),
+    )
 
 
 @pytest.mark.asyncio
@@ -97,6 +110,8 @@ async def test_build_live_signal_contexts_uses_live_prices_and_history(monkeypat
     assert yes_ctx["selected_outcome"] == "yes"
     assert yes_ctx["live_selected_price"] == pytest.approx(0.45)
     assert yes_ctx["live_edge_percent"] == pytest.approx(5.0)
+    assert yes_ctx["market_data_source"] == "http_batch"
+    assert yes_ctx["market_data_age_ms"] is not None
     assert yes_ctx["history_summary"]["points"] == 2
     assert len(yes_ctx["history_tail"]) <= 3
 

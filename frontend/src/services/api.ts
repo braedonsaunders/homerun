@@ -39,6 +39,25 @@ function unwrapApiData(data: any): any {
   return data
 }
 
+function unwrapStrategyManagerPayload(data: any): any {
+  const first = unwrapApiData(data)
+  if (first && typeof first === 'object' && !Array.isArray(first) && 'data' in first) {
+    return unwrapApiData((first as any).data)
+  }
+  return first
+}
+
+function getStrategyManagerItems(data: any): any[] {
+  const payload = unwrapStrategyManagerPayload(data)
+  if (Array.isArray(payload)) {
+    return payload
+  }
+  if (payload && typeof payload === 'object' && Array.isArray((payload as any).items)) {
+    return (payload as any).items
+  }
+  return []
+}
+
 // ==================== TYPES ====================
 
 export interface AIAnalysis {
@@ -749,7 +768,7 @@ export interface PluginValidation {
 
 export const getPlugins = async (): Promise<StrategyPlugin[]> => {
   const { data } = await api.get('/strategy-manager')
-  return unwrapApiData(data)
+  return getStrategyManagerItems(data)
 }
 
 export const createPlugin = async (plugin: {
@@ -870,10 +889,11 @@ export const deleteOpportunityStrategy = async (id: string): Promise<void> => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const getTraderStrategyDocs = async (): Promise<Record<string, any>> => {
   const { data } = await api.get('/strategy-manager/docs')
-  if (Array.isArray(data)) {
+  const payload = unwrapStrategyManagerPayload(data)
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return {}
   }
-  return (data?.items && !Array.isArray(data.items) ? data.items : data) ?? {}
+  return payload
 }
 
 // ==================== WALLETS ====================
@@ -1771,17 +1791,10 @@ export const setTraderOrchestratorLiveKillSwitch = async (enabled: boolean, requ
 
 export type TraderSourceKey = 'scanner' | 'crypto' | 'news' | 'weather' | 'traders'
 
-export interface TraderTradersScope {
-  modes: string[]
-  individual_wallets: string[]
-  group_ids: string[]
-}
-
 export interface TraderSourceConfig {
   source_key: TraderSourceKey | string
   strategy_key: string
   strategy_params: Record<string, any>
-  traders_scope?: TraderTradersScope
 }
 
 export interface Trader {
@@ -1829,6 +1842,8 @@ export interface TraderDecision {
   market_id: string | null
   market_question: string | null
   direction: string | null
+  direction_side?: string | null
+  direction_label?: string | null
   market_price: number | null
   model_probability: number | null
   edge_percent: number | null
@@ -1855,6 +1870,8 @@ export interface TraderOrder {
   market_id: string
   market_question: string | null
   direction: string | null
+  direction_side?: string | null
+  direction_label?: string | null
   mode: string
   status: string
   notional_usd: number | null
@@ -1874,6 +1891,8 @@ export interface TraderOrder {
   confidence: number | null
   actual_profit: number | null
   reason: string | null
+  close_trigger?: string | null
+  close_reason?: string | null
   payload: Record<string, any>
   error_message: string | null
   event_id: string | null
@@ -1912,7 +1931,6 @@ export interface TraderSource {
   default_strategy_key?: string
   strategy_options?: TraderSourceStrategyOption[]
   default_config?: TraderSourceConfig
-  scope_fields?: Array<Record<string, any>>
 }
 
 export interface TraderSourceStrategyOption {
@@ -2009,13 +2027,6 @@ function normalizeTraderFields(raw: any): Trader {
         source_key: sourceKey,
         strategy_key: normalizeTraderStrategyKeyForSource(sourceKey, item.strategy_key),
         strategy_params: item.strategy_params && typeof item.strategy_params === 'object' ? item.strategy_params : {},
-        traders_scope: item.traders_scope && typeof item.traders_scope === 'object'
-          ? {
-              modes: Array.isArray(item.traders_scope.modes) ? item.traders_scope.modes : [],
-              individual_wallets: Array.isArray(item.traders_scope.individual_wallets) ? item.traders_scope.individual_wallets : [],
-              group_ids: Array.isArray(item.traders_scope.group_ids) ? item.traders_scope.group_ids : [],
-            }
-          : undefined,
       }
     })
 
@@ -2180,8 +2191,7 @@ export const getTraderStrategies = async (params?: {
   status?: string
 }): Promise<TraderStrategyDefinition[]> => {
   const { data } = await api.get('/strategy-manager', { params })
-  // Map unified response shape to TraderStrategyDefinition shape
-  const items = data.items || data || []
+  const items = getStrategyManagerItems(data)
   return items.map((s: any) => ({
     ...s,
     strategy_key: s.strategy_key || s.slug,
@@ -2194,12 +2204,13 @@ export const getTraderStrategies = async (params?: {
 
 export const getTraderStrategy = async (id: string): Promise<TraderStrategyDefinition> => {
   const { data } = await api.get(`/strategy-manager/${id}`)
+  const strategy = unwrapStrategyManagerPayload(data) || {}
   return {
-    ...data,
-    strategy_key: data.strategy_key || data.slug,
-    label: data.label || data.name,
-    default_params_json: data.default_params_json || data.config || {},
-    param_schema_json: data.param_schema_json || data.config_schema || {},
+    ...strategy,
+    strategy_key: strategy.strategy_key || strategy.slug,
+    label: strategy.label || strategy.name,
+    default_params_json: strategy.default_params_json || strategy.config || {},
+    param_schema_json: strategy.param_schema_json || strategy.config_schema || {},
     aliases_json: [],
   }
 }
@@ -2833,6 +2844,7 @@ export interface LiveTruthMonitorJobRequest {
   llm_model?: string
   include_strategy_source?: boolean
   max_alerts_for_llm?: number
+  enable_provider_checks?: boolean
 }
 
 export interface LiveTruthMonitorReportPayload {
@@ -3542,12 +3554,12 @@ export const getUnifiedStrategies = async (params?: {
   enabled?: boolean
 }): Promise<UnifiedStrategy[]> => {
   const { data } = await api.get('/strategy-manager', { params })
-  return data.items || []
+  return getStrategyManagerItems(data)
 }
 
 export const getUnifiedStrategy = async (id: string): Promise<UnifiedStrategy> => {
   const { data } = await api.get(`/strategy-manager/${id}`)
-  return unwrapApiData(data)
+  return unwrapStrategyManagerPayload(data)
 }
 
 export const createUnifiedStrategy = async (payload: {
@@ -3622,7 +3634,11 @@ export const getUnifiedStrategyTemplate = async (): Promise<{
 
 export const getUnifiedStrategyDocs = async (): Promise<Record<string, any>> => {
   const { data } = await api.get('/strategy-manager/docs')
-  return unwrapApiData(data)
+  const payload = unwrapStrategyManagerPayload(data)
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {}
+  }
+  return payload
 }
 
 // ==================== UNIFIED DATA SOURCE API ====================

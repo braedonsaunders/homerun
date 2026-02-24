@@ -3,9 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from config import settings
 from services.polymarket import polymarket_client
 from services.trading import OrderSide, OrderType, trading_service
 from utils.converters import safe_float
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _normalize_side(value: Any) -> OrderSide | None:
@@ -55,6 +59,7 @@ async def execute_live_order(
     normalized_side = _normalize_side(side)
     requested_size = max(0.0, safe_float(size, 0.0) or 0.0)
     fallback = safe_float(fallback_price)
+    min_order_size_usd = max(0.01, safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0) or 1.0)
 
     base_payload = {
         "adapter": "live_execution_adapter_v1",
@@ -94,7 +99,9 @@ async def execute_live_order(
         )
 
     resolved_price = fallback
+    price_resolution = "explicit_limit"
     if resolve_live_price:
+        price_resolution = "fallback_price"
         try:
             live_quote = None
             if normalized_side == OrderSide.BUY:
@@ -106,9 +113,27 @@ async def execute_live_order(
                     await polymarket_client.get_price(normalized_token_id, side="SELL")
                 )
             if live_quote is not None and live_quote > 0:
-                resolved_price = live_quote
-        except Exception:
-            pass
+                live_notional = float(live_quote) * requested_size
+                fallback_notional = (float(fallback) * requested_size) if fallback is not None and fallback > 0 else 0.0
+                if (
+                    live_notional + 1e-9 < min_order_size_usd
+                    and fallback is not None
+                    and fallback > 0
+                    and fallback_notional + 1e-9 >= min_order_size_usd
+                ):
+                    resolved_price = fallback
+                    price_resolution = "fallback_min_notional_guard"
+                else:
+                    resolved_price = live_quote
+                    price_resolution = "live_quote"
+        except Exception as exc:
+            logger.warning(
+                "Live quote resolution failed; using fallback price",
+                token_id=normalized_token_id,
+                side=str(normalized_side.value),
+                fallback_price=fallback,
+                exc_info=exc,
+            )
 
     if resolved_price is None or resolved_price <= 0:
         return LiveOrderExecution(
@@ -119,7 +144,7 @@ async def execute_live_order(
                 **base_payload,
                 "submission": "rejected",
                 "resolved_price": resolved_price,
-                "price_resolution": "live_quote" if resolve_live_price else "explicit_limit",
+                "price_resolution": price_resolution,
             },
         )
 
@@ -140,6 +165,14 @@ async def execute_live_order(
             opportunity_id=opportunity_id,
         )
     except Exception as exc:
+        logger.error(
+            "Live order placement failed",
+            token_id=normalized_token_id,
+            side=str(normalized_side.value),
+            resolved_price=resolved_price,
+            requested_size=requested_size,
+            exc_info=exc,
+        )
         return LiveOrderExecution(
             status="failed",
             effective_price=resolved_price,
@@ -148,6 +181,7 @@ async def execute_live_order(
                 **base_payload,
                 "submission": "exception",
                 "resolved_price": resolved_price,
+                "price_resolution": price_resolution,
             },
         )
 
@@ -167,7 +201,7 @@ async def execute_live_order(
             **base_payload,
             "submission": "live",
             "resolved_price": resolved_price,
-            "price_resolution": "live_quote" if resolve_live_price else "explicit_limit",
+            "price_resolution": price_resolution,
             "order_id": order_id,
             "clob_order_id": clob_order_id,
             "trading_status": str(getattr(getattr(order, "status", None), "value", getattr(order, "status", "")) or ""),

@@ -19,15 +19,15 @@ Detection approach (v2 — deterministic + fuzzy hybrid):
    false positives), fuzzy-match against Kalshi markets using Jaccard
    similarity on word tokens
 5. GATE: sport-outcome compatibility — never match WIN vs TIE
-6. GATE: minimum combined-fee threshold (Poly 2% + Kalshi 7% = 9%)
-7. If guaranteed profit after fees > $0.01, emit an opportunity
+6. GATE: dynamic per-leg taker-fee model + post-fee profit floor
+7. If guaranteed profit after fees > configured floor, emit opportunity
 
 Key safeguards (each addresses a documented class of false positive):
 - Platform filter: only iterate Polymarket markets, never Kalshi-vs-Kalshi
 - Outcome guard: parse Kalshi ticker suffix (-TIE/-WIN/-AWY) + question text
 - Multiway guard: stricter matching for events with 2+ Kalshi sub-markets
 - Resolution divergence: flag soccer "90-min" vs "advance" mismatches
-- Minimum profit: reject < $0.01 guaranteed to avoid execution risk drag
+- Minimum profit: reject marginal post-fee spreads to avoid execution risk drag
 """
 
 from __future__ import annotations
@@ -45,20 +45,17 @@ from models import Market, Event, Opportunity
 from config import settings
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from services.quality_filter import QualityFilterOverrides
-from utils.kelly import kelly_fraction
+from utils.kelly import kelly_fraction, polymarket_taker_fee, kalshi_taker_fee
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-#  Fee constants
+#  Fee / execution constants
 # ---------------------------------------------------------------------------
-POLYMARKET_FEE = 0.02  # 2% winner fee
-KALSHI_FEE = 0.07  # 7% Kalshi fee on winnings
-# Combined fee floor: cross-platform trades eat ~9% in fees.  A spread must
-# exceed this to have any profit after fees.  Opportunities below $0.01
-# guaranteed are not worth the non-atomic execution risk.
-CROSS_PLATFORM_MIN_NET_PROFIT = 0.01
+# Cross-platform execution is non-atomic and includes two taker fills.
+# Keep a strict post-fee floor so marginal spreads are rejected.
+CROSS_PLATFORM_MIN_NET_PROFIT = 0.03
 
 # ---------------------------------------------------------------------------
 #  Text normalisation for fuzzy matching
@@ -119,8 +116,9 @@ _ABBREVIATIONS: dict[str, str] = {
 _RE_PUNCTUATION = re.compile(f"[{re.escape(string.punctuation)}]")
 _RE_MULTI_SPACE = re.compile(r"\s+")
 
-# Minimum Jaccard similarity to consider two markets as matching
-_MATCH_THRESHOLD = 0.35
+# Minimum Jaccard similarity to consider two markets as matching.
+# Higher threshold sharply reduces false positives from fuzzy title overlap.
+_MATCH_THRESHOLD = 0.60
 
 # ---------------------------------------------------------------------------
 #  3-way sports market outcome detection
@@ -719,6 +717,67 @@ def _has_resolution_divergence_risk(question: str) -> bool:
     return any(kw in q for kw in _RESOLUTION_DIVERGENCE_KEYWORDS)
 
 
+def _polymarket_fee_per_contract(price: float) -> float:
+    return max(0.0, polymarket_taker_fee(max(0.0, min(1.0, price))))
+
+
+def _kalshi_fee_per_contract(price: float) -> float:
+    return max(0.0, kalshi_taker_fee(max(0.0, min(1.0, price)), contracts=1))
+
+
+_RULE_AXIS_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "time_scope",
+        (
+            r"\b90[\s-]?min(?:ute)?\b",
+            r"\bregulation\b",
+            r"\bextra[\s-]?time\b",
+            r"\bpenalt(?:y|ies)\b",
+            r"\badvance(s|d)?\b",
+            r"\bqualif(y|ies|ied)\b",
+        ),
+    ),
+    (
+        "calendar_scope",
+        (
+            r"\bend of day\b",
+            r"\bby end of day\b",
+            r"\btoday\b",
+            r"\bthis week\b",
+            r"\bthis month\b",
+            r"\bon\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+            r"\bon\s+\d{4}-\d{2}-\d{2}",
+            r"\bby\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|end|eod|\d)",
+            r"\bbefore\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d)",
+        ),
+    ),
+)
+
+
+def _resolution_rule_signature(question: str) -> dict[str, set[str]]:
+    q = str(question or "").lower()
+    out: dict[str, set[str]] = {}
+    for axis, patterns in _RULE_AXIS_PATTERNS:
+        matches: set[str] = set()
+        for pattern in patterns:
+            if re.search(pattern, q):
+                matches.add(pattern)
+        if matches:
+            out[axis] = matches
+    return out
+
+
+def _resolution_rules_compatible(question_a: str, question_b: str) -> bool:
+    sig_a = _resolution_rule_signature(question_a)
+    sig_b = _resolution_rule_signature(question_b)
+    for axis in {"time_scope", "calendar_scope"}:
+        axis_a = sig_a.get(axis, set())
+        axis_b = sig_b.get(axis, set())
+        if axis_a and axis_b and axis_a.isdisjoint(axis_b):
+            return False
+    return True
+
+
 class CrossPlatformStrategy(BaseStrategy):
     """Cross-platform arbitrage between Polymarket and Kalshi.
 
@@ -846,8 +905,6 @@ class CrossPlatformStrategy(BaseStrategy):
         pm_no: float,
         k_yes: float,
         k_no: float,
-        poly_fee: float = POLYMARKET_FEE,
-        kalshi_fee: float = KALSHI_FEE,
     ) -> Optional[dict]:
         """Check both arb legs and return the best one if profitable.
 
@@ -870,8 +927,8 @@ class CrossPlatformStrategy(BaseStrategy):
                 "desc": "Buy YES on Polymarket + NO on Kalshi",
                 "cost_a": pm_yes,
                 "cost_b": k_no,
-                "fee_a": poly_fee,
-                "fee_b": kalshi_fee,
+                "fee_a": _polymarket_fee_per_contract(pm_yes),
+                "fee_b": _kalshi_fee_per_contract(k_no),
                 "pm_action": "BUY",
                 "pm_outcome": "YES",
                 "k_action": "BUY",
@@ -882,8 +939,8 @@ class CrossPlatformStrategy(BaseStrategy):
                 "desc": "Buy NO on Polymarket + YES on Kalshi",
                 "cost_a": pm_no,
                 "cost_b": k_yes,
-                "fee_a": poly_fee,
-                "fee_b": kalshi_fee,
+                "fee_a": _polymarket_fee_per_contract(pm_no),
+                "fee_b": _kalshi_fee_per_contract(k_yes),
                 "pm_action": "BUY",
                 "pm_outcome": "NO",
                 "k_action": "BUY",
@@ -896,20 +953,16 @@ class CrossPlatformStrategy(BaseStrategy):
             if total_cost >= 1.0:
                 continue
 
-            # Guaranteed payout is $1.00 (one side always wins).
-            # Profit depends on which side wins (different fees apply).
-            profit_if_a_wins = (1.0 - leg["cost_a"]) * (1.0 - leg["fee_a"]) - leg["cost_b"]
-            profit_if_b_wins = (1.0 - leg["cost_b"]) * (1.0 - leg["fee_b"]) - leg["cost_a"]
-
-            # Guaranteed profit is the minimum of both scenarios
-            guaranteed = min(profit_if_a_wins, profit_if_b_wins)
+            # Both legs are taker entries, so entry fees are paid regardless of
+            # which side resolves YES.
+            guaranteed = 1.0 - total_cost - leg["fee_a"] - leg["fee_b"]
             if guaranteed <= 0:
                 continue
 
             if guaranteed > best_net:
                 best_net = guaranteed
                 gross = 1.0 - total_cost
-                fee_estimate = gross - guaranteed
+                fee_estimate = leg["fee_a"] + leg["fee_b"]
                 roi = (guaranteed / total_cost) * 100.0
 
                 best_leg = {
@@ -923,9 +976,11 @@ class CrossPlatformStrategy(BaseStrategy):
                     "pm_action": leg["pm_action"],
                     "pm_outcome": leg["pm_outcome"],
                     "pm_price": leg["cost_a"],
+                    "pm_fee": leg["fee_a"],
                     "k_action": leg["k_action"],
                     "k_outcome": leg["k_outcome"],
                     "k_price": leg["cost_b"],
+                    "k_fee": leg["fee_b"],
                 }
 
         return best_leg
@@ -1044,6 +1099,15 @@ class CrossPlatformStrategy(BaseStrategy):
             kalshi_market, similarity = match
             pairs_matched += 1
 
+            if not _resolution_rules_compatible(pm_market.question, kalshi_market.question):
+                outcome_rejections += 1
+                logger.debug(
+                    "Cross-platform: rejected incompatible resolution rules",
+                    polymarket_question=pm_market.question[:120],
+                    kalshi_question=kalshi_market.question[:120],
+                )
+                continue
+
             # Get Kalshi prices
             k_yes = kalshi_market.yes_price
             k_no = kalshi_market.no_price
@@ -1114,9 +1178,15 @@ class CrossPlatformStrategy(BaseStrategy):
                 markets=risk_markets,
                 positions=positions,
                 event=parent_event,
+                skip_fee_model=True,
+                custom_roi_percent=arb["roi"],
             )
 
             if opp:
+                opp.gross_profit = float(arb["gross_profit"])
+                opp.fee = float(arb["fee_estimate"])
+                opp.net_profit = float(arb["net_profit"])
+                opp.roi_percent = float(arb["roi"])
                 # Override the risk score to account for match confidence.
                 # Lower match similarity -> higher risk.
                 confidence_penalty = max(0.0, 0.30 * (1.0 - similarity))

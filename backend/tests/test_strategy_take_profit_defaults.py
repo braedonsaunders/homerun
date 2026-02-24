@@ -12,19 +12,15 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.strategies.bayesian_cascade import BayesianCascadeStrategy
-from services.strategies.bias_fader import BiasFaderStrategy
 from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
 from services.strategies.correlation_arb import CorrelationArbStrategy
 from services.strategies.crypto_spike_reversion import CryptoSpikeReversionStrategy
 from services.strategies.flash_crash_reversion import FlashCrashReversionStrategy
-from services.strategies.flb_exploiter import FLBExploiterStrategy
-from services.strategies.liquidity_vacuum import LiquidityVacuumStrategy
 from services.strategies.market_making import MarketMakingStrategy
 from services.strategies.prob_surface_arb import ProbSurfaceArbStrategy
 from services.strategies.stat_arb import StatArbStrategy
 from services.strategies.tail_end_carry import TailEndCarryStrategy
 from services.strategies.temporal_decay import TemporalDecayStrategy
-from services.strategies.term_premium import TermPremiumStrategy
 from services.strategies.traders_confluence import TradersConfluenceStrategy
 from services.strategies.vpin_toxicity import VPINToxicityStrategy
 
@@ -73,21 +69,16 @@ MARKET_STATE = {
     ("strategy_cls", "expected_tp"),
     [
         (BayesianCascadeStrategy, 12.0),
-        (BiasFaderStrategy, 12.0),
         (CorrelationArbStrategy, 12.0),
-        (LiquidityVacuumStrategy, 12.0),
         (ProbSurfaceArbStrategy, 12.0),
         (StatArbStrategy, 12.0),
         (TradersConfluenceStrategy, 12.0),
         (VPINToxicityStrategy, 12.0),
-        (TermPremiumStrategy, 10.0),
         (TemporalDecayStrategy, 10.0),
-        (BtcEthHighFreqStrategy, 8.0),
         (CryptoSpikeReversionStrategy, 8.0),
         (FlashCrashReversionStrategy, 8.0),
         (MarketMakingStrategy, 8.0),
         (TailEndCarryStrategy, 8.0),
-        (FLBExploiterStrategy, 8.0),
     ],
 )
 def test_should_exit_applies_default_take_profit(strategy_cls, expected_tp):
@@ -104,21 +95,16 @@ def test_should_exit_applies_default_take_profit(strategy_cls, expected_tp):
     "strategy_cls",
     [
         BayesianCascadeStrategy,
-        BiasFaderStrategy,
         CorrelationArbStrategy,
-        LiquidityVacuumStrategy,
         ProbSurfaceArbStrategy,
         StatArbStrategy,
         TradersConfluenceStrategy,
         VPINToxicityStrategy,
-        TermPremiumStrategy,
         TemporalDecayStrategy,
-        BtcEthHighFreqStrategy,
         CryptoSpikeReversionStrategy,
         FlashCrashReversionStrategy,
         MarketMakingStrategy,
         TailEndCarryStrategy,
-        FLBExploiterStrategy,
     ],
 )
 def test_should_exit_preserves_configured_take_profit(strategy_cls):
@@ -146,9 +132,9 @@ def test_btc_highfreq_stop_loss_waits_for_near_close_window():
         },
     )
 
-    assert decision.action == "hold"
-    assert "Stop loss deferred" in decision.reason
-    assert position.config["stop_loss_policy"] == "near_close_only"
+    assert decision.action == "close"
+    assert "Stop loss hit" in decision.reason
+    assert position.config["stop_loss_policy"] == "always"
     assert position.config["stop_loss_activation_seconds"] == 90
 
 
@@ -198,6 +184,71 @@ def test_btc_highfreq_stop_loss_timeframe_override_is_applied():
     assert position.config["stop_loss_activation_seconds"] == 20
 
 
+def test_btc_highfreq_rapid_window_stall_exits_at_breakeven():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position(
+        {
+            "rapid_exit_window_minutes_5m": 1.0,
+            "min_hold_minutes": 10.0,
+            "take_profit_pct": 50.0,
+        }
+    )
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.current_price = 0.50
+    position.highest_price = 0.50
+    position.age_minutes = 2.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.50,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Rapid window stalled without upside" in decision.reason
+    assert position.config["rapid_exit_window_minutes"] == 1.0
+
+
+def test_btc_highfreq_rapid_window_stall_not_flagged_when_price_increased():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position(
+        {
+            "rapid_exit_window_minutes_5m": 1.0,
+            "take_profit_pct": 50.0,
+            "min_hold_minutes": 0.0,
+        }
+    )
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.current_price = 0.50
+    position.highest_price = 0.53
+    position.age_minutes = 2.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.50,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    rapid_state = position.strategy_context.get("_crypto_hf_rapid_exit_state")
+    assert decision.action == "close"
+    assert "Trailing stop" in decision.reason
+    assert isinstance(rapid_state, dict)
+    assert rapid_state.get("evaluated") is True
+    assert rapid_state.get("stalled") is False
+
+
 def test_btc_highfreq_trailing_stop_waits_for_activation_profit():
     strategy = BtcEthHighFreqStrategy()
     position = _make_position()
@@ -244,3 +295,241 @@ def test_btc_highfreq_trailing_stop_arms_after_activation_profit():
 
     assert decision.action == "close"
     assert "Trailing stop" in decision.reason
+
+
+def test_btc_highfreq_rapid_peak_mode_arms_without_immediate_exit():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position()
+    position.strategy_context = {"timeframe": "15m"}
+    position.entry_price = 0.50
+    position.current_price = 0.56
+    position.highest_price = 0.56
+    position.age_minutes = 0.5
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.56,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 600,
+            "min_order_size_usd": 1.0,
+        },
+    )
+
+    rapid_state = position.strategy_context.get("_crypto_hf_rapid_exit_state")
+    assert decision.action == "hold"
+    assert isinstance(rapid_state, dict)
+    assert rapid_state.get("armed") is True
+    assert position.config["take_profit_pct"] > 15.0
+
+
+def test_btc_highfreq_rapid_peak_mode_exits_on_backside_reversal():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position()
+    position.strategy_context = {"timeframe": "15m"}
+    position.entry_price = 0.50
+    position.current_price = 0.55
+    position.highest_price = 0.58
+    position.age_minutes = 1.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.55,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 600,
+            "min_order_size_usd": 1.0,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Adaptive backside peak exit" in decision.reason
+
+
+def test_btc_highfreq_executable_notional_guard_forces_early_exit():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_loss_position()
+    position.strategy_context = {"timeframe": "15m"}
+    position.entry_price = 0.50
+    position.current_price = 0.20
+    position.highest_price = 0.53
+    position.age_minutes = 1.0
+    position.filled_size = 6.0
+    position.notional_usd = 3.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.20,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 600,
+            "min_order_size_usd": 1.0,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Executable-notional guard" in decision.reason
+
+
+def test_btc_highfreq_underwater_rebound_salvage_exit_after_dwell_and_fade():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_loss_position(
+        {
+            "underwater_rebound_exit_enabled": True,
+            "underwater_dwell_minutes_5m": 1.0,
+            "underwater_recovery_ratio_min_5m": 0.25,
+            "underwater_rebound_pct_min_5m": 3.0,
+            "underwater_exit_fade_pct_5m": 0.30,
+            "underwater_timeout_minutes_5m": 20.0,
+            "underwater_timeout_loss_pct": 20.0,
+            "stop_loss_pct": 50.0,
+            "take_profit_pct": 100.0,
+            "trailing_stop_pct": 0.0,
+            "min_hold_minutes": 0.0,
+        }
+    )
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.lowest_price = 0.45
+    position.highest_price = 0.50
+    position.current_price = 0.45
+    position.age_minutes = 1.0
+
+    first = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.45,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert first.action == "hold"
+
+    position.current_price = 0.48
+    position.highest_price = 0.50
+    position.age_minutes = 3.0
+    second = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.48,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert second.action == "hold"
+
+    position.current_price = 0.477
+    position.highest_price = 0.50
+    position.age_minutes = 3.2
+    third = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.477,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert third.action == "close"
+    assert "Underwater rebound salvage exit" in third.reason
+    assert position.config["underwater_dwell_minutes"] == 1.0
+
+
+def test_btc_highfreq_underwater_timeout_stop_exits_after_dwell():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_loss_position(
+        {
+            "underwater_rebound_exit_enabled": True,
+            "underwater_dwell_minutes_5m": 3.0,
+            "underwater_recovery_ratio_min_5m": 0.9,
+            "underwater_rebound_pct_min_5m": 8.0,
+            "underwater_exit_fade_pct_5m": 2.0,
+            "underwater_timeout_minutes_5m": 1.5,
+            "underwater_timeout_loss_pct": 6.0,
+            "stop_loss_pct": 50.0,
+            "take_profit_pct": 100.0,
+            "trailing_stop_pct": 0.0,
+            "min_hold_minutes": 0.0,
+        }
+    )
+    position.strategy_context = {"timeframe": "5m"}
+    position.entry_price = 0.50
+    position.lowest_price = 0.45
+    position.highest_price = 0.50
+    position.current_price = 0.46
+    position.age_minutes = 0.2
+
+    first = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.46,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+    assert first.action == "hold"
+
+    position.current_price = 0.46
+    position.age_minutes = 2.0
+    second = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.46,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert second.action == "close"
+    assert "Underwater timeout stop" in second.reason
+
+
+def test_btc_highfreq_near_expiry_flatten_guard_closes_small_pnl_position():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_position(
+        {
+            "take_profit_pct": 100.0,
+            "stop_loss_pct": 50.0,
+            "trailing_stop_pct": 0.0,
+            "min_hold_minutes": 0.0,
+        }
+    )
+    position.strategy_context = {"timeframe": "15m"}
+    position.entry_price = 0.50
+    position.current_price = 0.503
+    position.highest_price = 0.503
+    position.age_minutes = 1.0
+    position.filled_size = 20.0
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.503,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 60,
+            "min_order_size_usd": 1.0,
+        },
+    )
+
+    assert decision.action == "close"
+    assert "Near-expiry flatten guard" in decision.reason

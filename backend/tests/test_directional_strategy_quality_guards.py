@@ -13,7 +13,6 @@ if str(BACKEND_ROOT) not in sys.path:
 from models.market import Market, Event, Token
 from services.strategies.temporal_decay import TemporalDecayStrategy
 from services.strategies.market_making import MarketMakingStrategy
-from services.strategies.liquidity_vacuum import LiquidityVacuumStrategy
 from utils.utcnow import utcnow
 
 
@@ -234,38 +233,3 @@ def test_market_making_skips_multileg_contracts():
     opps = strategy.detect(events=[], markets=[market], prices={})
     assert opps == []
 
-
-def test_liquidity_vacuum_marks_directional_and_uses_target_payout():
-    strategy = LiquidityVacuumStrategy()
-    market = _make_market(
-        market_id="vac1",
-        question="Will BTC close above 100k today?",
-        yes_price=0.45,
-        no_price=0.55,
-        liquidity=30000.0,
-        volume=60000.0,
-    )
-    yes_token, no_token = market.clob_token_ids
-    event = Event(
-        id="ev1",
-        slug="ev1",
-        title="BTC Daily",
-        description="",
-        category="crypto",
-        markets=[market],
-        active=True,
-        closed=False,
-    )
-    opps = strategy.detect(
-        events=[event],
-        markets=[market],
-        prices={
-            yes_token: {"mid": 0.45, "bid_depth": 5000.0, "ask_depth": 500.0},
-            no_token: {"mid": 0.55},
-        },
-    )
-
-    assert len(opps) >= 1
-    opp = opps[0]
-    assert opp.is_guaranteed is False
-    assert opp.expected_payout < 1.0

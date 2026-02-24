@@ -79,10 +79,14 @@ class LiveTruthMonitorRequest(BaseModel):
         le=10.0,
         description="Polling cadence passed to the monitor script.",
     )
-    run_llm_analysis: bool = Field(default=True)
+    run_llm_analysis: bool = Field(default=False)
     llm_model: Optional[str] = Field(default=None, min_length=2, max_length=200)
     include_strategy_source: bool = Field(default=True)
     max_alerts_for_llm: int = Field(default=80, ge=1, le=400)
+    enable_provider_checks: bool = Field(
+        default=False,
+        description="Enable provider/wallet API reconciliation checks (higher runtime/API load).",
+    )
 
 
 class CodeBacktestRequest(BaseModel):

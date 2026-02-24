@@ -35,7 +35,6 @@ from models.database import (  # noqa: E402
 from services.polymarket import polymarket_client  # noqa: E402
 from services.trader_orchestrator_state import _extract_live_fill_metrics  # noqa: E402
 from services.trading import trading_service  # noqa: E402
-from services.wallet_ws_monitor import WalletMonitorEvent  # noqa: E402
 from utils.converters import safe_float, safe_int  # noqa: E402
 
 
@@ -57,6 +56,8 @@ DECISION_FRESHNESS_SECONDS = 120
 WALLET_EVENT_STALE_SECONDS = 120
 WALLET_BLOCK_STALE_SECONDS = 60
 DB_ALERT_WORKERS = {"trader_orchestrator", "trader_reconciliation", "event_dispatcher", "snapshot_broadcaster"}
+WALLET_CONTEXT_REFRESH_SECONDS = 60.0
+PROVIDER_SNAPSHOT_REFRESH_SECONDS = 30.0
 
 
 @dataclass
@@ -65,6 +66,7 @@ class MonitorConfig:
     poll_seconds: float
     trader_id: Optional[str]
     trader_name: Optional[str]
+    enable_provider_checks: bool
 
 
 def utcnow() -> datetime:
@@ -82,7 +84,17 @@ def to_iso(dt: Optional[datetime]) -> str:
 def parse_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
-    text = value.strip().replace("Z", "+00:00")
+    text = value.strip()
+    if text.endswith("Z"):
+        t_index = text.find("T")
+        has_offset = False
+        if t_index >= 0:
+            time_part = text[t_index + 1 : -1]
+            has_offset = ("+" in time_part) or ("-" in time_part[1:])
+        if has_offset:
+            text = text[:-1]
+        else:
+            text = f"{text[:-1]}+00:00"
     try:
         dt = datetime.fromisoformat(text)
     except ValueError:
@@ -290,7 +302,7 @@ async def _load_cycle_state(trader_id: str) -> dict[str, Any]:
                     select(TraderDecision)
                     .where(TraderDecision.trader_id == trader_id)
                     .order_by(desc(TraderDecision.created_at))
-                    .limit(50)
+                    .limit(1)
                 )
             )
             .scalars()
@@ -304,17 +316,12 @@ async def _load_cycle_state(trader_id: str) -> dict[str, Any]:
                         (TraderEvent.trader_id == trader_id) | (TraderEvent.trader_id.is_(None))
                     )
                     .order_by(desc(TraderEvent.created_at))
-                    .limit(80)
+                    .limit(1)
                 )
             )
             .scalars()
             .all()
         )
-
-        wallet_monitor_total = int((await session.execute(select(func.count(WalletMonitorEvent.id)))).scalar() or 0)
-        wallet_monitor_last = (
-            await session.execute(select(func.max(WalletMonitorEvent.detected_at)))
-        ).scalar_one_or_none()
 
         orchestrator_snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
         worker_rows = list(
@@ -355,8 +362,6 @@ async def _load_cycle_state(trader_id: str) -> dict[str, Any]:
             "execution_orders": execution_rows,
             "decisions": decisions,
             "events": events,
-            "wallet_monitor_total": wallet_monitor_total,
-            "wallet_monitor_last": wallet_monitor_last,
             "orchestrator_snapshot": orchestrator_snapshot,
             "worker_snapshots": worker_rows,
             "status_counts": status_counts,
@@ -418,6 +423,21 @@ async def _fetch_wallet_context() -> dict[str, Any]:
     }
 
 
+def _empty_wallet_context(error: str = "wallet_context_unavailable") -> dict[str, Any]:
+    return {
+        "ready": False,
+        "error": error,
+        "signature_type": safe_int(getattr(settings, "POLYMARKET_SIGNATURE_TYPE", 1), 1),
+        "eoa_address": "",
+        "wallet_address": "",
+        "proxy_funder": "",
+        "execution_wallet": "",
+        "eoa_token_sizes": {},
+        "proxy_token_sizes": {},
+        "execution_token_sizes": {},
+    }
+
+
 def _build_provider_id_set(orders: list[TraderOrder], exec_rows_by_order: dict[str, list[ExecutionSessionOrder]]) -> set[str]:
     clob_ids: set[str] = set()
     for order in orders:
@@ -429,28 +449,6 @@ def _build_provider_id_set(orders: list[TraderOrder], exec_rows_by_order: dict[s
             if candidate:
                 clob_ids.add(candidate)
     return clob_ids
-
-
-def _build_local_open_token_sizes(orders: list[TraderOrder]) -> dict[str, float]:
-    totals: dict[str, float] = {}
-    for order in orders:
-        status = normalize_status(order.status)
-        if status not in LIVE_ACTIVE_STATUSES:
-            continue
-        payload = dict(order.payload_json or {})
-        token_id = _extract_token_id(payload)
-        if not token_id:
-            continue
-        _, filled_size, _ = _extract_live_fill_metrics(payload)
-        if filled_size <= 0:
-            entry_price = safe_float(order.effective_price, 0.0) or safe_float(order.entry_price, 0.0) or 0.0
-            notional = safe_float(order.notional_usd, 0.0) or 0.0
-            if entry_price > 0 and notional > 0:
-                filled_size = notional / entry_price
-        if filled_size <= 0:
-            continue
-        totals[token_id] = totals.get(token_id, 0.0) + float(filled_size)
-    return totals
 
 
 def _make_alert_record(
@@ -517,6 +515,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                 "trader_id": trader_id,
                 "trader_name": str(trader.name),
                 "strategy_key": str(trader.strategy_key),
+                "provider_checks_enabled": bool(config.enable_provider_checks),
                 "report_path": str(report_path),
             }
         ),
@@ -529,6 +528,12 @@ async def run_monitor(config: MonitorConfig) -> int:
     alerts_count_by_rule: dict[str, int] = {}
     total_cycles = 0
     monitor_errors: list[str] = []
+    cached_wallet_ctx: Optional[dict[str, Any]] = None
+    cached_wallet_ctx_mono = -1.0
+    wallet_ctx_refresh_task: Optional[asyncio.Task[dict[str, Any]]] = None
+    cached_provider_ids: tuple[str, ...] = ()
+    cached_provider_snapshots: dict[str, dict[str, Any]] = {}
+    cached_provider_snapshots_mono = -1.0
 
     with report_path.open("w", encoding="utf-8") as report:
         while True:
@@ -541,7 +546,33 @@ async def run_monitor(config: MonitorConfig) -> int:
             total_cycles += 1
             try:
                 cycle_state = await _load_cycle_state(trader_id)
-                wallet_ctx = await _fetch_wallet_context()
+                if config.enable_provider_checks:
+                    if wallet_ctx_refresh_task is not None and wallet_ctx_refresh_task.done():
+                        try:
+                            cached_wallet_ctx = wallet_ctx_refresh_task.result()
+                            cached_wallet_ctx_mono = now_mono
+                        except Exception as exc:
+                            monitor_errors.append(f"wallet_context_error:{exc}")
+                            if cached_wallet_ctx is None:
+                                cached_wallet_ctx = _empty_wallet_context(str(exc))
+                        finally:
+                            wallet_ctx_refresh_task = None
+                    if (
+                        wallet_ctx_refresh_task is None
+                        and (
+                            cached_wallet_ctx is None
+                            or cached_wallet_ctx_mono < 0.0
+                            or (now_mono - cached_wallet_ctx_mono) >= WALLET_CONTEXT_REFRESH_SECONDS
+                        )
+                    ):
+                        wallet_ctx_refresh_task = asyncio.create_task(_fetch_wallet_context())
+                    wallet_ctx = cached_wallet_ctx or _empty_wallet_context(
+                        "wallet_context_refresh_pending"
+                        if wallet_ctx_refresh_task is not None
+                        else "wallet_context_unavailable"
+                    )
+                else:
+                    wallet_ctx = _empty_wallet_context("provider_checks_disabled")
                 orders: list[TraderOrder] = cycle_state["orders"]
                 exec_rows: list[ExecutionSessionOrder] = cycle_state["execution_orders"]
                 decisions: list[TraderDecision] = cycle_state["decisions"]
@@ -554,15 +585,33 @@ async def run_monitor(config: MonitorConfig) -> int:
                         continue
                     exec_rows_by_order.setdefault(key, []).append(exec_row)
 
-                provider_ids = _build_provider_id_set(orders, exec_rows_by_order)
+                provider_ids = tuple(sorted(_build_provider_id_set(orders, exec_rows_by_order)))
                 provider_snapshots: dict[str, dict[str, Any]] = {}
-                if provider_ids:
-                    try:
-                        provider_snapshots = await trading_service.get_order_snapshots_by_clob_ids(sorted(provider_ids))
-                    except Exception as exc:
-                        monitor_errors.append(f"provider_snapshot_error:{exc}")
-
-                local_open_token_sizes = _build_local_open_token_sizes(orders)
+                if config.enable_provider_checks and provider_ids:
+                    should_refresh_provider_snapshots = (
+                        cached_provider_snapshots_mono < 0.0
+                        or provider_ids != cached_provider_ids
+                        or (now_mono - cached_provider_snapshots_mono) >= PROVIDER_SNAPSHOT_REFRESH_SECONDS
+                    )
+                    if should_refresh_provider_snapshots:
+                        try:
+                            cached_provider_snapshots = await trading_service.get_order_snapshots_by_clob_ids(
+                                list(provider_ids)
+                            )
+                            cached_provider_snapshots_mono = now_mono
+                            cached_provider_ids = provider_ids
+                        except Exception as exc:
+                            monitor_errors.append(f"provider_snapshot_error:{exc}")
+                            if provider_ids != cached_provider_ids:
+                                cached_provider_ids = provider_ids
+                    provider_snapshots = {
+                        clob_id: dict(cached_provider_snapshots.get(clob_id) or {})
+                        for clob_id in provider_ids
+                    }
+                else:
+                    cached_provider_ids = ()
+                    cached_provider_snapshots = {}
+                    cached_provider_snapshots_mono = now_mono
 
                 new_alerts: list[dict[str, Any]] = []
                 now = utcnow()
@@ -716,7 +765,12 @@ async def run_monitor(config: MonitorConfig) -> int:
                     market_question = _extract_market_question(order)
 
                     # Local active with no provider evidence.
-                    if status in LIVE_ACTIVE_STATUSES and not order_provider_clob_id:
+                    if (
+                        config.enable_provider_checks
+                        and wallet_ctx["ready"]
+                        and status in LIVE_ACTIVE_STATUSES
+                        and not order_provider_clob_id
+                    ):
                         new_alerts.append(
                             _make_alert_record(
                                 ts=now,
@@ -738,7 +792,11 @@ async def run_monitor(config: MonitorConfig) -> int:
                         )
 
                     # Entry truth: provider filled but local failed/pending stale.
-                    if provider_status in {"filled", "matched", "executed"} and status in {"failed", "submitted"}:
+                    if (
+                        config.enable_provider_checks
+                        and provider_status in {"filled", "matched", "executed"}
+                        and status in {"failed", "submitted"}
+                    ):
                         order_age_seconds = max(
                             0.0,
                             (now - (order.updated_at.replace(tzinfo=timezone.utc) if order.updated_at and order.updated_at.tzinfo is None else (order.updated_at or now))).total_seconds()
@@ -820,7 +878,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                         )
 
                     # Terminal close with partial or missing provider close fill.
-                    if status in LIVE_TERMINAL_STATUSES and status.startswith("closed"):
+                    if config.enable_provider_checks and status in LIVE_TERMINAL_STATUSES and status.startswith("closed"):
                         pending_exit_status = ""
                         pending_exit_filled_size = 0.0
                         pending_exit_fill_price = None
@@ -884,6 +942,8 @@ async def run_monitor(config: MonitorConfig) -> int:
                         and execution_wallet == proxy_wallet
                     )
                     if (
+                        config.enable_provider_checks
+                        and
                         token_id
                         and provider_status in {"filled", "matched", "executed"}
                         and eoa_size <= 1e-9
@@ -911,7 +971,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                         )
 
                     # Open local without provider evidence and without wallet evidence.
-                    if status in LIVE_ACTIVE_STATUSES:
+                    if config.enable_provider_checks and wallet_ctx["ready"] and status in LIVE_ACTIVE_STATUSES:
                         execution_size = wallet_ctx["execution_token_sizes"].get(token_id, 0.0) if token_id else 0.0
                         if (
                             provider_status in {"", "missing", "cancelled"}
@@ -1061,15 +1121,6 @@ async def run_monitor(config: MonitorConfig) -> int:
                             )
 
                 # Wallet monitor down + no provider fallback.
-                wallet_last = cycle_state["wallet_monitor_last"]
-                wallet_age_seconds = None
-                if wallet_last is not None:
-                    wallet_last_aware = (
-                        wallet_last.replace(tzinfo=timezone.utc)
-                        if wallet_last.tzinfo is None
-                        else wallet_last.astimezone(timezone.utc)
-                    )
-                    wallet_age_seconds = (now - wallet_last_aware).total_seconds()
                 provider_updates_recent = False
                 provider_fallback_recent = False
                 provider_fallback_age = None
@@ -1077,6 +1128,8 @@ async def run_monitor(config: MonitorConfig) -> int:
                 wallet_monitor_ws_connected = False
                 wallet_monitor_fallback_polling = False
                 wallet_monitor_tracked_wallets = 0
+                wallet_monitor_events_detected_total = 0
+                wallet_monitor_last_detected_at_iso = ""
                 wallet_last_event_age = None
                 wallet_last_block_age = None
                 wallet_last_fallback_poll_age = None
@@ -1121,6 +1174,13 @@ async def run_monitor(config: MonitorConfig) -> int:
                             0,
                             safe_int(stats_json.get("wallet_monitor_tracked_wallets"), 0),
                         )
+                        wallet_monitor_events_detected_total = max(
+                            wallet_monitor_events_detected_total,
+                            max(
+                                0,
+                                safe_int(stats_json.get("wallet_monitor_events_detected_total"), 0),
+                            ),
+                        )
                         worker_wallet_event_at = parse_iso(stats_json.get("wallet_monitor_last_event_detected_at"))
                         worker_wallet_block_at = parse_iso(
                             stats_json.get("wallet_monitor_last_block_processed_at")
@@ -1129,14 +1189,12 @@ async def run_monitor(config: MonitorConfig) -> int:
                         worker_wallet_poll_at = parse_iso(stats_json.get("wallet_monitor_last_fallback_poll_at"))
                         if worker_wallet_event_at is not None:
                             wallet_last_event_age = (now - worker_wallet_event_at).total_seconds()
+                            wallet_monitor_last_detected_at_iso = to_iso(worker_wallet_event_at)
                         if worker_wallet_block_at is not None:
                             wallet_last_block_age = (now - worker_wallet_block_at).total_seconds()
                         if worker_wallet_poll_at is not None:
                             wallet_last_fallback_poll_age = (now - worker_wallet_poll_at).total_seconds()
                 wallet_event_recent = (
-                    wallet_age_seconds is not None
-                    and wallet_age_seconds <= WALLET_EVENT_STALE_SECONDS
-                ) or (
                     wallet_last_event_age is not None
                     and wallet_last_event_age <= WALLET_EVENT_STALE_SECONDS
                 )
@@ -1153,6 +1211,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                     and not wallet_event_recent
                     and not wallet_transport_recent
                     and not provider_fallback_recent
+                    and not provider_updates_recent
                 ):
                     new_alerts.append(
                         _make_alert_record(
@@ -1162,7 +1221,6 @@ async def run_monitor(config: MonitorConfig) -> int:
                             signal_id="",
                             market_question="",
                             local_status_reason=(
-                                f"wallet_monitor_age={wallet_age_seconds} "
                                 f"wallet_event_age={wallet_last_event_age} "
                                 f"wallet_block_age={wallet_last_block_age} "
                                 f"wallet_fallback_poll_age={wallet_last_fallback_poll_age} "
@@ -1215,8 +1273,9 @@ async def run_monitor(config: MonitorConfig) -> int:
                         "is_enabled": bool(cycle_state["trader"].is_enabled),
                         "is_paused": bool(cycle_state["trader"].is_paused),
                         "status_counts": cycle_state["status_counts"],
-                        "wallet_monitor_total": int(cycle_state["wallet_monitor_total"]),
-                        "wallet_monitor_last_detected_at": to_iso(cycle_state["wallet_monitor_last"]),
+                        "wallet_monitor_total": wallet_monitor_events_detected_total,
+                        "wallet_monitor_last_detected_at": wallet_monitor_last_detected_at_iso,
+                        "provider_checks_enabled": bool(config.enable_provider_checks),
                         "provider_ready": bool(wallet_ctx["ready"]),
                         "execution_wallet": wallet_ctx["execution_wallet"],
                         "eoa_wallet": wallet_ctx["wallet_address"],
@@ -1240,6 +1299,8 @@ async def run_monitor(config: MonitorConfig) -> int:
                 missed_ticks = int((cycle_finished_mono - next_cycle_mono) // config.poll_seconds)
                 if missed_ticks > 0:
                     next_cycle_mono += missed_ticks * config.poll_seconds
+    if wallet_ctx_refresh_task is not None and not wallet_ctx_refresh_task.done():
+        wallet_ctx_refresh_task.cancel()
 
     finished_at = utcnow()
     expected_cycles = max(1, int(math.ceil(config.duration_seconds / config.poll_seconds)))
@@ -1257,6 +1318,7 @@ async def run_monitor(config: MonitorConfig) -> int:
         "cycle_coverage_pct": (float(total_cycles) / float(expected_cycles) * 100.0),
         "alerts_total": int(sum(alerts_count_by_rule.values())),
         "alerts_by_rule": alerts_count_by_rule,
+        "provider_checks_enabled": bool(config.enable_provider_checks),
         "monitor_errors": monitor_errors,
         "report_path": str(report_path),
     }
@@ -1272,12 +1334,20 @@ def parse_args() -> MonitorConfig:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--trader-id", type=str, default=os.environ.get("TRADER_ID"))
     parser.add_argument("--trader-name", type=str, default=os.environ.get("TRADER_NAME"))
+    parser.add_argument(
+        "--provider-checks",
+        dest="enable_provider_checks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable provider and wallet API reconciliation checks (use --no-provider-checks to disable).",
+    )
     args = parser.parse_args()
     return MonitorConfig(
         duration_seconds=max(1, int(args.duration_seconds)),
         poll_seconds=max(0.2, float(args.poll_seconds)),
         trader_id=str(args.trader_id).strip() if args.trader_id else None,
         trader_name=str(args.trader_name).strip() if args.trader_name else None,
+        enable_provider_checks=bool(args.enable_provider_checks),
     )
 
 

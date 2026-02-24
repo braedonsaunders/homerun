@@ -16,6 +16,7 @@ import asyncio
 import math
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta
 from itertools import combinations
 from utils.utcnow import utcnow
@@ -1654,12 +1655,14 @@ class WhaleCohortAnalyzer:
 
     def __init__(self):
         self._cached_cohorts: List[dict] = []
+        self._cached_graph: dict = self._empty_graph()
 
     async def analyze_cohorts(self) -> List[dict]:
         wallets = await self._get_smart_wallets()
         if len(wallets) < 2:
             logger.info("Not enough wallets for cohort analysis", count=len(wallets))
             self._cached_cohorts = []
+            self._cached_graph = self._empty_graph()
             return []
 
         addresses = [w["address"] for w in wallets]
@@ -1667,6 +1670,7 @@ class WhaleCohortAnalyzer:
         if not rollups:
             logger.info("No rollup data for cohort analysis")
             self._cached_cohorts = []
+            self._cached_graph = self._empty_graph()
             return []
 
         participation = self._build_participation_matrix(rollups)
@@ -1674,13 +1678,27 @@ class WhaleCohortAnalyzer:
         pair_scores = self._compute_pairwise_scores(participation)
 
         cohorts = self._find_cohorts(pair_scores, participation)
+        graph = await self._build_network_graph_payload(
+            participation=participation,
+            pair_scores=pair_scores,
+            cohorts=cohorts,
+        )
 
         self._cached_cohorts = cohorts
-        logger.info("Whale cohort analysis complete", cohorts=len(cohorts))
+        self._cached_graph = graph
+        logger.info(
+            "Whale cohort analysis complete",
+            cohorts=len(cohorts),
+            nodes=len(graph.get("nodes") or []),
+            edges=len(graph.get("edges") or []),
+        )
         return cohorts
 
     async def get_cohorts(self) -> List[dict]:
-        return list(self._cached_cohorts)
+        return deepcopy(self._cached_cohorts)
+
+    async def get_network_graph(self) -> dict:
+        return deepcopy(self._cached_graph)
 
     async def _get_smart_wallets(self) -> List[dict]:
         async with AsyncSessionLocal() as session:
@@ -1900,6 +1918,264 @@ class WhaleCohortAnalyzer:
 
         cohorts.sort(key=lambda c: c["avg_combined_score"], reverse=True)
         return cohorts
+
+    def _empty_graph(self) -> dict:
+        return {
+            "generated_at": None,
+            "lookback_days": self.LOOKBACK_DAYS,
+            "min_shared_markets": self.MIN_SHARED_MARKETS,
+            "min_combined_score": self.MIN_COMBINED_SCORE,
+            "summary": {
+                "wallet_nodes": 0,
+                "cluster_nodes": 0,
+                "co_trade_edges": 0,
+                "cluster_membership_edges": 0,
+                "cohort_count": 0,
+            },
+            "nodes": [],
+            "edges": [],
+            "cohorts": [],
+        }
+
+    async def _build_network_graph_payload(
+        self,
+        *,
+        participation: Dict[str, Dict[str, dict]],
+        pair_scores: Dict[Tuple[str, str], dict],
+        cohorts: List[dict],
+    ) -> dict:
+        wallet_addresses = sorted(participation.keys())
+        if not wallet_addresses:
+            return self._empty_graph()
+
+        profiles = await self._load_wallet_profiles(wallet_addresses)
+
+        degree_by_wallet: Dict[str, int] = defaultdict(int)
+        co_trade_edges: List[dict] = []
+        for (wallet_a, wallet_b), score in sorted(
+            pair_scores.items(),
+            key=lambda item: item[1].get("combined_score", 0.0),
+            reverse=True,
+        ):
+            source_id = f"wallet:{wallet_a}"
+            target_id = f"wallet:{wallet_b}"
+            combined_score = float(score.get("combined_score") or 0.0)
+            degree_by_wallet[wallet_a] += 1
+            degree_by_wallet[wallet_b] += 1
+            co_trade_edges.append(
+                {
+                    "id": f"edge:co_trade:{wallet_a}:{wallet_b}",
+                    "kind": "co_trade",
+                    "source": source_id,
+                    "target": target_id,
+                    "weight": round(combined_score, 4),
+                    "combined_score": round(combined_score, 4),
+                    "shared_markets": int(score.get("shared_markets") or 0),
+                    "direction_agreement": round(float(score.get("direction_agreement_pct") or 0.0), 4),
+                    "timing_correlation": round(float(score.get("timing_correlation") or 0.0), 4),
+                }
+            )
+
+        cohorts_payload: List[dict] = []
+        cohort_memberships: Dict[str, List[str]] = defaultdict(list)
+        for idx, cohort in enumerate(cohorts, start=1):
+            cohort_id = f"cohort_{idx}"
+            members = sorted([str(address).lower() for address in (cohort.get("wallet_addresses") or []) if address])
+            cohorts_payload.append(
+                {
+                    "id": cohort_id,
+                    "wallet_addresses": members,
+                    "avg_combined_score": round(float(cohort.get("avg_combined_score") or 0.0), 4),
+                    "shared_market_count": int(cohort.get("shared_market_count") or 0),
+                    "direction_agreement": round(float(cohort.get("direction_agreement") or 0.0), 4),
+                }
+            )
+            for address in members:
+                cohort_memberships[address].append(cohort_id)
+
+        wallet_nodes: List[dict] = []
+        cluster_members: Dict[str, List[str]] = defaultdict(list)
+        for address in wallet_addresses:
+            profile = profiles.get(address, {})
+            cluster_id = str(profile.get("cluster_id") or "").strip()
+            if cluster_id:
+                cluster_members[cluster_id].append(address)
+            wallet_nodes.append(
+                {
+                    "id": f"wallet:{address}",
+                    "kind": "wallet",
+                    "address": address,
+                    "label": profile.get("display_name") or f"{address[:6]}...{address[-4:]}",
+                    "username": profile.get("username"),
+                    "tracked": bool(profile.get("tracked")),
+                    "tracked_label": profile.get("tracked_label"),
+                    "in_top_pool": bool(profile.get("in_top_pool")),
+                    "pool_tier": profile.get("pool_tier"),
+                    "rank_score": round(float(profile.get("rank_score") or 0.0), 4),
+                    "composite_score": round(float(profile.get("composite_score") or 0.0), 4),
+                    "total_pnl": round(float(profile.get("total_pnl") or 0.0), 2),
+                    "win_rate": round(float(profile.get("win_rate") or 0.0), 4),
+                    "total_trades": int(profile.get("total_trades") or 0),
+                    "activity_market_count": len(participation.get(address) or {}),
+                    "degree": int(degree_by_wallet.get(address, 0)),
+                    "tags": list(profile.get("tags") or []),
+                    "cluster_id": cluster_id or None,
+                    "cluster_label": profile.get("cluster_label"),
+                    "cohort_ids": sorted(cohort_memberships.get(address) or []),
+                }
+            )
+
+        wallet_nodes.sort(
+            key=lambda node: (
+                int(node.get("degree") or 0),
+                float(node.get("composite_score") or 0.0),
+                float(node.get("rank_score") or 0.0),
+            ),
+            reverse=True,
+        )
+
+        cluster_nodes: List[dict] = []
+        cluster_edges: List[dict] = []
+        for cluster_id, members in sorted(
+            cluster_members.items(),
+            key=lambda item: len(item[1]),
+            reverse=True,
+        ):
+            member_profiles = [profiles.get(address, {}) for address in members]
+            avg_composite_score = (
+                sum(float(profile.get("composite_score") or 0.0) for profile in member_profiles) / max(len(member_profiles), 1)
+            )
+            combined_pnl = sum(float(profile.get("total_pnl") or 0.0) for profile in member_profiles)
+            tracked_member_count = sum(1 for profile in member_profiles if bool(profile.get("tracked")))
+            cluster_label = ""
+            for profile in member_profiles:
+                label = str(profile.get("cluster_label") or "").strip()
+                if label:
+                    cluster_label = label
+                    break
+            if not cluster_label:
+                cluster_label = f"Cluster {cluster_id[:8]}"
+
+            cluster_node_id = f"cluster:{cluster_id}"
+            cluster_nodes.append(
+                {
+                    "id": cluster_node_id,
+                    "kind": "cluster",
+                    "cluster_id": cluster_id,
+                    "label": cluster_label,
+                    "member_count": len(members),
+                    "tracked_member_count": tracked_member_count,
+                    "avg_composite_score": round(avg_composite_score, 4),
+                    "combined_pnl": round(combined_pnl, 2),
+                }
+            )
+
+            for address in members:
+                cluster_edges.append(
+                    {
+                        "id": f"edge:cluster:{cluster_id}:{address}",
+                        "kind": "cluster_membership",
+                        "source": cluster_node_id,
+                        "target": f"wallet:{address}",
+                        "weight": 1.0,
+                    }
+                )
+
+        return {
+            "generated_at": utcnow().isoformat(),
+            "lookback_days": self.LOOKBACK_DAYS,
+            "min_shared_markets": self.MIN_SHARED_MARKETS,
+            "min_combined_score": self.MIN_COMBINED_SCORE,
+            "summary": {
+                "wallet_nodes": len(wallet_nodes),
+                "cluster_nodes": len(cluster_nodes),
+                "co_trade_edges": len(co_trade_edges),
+                "cluster_membership_edges": len(cluster_edges),
+                "cohort_count": len(cohorts_payload),
+            },
+            "nodes": wallet_nodes + cluster_nodes,
+            "edges": co_trade_edges + cluster_edges,
+            "cohorts": cohorts_payload,
+        }
+
+    async def _load_wallet_profiles(self, addresses: List[str]) -> Dict[str, dict]:
+        if not addresses:
+            return {}
+
+        normalized_addresses = sorted(
+            {
+                str(address).strip().lower()
+                for address in addresses
+                if str(address).strip()
+            }
+        )
+        discovered_by_address: Dict[str, DiscoveredWallet] = {}
+        tracked_labels: Dict[str, str] = {}
+
+        async with AsyncSessionLocal() as session:
+            for chunk in _iter_chunks(normalized_addresses):
+                discovered_result = await session.execute(
+                    select(DiscoveredWallet).where(DiscoveredWallet.address.in_(chunk))
+                )
+                for wallet in discovered_result.scalars().all():
+                    address = str(wallet.address or "").strip().lower()
+                    if address:
+                        discovered_by_address[address] = wallet
+
+            for chunk in _iter_chunks(normalized_addresses):
+                tracked_result = await session.execute(
+                    select(TrackedWallet.address, TrackedWallet.label).where(TrackedWallet.address.in_(chunk))
+                )
+                for address_raw, label_raw in tracked_result.all():
+                    address = str(address_raw or "").strip().lower()
+                    label = str(label_raw or "").strip()
+                    if address and label:
+                        tracked_labels[address] = label
+
+            cluster_ids = sorted(
+                {
+                    str(wallet.cluster_id).strip()
+                    for wallet in discovered_by_address.values()
+                    if wallet.cluster_id is not None and str(wallet.cluster_id).strip()
+                }
+            )
+            cluster_labels: Dict[str, str] = {}
+            for chunk in _iter_chunks(cluster_ids):
+                cluster_result = await session.execute(
+                    select(WalletCluster.id, WalletCluster.label).where(WalletCluster.id.in_(chunk))
+                )
+                for cluster_id_raw, label_raw in cluster_result.all():
+                    cluster_id = str(cluster_id_raw or "").strip().lower()
+                    label = str(label_raw or "").strip()
+                    if cluster_id and label:
+                        cluster_labels[cluster_id] = label
+
+        profiles: Dict[str, dict] = {}
+        for address in normalized_addresses:
+            wallet = discovered_by_address.get(address)
+            tracked_label = tracked_labels.get(address)
+            cluster_id = str(wallet.cluster_id).strip() if wallet and wallet.cluster_id is not None else ""
+            cluster_label = cluster_labels.get(cluster_id.lower()) if cluster_id else None
+            username = str(wallet.username or "").strip() if wallet else ""
+            display_name = username or tracked_label or cluster_label or f"{address[:6]}...{address[-4:]}"
+
+            profiles[address] = {
+                "display_name": display_name,
+                "username": username or None,
+                "tracked": address in tracked_labels,
+                "tracked_label": tracked_label,
+                "in_top_pool": bool(wallet.in_top_pool) if wallet is not None else False,
+                "pool_tier": wallet.pool_tier if wallet is not None else None,
+                "rank_score": float(wallet.rank_score or 0.0) if wallet is not None else 0.0,
+                "composite_score": float(wallet.composite_score or 0.0) if wallet is not None else 0.0,
+                "total_pnl": float(wallet.total_pnl or 0.0) if wallet is not None else 0.0,
+                "win_rate": float(wallet.win_rate or 0.0) if wallet is not None else 0.0,
+                "total_trades": int(wallet.total_trades or 0) if wallet is not None else 0,
+                "tags": list(wallet.tags or []) if wallet is not None else [],
+                "cluster_id": cluster_id or None,
+                "cluster_label": cluster_label,
+            }
+        return profiles
 
 
 # ============================================================================

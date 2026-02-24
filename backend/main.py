@@ -329,6 +329,8 @@ async def lifespan(app: FastAPI):
                 stale_after_seconds = max(180, interval_seconds * 6)
                 if worker_name == "scanner":
                     stale_after_seconds = max(stale_after_seconds, 360)
+                elif worker_name == "tracked_traders":
+                    stale_after_seconds = max(stale_after_seconds, 900)
                 age_seconds = (now - updated_at).total_seconds()
                 if age_seconds <= stale_after_seconds:
                     continue

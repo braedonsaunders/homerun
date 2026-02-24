@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
+from utils.kelly import polymarket_taker_fee, kalshi_taker_fee
+
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -83,6 +85,8 @@ class FeeModel:
         total_cost: float = 0.0,
         maker_mode: Optional[bool] = None,
         total_liquidity: float = 0.0,  # NEW: total liquidity across all legs
+        platform: str = "polymarket",
+        entry_prices: Optional[list[float]] = None,
     ) -> FeeBreakdown:
         """Calculate all fees for a trade.
 
@@ -96,6 +100,9 @@ class FeeModel:
             maker_mode: If True, set spread_cost=0 (limit orders don't cross
                 spread) and winner_fee_rate=0 (makers pay 0% on Polymarket).
                 If None, falls back to the instance-level self.maker_mode.
+            platform: Primary venue ("polymarket", "kalshi", etc.).
+            entry_prices: Optional per-leg entry prices for dynamic taker fee
+                calculation. When omitted, falls back to winner_fee_rate model.
 
         Returns:
             FeeBreakdown with all individual fee components and totals.
@@ -107,12 +114,23 @@ class FeeModel:
         # Resolve maker_mode: explicit arg > instance default
         effective_maker_mode = maker_mode if maker_mode is not None else self.maker_mode
 
-        # 1. Winner fee: applied to the payout on the winning leg
-        #    Makers pay 0% on Polymarket
+        # 1. Entry/taker fees.
+        #    Makers pay zero entry fees in maker mode.
         if effective_maker_mode:
             winner_fee = ZERO
         else:
-            winner_fee = expected_payout_dec * self.winner_fee_rate
+            venue = str(platform or "polymarket").strip().lower()
+            normalized_prices = [
+                max(0.0, min(1.0, float(p)))
+                for p in (entry_prices or [])
+                if isinstance(p, (int, float))
+            ]
+            if normalized_prices and venue == "polymarket":
+                winner_fee = _to_decimal(sum(polymarket_taker_fee(price) for price in normalized_prices))
+            elif normalized_prices and venue == "kalshi":
+                winner_fee = _to_decimal(sum(kalshi_taker_fee(price, contracts=1) for price in normalized_prices))
+            else:
+                winner_fee = expected_payout_dec * self.winner_fee_rate
 
         # 2. Gas costs: one transaction per leg, plus NegRisk conversion overhead
         gas_cost_usd = self.gas_cost_per_tx * Decimal(num_legs)
@@ -176,6 +194,8 @@ class FeeModel:
         total_cost: float = 0.0,
         maker_mode: Optional[bool] = None,
         total_liquidity: float = 0.0,  # NEW
+        platform: str = "polymarket",
+        entry_prices: Optional[list[float]] = None,
     ) -> tuple[float, FeeBreakdown]:
         """Calculate net profit after subtracting all fees.
 
@@ -202,9 +222,26 @@ class FeeModel:
             total_cost=total_cost,
             maker_mode=maker_mode,
             total_liquidity=total_liquidity,
+            platform=platform,
+            entry_prices=entry_prices,
         )
         net_profit = float(_to_decimal(gross_profit) - _to_decimal(breakdown.total_fees))
         return net_profit, breakdown
+
+    def full_breakdown(
+        self,
+        total_cost: float,
+        expected_payout: float = 1.0,
+        n_legs: int = 1,
+        **kwargs,
+    ) -> FeeBreakdown:
+        """Compatibility wrapper for callers expecting full_breakdown()."""
+        return self.calculate_fees(
+            expected_payout=expected_payout,
+            num_legs=max(1, int(n_legs)),
+            total_cost=total_cost,
+            **kwargs,
+        )
 
 
 # Module-level singleton for convenient import

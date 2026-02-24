@@ -83,6 +83,21 @@ def _parse_collateral_amount(value: Any, *, assume_base_units: bool = False) -> 
     return float(parsed)
 
 
+def _parse_balance_allowance_amount(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return Decimal(raw)
+    except Exception:
+        parsed_float = safe_float(value)
+        if parsed_float is None:
+            return None
+        return Decimal(str(parsed_float))
+
+
 def _is_retryable_db_error(exc: Exception) -> bool:
     message = str(getattr(exc, "orig", exc)).lower()
     return any(
@@ -319,6 +334,126 @@ class TradingService:
             return False
         text = str(error_text).lower()
         return "invalid signature" in text
+
+    async def _fetch_conditional_balance_snapshot(
+        self,
+        token_id: str,
+        signature_type: int,
+        *,
+        refresh: bool,
+    ) -> Optional[dict[str, Any]]:
+        token_key = str(token_id or "").strip()
+        if not token_key:
+            return None
+        if not self._signature_type_supported(signature_type):
+            return None
+        if not self.is_ready():
+            return None
+
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_key,
+                signature_type=int(signature_type),
+            )
+        except Exception:
+            return None
+
+        if refresh:
+            try:
+                await asyncio.to_thread(self._client.update_balance_allowance, params)
+            except Exception as exc:
+                logger.debug(
+                    "Conditional balance-allowance refresh failed",
+                    token_id=token_key,
+                    signature_type=signature_type,
+                    exc_info=exc,
+                )
+
+        try:
+            payload = await asyncio.to_thread(self._client.get_balance_allowance, params)
+        except Exception as exc:
+            logger.debug(
+                "Conditional balance-allowance fetch failed",
+                token_id=token_key,
+                signature_type=signature_type,
+                exc_info=exc,
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        balance_raw = _parse_balance_allowance_amount(payload.get("balance")) or ZERO
+        allowance_raw = _parse_balance_allowance_amount(payload.get("allowance"))
+        allowances = payload.get("allowances")
+        if isinstance(allowances, dict):
+            for raw_allowance in allowances.values():
+                parsed_allowance = _parse_balance_allowance_amount(raw_allowance)
+                if parsed_allowance is None:
+                    continue
+                if allowance_raw is None or parsed_allowance > allowance_raw:
+                    allowance_raw = parsed_allowance
+        if allowance_raw is None:
+            allowance_raw = balance_raw
+        available_raw = min(balance_raw, allowance_raw)
+
+        return {
+            "signature_type": int(signature_type),
+            "balance_raw": balance_raw,
+            "allowance_raw": allowance_raw,
+            "available_raw": available_raw,
+        }
+
+    async def _select_signature_type_for_conditional_token(self, token_id: str) -> Optional[int]:
+        token_key = str(token_id or "").strip()
+        if not token_key:
+            return None
+        if not self.is_ready() and not await self.ensure_initialized():
+            return None
+        if not self.is_ready():
+            return None
+
+        current_signature_type = self._resolved_signature_type()
+        candidates: list[int] = []
+        if self._signature_type_supported(current_signature_type):
+            candidates.append(int(current_signature_type))
+        for signature_type in POLYMARKET_SIGNATURE_TYPES:
+            if signature_type in candidates:
+                continue
+            if not self._signature_type_supported(signature_type):
+                continue
+            candidates.append(signature_type)
+
+        best_snapshot: Optional[dict[str, Any]] = None
+        for signature_type in candidates:
+            snapshot = await self._fetch_conditional_balance_snapshot(
+                token_key,
+                signature_type,
+                refresh=True,
+            )
+            if snapshot is None:
+                continue
+            if best_snapshot is None:
+                best_snapshot = snapshot
+                continue
+            if snapshot["available_raw"] > best_snapshot["available_raw"]:
+                best_snapshot = snapshot
+                continue
+            if (
+                snapshot["available_raw"] == best_snapshot["available_raw"]
+                and snapshot["balance_raw"] > best_snapshot["balance_raw"]
+            ):
+                best_snapshot = snapshot
+
+        if best_snapshot is None:
+            return None
+
+        selected_signature_type = int(best_snapshot["signature_type"])
+        self._balance_signature_type = selected_signature_type
+        self._apply_signature_type_to_client(selected_signature_type)
+        return selected_signature_type
 
     async def _refresh_signature_type(self, *, force: bool = False) -> bool:
         if not self.is_ready():
@@ -643,14 +778,7 @@ class TradingService:
         except Exception:
             pass
 
-        signature_type: Optional[int] = None
-        if isinstance(self._balance_signature_type, int):
-            signature_type = int(self._balance_signature_type)
-        else:
-            builder = getattr(self._client, "builder", None)
-            if builder is not None and isinstance(getattr(builder, "sig_type", None), int):
-                signature_type = int(builder.sig_type)
-
+        signature_type = self._resolved_signature_type()
         if not isinstance(signature_type, int) or not self._signature_type_supported(signature_type):
             return False
 
@@ -672,6 +800,60 @@ class TradingService:
                 exc_info=exc,
             )
             return False
+
+    async def refresh_collateral_balance_allowance(self) -> bool:
+        if not self.is_ready() and not await self.ensure_initialized():
+            return False
+        if not self.is_ready():
+            return False
+
+        try:
+            await self._refresh_signature_type()
+        except Exception:
+            pass
+
+        signature_type = self._resolved_signature_type()
+        if not isinstance(signature_type, int) or not self._signature_type_supported(signature_type):
+            return False
+
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=signature_type,
+            )
+            await asyncio.to_thread(self._client.update_balance_allowance, params)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Collateral balance-allowance refresh failed",
+                signature_type=signature_type,
+                exc_info=exc,
+            )
+            return False
+
+    async def prepare_sell_balance_allowance(self, token_id: str) -> bool:
+        token_key = str(token_id or "").strip()
+        if token_key:
+            try:
+                await self._select_signature_type_for_conditional_token(token_key)
+            except Exception:
+                pass
+        collateral_refreshed = await self.refresh_collateral_balance_allowance()
+        conditional_refreshed = False
+        if token_key:
+            conditional_refreshed = await self.refresh_conditional_balance_allowance(token_key)
+            if not conditional_refreshed:
+                for signature_type in POLYMARKET_SIGNATURE_TYPES:
+                    if not self._signature_type_supported(signature_type):
+                        continue
+                    self._balance_signature_type = signature_type
+                    self._apply_signature_type_to_client(signature_type)
+                    if await self.refresh_conditional_balance_allowance(token_key):
+                        conditional_refreshed = True
+                        break
+        return collateral_refreshed or conditional_refreshed
 
     async def ensure_initialized(self) -> bool:
         if self.is_ready():
@@ -1227,11 +1409,13 @@ class TradingService:
             return "open"
         if status_key in {"pending", "queued", "new", "received", "submitted"}:
             return "pending"
+        if status_key in {"canceling", "cancelling"}:
+            return "pending"
         if status_key in {"cancelled", "canceled", "killed", "void", "terminated"}:
             return "cancelled"
         if status_key in {"expired", "timed_out", "timeout"}:
             return "expired"
-        if status_key in {"failed", "rejected", "error"}:
+        if status_key in {"failed", "rejected", "error", "invalid", "invalidated", "malformed", "dead"}:
             return "failed"
         return status_key
 
@@ -1857,7 +2041,7 @@ class TradingService:
             await self._refresh_signature_type()
             sell_allowance_retry_used = False
             if side == OrderSide.SELL:
-                await self.refresh_conditional_balance_allowance(token_id)
+                await self.prepare_sell_balance_allowance(token_id)
 
             # Build and sign order using py-clob-client
             from py_clob_client.clob_types import OrderArgs
@@ -1899,9 +2083,9 @@ class TradingService:
                         and "not enough balance / allowance" in error_text
                     ):
                         sell_allowance_retry_used = True
-                        if await self.refresh_conditional_balance_allowance(token_id):
+                        if await self.prepare_sell_balance_allowance(token_id):
                             logger.warning(
-                                "Sell order creation failed with stale balance/allowance cache; refreshed and retrying",
+                                "Sell order creation failed with stale balance/allowance cache; refreshed allowances and retrying",
                                 attempt=attempt + 1,
                                 token_id=token_id,
                             )
@@ -1965,9 +2149,9 @@ class TradingService:
                     and "not enough balance / allowance" in error_message.lower()
                 ):
                     sell_allowance_retry_used = True
-                    if await self.refresh_conditional_balance_allowance(token_id):
+                    if await self.prepare_sell_balance_allowance(token_id):
                         logger.warning(
-                            "Sell order rejected with stale balance/allowance cache; refreshed and retrying",
+                            "Sell order rejected with stale balance/allowance cache; refreshed allowances and retrying",
                             attempt=attempt + 1,
                             token_id=token_id,
                         )

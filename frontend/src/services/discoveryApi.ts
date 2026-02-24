@@ -267,6 +267,79 @@ export interface TradersOverview {
   }
 }
 
+export interface TraderNetworkNode {
+  id: string
+  kind: 'wallet' | 'cluster' | 'group' | string
+  label: string
+  description?: string | null
+  address?: string
+  username?: string | null
+  tracked?: boolean
+  in_top_pool?: boolean
+  pool_tier?: string | null
+  rank_score?: number
+  composite_score?: number
+  total_pnl?: number
+  win_rate?: number
+  total_trades?: number
+  activity_market_count?: number
+  degree?: number
+  co_trade_degree?: number
+  group_links?: number
+  cluster_links?: number
+  tags?: string[]
+  cluster_id?: string | null
+  cluster_label?: string | null
+  member_count?: number
+  linked_wallet_count?: number
+  source_type?: string
+  group_id?: string
+  member_wallet_addresses?: string[]
+}
+
+export interface TraderNetworkEdge {
+  id: string
+  kind: 'co_trade' | 'cluster_membership' | 'group_membership' | string
+  source: string
+  target: string
+  weight: number
+  combined_score?: number
+  shared_markets?: number
+  direction_agreement?: number
+  timing_correlation?: number
+}
+
+export interface TraderNetworkCohort {
+  id: string
+  wallet_addresses: string[]
+  avg_combined_score: number
+  shared_market_count: number
+  direction_agreement: number
+  visible_wallet_addresses?: string[]
+  visible_wallet_count?: number
+}
+
+export interface TradersNetworkGraph {
+  generated_at: string | null
+  lookback_days: number
+  min_pair_score: number
+  limit_wallets: number
+  summary: {
+    wallet_nodes: number
+    cluster_nodes: number
+    group_nodes: number
+    co_trade_edges: number
+    cluster_membership_edges: number
+    group_membership_edges: number
+    components: number
+    density: number
+  }
+  nodes: TraderNetworkNode[]
+  edges: TraderNetworkEdge[]
+  cohorts: TraderNetworkCohort[]
+  actions: Record<string, string[]>
+}
+
 export interface PoolMember {
   address: string
   username?: string | null
@@ -461,6 +534,16 @@ export const discoveryApi = {
     hours?: number
   } = {}): Promise<TradersOverview> => {
     const { data } = await discoveryHttp.get(`${API_BASE}/traders`, { params })
+    return data
+  },
+
+  getTradersNetworkGraph: async (params: {
+    min_pair_score?: number
+    limit_wallets?: number
+    include_groups?: boolean
+    include_clusters?: boolean
+  } = {}): Promise<TradersNetworkGraph> => {
+    const { data } = await discoveryHttp.get(`${API_BASE}/traders/network`, { params })
     return data
   },
 

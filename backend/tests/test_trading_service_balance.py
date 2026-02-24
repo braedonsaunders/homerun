@@ -1,8 +1,10 @@
 import sys
+import types
 from datetime import datetime
 from pathlib import Path
 
 import pytest
+from unittest.mock import AsyncMock
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -38,9 +40,31 @@ class _BalanceClient:
         return self.payload
 
 
+def _install_balance_allowance_modules(monkeypatch) -> None:
+    py_clob_client = types.ModuleType("py_clob_client")
+    clob_types = types.ModuleType("py_clob_client.clob_types")
+
+    class AssetType:
+        COLLATERAL = "COLLATERAL"
+        CONDITIONAL = "CONDITIONAL"
+
+    class BalanceAllowanceParams:
+        def __init__(self, *, asset_type, signature_type, token_id=None):
+            self.asset_type = asset_type
+            self.signature_type = signature_type
+            self.token_id = token_id
+
+    clob_types.AssetType = AssetType
+    clob_types.BalanceAllowanceParams = BalanceAllowanceParams
+
+    monkeypatch.setitem(sys.modules, "py_clob_client", py_clob_client)
+    monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", clob_types)
+
+
 @pytest.mark.asyncio
 async def test_get_balance_returns_error_when_service_not_initialized():
     service = TradingService()
+    service.ensure_initialized = AsyncMock(return_value=False)
     result = await service.get_balance()
     assert result == {"error": "Polymarket credentials not configured"}
 
@@ -105,7 +129,7 @@ async def test_get_balance_returns_error_on_unexpected_payload_shape():
     service._client = _BalanceClient(["unexpected"])
 
     result = await service.get_balance()
-    assert result == {"error": "Unexpected balance response"}
+    assert result == {"error": "Could not fetch balance from CLOB API"}
 
 
 @pytest.mark.asyncio
@@ -146,6 +170,7 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
     service = TradingService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
     service._client = _BalanceClient(
         {
             0: {"balance": "0", "allowances": {"exchange": "0"}},
@@ -166,3 +191,28 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
     assert result["reserved"] == pytest.approx(0.0)
     assert service._balance_signature_type == 1
     assert service._client.builder.sig_type == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_sell_balance_allowance_selects_signature_type_with_conditional_balance(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+
+    service = TradingService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 0
+    service._client = _BalanceClient(
+        {
+            0: {"balance": "0", "allowance": "0"},
+            1: {"balance": "0", "allowance": "0"},
+            2: {"balance": "12.5", "allowance": "100.0"},
+        },
+        builder_sig_type=0,
+    )
+
+    refreshed = await service.prepare_sell_balance_allowance("token-123")
+
+    assert refreshed is True
+    assert service._balance_signature_type == 2
+    assert service._client.builder.sig_type == 2

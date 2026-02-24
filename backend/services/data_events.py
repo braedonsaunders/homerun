@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -152,6 +152,20 @@ class DataEvent:
     changed_token_ids: Optional[list[str]] = None
     changed_market_ids: Optional[list[str]] = None
     affected_market_ids: Optional[list[str]] = None
+
+    def __post_init__(self) -> None:
+        event_key = str(self.event_type or "").strip()
+        if event_key not in EventType._ALL:
+            raise ValueError(
+                f"Unsupported event_type '{event_key}'. "
+                f"Valid event types: {sorted(EventType._ALL)}"
+            )
+        if not isinstance(self.timestamp, datetime):
+            raise TypeError("timestamp must be a datetime instance")
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware UTC")
+        object.__setattr__(self, "event_type", event_key)
+        object.__setattr__(self, "timestamp", self.timestamp.astimezone(timezone.utc))
 
 
 class BlockReason:

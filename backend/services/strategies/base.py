@@ -19,6 +19,7 @@ from services.fee_model import fee_model
 from services.data_events import DataEvent, EventType
 
 from utils.converters import to_float, to_confidence
+from utils.kelly import kalshi_taker_fee, polymarket_taker_fee
 from utils.signal_helpers import signal_payload
 from utils.utcnow import utcnow as _utcnow, as_utc
 
@@ -349,6 +350,8 @@ class BaseStrategy(ABC):
     # Use EventType.* constants (e.g. EventType.MARKET_DATA_REFRESH).
     # Unknown values are rejected at registration time by the EventDispatcher.
     subscriptions: list[str] = []
+    supports_entry_take_profit_exit: bool = False
+    default_open_order_timeout_seconds: Optional[float] = None
     # Realtime scanner routing for MARKET_DATA_REFRESH batches:
     # - "incremental": run on affected-market batches in reactive fast scans
     # - "full_snapshot": always run on the full cached market snapshot
@@ -979,12 +982,12 @@ class BaseStrategy(ABC):
                 for idx, target in enumerate(soc.targets):
                     if idx in targets_hit:
                         continue
-                    if pnl_pct * 100 >= target.trigger_bps:
+                    if pnl_pct >= target.trigger_bps:
                         targets_hit.append(idx)
                         ctx["_scale_out_targets_hit"] = targets_hit
                         return ExitDecision(
                             "reduce",
-                            f"Scale-out target {idx + 1} hit ({pnl_pct:.1f}% >= {target.trigger_bps / 100:.1f}%)",
+                            f"Scale-out target {idx + 1} hit ({pnl_pct:.1f}% >= {target.trigger_bps:.1f}%)",
                             close_price=current_price,
                             reduce_fraction=target.exit_fraction,
                         )
@@ -1143,7 +1146,6 @@ class BaseStrategy(ABC):
     @staticmethod
     def fee_adjusted_edge_pct(edge_pct: float, entry_price: float, platform: str = "polymarket") -> float:
         """Return edge percent after platform taker fees."""
-        from utils.kelly import polymarket_taker_fee, kalshi_taker_fee
 
         if platform == "polymarket":
             fee = polymarket_taker_fee(entry_price)
@@ -1281,13 +1283,25 @@ class BaseStrategy(ABC):
             return None
 
         gross_profit = expected_payout - total_cost
-        fee = expected_payout * self.fee
-        net_profit = gross_profit - fee
-        roi = (net_profit / total_cost) * 100
 
         # --- Comprehensive fee model (gas, spread, multi-leg slippage) ---
         is_negrisk = any(getattr(m, "neg_risk", False) for m in markets)
         total_liquidity = sum(m.liquidity for m in markets)
+        entry_prices: list[float] = []
+        for position in positions:
+            raw_price = position.get("price") if isinstance(position, dict) else None
+            parsed_price = to_float(raw_price)
+            if parsed_price is None:
+                continue
+            if parsed_price <= 0:
+                continue
+            entry_prices.append(float(parsed_price))
+        market_platforms = {
+            str(getattr(m, "platform", "") or "").strip().lower()
+            for m in markets
+            if str(getattr(m, "platform", "") or "").strip()
+        }
+        platform = market_platforms.pop() if len(market_platforms) == 1 else "polymarket"
         if skip_fee_model:
             # Directional/non-standard payout — zero-fee breakdown preserves the
             # _fee_breakdown metadata key without polluting the ROI calculation.
@@ -1309,7 +1323,13 @@ class BaseStrategy(ABC):
                 total_cost=total_cost,
                 maker_mode=settings.FEE_MODEL_MAKER_MODE,
                 total_liquidity=total_liquidity,
+                platform=platform,
+                entry_prices=entry_prices,
             )
+
+        fee = float(fee_breakdown.total_fees)
+        net_profit = gross_profit - fee
+        roi = (net_profit / total_cost) * 100
 
         # --- VWAP-adjusted realistic profit ---
         realistic_cost = vwap_total_cost if vwap_total_cost is not None else total_cost

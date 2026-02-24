@@ -37,6 +37,7 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
                     "min_edge_percent": 3.0,
                     "min_confidence": 0.45,
                     "base_size_usd": 25.0,
+                    "max_open_order_seconds": 20.0,
                 },
             }
         ],
@@ -141,11 +142,11 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
                     "min_confidence": 0.5,
                     "min_confluence_strength": 0.55,
                     "base_size_usd": 18.0,
-                },
-                "traders_scope": {
-                    "modes": ["tracked", "pool"],
-                    "individual_wallets": [],
-                    "group_ids": [],
+                    "traders_scope": {
+                        "modes": ["tracked", "pool"],
+                        "individual_wallets": [],
+                        "group_ids": [],
+                    },
                 },
             }
         ],

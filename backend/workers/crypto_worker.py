@@ -92,13 +92,19 @@ def _collect_ws_prices_for_markets(feed_manager, markets: list) -> dict[str, flo
     if price_cache is None:
         return ws_prices
 
+    execution_max_age_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
+
     for market in markets:
         for token_id in getattr(market, "clob_token_ids", None) or []:
             token = str(token_id or "").strip()
             if not token or len(token) <= 20:
                 continue
             try:
-                if not price_cache.is_fresh(token):
+                try:
+                    is_fresh = price_cache.is_fresh(token, max_age_seconds=execution_max_age_seconds)
+                except TypeError:
+                    is_fresh = price_cache.is_fresh(token)
+                if not is_fresh:
                     continue
                 if hasattr(price_cache, "get_mid_price"):
                     mid = price_cache.get_mid_price(token)
@@ -296,6 +302,7 @@ async def _dispatch_crypto_opportunities(
                     session,
                     opportunities,
                     source="crypto",
+                    sweep_missing=True,
                 )
             try:
                 await event_bus.publish("crypto_markets_update", {"markets": markets_payload, "trigger": trigger})

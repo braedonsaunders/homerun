@@ -32,6 +32,7 @@ import {
   Database,
   LayoutGrid,
   List,
+  Network,
   Newspaper,
   ArrowUpDown,
   CloudRain,
@@ -52,6 +53,7 @@ import {
   getTradingStatus,
   getTradingPositions,
   getTradingBalance,
+  analyzeWalletPnL,
   getKalshiStatus,
   getKalshiPositions,
   getKalshiBalance,
@@ -117,9 +119,10 @@ import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 import OpportunityEmptyState from './components/OpportunityEmptyState'
 import DataPanel, { DataView } from './components/DataPanel'
 import UILockScreen from './components/UILockScreen'
+import TradersNetworkPanel from './components/TradersNetworkPanel'
 
 type Tab = 'opportunities' | 'data' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
-type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
+type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis' | 'graph'
 type OpportunitiesView = string
 
 const ITEMS_PER_PAGE = 20
@@ -915,6 +918,20 @@ function App() {
     retry: false,
   })
 
+  const headerPolymarketWalletAddress = String(headerTradingStatus?.wallet_address || '').trim()
+  const { data: headerPolymarketWalletPnl } = useQuery({
+    queryKey: ['header-polymarket-wallet-pnl', headerPolymarketWalletAddress],
+    queryFn: () => analyzeWalletPnL(headerPolymarketWalletAddress, 'ALL'),
+    enabled: (
+      isLiveAccountSelected
+      && selectedLivePlatform === 'polymarket'
+      && headerPolymarketReady
+      && headerPolymarketWalletAddress.length > 0
+    ),
+    refetchInterval: 15000,
+    retry: false,
+  })
+
   const { data: headerKalshiStatus } = useQuery({
     queryKey: ['kalshi-status'],
     queryFn: getKalshiStatus,
@@ -968,12 +985,17 @@ function App() {
 
     const liveBalance = headerTradingBalance?.balance ?? 0
     const livePositions = headerTradingPositions.length
-    const livePnl = headerTradingPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl || 0), 0)
+    const liveUnrealizedPnl = headerTradingPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl || 0), 0)
     const liveCostBasis = headerTradingPositions.reduce(
       (sum, position) => sum + Number(position.size || 0) * Number(position.average_cost || 0),
       0,
     )
-    const liveRoi = liveCostBasis > 0 ? (livePnl / liveCostBasis) * 100 : 0
+    const livePnlCandidate = Number(headerPolymarketWalletPnl?.total_pnl)
+    const liveRoiCandidate = Number(headerPolymarketWalletPnl?.roi_percent)
+    const livePnl = Number.isFinite(livePnlCandidate) ? livePnlCandidate : liveUnrealizedPnl
+    const liveRoi = Number.isFinite(liveRoiCandidate)
+      ? liveRoiCandidate
+      : (liveCostBasis > 0 ? (liveUnrealizedPnl / liveCostBasis) * 100 : 0)
     return {
       balance: liveBalance,
       pnl: livePnl,
@@ -992,6 +1014,8 @@ function App() {
     headerKalshiPositions,
     headerTradingBalance?.balance,
     headerTradingPositions,
+    headerPolymarketWalletPnl?.total_pnl,
+    headerPolymarketWalletPnl?.roi_percent,
   ])
   const strategyTypesBySourceKey = useMemo(() => {
     const grouped: Record<string, string[]> = {}
@@ -1783,7 +1807,9 @@ function App() {
                       className={cn(
                         "w-[72px] h-12 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all relative group",
                         isActive
-                          ? "sidebar-item-active text-green-400"
+                          ? (item.id === 'trading'
+                            ? "bg-card/70 shadow-[inset_2px_0_0_0_hsl(var(--primary))] text-green-400"
+                            : "sidebar-item-active text-green-400")
                           : "text-muted-foreground hover:text-foreground hover:bg-card/60"
                       )}
                     >
@@ -2643,11 +2669,31 @@ function App() {
                     <Search className="w-3.5 h-3.5" />
                     Analysis
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTradersSubTab('graph')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'graph'
+                        ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30 hover:bg-fuchsia-500/30 hover:text-fuchsia-300"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Network className="w-3.5 h-3.5" />
+                    Graph
+                  </Button>
                 </div>
-                <div className={cn(
-                  "flex-1 min-h-0 px-6 py-4",
-                  tradersSubTab === 'analysis' ? "overflow-hidden" : "overflow-y-auto"
-                )}>
+                <div
+                  className={cn(
+                    'flex-1 min-h-0',
+                    tradersSubTab === 'graph'
+                      ? 'overflow-hidden px-6 pt-4 pb-5'
+                      : tradersSubTab === 'analysis'
+                        ? 'overflow-hidden px-6 py-4'
+                        : 'overflow-y-auto px-6 py-4',
+                  )}
+                >
                   <div className={tradersSubTab === 'discovery' ? '' : 'hidden'}>
                     <DiscoveryPanel
                       view="discovery"
@@ -2674,6 +2720,15 @@ function App() {
                       initialWallet={walletToAnalyze}
                       initialUsername={walletUsername}
                       onWalletAnalyzed={() => { setWalletToAnalyze(null); setWalletUsername(null) }}
+                    />
+                  </div>
+                  <div className={cn("h-full min-h-0", tradersSubTab === 'graph' ? '' : 'hidden')}>
+                    <TradersNetworkPanel
+                      onAnalyzeWallet={handleAnalyzeWallet}
+                      onNavigateToWallet={(address) => {
+                        setWalletToAnalyze(address)
+                        setTradersSubTab('analysis')
+                      }}
                     />
                   </div>
                 </div>

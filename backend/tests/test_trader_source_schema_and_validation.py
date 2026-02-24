@@ -170,11 +170,12 @@ async def test_normalize_trader_payload_rejects_invalid_traders_scope(tmp_path):
                         {
                             "source_key": "traders",
                             "strategy_key": strategy_key,
-                            "strategy_params": {},
-                            "traders_scope": {
-                                "modes": ["individual"],
-                                "individual_wallets": [],
-                                "group_ids": [],
+                            "strategy_params": {
+                                "traders_scope": {
+                                    "modes": ["individual"],
+                                    "individual_wallets": [],
+                                    "group_ids": [],
+                                }
                             },
                         }
                     ],

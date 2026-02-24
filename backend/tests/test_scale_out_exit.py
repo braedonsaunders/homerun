@@ -27,8 +27,8 @@ class _ScaleOutStrategy(BaseStrategy):
 
     scale_out_config = ScaleOutConfig(
         targets=[
-            ScaleOutTarget(trigger_bps=500, exit_fraction=0.33),
-            ScaleOutTarget(trigger_bps=1000, exit_fraction=0.5),
+            ScaleOutTarget(trigger_bps=5, exit_fraction=0.33),
+            ScaleOutTarget(trigger_bps=10, exit_fraction=0.5),
         ],
         trailing_stop_bps=80,
         near_resolution_exit=True,
@@ -81,7 +81,7 @@ def _market_state(current_price: float, **kwargs) -> dict:
 class TestScaleOutTargets:
     def test_first_target_hit(self):
         strategy = _ScaleOutStrategy()
-        pos = _make_position(entry_price=0.50, current_price=0.525)  # +5% = 500 bps
+        pos = _make_position(entry_price=0.50, current_price=0.525)  # +5%
 
         decision = strategy.default_exit_check(pos, _market_state(0.525))
 
@@ -94,7 +94,7 @@ class TestScaleOutTargets:
         strategy = _ScaleOutStrategy()
         pos = _make_position(
             entry_price=0.50,
-            current_price=0.55,  # +10% = 1000 bps
+            current_price=0.55,  # +10%
             strategy_context={"_scale_out_targets_hit": [0]},
         )
 
@@ -107,7 +107,7 @@ class TestScaleOutTargets:
 
     def test_no_target_hit_below_threshold(self):
         strategy = _ScaleOutStrategy()
-        pos = _make_position(entry_price=0.50, current_price=0.52)  # +4% = 400 bps < 500
+        pos = _make_position(entry_price=0.50, current_price=0.52)  # +4% < 5% target
 
         decision = strategy.default_exit_check(pos, _market_state(0.52))
 
@@ -118,7 +118,7 @@ class TestScaleOutTargets:
         strategy = _ScaleOutStrategy()
         pos = _make_position(
             entry_price=0.50,
-            current_price=0.525,  # +5% = 500 bps (target 1 threshold)
+            current_price=0.525,  # +5% (target 1 threshold)
             strategy_context={"_scale_out_targets_hit": [0]},
         )
 
@@ -128,7 +128,7 @@ class TestScaleOutTargets:
 
     def test_both_targets_hit_simultaneously(self):
         strategy = _ScaleOutStrategy()
-        pos = _make_position(entry_price=0.50, current_price=0.55)  # +10% = 1000 bps
+        pos = _make_position(entry_price=0.50, current_price=0.55)  # +10%
 
         decision = strategy.default_exit_check(pos, _market_state(0.55))
 
@@ -294,7 +294,7 @@ class TestScaleOutNearResolution:
             description = "Test"
             scale_out_config = ScaleOutConfig(
                 targets=[
-                    ScaleOutTarget(trigger_bps=500, exit_fraction=0.33),
+                    ScaleOutTarget(trigger_bps=5, exit_fraction=0.33),
                 ],
                 near_resolution_exit=False,
             )
@@ -352,7 +352,7 @@ class TestScaleOutFallbackToDefault:
         strategy = _ScaleOutStrategy()
         pos = _make_position(
             entry_price=0.50,
-            current_price=0.525,  # +5% = 500 bps
+            current_price=0.525,  # +5%
             config={"take_profit_pct": 5.0},
         )
 
@@ -376,7 +376,7 @@ class TestScaleOutFallbackToDefault:
         strategy = _ScaleOutStrategy()
         pos = _make_position(
             entry_price=0.50,
-            current_price=0.525,  # +5% = 500 bps
+            current_price=0.525,  # +5%
             age_minutes=2.0,
             config={"min_hold_minutes": 5.0},
         )
@@ -394,11 +394,11 @@ class TestScaleOutEdgeCases:
             name = "Single Target"
             description = "One target"
             scale_out_config = ScaleOutConfig(
-                targets=[ScaleOutTarget(trigger_bps=300, exit_fraction=0.5)],
+                targets=[ScaleOutTarget(trigger_bps=3, exit_fraction=0.5)],
             )
 
         strategy = _SingleTargetStrategy()
-        pos = _make_position(entry_price=0.50, current_price=0.515)  # +3% = 300 bps
+        pos = _make_position(entry_price=0.50, current_price=0.515)  # +3%
 
         decision = strategy.default_exit_check(pos, _market_state(0.515))
 
@@ -411,7 +411,7 @@ class TestScaleOutEdgeCases:
             name = "No Trailing"
             description = "Zero trailing"
             scale_out_config = ScaleOutConfig(
-                targets=[ScaleOutTarget(trigger_bps=300, exit_fraction=0.5)],
+                targets=[ScaleOutTarget(trigger_bps=3, exit_fraction=0.5)],
                 trailing_stop_bps=0.0,
                 near_resolution_exit=False,
             )
@@ -433,7 +433,7 @@ class TestScaleOutEdgeCases:
 
     def test_reduce_fraction_on_decision(self):
         strategy = _ScaleOutStrategy()
-        pos = _make_position(entry_price=0.50, current_price=0.55)  # +10% = 1000 bps
+        pos = _make_position(entry_price=0.50, current_price=0.55)  # +10%
 
         decision = strategy.default_exit_check(pos, _market_state(0.55))
 

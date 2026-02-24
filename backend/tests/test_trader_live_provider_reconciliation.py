@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -184,5 +185,105 @@ async def test_live_cleanup_requires_provider_cancel(tmp_path):
                     dry_run=False,
                     target_status="cancelled",
                 )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    trader_id = "paper-cleanup-filters"
+    try:
+        async with session_factory() as session:
+            await _seed_trader(session, trader_id)
+            now = utcnow()
+            session.add_all(
+                [
+                    TraderOrder(
+                        id="order-crypto-old-unfilled",
+                        trader_id=trader_id,
+                        source="crypto",
+                        market_id="market-1",
+                        direction="buy_yes",
+                        mode="paper",
+                        status="open",
+                        notional_usd=0.0,
+                        entry_price=0.5,
+                        effective_price=0.5,
+                        payload_json={},
+                        created_at=now - timedelta(seconds=45),
+                        updated_at=now - timedelta(seconds=45),
+                    ),
+                    TraderOrder(
+                        id="order-crypto-old-filled",
+                        trader_id=trader_id,
+                        source="crypto",
+                        market_id="market-2",
+                        direction="buy_yes",
+                        mode="paper",
+                        status="open",
+                        notional_usd=30.0,
+                        entry_price=0.5,
+                        effective_price=0.5,
+                        payload_json={},
+                        created_at=now - timedelta(seconds=45),
+                        updated_at=now - timedelta(seconds=45),
+                    ),
+                    TraderOrder(
+                        id="order-weather-old-unfilled",
+                        trader_id=trader_id,
+                        source="weather",
+                        market_id="market-3",
+                        direction="buy_yes",
+                        mode="paper",
+                        status="open",
+                        notional_usd=0.0,
+                        entry_price=0.5,
+                        effective_price=0.5,
+                        payload_json={},
+                        created_at=now - timedelta(seconds=45),
+                        updated_at=now - timedelta(seconds=45),
+                    ),
+                    TraderOrder(
+                        id="order-crypto-fresh-unfilled",
+                        trader_id=trader_id,
+                        source="crypto",
+                        market_id="market-4",
+                        direction="buy_yes",
+                        mode="paper",
+                        status="open",
+                        notional_usd=0.0,
+                        entry_price=0.5,
+                        effective_price=0.5,
+                        payload_json={},
+                        created_at=now - timedelta(seconds=5),
+                        updated_at=now - timedelta(seconds=5),
+                    ),
+                ]
+            )
+            await session.commit()
+
+            result = await cleanup_trader_open_orders(
+                session,
+                trader_id=trader_id,
+                scope="paper",
+                max_age_seconds=20.0,
+                source="crypto",
+                require_unfilled=True,
+                dry_run=False,
+                target_status="cancelled",
+                reason="test_cleanup",
+            )
+            assert result["updated"] == 1
+
+            crypto_old_unfilled = await session.get(TraderOrder, "order-crypto-old-unfilled")
+            crypto_old_filled = await session.get(TraderOrder, "order-crypto-old-filled")
+            weather_old_unfilled = await session.get(TraderOrder, "order-weather-old-unfilled")
+            crypto_fresh_unfilled = await session.get(TraderOrder, "order-crypto-fresh-unfilled")
+
+            assert crypto_old_unfilled is not None and crypto_old_unfilled.status == "cancelled"
+            assert crypto_old_filled is not None and crypto_old_filled.status == "open"
+            assert weather_old_unfilled is not None and weather_old_unfilled.status == "open"
+            assert crypto_fresh_unfilled is not None and crypto_fresh_unfilled.status == "open"
     finally:
         await engine.dispose()

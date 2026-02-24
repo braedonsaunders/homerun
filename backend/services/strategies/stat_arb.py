@@ -80,11 +80,13 @@ CATEGORY_BASE_RATES: dict[str, float] = {
 
 # Signal weights for composite fair probability
 SIGNAL_WEIGHTS = {
-    "anchoring": 0.15,
-    "category_base_rate": 0.25,
-    "consensus": 0.25,
-    "momentum": 0.15,
-    "volume_price": 0.20,
+    "anchoring": 0.13,
+    "category_base_rate": 0.18,
+    "consensus": 0.20,
+    "momentum": 0.12,
+    "volume_price": 0.15,
+    "favorite_longshot": 0.10,
+    "liquidity_imbalance": 0.12,
 }
 
 
@@ -314,6 +316,58 @@ class StatArbStrategy(BaseStrategy):
 
         return 0.0
 
+    def _signal_favorite_longshot(self, yes_price: float) -> float:
+        """Capture favorite-longshot skew as one weak component.
+
+        Longshots (very low YES prices) are frequently overbid by retail.
+        Favorites are frequently underbid. Positive values imply YES should be
+        priced higher; negative values imply YES should be priced lower.
+        """
+        if yes_price <= 0.25:
+            return -min(1.0, (0.25 - yes_price) / 0.25) * 0.8
+        if yes_price >= 0.75:
+            return min(1.0, (yes_price - 0.75) / 0.25) * 0.6
+        return 0.0
+
+    def _signal_liquidity_imbalance(self, market: Market, prices: dict[str, dict]) -> float:
+        """Use bid/ask depth imbalance as an additional directional input."""
+        token_ids = list(getattr(market, "clob_token_ids", []) or [])
+        if len(token_ids) < 2:
+            return 0.0
+
+        yes_payload = prices.get(token_ids[0]) if token_ids[0] in prices else None
+        no_payload = prices.get(token_ids[1]) if token_ids[1] in prices else None
+
+        def _depth(payload: dict | None, *keys: str) -> float:
+            if not isinstance(payload, dict):
+                return 0.0
+            for key in keys:
+                value = payload.get(key)
+                if isinstance(value, (int, float)) and value > 0:
+                    return float(value)
+            return 0.0
+
+        yes_bid_depth = _depth(yes_payload, "bid_depth", "best_bid_size", "bid_size")
+        yes_ask_depth = _depth(yes_payload, "ask_depth", "best_ask_size", "ask_size")
+        no_bid_depth = _depth(no_payload, "bid_depth", "best_bid_size", "bid_size")
+        no_ask_depth = _depth(no_payload, "ask_depth", "best_ask_size", "ask_size")
+
+        total_yes = yes_bid_depth + yes_ask_depth
+        total_no = no_bid_depth + no_ask_depth
+        if total_yes <= 0 and total_no <= 0:
+            return 0.0
+
+        yes_pressure = 0.0
+        if total_yes > 0:
+            yes_pressure = (yes_bid_depth - yes_ask_depth) / total_yes
+        no_pressure = 0.0
+        if total_no > 0:
+            no_pressure = (no_bid_depth - no_ask_depth) / total_no
+
+        # If NO book has stronger bid pressure, YES should be lower.
+        imbalance = (yes_pressure - no_pressure) / 2.0
+        return max(-1.0, min(1.0, imbalance))
+
     # ------------------------------------------------------------------
     # Temporal awareness
     # ------------------------------------------------------------------
@@ -429,6 +483,14 @@ class StatArbStrategy(BaseStrategy):
         vol_price = self._signal_volume_price(yes_price, market.volume, market.liquidity)
         signals["volume_price"] = vol_price
 
+        # Signal 6: Favorite/longshot skew
+        flb_signal = self._signal_favorite_longshot(yes_price)
+        signals["favorite_longshot"] = flb_signal
+
+        # Signal 7: Liquidity imbalance (depth/pressure)
+        liquidity_imbalance = self._signal_liquidity_imbalance(market, prices)
+        signals["liquidity_imbalance"] = liquidity_imbalance
+
         # Weighted composite adjustment
         # Each signal contributes a directional shift from the market price.
         # Positive signal => fair prob higher than market (buy YES),
@@ -542,10 +604,13 @@ class StatArbStrategy(BaseStrategy):
             # expected_payout is 1.0 if our prediction is correct
             total_cost = buy_price
             expected_payout = 1.0
-            gross_profit = expected_payout - total_cost
-            fee = expected_payout * self.fee
-            net_profit = gross_profit - fee
-            roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+            edge_pct = abs(edge) * 100.0
+            roi = self.fee_adjusted_edge_pct(
+                edge_pct,
+                buy_price,
+                platform=str(getattr(market, "platform", "polymarket") or "polymarket"),
+            )
+            net_profit = total_cost * (roi / 100.0)
 
             # Skip if negative expected profit after fees
             if net_profit <= 0:
@@ -601,6 +666,10 @@ class StatArbStrategy(BaseStrategy):
                 risk_factors.append(f"Strong {direction_word} momentum detected")
             if abs(signal_breakdown.get("volume_price", 0)) > 0.3:
                 risk_factors.append("Volume-price divergence detected")
+            if abs(signal_breakdown.get("favorite_longshot", 0)) > 0.25:
+                risk_factors.append("Favorite-longshot skew signal contributed")
+            if abs(signal_breakdown.get("liquidity_imbalance", 0)) > 0.25:
+                risk_factors.append("Order-book liquidity imbalance contributed")
 
             # Build position
             positions = [

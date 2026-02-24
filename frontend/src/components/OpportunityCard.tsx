@@ -47,7 +47,6 @@ const STRATEGY_COLORS: Record<string, string> = {
   must_happen: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20',
   cross_platform: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
   bayesian_cascade: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
-  liquidity_vacuum: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
   entropy_arb: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
   event_driven: 'bg-lime-500/10 text-lime-400 border-lime-500/20',
   temporal_decay: 'bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-500/20',
@@ -64,7 +63,6 @@ const STRATEGY_COLORS: Record<string, string> = {
   weather_edge: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
   weather_ensemble_edge: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
   weather_distribution: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
-  weather_conservative_no: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
   // Pipeline detectors
   news_edge: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
   btc_eth_highfreq: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
@@ -80,7 +78,6 @@ const STRATEGY_ABBREV: Record<string, string> = {
   must_happen: 'MH',
   cross_platform: 'XPL',
   bayesian_cascade: 'BAY',
-  liquidity_vacuum: 'LVA',
   entropy_arb: 'ENT',
   event_driven: 'EVT',
   temporal_decay: 'TMP',
@@ -96,7 +93,6 @@ const STRATEGY_ABBREV: Record<string, string> = {
   weather_edge: 'WTH',
   weather_ensemble_edge: 'WEN',
   weather_distribution: 'WDI',
-  weather_conservative_no: 'WNO',
   news_edge: 'NEW',
   btc_eth_highfreq: 'BTC',
   traders_confluence: 'TRD',
@@ -111,7 +107,6 @@ const STRATEGY_NAMES: Record<string, string> = {
   must_happen: 'Must-Happen',
   cross_platform: 'Cross-Platform',
   bayesian_cascade: 'Bayesian Cascade',
-  liquidity_vacuum: 'Liquidity Vacuum',
   entropy_arb: 'Entropy Arb',
   event_driven: 'Event-Driven',
   temporal_decay: 'Temporal Decay',
@@ -127,7 +122,6 @@ const STRATEGY_NAMES: Record<string, string> = {
   weather_edge: 'Weather Edge',
   weather_ensemble_edge: 'Weather Ensemble',
   weather_distribution: 'Weather Distribution',
-  weather_conservative_no: 'Weather NO',
   news_edge: 'News Edge',
   btc_eth_highfreq: 'Crypto HF',
   traders_confluence: 'Traders Flow',
@@ -435,7 +429,7 @@ function OpportunityCard({
   const marketYesPrice = resolveMarketYesPrice(market)
   const marketNoPrice = resolveMarketNoPrice(market)
   const weather = market?.weather
-  const WEATHER_STRATEGIES = new Set(['weather_edge', 'weather_ensemble_edge', 'weather_distribution', 'weather_conservative_no'])
+  const WEATHER_STRATEGIES = new Set(['weather_edge', 'weather_ensemble_edge', 'weather_distribution'])
   const isWeatherOpportunity = !isSearch && (WEATHER_STRATEGIES.has(opportunity.strategy) || Boolean(weather))
 
   const weatherSources = useMemo((): WeatherForecastSource[] => {

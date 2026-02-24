@@ -88,6 +88,12 @@ class TradersConfluenceStrategy(BaseStrategy):
         "firehose_max_age_minutes": 720,
         "firehose_source_scope": "all",
         "firehose_side_filter": "all",
+        "execution_policy": "REPRICE_LOOP",
+        "price_policy": "taker_limit",
+        "time_in_force": "IOC",
+        "session_timeout_seconds": 90,
+        "max_reprice_attempts": 2,
+        "traders_scope": StrategySDK.trader_scope_defaults(),
     }
     default_config = dict(DEFAULT_CONFIG)
 
@@ -134,6 +140,25 @@ class TradersConfluenceStrategy(BaseStrategy):
             return True
         signal_type = str(signal.get("signal_type") or "").strip().lower()
         return "buy" in signal_type or "sell" in signal_type or "accumulation" in signal_type
+
+    @staticmethod
+    def _resolve_trade_outcome(signal: dict) -> str:
+        outcome = str(signal.get("outcome") or "").strip().upper()
+        if outcome in {"YES", "NO"}:
+            return outcome
+
+        side = str(signal.get("side") or "").strip().lower()
+        if side in {"yes", "buy", "long"}:
+            return "YES"
+        if side in {"no", "sell", "short"}:
+            return "NO"
+
+        signal_type = str(signal.get("signal_type") or "").strip().lower()
+        if "buy" in signal_type or "accumulation" in signal_type:
+            return "YES"
+        if "sell" in signal_type or "distribution" in signal_type:
+            return "NO"
+        return "NO"
 
     @staticmethod
     def _price_checks(signal: dict) -> tuple[bool, bool]:
@@ -497,7 +522,7 @@ class TradersConfluenceStrategy(BaseStrategy):
             if not passed:
                 continue
 
-            side_label = "YES" if signal.get("side") == "buy" else "NO"
+            side_label = self._resolve_trade_outcome(signal)
             direction = "buy_yes" if side_label == "YES" else "buy_no"
             market = self._build_signal_market(signal)
             confidence = self._confidence(signal)
@@ -578,7 +603,7 @@ class TradersConfluenceStrategy(BaseStrategy):
                 "signal_id": str(signal.get("id") or ""),
                 "tier": tier,
                 "side": signal.get("side"),
-                "outcome": str(signal.get("outcome") or "").strip().upper(),
+                "outcome": side_label,
                 "wallet_count": wallet_count,
                 "confidence": confidence,
                 "confluence_strength": strength,

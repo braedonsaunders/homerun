@@ -215,10 +215,6 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
             "strategy_key": default_strategy_key,
             "strategy_params": dict(template_default_params or default_strategy_defaults),
         }
-        if adapter.key == "traders":
-            default_config["traders_scope"] = dict(
-                (source_defaults.get("traders") or {}).get("traders_scope") or StrategySDK.trader_scope_defaults()
-            )
 
         sources.append(
             {
@@ -230,12 +226,11 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
                 "default_strategy_key": default_strategy_key,
                 "strategy_options": strategy_options,
                 "default_config": default_config,
-                "scope_fields": StrategySDK.trader_scope_fields_schema() if adapter.key == "traders" else [],
             }
         )
 
     return {
-        "version": "2026-02-21",
+        "version": "2026-02-23",
         "sources": sources,
         "shared_risk_fields": StrategySDK.trader_risk_fields_schema(),
         "shared_risk_defaults": StrategySDK.trader_risk_defaults(),

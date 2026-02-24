@@ -41,6 +41,9 @@ from services.worker_state import _commit_with_retry, _is_retryable_db_error
 from services.trader_orchestrator.sources.registry import (
     normalize_source_key,
 )
+from services.trader_orchestrator.strategies.registry import (
+    get_strategy as resolve_strategy_instance,
+)
 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_loader import strategy_loader
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
@@ -61,6 +64,7 @@ from services.trader_orchestrator_state import (
     get_last_resolved_loss_at,
     get_market_exposure,
     get_open_order_count_for_trader,
+    get_pending_live_exit_summary_for_trader,
     get_trader_source_exposure,
     get_open_market_ids_for_trader,
     get_open_position_count_for_trader,
@@ -109,8 +113,37 @@ _ORCHESTRATOR_TRIGGER_EVENTS = frozenset(
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
+_OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
+_LIVE_PROVIDER_HEALTH_WINDOW_SECONDS = 180
+_LIVE_PROVIDER_HEALTH_MIN_ERRORS = 2
+_LIVE_PROVIDER_HEALTH_BLOCK_SECONDS = 120
+_LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
+_LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
 _terminal_stale_order_last_checked_at: datetime | None = None
 _terminal_stale_order_alert_last_emitted: dict[str, datetime] = {}
+_open_order_timeout_cleanup_failure_cooldown_until: dict[str, datetime] = {}
+_live_provider_entry_blocked_until: dict[str, datetime] = {}
+_live_provider_block_event_cooldown_until: dict[str, datetime] = {}
+_live_risk_clamp_event_cooldown_until: dict[str, datetime] = {}
+
+_LIVE_PROVIDER_INFRA_ERROR_MARKERS = (
+    "connection refused",
+    "database system is not yet accepting connections",
+    "dial tcp",
+    "i/o timeout",
+    "timeout",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "connection reset",
+    "connection closed",
+    "transport error",
+    "read: connection",
+    "write: broken pipe",
+    "upstream connect error",
+    "network is unreachable",
+)
 
 
 async def _worker_sleep(interval_seconds: float) -> None:
@@ -185,10 +218,102 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
-def _supports_live_market_context(signal: Any) -> bool:
-    """Only apply HTTP live-market enrichment to non-crypto signals."""
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _normalize_strategy_type_values(raw: Any) -> set[str]:
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    elif isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    else:
+        values = []
+    normalized: set[str] = set()
+    for item in values:
+        value = str(item or "").strip().lower()
+        if value:
+            normalized.add(value)
+    return normalized
+
+
+def _strategy_instance_for_source_config(source_config: dict[str, Any] | None) -> Any | None:
+    if not isinstance(source_config, dict):
+        return None
+    strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
+    if not strategy_key:
+        return None
+    loaded = strategy_loader.get_strategy(strategy_key)
+    if loaded is None:
+        try:
+            return resolve_strategy_instance(strategy_key)
+        except Exception:
+            return None
+    instance = getattr(loaded, "instance", None)
+    if instance is not None:
+        return instance
+    return loaded
+
+
+def _accepted_signal_strategy_types(source_config: dict[str, Any]) -> set[str]:
+    strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
+    if not strategy_key:
+        return set()
+
+    allowed = {strategy_key}
+    strategy_params = dict(source_config.get("strategy_params") or {})
+    allowed.update(_normalize_strategy_type_values(strategy_params.get("accepted_signal_strategy_types")))
+
+    strategy_instance = _strategy_instance_for_source_config(source_config)
+    if strategy_instance is not None:
+        allowed.update(_normalize_strategy_type_values(getattr(strategy_instance, "accepted_signal_strategy_types", None)))
+
+    return allowed
+
+
+def _supports_live_market_context(
+    signal: Any,
+    source_config: dict[str, Any] | None = None,
+) -> bool:
+    """Apply live-market enrichment where strategy evaluation requires it."""
     source = str(getattr(signal, "source", "") or "").strip().lower()
-    return source != "crypto"
+    if source != "crypto":
+        return True
+    if not isinstance(source_config, dict):
+        return False
+
+    strategy_params = dict(source_config.get("strategy_params") or {})
+    explicit = _coerce_optional_bool(strategy_params.get("enable_live_market_context"))
+    if explicit is None:
+        explicit = _coerce_optional_bool(strategy_params.get("requires_live_market_context"))
+    if explicit is not None:
+        return explicit
+
+    strategy_instance = _strategy_instance_for_source_config(source_config)
+    if strategy_instance is not None:
+        declared = _coerce_optional_bool(getattr(strategy_instance, "requires_live_market_context", None))
+        if declared is None:
+            declared = _coerce_optional_bool(getattr(strategy_instance, "enable_live_market_context", None))
+        if declared is not None:
+            return declared
+
+    return False
 
 
 def _normalize_resume_policy(value: Any) -> str:
@@ -282,13 +407,136 @@ def _normalize_source_configs(trader: dict[str, Any]) -> dict[str, dict[str, Any
         strategy_key = str(raw.get("strategy_key") or "").strip().lower()
         if not source_key or not strategy_key:
             continue
+        strategy_params = dict(raw.get("strategy_params") or {})
+        if source_key == "traders":
+            strategy_params = StrategySDK.validate_trader_filter_config(strategy_params)
         normalized[source_key] = {
             "source_key": source_key,
             "strategy_key": strategy_key,
-            "strategy_params": dict(raw.get("strategy_params") or {}),
-            "traders_scope": dict(raw.get("traders_scope") or {}),
+            "strategy_params": strategy_params,
         }
     return normalized
+
+
+def _source_open_order_timeout_seconds(source_config: dict[str, Any]) -> float | None:
+    strategy_params = dict(source_config.get("strategy_params") or {})
+    strategy_instance = _strategy_instance_for_source_config(source_config)
+    default_seconds = None
+    if strategy_instance is not None:
+        declared_default = safe_float(getattr(strategy_instance, "default_open_order_timeout_seconds", None), None)
+        if declared_default is not None and declared_default > 0.0:
+            default_seconds = float(declared_default)
+        else:
+            strategy_defaults = getattr(strategy_instance, "default_config", None)
+            if isinstance(strategy_defaults, dict):
+                default_seconds = StrategySDK.resolve_open_order_timeout_seconds(
+                    strategy_defaults,
+                    default_seconds=None,
+                )
+    return StrategySDK.resolve_open_order_timeout_seconds(
+        strategy_params,
+        default_seconds=default_seconds,
+    )
+
+
+async def _enforce_source_open_order_timeouts(
+    session: Any,
+    *,
+    trader_id: str,
+    run_mode: str,
+    source_configs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if not source_configs:
+        return {"configured": 0, "updated": 0, "suppressed": 0, "sources": [], "errors": []}
+
+    scope = run_mode if run_mode in {"paper", "live"} else "all"
+    configured = 0
+    updated = 0
+    suppressed = 0
+    source_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    now_utc = utcnow()
+
+    expired_keys = [
+        key
+        for key, until in _open_order_timeout_cleanup_failure_cooldown_until.items()
+        if until <= now_utc
+    ]
+    for key in expired_keys:
+        _open_order_timeout_cleanup_failure_cooldown_until.pop(key, None)
+
+    for source_key, source_config in source_configs.items():
+        timeout_seconds = _source_open_order_timeout_seconds(source_config)
+        if timeout_seconds is None:
+            continue
+        configured += 1
+        cooldown_key = f"{trader_id}:{scope}:{source_key}"
+        cooldown_until = _open_order_timeout_cleanup_failure_cooldown_until.get(cooldown_key)
+        if cooldown_until is not None and now_utc < cooldown_until:
+            suppressed += 1
+            source_rows.append(
+                {
+                    "source": source_key,
+                    "timeout_seconds": timeout_seconds,
+                    "matched": 0,
+                    "updated": 0,
+                    "suppressed": True,
+                    "suppressed_until": cooldown_until.isoformat(),
+                }
+            )
+            continue
+        try:
+            cleanup = await cleanup_trader_open_orders(
+                session,
+                trader_id=trader_id,
+                scope=scope,
+                max_age_seconds=timeout_seconds,
+                source=source_key,
+                require_unfilled=True,
+                dry_run=False,
+                target_status="cancelled",
+                reason=f"max_open_order_timeout:{source_key}",
+            )
+            _open_order_timeout_cleanup_failure_cooldown_until.pop(cooldown_key, None)
+        except Exception as exc:
+            logger.warning(
+                "Source open-order timeout cleanup failed for trader=%s source=%s",
+                trader_id,
+                source_key,
+                exc_info=exc,
+            )
+            cooldown_until = now_utc + timedelta(seconds=_OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS)
+            _open_order_timeout_cleanup_failure_cooldown_until[cooldown_key] = cooldown_until
+            errors.append(
+                {
+                    "source": source_key,
+                    "timeout_seconds": timeout_seconds,
+                    "error": str(exc),
+                    "suppressed_until": cooldown_until.isoformat(),
+                    "cooldown_seconds": _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS,
+                }
+            )
+            continue
+
+        source_updated = int(cleanup.get("updated", 0))
+        updated += source_updated
+        source_rows.append(
+            {
+                "source": source_key,
+                "timeout_seconds": timeout_seconds,
+                "matched": int(cleanup.get("matched", 0)),
+                "updated": source_updated,
+                "suppressed": False,
+            }
+        )
+
+    return {
+        "configured": configured,
+        "updated": updated,
+        "suppressed": suppressed,
+        "sources": source_rows,
+        "errors": errors,
+    }
 
 
 def _normalize_portfolio_config(risk_limits: dict[str, Any]) -> dict[str, Any]:
@@ -483,6 +731,18 @@ def _query_sources_for_configs(source_configs: dict[str, dict[str, Any]]) -> lis
     return sorted(source_configs.keys())
 
 
+def _query_strategy_types_for_configs(source_configs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    if not source_configs:
+        return {}
+    out: dict[str, list[str]] = {}
+    for source_key, source_config in source_configs.items():
+        allowed = _accepted_signal_strategy_types(source_config)
+        if not allowed:
+            continue
+        out[source_key] = sorted(allowed)
+    return out
+
+
 def _normalize_crypto_asset(value: Any) -> str:
     asset = str(value or "").strip().upper()
     if asset == "XBT":
@@ -592,6 +852,164 @@ def _crypto_signal_in_scope(signal: Any, source_config: dict[str, Any]) -> bool:
 
 def _signal_wallets(signal: Any) -> set[str]:
     return StrategySDK.extract_trader_signal_wallets(signal)
+
+
+def _is_live_provider_infra_error(error_text: Any) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    if "not enough balance / allowance" in text:
+        return False
+    return any(marker in text for marker in _LIVE_PROVIDER_INFRA_ERROR_MARKERS)
+
+
+def _live_provider_health_event_due(trader_id: str, now: datetime) -> bool:
+    cooldown_until = _live_provider_block_event_cooldown_until.get(trader_id)
+    if cooldown_until is not None and now < cooldown_until:
+        return False
+    _live_provider_block_event_cooldown_until[trader_id] = now + timedelta(
+        seconds=_LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS
+    )
+    return True
+
+
+def _live_risk_clamp_event_due(trader_id: str, now: datetime) -> bool:
+    cooldown_until = _live_risk_clamp_event_cooldown_until.get(trader_id)
+    if cooldown_until is not None and now < cooldown_until:
+        return False
+    _live_risk_clamp_event_cooldown_until[trader_id] = now + timedelta(
+        seconds=_LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS
+    )
+    return True
+
+
+async def _live_provider_failure_snapshot(
+    session: Any,
+    *,
+    trader_id: str,
+    window_seconds: int,
+) -> dict[str, Any]:
+    if not hasattr(session, "execute"):
+        return {"count": 0, "window_seconds": window_seconds, "errors": []}
+
+    now = utcnow()
+    cutoff = now - timedelta(seconds=max(30, int(window_seconds)))
+    mode_key_expr = func.lower(func.coalesce(TraderOrder.mode, ""))
+    rows = (
+        await session.execute(
+            select(
+                TraderOrder.id,
+                TraderOrder.status,
+                TraderOrder.error_message,
+                TraderOrder.payload_json,
+                TraderOrder.updated_at,
+            )
+            .where(TraderOrder.trader_id == trader_id)
+            .where(mode_key_expr == "live")
+            .where(TraderOrder.updated_at.is_not(None))
+            .where(TraderOrder.updated_at >= cutoff)
+            .order_by(TraderOrder.updated_at.desc())
+            .limit(200)
+        )
+    ).all()
+
+    failures: list[dict[str, Any]] = []
+    for row in rows:
+        payload = dict(row.payload_json or {})
+        pending_live_exit = payload.get("pending_live_exit")
+        pending_live_exit = pending_live_exit if isinstance(pending_live_exit, dict) else {}
+        provider_reconcile = payload.get("provider_reconciliation")
+        provider_reconcile = provider_reconcile if isinstance(provider_reconcile, dict) else {}
+        candidates = [
+            row.error_message,
+            payload.get("error_message"),
+            payload.get("error"),
+            pending_live_exit.get("last_error"),
+            provider_reconcile.get("error"),
+        ]
+        matched_error = next((text for text in candidates if _is_live_provider_infra_error(text)), None)
+        if matched_error is None:
+            continue
+        failures.append(
+            {
+                "order_id": str(row.id or "").strip() or None,
+                "status": str(row.status or "").strip().lower() or None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at is not None else None,
+                "error": str(matched_error),
+            }
+        )
+
+    return {
+        "count": len(failures),
+        "window_seconds": int(max(30, int(window_seconds))),
+        "errors": failures[:8],
+    }
+
+
+def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    changes: dict[str, dict[str, Any]] = {}
+
+    configured_allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
+    if configured_allow_averaging:
+        changes["allow_averaging"] = {"configured": configured_allow_averaging, "effective": False}
+    effective_risk_limits["allow_averaging"] = False
+
+    configured_cooldown_seconds = max(0, safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
+    clamped_cooldown_seconds = max(configured_cooldown_seconds, 90)
+    if clamped_cooldown_seconds != configured_cooldown_seconds:
+        changes["cooldown_seconds"] = {
+            "configured": configured_cooldown_seconds,
+            "effective": clamped_cooldown_seconds,
+        }
+    effective_risk_limits["cooldown_seconds"] = clamped_cooldown_seconds
+
+    configured_max_consecutive_losses = max(1, safe_int(effective_risk_limits.get("max_consecutive_losses"), 4))
+    clamped_max_consecutive_losses = min(configured_max_consecutive_losses, 3)
+    if clamped_max_consecutive_losses != configured_max_consecutive_losses:
+        changes["max_consecutive_losses"] = {
+            "configured": configured_max_consecutive_losses,
+            "effective": clamped_max_consecutive_losses,
+        }
+    effective_risk_limits["max_consecutive_losses"] = clamped_max_consecutive_losses
+
+    configured_max_open_orders = max(1, safe_int(effective_risk_limits.get("max_open_orders"), 20))
+    clamped_max_open_orders = min(configured_max_open_orders, 6)
+    if clamped_max_open_orders != configured_max_open_orders:
+        changes["max_open_orders"] = {
+            "configured": configured_max_open_orders,
+            "effective": clamped_max_open_orders,
+        }
+    effective_risk_limits["max_open_orders"] = clamped_max_open_orders
+
+    configured_max_open_positions = max(1, safe_int(effective_risk_limits.get("max_open_positions"), 12))
+    clamped_max_open_positions = min(configured_max_open_positions, 4)
+    if clamped_max_open_positions != configured_max_open_positions:
+        changes["max_open_positions"] = {
+            "configured": configured_max_open_positions,
+            "effective": clamped_max_open_positions,
+        }
+    effective_risk_limits["max_open_positions"] = clamped_max_open_positions
+
+    configured_max_trade_notional = max(1.0, safe_float(effective_risk_limits.get("max_trade_notional_usd"), 350.0))
+    clamped_max_trade_notional = min(float(configured_max_trade_notional), 200.0)
+    if clamped_max_trade_notional != float(configured_max_trade_notional):
+        changes["max_trade_notional_usd"] = {
+            "configured": float(configured_max_trade_notional),
+            "effective": clamped_max_trade_notional,
+        }
+    effective_risk_limits["max_trade_notional_usd"] = clamped_max_trade_notional
+
+    configured_max_orders_per_cycle = max(1, safe_int(effective_risk_limits.get("max_orders_per_cycle"), 50))
+    clamped_max_orders_per_cycle = min(configured_max_orders_per_cycle, 4)
+    if clamped_max_orders_per_cycle != configured_max_orders_per_cycle:
+        changes["max_orders_per_cycle"] = {
+            "configured": configured_max_orders_per_cycle,
+            "effective": clamped_max_orders_per_cycle,
+        }
+    effective_risk_limits["max_orders_per_cycle"] = clamped_max_orders_per_cycle
+
+    effective_risk_limits["halt_on_consecutive_losses"] = True
+    return changes
 
 
 async def _backfill_simulation_ledger_for_active_paper_orders(
@@ -955,10 +1373,12 @@ async def _run_trader_once(
         effective_process_signals = bool(process_signals)
         default_strategy_params: dict[str, Any] = {}
         sources: list[str] = []
+        strategy_types_by_source: dict[str, list[str]] = {}
         if source_configs:
             default_source_config = next(iter(source_configs.values()))
             default_strategy_params = dict(default_source_config.get("strategy_params") or {})
             sources = _query_sources_for_configs(source_configs)
+            strategy_types_by_source = _query_strategy_types_for_configs(source_configs)
         elif effective_process_signals:
             await _emit_cycle_heartbeat_if_due(
                 session,
@@ -976,6 +1396,9 @@ async def _run_trader_once(
                     continue
                 if key_name in normalized_limits:
                     risk_limits[key_name] = normalized_limits[key_name]
+        position_cap_scope = str(risk_limits.get("position_cap_scope") or "market_direction").strip().lower()
+        if position_cap_scope not in {"market_direction", "market", "asset_timeframe"}:
+            position_cap_scope = "market_direction"
         metadata = StrategySDK.validate_trader_runtime_metadata(trader.get("metadata"))
         run_mode = str(control.get("mode") or "paper").strip().lower()
         resume_policy = _normalize_resume_policy(metadata.get("resume_policy"))
@@ -989,7 +1412,8 @@ async def _run_trader_once(
                 session,
                 trader_id=trader_id,
                 sources=sources,
-                statuses=["pending", "selected", "submitted"],
+                statuses=["pending", "selected"],
+                strategy_types_by_source=strategy_types_by_source,
                 cursor_created_at=cursor_created_at,
                 cursor_signal_id=cursor_signal_id,
                 limit=1,
@@ -1099,16 +1523,58 @@ async def _run_trader_once(
                     message=f"Expired {int(reconcile_result['expired'])} execution session(s)",
                     payload=reconcile_result,
                 )
+        timeout_cleanup = await _enforce_source_open_order_timeouts(
+            session,
+            trader_id=trader_id,
+            run_mode=run_mode,
+            source_configs=source_configs,
+        )
+        if timeout_cleanup.get("updated", 0) > 0:
+            await create_trader_event(
+                session,
+                trader_id=trader_id,
+                event_type="open_order_timeout_cleanup",
+                source="worker",
+                message=f"Cancelled {int(timeout_cleanup['updated'])} stale unfilled order(s)",
+                payload=timeout_cleanup,
+            )
+        if timeout_cleanup.get("errors"):
+            await create_trader_event(
+                session,
+                trader_id=trader_id,
+                event_type="open_order_timeout_cleanup_failed",
+                severity="warn",
+                source="worker",
+                message="One or more source open-order timeout cleanups failed",
+                payload=timeout_cleanup,
+            )
         open_positions = await get_open_position_count_for_trader(
             session,
             trader_id,
             mode=run_mode,
+            position_cap_scope=position_cap_scope,
         )
         open_order_count = await get_open_order_count_for_trader(
             session,
             trader_id,
             mode=run_mode,
         )
+        pending_live_exit_summary = {
+            "count": 0,
+            "order_ids": [],
+            "market_ids": [],
+            "signal_ids": [],
+            "statuses": {},
+            "identities": [],
+            "identity_keys": [],
+        }
+        if run_mode == "live":
+            pending_live_exit_summary = await get_pending_live_exit_summary_for_trader(
+                session,
+                trader_id,
+                mode=run_mode,
+            )
+        pending_live_exit_count = int(pending_live_exit_summary.get("count", 0) or 0)
         effective_open_positions = max(open_positions, open_order_count)
         open_market_ids = await get_open_market_ids_for_trader(
             session,
@@ -1117,6 +1583,13 @@ async def _run_trader_once(
         )
 
         block_entries_reason = None
+        block_entries_payload: dict[str, Any] = {
+            "resume_policy": resume_policy,
+            "mode": run_mode,
+            "open_positions": open_positions,
+        }
+        block_entries_event_type = "trader_resume_policy"
+        block_entries_event_severity = "warn" if run_mode == "live" else "info"
         if resume_policy == "manage_only":
             block_entries_reason = "Resume policy manage_only blocks new entries"
         elif resume_policy == "flatten_then_start" and open_positions > 0:
@@ -1127,21 +1600,106 @@ async def _run_trader_once(
             else:
                 block_entries_reason = f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
 
+        if run_mode == "live":
+            provider_health_window_seconds = int(
+                max(
+                    30,
+                    min(
+                        900,
+                        safe_int(
+                            default_strategy_params.get("live_provider_health_window_seconds"),
+                            _LIVE_PROVIDER_HEALTH_WINDOW_SECONDS,
+                        ),
+                    ),
+                )
+            )
+            provider_health_min_errors = int(
+                max(
+                    1,
+                    min(
+                        20,
+                        safe_int(
+                            default_strategy_params.get("live_provider_health_min_errors"),
+                            _LIVE_PROVIDER_HEALTH_MIN_ERRORS,
+                        ),
+                    ),
+                )
+            )
+            provider_health_block_seconds = int(
+                max(
+                    15,
+                    min(
+                        3600,
+                        safe_int(
+                            default_strategy_params.get("live_provider_health_block_seconds"),
+                            _LIVE_PROVIDER_HEALTH_BLOCK_SECONDS,
+                        ),
+                    ),
+                )
+            )
+            provider_health_now = utcnow()
+            blocked_until = _live_provider_entry_blocked_until.get(trader_id)
+            if blocked_until is not None and provider_health_now >= blocked_until:
+                _live_provider_entry_blocked_until.pop(trader_id, None)
+                blocked_until = None
+
+            provider_health_snapshot: dict[str, Any]
+            new_provider_block = False
+            if blocked_until is None:
+                provider_health_snapshot = await _live_provider_failure_snapshot(
+                    session,
+                    trader_id=trader_id,
+                    window_seconds=provider_health_window_seconds,
+                )
+                if int(provider_health_snapshot.get("count", 0) or 0) >= provider_health_min_errors:
+                    blocked_until = provider_health_now + timedelta(seconds=provider_health_block_seconds)
+                    _live_provider_entry_blocked_until[trader_id] = blocked_until
+                    new_provider_block = True
+            else:
+                provider_health_snapshot = {
+                    "count": 0,
+                    "window_seconds": provider_health_window_seconds,
+                    "errors": [],
+                }
+
+            if blocked_until is not None and provider_health_now < blocked_until:
+                if block_entries_reason is None:
+                    recent_error_count = int(provider_health_snapshot.get("count", 0) or 0)
+                    blocked_until_iso = blocked_until.isoformat().replace("+00:00", "Z")
+                    block_entries_reason = (
+                        "Live provider health guard: "
+                        f"entries paused until {blocked_until_iso} after {recent_error_count} provider infra "
+                        f"failure(s) in {provider_health_window_seconds}s (threshold={provider_health_min_errors})"
+                    )
+                    block_entries_event_type = "live_provider_health_block"
+                    block_entries_payload = {
+                        **block_entries_payload,
+                        "provider_health": {
+                            "window_seconds": provider_health_window_seconds,
+                            "min_errors": provider_health_min_errors,
+                            "block_seconds": provider_health_block_seconds,
+                            "blocked_until": blocked_until_iso,
+                            "recent_failure_count": recent_error_count,
+                            "recent_failures": provider_health_snapshot.get("errors") or [],
+                            "new_block": new_provider_block,
+                        },
+                    }
+
         if block_entries_reason is not None and effective_process_signals:
             effective_process_signals = False
-            await create_trader_event(
-                session,
-                trader_id=trader_id,
-                event_type="trader_resume_policy",
-                severity="warn" if run_mode == "live" else "info",
-                source="worker",
-                message=block_entries_reason,
-                payload={
-                    "resume_policy": resume_policy,
-                    "mode": run_mode,
-                    "open_positions": open_positions,
-                },
-            )
+            should_emit_block_event = True
+            if block_entries_event_type == "live_provider_health_block":
+                should_emit_block_event = _live_provider_health_event_due(trader_id, utcnow())
+            if should_emit_block_event:
+                await create_trader_event(
+                    session,
+                    trader_id=trader_id,
+                    event_type=block_entries_event_type,
+                    severity=block_entries_event_severity,
+                    source="worker",
+                    message=block_entries_reason,
+                    payload=block_entries_payload,
+                )
 
         if not effective_process_signals:
             await _persist_trader_cycle_heartbeat(session, trader_id)
@@ -1254,6 +1812,19 @@ async def _run_trader_once(
             fallback_daily_loss = safe_float(global_limits.get("max_daily_loss_usd"), 0.0) or 0.0
             if fallback_daily_loss > 0:
                 effective_risk_limits["max_daily_loss_usd"] = fallback_daily_loss
+        live_risk_clamp_changes: dict[str, dict[str, Any]] = {}
+        if run_mode == "live":
+            live_risk_clamp_changes = _apply_live_risk_clamps(effective_risk_limits)
+            if live_risk_clamp_changes and _live_risk_clamp_event_due(trader_id, utcnow()):
+                await create_trader_event(
+                    session,
+                    trader_id=trader_id,
+                    event_type="live_risk_clamped",
+                    severity="warn",
+                    source="worker",
+                    message="Applied live risk safety clamps for directional execution stability.",
+                    payload={"changes": live_risk_clamp_changes},
+                )
         allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
 
         global_daily_pnl = await get_daily_realized_pnl(session, mode=run_mode)
@@ -1379,9 +1950,10 @@ async def _run_trader_once(
         traders_scope_context: dict[str, Any] | None = None
         traders_source_config = source_configs.get("traders")
         if traders_source_config is not None:
+            traders_params = dict(traders_source_config.get("strategy_params") or {})
             traders_scope_context = await _build_traders_scope_context(
                 session,
-                dict(traders_source_config.get("traders_scope") or {}),
+                traders_params.get("traders_scope"),
             )
 
         # Kill switch is the very first gate: short-circuit before any signal
@@ -1404,7 +1976,8 @@ async def _run_trader_once(
                     session,
                     trader_id=trader_id,
                     sources=sources,
-                    statuses=["pending", "selected", "submitted"],
+                    statuses=["pending", "selected"],
+                    strategy_types_by_source=strategy_types_by_source,
                     cursor_created_at=cursor_created_at,
                     cursor_signal_id=cursor_signal_id,
                     limit=batch_limit,
@@ -1417,11 +1990,45 @@ async def _run_trader_once(
             for signal in signals:
                 signal_source = normalize_source_key(getattr(signal, "source", ""))
                 source_config = source_configs.get(signal_source)
+                signal_id = str(signal.id)
+                signal_ts = _signal_cursor_timestamp(signal)
+                if source_config is not None:
+                    expected_strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
+                    signal_strategy_type = str(getattr(signal, "strategy_type", "") or "").strip().lower()
+                    allowed_strategy_types = set(strategy_types_by_source.get(signal_source) or [])
+                    strategy_mismatch = bool(
+                        expected_strategy_key
+                        and allowed_strategy_types
+                        and signal_strategy_type not in allowed_strategy_types
+                    )
+                    if strategy_mismatch:
+                        allowed_label = ", ".join(sorted(allowed_strategy_types)) or expected_strategy_key
+                        await record_signal_consumption(
+                            session,
+                            trader_id=trader_id,
+                            signal_id=signal_id,
+                            outcome="skipped",
+                            reason=(
+                                "Signal excluded by source strategy filter "
+                                f"(signal={signal_strategy_type or 'unknown'}, allowed={allowed_label})"
+                            ),
+                            commit=False,
+                        )
+                        await upsert_trader_signal_cursor(
+                            session,
+                            trader_id=trader_id,
+                            last_signal_created_at=signal_ts,
+                            last_signal_id=signal_id,
+                            commit=False,
+                        )
+                        cursor_created_at = signal_ts
+                        cursor_signal_id = signal_id
+                        processed_signals += 1
+                        prefiltered += 1
+                        continue
                 if signal_source != "crypto" or source_config is None or _crypto_signal_in_scope(signal, source_config):
                     scoped_signals.append(signal)
                     continue
-                signal_id = str(signal.id)
-                signal_ts = _signal_cursor_timestamp(signal)
                 await record_signal_consumption(
                     session,
                     trader_id=trader_id,
@@ -1449,7 +2056,12 @@ async def _run_trader_once(
 
             live_contexts: dict[str, dict[str, Any]] = {}
             if enable_live_market_context:
-                context_candidates = [sig for sig in signals if _supports_live_market_context(sig)]
+                context_candidates: list[Any] = []
+                for sig in signals:
+                    source_key = normalize_source_key(getattr(sig, "source", ""))
+                    source_config = source_configs.get(source_key)
+                    if _supports_live_market_context(sig, source_config):
+                        context_candidates.append(sig)
                 try:
                     live_contexts = await asyncio.wait_for(
                         build_live_signal_contexts(
@@ -1620,9 +2232,10 @@ async def _run_trader_once(
 
                     if signal_source == "traders":
                         if traders_scope_context is None:
+                            traders_params = dict(source_config.get("strategy_params") or {})
                             traders_scope_context = await _build_traders_scope_context(
                                 session,
-                                dict(source_config.get("traders_scope") or {}),
+                                traders_params.get("traders_scope"),
                             )
                         scope_ok, scope_payload = _signal_matches_traders_scope(runtime_signal, traders_scope_context)
                         traders_scope_payload = scope_payload
@@ -1773,6 +2386,9 @@ async def _run_trader_once(
                         "cooldown_remaining_seconds": cooldown_remaining_seconds,
                         "trader_open_positions": effective_open_positions,
                         "trader_open_orders": open_order_count,
+                        "pending_live_exit_count": pending_live_exit_count,
+                        "pending_live_exit_statuses": pending_live_exit_summary.get("statuses") or {},
+                        "live_risk_clamps": live_risk_clamp_changes,
                         "trading_schedule_ok": trading_schedule_ok,
                     }
 
@@ -1798,6 +2414,8 @@ async def _run_trader_once(
                             "cooldown_remaining_seconds": cooldown_remaining_seconds,
                             "trader_open_positions": effective_open_positions,
                             "trader_open_orders": open_order_count,
+                            "pending_live_exit_count": pending_live_exit_count,
+                            "pending_live_exit_statuses": pending_live_exit_summary.get("statuses") or {},
                         }
 
                         def _evaluate_runtime_risk(size_for_eval: float):
@@ -1867,6 +2485,8 @@ async def _run_trader_once(
                         effective_risk_limits=effective_risk_limits,
                         allow_averaging=allow_averaging,
                         open_market_ids=open_market_ids,
+                        pending_live_exit_count=pending_live_exit_count,
+                        pending_live_exit_summary=pending_live_exit_summary,
                         portfolio_allocator=portfolio_allocator,
                         risk_evaluator=risk_evaluator,
                         invoke_hooks=True,
@@ -1922,6 +2542,9 @@ async def _run_trader_once(
                                 "cooldown_remaining_seconds": risk_runtime_payload["cooldown_remaining_seconds"],
                                 "trader_open_positions": risk_runtime_payload["trader_open_positions"],
                                 "trader_open_orders": risk_runtime_payload["trader_open_orders"],
+                                "pending_live_exit_count": risk_runtime_payload["pending_live_exit_count"],
+                                "pending_live_exit_statuses": risk_runtime_payload["pending_live_exit_statuses"],
+                                "live_risk_clamps": risk_runtime_payload["live_risk_clamps"],
                                 "trading_schedule_ok": risk_runtime_payload["trading_schedule_ok"],
                             },
                             "portfolio_runtime": portfolio_runtime_payload,
@@ -1982,6 +2605,7 @@ async def _run_trader_once(
                                     session,
                                     trader_id,
                                     mode=run_mode,
+                                    position_cap_scope=position_cap_scope,
                                 )
                                 open_order_count = await get_open_order_count_for_trader(
                                     session,
@@ -2011,6 +2635,7 @@ async def _run_trader_once(
                                     session,
                                     trader_id,
                                     mode=run_mode,
+                                    position_cap_scope=position_cap_scope,
                                 )
                                 open_order_count = await get_open_order_count_for_trader(
                                     session,
@@ -2319,6 +2944,13 @@ async def run_worker_loop() -> None:
 
     trigger_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_ORCHESTRATOR_TRIGGER_QUEUE_MAXSIZE)
     runtime_trigger_event: dict[str, Any] | None = None
+    coalesced_triggers_by_source: dict[str, dict[str, Any]] = {}
+
+    def _pop_coalesced_trigger() -> dict[str, Any] | None:
+        if not coalesced_triggers_by_source:
+            return None
+        source_key = next(iter(coalesced_triggers_by_source.keys()))
+        return coalesced_triggers_by_source.pop(source_key, None)
 
     async def _on_runtime_event(event_type: str, data: dict[str, Any]) -> None:
         if event_type not in _ORCHESTRATOR_TRIGGER_EVENTS:
@@ -2343,9 +2975,14 @@ async def run_worker_loop() -> None:
                 }
             )
         except asyncio.QueueFull:
+            source_key = str(payload.get("source") or "").strip().lower() or "__all__"
+            coalesced_triggers_by_source[source_key] = {
+                "event_type": str(event_type),
+                "source": "" if source_key == "__all__" else source_key,
+            }
             logger.warning(
-                "Orchestrator runtime trigger queue full; dropping event",
-                extra={"event_type": event_type},
+                "Orchestrator runtime trigger queue full; coalescing trigger",
+                extra={"event_type": event_type, "source": source_key},
             )
 
     await event_bus.start()
@@ -2357,7 +2994,7 @@ async def run_worker_loop() -> None:
             sleep_seconds = 2
             skip_cycle = False
             manual_force_cycle = False
-            cycle_trigger = runtime_trigger_event
+            cycle_trigger = runtime_trigger_event or _pop_coalesced_trigger()
             runtime_trigger_event = None
             manage_only_cycle = False
             manage_only_reasons: list[str] = []
@@ -2527,7 +3164,9 @@ async def run_worker_loop() -> None:
                         traders = await list_traders(session)
 
                 if skip_cycle:
-                    runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
+                    runtime_trigger_event = _pop_coalesced_trigger()
+                    if runtime_trigger_event is None:
+                        runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
                     continue
 
                 total_decisions = 0
@@ -2615,7 +3254,9 @@ async def run_worker_loop() -> None:
                         stats=metrics,
                     )
 
-                runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
+                runtime_trigger_event = _pop_coalesced_trigger()
+                if runtime_trigger_event is None:
+                    runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, sleep_seconds)
             except Exception as exc:
                 logger.exception("Trader orchestrator worker cycle failed: %s", exc)
                 try:
@@ -2637,7 +3278,9 @@ async def run_worker_loop() -> None:
                         "Failed to persist orchestrator worker error state",
                         error=str(snapshot_exc),
                     )
-                runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, 2)
+                runtime_trigger_event = _pop_coalesced_trigger()
+                if runtime_trigger_event is None:
+                    runtime_trigger_event = await _wait_for_runtime_trigger(trigger_queue, 2)
     finally:
         event_bus.unsubscribe("*", _on_runtime_event)
         await _release_orchestrator_cycle_lock_owner()

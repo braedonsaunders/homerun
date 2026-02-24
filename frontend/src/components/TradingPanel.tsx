@@ -67,7 +67,7 @@ import {
 } from '../services/api'
 import { discoveryApi } from '../services/discoveryApi'
 import { cn } from '../lib/utils'
-import { getTraderOrderPlatformLinks } from '../lib/marketUrls'
+import { getOpportunityPlatformLinks, getTraderOrderPlatformLinks } from '../lib/marketUrls'
 import { selectedAccountIdAtom } from '../store/atoms'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -89,9 +89,12 @@ type FeedFilter = 'all' | 'decision' | 'order' | 'event'
 type TradeStatusFilter = 'all' | 'open' | 'resolved' | 'failed'
 type AllBotsTab = 'overview' | 'trades' | 'positions'
 type TradeAction = 'BUY' | 'SELL'
+type DirectionSide = 'YES' | 'NO'
 type PositionDirectionFilter = 'all' | 'yes' | 'no'
 type PositionSortField = 'exposure' | 'updated' | 'edge' | 'confidence' | 'unrealized'
 type PositionSortDirection = 'asc' | 'desc'
+type BotRosterSort = 'name_asc' | 'name_desc' | 'pnl_desc' | 'pnl_asc' | 'open_desc' | 'activity_desc'
+type BotRosterGroupBy = 'none' | 'status' | 'source'
 
 type TerminalLeg = {
   action: TradeAction | null
@@ -121,6 +124,7 @@ type PositionBookRow = {
   sourceSummary: string
   executionSummary: string
   direction: string
+  directionSide: DirectionSide | null
   exposureUsd: number
   averagePrice: number | null
   markPrice: number | null
@@ -258,6 +262,8 @@ const RESOLVED_ORDER_STATUSES = new Set([
   'loss',
 ])
 const FAILED_ORDER_STATUSES = new Set(['failed', 'rejected', 'error', 'cancelled'])
+const WIN_ORDER_STATUSES = new Set(['resolved_win', 'closed_win', 'win'])
+const LOSS_ORDER_STATUSES = new Set(['resolved_loss', 'closed_loss', 'loss'])
 
 const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   {
@@ -481,6 +487,86 @@ function formatShortDate(value: string | null | undefined): string {
   return ts.toLocaleString()
 }
 
+function formatRelativeAge(value: string | null | undefined): string {
+  const ts = toTs(value)
+  if (ts <= 0) return '—'
+  const ageMs = Math.max(0, Date.now() - ts)
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s`
+  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m`
+  if (ageMs < 86_400_000) return `${Math.round(ageMs / 3_600_000)}h`
+  return `${Math.round(ageMs / 86_400_000)}d`
+}
+
+function computeOrderDynamicEdgePercent(params: {
+  status: string
+  edgePercent: number
+  fillPrice: number
+  markPrice: number
+  realizedPnl: number
+  filledNotional: number
+}): number {
+  const {
+    status,
+    edgePercent,
+    fillPrice,
+    markPrice,
+    realizedPnl,
+    filledNotional,
+  } = params
+  if (OPEN_ORDER_STATUSES.has(status) && fillPrice > 0 && markPrice > 0) {
+    return ((markPrice - fillPrice) / fillPrice) * 100
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status) && filledNotional > 0) {
+    return (realizedPnl / filledNotional) * 100
+  }
+  return normalizeEdgePercent(edgePercent)
+}
+
+function computeOrderFillProgressPercent(
+  payload: Record<string, unknown>,
+  params: {
+    filledSize: number
+    filledNotional: number
+    requestedNotionalFallback: number
+  }
+): number | null {
+  const {
+    filledSize,
+    filledNotional,
+    requestedNotionalFallback,
+  } = params
+  const requestedSize = (
+    toFiniteNumber(payload.requested_shares)
+    ?? toFiniteNumber(payload.requested_size)
+    ?? toFiniteNumber(payload.shares)
+  )
+  if (requestedSize !== null && requestedSize > 0) {
+    return clamp((Math.max(0, filledSize) / requestedSize) * 100, 0, 100)
+  }
+  const requestedNotional = (
+    toFiniteNumber(payload.requested_notional_usd)
+    ?? toFiniteNumber(payload.effective_notional_usd)
+    ?? (requestedNotionalFallback > 0 ? requestedNotionalFallback : null)
+  )
+  if (requestedNotional !== null && requestedNotional > 0) {
+    return clamp((Math.max(0, filledNotional) / requestedNotional) * 100, 0, 100)
+  }
+  return null
+}
+
+function computePendingExitProgressPercent(pendingExit: Record<string, unknown>): number | null {
+  const fillRatio = toFiniteNumber(pendingExit.fill_ratio)
+  if (fillRatio !== null && fillRatio >= 0) {
+    return clamp(fillRatio * 100, 0, 100)
+  }
+  const filledSize = toFiniteNumber(pendingExit.filled_size)
+  const exitSize = toFiniteNumber(pendingExit.exit_size)
+  if (filledSize !== null && exitSize !== null && exitSize > 0) {
+    return clamp((Math.max(0, filledSize) / exitSize) * 100, 0, 100)
+  }
+  return null
+}
+
 function shortId(value: string | null | undefined): string {
   if (!value) return 'n/a'
   return value.length <= 12 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`
@@ -493,12 +579,50 @@ function compactText(value: string | null | undefined, maxChars = 96): string {
   return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`
 }
 
-function buildOrderMarketLinks(order: TraderOrder, payload: Record<string, unknown>): { polymarket: string | null; kalshi: string | null } {
+function buildOrderMarketLinks(
+  order: TraderOrder,
+  payload: Record<string, unknown>,
+  signalPayload: Record<string, unknown> | null = null
+): { polymarket: string | null; kalshi: string | null } {
+  if (signalPayload) {
+    const rawMarkets = Array.isArray(signalPayload.markets) ? signalPayload.markets : []
+    const signalMarkets = rawMarkets.filter((market): market is Record<string, unknown> => isRecord(market))
+    const marketId = String(order.market_id || '').trim()
+    const normalizedMarketId = marketId.toLowerCase()
+    const matchedMarkets = marketId
+      ? signalMarkets.filter((market) => {
+          const candidates = [
+            cleanText(market.id),
+            cleanText(market.market_id),
+            cleanText(market.slug),
+            cleanText(market.market_slug),
+            cleanText(market.ticker),
+            cleanText(market.condition_id),
+            cleanText(market.conditionId),
+          ]
+            .filter((value): value is string => Boolean(value))
+            .map((value) => value.toLowerCase())
+          return candidates.includes(normalizedMarketId)
+        })
+      : []
+    const opportunityLinks = getOpportunityPlatformLinks({
+      ...signalPayload,
+      markets: matchedMarkets.length > 0 ? matchedMarkets : signalMarkets,
+    } as any)
+    if (opportunityLinks.polymarketUrl || opportunityLinks.kalshiUrl) {
+      return {
+        polymarket: opportunityLinks.polymarketUrl,
+        kalshi: opportunityLinks.kalshiUrl,
+      }
+    }
+  }
+
+  const mergedPayload = signalPayload ? { ...signalPayload, ...payload } : payload
   const links = getTraderOrderPlatformLinks({
     source: order.source,
     marketId: order.market_id,
     marketQuestion: order.market_question,
-    payload,
+    payload: mergedPayload,
   })
   return {
     polymarket: links.polymarketUrl,
@@ -543,6 +667,178 @@ function resolveTraderStatusPresentation(
     badgeVariant: 'default',
     badgeClassName: '',
   }
+}
+
+function resolveOrderStatusBadgePresentation(
+  status: string,
+  pnl: number
+): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className: string } {
+  if (status === 'cancelled') {
+    return {
+      variant: 'outline',
+      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/20 dark:text-zinc-100',
+    }
+  }
+
+  if (status === 'open') {
+    return {
+      variant: 'outline',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/20 dark:text-sky-100',
+    }
+  }
+
+  if (status === 'executed') {
+    return {
+      variant: 'outline',
+      className: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/45 dark:bg-indigo-500/20 dark:text-indigo-100',
+    }
+  }
+
+  if (status === 'submitted' || status === 'pending' || status === 'queued') {
+    return {
+      variant: 'outline',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/20 dark:text-amber-100',
+    }
+  }
+
+  if (WIN_ORDER_STATUSES.has(status)) {
+    return {
+      variant: 'outline',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
+    }
+  }
+
+  if (LOSS_ORDER_STATUSES.has(status) || FAILED_ORDER_STATUSES.has(status)) {
+    return {
+      variant: 'outline',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
+    }
+  }
+
+  if (status === 'resolved') {
+    return {
+      variant: 'outline',
+      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
+    }
+  }
+
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    if (pnl > 0) {
+      return {
+        variant: 'outline',
+        className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
+      }
+    }
+    if (pnl < 0) {
+      return {
+        variant: 'outline',
+        className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
+      }
+    }
+    return {
+      variant: 'outline',
+      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
+    }
+  }
+
+  return {
+    variant: 'outline',
+    className: 'border-border bg-muted/50 text-foreground',
+  }
+}
+
+function titleCaseStatusLabel(value: string): string {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return 'Unknown'
+  return normalized
+    .split('_')
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ')
+}
+
+function resolveOrderLifecycleLabel(status: string): string {
+  if (status === 'submitted' || status === 'pending' || status === 'queued') return 'Submitted'
+  if (status === 'open') return 'Working'
+  if (status === 'executed') return 'Filled'
+  if (status === 'cancelled') return 'Canceled'
+  if (status === 'rejected') return 'Rejected'
+  if (status === 'failed' || status === 'error') return 'Failed'
+  if (status === 'resolved_win') return 'Settled (Profit)'
+  if (status === 'resolved_loss') return 'Settled (Loss)'
+  if (status === 'closed_win') return 'Closed (Profit)'
+  if (status === 'closed_loss') return 'Closed (Loss)'
+  if (status === 'win') return 'Settled (Profit)'
+  if (status === 'loss') return 'Settled (Loss)'
+  if (status === 'resolved') return 'Settled'
+  return titleCaseStatusLabel(status)
+}
+
+function resolveVenueStatusPresentation(providerSnapshotStatus: string): {
+  label: string
+  detail: string
+  className: string
+} {
+  const key = normalizeStatus(providerSnapshotStatus)
+  if (key === 'filled') {
+    return {
+      label: 'Filled',
+      detail: 'Venue reports the order as filled.',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
+    }
+  }
+  if (key === 'partially_filled') {
+    return {
+      label: 'Partial',
+      detail: 'Venue reports a partial fill.',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+    }
+  }
+  if (key === 'open') {
+    return {
+      label: 'Working',
+      detail: 'Venue order remains working on book.',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+    }
+  }
+  if (key === 'pending') {
+    return {
+      label: 'Pending',
+      detail: 'Venue has accepted but not yet worked the order.',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
+    }
+  }
+  if (key === 'cancelled' || key === 'expired') {
+    return {
+      label: 'Canceled',
+      detail: 'Venue confirms cancellation/expiry.',
+      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200',
+    }
+  }
+  if (key === 'failed' || key === 'rejected') {
+    return {
+      label: 'Rejected',
+      detail: 'Venue reports failed/rejected execution.',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200',
+    }
+  }
+  return {
+    label: '\u2014',
+    detail: 'No venue status snapshot available.',
+    className: 'border-border bg-muted/50 text-muted-foreground',
+  }
+}
+
+function resolveOrderOutcomeBadgeClassName(status: string): string {
+  if (status === 'cancelled') {
+    return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200'
+  }
+  if (FAILED_ORDER_STATUSES.has(status)) {
+    return 'border-red-300/90 bg-red-100/80 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    return 'border-emerald-300/90 bg-emerald-100/80 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200'
+  }
+  return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-800 dark:border-zinc-500/45 dark:bg-zinc-500/12 dark:text-zinc-200'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -611,6 +907,42 @@ function normalizeOutcome(value: unknown): 'YES' | 'NO' | null {
     return 'NO'
   }
   return null
+}
+
+function normalizeDirectionSide(value: unknown): DirectionSide | null {
+  const key = String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+  if (!key) return null
+  if (key === 'YES' || key === 'BUY_YES' || key === 'SELL_YES' || key === 'BUY' || key === 'LONG' || key === 'UP') {
+    return 'YES'
+  }
+  if (key === 'NO' || key === 'BUY_NO' || key === 'SELL_NO' || key === 'SELL' || key === 'SHORT' || key === 'DOWN') {
+    return 'NO'
+  }
+  return null
+}
+
+function resolveOrderDirectionPresentation(
+  order: TraderOrder,
+): { side: DirectionSide | null; label: string } {
+  const side = normalizeDirectionSide(order.direction_side ?? order.direction)
+  const label = cleanText(order.direction_label) || side || String(order.direction || '').trim().toUpperCase() || 'N/A'
+  return {
+    side,
+    label,
+  }
+}
+
+function resolveDecisionDirectionPresentation(decision: {
+  direction: string | null
+  direction_side?: string | null
+  direction_label?: string | null
+}): { side: DirectionSide | null; label: string } {
+  const side = normalizeDirectionSide(decision.direction_side ?? decision.direction)
+  const label = cleanText(decision.direction_label) || side || String(decision.direction || '').trim().toUpperCase() || 'N/A'
+  return {
+    side,
+    label,
+  }
 }
 
 function terminalLegFromExecutionPlanLeg(leg: Record<string, unknown>): TerminalLeg | null {
@@ -824,8 +1156,8 @@ function orderCloseLifecycleReason(order: TraderOrder): string | null {
   if (!payload) return null
   const positionClose = isRecord(payload.position_close) ? payload.position_close : null
   const pendingExit = isRecord(payload.pending_live_exit) ? payload.pending_live_exit : null
-  const closeTrigger = cleanText(positionClose ? positionClose.close_trigger : null)
-  const closeReason = cleanText(positionClose ? positionClose.reason : null)
+  const closeTrigger = cleanText(order.close_trigger) || cleanText(positionClose ? positionClose.close_trigger : null)
+  const closeReason = cleanText(order.close_reason) || cleanText(positionClose ? positionClose.reason : null)
   const pendingTrigger = cleanText(pendingExit ? pendingExit.close_trigger : null)
   const pendingReason = cleanText(pendingExit ? pendingExit.reason : null)
   const primary = closeTrigger || pendingTrigger || closeReason || pendingReason
@@ -934,7 +1266,7 @@ function orderOutcomeSummary(order: TraderOrder): { headline: string; detail: st
   }
   if (OPEN_ORDER_STATUSES.has(status)) {
     return {
-      headline: 'In flight',
+      headline: 'Working',
       detail: reason,
     }
   }
@@ -1584,7 +1916,11 @@ function withConfiguredParams(
   return next
 }
 
-function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<string, string>): PositionBookRow[] {
+function buildPositionBookRows(
+  orders: TraderOrder[],
+  traderNameById: Record<string, string>,
+  decisionSignalPayloadByDecisionId: Map<string, Record<string, unknown>>
+): PositionBookRow[] {
   const buckets = new Map<string, {
     traderId: string
     traderName: string
@@ -1593,6 +1929,7 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
     sources: Set<string>
     executionTypes: Set<string>
     direction: string
+    directionSide: DirectionSide | null
     exposureUsd: number
     weightedPrice: number
     weightedMark: number
@@ -1619,9 +1956,14 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
 
     const traderId = String(order.trader_id || 'unknown')
     const marketId = String(order.market_id || 'unknown')
-    const direction = String(order.direction || 'flat').toUpperCase()
-    const key = `${traderId}:${marketId}:${direction}`
     const orderPayload = isRecord(order.payload) ? order.payload : {}
+    const linkedDecisionId = String(order.decision_id || '').trim()
+    const signalPayload = linkedDecisionId
+      ? decisionSignalPayloadByDecisionId.get(linkedDecisionId) || null
+      : null
+    const directionPresentation = resolveOrderDirectionPresentation(order)
+    const directionKey = directionPresentation.side || directionPresentation.label.toUpperCase() || 'UNKNOWN'
+    const key = `${traderId}:${marketId}:${directionKey}`
     const positionState = isRecord(orderPayload.position_state) ? orderPayload.position_state : {}
     const markPrice = toNumber(
       order.current_price
@@ -1652,7 +1994,7 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
     const mode = normalizeStatus(order.mode)
     const sourceLabel = cleanText(order.source)?.toUpperCase() || 'UNKNOWN'
     const executionSummary = orderExecutionTypeSummary(order)
-    const links = buildOrderMarketLinks(order, orderPayload)
+    const links = buildOrderMarketLinks(order, orderPayload, signalPayload)
     const markUpdatedAt = cleanText(order.mark_updated_at) || cleanText(positionState.last_marked_at)
 
     if (!buckets.has(key)) {
@@ -1663,7 +2005,8 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
         marketQuestion: String(order.market_question || order.market_id || 'Unknown market'),
         sources: new Set<string>(),
         executionTypes: new Set<string>(),
-        direction,
+        direction: directionPresentation.label,
+        directionSide: directionPresentation.side,
         exposureUsd: 0,
         weightedPrice: 0,
         weightedMark: 0,
@@ -1717,6 +2060,16 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
       ? markUpdatedAt
       : bucket.markUpdatedAt
     bucket.statuses.add(status)
+    if (!bucket.directionSide && directionPresentation.side) {
+      bucket.directionSide = directionPresentation.side
+    }
+    if (
+      directionPresentation.label
+      && bucket.direction === (bucket.directionSide || '')
+      && directionPresentation.label !== (bucket.directionSide || '')
+    ) {
+      bucket.direction = directionPresentation.label
+    }
     if (!bucket.polymarketLink && links.polymarket) {
       bucket.polymarketLink = links.polymarket
     }
@@ -1738,6 +2091,7 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
         sourceSummary: Array.from(bucket.sources).join(', '),
         executionSummary: summarizeExecutionTypes(bucket.executionTypes),
         direction: bucket.direction,
+        directionSide: bucket.directionSide,
         exposureUsd: bucket.exposureUsd,
         averagePrice: bucket.exposureUsd > 0 ? bucket.weightedPrice / bucket.exposureUsd : null,
         markPrice: bucket.markWeight > 0 ? bucket.weightedMark / bucket.markWeight : null,
@@ -1760,14 +2114,12 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
     .sort((a, b) => b.exposureUsd - a.exposureUsd)
 }
 
-function isYesDirection(value: string): boolean {
-  const normalized = String(value || '').trim().toUpperCase()
-  return normalized === 'YES' || normalized === 'BUY' || normalized === 'LONG' || normalized === 'UP'
+function isYesDirection(value: unknown): boolean {
+  return normalizeDirectionSide(value) === 'YES'
 }
 
-function isNoDirection(value: string): boolean {
-  const normalized = String(value || '').trim().toUpperCase()
-  return normalized === 'NO' || normalized === 'SELL' || normalized === 'SHORT' || normalized === 'DOWN'
+function isNoDirection(value: unknown): boolean {
+  return normalizeDirectionSide(value) === 'NO'
 }
 
 function compareNullableNumber(
@@ -1849,8 +2201,8 @@ function summarizePositionRows(rows: PositionBookRow[]): {
 
   for (const row of rows) {
     totalExposure += row.exposureUsd
-    if (isYesDirection(row.direction)) yesRows += 1
-    if (isNoDirection(row.direction)) noRows += 1
+    if (isYesDirection(row.directionSide || row.direction)) yesRows += 1
+    if (isNoDirection(row.directionSide || row.direction)) noRows += 1
     if (row.unrealizedPnl !== null) {
       totalUnrealizedPnl += row.unrealizedPnl
       rowsWithUnrealized += 1
@@ -1965,6 +2317,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [tradeStatusFilter, setTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [tradeSearch, setTradeSearch] = useState('')
   const [decisionSearch, setDecisionSearch] = useState('')
+  const [botRosterSearch, setBotRosterSearch] = useState('')
+  const [botRosterHideInactive, setBotRosterHideInactive] = useState(false)
+  const [botRosterSort, setBotRosterSort] = useState<BotRosterSort>('name_asc')
+  const [botRosterGroupBy, setBotRosterGroupBy] = useState<BotRosterGroupBy>('status')
   const [confirmLiveStartOpen, setConfirmLiveStartOpen] = useState(false)
   const [workTab, setWorkTab] = useState<'terminal' | 'positions' | 'trades' | 'monitor' | 'decisions' | 'risk'>('terminal')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
@@ -1987,7 +2343,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [draftSourceStrategies, setDraftSourceStrategies] = useState<Record<string, string>>({})
   const [draftInterval, setDraftInterval] = useState('60')
   const [draftSources, setDraftSources] = useState('')
-  const [draftEnabled, setDraftEnabled] = useState(true)
   const [draftTradersScopeModes, setDraftTradersScopeModes] = useState<TradersScopeMode[]>(['tracked', 'pool'])
   const [draftTradersIndividualWallets, setDraftTradersIndividualWallets] = useState<string[]>([])
   const [draftTradersGroupIds, setDraftTradersGroupIds] = useState<string[]>([])
@@ -2003,7 +2358,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [draftSignalFilters, setDraftSignalFilters] = useState<TraderSignalFilters>(DEFAULT_SIGNAL_FILTERS)
   const [liveTruthDurationSeconds, setLiveTruthDurationSeconds] = useState('300')
   const [liveTruthPollSeconds, setLiveTruthPollSeconds] = useState('1.0')
-  const [liveTruthRunLlm, setLiveTruthRunLlm] = useState(true)
+  const [liveTruthRunLlm, setLiveTruthRunLlm] = useState(false)
+  const [liveTruthEnableProviderChecks, setLiveTruthEnableProviderChecks] = useState(false)
   const [liveTruthIncludeStrategySource, setLiveTruthIncludeStrategySource] = useState(true)
   const [liveTruthModel, setLiveTruthModel] = useState('')
   const [liveTruthMaxAlertsForLlm, setLiveTruthMaxAlertsForLlm] = useState('80')
@@ -2128,6 +2484,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const allOrders = allOrdersQuery.data || []
   const allDecisions = allDecisionsQuery.data || []
   const allEvents = allEventsQuery.data || []
+  const decisionSignalPayloadByDecisionId = useMemo(() => {
+    const byDecisionId = new Map<string, Record<string, unknown>>()
+    for (const decision of allDecisions) {
+      const decisionId = String(decision.id || '').trim()
+      if (!decisionId) continue
+      if (!isRecord(decision.signal_payload)) continue
+      byDecisionId.set(decisionId, decision.signal_payload)
+    }
+    return byDecisionId
+  }, [allDecisions])
 
   const selectedTrader = useMemo(
     () => traders.find((trader) => trader.id === selectedTraderId) || null,
@@ -2249,6 +2615,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => sourceStrategyDetailsLookup.crypto?.[cryptoStrategyKeyDraft] || null,
     [cryptoStrategyKeyDraft, sourceStrategyDetailsLookup]
   )
+  const tradersStrategyKeyDraft = useMemo(
+    () => effectiveSourceStrategies.traders || defaultStrategyForSource('traders', sourceCards),
+    [effectiveSourceStrategies, sourceCards]
+  )
+  const selectedTradersStrategyDetail = useMemo(
+    () => sourceStrategyDetailsLookup.traders?.[tradersStrategyKeyDraft] || null,
+    [sourceStrategyDetailsLookup, tradersStrategyKeyDraft]
+  )
   const cryptoModeParamKey = useMemo(
     () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_MODE_PARAM_KEYS),
     [selectedCryptoStrategyDetail]
@@ -2325,25 +2699,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       ),
     [advancedConfig.cryptoExcludedTimeframesCsv]
   )
-  const scopeFormSchema = useMemo(() => {
-    const tradersSource = sourceCards.find((source) => isTraderSourceKey(source.key))
-    return {
-      param_fields: Array.isArray(tradersSource?.scope_fields) ? tradersSource.scope_fields : [],
-    }
-  }, [sourceCards])
+  const tradersStrategyFormSchema = useMemo(
+    () => ({
+      param_fields: Array.isArray(selectedTradersStrategyDetail?.paramFields) ? selectedTradersStrategyDetail.paramFields : [],
+    }),
+    [selectedTradersStrategyDetail]
+  )
   const riskFormSchema = useMemo(
     () => ({
       param_fields: Array.isArray(traderConfigSchema?.shared_risk_fields) ? traderConfigSchema.shared_risk_fields : [],
-    }),
-    [traderConfigSchema]
-  )
-  const runtimeFormSchema = useMemo(
-    () => ({
-      param_fields: (Array.isArray(traderConfigSchema?.runtime_fields) ? traderConfigSchema.runtime_fields : [])
-        .filter((field: Record<string, unknown>) => {
-          const key = String(field?.key || '').trim().toLowerCase()
-          return key !== 'trading_schedule_utc' && key !== 'trading_window_utc'
-        }),
     }),
     [traderConfigSchema]
   )
@@ -2376,6 +2740,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       }),
     }
   }, [draftCopyTrading.copy_mode_type, draftCopyTrading.copy_trade_mode, draftCopyTrading.proportional_sizing, traderConfigSchema])
+  const parsedDraftParams = useMemo(() => parseJsonObject(draftParams || '{}'), [draftParams])
   const parsedDraftRisk = useMemo(() => parseJsonObject(draftRisk || '{}'), [draftRisk])
   const parsedDraftMetadata = useMemo(() => parseJsonObject(draftMetadata || '{}'), [draftMetadata])
   const tradingScheduleDraft = useMemo(
@@ -2389,22 +2754,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }),
     [parsedDraftRisk.value, traderConfigSchema]
   )
-  const runtimeFormValues = useMemo(
+  const tradersStrategyFormValues = useMemo(
     () => ({
-      ...(isRecord(traderConfigSchema?.default_runtime_metadata) ? traderConfigSchema.default_runtime_metadata : {}),
-      ...(parsedDraftMetadata.value || {}),
-    }),
-    [parsedDraftMetadata.value, traderConfigSchema]
-  )
-  const scopeFormValues = useMemo(
-    () => ({
+      ...(isRecord(selectedTradersStrategyDetail?.defaultParams) ? selectedTradersStrategyDetail?.defaultParams : {}),
+      ...(parsedDraftParams.value || {}),
       traders_scope: {
         modes: draftTradersScopeModes,
         individual_wallets: draftTradersIndividualWallets,
         group_ids: draftTradersGroupIds,
       },
     }),
-    [draftTradersGroupIds, draftTradersIndividualWallets, draftTradersScopeModes]
+    [
+      draftTradersGroupIds,
+      draftTradersIndividualWallets,
+      draftTradersScopeModes,
+      parsedDraftParams.value,
+      selectedTradersStrategyDetail?.defaultParams,
+    ]
   )
   const defaultSignalFilters = useMemo(
     () =>
@@ -2695,7 +3061,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     const cryptoParams =
       (traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'crypto')?.strategy_params ||
         primaryParams) as Record<string, unknown>
-    const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')?.traders_scope
+    const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')
+      ?.strategy_params?.traders_scope
 
     if (!options.preserveName) {
       setDraftName(trader.name)
@@ -2705,7 +3072,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDraftSourceStrategies(sourceStrategyMap)
     setDraftInterval(String(trader.interval_seconds || 60))
     setDraftSources(normalizedSourceKeys.join(', ') || defaultSourceCsv)
-    setDraftEnabled(isTraderExecutionEnabled(trader))
     const risk = trader.risk_limits || {}
     const metadata = trader.metadata || {}
     setDraftParams(JSON.stringify(primaryParams, null, 2))
@@ -2715,18 +3081,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       setDraftCopyFromTraderId('')
     }
     setAdvancedConfig(computeAdvancedConfig(cryptoParams))
+    const tradersScopeRecord = isRecord(tradersScope) ? tradersScope : {}
     setDraftTradersScopeModes(
-      (tradersScope?.modes || ['tracked', 'pool'])
+      (toStringList(tradersScopeRecord.modes).length > 0 ? toStringList(tradersScopeRecord.modes) : ['tracked', 'pool'])
         .map((mode) => String(mode || '').toLowerCase())
         .filter((mode): mode is TradersScopeMode =>
           mode === 'tracked' || mode === 'pool' || mode === 'individual' || mode === 'group'
         )
     )
     setDraftTradersIndividualWallets(
-      (tradersScope?.individual_wallets || []).map((wallet) => String(wallet || '').trim().toLowerCase()).filter(Boolean)
+      toStringList(tradersScopeRecord.individual_wallets)
+        .map((wallet) => String(wallet || '').trim().toLowerCase())
+        .filter(Boolean)
     )
     setDraftTradersGroupIds(
-      (tradersScope?.group_ids || []).map((groupId) => String(groupId || '').trim()).filter(Boolean)
+      toStringList(tradersScopeRecord.group_ids)
+        .map((groupId) => String(groupId || '').trim())
+        .filter(Boolean)
     )
   }
 
@@ -2760,15 +3131,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDraftSourceStrategies(defaultStrategies)
     setDraftInterval('5')
     setDraftSources(defaultSources.join(', '))
-    setDraftEnabled(true)
     setDraftTradersScopeModes(['tracked', 'pool'])
     setDraftTradersIndividualWallets([])
     setDraftTradersGroupIds([])
     setDraftParams('{}')
     setDraftRisk(JSON.stringify(isRecord(traderConfigSchema?.shared_risk_defaults) ? traderConfigSchema.shared_risk_defaults : {}, null, 2))
-    setDraftMetadata(
-      JSON.stringify(isRecord(traderConfigSchema?.default_runtime_metadata) ? traderConfigSchema.default_runtime_metadata : {}, null, 2)
-    )
+    setDraftMetadata('{}')
     setDraftCopyFromTraderId('')
     setAdvancedConfig(defaultAdvancedConfig())
     setDeleteAction('disable')
@@ -2778,7 +3146,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setLiveTruthJobId(null)
     setLiveTruthDurationSeconds('300')
     setLiveTruthPollSeconds('1.0')
-    setLiveTruthRunLlm(true)
+    setLiveTruthRunLlm(false)
+    setLiveTruthEnableProviderChecks(false)
     setLiveTruthIncludeStrategySource(true)
     setLiveTruthModel('')
     setLiveTruthMaxAlertsForLlm('80')
@@ -2809,7 +3178,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setLiveTruthJobId(null)
     setLiveTruthDurationSeconds('300')
     setLiveTruthPollSeconds('1.0')
-    setLiveTruthRunLlm(true)
+    setLiveTruthRunLlm(false)
+    setLiveTruthEnableProviderChecks(false)
     setLiveTruthIncludeStrategySource(true)
     setLiveTruthModel('')
     setLiveTruthMaxAlertsForLlm('80')
@@ -2836,26 +3206,29 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setAdvancedConfig((current) => ({ ...current, [key]: value }))
   }
 
-  const applyScopeFormValues = (values: Record<string, unknown>) => {
-    const rawScope = isRecord(values.traders_scope) ? values.traders_scope : {}
+  const applyTradersStrategyFormValues = (values: Record<string, unknown>) => {
+    const nextValues = { ...values }
+    const rawScope = isRecord(nextValues.traders_scope) ? nextValues.traders_scope : {}
     const scopeModes = toStringList(rawScope.modes)
       .map((mode) => String(mode || '').trim().toLowerCase())
       .filter((mode): mode is TradersScopeMode =>
         mode === 'tracked' || mode === 'pool' || mode === 'individual' || mode === 'group'
       )
-    setDraftTradersScopeModes(scopeModes.length > 0 ? scopeModes : ['tracked'])
-    setDraftTradersIndividualWallets(
-      toStringList(rawScope.individual_wallets).map((wallet) => wallet.toLowerCase())
-    )
-    setDraftTradersGroupIds(toStringList(rawScope.group_ids))
+    const normalizedScopeModes: TradersScopeMode[] = scopeModes.length > 0 ? scopeModes : ['tracked']
+    const normalizedScope = {
+      modes: normalizedScopeModes,
+      individual_wallets: toStringList(rawScope.individual_wallets).map((wallet) => wallet.toLowerCase()),
+      group_ids: toStringList(rawScope.group_ids),
+    }
+    setDraftTradersScopeModes(normalizedScope.modes)
+    setDraftTradersIndividualWallets(normalizedScope.individual_wallets)
+    setDraftTradersGroupIds(normalizedScope.group_ids)
+    nextValues.traders_scope = normalizedScope
+    setDraftParams(JSON.stringify(nextValues, null, 2))
   }
 
   const setDraftRiskFromForm = (values: Record<string, unknown>) => {
     setDraftRisk(JSON.stringify(values, null, 2))
-  }
-
-  const setDraftMetadataFromForm = (values: Record<string, unknown>) => {
-    setDraftMetadata(JSON.stringify(values, null, 2))
   }
 
   const setDraftTradingSchedule = (
@@ -2938,11 +3311,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         strategy_params: withConfiguredParams(rawStrategyParams, advancedConfig, sourceKey, strategyKey, strategyDetail),
       }
       if (sourceKey === 'traders') {
-        nextConfig.traders_scope = {
-          modes: draftTradersScopeModes,
-          individual_wallets: draftTradersIndividualWallets,
-          group_ids: draftTradersGroupIds,
+        nextConfig.strategy_params = {
+          ...nextConfig.strategy_params,
+          traders_scope: {
+            modes: draftTradersScopeModes,
+            individual_wallets: draftTradersIndividualWallets,
+            group_ids: draftTradersGroupIds,
+          },
         }
+      } else if (isRecord(nextConfig.strategy_params)) {
+        delete nextConfig.strategy_params.traders_scope
       }
       configs.push(nextConfig)
     }
@@ -3089,6 +3467,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         duration_seconds: durationSeconds,
         poll_seconds: pollSeconds,
         run_llm_analysis: liveTruthRunLlm,
+        enable_provider_checks: liveTruthEnableProviderChecks,
         include_strategy_source: liveTruthIncludeStrategySource,
         max_alerts_for_llm: maxAlertsForLlm,
         ...(liveTruthModel.trim() ? { llm_model: liveTruthModel.trim() } : {}),
@@ -3162,20 +3541,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: parsedRisk.value,
         metadata: parsedMetadata.value,
+        is_enabled: false,
+        is_paused: false,
       }
 
       if (copyFromTraderId) {
         payload.copy_from_trader_id = copyFromTraderId
-
-        const sourceTrader = traders.find((trader) => trader.id === copyFromTraderId)
-        const sourceExecutionEnabled = isTraderExecutionEnabled(sourceTrader)
-        if (!sourceTrader || draftEnabled !== sourceExecutionEnabled) {
-          payload.is_enabled = draftEnabled
-          payload.is_paused = !draftEnabled
-        }
-      } else {
-        payload.is_enabled = draftEnabled
-        payload.is_paused = false
       }
 
       return createTrader(payload)
@@ -3228,8 +3599,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: parsedRisk.value,
         metadata: parsedMetadata.value,
-        is_enabled: draftEnabled,
-        is_paused: false,
       })
     },
     onSuccess: () => {
@@ -3330,6 +3699,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       notional: number
       wins: number
       losses: number
+      latest_activity_ts: number
     }>()
 
     const bySource = new Map<string, {
@@ -3351,6 +3721,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const traderId = String(order.trader_id || 'unknown')
       const traderName = traderNameById[traderId] || shortId(traderId)
       const source = String(order.source || 'unknown')
+      const orderTs = Math.max(
+        toTs(order.updated_at),
+        toTs(order.executed_at),
+        toTs(order.created_at)
+      )
 
       totalNotional += notional
       if (edge !== 0) {
@@ -3373,6 +3748,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           notional: 0,
           wins: 0,
           losses: 0,
+          latest_activity_ts: 0,
         })
       }
 
@@ -3394,6 +3770,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
       traderRow.orders += 1
       traderRow.notional += notional
+      traderRow.latest_activity_ts = Math.max(traderRow.latest_activity_ts, orderTs)
       sourceRow.orders += 1
       sourceRow.notional += notional
 
@@ -3428,9 +3805,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }
 
     const winRate = resolved > 0 ? (wins / resolved) * 100 : 0
-    const topTraderRows = Array.from(byTrader.values())
-      .sort((a, b) => b.pnl - a.pnl)
-      .slice(0, 8)
+    const traderRows = Array.from(byTrader.values())
+      .sort((a, b) => {
+        if (a.pnl !== b.pnl) return b.pnl - a.pnl
+        if (a.open !== b.open) return b.open - a.open
+        return a.traderName.localeCompare(b.traderName)
+      })
 
     const sourceRows = Array.from(bySource.values())
       .sort((a, b) => b.orders - a.orders)
@@ -3447,14 +3827,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       winRate,
       avgEdge: edgeCount > 0 ? edgeSum / edgeCount : 0,
       avgConfidence: confidenceCount > 0 ? confidenceSum / confidenceCount : 0,
-      topTraderRows,
+      traderRows,
       sourceRows,
     }
   }, [allOrders, traderNameById])
 
   const globalPositionBook = useMemo(
-    () => buildPositionBookRows(allOrders, traderNameById),
-    [allOrders, traderNameById]
+    () => buildPositionBookRows(allOrders, traderNameById, decisionSignalPayloadByDecisionId),
+    [allOrders, traderNameById, decisionSignalPayloadByDecisionId]
   )
 
   const selectedPositionBook = useMemo(
@@ -3465,10 +3845,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const filteredSelectedPositionBook = useMemo(() => {
     const query = positionSearch.trim().toLowerCase()
     const rows = selectedPositionBook.filter((row) => {
-      if (positionDirectionFilter === 'yes' && !isYesDirection(row.direction)) return false
-      if (positionDirectionFilter === 'no' && !isNoDirection(row.direction)) return false
+      if (positionDirectionFilter === 'yes' && !isYesDirection(row.directionSide || row.direction)) return false
+      if (positionDirectionFilter === 'no' && !isNoDirection(row.directionSide || row.direction)) return false
       if (!query) return true
-      const haystack = `${row.marketQuestion} ${row.marketId} ${row.sourceSummary} ${row.statusSummary} ${row.direction} ${row.executionSummary}`.toLowerCase()
+      const haystack = `${row.marketQuestion} ${row.marketId} ${row.sourceSummary} ${row.statusSummary} ${row.direction} ${row.directionSide || ''} ${row.executionSummary}`.toLowerCase()
       return haystack.includes(query)
     })
     return sortPositionRows(rows, positionSortField, positionSortDirection)
@@ -3577,7 +3957,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         if (!matchesStatus) return false
         if (!q) return true
 
-        const haystack = `${order.market_question || ''} ${order.market_id || ''} ${order.source || ''} ${order.direction || ''} ${orderExecutionTypeSummary(order)}`.toLowerCase()
+        const haystack = `${order.market_question || ''} ${order.market_id || ''} ${order.source || ''} ${order.direction || ''} ${order.direction_label || ''} ${order.direction_side || ''} ${orderExecutionTypeSummary(order)}`.toLowerCase()
         return haystack.includes(q)
       })
       .slice(0, 250)
@@ -3586,6 +3966,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const selectedTradeRows = useMemo(() => {
     return filteredTradeHistory.map((order) => {
       const status = normalizeStatus(order.status)
+      const lifecycleLabel = resolveOrderLifecycleLabel(status)
       const pnl = toNumber(order.actual_profit)
       const orderPayload = order.payload && typeof order.payload === 'object' ? order.payload : {}
       const providerReconciliation = orderPayload.provider_reconciliation && typeof orderPayload.provider_reconciliation === 'object'
@@ -3600,7 +3981,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const pendingExit = orderPayload.pending_live_exit && typeof orderPayload.pending_live_exit === 'object'
         ? orderPayload.pending_live_exit
         : {}
+      const positionClose = orderPayload.position_close && typeof orderPayload.position_close === 'object'
+        ? orderPayload.position_close
+        : {}
       const pendingExitStatus = normalizeStatus(String(pendingExit.status || ''))
+      const closeTrigger = cleanText(
+        order.close_trigger
+        || positionClose.close_trigger
+        || pendingExit.close_trigger
+      )
       const fillPx = toNumber(
         order.average_fill_price
         ?? providerReconciliation.average_fill_price
@@ -3630,6 +4019,24 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       if ((order.unrealized_pnl === null || order.unrealized_pnl === undefined) && markPx > 0 && filledSize > 0 && filledNotional > 0) {
         unrealized = (markPx * filledSize) - filledNotional
       }
+      const fillProgressPercent = computeOrderFillProgressPercent(
+        orderPayload as Record<string, unknown>,
+        {
+          filledSize,
+          filledNotional,
+          requestedNotionalFallback: Math.abs(toNumber(order.notional_usd)),
+        }
+      )
+      const dynamicEdgePercent = computeOrderDynamicEdgePercent({
+        status,
+        edgePercent: toNumber(order.edge_percent),
+        fillPrice: fillPx,
+        markPrice: markPx,
+        realizedPnl: pnl,
+        filledNotional,
+      })
+      const exitProgressPercent = computePendingExitProgressPercent(pendingExit as Record<string, unknown>)
+      const updatedAt = String(order.updated_at || order.mark_updated_at || order.created_at || '')
       const markUpdatedAtRaw = String(order.mark_updated_at || positionState.last_marked_at || '')
       const markUpdatedTs = toTs(markUpdatedAtRaw)
       const markFresh = markUpdatedTs > 0 && (Date.now() - markUpdatedTs) <= 15_000
@@ -3642,30 +4049,45 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           || ''
         )
       )
-      const links = buildOrderMarketLinks(order, orderPayload)
+      const linkedDecisionId = String(order.decision_id || '').trim()
+      const signalPayload = linkedDecisionId
+        ? decisionSignalPayloadByDecisionId.get(linkedDecisionId) || null
+        : null
+      const links = buildOrderMarketLinks(order, orderPayload, signalPayload)
       const outcome = orderOutcomeSummary(order)
       const executionSummary = orderExecutionTypeSummary(order)
+      const venuePresentation = resolveVenueStatusPresentation(providerSnapshotStatus)
+      const directionPresentation = resolveOrderDirectionPresentation(order)
       return {
         order,
         status,
+        lifecycleLabel,
         pnl,
         fillPx,
         markPx,
         filledSize,
         filledNotional,
         unrealized,
+        fillProgressPercent,
+        dynamicEdgePercent,
+        exitProgressPercent,
+        updatedAt,
         providerSnapshotStatus,
         pendingExitStatus,
+        closeTrigger,
         pendingExit,
         markFresh,
         links,
+        directionSide: directionPresentation.side,
+        directionLabel: directionPresentation.label,
         executionSummary,
         outcomeHeadline: outcome.headline,
         outcomeDetail: outcome.detail,
-        outcomeDetailCompact: compactText(outcome.detail, 96),
+        outcomeDetailCompact: compactText(outcome.detail, 160),
+        venuePresentation,
       }
     })
-  }, [filteredTradeHistory])
+  }, [decisionSignalPayloadByDecisionId, filteredTradeHistory])
 
   const selectedTradeTotals = useMemo(() => {
     let total = 0
@@ -3722,7 +4144,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         if (!matchesStatus) return false
         if (!q) return true
 
-        const haystack = `${order.market_question || ''} ${order.market_id || ''} ${order.source || ''} ${order.direction || ''} ${traderNameById[String(order.trader_id || '')] || ''} ${orderExecutionTypeSummary(order)}`.toLowerCase()
+        const haystack = `${order.market_question || ''} ${order.market_id || ''} ${order.source || ''} ${order.direction || ''} ${order.direction_label || ''} ${order.direction_side || ''} ${traderNameById[String(order.trader_id || '')] || ''} ${orderExecutionTypeSummary(order)}`.toLowerCase()
         return haystack.includes(q)
       })
       .slice(0, 300)
@@ -3731,10 +4153,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const filteredAllPositionBook = useMemo(() => {
     const query = allBotsPositionSearch.trim().toLowerCase()
     const rows = globalPositionBook.filter((row) => {
-      if (allBotsPositionDirectionFilter === 'yes' && !isYesDirection(row.direction)) return false
-      if (allBotsPositionDirectionFilter === 'no' && !isNoDirection(row.direction)) return false
+      if (allBotsPositionDirectionFilter === 'yes' && !isYesDirection(row.directionSide || row.direction)) return false
+      if (allBotsPositionDirectionFilter === 'no' && !isNoDirection(row.directionSide || row.direction)) return false
       if (!query) return true
-      const haystack = `${row.traderName} ${row.marketQuestion} ${row.marketId} ${row.sourceSummary} ${row.statusSummary} ${row.direction} ${row.executionSummary}`.toLowerCase()
+      const haystack = `${row.traderName} ${row.marketQuestion} ${row.marketId} ${row.sourceSummary} ${row.statusSummary} ${row.direction} ${row.directionSide || ''} ${row.executionSummary}`.toLowerCase()
       return haystack.includes(query)
     })
     return sortPositionRows(rows, allBotsPositionSortField, allBotsPositionSortDirection)
@@ -3904,14 +4326,149 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [activityRows]
   )
 
-  const allBotsLeaderboardRows = useMemo(() => {
-    const performanceByTraderId = new Map(
-      globalSummary.topTraderRows.map((row) => [row.traderId, row])
-    )
+  const traderPerformanceById = useMemo(
+    () => new Map(globalSummary.traderRows.map((row) => [row.traderId, row])),
+    [globalSummary.traderRows]
+  )
 
+  const sourceLabelByKey = useMemo(() => {
+    const labels: Record<string, string> = {}
+    for (const source of sourceCards) {
+      const key = normalizeSourceKey(source.key)
+      if (!key) continue
+      labels[key] = String(source.label || source.key).trim() || source.key.toUpperCase()
+    }
+    return labels
+  }, [sourceCards])
+
+  const sourceGroupOrderByKey = useMemo(() => {
+    const order = new Map<string, number>()
+    sourceCards.forEach((source, index) => {
+      const key = normalizeSourceKey(source.key)
+      if (!key) return
+      order.set(key, index)
+    })
+    return order
+  }, [sourceCards])
+
+  const botRosterRows = useMemo(() => {
+    return traders.map((trader) => {
+      const status = resolveTraderStatusPresentation(trader, orchestratorRunning)
+      const sourceKeys = traderSourceKeys(trader)
+      const sourceLabels = sourceKeys.map((sourceKey) => sourceLabelByKey[sourceKey] || sourceKey.toUpperCase())
+      const performance = traderPerformanceById.get(trader.id)
+      const latestActivityTs = Math.max(
+        toTs(trader.last_run_at),
+        toNumber(performance?.latest_activity_ts)
+      )
+      return {
+        trader,
+        status,
+        sourceKeys,
+        sourceLabels,
+        primarySourceKey: sourceKeys.length === 1 ? sourceKeys[0] : sourceKeys.length > 1 ? 'multi' : 'unknown',
+        open: toNumber(performance?.open),
+        resolved: toNumber(performance?.resolved),
+        pnl: toNumber(performance?.pnl),
+        latestActivityTs,
+        isInactive: !isTraderExecutionEnabled(trader),
+      }
+    })
+  }, [orchestratorRunning, sourceLabelByKey, traderPerformanceById, traders])
+
+  const filteredBotRosterRows = useMemo(() => {
+    const query = botRosterSearch.trim().toLowerCase()
+    const rows = botRosterRows.filter((row) => {
+      if (botRosterHideInactive && row.isInactive) return false
+      if (!query) return true
+      const haystack = `${row.trader.name} ${row.trader.id} ${row.status.label} ${row.sourceLabels.join(' ')}`.toLowerCase()
+      return haystack.includes(query)
+    })
+    rows.sort((left, right) => {
+      if (botRosterSort === 'name_asc') {
+        return left.trader.name.localeCompare(right.trader.name)
+      }
+      if (botRosterSort === 'name_desc') {
+        return right.trader.name.localeCompare(left.trader.name)
+      }
+      if (botRosterSort === 'pnl_desc') {
+        if (left.pnl !== right.pnl) return right.pnl - left.pnl
+      }
+      if (botRosterSort === 'pnl_asc') {
+        if (left.pnl !== right.pnl) return left.pnl - right.pnl
+      }
+      if (botRosterSort === 'open_desc') {
+        if (left.open !== right.open) return right.open - left.open
+      }
+      if (botRosterSort === 'activity_desc') {
+        if (left.latestActivityTs !== right.latestActivityTs) return right.latestActivityTs - left.latestActivityTs
+      }
+      if (left.pnl !== right.pnl) return right.pnl - left.pnl
+      return left.trader.name.localeCompare(right.trader.name)
+    })
+    return rows
+  }, [botRosterHideInactive, botRosterRows, botRosterSearch, botRosterSort])
+
+  const groupedBotRosterRows = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; order: number; rows: typeof filteredBotRosterRows }>()
+
+    if (botRosterGroupBy === 'none') {
+      return [{
+        key: 'all',
+        label: 'All Bots',
+        order: 0,
+        rows: filteredBotRosterRows,
+      }]
+    }
+
+    for (const row of filteredBotRosterRows) {
+      let key = ''
+      let label = ''
+      let order = 99
+      if (botRosterGroupBy === 'status') {
+        key = row.status.key
+        if (row.status.key === 'running') {
+          label = 'Running'
+          order = 0
+        } else if (row.status.key === 'paused_engine') {
+          label = 'Paused (Engine)'
+          order = 1
+        } else {
+          label = 'Inactive'
+          order = 2
+        }
+      } else {
+        key = row.primarySourceKey
+        if (key === 'multi') {
+          label = 'Multi-source'
+          order = sourceGroupOrderByKey.size + 1
+        } else if (key === 'unknown') {
+          label = 'Unassigned'
+          order = sourceGroupOrderByKey.size + 2
+        } else {
+          label = sourceLabelByKey[key] || key.toUpperCase()
+          order = sourceGroupOrderByKey.get(key) ?? sourceGroupOrderByKey.size
+        }
+      }
+
+      if (!groups.has(key)) {
+        groups.set(key, { key, label, order, rows: [] })
+      }
+      const group = groups.get(key)
+      if (!group) continue
+      group.rows.push(row)
+    }
+
+    return Array.from(groups.values()).sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order
+      return a.label.localeCompare(b.label)
+    })
+  }, [botRosterGroupBy, filteredBotRosterRows, sourceGroupOrderByKey, sourceLabelByKey])
+
+  const allBotsLeaderboardRows = useMemo(() => {
     return traders
       .map((trader) => {
-        const row = performanceByTraderId.get(trader.id)
+        const row = traderPerformanceById.get(trader.id)
         const resolved = toNumber(row?.resolved)
         const wins = toNumber(row?.wins)
         return {
@@ -3932,7 +4489,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         return a.trader.name.localeCompare(b.trader.name)
       })
       .slice(0, 12)
-  }, [globalSummary.topTraderRows, traders])
+  }, [traderPerformanceById, traders])
 
   const enabledTraderCount = useMemo(
     () => traders.filter((trader) => isTraderExecutionEnabled(trader)).length,
@@ -3988,6 +4545,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const selectedDecision = useMemo(
     () => selectedDecisions.find((decision) => decision.id === selectedDecisionId) || null,
     [selectedDecisions, selectedDecisionId]
+  )
+  const selectedDecisionDirection = useMemo(
+    () => (selectedDecision ? resolveDecisionDirectionPresentation(selectedDecision) : { side: null, label: 'N/A' }),
+    [selectedDecision]
   )
   const decisionChecks = decisionDetailQuery.data?.checks || []
   const decisionOrders = decisionDetailQuery.data?.orders || []
@@ -4085,7 +4646,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   return (
     <div className="h-full min-h-0 flex flex-col gap-1.5">
       {/* ── Hub Strip ── */}
-      <div className="shrink-0 rounded-lg border border-cyan-500/30 bg-gradient-to-r from-cyan-500/[0.06] via-card to-emerald-500/[0.06] px-3 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <div className="shrink-0 rounded-lg border border-cyan-500/30 bg-card px-3 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
         <div className="flex items-center gap-1.5">
           <Button
             onClick={runStartStopCommand}
@@ -4186,8 +4747,52 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               <Plus className="w-3.5 h-3.5" />
             </Button>
           </div>
+          <div className="shrink-0 px-1.5 py-1.5 border-b border-border/50 space-y-1">
+            <Input
+              value={botRosterSearch}
+              onChange={(event) => setBotRosterSearch(event.target.value)}
+              placeholder="Search bots, source, status..."
+              className="h-6 text-[10px]"
+            />
+            <div className="grid grid-cols-2 gap-1">
+              <Select value={botRosterSort} onValueChange={(value) => setBotRosterSort(value as BotRosterSort)}>
+                <SelectTrigger className="h-6 text-[10px] px-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="name_asc">Name A-Z</SelectItem>
+                  <SelectItem value="name_desc">Name Z-A</SelectItem>
+                  <SelectItem value="pnl_desc">P&amp;L High-Low</SelectItem>
+                  <SelectItem value="pnl_asc">P&amp;L Low-High</SelectItem>
+                  <SelectItem value="open_desc">Open Orders</SelectItem>
+                  <SelectItem value="activity_desc">Latest Activity</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={botRosterGroupBy} onValueChange={(value) => setBotRosterGroupBy(value as BotRosterGroupBy)}>
+                <SelectTrigger className="h-6 text-[10px] px-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="status">Group: Status</SelectItem>
+                  <SelectItem value="source">Group: Source</SelectItem>
+                  <SelectItem value="none">Group: None</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <label className="h-6 rounded border border-border/50 bg-background/50 px-2 flex items-center gap-1.5">
+              <Switch
+                checked={botRosterHideInactive}
+                onCheckedChange={setBotRosterHideInactive}
+                className="scale-[0.75]"
+              />
+              <span className="text-[10px] text-muted-foreground">Hide inactive</span>
+              <span className="ml-auto text-[10px] font-mono text-muted-foreground">
+                {filteredBotRosterRows.length}/{traders.length}
+              </span>
+            </label>
+          </div>
           <ScrollArea className="flex-1 min-h-0">
-            <div className="p-1.5 space-y-0.5">
+            <div className="p-1.5 space-y-1.5">
               {/* "All Bots" aggregate */}
               <button
                 type="button"
@@ -4199,39 +4804,76 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     : 'text-muted-foreground hover:bg-muted/40'
                 )}
               >
-                All Bots
+                <div className="flex items-center justify-between gap-2">
+                  <span>All Bots</span>
+                  <span className={cn('font-mono text-[10px]', globalSummary.resolvedPnl > 0 ? 'text-emerald-500' : globalSummary.resolvedPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                    {formatCurrency(globalSummary.resolvedPnl, true)}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[9px] text-muted-foreground">
+                  Showing {filteredBotRosterRows.length}/{traders.length}
+                </div>
               </button>
-              {traders.map((trader) => {
-                const traderStatus = resolveTraderStatusPresentation(trader, orchestratorRunning)
-                const isActive = trader.id === selectedTraderId
-                const traderSources = traderSourceKeys(trader)
-                return (
-                  <button
-                    key={trader.id}
-                    type="button"
-                    onClick={() => setSelectedTraderId(trader.id)}
-                    className={cn(
-                      'w-full text-left rounded-md px-2 py-1.5 transition-colors group',
-                      isActive
-                        ? 'bg-cyan-500/15 text-foreground'
-                        : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className={cn(
-                        'w-1.5 h-1.5 rounded-full shrink-0',
-                        traderStatus.dotClassName
-                      )} />
-                      <span className="text-[11px] font-medium truncate leading-tight">{trader.name}</span>
+              {groupedBotRosterRows.length === 0 ? (
+                <p className="py-6 text-center text-[11px] text-muted-foreground">No bots match these filters.</p>
+              ) : (
+                groupedBotRosterRows.map((group) => {
+                  const groupPnl = group.rows.reduce((sum, row) => sum + row.pnl, 0)
+                  return (
+                    <div key={group.key} className="space-y-0.5">
+                      {botRosterGroupBy !== 'none' ? (
+                        <div className="px-1 py-0.5 flex items-center justify-between">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{group.label}</span>
+                          <span className={cn('text-[9px] font-mono', groupPnl > 0 ? 'text-emerald-500' : groupPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                            {group.rows.length} · {formatCurrency(groupPnl, true)}
+                          </span>
+                        </div>
+                      ) : null}
+                      {group.rows.map((row) => {
+                        const isActive = row.trader.id === selectedTraderId
+                        return (
+                          <button
+                            key={row.trader.id}
+                            type="button"
+                            onClick={() => setSelectedTraderId(row.trader.id)}
+                            className={cn(
+                              'w-full text-left rounded-md px-2 py-1.5 transition-colors group',
+                              isActive
+                                ? 'bg-cyan-500/15 text-foreground'
+                                : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-1.5">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={cn(
+                                    'w-1.5 h-1.5 rounded-full shrink-0',
+                                    row.status.dotClassName
+                                  )} />
+                                  <span className="text-[11px] font-medium truncate leading-tight">{row.trader.name}</span>
+                                </div>
+                                <div className="pl-3 mt-0.5 text-[9px] text-muted-foreground">
+                                  {row.open} open · {row.resolved} resolved
+                                </div>
+                              </div>
+                              <span className={cn('shrink-0 text-[10px] font-mono', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                                {formatCurrency(row.pnl, true)}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-0.5 mt-0.5 pl-3">
+                              {row.sourceLabels.length > 0 ? row.sourceLabels.map((sourceLabel) => (
+                                <span key={`${row.trader.id}:${sourceLabel}`} className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">{sourceLabel}</span>
+                              )) : (
+                                <span className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">Unassigned</span>
+                              )}
+                            </div>
+                          </button>
+                        )
+                      })}
                     </div>
-                    <div className="flex flex-wrap gap-0.5 mt-0.5 pl-3">
-                      {traderSources.map((source) => (
-                        <span key={source} className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">{source}</span>
-                      ))}
-                    </div>
-                  </button>
-                )
-              })}
+                  )
+                })
+              )}
             </div>
           </ScrollArea>
         </div>
@@ -4239,7 +4881,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         {/* Right — Work Area */}
         <div className="flex flex-col min-h-0 gap-1.5">
           {showingAllBotsDashboard ? (
-            <div className="flex-1 min-h-0 overflow-hidden rounded-lg border border-cyan-500/25 bg-gradient-to-br from-cyan-500/[0.08] via-card to-emerald-500/[0.08]">
+            <div className="flex-1 min-h-0 overflow-hidden rounded-lg border border-cyan-500/25 bg-card">
               <div className="h-full min-h-0 flex flex-col">
                 <div className="shrink-0 border-b border-cyan-500/20 px-3 py-2">
                   <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -4519,21 +5161,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   <TableHead className="text-[11px]">Bot</TableHead>
                                   <TableHead className="text-[11px]">Market</TableHead>
                                   <TableHead className="text-[11px]">Dir</TableHead>
-                                  <TableHead className="text-[11px]">Status / Reason</TableHead>
+                                  <TableHead className="text-[11px]">Lifecycle / Outcome</TableHead>
                                   <TableHead className="text-[11px] text-right">Notional</TableHead>
                                   <TableHead className="text-[11px] text-right">Fill Px</TableHead>
+                                  <TableHead className="text-[11px] text-right">Fill Progress</TableHead>
                                   <TableHead className="text-[11px] text-right">Mark Px</TableHead>
                                   <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
-                                  <TableHead className="text-[11px] text-right">Edge</TableHead>
+                                  <TableHead className="text-[11px] text-right">Edge Δ</TableHead>
                                   <TableHead className="text-[11px] text-right">R-P&amp;L</TableHead>
                                   <TableHead className="text-[11px]">Mode</TableHead>
                                   <TableHead className="text-[11px]">Created</TableHead>
+                                  <TableHead className="text-[11px]">Updated</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
                                 {filteredAllTradeHistory.map((order) => {
                                   const status = normalizeStatus(order.status)
+                                  const lifecycleLabel = resolveOrderLifecycleLabel(status)
                                   const pnl = toNumber(order.actual_profit)
+                                  const statusBadge = resolveOrderStatusBadgePresentation(status, pnl)
+                                  const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(status)
                                   const orderPayload = order.payload && typeof order.payload === 'object' ? order.payload : {}
                                   const providerReconciliation = orderPayload.provider_reconciliation && typeof orderPayload.provider_reconciliation === 'object'
                                     ? orderPayload.provider_reconciliation
@@ -4544,6 +5191,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   const positionState = orderPayload.position_state && typeof orderPayload.position_state === 'object'
                                     ? orderPayload.position_state
                                     : {}
+                                  const providerSnapshotStatus = normalizeStatus(
+                                    String(
+                                      order.provider_snapshot_status
+                                      || providerReconciliation.snapshot_status
+                                      || providerSnapshot.normalized_status
+                                      || providerSnapshot.status
+                                      || ''
+                                    )
+                                  )
                                   const fillPx = toNumber(
                                     order.average_fill_price
                                     ?? providerReconciliation.average_fill_price
@@ -4573,63 +5229,152 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   if ((order.unrealized_pnl === null || order.unrealized_pnl === undefined) && markPx > 0 && filledSize > 0 && filledNotional > 0) {
                                     unrealized = (markPx * filledSize) - filledNotional
                                   }
+                                  const fillProgressPercent = computeOrderFillProgressPercent(
+                                    orderPayload as Record<string, unknown>,
+                                    {
+                                      filledSize,
+                                      filledNotional,
+                                      requestedNotionalFallback: Math.abs(toNumber(order.notional_usd)),
+                                    }
+                                  )
+                                  const dynamicEdgePercent = computeOrderDynamicEdgePercent({
+                                    status,
+                                    edgePercent: toNumber(order.edge_percent),
+                                    fillPrice: fillPx,
+                                    markPrice: markPx,
+                                    realizedPnl: pnl,
+                                    filledNotional,
+                                  })
+                                  const linkedDecisionId = String(order.decision_id || '').trim()
+                                  const signalPayload = linkedDecisionId
+                                    ? decisionSignalPayloadByDecisionId.get(linkedDecisionId) || null
+                                    : null
+                                  const links = buildOrderMarketLinks(order, orderPayload, signalPayload)
+                                  const primaryMarketLink = links.polymarket || links.kalshi
+                                  const updatedAt = String(order.updated_at || order.mark_updated_at || order.created_at || '')
                                   const outcome = orderOutcomeSummary(order)
                                   const outcomeDetailCompact = compactText(outcome.detail, 120)
                                   const executionSummary = orderExecutionTypeSummary(order)
+                                  const venuePresentation = resolveVenueStatusPresentation(providerSnapshotStatus)
+                                  const directionPresentation = resolveOrderDirectionPresentation(order)
                                   return (
                                     <TableRow key={order.id} className="text-xs">
                                       <TableCell className="py-1 max-w-[140px] truncate" title={traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)}>
                                         {traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)}
                                       </TableCell>
                                       <TableCell className="max-w-[260px] truncate py-1" title={order.market_question || order.market_id}>
-                                        {order.market_question || shortId(order.market_id)}
+                                        <div className="flex min-w-0 items-center gap-1">
+                                          <div className="flex shrink-0 items-center gap-0.5">
+                                            {links.polymarket && (
+                                              <a
+                                                href={links.polymarket}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                title="Open Polymarket market"
+                                              >
+                                                <ExternalLink className="h-3 w-3" />
+                                              </a>
+                                            )}
+                                            {links.kalshi && (
+                                              <a
+                                                href={links.kalshi}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                title="Open Kalshi market"
+                                              >
+                                                <ExternalLink className="h-3 w-3" />
+                                              </a>
+                                            )}
+                                          </div>
+                                          {primaryMarketLink ? (
+                                            <a
+                                              href={primaryMarketLink}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="truncate hover:underline underline-offset-2"
+                                              title="Open market"
+                                            >
+                                              {order.market_question || shortId(order.market_id)}
+                                            </a>
+                                          ) : (
+                                            <span className="truncate">
+                                              {order.market_question || shortId(order.market_id)}
+                                            </span>
+                                          )}
+                                        </div>
                                       </TableCell>
                                       <TableCell className="py-1">
-                                        <Badge variant={String(order.direction || '').toUpperCase() === 'YES' ? 'default' : 'secondary'} className="text-[10px] h-5 px-1.5">
-                                          {String(order.direction || '').toUpperCase()}
+                                        <Badge
+                                          variant="outline"
+                                          className="h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground"
+                                          title={directionPresentation.label}
+                                        >
+                                          {directionPresentation.label}
                                         </Badge>
                                       </TableCell>
-                                      <TableCell className="py-1">
-                                        <div className="min-w-0 space-y-0.5">
-                                          <div className="flex min-w-0 items-center gap-1">
-                                            <Badge variant={OPEN_ORDER_STATUSES.has(status) ? 'default' : RESOLVED_ORDER_STATUSES.has(status) ? (pnl >= 0 ? 'default' : 'destructive') : 'outline'} className="text-[10px] h-5 px-1.5">
-                                              {status}
+                                      <TableCell className="py-0.5 min-w-[260px]">
+                                        <div className="min-w-0 space-y-0">
+                                          <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+                                            <Badge
+                                              variant={statusBadge.variant}
+                                              title={`Raw status: ${status}`}
+                                              className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
+                                            >
+                                              {lifecycleLabel}
                                             </Badge>
                                             <Badge
                                               variant="outline"
                                               title={outcome.detail}
                                               className={cn(
-                                                'h-5 max-w-[180px] truncate px-1.5 text-[10px]',
-                                                FAILED_ORDER_STATUSES.has(status) ? 'border-red-500/40 bg-red-500/5 text-red-500' :
-                                                RESOLVED_ORDER_STATUSES.has(status) ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500' :
-                                                'text-muted-foreground'
+                                                'h-4 max-w-[180px] truncate px-1 text-[9px] font-medium',
+                                                outcomeBadgeClassName
                                               )}
                                             >
                                               {outcome.headline}
                                             </Badge>
                                             {executionSummary !== '—' && (
-                                              <Badge variant="outline" title={`Execution: ${executionSummary}`} className="h-5 px-1.5 text-[10px] text-muted-foreground">
+                                              <Badge
+                                                variant="outline"
+                                                title={`Execution: ${executionSummary}`}
+                                                className="h-4 max-w-[150px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85"
+                                              >
                                                 {executionSummary}
                                               </Badge>
                                             )}
+                                            {venuePresentation.label !== '\u2014' && (
+                                              <Badge
+                                                variant="outline"
+                                                title={`Venue: ${venuePresentation.detail} • raw:${providerSnapshotStatus}`}
+                                                className={cn(
+                                                  'h-4 max-w-[120px] truncate px-1 text-[9px] font-medium',
+                                                  venuePresentation.className
+                                                )}
+                                              >
+                                                {`V:${venuePresentation.label}`}
+                                              </Badge>
+                                            )}
                                           </div>
-                                          <p className="truncate text-[10px] text-muted-foreground" title={outcome.detail}>
-                                            {outcomeDetailCompact}
+                                          <p className="truncate text-[9px] leading-none text-foreground/85" title={outcome.detail}>
+                                            <span className="font-medium text-muted-foreground">Reason:</span> {outcomeDetailCompact}
                                           </p>
                                         </div>
                                       </TableCell>
                                       <TableCell className="text-right font-mono py-1">{formatCurrency(toNumber(order.notional_usd))}</TableCell>
                                       <TableCell className="text-right font-mono py-1">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
+                                      <TableCell className="text-right font-mono py-1">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
                                       <TableCell className="text-right font-mono py-1">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
                                       <TableCell className={cn('text-right font-mono py-1', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
                                         {OPEN_ORDER_STATUSES.has(status) ? formatCurrency(unrealized) : '\u2014'}
                                       </TableCell>
-                                      <TableCell className="text-right font-mono py-1">{formatPercent(toNumber(order.edge_percent))}</TableCell>
+                                      <TableCell className="text-right font-mono py-1">{formatPercent(dynamicEdgePercent)}</TableCell>
                                       <TableCell className={cn('text-right font-mono py-1', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
                                         {RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl) : '\u2014'}
                                       </TableCell>
                                       <TableCell className="py-1 uppercase text-[10px]">{String(order.mode || '').toUpperCase()}</TableCell>
                                       <TableCell className="py-1 text-[10px] text-muted-foreground">{formatShortDate(order.created_at)}</TableCell>
+                                      <TableCell className="py-1 text-[10px] text-muted-foreground" title={formatTimestamp(updatedAt)}>{formatRelativeAge(updatedAt)}</TableCell>
                                     </TableRow>
                                   )
                                 })}
@@ -4769,7 +5514,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           <a
                                             href={row.links.polymarket}
                                             target="_blank"
-                                            rel="noreferrer"
+                                            rel="noopener noreferrer"
+                                            onClick={(event) => event.stopPropagation()}
                                             className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                             title="Open Polymarket market"
                                           >
@@ -4780,7 +5526,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           <a
                                             href={row.links.kalshi}
                                             target="_blank"
-                                            rel="noreferrer"
+                                            rel="noopener noreferrer"
+                                            onClick={(event) => event.stopPropagation()}
                                             className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                             title="Open Kalshi market"
                                           >
@@ -4791,12 +5538,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           <span className="text-[9px] text-muted-foreground">—</span>
                                         )}
                                       </div>
-                                    </TableCell>
-                                    <TableCell className="py-1">
-                                      <Badge variant={isYesDirection(row.direction) ? 'default' : 'secondary'} className="text-[10px] h-5 px-1.5">
+                                  </TableCell>
+                                  <TableCell className="py-1">
+                                      <Badge variant="outline" className="h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground" title={row.direction}>
                                         {row.direction}
                                       </Badge>
-                                    </TableCell>
+                                  </TableCell>
                                     <TableCell className="text-right font-mono py-1">{formatCurrency(row.exposureUsd)}</TableCell>
                                     <TableCell className="text-right font-mono py-1">{row.averagePrice !== null ? row.averagePrice.toFixed(3) : '—'}</TableCell>
                                     <TableCell className={cn('text-right font-mono py-1', row.markFresh && 'text-sky-300')}>
@@ -5086,7 +5833,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         <a
                                           href={row.links.polymarket}
                                           target="_blank"
-                                          rel="noreferrer"
+                                          rel="noopener noreferrer"
+                                          onClick={(event) => event.stopPropagation()}
                                           className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                           title="Open Polymarket market"
                                         >
@@ -5097,7 +5845,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         <a
                                           href={row.links.kalshi}
                                           target="_blank"
-                                          rel="noreferrer"
+                                          rel="noopener noreferrer"
+                                          onClick={(event) => event.stopPropagation()}
                                           className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                           title="Open Kalshi market"
                                         >
@@ -5110,7 +5859,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     </div>
                                   </TableCell>
                                   <TableCell className="py-1">
-                                    <Badge variant={isYesDirection(row.direction) ? 'default' : 'secondary'} className="text-[10px] h-5 px-1.5">
+                                    <Badge variant="outline" className="h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground" title={row.direction}>
                                       {row.direction}
                                     </Badge>
                                   </TableCell>
@@ -5200,23 +5949,48 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <Table className="w-full table-fixed">
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="w-[22%] text-[10px]">Market</TableHead>
-                                <TableHead className="w-[4%] text-[10px]">L</TableHead>
+                                <TableHead className="w-[26%] text-[10px]">Market</TableHead>
                                 <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                <TableHead className="w-[18%] text-[10px]">Status / Reason</TableHead>
-                                <TableHead className="w-[9%] text-[10px] text-right">Notional</TableHead>
-                                <TableHead className="w-[7%] text-[10px] text-right">Fill</TableHead>
-                                <TableHead className="w-[7%] text-[10px] text-right">Mark</TableHead>
-                                <TableHead className="w-[9%] text-[10px] text-right">U-P&amp;L</TableHead>
-                                <TableHead className="w-[6%] text-[10px] text-right">Edge</TableHead>
-                                <TableHead className="w-[9%] text-[10px] text-right">R-P&amp;L</TableHead>
-                                <TableHead className="w-[6%] text-[10px]">Prov</TableHead>
-                                <TableHead className="w-[8%] text-[10px]">Created</TableHead>
+                                <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
+                                <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                                <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
+                                <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
+                                <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
+                                <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
+                                <TableHead className="w-[5%] text-[10px]">Age</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {selectedTradeRows.map((row) => {
-                                const { order, status, pnl, fillPx, markPx, unrealized, providerSnapshotStatus, pendingExitStatus, pendingExit, markFresh, links, executionSummary, outcomeHeadline, outcomeDetail, outcomeDetailCompact } = row
+                                const {
+                                  order,
+                                  status,
+                                  pnl,
+                                  lifecycleLabel,
+                                  fillPx,
+                                  markPx,
+                                  unrealized,
+                                  fillProgressPercent,
+                                  dynamicEdgePercent,
+                                  exitProgressPercent,
+                                  updatedAt,
+                                  providerSnapshotStatus,
+                                  pendingExitStatus,
+                                  closeTrigger,
+                                  pendingExit,
+                                  markFresh,
+                                  links,
+                                  directionLabel,
+                                  executionSummary,
+                                  outcomeHeadline,
+                                  outcomeDetail,
+                                  outcomeDetailCompact,
+                                  venuePresentation,
+                                } = row
                                 const pendingExitError = pendingExit && typeof pendingExit === 'object'
                                   ? String((pendingExit as Record<string, unknown>).last_error || (pendingExit as Record<string, unknown>).error || '').trim()
                                   : ''
@@ -5226,84 +6000,109 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 const pendingExitLabel = pendingExitStatus === 'failed' && OPEN_ORDER_STATUSES.has(status)
                                   ? 'E:RETRY'
                                   : `E:${pendingExitStatus.slice(0, 4).toUpperCase()}`
+                                const statusBadge = resolveOrderStatusBadgePresentation(status, pnl)
+                                const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(status)
                                 return (
                                   <TableRow key={order.id} className="text-[11px] leading-tight">
-                                    <TableCell className="max-w-[220px] truncate py-0.5" title={order.market_question || order.market_id}>
-                                      {order.market_question || shortId(order.market_id)}
-                                    </TableCell>
-                                    <TableCell className="py-0.5">
-                                      <div className="flex items-center gap-1">
-                                        {links.polymarket && (
-                                          <a
-                                            href={links.polymarket}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                            title="Open Polymarket market"
-                                          >
-                                            <ExternalLink className="h-3 w-3" />
-                                          </a>
-                                        )}
-                                        {links.kalshi && (
-                                          <a
-                                            href={links.kalshi}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                            title="Open Kalshi market"
-                                          >
-                                            <ExternalLink className="h-3 w-3" />
-                                          </a>
-                                        )}
-                                        {!links.polymarket && !links.kalshi && (
-                                          <span className="text-[9px] text-muted-foreground">\u2014</span>
-                                        )}
+                                    <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
+                                      <div className="flex min-w-0 items-center gap-1">
+                                        <div className="flex shrink-0 items-center gap-0.5">
+                                          {links.polymarket && (
+                                            <a
+                                              href={links.polymarket}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                              title="Open Polymarket market"
+                                            >
+                                              <ExternalLink className="h-3 w-3" />
+                                            </a>
+                                          )}
+                                          {links.kalshi && (
+                                            <a
+                                              href={links.kalshi}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                              title="Open Kalshi market"
+                                            >
+                                              <ExternalLink className="h-3 w-3" />
+                                            </a>
+                                          )}
+                                        </div>
+                                        <span className="truncate">{order.market_question || shortId(order.market_id)}</span>
                                       </div>
                                     </TableCell>
                                     <TableCell className="py-0.5">
-                                      <Badge variant={String(order.direction || '').toUpperCase() === 'YES' ? 'default' : 'secondary'} className="text-[9px] h-4 px-1">{String(order.direction || '').toUpperCase()}</Badge>
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
+                                        title={directionLabel}
+                                      >
+                                        {directionLabel}
+                                      </Badge>
                                     </TableCell>
-                                    <TableCell className="py-0.5">
-                                      <div className="min-w-0 space-y-0.5">
-                                        <div className="flex min-w-0 items-center gap-1">
-                                          <Badge variant={OPEN_ORDER_STATUSES.has(status) ? 'default' : RESOLVED_ORDER_STATUSES.has(status) ? (pnl >= 0 ? 'default' : 'destructive') : 'outline'} className="text-[9px] h-4 px-1 w-fit">{status}</Badge>
+                                    <TableCell className="py-0.5 min-w-[260px]">
+                                        <div className="min-w-0 space-y-0">
+                                          <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+                                          <Badge
+                                            variant={statusBadge.variant}
+                                            title={`Raw status: ${status}`}
+                                            className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
+                                          >
+                                            {lifecycleLabel}
+                                          </Badge>
                                           <Badge
                                             variant="outline"
                                             title={outcomeDetail}
                                             className={cn(
-                                              'h-4 max-w-[132px] truncate px-1 text-[9px]',
-                                              FAILED_ORDER_STATUSES.has(status) ? 'border-red-500/40 bg-red-500/5 text-red-500' :
-                                              RESOLVED_ORDER_STATUSES.has(status) ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500' :
-                                              'text-muted-foreground'
+                                              'h-4 max-w-[180px] truncate px-1 text-[9px] font-medium',
+                                              outcomeBadgeClassName
                                             )}
                                           >
                                             {outcomeHeadline}
                                           </Badge>
                                           {executionSummary !== '—' && (
-                                            <Badge variant="outline" title={`Execution: ${executionSummary}`} className="h-4 max-w-[128px] truncate px-1 text-[9px] text-muted-foreground">
+                                            <Badge variant="outline" title={`Execution: ${executionSummary}`} className="h-4 max-w-[150px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85">
                                               {executionSummary}
                                             </Badge>
                                           )}
+                                          {closeTrigger && (
+                                            <Badge
+                                              variant="outline"
+                                              title={`Close trigger: ${closeTrigger}`}
+                                              className="h-4 max-w-[150px] truncate border-sky-300 bg-sky-100 px-1 text-[9px] font-medium text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200"
+                                            >
+                                              {`T:${closeTrigger}`}
+                                            </Badge>
+                                          )}
                                           {pendingExitStatus && pendingExitStatus !== 'unknown' && (
-                                            <span
+                                            <Badge
+                                              variant="outline"
                                               title={
                                                 `exit:${pendingExitStatus}`
                                                 + (pendingExitError ? ` • ${pendingExitError}` : '')
                                                 + (pendingExitNextRetry ? ` • next_retry:${formatTimestamp(pendingExitNextRetry)}` : '')
                                               }
-                                              className={cn('text-[9px] uppercase', pendingExitStatus === 'failed' ? 'text-amber-400' : 'text-muted-foreground')}
+                                              className={cn(
+                                                'h-4 px-1 text-[9px] font-semibold',
+                                                pendingExitStatus === 'failed'
+                                                  ? 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200'
+                                                  : 'border-border/80 bg-background/80 text-foreground/80'
+                                              )}
                                             >
                                               {pendingExitLabel}
-                                            </span>
+                                            </Badge>
                                           )}
                                         </div>
-                                        <p className="truncate text-[9px] text-muted-foreground" title={outcomeDetail}>
-                                          {outcomeDetailCompact}
+                                        <p className="truncate text-[9px] leading-none text-foreground/85" title={outcomeDetail}>
+                                          <span className="font-medium text-muted-foreground">Reason:</span> {outcomeDetailCompact}
                                         </p>
                                       </div>
                                     </TableCell>
                                     <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
                                     <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
+                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
                                     <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', markFresh && 'text-sky-300')}>
                                       {markPx > 0 ? (
                                         <FlashNumber
@@ -5327,19 +6126,31 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         />
                                       ) : '\u2014'}
                                     </TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(toNumber(order.edge_percent))}</TableCell>
+                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
                                     <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>{RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl, true) : '\u2014'}</TableCell>
                                     <TableCell className="py-0.5">
-                                      <span
-                                        title={order.provider_clob_order_id || order.provider_order_id || ''}
-                                        className={cn('text-[9px] uppercase', providerSnapshotStatus === 'filled' ? 'text-emerald-500' : providerSnapshotStatus === 'failed' ? 'text-red-500' : 'text-muted-foreground')}
+                                      <Badge
+                                        variant="outline"
+                                        title={
+                                          `${venuePresentation.detail}`
+                                          + (providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : '')
+                                          + (
+                                            order.provider_clob_order_id || order.provider_order_id
+                                              ? ` • order_ref:${order.provider_clob_order_id || order.provider_order_id}`
+                                              : ''
+                                          )
+                                        }
+                                        className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
                                       >
-                                        {providerSnapshotStatus || '\u2014'}
-                                      </span>
+                                        {venuePresentation.label}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                                      {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
                                     </TableCell>
                                     <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                                      <span title={`${String(order.mode || '').toUpperCase()} • ${formatTimestamp(order.created_at)}`}>
-                                        {formatShortDate(order.created_at)}
+                                      <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
+                                        {formatRelativeAge(updatedAt)}
                                       </span>
                                     </TableCell>
                                   </TableRow>
@@ -5383,7 +6194,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </div>
 
                         <p className="text-[10px] text-muted-foreground/80">
-                          Run live-trading lifecycle diagnostics, send findings to LLM, and export raw artifacts.
+                          Run live-trading lifecycle diagnostics with optional provider checks and optional LLM analysis.
                         </p>
 
                         {!selectedTrader ? (
@@ -5430,7 +6241,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </div>
                         </div>
 
-                        <div className="grid gap-2 md:grid-cols-2">
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <div className="rounded-md border border-border/60 p-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-medium">Provider Deep Checks</p>
+                              <Switch checked={liveTruthEnableProviderChecks} onCheckedChange={setLiveTruthEnableProviderChecks} />
+                            </div>
+                            <p className="mt-1 text-[10px] text-muted-foreground/80">
+                              Enables wallet/provider API reconciliation checks. Leave off to avoid impacting active trading.
+                            </p>
+                          </div>
                           <div className="rounded-md border border-border/60 p-2">
                             <div className="flex items-center justify-between">
                               <p className="text-xs font-medium">Analyze with LLM</p>
@@ -5664,7 +6484,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
                               <span>Source: {selectedDecision.source}</span>
                               <span>Strategy: {selectedDecision.strategy_key}</span>
-                              <span>Direction: {String(selectedDecision.direction || 'n/a').toUpperCase()}</span>
+                              <span>Direction: {selectedDecisionDirection.label}</span>
                               <span>Price: {toNumber(selectedDecision.market_price).toFixed(3)}</span>
                               <span>Model: {toNumber(selectedDecision.model_probability).toFixed(3)}</span>
                               <span>Edge: {formatPercent(toNumber(selectedDecision.edge_percent))}</span>
@@ -5704,11 +6524,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 {decisionOrders.length > 0 ? (
                                   <>
                                     <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-2 mb-1">Linked Orders ({decisionOrders.length})</p>
-                                    {decisionOrders.map((order: any) => (
-                                      <div key={order.id} className="rounded border border-border px-2 py-1 font-mono text-[10px]">
-                                        {normalizeStatus(order.status).toUpperCase()} {'\u2022'} {formatCurrency(toNumber(order.notional_usd))} {'\u2022'} {String(order.direction || '').toUpperCase()}
-                                      </div>
-                                    ))}
+                                    {decisionOrders.map((order: any) => {
+                                      const directionPresentation = resolveOrderDirectionPresentation(order as TraderOrder)
+                                      return (
+                                        <div key={order.id} className="rounded border border-border px-2 py-1 font-mono text-[10px]">
+                                          {normalizeStatus(order.status).toUpperCase()} {'\u2022'} {formatCurrency(toNumber(order.notional_usd))} {'\u2022'} {directionPresentation.label}
+                                        </div>
+                                      )
+                                    })}
                                   </>
                                 ) : null}
                               </div>
@@ -5856,8 +6679,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </SheetTitle>
                 <SheetDescription>
                   {traderFlyoutMode === 'create'
-                    ? 'Configure a new bot profile with explicit strategy, source, risk, and lifecycle controls.'
-                    : 'Update runtime configuration and lifecycle state for this bot.'}
+                    ? 'Configure a new bot profile with explicit strategy, source, risk, and schedule controls.'
+                    : 'Update strategy, source, risk, and schedule settings for this bot.'}
                 </SheetDescription>
               </SheetHeader>
             </div>
@@ -5899,8 +6722,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </SelectContent>
                       </Select>
                       <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                        Creates a new bot with copied source config, strategy params, interval, risk limits, runtime metadata,
-                        and enabled/paused flags from the selected bot. Trades, decisions, orders, and events are never copied.
+                        Creates a new bot with copied source config, strategy params, interval, risk limits, and schedule settings
+                        from the selected bot. Trades, decisions, orders, and events are never copied.
                       </p>
                     </div>
                   ) : null}
@@ -6148,15 +6971,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   {sourceCards.some((s) => isTraderSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
                     <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-2.5 space-y-3 mt-2">
                       <div className="border border-orange-500/30 bg-background/60 rounded-md p-2.5 space-y-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Wallet Scope</p>
-                        {scopeFormSchema.param_fields.length > 0 ? (
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Strategy Parameters</p>
+                        {tradersStrategyFormSchema.param_fields.length > 0 ? (
                           <StrategyConfigForm
-                            schema={scopeFormSchema as { param_fields: any[] }}
-                            values={scopeFormValues}
-                            onChange={applyScopeFormValues}
+                            schema={tradersStrategyFormSchema as { param_fields: any[] }}
+                            values={tradersStrategyFormValues}
+                            onChange={applyTradersStrategyFormValues}
                           />
                         ) : (
-                          <p className="text-[10px] text-muted-foreground/80">No wallet scope schema available.</p>
+                          <p className="text-[10px] text-muted-foreground/80">No strategy schema available for selected wallet source strategy.</p>
                         )}
                         {draftTradersScopeModes.includes('individual') ? (
                           <div className="space-y-1.5">
@@ -6549,44 +7372,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </FlyoutSection>
 
                 <FlyoutSection
-                  title="Runtime State"
-                  icon={Play}
-                  iconClassName="text-emerald-500"
-                  count={`${draftEnabled ? 'enabled' : 'disabled'}`}
-                  defaultOpen={false}
-                  subtitle="Lifecycle controls applied when this bot is loaded by the orchestrator."
-                >
-                  <div className="grid gap-3">
-                    <div className="rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm">Enabled</span>
-                        <Switch checked={draftEnabled} onCheckedChange={(checked) => setDraftEnabled(checked)} />
-                      </div>
-                      <p className="mt-2 text-xs text-muted-foreground">Disabled bots are excluded from orchestrator cycles.</p>
-                    </div>
-                  </div>
-                </FlyoutSection>
-
-                <FlyoutSection
-                  title="Runtime Metadata"
-                  icon={ShieldAlert}
-                  iconClassName="text-amber-500"
-                  count={`${runtimeFormSchema.param_fields.length} fields`}
-                  defaultOpen={false}
-                  subtitle="Rendered directly from StrategySDK runtime metadata schema."
-                >
-                  {runtimeFormSchema.param_fields.length > 0 ? (
-                    <StrategyConfigForm
-                      schema={runtimeFormSchema as { param_fields: any[] }}
-                      values={runtimeFormValues}
-                      onChange={setDraftMetadataFromForm}
-                    />
-                  ) : (
-                    <p className="text-[10px] text-muted-foreground/80">No runtime metadata schema available.</p>
-                  )}
-                </FlyoutSection>
-
-                <FlyoutSection
                   title="Risk Limits"
                   icon={AlertTriangle}
                   iconClassName="text-rose-500"
@@ -6609,7 +7394,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   title="Advanced JSON Editors"
                   icon={Square}
                   iconClassName="text-slate-500"
-                  count="3 editors"
+                  count="2 editors"
                   defaultOpen={false}
                 >
                   <details className="rounded-md border border-border p-2">
@@ -6627,15 +7412,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
                       value={draftRisk}
                       onChange={(event) => setDraftRisk(event.target.value)}
-                    />
-                  </details>
-
-                  <details className="rounded-md border border-border p-2">
-                    <summary className="cursor-pointer text-xs font-medium">Metadata JSON</summary>
-                    <textarea
-                      className="mt-2 w-full min-h-[160px] rounded-md border bg-background p-2 text-xs font-mono"
-                      value={draftMetadata}
-                      onChange={(event) => setDraftMetadata(event.target.value)}
                     />
                   </details>
                 </FlyoutSection>

@@ -81,6 +81,8 @@ function shortText(value: string | null | undefined, head = 10, tail = 8): strin
 function normalizeOutcome(raw: string | null | undefined): string {
   const value = String(raw || '').trim().toUpperCase()
   if (!value) return 'N/A'
+  if (value === 'BUY_YES' || value === 'SELL_YES') return 'YES'
+  if (value === 'BUY_NO' || value === 'SELL_NO') return 'NO'
   if (value === 'LONG' || value === 'BUY' || value === 'UP') return 'YES'
   if (value === 'SHORT' || value === 'SELL' || value === 'DOWN') return 'NO'
   return value
@@ -600,8 +602,6 @@ function PositionsTable({
               const marketValue = position.size * position.currentPrice
               const pnlPercent = costBasis > 0 ? (position.unrealizedPnl / costBasis) * 100 : 0
               const link = marketLink(platform, position)
-              const isYes = position.outcome === 'YES'
-              const isNo = position.outcome === 'NO'
               return (
                 <TableRow key={position.key} className="border-border/70">
                   <TableCell className="px-3 py-2.5">
@@ -615,12 +615,7 @@ function PositionsTable({
                   <TableCell className="px-3 py-2.5">
                     <Badge
                       variant="outline"
-                      className={cn(
-                        'h-5 border-transparent px-1.5 text-[10px]',
-                        isYes && 'bg-emerald-500/20 text-emerald-300',
-                        isNo && 'bg-red-500/20 text-red-300',
-                        !isYes && !isNo && 'bg-muted text-muted-foreground'
-                      )}
+                      className="h-5 border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground"
                     >
                       {position.outcome}
                     </Badge>

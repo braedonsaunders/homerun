@@ -6,9 +6,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from config import settings
 from services.polymarket import polymarket_client
+from services.redis_price_cache import redis_price_cache
+from services.ws_feeds import get_feed_manager
 from utils.converters import safe_float
+from utils.logger import get_logger
 from utils.utcnow import utcnow
+
+logger = get_logger(__name__)
 
 _POLYMARKET_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _POLYMARKET_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
@@ -117,6 +123,22 @@ def _extract_market_timing(market_info: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_identifier(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _iso_from_epoch_seconds(epoch_seconds: float | None) -> Optional[str]:
+    if epoch_seconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(epoch_seconds), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return None
+
+
+def _epoch_seconds_from_market_timestamp(value: Any) -> Optional[float]:
+    parsed = _parse_market_datetime(value)
+    if parsed is None:
+        return None
+    return parsed.timestamp()
 
 
 def _is_condition_id(value: str) -> bool:
@@ -325,7 +347,13 @@ async def _fetch_market_info(
             polymarket_client.get_market_by_condition_id(normalized),
             timeout=timeout,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch live market metadata",
+            market_id=normalized,
+            timeout_seconds=timeout,
+            exc_info=exc,
+        )
         return None
 
 
@@ -369,26 +397,40 @@ async def build_live_signal_contexts(
         return {}
 
     market_ids = sorted({row["market_lookup_id"] for row in signal_rows})
-    market_infos: dict[str, Optional[dict[str, Any]]] = {}
+    market_infos: dict[str, dict[str, Any]] = {
+        market_id: dict(market_hints_by_lookup_id.get(market_id) or {})
+        for market_id in market_ids
+    }
     market_sem = asyncio.Semaphore(max(1, int(max_market_concurrency)))
 
     async def _resolve_market(market_id: str) -> None:
         async with market_sem:
-            market_infos[market_id] = await _fetch_market_info(
+            fetched = await _fetch_market_info(
                 market_id,
                 timeout_seconds=market_fetch_timeout_seconds,
             )
+            if not isinstance(fetched, dict):
+                return
+            merged = dict(market_infos.get(market_id) or {})
+            merged.update(fetched)
+            market_infos[market_id] = merged
 
-    await asyncio.gather(*[_resolve_market(mid) for mid in market_ids])
+    market_ids_to_fetch: list[str] = []
+    for market_id in market_ids:
+        existing = market_infos.get(market_id) or {}
+        yes_hint, no_hint = _extract_yes_no_tokens(existing)
+        if yes_hint is not None or no_hint is not None:
+            continue
+        if _is_token_id(market_id):
+            continue
+        market_ids_to_fetch.append(market_id)
+    await asyncio.gather(*[_resolve_market(mid) for mid in market_ids_to_fetch])
 
     yes_no_tokens_by_market: dict[str, tuple[Optional[str], Optional[str]]] = {}
     all_market_tokens: set[str] = set()
     for market_id in market_ids:
         info = market_infos.get(market_id) or {}
         yes_token, no_token = _extract_yes_no_tokens(info)
-        if yes_token is None and no_token is None:
-            hinted = market_hints_by_lookup_id.get(market_id) or {}
-            yes_token, no_token = _extract_yes_no_tokens(hinted)
         # Fallback if market id itself is already a token id.
         if yes_token is None and no_token is None and _is_token_id(market_id):
             yes_token = market_id
@@ -398,25 +440,199 @@ async def build_live_signal_contexts(
         if no_token:
             all_market_tokens.add(no_token)
 
+    now_epoch = time.time()
+    strict_ttl = max(0.05, float(getattr(settings, "WS_EXECUTION_PRICE_STALE_SECONDS", 1.0) or 1.0))
+    relaxed_ttl = max(strict_ttl, float(getattr(settings, "WS_PRICE_STALE_SECONDS", 30.0) or 30.0))
+    source_priority = {
+        "redis_strict": 0,
+        "ws_strict": 1,
+        "redis_relaxed": 2,
+        "ws_relaxed": 3,
+        "http_batch": 4,
+        "market_snapshot": 5,
+        "history_tail": 6,
+    }
     live_prices: dict[str, float] = {}
+    live_price_meta: dict[str, dict[str, Any]] = {}
+
+    def _record_live_price(
+        token_id: str,
+        *,
+        mid: Any,
+        source: str,
+        observed_at_s: float | None,
+    ) -> None:
+        norm = _normalize_identifier(token_id)
+        if not norm:
+            return
+        parsed_mid = safe_float(mid)
+        if parsed_mid is None or parsed_mid < 0.0 or parsed_mid > 1.01:
+            return
+        priority = source_priority.get(source, 99)
+        existing = live_price_meta.get(norm)
+        if isinstance(existing, dict):
+            existing_priority = int(existing.get("priority", 99))
+            if existing_priority <= priority:
+                return
+        age_ms = None
+        if observed_at_s is not None:
+            age_ms = max(0.0, (now_epoch - float(observed_at_s)) * 1000.0)
+        live_prices[norm] = float(parsed_mid)
+        live_price_meta[norm] = {
+            "source": source,
+            "priority": priority,
+            "observed_at_s": float(observed_at_s) if observed_at_s is not None else None,
+            "observed_at": _iso_from_epoch_seconds(observed_at_s),
+            "age_ms": age_ms,
+        }
+
     if all_market_tokens:
-        batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
+        token_list = sorted(all_market_tokens)
         try:
-            batch = await asyncio.wait_for(
-                polymarket_client.get_prices_batch(sorted(all_market_tokens)),
-                timeout=batch_timeout,
+            strict_rows = await redis_price_cache.read_prices(token_list, stale_seconds=strict_ttl)
+        except Exception as exc:
+            logger.warning(
+                "Redis strict price read failed",
+                token_count=len(token_list),
+                stale_seconds=strict_ttl,
+                exc_info=exc,
             )
+            strict_rows = {}
+        for token_id, row in strict_rows.items():
+            if not isinstance(row, dict):
+                continue
+            _record_live_price(
+                token_id,
+                mid=row.get("mid"),
+                source="redis_strict",
+                observed_at_s=safe_float(row.get("ts")),
+            )
+
+        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        if unresolved and relaxed_ttl > strict_ttl + 1e-9:
+            try:
+                relaxed_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=relaxed_ttl)
+            except Exception as exc:
+                logger.warning(
+                    "Redis relaxed price read failed",
+                    token_count=len(unresolved),
+                    stale_seconds=relaxed_ttl,
+                    exc_info=exc,
+                )
+                relaxed_rows = {}
+            for token_id, row in relaxed_rows.items():
+                if not isinstance(row, dict):
+                    continue
+                _record_live_price(
+                    token_id,
+                    mid=row.get("mid"),
+                    source="redis_relaxed",
+                    observed_at_s=safe_float(row.get("ts")),
+                )
+
+        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        feed_manager = None
+        try:
+            feed_manager = get_feed_manager()
+        except Exception as exc:
+            logger.warning(
+                "Failed to obtain WebSocket feed manager for live pricing",
+                exc_info=exc,
+            )
+            feed_manager = None
+        if unresolved and feed_manager is not None and getattr(feed_manager, "_started", False):
+            for token_id in unresolved:
+                token_norm = _normalize_identifier(token_id)
+                if not token_norm:
+                    continue
+                try:
+                    mid = feed_manager.cache.get_mid_price(token_norm)
+                except Exception as exc:
+                    logger.warning(
+                        "WebSocket mid-price lookup failed",
+                        token_id=token_norm,
+                        exc_info=exc,
+                    )
+                    mid = None
+                parsed_mid = safe_float(mid)
+                if parsed_mid is None:
+                    continue
+                age_s = None
+                try:
+                    age_s = safe_float(feed_manager.cache.staleness(token_norm))
+                except Exception as exc:
+                    logger.warning(
+                        "WebSocket staleness lookup failed",
+                        token_id=token_norm,
+                        exc_info=exc,
+                    )
+                    age_s = None
+                if age_s is not None:
+                    if age_s > relaxed_ttl:
+                        continue
+                    source = "ws_strict" if age_s <= strict_ttl else "ws_relaxed"
+                    observed_at_s = now_epoch - max(0.0, float(age_s))
+                else:
+                    try:
+                        strict_fresh = feed_manager.is_fresh(token_norm, max_age_seconds=strict_ttl)
+                    except Exception as exc:
+                        logger.warning(
+                            "WebSocket strict freshness check failed",
+                            token_id=token_norm,
+                            stale_seconds=strict_ttl,
+                            exc_info=exc,
+                        )
+                        strict_fresh = False
+                    if strict_fresh:
+                        source = "ws_strict"
+                        observed_at_s = now_epoch
+                    else:
+                        try:
+                            relaxed_fresh = feed_manager.is_fresh(token_norm, max_age_seconds=relaxed_ttl)
+                        except Exception as exc:
+                            logger.warning(
+                                "WebSocket relaxed freshness check failed",
+                                token_id=token_norm,
+                                stale_seconds=relaxed_ttl,
+                                exc_info=exc,
+                            )
+                            relaxed_fresh = False
+                        if not relaxed_fresh:
+                            continue
+                        source = "ws_relaxed"
+                        observed_at_s = now_epoch
+                _record_live_price(
+                    token_norm,
+                    mid=parsed_mid,
+                    source=source,
+                    observed_at_s=observed_at_s,
+                )
+
+        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        if unresolved:
+            batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
+            try:
+                batch = await asyncio.wait_for(
+                    polymarket_client.get_prices_batch(unresolved),
+                    timeout=batch_timeout,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "HTTP batch price fetch failed",
+                    token_count=len(unresolved),
+                    timeout_seconds=batch_timeout,
+                    exc_info=exc,
+                )
+                batch = {}
             for token_id, payload in (batch or {}).items():
-                norm = _normalize_identifier(token_id)
-                if not norm or not isinstance(payload, dict):
+                if not isinstance(payload, dict):
                     continue
-                mid = safe_float(payload.get("mid"))
-                if mid is None:
-                    continue
-                if 0.0 <= mid <= 1.0:
-                    live_prices[norm] = mid
-        except Exception:
-            live_prices = {}
+                _record_live_price(
+                    token_id,
+                    mid=payload.get("mid"),
+                    source="http_batch",
+                    observed_at_s=now_epoch,
+                )
 
     selected_tokens: set[str] = set()
     selected_token_by_signal: dict[str, Optional[str]] = {}
@@ -444,8 +660,47 @@ async def build_live_signal_contexts(
     start_s = max(0, now_s - max(60, int(history_window_seconds)))
     fidelity = max(30, int(history_fidelity_seconds))
     history_timeout = max(0.1, float(history_fetch_timeout_seconds))
+    feed_manager = None
+    try:
+        feed_manager = get_feed_manager()
+    except Exception as exc:
+        logger.warning(
+            "Failed to obtain WebSocket feed manager for history lookup",
+            exc_info=exc,
+        )
+        feed_manager = None
 
     async def _resolve_history(token_id: str) -> None:
+        if feed_manager is not None and getattr(feed_manager, "_started", False):
+            try:
+                cached_history = feed_manager.cache.get_price_history(
+                    token_id,
+                    max_snapshots=max(20, int(max_history_points) * 2),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "WebSocket history lookup failed",
+                    token_id=token_id,
+                    exc_info=exc,
+                )
+                cached_history = []
+            normalized_cached: list[dict[str, Any]] = []
+            for item in cached_history:
+                if not isinstance(item, dict):
+                    continue
+                ts = _epoch_seconds_from_market_timestamp(item.get("timestamp"))
+                mid = safe_float(item.get("mid"))
+                if ts is None or mid is None:
+                    continue
+                normalized_cached.append({"t": ts * 1000.0, "p": float(mid)})
+            normalized_from_cache = _normalize_history_points(
+                normalized_cached,
+                max_points=max_history_points,
+            )
+            if len(normalized_from_cache) >= 2:
+                history_points_by_token[token_id] = normalized_from_cache
+                return
+
         async with history_sem:
             try:
                 raw = await asyncio.wait_for(
@@ -457,7 +712,13 @@ async def build_live_signal_contexts(
                     ),
                     timeout=history_timeout,
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "HTTP price history fetch failed",
+                    token_id=token_id,
+                    timeout_seconds=history_timeout,
+                    exc_info=exc,
+                )
                 raw = []
             history_points_by_token[token_id] = _normalize_history_points(
                 raw or [],
@@ -479,31 +740,88 @@ async def build_live_signal_contexts(
         yes_token, no_token = yes_no_tokens_by_market.get(market_id, (None, None))
         selected_token = selected_token_by_signal.get(signal_id)
 
-        yes_live = live_prices.get(yes_token) if yes_token else None
-        no_live = live_prices.get(no_token) if no_token else None
+        yes_norm = _normalize_identifier(yes_token)
+        no_norm = _normalize_identifier(no_token)
+        yes_live = live_prices.get(yes_norm) if yes_norm else None
+        no_live = live_prices.get(no_norm) if no_norm else None
+        yes_meta = dict(live_price_meta.get(yes_norm) or {})
+        no_meta = dict(live_price_meta.get(no_norm) or {})
+        snapshot_observed_s = None
+        for key in (
+            "source_observed_at",
+            "price_updated_at",
+            "updated_at",
+            "fetched_at",
+            "live_market_fetched_at",
+        ):
+            snapshot_observed_s = _epoch_seconds_from_market_timestamp(market_info.get(key))
+            if snapshot_observed_s is not None:
+                break
         if yes_live is None:
-            yes_live = safe_float(market_info.get("yes_price"))
+            yes_snapshot = safe_float(market_info.get("yes_price"))
+            if yes_snapshot is not None and 0.0 <= yes_snapshot <= 1.01:
+                yes_live = float(yes_snapshot)
+                yes_meta = {
+                    "source": "market_snapshot",
+                    "observed_at_s": snapshot_observed_s,
+                    "observed_at": _iso_from_epoch_seconds(snapshot_observed_s),
+                    "age_ms": (
+                        max(0.0, (now_epoch - snapshot_observed_s) * 1000.0)
+                        if snapshot_observed_s is not None
+                        else None
+                    ),
+                }
         if no_live is None:
-            no_live = safe_float(market_info.get("no_price"))
+            no_snapshot = safe_float(market_info.get("no_price"))
+            if no_snapshot is not None and 0.0 <= no_snapshot <= 1.01:
+                no_live = float(no_snapshot)
+                no_meta = {
+                    "source": "market_snapshot",
+                    "observed_at_s": snapshot_observed_s,
+                    "observed_at": _iso_from_epoch_seconds(snapshot_observed_s),
+                    "age_ms": (
+                        max(0.0, (now_epoch - snapshot_observed_s) * 1000.0)
+                        if snapshot_observed_s is not None
+                        else None
+                    ),
+                }
 
         selected_outcome: Optional[str] = None
         selected_live: Optional[float] = None
+        selected_meta: dict[str, Any] = {}
         if direction == "buy_yes":
             selected_outcome = "yes"
             selected_live = yes_live
+            selected_meta = yes_meta
         elif direction == "buy_no":
             selected_outcome = "no"
             selected_live = no_live
+            selected_meta = no_meta
         elif selected_token:
             selected_outcome = "yes" if selected_token == yes_token else "no"
             if selected_token == yes_token:
                 selected_live = yes_live
+                selected_meta = yes_meta
             elif selected_token == no_token:
                 selected_live = no_live
+                selected_meta = no_meta
 
         selected_history = history_points_by_token.get(selected_token, []) if selected_token else []
         if selected_live is None and selected_history:
             selected_live = selected_history[-1]["p"]
+            selected_history_ts_s = safe_float(selected_history[-1].get("t"))
+            if selected_history_ts_s is not None:
+                selected_history_ts_s = selected_history_ts_s / 1000.0
+            selected_meta = {
+                "source": "history_tail",
+                "observed_at_s": selected_history_ts_s,
+                "observed_at": _iso_from_epoch_seconds(selected_history_ts_s),
+                "age_ms": (
+                    max(0.0, (now_epoch - selected_history_ts_s) * 1000.0)
+                    if selected_history_ts_s is not None
+                    else None
+                ),
+            }
 
         signal_entry = safe_float(getattr(signal, "entry_price", None))
         entry_delta = None
@@ -522,6 +840,11 @@ async def build_live_signal_contexts(
             live_edge = (model_probability - selected_live) * 100.0
 
         timing = _extract_market_timing(market_info)
+        selected_source = str(selected_meta.get("source") or "").strip().lower()
+        selected_age_ms = safe_float(selected_meta.get("age_ms"))
+        selected_observed_at = selected_meta.get("observed_at") or None
+        yes_source = str(yes_meta.get("source") or "").strip().lower() or None
+        no_source = str(no_meta.get("source") or "").strip().lower() or None
         contexts[signal_id] = {
             "available": bool(selected_live is not None),
             "fetched_at": fetched_at_iso,
@@ -539,6 +862,13 @@ async def build_live_signal_contexts(
             "live_yes_price": yes_live,
             "live_no_price": no_live,
             "live_selected_price": selected_live,
+            "yes_price_source": yes_source,
+            "no_price_source": no_source,
+            "live_selected_price_source": selected_source or None,
+            "market_data_source": selected_source or None,
+            "source_observed_at": selected_observed_at,
+            "market_data_age_ms": selected_age_ms,
+            "market_data_age_seconds": ((selected_age_ms / 1000.0) if selected_age_ms is not None else None),
             "signal_entry_price": signal_entry,
             "entry_price_delta": entry_delta,
             "entry_price_delta_pct": entry_delta_pct,

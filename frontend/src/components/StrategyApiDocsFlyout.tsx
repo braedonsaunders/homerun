@@ -136,6 +136,7 @@ function UnifiedDocs({ docs }: { docs: Record<string, any> }) {
   const qualityFilter = docs.quality_filter as Record<string, any> | undefined
   const platformHooks = docs.platform_hooks as Record<string, any> | undefined
   const configSchema = docs.config_schema as Record<string, any> | undefined
+  const strategySdk = docs.strategy_sdk as Record<string, any> | undefined
   const imports = docs.imports as Record<string, any> | undefined
   const dataSourceSdk = docs.data_source_sdk as Record<string, any> | undefined
   const traderDataSdk = docs.trader_data_sdk as Record<string, any> | undefined
@@ -592,6 +593,87 @@ function UnifiedDocs({ docs }: { docs: Record<string, any> }) {
               </div>
             )}
             <p className="text-[10px] text-muted-foreground">{configSchema.how_it_works as string}</p>
+          </div>
+        </Section>
+      )}
+
+      {/* StrategySDK */}
+      {strategySdk && (
+        <Section title="StrategySDK Reference" icon={Code2} iconColor="text-indigo-400">
+          <div className="space-y-3 pt-2">
+            {strategySdk.summary && (
+              <p className="text-[11px] text-muted-foreground">{strategySdk.summary as string}</p>
+            )}
+
+            {Array.isArray(strategySdk.business_logic_contract) && strategySdk.business_logic_contract.length > 0 && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Business Logic Contract</div>
+                <ol className="space-y-0.5">
+                  {(strategySdk.business_logic_contract as string[]).map((item, i) => (
+                    <li key={i} className="text-[10px] text-muted-foreground flex items-start gap-1">
+                      <span className="text-amber-400 shrink-0">{i + 1}.</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {strategySdk.signal_routing_controls && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Signal Routing Controls</div>
+                <FieldTable fields={strategySdk.signal_routing_controls as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.configuration_helpers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Configuration Helpers</div>
+                <FieldTable fields={strategySdk.configuration_helpers as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.validation_helpers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Validation Helpers</div>
+                <FieldTable fields={strategySdk.validation_helpers as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.market_and_execution_helpers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Market + Execution Helpers</div>
+                <FieldTable fields={strategySdk.market_and_execution_helpers as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.llm_and_news_helpers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">LLM + News Helpers</div>
+                <FieldTable fields={strategySdk.llm_and_news_helpers as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.trader_data_helpers && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Trader Data Helpers</div>
+                <FieldTable fields={strategySdk.trader_data_helpers as Record<string, string>} />
+              </div>
+            )}
+
+            {strategySdk.crypto_highfreq_scope_defaults && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Crypto HF Scope Defaults</div>
+                <CodeBlock code={JSON.stringify(strategySdk.crypto_highfreq_scope_defaults, null, 2)} />
+              </div>
+            )}
+
+            {strategySdk.crypto_highfreq_scope_schema && (
+              <div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Crypto HF Scope Schema</div>
+                <CodeBlock code={JSON.stringify(strategySdk.crypto_highfreq_scope_schema, null, 2)} />
+              </div>
+            )}
           </div>
         </Section>
       )}

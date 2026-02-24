@@ -676,6 +676,8 @@ class ValidationService:
         )
         trader_id = str(payload.get("trader_id") or "").strip()
         trader_name = str(payload.get("trader_name") or "").strip()
+        enable_provider_checks = _coerce_bool(payload.get("enable_provider_checks"), False)
+        run_llm_analysis = _coerce_bool(payload.get("run_llm_analysis"), False)
 
         script_path = (_repo_root() / "scripts" / "live_truth_monitor.py").resolve()
         if not script_path.exists() or not script_path.is_file():
@@ -693,6 +695,8 @@ class ValidationService:
             command.extend(["--trader-id", trader_id])
         elif trader_name:
             command.extend(["--trader-name", trader_name])
+        if enable_provider_checks:
+            command.append("--enable-provider-checks")
 
         ok = await self._set_job_progress(job_id, 0.05, "Launching live truth monitor")
         if not ok:
@@ -837,7 +841,8 @@ class ValidationService:
             "exit_code": int(return_code),
         }
 
-        ok = await self._set_job_progress(job_id, 0.85, "Monitor completed; preparing LLM analysis")
+        llm_progress_message = "Monitor completed; preparing LLM analysis" if run_llm_analysis else "Monitor completed"
+        ok = await self._set_job_progress(job_id, 0.85, llm_progress_message)
         if not ok:
             raise RuntimeError("Job cancelled")
 

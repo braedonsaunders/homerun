@@ -388,13 +388,14 @@ class PriceCache:
             return None
         return (entry.best_bid, entry.best_ask)
 
-    def is_fresh(self, token_id: str) -> bool:
+    def is_fresh(self, token_id: str, *, max_age_seconds: float | None = None) -> bool:
         """Return ``True`` if the cached data is within the staleness TTL."""
         with self._lock:
             entry = self._entries.get(token_id)
         if entry is None or entry.updated_at == 0.0:
             return False
-        return (time.monotonic() - entry.updated_at) < self._stale_ttl
+        ttl = self._stale_ttl if max_age_seconds is None else max(0.0, float(max_age_seconds))
+        return (time.monotonic() - entry.updated_at) < ttl
 
     def staleness(self, token_id: str) -> Optional[float]:
         """Return age in seconds of the cached data, or ``None``."""
@@ -1456,9 +1457,9 @@ class FeedManager:
 
         return self._cache.get_order_book(token_id)
 
-    def is_fresh(self, token_id: str) -> bool:
+    def is_fresh(self, token_id: str, *, max_age_seconds: float | None = None) -> bool:
         """Check whether cached data for *token_id* is within TTL."""
-        return self._cache.is_fresh(token_id)
+        return self._cache.is_fresh(token_id, max_age_seconds=max_age_seconds)
 
     async def get_best_bid_ask(self, token_id: str) -> Optional[tuple[float, float]]:
         """Return ``(best_bid, best_ask)`` with HTTP fallback."""

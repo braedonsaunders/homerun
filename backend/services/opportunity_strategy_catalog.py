@@ -55,13 +55,6 @@ _SYSTEM_SOURCE_REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         'weather_payload = normalized.get("weather")',
         "StrategySDK.resolve_position_sizing(",
     ),
-    "weather_conservative_no": (
-        'source_key = "weather"',
-        'subscriptions = ["weather_update"]',
-        "async def on_event",
-        'weather_payload = normalized.get("weather")',
-        "StrategySDK.resolve_position_sizing(",
-    ),
     "news_edge": (
         'source_key = "news"',
         'subscriptions = ["news_update"]',
@@ -260,21 +253,6 @@ _SCANNER_SCHEMA_BAYESIAN = {
     ]
 }
 
-_SCANNER_SCHEMA_LIQUIDITY_VACUUM = {
-    "param_fields": [
-        *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
-        {
-            "key": "min_imbalance_ratio",
-            "label": "Min Imbalance Ratio",
-            "type": "number",
-            "min": 1,
-            "max": 100,
-        },
-        {"key": "min_depth_usd", "label": "Min Depth (USD)", "type": "number", "min": 0},
-        *_COMMON_SCANNER_SCHEMA["param_fields"][3:],
-    ]
-}
-
 _SCANNER_SCHEMA_CORRELATION = {
     "param_fields": [
         *_COMMON_SCANNER_SCHEMA["param_fields"][:3],
@@ -418,24 +396,10 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         config_schema=_SCANNER_SCHEMA_BAYESIAN,
     ),
     SystemOpportunityStrategySeed(
-        slug="liquidity_vacuum",
-        source_key="scanner",
-        import_module="services.strategies.liquidity_vacuum",
-        sort_order=110,
-        config_schema=_SCANNER_SCHEMA_LIQUIDITY_VACUUM,
-    ),
-    SystemOpportunityStrategySeed(
         slug="vpin_toxicity",
         source_key="scanner",
         import_module="services.strategies.vpin_toxicity",
         sort_order=115,
-        config_schema=_COMMON_SCANNER_SCHEMA,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="flb_exploiter",
-        source_key="scanner",
-        import_module="services.strategies.flb_exploiter",
-        sort_order=125,
         config_schema=_COMMON_SCANNER_SCHEMA,
     ),
     SystemOpportunityStrategySeed(
@@ -453,13 +417,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         config_schema=_SCANNER_SCHEMA_CORRELATION,
     ),
     SystemOpportunityStrategySeed(
-        slug="term_premium",
-        source_key="scanner",
-        import_module="services.strategies.term_premium",
-        sort_order=145,
-        config_schema=_COMMON_SCANNER_SCHEMA,
-    ),
-    SystemOpportunityStrategySeed(
         slug="prob_surface_arb",
         source_key="scanner",
         import_module="services.strategies.prob_surface_arb",
@@ -472,13 +429,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.market_making",
         sort_order=160,
         config_schema=_SCANNER_SCHEMA_MARKET_MAKING,
-    ),
-    SystemOpportunityStrategySeed(
-        slug="bias_fader",
-        source_key="scanner",
-        import_module="services.strategies.bias_fader",
-        sort_order=165,
-        config_schema=_COMMON_SCANNER_SCHEMA,
     ),
     SystemOpportunityStrategySeed(
         slug="stat_arb",
@@ -705,29 +655,6 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             ]
         },
     ),
-    SystemOpportunityStrategySeed(
-        slug="weather_conservative_no",
-        source_key="weather",
-        import_module="services.strategies.weather_conservative_no",
-        sort_order=203,
-        config_schema={
-            "param_fields": [
-                {"key": "min_safe_distance_c", "label": "Min Distance from Forecast (C)", "type": "number", "min": 0},
-                {"key": "max_no_price", "label": "Max NO Price", "type": "number", "min": 0, "max": 1},
-                {"key": "min_model_agreement", "label": "Min Model Agreement", "type": "number", "min": 0, "max": 1},
-                {"key": "max_source_spread_c", "label": "Max Source Spread (C)", "type": "number", "min": 0},
-                {"key": "min_source_count", "label": "Min Forecast Sources", "type": "integer", "min": 1},
-                {
-                    "key": "max_positions_per_event",
-                    "label": "Max Positions per Event",
-                    "type": "integer",
-                    "min": 1,
-                    "max": 10,
-                },
-                {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
-            ]
-        },
-    ),
     # ── Traders strategies ───────────────────────────────────
     SystemOpportunityStrategySeed(
         slug="traders_confluence",
@@ -876,6 +803,18 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
         "spread_dislocation",
         "miracle",
         "weather_edge",
+        # 2026 strategy consolidation removals
+        "liquidity_vacuum",
+        "flb_exploiter",
+        "term_premium",
+        "bias_fader",
+        "crypto_oracle_dislocation_reversion",
+        "crypto_trend_confirmation",
+        "crypto_inventory_maker",
+        "crypto_regime_router",
+        "crypto_velocity_reversal",
+        "weather_base",
+        "weather_conservative_no",
     ]
     orphan_rows = {
         row.slug: row

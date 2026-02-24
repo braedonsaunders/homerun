@@ -740,6 +740,8 @@ export default function UnifiedStrategiesManager({
     queryClient.invalidateQueries({ queryKey: ['strategies'] })
     queryClient.invalidateQueries({ queryKey: ['plugins'] })
     queryClient.invalidateQueries({ queryKey: ['trader-strategies-catalog'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-config-schema'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-sources'] })
   }
 
   // ── Mutations ──

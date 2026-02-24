@@ -7,6 +7,7 @@ liquidity/spread quality and non-trivial expected repricing room.
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import timezone
 from typing import Any, Optional
 
@@ -67,15 +68,18 @@ class TailEndCarryStrategy(BaseStrategy):
     sizing_config = SizingConfig()
 
     default_config = {
-        "min_probability": 0.88,
-        "max_probability": 0.98,
-        "min_days_to_resolution": 0.15,
-        "max_days_to_resolution": 10.0,
+        "min_probability": 0.93,
+        "max_probability": 0.99,
+        "min_days_to_resolution": 0.03,
+        "max_days_to_resolution": 1.0,
         "min_liquidity": 5000.0,
         "max_spread": 0.03,
         "min_repricing_buffer": 0.015,
         "repricing_weight": 0.45,
         "max_opportunities": 35,
+        "panic_drop_threshold": 0.08,
+        "panic_window_points": 6,
+        "panic_recovery_ratio_max": 0.20,
         "take_profit_pct": 8.0,
     }
 
@@ -132,15 +136,18 @@ class TailEndCarryStrategy(BaseStrategy):
         cfg = dict(self.default_config)
         cfg.update(getattr(self, "config", {}) or {})
 
-        min_probability = clamp(safe_float(cfg.get("min_probability"), 0.88), 0.5, 0.99)
-        max_probability = clamp(safe_float(cfg.get("max_probability"), 0.98), min_probability + 0.01, 0.995)
-        min_days = max(0.0, safe_float(cfg.get("min_days_to_resolution"), 0.15))
-        max_days = max(min_days + 0.01, safe_float(cfg.get("max_days_to_resolution"), 10.0))
+        min_probability = clamp(safe_float(cfg.get("min_probability"), 0.93), 0.5, 0.995)
+        max_probability = clamp(safe_float(cfg.get("max_probability"), 0.99), min_probability + 0.005, 0.999)
+        min_days = max(0.0, safe_float(cfg.get("min_days_to_resolution"), 0.03))
+        max_days = max(min_days + 0.005, safe_float(cfg.get("max_days_to_resolution"), 1.0))
         min_liquidity = max(100.0, safe_float(cfg.get("min_liquidity"), 5000.0))
         max_spread = clamp(safe_float(cfg.get("max_spread"), 0.03), 0.005, 0.20)
         min_repricing_buffer = clamp(safe_float(cfg.get("min_repricing_buffer"), 0.015), 0.005, 0.10)
         repricing_weight = clamp(safe_float(cfg.get("repricing_weight"), 0.45), 0.10, 0.90)
         max_opportunities = max(1, int(safe_float(cfg.get("max_opportunities"), 35)))
+        panic_drop_threshold = clamp(safe_float(cfg.get("panic_drop_threshold"), 0.08), 0.02, 0.30)
+        panic_window_points = max(3, int(safe_float(cfg.get("panic_window_points"), 6)))
+        panic_recovery_ratio_max = clamp(safe_float(cfg.get("panic_recovery_ratio_max"), 0.20), 0.0, 0.9)
 
         event_by_market: dict[str, Event] = {}
         for event in events:
@@ -149,6 +156,7 @@ class TailEndCarryStrategy(BaseStrategy):
 
         now = utcnow().astimezone(timezone.utc)
         candidates: list[tuple[float, Opportunity]] = []
+        history_by_key = self.state.setdefault("tail_carry_price_history", {})
 
         for market in markets:
             if market.closed or not market.active:
@@ -173,6 +181,21 @@ class TailEndCarryStrategy(BaseStrategy):
                 price, bid, ask, token_id = self._extract_side_book(market, prices, outcome)
                 if not (min_probability <= price <= max_probability):
                     continue
+
+                history_key = f"{market.id}:{outcome}"
+                history = history_by_key.get(history_key)
+                if not isinstance(history, deque):
+                    history = deque(maxlen=max(12, panic_window_points * 2))
+                    history_by_key[history_key] = history
+                history.append(float(price))
+                price_window = list(history)[-panic_window_points:]
+                if len(price_window) >= panic_window_points:
+                    window_high = max(price_window)
+                    window_low = min(price_window)
+                    drop_from_high = (window_high - price) / max(window_high, 1e-6)
+                    recovery_ratio = (price - window_low) / max(window_high - window_low, 1e-6)
+                    if drop_from_high >= panic_drop_threshold and recovery_ratio <= panic_recovery_ratio_max:
+                        continue
 
                 spread = 0.0
                 if isinstance(bid, float) and isinstance(ask, float) and bid > 0.0 and ask > 0.0:
@@ -258,13 +281,18 @@ class TailEndCarryStrategy(BaseStrategy):
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
         """Tail carry: source, strategy type, entry band, resolution window checks."""
-        min_entry = clamp(to_float(params.get("min_entry_price", 0.85), 0.85), 0.01, 0.99)
-        max_entry = clamp(to_float(params.get("max_entry_price", 0.985), 0.985), min_entry, 0.999)
+        min_entry = clamp(to_float(params.get("min_entry_price", 0.93), 0.93), 0.01, 0.995)
+        max_entry = clamp(to_float(params.get("max_entry_price", 0.99), 0.99), min_entry, 0.999)
         min_days = max(0.0, to_float(params.get("min_days_to_resolution", 0.03), 0.03))
-        max_days = max(min_days + 0.01, to_float(params.get("max_days_to_resolution", 7.0), 7.0))
+        max_days = max(min_days + 0.005, to_float(params.get("max_days_to_resolution", 1.0), 1.0))
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
-        strategy_type = str(payload.get("strategy") or payload.get("strategy_type") or "").strip().lower()
+        strategy_type = str(
+            payload.get("strategy")
+            or payload.get("strategy_type")
+            or getattr(signal, "strategy_type", "")
+            or ""
+        ).strip().lower()
         strategy_ok = strategy_type == "tail_end_carry"
 
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)

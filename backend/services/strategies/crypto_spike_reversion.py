@@ -17,7 +17,7 @@ from typing import Any
 from services.strategies.base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
-from utils.converters import to_float, to_confidence
+from utils.converters import safe_float, to_float, to_confidence
 from utils.signal_helpers import signal_payload, live_move, selected_probability
 from services.trader_orchestrator.strategies.sizing import compute_position_size
 
@@ -35,6 +35,8 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     worker_affinity = "crypto"
     market_categories = ["crypto"]
     subscriptions = ["crypto_update"]
+    accepted_signal_strategy_types = ["btc_eth_highfreq"]
+    requires_live_market_context = True
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=1.0,
@@ -58,7 +60,11 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
         params = context.get("params") or {}
         payload = signal_payload(signal)
-        live_market = context.get("live_market") or {}
+        live_market = context.get("live_market")
+        if not isinstance(live_market, dict):
+            live_market = payload.get("live_market")
+        if not isinstance(live_market, dict):
+            live_market = {}
 
         min_edge = to_float(params.get("min_edge_percent", 2.8), 2.8)
         min_conf = to_confidence(params.get("min_confidence", 0.44), 0.44)
@@ -80,8 +86,14 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))
 
         move_5m = live_move(live_market, "move_5m")
+        if move_5m is None:
+            move_5m = safe_float(payload.get("move_5m_percent"), default=safe_float(payload.get("move_5m_pct")))
         move_30m = live_move(live_market, "move_30m")
+        if move_30m is None:
+            move_30m = safe_float(payload.get("move_30m_percent"), default=safe_float(payload.get("move_30m_pct")))
         move_2h = live_move(live_market, "move_2h")
+        if move_2h is None:
+            move_2h = safe_float(payload.get("move_2h_percent"), default=safe_float(payload.get("move_2h_pct")))
 
         # Direction alignment: signal direction must oppose the spike
         direction_alignment = False

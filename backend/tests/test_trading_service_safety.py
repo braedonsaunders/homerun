@@ -23,7 +23,7 @@ class _SequencedClient:
     def create_order(self, order_args):
         return {"order_args": order_args}
 
-    def post_order(self, signed_order, order_type):
+    def post_order(self, signed_order, order_type, post_only=False):
         self._counter += 1
         success = self._outcomes.pop(0) if self._outcomes else True
         if success:
@@ -227,3 +227,44 @@ async def test_get_order_snapshots_parses_provider_fill_values(monkeypatch):
     assert snapshots["clob-1"]["filled_notional_usd"] == pytest.approx(11.0)
     assert snapshots["clob-2"]["normalized_status"] == "filled"
     assert snapshots["clob-2"]["filled_notional_usd"] == pytest.approx(15.6)
+
+
+@pytest.mark.asyncio
+async def test_get_order_snapshots_maps_invalid_status_to_failed(monkeypatch):
+    _configure_limits(monkeypatch)
+
+    class _InvalidStatusClient:
+        def get_orders(self):
+            return []
+
+        def get_order(self, clob_order_id: str):
+            return {
+                "id": clob_order_id,
+                "status": "INVALID",
+                "size": "17.77",
+                "size_matched": "0",
+                "price": "0.24",
+            }
+
+    service = TradingService()
+    service._initialized = True
+    service._client = _InvalidStatusClient()
+    service._remember_order(
+        Order(
+            id="order-invalid",
+            token_id="tok-invalid",
+            side=OrderSide.BUY,
+            price=0.24,
+            size=17.77,
+            status=OrderStatus.OPEN,
+            clob_order_id="clob-invalid",
+            created_at=datetime(2026, 1, 1, 0, 0, 0),
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+        )
+    )
+
+    snapshots = await service.get_order_snapshots_by_clob_ids(["clob-invalid"])
+
+    assert snapshots["clob-invalid"]["normalized_status"] == "failed"
+    assert service.get_order("order-invalid") is not None
+    assert service.get_order("order-invalid").status == OrderStatus.FAILED

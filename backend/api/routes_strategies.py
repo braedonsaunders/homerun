@@ -346,6 +346,22 @@ async def get_unified_docs():
                         "Access at runtime via self.config (merged defaults + user overrides)."
                     ),
                 },
+                "accepted_signal_strategy_types": {
+                    "type": "list[str]",
+                    "required": False,
+                    "description": (
+                        "Optional evaluate() input allowlist by strategy_type. "
+                        "Use this when one strategy evaluates feeder signals emitted by another."
+                    ),
+                },
+                "requires_live_market_context": {
+                    "type": "bool",
+                    "required": False,
+                    "description": (
+                        "Optional orchestrator hint for crypto source strategies. "
+                        "When true, evaluate() receives live_market enrichment."
+                    ),
+                },
             },
             "built_in_properties": {
                 "self.config": "dict — Merged default_config + user overrides (set by configure())",
@@ -820,6 +836,114 @@ async def get_unified_docs():
                 "4. At runtime, user overrides are merged with defaults into self.config. "
                 "5. In evaluate(), access via context['params'] which is the same merged config."
             ),
+        },
+        # ── Section 6b: StrategySDK Reference ───────────────────────
+        "strategy_sdk": {
+            "summary": (
+                "StrategySDK is the stable helper API for strategy authors. "
+                "Business logic still lives in your editable strategy class: "
+                "detect(), evaluate(), should_exit(), and optional hooks."
+            ),
+            "business_logic_contract": [
+                (
+                    "Runtime authority is the strategy source_code stored in the DB row. "
+                    "If you edit Python logic, runtime behavior changes after reload."
+                ),
+                (
+                    "StrategySDK helpers expose data access, config defaults/schemas, "
+                    "normalization, and utility math; they do not replace your strategy logic."
+                ),
+                (
+                    "Hard platform controls (risk manager, trading window, quality pipeline) "
+                    "can still gate execution after your strategy decision."
+                ),
+            ],
+            "signal_routing_controls": {
+                "accepted_signal_strategy_types": (
+                    "Optional class attribute (list[str]): additional strategy_type values "
+                    "your evaluate() should accept from the same source."
+                ),
+                "requires_live_market_context": (
+                    "Optional class attribute (bool): request live_market enrichment "
+                    "for evaluate() when using crypto source signals."
+                ),
+                "strategy_params.accepted_signal_strategy_types": (
+                    "Runtime override for routing allowlist; list or comma-separated string."
+                ),
+                "strategy_params.enable_live_market_context": (
+                    "Runtime override for live context enrichment; true/false."
+                ),
+            },
+            "configuration_helpers": {
+                "StrategySDK.trader_filter_defaults()": "Tracked-trader filtering defaults",
+                "StrategySDK.trader_filter_config_schema()": "Schema for tracked-trader filters",
+                "StrategySDK.trader_scope_defaults()": "Default wallet scope (tracked/pool/individual/group)",
+                "StrategySDK.trader_scope_fields_schema()": "Schema for wallet-scope object fields",
+                "StrategySDK.trader_runtime_defaults()": "Default runtime metadata/schedule values",
+                "StrategySDK.trader_runtime_fields_schema()": "Schema for runtime metadata fields",
+                "StrategySDK.trader_risk_defaults()": "Default trader risk controls",
+                "StrategySDK.trader_risk_fields_schema()": "Schema for trader risk controls",
+                "StrategySDK.trader_opportunity_filter_defaults()": "Default trader opportunity filters",
+                "StrategySDK.trader_opportunity_filter_config_schema()": "Schema for trader opportunity filters",
+                "StrategySDK.copy_trading_defaults()": "Default copy-trading behavior",
+                "StrategySDK.copy_trading_config_schema()": "Schema for copy-trading params",
+                "StrategySDK.pool_eligibility_defaults()": "Default smart-pool selection thresholds",
+                "StrategySDK.pool_eligibility_config_schema()": "Schema for pool eligibility tuning",
+                "StrategySDK.news_filter_defaults()": "Default news strategy filters",
+                "StrategySDK.news_filter_config_schema()": "Schema for news strategy filters",
+                "StrategySDK.crypto_highfreq_scope_defaults()": "Default high-frequency crypto scope and exit controls",
+                "StrategySDK.crypto_highfreq_scope_config_schema()": "Schema for high-frequency crypto scope controls",
+                "StrategySDK.strategy_retention_config_schema()": "Schema for max_opportunities and retention_window",
+            },
+            "validation_helpers": {
+                "StrategySDK.validate_trader_filter_config(config)": "Normalize and clamp trader filter config",
+                "StrategySDK.validate_trader_scope_config(config)": "Normalize trader wallet scope config",
+                "StrategySDK.validate_trader_runtime_metadata(config)": "Normalize schedule/tags/runtime metadata",
+                "StrategySDK.validate_trader_risk_config(config)": "Normalize trader risk limits",
+                "StrategySDK.validate_trader_opportunity_filter_config(config)": "Normalize trader opportunity filters",
+                "StrategySDK.validate_copy_trading_config(config)": "Normalize copy-trading params",
+                "StrategySDK.validate_pool_eligibility_config(config)": "Normalize smart-pool eligibility params",
+                "StrategySDK.validate_news_filter_config(config)": "Normalize news filter params",
+                "StrategySDK.normalize_strategy_retention_config(config)": "Normalize retention aliases to retention_max_age_minutes",
+                "StrategySDK.normalize_reverse_intent(value, ...)": "Normalize stop-and-reverse payload for should_exit()",
+                "StrategySDK.parse_duration_minutes(value)": "Parse durations like 15m, 2h, 3d into minutes",
+            },
+            "market_and_execution_helpers": {
+                "StrategySDK.opposite_direction(direction)": "Map buy_yes <-> buy_no",
+                "StrategySDK.build_reverse_intent(...)": "Build validated reverse intent payload for ExitDecision.payload",
+                "StrategySDK.get_live_price(market, prices, side='YES')": "Resolve best available live price",
+                "StrategySDK.get_spread_bps(market, prices, side='YES')": "Bid-ask spread in basis points",
+                "StrategySDK.get_ws_mid_price(token_id)": "Live WebSocket mid price",
+                "StrategySDK.get_ws_spread_bps(token_id)": "Live WebSocket spread in bps",
+                "StrategySDK.get_chainlink_price(asset)": "Latest oracle price",
+                "StrategySDK.calculate_fees(total_cost, expected_payout, n_legs)": "Comprehensive fee estimate",
+                "StrategySDK.resolve_position_sizing(...)": "One-call sizing output with tradeability gate",
+                "StrategySDK.get_order_book_depth(...)": "VWAP/slippage/fill-probability estimate",
+                "StrategySDK.get_book_levels(...)": "Raw orderbook levels",
+                "StrategySDK.get_price_history(token_id, max_snapshots)": "Recent price snapshots",
+                "StrategySDK.get_price_change(token_id, lookback_seconds)": "Lookback price delta summary",
+                "StrategySDK.get_recent_trades(token_id, max_trades)": "Recent trade tape",
+                "StrategySDK.get_trade_volume(token_id, lookback_seconds)": "Buy/sell volume summary",
+                "StrategySDK.get_buy_sell_imbalance(token_id, lookback_seconds)": "Order-flow imbalance in [-1, 1]",
+            },
+            "llm_and_news_helpers": {
+                "StrategySDK.ask_llm(...)": "Text LLM call with strategy-safe fallback",
+                "StrategySDK.ask_llm_json(...)": "Structured JSON LLM call",
+                "StrategySDK.get_recent_news(query, max_articles)": "Recent news search",
+                "StrategySDK.get_news_for_market(market, max_articles)": "Semantically matched market news",
+            },
+            "trader_data_helpers": {
+                "StrategySDK.get_trader_firehose_signals(...)": "Raw tracked-trader firehose rows",
+                "StrategySDK.get_trader_strategy_signals(...)": "Rows after strategy filtering",
+                "StrategySDK.get_trader_confluence_signals(...)": "Confluence detector outputs",
+                "StrategySDK.get_pooled_traders(...)": "Current smart-pool wallets",
+                "StrategySDK.get_tracked_traders(...)": "Tracked wallets and optional activity",
+                "StrategySDK.get_trader_groups(...)": "Trader groups and optional members",
+                "StrategySDK.get_trader_tags()": "Tag definitions and wallet counts",
+                "StrategySDK.get_traders_by_tag(tag_name, limit)": "Wallets for a tag",
+            },
+            "crypto_highfreq_scope_defaults": StrategySDK.crypto_highfreq_scope_defaults(),
+            "crypto_highfreq_scope_schema": StrategySDK.crypto_highfreq_scope_config_schema(),
         },
         # ── Section 7: Available Imports ──────────────────────────────
         "imports": {

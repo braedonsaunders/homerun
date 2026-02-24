@@ -41,17 +41,10 @@ from services.trader_orchestrator_state import (
 router = APIRouter(prefix="/traders", tags=["Traders"])
 
 
-class TraderTradersScopeRequest(BaseModel):
-    modes: list[str] = Field(default_factory=list)
-    individual_wallets: list[str] = Field(default_factory=list)
-    group_ids: list[str] = Field(default_factory=list)
-
-
 class TraderSourceConfigRequest(BaseModel):
     source_key: str
     strategy_key: str
     strategy_params: dict[str, Any] = Field(default_factory=dict)
-    traders_scope: Optional[TraderTradersScopeRequest] = None
 
 
 class TraderRequest(BaseModel):

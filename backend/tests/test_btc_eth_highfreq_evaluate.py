@@ -248,3 +248,154 @@ def test_evaluate_blocks_when_liquidity_below_threshold():
     assert decision.decision == "skipped"
     liquidity = _check_by_key(decision, "liquidity")
     assert liquidity.passed is False
+
+
+def test_evaluate_enforces_reentry_cooldown_by_default():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+            },
+        },
+    )
+
+    cooldown = _check_by_key(decision, "reentry_cooldown")
+    assert cooldown.passed is True
+    assert "required_ms=75000" in str(cooldown.detail)
+    assert decision.payload["reentry_cooldown_seconds_per_market"] == 75.0
+    assert decision.payload["force_disable_reentry_cooldown"] is False
+
+
+def test_evaluate_blocks_4h_timeframe_by_hardening_allowlist():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.payload_json["timeframe"] = "4h"
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 14000,
+            },
+        },
+    )
+
+    assert decision.decision == "skipped"
+    timeframe_hardening = _check_by_key(decision, "timeframe_hardening")
+    assert timeframe_hardening.passed is False
+    detail = str(timeframe_hardening.detail)
+    assert "allowed=" in detail
+    assert "5m" in detail and "15m" in detail and "1h" in detail
+
+
+def test_evaluate_blocks_entry_above_hardened_price_ceiling():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.entry_price = 0.82
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 260,
+            },
+        },
+    )
+
+    assert decision.decision == "skipped"
+    entry_ceiling = _check_by_key(decision, "entry_price_ceiling")
+    assert entry_ceiling.passed is False
+    assert "ceiling=" in str(entry_ceiling.detail)
+
+
+def test_evaluate_blocks_rebalance_low_entry_price_floor():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.entry_price = 0.02
+    signal.payload_json["dominant_strategy"] = "rebalance"
+    signal.payload_json["regime"] = "closing"
+    signal.payload_json["up_price"] = 0.02
+    signal.payload_json["down_price"] = 0.98
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "rebalance_min_entry_price_floor": 0.08,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+            },
+        },
+    )
+
+    assert decision.decision == "skipped"
+    entry_floor = _check_by_key(decision, "entry_price_floor")
+    assert entry_floor.passed is False
+    assert decision.payload["entry_price"] == 0.02
+    assert decision.payload["entry_price_floor"] >= 0.08
+
+
+def test_evaluate_blocks_when_estimated_size_fails_exitability_guard():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "base_size_usd": 1.0,
+                "max_size_usd": 1.0,
+                "entry_executable_exit_ratio_floor": 0.30,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+            },
+        },
+    )
+
+    assert decision.decision == "skipped"
+    exitability = _check_by_key(decision, "entry_exitability")
+    assert exitability.passed is False
+    assert decision.payload["entry_exitability_estimated_size_usd"] == 1.0
+    assert decision.payload["entry_exitability_required_size_usd"] > 3.0

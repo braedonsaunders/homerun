@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 from datetime import timedelta
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 from sqlalchemy import select
 
 from utils.utcnow import utcnow
@@ -47,6 +47,24 @@ POOL_RECOMPUTE_INTERVAL = timedelta(minutes=1)
 FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=20)
 INSIDER_RESCORING_INTERVAL = timedelta(minutes=10)
 POOL_RECOMPUTE_MODE_MAP = {"quality_only": "quality_only", "balanced": "balanced"}
+_RETRYABLE_DB_ERROR_MARKERS = (
+    "deadlock detected",
+    "serialization failure",
+    "could not serialize access",
+    "lock not available",
+    "connection is closed",
+    "underlying connection is closed",
+    "connection has been closed",
+    "closed the connection unexpectedly",
+    "terminating connection",
+    "connection reset by peer",
+    "broken pipe",
+)
+_RETRYABLE_DB_ATTEMPTS = 3
+_RETRYABLE_DB_BASE_DELAY_SECONDS = 0.2
+_RETRYABLE_DB_MAX_DELAY_SECONDS = 2.0
+
+_T = TypeVar("_T")
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -63,6 +81,41 @@ def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> 
     except Exception:
         parsed = default
     return max(minimum, min(maximum, parsed))
+
+
+def _is_retryable_db_error(exc: Exception) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(marker in message for marker in _RETRYABLE_DB_ERROR_MARKERS)
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    return min(_RETRYABLE_DB_BASE_DELAY_SECONDS * (2**attempt), _RETRYABLE_DB_MAX_DELAY_SECONDS)
+
+
+async def _run_with_retryable_db_retries(
+    step_name: str,
+    operation: Callable[[], Awaitable[_T]],
+) -> _T:
+    for attempt in range(_RETRYABLE_DB_ATTEMPTS):
+        try:
+            return await operation()
+        except asyncio.TimeoutError:
+            raise
+        except Exception as exc:
+            retryable = _is_retryable_db_error(exc)
+            last_attempt = attempt >= _RETRYABLE_DB_ATTEMPTS - 1
+            if not retryable or last_attempt:
+                raise
+            delay = _retry_delay_seconds(attempt)
+            logger.warning(
+                "Tracked-traders %s hit retryable DB contention; retrying (attempt=%s delay=%.2fs)",
+                step_name,
+                attempt + 1,
+                delay,
+                exc_info=exc,
+            )
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"unreachable retry loop for step={step_name}")
 
 
 async def _trader_opportunity_intent_settings() -> dict[str, Any]:
@@ -179,8 +232,8 @@ async def _run_loop() -> None:
     next_incremental = now
     next_reconcile = now
     next_recompute = now
-    next_full_intelligence = now
-    next_insider_rescore = now
+    next_full_intelligence = now + FULL_INTELLIGENCE_INTERVAL
+    next_insider_rescore = now + INSIDER_RESCORING_INTERVAL
     last_insider_flagged = 0
 
     await wallet_intelligence.initialize()
@@ -354,28 +407,12 @@ async def _run_loop() -> None:
                     logger.warning("Tracked-traders pool_recompute timed out after 90s")
                 next_recompute = now + pool_recompute_interval
 
-            if requested or now >= next_full_intelligence:
-                activity_labels.append("full_intelligence")
-                try:
-                    await asyncio.wait_for(wallet_intelligence.run_full_analysis(), timeout=180)
-                except asyncio.TimeoutError:
-                    activity_labels.append("full_intelligence_timeout")
-                    logger.warning("Tracked-traders full_intelligence timed out after 180s")
-                next_full_intelligence = now + FULL_INTELLIGENCE_INTERVAL
-            else:
-                activity_labels.append("confluence_scan")
-                try:
-                    await asyncio.wait_for(wallet_intelligence.confluence.scan_for_confluence(), timeout=45)
-                except asyncio.TimeoutError:
-                    activity_labels.append("confluence_scan_timeout")
-                    logger.warning("Tracked-traders confluence_scan timed out after 45s")
-
-            if requested or now >= next_insider_rescore:
-                activity_labels.append("insider_rescore")
-                rescore = await insider_detector.rescore_wallets(stale_minutes=15)
-                insider_flagged = int(rescore.get("flagged_insiders") or 0)
-                last_insider_flagged = insider_flagged
-                next_insider_rescore = now + INSIDER_RESCORING_INTERVAL
+            activity_labels.append("confluence_scan")
+            try:
+                await asyncio.wait_for(wallet_intelligence.confluence.scan_for_confluence(), timeout=45)
+            except asyncio.TimeoutError:
+                activity_labels.append("confluence_scan_timeout")
+                logger.warning("Tracked-traders confluence_scan timed out after 45s")
 
             trader_intent_settings = await _trader_opportunity_intent_settings()
 
@@ -476,6 +513,51 @@ async def _run_loop() -> None:
                 )
                 if requested:
                     await clear_worker_run_request(session, worker_name)
+
+            maintenance_now = utcnow()
+            if requested or maintenance_now >= next_full_intelligence:
+                activity_labels.append("full_intelligence")
+                try:
+                    await _run_with_retryable_db_retries(
+                        "full_intelligence",
+                        lambda: asyncio.wait_for(wallet_intelligence.run_full_analysis(), timeout=180),
+                    )
+                except asyncio.TimeoutError:
+                    activity_labels.append("full_intelligence_timeout")
+                    logger.warning("Tracked-traders full_intelligence timed out after 180s")
+                except Exception as exc:
+                    if _is_retryable_db_error(exc):
+                        activity_labels.append("full_intelligence_db_contention")
+                        logger.warning(
+                            "Tracked-traders full_intelligence skipped due retryable DB contention",
+                            exc_info=exc,
+                        )
+                    else:
+                        raise
+                next_full_intelligence = maintenance_now + FULL_INTELLIGENCE_INTERVAL
+
+            if requested or maintenance_now >= next_insider_rescore:
+                activity_labels.append("insider_rescore")
+                try:
+                    rescore = await _run_with_retryable_db_retries(
+                        "insider_rescore",
+                        lambda: asyncio.wait_for(insider_detector.rescore_wallets(stale_minutes=15), timeout=90),
+                    )
+                    insider_flagged = int(rescore.get("flagged_insiders") or 0)
+                    last_insider_flagged = insider_flagged
+                except asyncio.TimeoutError:
+                    activity_labels.append("insider_rescore_timeout")
+                    logger.warning("Tracked-traders insider rescore timed out after 90s")
+                except Exception as exc:
+                    if _is_retryable_db_error(exc):
+                        activity_labels.append("insider_rescore_db_contention")
+                        logger.warning(
+                            "Tracked-traders insider rescore skipped due retryable DB contention",
+                            exc_info=exc,
+                        )
+                    else:
+                        raise
+                next_insider_rescore = maintenance_now + INSIDER_RESCORING_INTERVAL
 
             pool_stats = await smart_wallet_pool.get_pool_stats()
 

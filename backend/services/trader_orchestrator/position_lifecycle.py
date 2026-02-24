@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from models.database import TradeSignal, TraderOrder
 from services.polymarket import polymarket_client
+from services.signal_bus import make_dedupe_key, refresh_trade_signal_snapshots, upsert_trade_signal
 from services.simulation import simulation_service
+from services.strategy_sdk import StrategySDK
 from services.trading import trading_service
 from utils.utcnow import utcnow
 from utils.converters import safe_float
@@ -24,6 +26,11 @@ _FAILED_EXIT_MAX_RETRIES = 5
 _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS = 15
 _WALLET_SIZE_EPSILON = 1e-9
 _MARK_TOUCH_INTERVAL_SECONDS = 0.5
+
+
+def _iso_utc(value: datetime) -> str:
+    dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _mark_touch_interval_seconds(params: dict[str, Any], *, mode: str) -> float:
@@ -62,7 +69,7 @@ async def _publish_trader_order_updates(rows: list[TraderOrder]) -> None:
 def _failed_exit_retry_delay_seconds(last_error: Any) -> int:
     error_text = str(last_error or "").strip().lower()
     if "not enough balance / allowance" in error_text or "allowance" in error_text:
-        return 90
+        return 8
     if "below minimum" in error_text or "exit_notional_below_min" in error_text:
         return 20
     if "missing token_id or fill_size" in error_text:
@@ -90,6 +97,357 @@ def _direction_outcome_index(direction: Any) -> Optional[int]:
     if normalized == "buy_no":
         return 1
     return None
+
+
+def _opposite_direction(direction: Any) -> str:
+    return StrategySDK.opposite_direction(direction, default="")
+
+
+def _extract_market_token_ids(market_info: Optional[dict[str, Any]]) -> list[str]:
+    if not isinstance(market_info, dict):
+        return []
+    token_ids = market_info.get("token_ids")
+    if not isinstance(token_ids, list):
+        token_ids = market_info.get("tokenIds")
+    if not isinstance(token_ids, list):
+        token_ids = market_info.get("clob_token_ids")
+    if not isinstance(token_ids, list):
+        token_ids = market_info.get("clobTokenIds")
+    if not isinstance(token_ids, list):
+        return []
+    out: list[str] = []
+    for token_id in token_ids:
+        token_text = str(token_id or "").strip()
+        if token_text:
+            out.append(token_text)
+    return out
+
+
+def _extract_market_token_id(market_info: Optional[dict[str, Any]], outcome_idx: int) -> str:
+    if outcome_idx not in (0, 1):
+        return ""
+    token_ids = _extract_market_token_ids(market_info)
+    if not token_ids:
+        return ""
+    outcomes_raw = (market_info or {}).get("outcomes")
+    if isinstance(outcomes_raw, list) and len(outcomes_raw) == len(token_ids):
+        for idx, outcome_label in enumerate(outcomes_raw):
+            label = str(outcome_label or "").strip().lower()
+            if label == "yes" and outcome_idx == 0:
+                return token_ids[idx]
+            if label == "no" and outcome_idx == 1:
+                return token_ids[idx]
+    if len(token_ids) > outcome_idx:
+        return token_ids[outcome_idx]
+    return ""
+
+
+def _normalize_reverse_entry(
+    *,
+    reverse_intent: Any,
+    current_direction: str,
+    current_price: Optional[float],
+    market_seconds_left: Optional[float],
+    market_info: Optional[dict[str, Any]],
+    strategy_type: str,
+    source: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    normalized = StrategySDK.normalize_reverse_intent(
+        reverse_intent,
+        fallback_direction=_opposite_direction(current_direction),
+        default_signal_type=f"{str(source or '').strip().lower() or 'strategy'}_reverse",
+    )
+    if not isinstance(normalized, dict):
+        return None
+
+    direction = str(normalized.get("direction") or "").strip().lower()
+    if direction not in {"buy_yes", "buy_no"}:
+        return None
+    if direction == str(current_direction or "").strip().lower():
+        return None
+
+    min_seconds_left = max(0.0, safe_float(normalized.get("min_seconds_left"), 0.0) or 0.0)
+    if market_seconds_left is not None and market_seconds_left < min_seconds_left:
+        return None
+
+    min_price_headroom = max(0.0, min(1.0, safe_float(normalized.get("min_price_headroom"), 0.0) or 0.0))
+    if current_price is not None and current_price < min_price_headroom:
+        return None
+
+    outcome_idx = _direction_outcome_index(direction)
+    if outcome_idx is None:
+        return None
+
+    entry_price = safe_float(normalized.get("entry_price"), None)
+    if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
+        entry_price = _extract_market_side_price(market_info, outcome_idx)
+    if (entry_price is None or entry_price <= 0.0 or entry_price >= 1.0) and current_price is not None:
+        entry_price = 1.0 - current_price
+    if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
+        return None
+
+    token_id = str(normalized.get("token_id") or "").strip()
+    if not token_id:
+        token_id = _extract_market_token_id(market_info, outcome_idx)
+
+    strategy_key = str(normalized.get("strategy_type") or strategy_type or "").strip().lower()
+    signal_type = str(normalized.get("signal_type") or f"{source}_reverse").strip().lower()
+    if not signal_type:
+        signal_type = "strategy_reverse"
+
+    expires_in_seconds = max(5.0, safe_float(normalized.get("expires_in_seconds"), 60.0) or 60.0)
+    expires_at = now + timedelta(seconds=expires_in_seconds)
+    out = dict(normalized)
+    out["direction"] = direction
+    out["entry_price"] = float(max(0.001, min(0.999, entry_price)))
+    out["token_id"] = token_id
+    out["strategy_type"] = strategy_key
+    out["signal_type"] = signal_type
+    out["source"] = str(source or "").strip().lower()
+    out["expires_at"] = _iso_utc(expires_at)
+    return out
+
+
+def _arm_reverse_entry_from_exit(
+    *,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    strategy_exit: Any,
+    market_info: Optional[dict[str, Any]],
+    market_seconds_left: Optional[float],
+    current_price: Optional[float],
+    now: datetime,
+) -> dict[str, Any] | None:
+    strategy_payload = getattr(strategy_exit, "payload", None)
+    if not isinstance(strategy_payload, dict):
+        return None
+    reverse_intent = strategy_payload.get("reverse_intent")
+    if not isinstance(reverse_intent, dict):
+        return None
+
+    existing = payload.get("pending_reverse_entry")
+    existing = dict(existing) if isinstance(existing, dict) else {}
+    existing_status = str(existing.get("status") or "").strip().lower()
+    if existing_status in {"emitted", "submitted"} and str(existing.get("signal_id") or "").strip():
+        return None
+
+    prepared = _normalize_reverse_entry(
+        reverse_intent=reverse_intent,
+        current_direction=str(row.direction or ""),
+        current_price=current_price,
+        market_seconds_left=market_seconds_left,
+        market_info=market_info,
+        strategy_type=str(payload.get("strategy_type") or ""),
+        source=str(row.source or ""),
+        now=now,
+    )
+    if not isinstance(prepared, dict):
+        return None
+
+    attempt_index = int(safe_float(existing.get("attempt_index"), 0) or 0) + 1
+    prepared["status"] = "armed"
+    prepared["armed_at"] = _iso_utc(now)
+    prepared["attempt_index"] = attempt_index
+    prepared["source_order_id"] = str(row.id or "")
+    prepared["source_signal_id"] = str(row.signal_id or "")
+    prepared["trigger_reason"] = str(getattr(strategy_exit, "reason", "") or "").strip()
+    payload["pending_reverse_entry"] = prepared
+    return prepared
+
+
+async def _emit_armed_reverse_signal(
+    session: AsyncSession,
+    *,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    signal_payload: dict[str, Any],
+    market_info: Optional[dict[str, Any]],
+    close_trigger: Optional[str],
+    realized_pnl: Optional[float],
+    now: datetime,
+) -> tuple[str | None, str | None]:
+    pending = payload.get("pending_reverse_entry")
+    if not isinstance(pending, dict):
+        return None, None
+    status = str(pending.get("status") or "").strip().lower()
+    if status not in {"armed", "failed", "ready"}:
+        return None, None
+    trigger_key = str(close_trigger or "").strip().lower()
+    if "resolution" in trigger_key:
+        pending["status"] = "skipped_resolution"
+        pending["skipped_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+
+    expires_at = _parse_iso_utc_naive(pending.get("expires_at"))
+    now_naive = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo is not None else now
+    if expires_at is not None and now_naive > expires_at:
+        pending["status"] = "expired"
+        pending["expired_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+
+    direction = str(pending.get("direction") or "").strip().lower()
+    if direction not in {"buy_yes", "buy_no"}:
+        pending["status"] = "failed"
+        pending["last_error"] = "invalid_reverse_direction"
+        pending["failed_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+    outcome_idx = _direction_outcome_index(direction)
+    if outcome_idx is None:
+        pending["status"] = "failed"
+        pending["last_error"] = "invalid_reverse_outcome_idx"
+        pending["failed_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+
+    entry_price = safe_float(pending.get("entry_price"), None)
+    if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
+        entry_price = _extract_market_side_price(market_info, outcome_idx)
+    if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
+        close_price = safe_float((payload.get("position_close") or {}).get("close_price"), None)
+        if close_price is not None:
+            entry_price = 1.0 - close_price
+    if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
+        pending["status"] = "failed"
+        pending["last_error"] = "missing_reverse_entry_price"
+        pending["failed_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+
+    token_id = str(pending.get("token_id") or "").strip()
+    if not token_id:
+        token_id = _extract_market_token_id(market_info, outcome_idx)
+        if token_id:
+            pending["token_id"] = token_id
+
+    source = str(row.source or "").strip().lower() or "scanner"
+    strategy_type = str(
+        pending.get("strategy_type")
+        or payload.get("strategy_type")
+        or ""
+    ).strip().lower() or None
+    signal_type = str(pending.get("signal_type") or f"{source}_reverse").strip().lower()
+    if not signal_type:
+        signal_type = "strategy_reverse"
+    confidence = safe_float(pending.get("confidence"), None)
+    edge_percent = safe_float(pending.get("edge_percent"), None)
+    liquidity = safe_float(
+        pending.get("liquidity"),
+        safe_float((signal_payload or {}).get("liquidity"), safe_float(getattr(row, "notional_usd", None), 0.0)),
+    )
+
+    payload_json = dict(signal_payload or {})
+    payload_json["strategy_origin"] = str(payload_json.get("strategy_origin") or "crypto_worker")
+    payload_json["reverse_entry"] = {
+        "enabled": True,
+        "source_order_id": str(row.id or ""),
+        "source_signal_id": str(row.signal_id or ""),
+        "close_trigger": trigger_key,
+        "realized_pnl": realized_pnl,
+        "direction": direction,
+        "entry_price": float(entry_price),
+        "size_multiplier": safe_float(pending.get("size_multiplier"), 1.0),
+        "size_usd": safe_float(pending.get("size_usd")),
+        "metadata": dict(pending.get("metadata") or {}) if isinstance(pending.get("metadata"), dict) else {},
+    }
+    payload_json["reverse_entry"]["emitted_at"] = _iso_utc(now)
+    payload_json["selected_token_id"] = token_id or payload_json.get("selected_token_id")
+    payload_json["token_id"] = token_id or payload_json.get("token_id")
+    payload_json["signal_emitted_at"] = _iso_utc(now)
+    payload_json["source_observed_at"] = _iso_utc(now)
+
+    strategy_context = payload.get("strategy_context")
+    strategy_context_json = dict(strategy_context) if isinstance(strategy_context, dict) else {}
+    strategy_context_json["reverse_entry"] = dict(payload_json["reverse_entry"])
+    strategy_context_json["source_order_id"] = str(row.id or "")
+    strategy_context_json["source_signal_id"] = str(row.signal_id or "")
+    strategy_context_json["selected_direction"] = direction
+    if token_id:
+        strategy_context_json["selected_token_id"] = token_id
+
+    attempt_index = int(safe_float(pending.get("attempt_index"), 1) or 1)
+    dedupe_key = make_dedupe_key(
+        "reverse_entry",
+        str(row.id or ""),
+        attempt_index,
+        direction,
+        str(pending.get("armed_at") or ""),
+    )
+    source_item_id = str(pending.get("source_signal_id") or row.signal_id or row.id or "")
+    market_question = str(
+        payload_json.get("market_question")
+        or payload_json.get("question")
+        or getattr(row, "market_id", "")
+        or ""
+    ).strip() or None
+    expires_at_dt = _parse_iso_utc_naive(pending.get("expires_at"))
+    if expires_at_dt is None:
+        expires_seconds = max(5.0, safe_float(pending.get("expires_in_seconds"), 60.0) or 60.0)
+        expires_at_dt = now_naive + timedelta(seconds=expires_seconds)
+
+    try:
+        signal_row = await upsert_trade_signal(
+            session,
+            source=source,
+            source_item_id=source_item_id,
+            signal_type=signal_type,
+            strategy_type=strategy_type,
+            market_id=str(row.market_id or ""),
+            market_question=market_question,
+            direction=direction,
+            entry_price=float(max(0.001, min(0.999, entry_price))),
+            edge_percent=edge_percent,
+            confidence=confidence,
+            liquidity=liquidity,
+            expires_at=expires_at_dt,
+            payload_json=payload_json,
+            strategy_context_json=strategy_context_json or None,
+            dedupe_key=dedupe_key,
+            commit=False,
+        )
+    except Exception as exc:
+        pending["status"] = "failed"
+        pending["last_error"] = str(exc)
+        pending["failed_at"] = _iso_utc(now)
+        payload["pending_reverse_entry"] = pending
+        return None, None
+
+    signal_id = str(getattr(signal_row, "id", "") or "").strip()
+    pending["status"] = "emitted"
+    pending["emitted_at"] = _iso_utc(now)
+    pending["signal_id"] = signal_id
+    pending["dedupe_key"] = dedupe_key
+    payload["pending_reverse_entry"] = pending
+    return signal_id or None, source
+
+
+async def _publish_reverse_signal_batches(signal_ids_by_source: dict[str, list[str]], *, emitted_at: datetime) -> None:
+    if not signal_ids_by_source:
+        return
+    from services.event_bus import event_bus
+
+    emitted_at_iso = emitted_at.isoformat()
+    for source_key, signal_ids in signal_ids_by_source.items():
+        ids = [str(signal_id or "").strip() for signal_id in signal_ids if str(signal_id or "").strip()]
+        if not ids:
+            continue
+        try:
+            await event_bus.publish(
+                "trade_signal_batch",
+                {
+                    "event_type": "reverse_entry",
+                    "source": str(source_key or "").strip().lower(),
+                    "signal_count": int(len(ids)),
+                    "signal_ids": ids[:500],
+                    "emitted_at": emitted_at_iso,
+                    "trigger": "position_lifecycle_reverse",
+                },
+            )
+        except Exception:
+            continue
 
 
 def _extract_signal_side_price(payload: dict[str, Any], outcome_idx: int) -> Optional[float]:
@@ -372,9 +730,49 @@ def _pending_exit_fill_threshold(pending_exit: dict[str, Any]) -> float:
         if pending_exit.get("fill_ratio_threshold") is not None
         else pending_exit.get("fill_threshold_ratio")
     )
-    if parsed is None:
-        return 0.995
-    return max(0.5, min(1.0, float(parsed)))
+    if parsed is not None:
+        return max(0.5, min(1.0, float(parsed)))
+
+    required_exit_size = max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0)
+    retry_count = int(safe_float(pending_exit.get("retry_count"), 0) or 0)
+    close_trigger = str(pending_exit.get("close_trigger") or "").strip().lower()
+
+    if required_exit_size <= 10.0:
+        threshold = 0.88
+    elif required_exit_size <= 25.0:
+        threshold = 0.90
+    elif required_exit_size <= 75.0:
+        threshold = 0.93
+    elif required_exit_size <= 200.0:
+        threshold = 0.95
+    else:
+        threshold = 0.97
+
+    if "stop_loss" in close_trigger or "rapid" in close_trigger:
+        threshold = min(threshold, 0.92)
+    if retry_count >= 2:
+        threshold = max(0.85, threshold - 0.03)
+    return max(0.5, min(1.0, float(threshold)))
+
+
+def _remaining_exit_size(
+    *,
+    required_exit_size: float,
+    pending_exit: dict[str, Any],
+    wallet_position_size: float,
+) -> float:
+    required = max(0.0, float(required_exit_size))
+    already_filled = max(0.0, safe_float(pending_exit.get("filled_size"), 0.0) or 0.0)
+    remaining = max(0.0, required - already_filled)
+    if required > 0.0 and remaining <= 0.0 and already_filled <= 0.0:
+        remaining = required
+    wallet_cap = wallet_position_size if wallet_position_size > _WALLET_SIZE_EPSILON else 0.0
+    if wallet_cap > 0.0:
+        if remaining <= 0.0:
+            remaining = wallet_cap
+        else:
+            remaining = min(remaining, wallet_cap)
+    return max(0.0, remaining)
 
 
 def _pending_exit_provider_clob_id(pending_exit: dict[str, Any]) -> str:
@@ -523,7 +921,7 @@ def _market_end_time_iso(market_info: Any) -> Optional[str]:
     end_time = _extract_market_end_time_naive(market_info)
     if end_time is None:
         return None
-    return end_time.isoformat() + "Z"
+    return _iso_utc(end_time)
 
 
 async def _resolve_execution_wallet_address() -> str:
@@ -788,6 +1186,7 @@ async def reconcile_paper_positions(
     skipped_reasons: dict[str, int] = {}
     details: list[dict[str, Any]] = []
     state_updates = 0
+    reverse_signal_ids_by_source: dict[str, list[str]] = {}
 
     for row in candidates:
         entry_price = safe_float(row.effective_price)
@@ -861,7 +1260,7 @@ async def reconcile_paper_positions(
             "lowest_price": _state_price_floor(lowest_price),
             "last_mark_price": current_price,
             "last_mark_source": current_price_source,
-            "last_marked_at": now.isoformat() + "Z",
+            "last_marked_at": _iso_utc(now),
         }
 
         if winning_idx is not None:
@@ -904,12 +1303,19 @@ async def reconcile_paper_positions(
                         pos_view.lowest_price = lowest_price
                         pos_view.age_minutes = age_minutes
                         pos_view.pnl_percent = pnl_pct
+                        pos_view.filled_size = (notional / entry_price) if entry_price > 0 else 0.0
+                        pos_view.notional_usd = notional
                         if "strategy_context" not in payload:
                             payload["strategy_context"] = {}
                         pos_view.strategy_context = payload["strategy_context"]
                         pos_view.config = payload.get("strategy_exit_config", {})
                         pos_view.outcome_idx = outcome_idx
 
+                        token_id = _extract_live_token_id(payload)
+                        min_order_size_usd = max(
+                            0.01,
+                            safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0),
+                        )
                         market_state_dict = {
                             "current_price": current_price,
                             "market_tradable": market_tradable,
@@ -917,6 +1323,10 @@ async def reconcile_paper_positions(
                             "winning_outcome": None,
                             "seconds_left": market_seconds_left,
                             "end_time": market_end_time,
+                            "token_id": token_id,
+                            "mark_source": current_price_source,
+                            "min_order_size_usd": min_order_size_usd,
+                            "notional_usd": notional,
                         }
 
                         exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
@@ -942,6 +1352,15 @@ async def reconcile_paper_positions(
                     continue
 
                 if strategy_exit is not None:
+                    _arm_reverse_entry_from_exit(
+                        row=row,
+                        payload=payload,
+                        strategy_exit=strategy_exit,
+                        market_info=market_info,
+                        market_seconds_left=market_seconds_left,
+                        current_price=current_price,
+                        now=now,
+                    )
                     close_price = strategy_exit.close_price if strategy_exit.close_price is not None else current_price
                     close_trigger = f"strategy:{strategy_exit.reason}"
                     price_source = current_price_source
@@ -1110,11 +1529,25 @@ async def reconcile_paper_positions(
             "realized_pnl": pnl,
             "market_tradable": market_tradable,
             "age_minutes": age_minutes,
-            "closed_at": now.isoformat() + "Z",
+            "closed_at": _iso_utc(now),
             "reason": reason,
         }
         if simulation_close is not None:
             payload["position_close"]["simulation_close"] = simulation_close
+
+        reverse_signal_id, reverse_source = await _emit_armed_reverse_signal(
+            session,
+            row=row,
+            payload=payload,
+            signal_payload=signal_payload,
+            market_info=market_info,
+            close_trigger=close_trigger,
+            realized_pnl=pnl,
+            now=now,
+        )
+        if reverse_signal_id and reverse_source:
+            reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
+
         row.payload_json = payload
         if reason:
             if row.reason:
@@ -1126,6 +1559,9 @@ async def reconcile_paper_positions(
     if not dry_run and (closed > 0 or state_updates > 0):
         await session.commit()
         await _publish_trader_order_updates([row for row in candidates if row.updated_at == now])
+        if reverse_signal_ids_by_source:
+            await refresh_trade_signal_snapshots(session)
+            await _publish_reverse_signal_batches(reverse_signal_ids_by_source, emitted_at=now)
 
     return {
         "trader_id": trader_id,
@@ -1139,6 +1575,7 @@ async def reconcile_paper_positions(
         "total_realized_pnl": total_realized_pnl,
         "by_status": by_status,
         "skipped_reasons": skipped_reasons,
+        "reverse_signals_emitted": sum(len(ids) for ids in reverse_signal_ids_by_source.values()),
         "details": details,
     }
 
@@ -1209,6 +1646,7 @@ async def reconcile_live_positions(
     skipped_reasons: dict[str, int] = {}
     details: list[dict[str, Any]] = []
     state_updates = 0
+    reverse_signal_ids_by_source: dict[str, list[str]] = {}
 
     candidate_ids = {str(row.id) for row in candidates}
     terminal_rows = list(
@@ -1244,10 +1682,21 @@ async def reconcile_live_positions(
         pending_status = str(pending_exit.get("status") or "").strip().lower()
         if pending_status != "filled":
             continue
+        if _safe_bool(pending_exit.get("allow_partial_fill_terminal"), False):
+            continue
         close_trigger = str(pending_exit.get("close_trigger") or "").strip().lower()
         if "resolution" in close_trigger:
             continue
         required_exit_size = max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0)
+        _entry_notional, _entry_size, _entry_price = _extract_live_fill_metrics(payload)
+        if _entry_size <= 0.0 and _entry_notional > 0.0:
+            _fallback_entry_price = _entry_price if _entry_price and _entry_price > 0 else safe_float(row.effective_price)
+            if _fallback_entry_price is None or _fallback_entry_price <= 0:
+                _fallback_entry_price = safe_float(row.entry_price)
+            if _fallback_entry_price and _fallback_entry_price > 0:
+                _entry_size = _entry_notional / _fallback_entry_price
+        if _entry_size > 0.0:
+            required_exit_size = max(required_exit_size, _entry_size)
         if required_exit_size <= 0.0:
             continue
         filled_exit_size = max(0.0, safe_float(pending_exit.get("filled_size"), 0.0) or 0.0)
@@ -1267,7 +1716,7 @@ async def reconcile_live_positions(
                 or str(pending_exit.get("provider_clob_order_id") or "").strip()
                 else "pending"
             )
-            pending_exit["reopened_at"] = now.isoformat() + "Z"
+            pending_exit["reopened_at"] = _iso_utc(now)
             pending_exit["reopen_reason"] = "partial_exit_fill_below_threshold"
             pending_exit["fill_ratio"] = float(fill_ratio)
             payload["pending_live_exit"] = pending_exit
@@ -1316,16 +1765,36 @@ async def reconcile_live_positions(
         }
     )
     if token_ids_for_prices:
+        strict_stale_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
+        relaxed_stale_seconds = max(strict_stale_seconds, float(settings.WS_PRICE_STALE_SECONDS))
         try:
             from services.redis_price_cache import redis_price_cache
 
-            redis_rows = await redis_price_cache.read_prices(token_ids_for_prices)
+            redis_rows = await redis_price_cache.read_prices(
+                token_ids_for_prices,
+                stale_seconds=strict_stale_seconds,
+            )
             for token_id, price_row in redis_rows.items():
                 mid = safe_float((price_row or {}).get("mid")) if isinstance(price_row, dict) else None
                 if mid is not None and mid >= 0:
                     redis_mid_prices[str(token_id).strip()] = float(mid)
         except Exception:
             redis_mid_prices = {}
+        unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in redis_mid_prices]
+        if unresolved_token_ids and relaxed_stale_seconds > strict_stale_seconds + 1e-9:
+            try:
+                from services.redis_price_cache import redis_price_cache
+
+                relaxed_rows = await redis_price_cache.read_prices(
+                    unresolved_token_ids,
+                    stale_seconds=relaxed_stale_seconds,
+                )
+                for token_id, price_row in relaxed_rows.items():
+                    mid = safe_float((price_row or {}).get("mid")) if isinstance(price_row, dict) else None
+                    if mid is not None and mid >= 0:
+                        redis_mid_prices[str(token_id).strip()] = float(mid)
+            except Exception:
+                pass
         unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in redis_mid_prices]
         if unresolved_token_ids:
             async def _fetch_clob_midpoint(token_id: str) -> tuple[str, Optional[float]]:
@@ -1377,6 +1846,7 @@ async def reconcile_live_positions(
         payload = dict(row.payload_json or {})
         token_id = _extract_live_token_id(payload)
         wallet_position = wallet_positions_by_token.get(token_id) if token_id else None
+        wallet_position_observed = isinstance(wallet_position, dict)
         wallet_position_size = _extract_wallet_position_size(wallet_position)
         wallet_mark_price = _extract_wallet_mark_price(wallet_position)
         wallet_settlement_price = _extract_wallet_settlement_price(wallet_position)
@@ -1475,7 +1945,7 @@ async def reconcile_live_positions(
             "lowest_price": _state_price_floor(pending_lowest_price),
             "last_mark_price": pending_current_price,
             "last_mark_source": pending_current_price_source,
-            "last_marked_at": now.isoformat() + "Z",
+            "last_marked_at": _iso_utc(now),
         }
         pending_state_changed = False
         if pending_current_price is not None:
@@ -1541,7 +2011,7 @@ async def reconcile_live_positions(
                         pending_exit_local = payload.get("pending_live_exit")
                         if isinstance(pending_exit_local, dict):
                             pending_exit_local["status"] = "superseded_external"
-                            pending_exit_local["resolved_at"] = now.isoformat() + "Z"
+                            pending_exit_local["resolved_at"] = _iso_utc(now)
                             payload["pending_live_exit"] = pending_exit_local
                         row.status = next_status
                         row.actual_profit = pnl
@@ -1552,15 +2022,27 @@ async def reconcile_live_positions(
                             "close_trigger": close_trigger,
                             "realized_pnl": pnl,
                             "filled_size": close_qty,
-                            "closed_at": now.isoformat() + "Z",
+                            "closed_at": _iso_utc(now),
                             "reason": reason,
                             "wallet_trade_id": str(latest_wallet_sell_trade.get("trade_id") or ""),
                             "wallet_trade_timestamp": (
-                                latest_wallet_sell_trade.get("timestamp").isoformat() + "Z"
+                                _iso_utc(latest_wallet_sell_trade.get("timestamp"))
                                 if isinstance(latest_wallet_sell_trade.get("timestamp"), datetime)
                                 else None
                             ),
                         }
+                        reverse_signal_id, reverse_source = await _emit_armed_reverse_signal(
+                            session,
+                            row=row,
+                            payload=payload,
+                            signal_payload=pending_signal_payload,
+                            market_info=pending_market_info,
+                            close_trigger=close_trigger,
+                            realized_pnl=pnl,
+                            now=now,
+                        )
+                        if reverse_signal_id and reverse_source:
+                            reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
                         row.payload_json = payload
                         closed += 1
                     continue
@@ -1600,14 +2082,14 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "superseded_resolution"
-                    pending_exit["resolved_at"] = now.isoformat() + "Z"
+                    pending_exit["resolved_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
                     payload["position_close"] = {
                         "close_price": cp,
                         "price_source": "resolved_settlement",
                         "close_trigger": close_trigger,
                         "realized_pnl": _pnl,
-                        "closed_at": now.isoformat() + "Z",
+                        "closed_at": _iso_utc(now),
                         "reason": reason,
                     }
                     row.payload_json = payload
@@ -1642,14 +2124,14 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "superseded_resolution"
-                    pending_exit["resolved_at"] = now.isoformat() + "Z"
+                    pending_exit["resolved_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
                     payload["position_close"] = {
                         "close_price": cp,
                         "price_source": "wallet_redeemable_mark",
                         "close_trigger": "resolution",
                         "realized_pnl": _pnl,
-                        "closed_at": now.isoformat() + "Z",
+                        "closed_at": _iso_utc(now),
                         "reason": reason,
                     }
                     row.payload_json = payload
@@ -1682,29 +2164,23 @@ async def reconcile_live_positions(
             snapshot_fill_price = safe_float((snapshot or {}).get("average_fill_price"))
             if snapshot_fill_price is None or snapshot_fill_price <= 0:
                 snapshot_fill_price = safe_float((snapshot or {}).get("limit_price"))
-            wallet_exit_size_cap = (
-                wallet_position_size
-                if wallet_position_size > _WALLET_SIZE_EPSILON
-                else 0.0
-            )
+            if not snapshot_status:
+                snapshot_status = str(pending_exit.get("provider_status") or "").strip().lower()
+            if snapshot_filled_size <= 0.0:
+                snapshot_filled_size = max(0.0, safe_float(pending_exit.get("filled_size"), 0.0) or 0.0)
+            if snapshot_fill_price is None or snapshot_fill_price <= 0.0:
+                snapshot_fill_price = safe_float(pending_exit.get("average_fill_price"))
             required_exit_size = max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0)
-            if (
-                wallet_exit_size_cap > 0.0
-                and required_exit_size > (wallet_exit_size_cap + _WALLET_SIZE_EPSILON)
-            ):
-                required_exit_size = wallet_exit_size_cap
+            _fill_not, _fill_sz, _fill_px = _extract_live_fill_metrics(payload)
+            _ep = _fill_px if _fill_px and _fill_px > 0 else safe_float(row.effective_price)
+            if _ep is None or _ep <= 0:
+                _ep = safe_float(row.entry_price)
+            _not = _fill_not if _fill_not > 0 else (safe_float(row.notional_usd) or 0.0)
+            entry_position_size = _fill_sz if _fill_sz > 0 else (_not / _ep if _ep and _ep > 0 else 0.0)
+            if entry_position_size > 0.0:
+                required_exit_size = max(required_exit_size, entry_position_size)
+            if required_exit_size > 0.0:
                 pending_exit["exit_size"] = float(required_exit_size)
-            if required_exit_size <= 0.0:
-                _fill_not, _fill_sz, _fill_px = _extract_live_fill_metrics(payload)
-                _ep = _fill_px if _fill_px and _fill_px > 0 else safe_float(row.effective_price)
-                if _ep is None or _ep <= 0:
-                    _ep = safe_float(row.entry_price)
-                _not = _fill_not if _fill_not > 0 else (safe_float(row.notional_usd) or 0.0)
-                required_exit_size = _fill_sz if _fill_sz > 0 else (_not / _ep if _ep and _ep > 0 else 0.0)
-                if wallet_exit_size_cap > 0.0 and required_exit_size > 0.0:
-                    required_exit_size = min(required_exit_size, wallet_exit_size_cap)
-                if required_exit_size > 0.0:
-                    pending_exit["exit_size"] = float(required_exit_size)
 
             threshold_ratio = _pending_exit_fill_threshold(pending_exit)
             fill_ratio = (
@@ -1720,23 +2196,37 @@ async def reconcile_live_positions(
             if fill_ratio > 0.0:
                 pending_exit["fill_ratio"] = float(fill_ratio)
             if snapshot is not None:
-                pending_exit["last_snapshot_at"] = now.isoformat() + "Z"
+                pending_exit["last_snapshot_at"] = _iso_utc(now)
 
+            terminal_provider_status = snapshot_status in {"filled", "matched", "executed"}
+            wallet_flat_confirmed = (
+                wallet_position_size <= _WALLET_SIZE_EPSILON
+                and (
+                    wallet_position_observed
+                    or bool(wallet_positions_by_token)
+                    or isinstance(latest_wallet_sell_trade, dict)
+                )
+            )
             close_fill_threshold_met = (
                 required_exit_size > 0.0
                 and snapshot_filled_size >= (required_exit_size * threshold_ratio)
             )
+            close_fill_terminal_with_wallet_confirmation = (
+                required_exit_size > 0.0
+                and terminal_provider_status
+                and snapshot_filled_size > 0.0
+                and wallet_flat_confirmed
+            )
             close_fill_unknown_but_wallet_flat = (
                 required_exit_size <= 0.0
-                and snapshot_status == "filled"
-                and wallet_position_size <= _WALLET_SIZE_EPSILON
+                and terminal_provider_status
+                and wallet_flat_confirmed
             )
-            if close_fill_threshold_met or close_fill_unknown_but_wallet_flat:
-                _fill_not, _fill_sz, _fill_px = _extract_live_fill_metrics(payload)
-                _ep = _fill_px if _fill_px and _fill_px > 0 else safe_float(row.effective_price)
-                if _ep is None or _ep <= 0:
-                    _ep = safe_float(row.entry_price)
-                _not = _fill_not if _fill_not > 0 else (safe_float(row.notional_usd) or 0.0)
+            if (
+                close_fill_threshold_met
+                or close_fill_terminal_with_wallet_confirmation
+                or close_fill_unknown_but_wallet_flat
+            ):
                 base_qty = _fill_sz if _fill_sz > 0 else (_not / _ep if _ep and _ep > 0 else 0.0)
                 close_qty = snapshot_filled_size if snapshot_filled_size > 0 else required_exit_size
                 if close_qty <= 0.0:
@@ -1763,7 +2253,12 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "filled"
-                    pending_exit["filled_at"] = now.isoformat() + "Z"
+                    if (
+                        close_fill_terminal_with_wallet_confirmation
+                        and not close_fill_threshold_met
+                    ):
+                        pending_exit["allow_partial_fill_terminal"] = True
+                    pending_exit["filled_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
                     payload["position_close"] = {
                         "close_price": cp,
@@ -1773,9 +2268,21 @@ async def reconcile_live_positions(
                         "cost_basis_usd": cost_basis,
                         "settlement_proceeds_usd": close_qty * cp,
                         "filled_size": close_qty,
-                        "closed_at": now.isoformat() + "Z",
+                        "closed_at": _iso_utc(now),
                         "reason": reason,
                     }
+                    reverse_signal_id, reverse_source = await _emit_armed_reverse_signal(
+                        session,
+                        row=row,
+                        payload=payload,
+                        signal_payload=pending_signal_payload,
+                        market_info=pending_market_info,
+                        close_trigger=close_trigger,
+                        realized_pnl=_pnl,
+                        now=now,
+                    )
+                    if reverse_signal_id and reverse_source:
+                        reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
                     row.payload_json = payload
                     closed += 1
                 total_realized_pnl += _pnl
@@ -1797,11 +2304,11 @@ async def reconcile_live_positions(
                 if not dry_run:
                     pending_exit["status"] = "failed"
                     pending_exit["retry_count"] = int(pending_exit.get("retry_count", 0) or 0) + 1
-                    pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                    pending_exit["last_attempt_at"] = _iso_utc(now)
                     pending_exit["last_error"] = f"provider_exit_status:{snapshot_status}"
-                    pending_exit["next_retry_at"] = (
+                    pending_exit["next_retry_at"] = _iso_utc(
                         now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
-                    ).isoformat() + "Z"
+                    )
                     payload["pending_live_exit"] = pending_exit
                     _attach_pending_state(payload)
                     row.payload_json = payload
@@ -1833,7 +2340,7 @@ async def reconcile_live_positions(
             if pending_exit_kind == "take_profit_limit":
                 if not dry_run:
                     pending_exit["status"] = "cancelled"
-                    pending_exit["cancelled_at"] = now.isoformat() + "Z"
+                    pending_exit["cancelled_at"] = _iso_utc(now)
                     pending_exit["cancel_reason"] = str(
                         pending_exit.get("last_error") or "take_profit_limit_inactive"
                     )
@@ -1861,14 +2368,14 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "superseded_resolution"
-                    pending_exit["resolved_at"] = now.isoformat() + "Z"
+                    pending_exit["resolved_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
                     payload["position_close"] = {
                         "close_price": cp,
                         "price_source": "resolved_settlement",
                         "close_trigger": close_trigger,
                         "realized_pnl": _pnl,
-                        "closed_at": now.isoformat() + "Z",
+                        "closed_at": _iso_utc(now),
                         "reason": reason,
                     }
                     row.payload_json = payload
@@ -1903,14 +2410,14 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "superseded_resolution"
-                    pending_exit["resolved_at"] = now.isoformat() + "Z"
+                    pending_exit["resolved_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
                     payload["position_close"] = {
                         "close_price": cp,
                         "price_source": "wallet_redeemable_mark",
                         "close_trigger": "resolution",
                         "realized_pnl": _pnl,
-                        "closed_at": now.isoformat() + "Z",
+                        "closed_at": _iso_utc(now),
                         "reason": reason,
                     }
                     row.payload_json = payload
@@ -1948,22 +2455,14 @@ async def reconcile_live_positions(
 
             if retry_count >= _FAILED_EXIT_MAX_RETRIES:
                 if not dry_run:
-                    pending_exit["status"] = "failed"
-                    pending_exit["exhausted_at"] = now.isoformat() + "Z"
-                    pending_exit["retry_count"] = 0
-                    pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                    pending_exit["status"] = "blocked_retry_exhausted"
+                    pending_exit["exhausted_at"] = _iso_utc(now)
+                    pending_exit["retry_count"] = retry_count
+                    pending_exit["last_attempt_at"] = _iso_utc(now)
                     pending_exit["last_error"] = str(
-                        pending_exit.get("last_error") or "exit_retry_exhausted_backoff"
+                        pending_exit.get("last_error") or "exit_retry_exhausted"
                     )
-                    pending_exit["next_retry_at"] = (
-                        now
-                        + timedelta(
-                            seconds=max(
-                                2 * _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS,
-                                _failed_exit_retry_delay_seconds(pending_exit["last_error"]),
-                            )
-                        )
-                    ).isoformat() + "Z"
+                    pending_exit["next_retry_at"] = None
                     payload["pending_live_exit"] = pending_exit
                     _attach_pending_state(payload)
                     row.payload_json = payload
@@ -1993,18 +2492,26 @@ async def reconcile_live_positions(
 
             # Retry: refresh allowance and re-place exit order
             _fill_not_r, _fill_sz_r, _ = _extract_live_fill_metrics(payload)
-            exit_size = _fill_sz_r if _fill_sz_r > 0 else 0.0
+            exit_size = max(
+                max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0),
+                _fill_sz_r if _fill_sz_r > 0 else 0.0,
+            )
             wallet_exit_size_cap = (
                 wallet_position_size
                 if wallet_position_size > _WALLET_SIZE_EPSILON
                 else 0.0
             )
-            if wallet_exit_size_cap > 0.0:
-                if exit_size <= 0.0:
-                    exit_size = wallet_exit_size_cap
-                else:
-                    exit_size = min(exit_size, wallet_exit_size_cap)
+            if exit_size <= 0.0 and wallet_exit_size_cap > 0.0:
+                exit_size = wallet_exit_size_cap
+            if exit_size > 0.0:
                 pending_exit["exit_size"] = float(exit_size)
+            exit_size = _remaining_exit_size(
+                required_exit_size=exit_size,
+                pending_exit=pending_exit,
+                wallet_position_size=wallet_exit_size_cap,
+            )
+            if exit_size > 0.0:
+                pending_exit["remaining_size"] = float(exit_size)
             exit_price = safe_float(pending_exit.get("close_price")) or 0.01
             min_order_size_usd = max(0.01, safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0))
 
@@ -2012,15 +2519,14 @@ async def reconcile_live_positions(
                 exit_notional_estimate = float(exit_size) * float(max(exit_price, 0.0))
                 if exit_notional_estimate + 1e-9 < min_order_size_usd:
                     if not dry_run:
-                        pending_exit["status"] = "failed"
+                        pending_exit["status"] = "blocked_min_notional"
                         pending_exit["retry_count"] = retry_count + 1
-                        pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                        pending_exit["exhausted_at"] = _iso_utc(now)
+                        pending_exit["last_attempt_at"] = _iso_utc(now)
                         pending_exit["last_error"] = (
                             f"exit_notional_below_min:{exit_notional_estimate:.4f}<{min_order_size_usd:.4f}"
                         )
-                        pending_exit["next_retry_at"] = (
-                            now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
-                        ).isoformat() + "Z"
+                        pending_exit["next_retry_at"] = None
                         payload["pending_live_exit"] = pending_exit
                         _attach_pending_state(payload)
                         row.payload_json = payload
@@ -2031,12 +2537,18 @@ async def reconcile_live_positions(
                 try:
                     from services.live_execution_adapter import execute_live_order
 
+                    try:
+                        await trading_service.prepare_sell_balance_allowance(token_id)
+                    except Exception:
+                        pass
+
                     exec_result = await execute_live_order(
                         token_id=token_id,
                         side="SELL",
                         size=exit_size,
                         fallback_price=exit_price,
                         time_in_force="GTC",
+                        resolve_live_price=False,
                     )
                     if exec_result.status in {"executed", "open", "submitted"}:
                         logger.info(
@@ -2046,7 +2558,7 @@ async def reconcile_live_positions(
                         if not dry_run:
                             pending_exit["status"] = "submitted"
                             pending_exit["retry_count"] = retry_count + 1
-                            pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                            pending_exit["last_attempt_at"] = _iso_utc(now)
                             pending_exit["next_retry_at"] = None
                             pending_exit["exit_order_id"] = exec_result.order_id
                             pending_exit["provider_clob_order_id"] = str(
@@ -2067,11 +2579,11 @@ async def reconcile_live_positions(
                         if not dry_run:
                             pending_exit["status"] = "failed"
                             pending_exit["retry_count"] = retry_count + 1
-                            pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                            pending_exit["last_attempt_at"] = _iso_utc(now)
                             pending_exit["last_error"] = str(exec_result.error_message or "unknown")
-                            pending_exit["next_retry_at"] = (
+                            pending_exit["next_retry_at"] = _iso_utc(
                                 now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
-                            ).isoformat() + "Z"
+                            )
                             payload["pending_live_exit"] = pending_exit
                             _attach_pending_state(payload)
                             row.payload_json = payload
@@ -2087,11 +2599,11 @@ async def reconcile_live_positions(
                     if not dry_run:
                         pending_exit["status"] = "failed"
                         pending_exit["retry_count"] = retry_count + 1
-                        pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                        pending_exit["last_attempt_at"] = _iso_utc(now)
                         pending_exit["last_error"] = str(exc)
-                        pending_exit["next_retry_at"] = (
+                        pending_exit["next_retry_at"] = _iso_utc(
                             now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
-                        ).isoformat() + "Z"
+                        )
                         payload["pending_live_exit"] = pending_exit
                         _attach_pending_state(payload)
                         row.payload_json = payload
@@ -2103,15 +2615,25 @@ async def reconcile_live_positions(
                 # No token_id or size — can't retry, mark exhausted
                 if not dry_run:
                     pending_exit["status"] = "failed"
-                    pending_exit["exhausted_at"] = now.isoformat() + "Z"
+                    pending_exit["exhausted_at"] = _iso_utc(now)
                     pending_exit["retry_count"] = retry_count + 1
-                    pending_exit["last_attempt_at"] = now.isoformat() + "Z"
+                    pending_exit["last_attempt_at"] = _iso_utc(now)
                     pending_exit["last_error"] = "missing token_id or fill_size"
-                    pending_exit["next_retry_at"] = (
+                    pending_exit["next_retry_at"] = _iso_utc(
                         now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
-                    ).isoformat() + "Z"
+                    )
                     payload["pending_live_exit"] = pending_exit
                     _attach_pending_state(payload)
+                    row.payload_json = payload
+                    row.updated_at = now
+                    state_updates += 1
+                held += 1
+                continue
+
+        if isinstance(pending_exit, dict) and pending_exit.get("status") in {"blocked_min_notional", "blocked_retry_exhausted"}:
+            if pending_winning_idx is None and wallet_settlement_price is None:
+                if not dry_run and pending_state_changed:
+                    payload["position_state"] = pending_next_state
                     row.payload_json = payload
                     row.updated_at = now
                     state_updates += 1
@@ -2239,7 +2761,7 @@ async def reconcile_live_positions(
             "lowest_price": _state_price_floor(lowest_price),
             "last_mark_price": current_price,
             "last_mark_source": current_price_source,
-            "last_marked_at": now.isoformat() + "Z",
+            "last_marked_at": _iso_utc(now),
         }
         exit_eval_price = (
             current_price
@@ -2294,12 +2816,20 @@ async def reconcile_live_positions(
                             pos_view.lowest_price = lowest_price
                             pos_view.age_minutes = age_minutes
                             pos_view.pnl_percent = pnl_pct
+                            pos_view.filled_size = (
+                                filled_size if filled_size > 0.0 else (notional / entry_price if entry_price > 0 else 0.0)
+                            )
+                            pos_view.notional_usd = notional
                             if "strategy_context" not in payload:
                                 payload["strategy_context"] = {}
                             pos_view.strategy_context = payload["strategy_context"]
                             pos_view.config = payload.get("strategy_exit_config", {})
                             pos_view.outcome_idx = outcome_idx
 
+                            min_order_size_usd = max(
+                                0.01,
+                                safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0),
+                            )
                             market_state_dict = {
                                 "current_price": exit_eval_price,
                                 "market_tradable": market_tradable,
@@ -2307,6 +2837,10 @@ async def reconcile_live_positions(
                                 "winning_outcome": None,
                                 "seconds_left": market_seconds_left,
                                 "end_time": market_end_time,
+                                "token_id": token_id,
+                                "mark_source": exit_eval_price_source,
+                                "min_order_size_usd": min_order_size_usd,
+                                "notional_usd": notional,
                             }
 
                             exit_decision = loaded.instance.should_exit(pos_view, market_state_dict)
@@ -2337,6 +2871,15 @@ async def reconcile_live_positions(
                     and str(pending_exit.get("status") or "").strip().lower() in {"submitted", "pending"}
                 )
                 if strategy_exit is not None:
+                    _arm_reverse_entry_from_exit(
+                        row=row,
+                        payload=payload,
+                        strategy_exit=strategy_exit,
+                        market_info=market_info,
+                        market_seconds_left=market_seconds_left,
+                        current_price=exit_eval_price,
+                        now=now,
+                    )
                     close_price = (
                         strategy_exit.close_price
                         if strategy_exit.close_price is not None
@@ -2484,7 +3027,7 @@ async def reconcile_live_positions(
                             cancel_success = bool(await trading_service.cancel_order(cancel_target))
                         except Exception:
                             cancel_success = False
-                    existing_tp_limit["cancelled_for_override_at"] = now.isoformat() + "Z"
+                    existing_tp_limit["cancelled_for_override_at"] = _iso_utc(now)
                     existing_tp_limit["override_cancel_target"] = cancel_target
                     existing_tp_limit["override_cancel_success"] = cancel_success
                     if cancel_success:
@@ -2492,7 +3035,7 @@ async def reconcile_live_positions(
                     payload["superseded_take_profit_exit"] = existing_tp_limit
 
                 exit_record: dict[str, Any] = {
-                    "triggered_at": now.isoformat() + "Z",
+                    "triggered_at": _iso_utc(now),
                     "close_trigger": close_trigger,
                     "close_price": close_price,
                     "price_source": price_source,
@@ -2507,6 +3050,8 @@ async def reconcile_live_positions(
                 # Immediately attempt to place the sell order
                 token_id = _extract_live_token_id(payload)
                 exit_size = filled_size if filled_size > 0.0 else quantity
+                if exit_size > 0.0:
+                    exit_record["exit_size"] = float(exit_size)
                 wallet_exit_size_cap = (
                     wallet_position_size
                     if wallet_position_size > _WALLET_SIZE_EPSILON
@@ -2520,17 +3065,23 @@ async def reconcile_live_positions(
                     exit_record["exit_size"] = float(exit_size)
                 min_order_size_usd = max(0.01, safe_float(getattr(settings, "MIN_ORDER_SIZE_USD", 1.0), 1.0))
                 if token_id and exit_size > 0:
+                    exit_size = _remaining_exit_size(
+                        required_exit_size=exit_size,
+                        pending_exit=exit_record,
+                        wallet_position_size=wallet_exit_size_cap,
+                    )
+                    if exit_size > 0.0:
+                        exit_record["remaining_size"] = float(exit_size)
                     exit_notional_estimate = float(exit_size) * float(max(close_price, 0.0))
                     if exit_notional_estimate + 1e-9 < min_order_size_usd:
-                        exit_record["status"] = "failed"
+                        exit_record["status"] = "blocked_min_notional"
                         exit_record["retry_count"] = 1
+                        exit_record["exhausted_at"] = _iso_utc(now)
                         exit_record["last_error"] = (
                             f"exit_notional_below_min:{exit_notional_estimate:.4f}<{min_order_size_usd:.4f}"
                         )
-                        exit_record["last_attempt_at"] = now.isoformat() + "Z"
-                        exit_record["next_retry_at"] = (
-                            now + timedelta(seconds=_failed_exit_retry_delay_seconds(exit_record["last_error"]))
-                        ).isoformat() + "Z"
+                        exit_record["last_attempt_at"] = _iso_utc(now)
+                        exit_record["next_retry_at"] = None
                         payload["pending_live_exit"] = exit_record
                         row.payload_json = payload
                         row.updated_at = now
@@ -2540,12 +3091,18 @@ async def reconcile_live_positions(
                     try:
                         from services.live_execution_adapter import execute_live_order
 
+                        try:
+                            await trading_service.prepare_sell_balance_allowance(token_id)
+                        except Exception:
+                            pass
+
                         exec_result = await execute_live_order(
                             token_id=token_id,
                             side="SELL",
                             size=exit_size,
                             fallback_price=close_price,
                             time_in_force="GTC",
+                            resolve_live_price=False,
                         )
                         if exec_result.status in {"executed", "open", "submitted"}:
                             exit_record["status"] = "submitted"
@@ -2553,7 +3110,7 @@ async def reconcile_live_positions(
                             exit_record["provider_clob_order_id"] = str(
                                 (exec_result.payload or {}).get("clob_order_id") or ""
                             )
-                            exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                            exit_record["last_attempt_at"] = _iso_utc(now)
                             logger.info(
                                 "Exit order placed for order=%s trigger=%s status=%s",
                                 row.id, close_trigger, exec_result.status,
@@ -2561,11 +3118,11 @@ async def reconcile_live_positions(
                         else:
                             exit_record["status"] = "failed"
                             exit_record["last_error"] = str(exec_result.error_message or "unknown")
-                            exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                            exit_record["last_attempt_at"] = _iso_utc(now)
                             exit_record["retry_count"] = 1
-                            exit_record["next_retry_at"] = (
+                            exit_record["next_retry_at"] = _iso_utc(
                                 now + timedelta(seconds=_failed_exit_retry_delay_seconds(exit_record["last_error"]))
-                            ).isoformat() + "Z"
+                            )
                             logger.warning(
                                 "Exit order failed for order=%s trigger=%s error=%s",
                                 row.id, close_trigger, exec_result.error_message,
@@ -2573,11 +3130,11 @@ async def reconcile_live_positions(
                     except Exception as exc:
                         exit_record["status"] = "failed"
                         exit_record["last_error"] = str(exc)
-                        exit_record["last_attempt_at"] = now.isoformat() + "Z"
+                        exit_record["last_attempt_at"] = _iso_utc(now)
                         exit_record["retry_count"] = 1
-                        exit_record["next_retry_at"] = (
+                        exit_record["next_retry_at"] = _iso_utc(
                             now + timedelta(seconds=_failed_exit_retry_delay_seconds(exit_record["last_error"]))
-                        ).isoformat() + "Z"
+                        )
                         logger.warning(
                             "Exit order exception for order=%s trigger=%s: %s",
                             row.id, close_trigger, exc,
@@ -2586,9 +3143,9 @@ async def reconcile_live_positions(
                     exit_record["status"] = "failed"
                     exit_record["last_error"] = "missing token_id or fill_size"
                     exit_record["retry_count"] = 1
-                    exit_record["next_retry_at"] = (
+                    exit_record["next_retry_at"] = _iso_utc(
                         now + timedelta(seconds=_failed_exit_retry_delay_seconds(exit_record["last_error"]))
-                    ).isoformat() + "Z"
+                    )
 
                 payload["pending_live_exit"] = exit_record
                 row.payload_json = payload
@@ -2623,9 +3180,21 @@ async def reconcile_live_positions(
             "filled_notional_usd": filled_notional,
             "market_tradable": market_tradable,
             "age_minutes": age_minutes,
-            "closed_at": now.isoformat() + "Z",
+            "closed_at": _iso_utc(now),
             "reason": reason,
         }
+        reverse_signal_id, reverse_source = await _emit_armed_reverse_signal(
+            session,
+            row=row,
+            payload=payload,
+            signal_payload=signal_payload,
+            market_info=market_info,
+            close_trigger=close_trigger,
+            realized_pnl=pnl,
+            now=now,
+        )
+        if reverse_signal_id and reverse_source:
+            reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
         row.payload_json = payload
         if reason:
             if row.reason:
@@ -2637,6 +3206,9 @@ async def reconcile_live_positions(
     if not dry_run and (closed > 0 or state_updates > 0):
         await session.commit()
         await _publish_trader_order_updates([row for row in candidates if row.updated_at == now])
+        if reverse_signal_ids_by_source:
+            await refresh_trade_signal_snapshots(session)
+            await _publish_reverse_signal_batches(reverse_signal_ids_by_source, emitted_at=now)
 
     return {
         "trader_id": trader_id,
@@ -2651,5 +3223,6 @@ async def reconcile_live_positions(
         "total_realized_pnl": total_realized_pnl,
         "by_status": by_status,
         "skipped_reasons": skipped_reasons,
+        "reverse_signals_emitted": sum(len(ids) for ids in reverse_signal_ids_by_source.values()),
         "details": details,
     }

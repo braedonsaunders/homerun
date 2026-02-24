@@ -278,20 +278,29 @@ class EventDispatcher:
         source = event_data.get("source")
         if not isinstance(event_type, str) or not isinstance(source, str):
             return None
-        return DataEvent(
-            event_type=event_type,
-            source=source,
-            timestamp=_parse_timestamp(event_data.get("timestamp")),
-            market_id=event_data.get("market_id"),
-            token_id=event_data.get("token_id"),
-            payload=event_data.get("payload") if isinstance(event_data.get("payload"), dict) else {},
-            old_price=event_data.get("old_price"),
-            new_price=event_data.get("new_price"),
-            scan_mode=event_data.get("scan_mode"),
-            changed_token_ids=event_data.get("changed_token_ids"),
-            changed_market_ids=event_data.get("changed_market_ids"),
-            affected_market_ids=event_data.get("affected_market_ids"),
-        )
+        try:
+            return DataEvent(
+                event_type=event_type,
+                source=source,
+                timestamp=_parse_timestamp(event_data.get("timestamp")),
+                market_id=event_data.get("market_id"),
+                token_id=event_data.get("token_id"),
+                payload=event_data.get("payload") if isinstance(event_data.get("payload"), dict) else {},
+                old_price=event_data.get("old_price"),
+                new_price=event_data.get("new_price"),
+                scan_mode=event_data.get("scan_mode"),
+                changed_token_ids=event_data.get("changed_token_ids"),
+                changed_market_ids=event_data.get("changed_market_ids"),
+                affected_market_ids=event_data.get("affected_market_ids"),
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Dropped invalid DataEvent from Redis stream",
+                event_type=event_type,
+                source=source,
+                exc_info=exc,
+            )
+            return None
 
     async def _run_stream_listener(self) -> None:
         own_marker = f'"instance_id":"{self._instance_id}"'

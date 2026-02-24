@@ -130,6 +130,43 @@ def _signal_recently_refreshed(row: TradeSignal, now: datetime, max_age_seconds:
     return (now - refreshed_at).total_seconds() <= max_age_seconds
 
 
+def _execution_profile_for_opportunity(opportunity: Opportunity, legs_count: int) -> dict[str, Any]:
+    strategy_key = str(getattr(opportunity, "strategy", "") or "").strip().lower()
+    strategy_context = getattr(opportunity, "strategy_context", None)
+    source_key = ""
+    if isinstance(strategy_context, dict):
+        source_key = str(strategy_context.get("source_key") or "").strip().lower()
+    is_traders = source_key == "traders" or strategy_key.startswith("traders")
+
+    if is_traders:
+        return {
+            "policy": "REPRICE_LOOP" if legs_count <= 1 else "SEQUENTIAL_HEDGE",
+            "price_policy": "taker_limit",
+            "time_in_force": "IOC",
+            "constraints": {
+                "max_unhedged_notional_usd": 0.0,
+                "hedge_timeout_seconds": 12,
+                "session_timeout_seconds": 90,
+                "max_reprice_attempts": 2,
+                "pair_lock": legs_count > 1,
+                "leg_fill_tolerance_ratio": 0.02,
+            },
+        }
+    return {
+        "policy": "PARALLEL_MAKER" if legs_count > 1 else "SINGLE_LEG",
+        "price_policy": "maker_limit",
+        "time_in_force": "GTC",
+        "constraints": {
+            "max_unhedged_notional_usd": 0.0,
+            "hedge_timeout_seconds": 20,
+            "session_timeout_seconds": 300,
+            "max_reprice_attempts": 3,
+            "pair_lock": legs_count > 1,
+            "leg_fill_tolerance_ratio": 0.02,
+        },
+    }
+
+
 def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None:
     existing = getattr(opportunity, "execution_plan", None)
     if existing is not None:
@@ -153,6 +190,7 @@ def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None
         if market_id:
             market_by_id[market_id] = market
 
+    profile = _execution_profile_for_opportunity(opportunity, len(positions))
     legs: list[dict[str, Any]] = []
     for index, position in enumerate(positions):
         if not isinstance(position, dict):
@@ -187,8 +225,8 @@ def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None
                 "side": "sell" if action.startswith("sell") else "buy",
                 "outcome": str(position.get("outcome") or "").strip().lower() or None,
                 "limit_price": parsed_price,
-                "price_policy": str(position.get("price_policy") or "maker_limit"),
-                "time_in_force": str(position.get("time_in_force") or "GTC"),
+                "price_policy": str(position.get("price_policy") or profile["price_policy"]),
+                "time_in_force": str(position.get("time_in_force") or profile["time_in_force"]),
                 "notional_weight": max(0.0001, float(position.get("notional_weight") or 1.0)),
                 "min_fill_ratio": max(
                     0.0,
@@ -202,6 +240,7 @@ def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None
 
     if not legs:
         return None
+    profile = _execution_profile_for_opportunity(opportunity, len(legs))
 
     packed = "|".join(
         sorted(
@@ -213,17 +252,10 @@ def _normalize_execution_plan(opportunity: Opportunity) -> dict[str, Any] | None
 
     return {
         "plan_id": f"plan_{plan_hash}",
-        "policy": "PARALLEL_MAKER" if len(legs) > 1 else "SINGLE_LEG",
-        "time_in_force": "GTC",
+        "policy": str(profile["policy"]),
+        "time_in_force": str(profile["time_in_force"]),
         "legs": legs,
-        "constraints": {
-            "max_unhedged_notional_usd": 0.0,
-            "hedge_timeout_seconds": 20,
-            "session_timeout_seconds": 300,
-            "max_reprice_attempts": 3,
-            "pair_lock": len(legs) > 1,
-            "leg_fill_tolerance_ratio": 0.02,
-        },
+        "constraints": dict(profile["constraints"]),
         "metadata": {
             "strategy_type": str(getattr(opportunity, "strategy", "") or ""),
             "source_item_id": str(getattr(opportunity, "stable_id", "") or ""),

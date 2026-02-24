@@ -34,6 +34,7 @@ from models import Market, Event, Opportunity
 from config import settings as _cfg
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.data_events import DataEvent
+from services.strategy_sdk import StrategySDK
 from utils.converters import to_float, to_confidence, to_bool, clamp
 from utils.signal_helpers import signal_payload
 from services.quality_filter import QualityFilterOverrides
@@ -871,45 +872,15 @@ class BtcEthHighFreqStrategy(BaseStrategy):
     market_categories = ["crypto"]
     requires_historical_prices = True
     subscriptions = ["crypto_update"]
+    supports_entry_take_profit_exit = True
+    default_open_order_timeout_seconds = 20.0
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=1.0,
         max_resolution_months=0.1,
     )
 
-    default_config = {
-        "min_edge_percent": 2.0,
-        "min_confidence": 0.40,
-        "max_risk_score": 0.80,
-        "base_size_usd": 20.0,
-        "max_size_usd": 150.0,
-        "min_liquidity_usd": 250.0,
-        "max_spread_pct": 0.08,
-        "max_signal_age_seconds": 35.0,
-        "max_live_context_age_seconds": 5.0,
-        "max_oracle_age_seconds": 20.0,
-        "require_oracle_for_directional": True,
-        "min_seconds_left_for_entry_5m": 35.0,
-        "min_seconds_left_for_entry_15m": 90.0,
-        "min_seconds_left_for_entry_1h": 240.0,
-        "min_seconds_left_for_entry_4h": 600.0,
-        "take_profit_pct": 8.0,
-        "stop_loss_pct": 5.0,
-        "stop_loss_policy": "near_close_only",
-        "stop_loss_activation_seconds": 90,
-        "stop_loss_activation_seconds_5m": 45.0,
-        "stop_loss_activation_seconds_15m": 120.0,
-        "stop_loss_activation_seconds_1h": 300.0,
-        "stop_loss_activation_seconds_4h": 900.0,
-        "trailing_stop_activation_profit_pct": 4.0,
-        "trailing_stop_activation_profit_pct_5m": 4.0,
-        "trailing_stop_activation_profit_pct_15m": 6.0,
-        "trailing_stop_activation_profit_pct_1h": 8.0,
-        "trailing_stop_activation_profit_pct_4h": 10.0,
-        "preplace_take_profit_exit": True,
-        "enforce_min_exit_notional": False,
-        "live_window_required": True,
-    }
+    default_config = dict(StrategySDK.crypto_highfreq_scope_defaults())
 
     def __init__(self) -> None:
         super().__init__()
@@ -922,6 +893,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         self.fee = _cfg.BTC_ETH_HF_FEE_ESTIMATE  # default ~1.56% at 50% probability
         # Per-market price history keyed by market ID
         self._price_histories: dict[str, MarketPriceHistory] = {}
+        # Runtime anti-churn controls used by evaluate().
+        self._edge_first_seen_ms: dict[str, int] = {}
+        self._last_selected_at_ms_by_market: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -2085,6 +2059,19 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         )
         timeframe_not_excluded = not (bool(signal_timeframe) and signal_timeframe in exclude_timeframes)
         timeframe_scope_ok = timeframe_in_scope and timeframe_not_excluded
+        enforce_hard_timeframe_allowlist = to_bool(
+            params.get("enforce_hard_timeframe_allowlist"),
+            True,
+        )
+        hard_allowed_timeframes = _normalize_scope(
+            params.get("hard_allowed_timeframes"),
+            _normalize_timeframe,
+        )
+        if not hard_allowed_timeframes:
+            hard_allowed_timeframes = {"5m", "15m", "1h"}
+        timeframe_hardening_ok = (not enforce_hard_timeframe_allowlist) or (
+            bool(signal_timeframe) and signal_timeframe in hard_allowed_timeframes
+        )
 
         # --- Active mode resolution ---
         dominant_mode = _normalize_mode(payload.get("dominant_strategy"))
@@ -2133,7 +2120,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         max_live_context_age_seconds = max(
             0.1,
-            to_float(params.get("max_live_context_age_seconds", 5.0), 5.0),
+            to_float(params.get("max_live_context_age_seconds", 3.0), 3.0),
         )
         live_context_fetched_at = _parse_datetime_utc(
             _first_present(
@@ -2177,14 +2164,57 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 0.0,
                 (datetime.now(timezone.utc) - signal_ts_utc.astimezone(timezone.utc)).total_seconds(),
             )
-        max_signal_age_seconds = max(1.0, to_float(params.get("max_signal_age_seconds", 35.0), 35.0))
+        max_signal_age_seconds_cfg = self._float(_timeframe_override(params, "max_signal_age_seconds", signal_timeframe))
+        if max_signal_age_seconds_cfg is None:
+            max_signal_age_seconds_cfg = to_float(params.get("max_signal_age_seconds", 20.0), 20.0)
+        max_signal_age_seconds = max(0.1, float(max_signal_age_seconds_cfg))
         signal_fresh_ok = signal_age_seconds is None or signal_age_seconds <= max_signal_age_seconds
 
+        market_data_age_ms = self._float(
+            _first_present(
+                live_market.get("market_data_age_ms"),
+                payload.get("market_data_age_ms"),
+            )
+        )
+        if market_data_age_ms is None:
+            observed_at = _parse_datetime_utc(
+                _first_present(
+                    live_market.get("source_observed_at"),
+                    payload.get("source_observed_at"),
+                    live_market.get("fetched_at"),
+                    payload.get("live_market_fetched_at"),
+                    payload.get("signal_updated_at"),
+                    getattr(signal, "updated_at", None),
+                    getattr(signal, "created_at", None),
+                )
+            )
+            if observed_at is not None:
+                market_data_age_ms = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+                )
+        max_market_data_age_ms_cfg = self._float(_timeframe_override(params, "max_market_data_age_ms", signal_timeframe))
+        if max_market_data_age_ms_cfg is None:
+            max_market_data_age_ms_cfg = to_float(params.get("max_market_data_age_ms", 900.0), 900.0)
+        max_market_data_age_ms = max(50.0, float(max_market_data_age_ms_cfg))
+        require_market_data_age_for_sources = {
+            str(item or "").strip().lower()
+            for item in _as_list(_first_present(params.get("require_market_data_age_for_sources"), ["crypto"]))
+            if str(item or "").strip()
+        }
+        require_market_data_age = str(getattr(signal, "source", "") or "").strip().lower() in require_market_data_age_for_sources
+        market_data_freshness_enforced = to_bool(params.get("enforce_market_data_freshness"), True)
+        market_data_fresh_ok = (
+            (not market_data_freshness_enforced)
+            or (market_data_age_ms is not None and market_data_age_ms <= max_market_data_age_ms)
+            or (market_data_age_ms is None and not require_market_data_age)
+        )
+
         default_min_seconds_by_timeframe: dict[str, float] = {
-            "5m": 35.0,
-            "15m": 90.0,
-            "1h": 240.0,
-            "4h": 600.0,
+            "5m": 45.0,
+            "15m": 180.0,
+            "1h": 360.0,
+            "4h": 900.0,
         }
         timeframe_specific_floor = self._float(
             _timeframe_override(params, "min_seconds_left_for_entry", signal_timeframe)
@@ -2219,6 +2249,18 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             if signal_age_seconds is not None
             else "signal timestamp unavailable"
         )
+        market_data_freshness_detail = (
+            (
+                f"age_ms={market_data_age_ms:.0f} max={max_market_data_age_ms:.0f} "
+                f"source={str(getattr(signal, 'source', '') or '').strip().lower() or 'unknown'}"
+            )
+            if market_data_age_ms is not None
+            else (
+                "market_data_age unavailable but optional"
+                if not require_market_data_age
+                else "market_data_age unavailable and required"
+            )
+        )
         entry_window_detail = (
             f"seconds_left={signal_seconds_left:.1f} required>={min_seconds_left_for_entry:.1f}"
             if signal_seconds_left >= 0
@@ -2245,12 +2287,57 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 getattr(signal, "liquidity", None),
             )
         )
-        min_liquidity_usd = max(0.0, to_float(params.get("min_liquidity_usd", 250.0), 250.0))
+        min_liquidity_usd = max(0.0, to_float(params.get("min_liquidity_usd", 300.0), 300.0))
+        if regime == "opening":
+            min_liquidity_opening = self._float(
+                _timeframe_override(params, "min_liquidity_usd_opening", signal_timeframe)
+            )
+            if min_liquidity_opening is None:
+                min_liquidity_opening = self._float(params.get("min_liquidity_usd_opening"))
+            if min_liquidity_opening is not None:
+                min_liquidity_usd = max(min_liquidity_usd, max(0.0, float(min_liquidity_opening)))
         liquidity_ok = signal_liquidity_usd is None or signal_liquidity_usd >= min_liquidity_usd
         liquidity_detail = (
             f"liquidity={signal_liquidity_usd:.0f} min={min_liquidity_usd:.0f}"
             if signal_liquidity_usd is not None
             else "liquidity unavailable"
+        )
+
+        signal_volume_usd = self._float(
+            _first_present(
+                live_market.get("volume_usd"),
+                live_market.get("volume"),
+                payload.get("volume_usd"),
+                payload.get("volume"),
+                getattr(signal, "volume", None),
+            )
+        )
+        min_volume_usd = max(
+            0.0,
+            StrategySDK.crypto_highfreq_min_volume_usd(
+                params,
+                timeframe=signal_timeframe,
+                regime=regime,
+                active_mode=active_mode,
+            ),
+        )
+        if min_volume_usd <= 0.0:
+            volume_ok = True
+        elif signal_volume_usd is None:
+            volume_ok = False
+        else:
+            volume_ok = signal_volume_usd >= min_volume_usd
+        volume_detail = (
+            f"volume={signal_volume_usd:.0f} min={min_volume_usd:.0f}"
+            if signal_volume_usd is not None
+            else f"volume unavailable min={min_volume_usd:.0f}"
+        )
+
+        direction_policy_ok, direction_policy_detail = StrategySDK.crypto_highfreq_direction_allowed(
+            params,
+            regime=regime,
+            active_mode=active_mode,
+            direction=direction,
         )
 
         signal_spread = self._float(
@@ -2262,12 +2349,117 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         )
         if signal_spread is not None:
             signal_spread = max(0.0, min(1.0, signal_spread))
-        max_spread_pct = max(0.0, min(1.0, to_float(params.get("max_spread_pct", 0.08), 0.08)))
+        max_spread_pct = max(0.0, min(1.0, to_float(params.get("max_spread_pct", 0.06), 0.06)))
         spread_ok = signal_spread is None or signal_spread <= max_spread_pct
         spread_detail = (
             f"spread={signal_spread:.4f} max={max_spread_pct:.4f}"
             if signal_spread is not None
             else "spread unavailable"
+        )
+
+        history_summary = live_market.get("history_summary")
+        if not isinstance(history_summary, dict):
+            history_summary = payload.get("history_summary")
+        if not isinstance(history_summary, dict):
+            history_summary = {}
+
+        move_5m_pct = self._float(
+            _first_present(
+                ((history_summary.get("move_5m") or {}).get("percent") if isinstance(history_summary.get("move_5m"), dict) else None),
+                payload.get("move_5m_percent"),
+                payload.get("move_5m_pct"),
+            )
+        )
+        move_30m_pct = self._float(
+            _first_present(
+                ((history_summary.get("move_30m") or {}).get("percent") if isinstance(history_summary.get("move_30m"), dict) else None),
+                payload.get("move_30m_percent"),
+                payload.get("move_30m_pct"),
+            )
+        )
+        move_2h_pct = self._float(
+            _first_present(
+                ((history_summary.get("move_2h") or {}).get("percent") if isinstance(history_summary.get("move_2h"), dict) else None),
+                payload.get("move_2h_percent"),
+                payload.get("move_2h_pct"),
+            )
+        )
+
+        recent_move_zscore: Optional[float] = None
+        if move_5m_pct is not None:
+            move_scale = max(
+                0.15,
+                abs(move_30m_pct or 0.0) / 2.0,
+                abs(move_2h_pct or 0.0) / 3.0,
+            )
+            recent_move_zscore = abs(move_5m_pct) / move_scale if move_scale > 0 else None
+        max_recent_move_zscore_for_entry = max(
+            0.2,
+            to_float(params.get("max_recent_move_zscore_for_entry", 2.0), 2.0),
+        )
+        recent_move_ok = (
+            recent_move_zscore is None
+            or recent_move_zscore <= max_recent_move_zscore_for_entry
+        )
+        recent_move_detail = (
+            f"z={recent_move_zscore:.2f} max={max_recent_move_zscore_for_entry:.2f} "
+            f"move_5m={move_5m_pct if move_5m_pct is not None else 'n/a'} "
+            f"move_30m={move_30m_pct if move_30m_pct is not None else 'n/a'} "
+            f"move_2h={move_2h_pct if move_2h_pct is not None else 'n/a'}"
+            if recent_move_zscore is not None
+            else "recent move z-score unavailable"
+        )
+
+        spread_widening_bps = self._float(
+            _first_present(
+                live_market.get("spread_widening_bps"),
+                live_market.get("spread_delta_bps"),
+                payload.get("spread_widening_bps"),
+                payload.get("spread_delta_bps"),
+            )
+        )
+        max_spread_widening_bps = max(
+            0.0,
+            to_float(params.get("max_spread_widening_bps", 20.0), 20.0),
+        )
+        spread_widening_ok = (
+            spread_widening_bps is None
+            or spread_widening_bps <= max_spread_widening_bps
+        )
+        spread_widening_detail = (
+            f"widening_bps={spread_widening_bps:.2f} max={max_spread_widening_bps:.2f}"
+            if spread_widening_bps is not None
+            else "spread widening unavailable"
+        )
+
+        raw_orderbook_imbalance = self._float(
+            _first_present(
+                live_market.get("orderbook_imbalance"),
+                live_market.get("book_imbalance"),
+                live_market.get("imbalance"),
+                payload.get("orderbook_imbalance"),
+                payload.get("book_imbalance"),
+                payload.get("imbalance"),
+            )
+        )
+        orderbook_imbalance = None
+        if raw_orderbook_imbalance is not None:
+            normalized = abs(raw_orderbook_imbalance)
+            if normalized > 1.0 and normalized <= 100.0:
+                normalized /= 100.0
+            orderbook_imbalance = min(1.0, max(0.0, normalized))
+        max_orderbook_imbalance = min(
+            1.0,
+            max(0.5, to_float(params.get("max_orderbook_imbalance", 0.88), 0.88)),
+        )
+        orderbook_imbalance_ok = (
+            orderbook_imbalance is None
+            or orderbook_imbalance <= max_orderbook_imbalance
+        )
+        orderbook_imbalance_detail = (
+            f"imbalance={orderbook_imbalance:.3f} max={max_orderbook_imbalance:.3f}"
+            if orderbook_imbalance is not None
+            else "orderbook imbalance unavailable"
         )
 
         # --- Oracle / guardrail data ---
@@ -2293,7 +2485,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 if oracle_updated_at_ms > 1_000_000_000_000:
                     oracle_updated_at_ms /= 1000.0
                 oracle_age_seconds = max(0.0, time.time() - oracle_updated_at_ms)
-        max_oracle_age_seconds = max(1.0, to_float(params.get("max_oracle_age_seconds", 20.0), 20.0))
+        max_oracle_age_seconds = max(1.0, to_float(params.get("max_oracle_age_seconds", 12.0), 12.0))
         require_oracle_for_directional = to_bool(params.get("require_oracle_for_directional"), True)
         oracle_required = require_oracle_for_directional and active_mode in {"directional", "rebalance"}
         if oracle_required:
@@ -2320,6 +2512,37 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # --- Regime-aware required thresholds ---
         required_edge = min_edge * _EDGE_MODE_FACTORS.get(regime, {}).get(active_mode, 1.0)
         required_conf = min_conf * _CONF_MODE_FACTORS.get(active_mode, 1.0) * _REGIME_CONF_FACTORS.get(regime, 1.0)
+
+        entry_price_for_execution = self._float(
+            _first_present(
+                getattr(signal, "entry_price", None),
+                payload.get("entry_price"),
+                payload.get("selected_price"),
+                live_market.get("live_selected_price"),
+                live_market.get("signal_entry_price"),
+            )
+        )
+        if entry_price_for_execution is None or entry_price_for_execution <= 0.0:
+            if direction == "buy_yes":
+                entry_price_for_execution = self._float(
+                    _first_present(
+                        live_market.get("yes_price"),
+                        payload.get("up_price"),
+                        payload.get("yes_price"),
+                    )
+                )
+            elif direction == "buy_no":
+                entry_price_for_execution = self._float(
+                    _first_present(
+                        live_market.get("no_price"),
+                        payload.get("down_price"),
+                        payload.get("no_price"),
+                    )
+                )
+        if entry_price_for_execution is not None and entry_price_for_execution > 0.0:
+            entry_price_for_execution = clamp(entry_price_for_execution, 0.0, 1.0)
+        else:
+            entry_price_for_execution = None
 
         # --- Direction guardrail ---
         guardrail_blocked = False
@@ -2348,6 +2571,173 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         # --- Adaptive edge gating ---
         edge_for_gate = min(edge, mode_edge) if mode_edge > 0.0 else edge
+        now_ms = int(time.time() * 1000.0)
+        market_id = str(getattr(signal, "market_id", "") or "").strip()
+        edge_tracker_key = f"{market_id}|{direction}|{active_mode}" if market_id else ""
+        min_edge_persistence_ms = max(
+            0,
+            int(to_float(params.get("min_edge_persistence_ms", 1400), 1400.0)),
+        )
+        edge_persistence_elapsed_ms: Optional[int] = None
+        edge_persistence_ok = True
+        if edge_tracker_key and edge_for_gate >= required_edge and min_edge_persistence_ms > 0:
+            first_seen = self._edge_first_seen_ms.get(edge_tracker_key)
+            if first_seen is None:
+                self._edge_first_seen_ms[edge_tracker_key] = now_ms
+                first_seen = now_ms
+            edge_persistence_elapsed_ms = max(0, int(now_ms - first_seen))
+            edge_persistence_ok = edge_persistence_elapsed_ms >= min_edge_persistence_ms
+        elif edge_tracker_key and edge_for_gate < required_edge:
+            self._edge_first_seen_ms.pop(edge_tracker_key, None)
+        edge_persistence_detail = (
+            f"elapsed_ms={edge_persistence_elapsed_ms if edge_persistence_elapsed_ms is not None else 0} "
+            f"required_ms={min_edge_persistence_ms}"
+            if min_edge_persistence_ms > 0
+            else "edge persistence disabled"
+        )
+
+        force_disable_reentry_cooldown = to_bool(params.get("force_disable_reentry_cooldown"), False)
+        if force_disable_reentry_cooldown:
+            reentry_cooldown_seconds = 0.0
+        else:
+            reentry_cooldown_seconds = max(
+                0.0,
+                to_float(params.get("reentry_cooldown_seconds_per_market", 75.0), 75.0),
+            )
+        reentry_cooldown_ms = int(reentry_cooldown_seconds * 1000.0)
+        reentry_cooldown_elapsed_ms: Optional[int] = None
+        reentry_cooldown_ok = True
+        if market_id and reentry_cooldown_ms > 0:
+            last_selected_at_ms = self._last_selected_at_ms_by_market.get(market_id)
+            if last_selected_at_ms is not None:
+                reentry_cooldown_elapsed_ms = max(0, int(now_ms - last_selected_at_ms))
+                reentry_cooldown_ok = reentry_cooldown_elapsed_ms >= reentry_cooldown_ms
+        reentry_cooldown_detail = (
+            f"elapsed_ms={reentry_cooldown_elapsed_ms if reentry_cooldown_elapsed_ms is not None else 'none'} "
+            f"required_ms={reentry_cooldown_ms}"
+            if reentry_cooldown_ms > 0
+            else "re-entry cooldown disabled"
+        )
+
+        trader_context = context.get("trader")
+        risk_limits_context = (
+            trader_context.get("risk_limits")
+            if isinstance(trader_context, dict) and isinstance(trader_context.get("risk_limits"), dict)
+            else {}
+        )
+        max_trade_notional_hint = self._float(risk_limits_context.get("max_trade_notional_usd"))
+        edge_boost_for_checks = 1.0 + max(0.0, edge_for_gate - required_edge) / 30.0
+        conf_boost_for_checks = 0.8 + (confidence * 0.8)
+        estimated_size_for_checks = (
+            base_size
+            * _MODE_SIZE_FACTORS.get(active_mode, 1.0)
+            * _REGIME_SIZE_FACTORS.get(regime, 1.0)
+            * edge_boost_for_checks
+            * conf_boost_for_checks
+        )
+        estimated_size_for_checks = max(1.0, min(max_size, estimated_size_for_checks))
+        if max_trade_notional_hint is not None and max_trade_notional_hint > 0.0:
+            estimated_size_for_checks = min(estimated_size_for_checks, max_trade_notional_hint)
+
+        min_order_size_usd = max(0.01, to_float(getattr(_cfg, "MIN_ORDER_SIZE_USD", 1.0), 1.0))
+        default_exit_ratio_floor_by_timeframe = {
+            "5m": 0.38,
+            "15m": 0.34,
+            "1h": 0.30,
+            "4h": 0.26,
+        }
+        default_entry_exit_ratio_floor = default_exit_ratio_floor_by_timeframe.get(signal_timeframe, 0.38)
+        if active_mode == "rebalance":
+            default_entry_exit_ratio_floor -= 0.08
+        elif active_mode == "directional":
+            default_entry_exit_ratio_floor -= 0.03
+        if regime == "closing":
+            default_entry_exit_ratio_floor -= 0.05
+        default_entry_exit_ratio_floor = clamp(default_entry_exit_ratio_floor, 0.16, 0.90)
+        configured_entry_exit_ratio_floor = self._float(
+            _first_present(
+                _timeframe_override(params, "entry_executable_exit_ratio_floor", signal_timeframe),
+                params.get("entry_executable_exit_ratio_floor_closing") if regime == "closing" else None,
+                params.get("entry_executable_exit_ratio_floor"),
+            )
+        )
+        executable_exit_ratio_floor = (
+            clamp(configured_entry_exit_ratio_floor, 0.05, 0.95)
+            if configured_entry_exit_ratio_floor is not None
+            else default_entry_exit_ratio_floor
+        )
+        required_size_for_exitability = min_order_size_usd / max(0.01, executable_exit_ratio_floor)
+        entry_exitability_ok = estimated_size_for_checks + 1e-9 >= required_size_for_exitability
+        entry_exitability_detail = (
+            f"est_size={estimated_size_for_checks:.2f} required>={required_size_for_exitability:.2f} "
+            f"ratio_floor={executable_exit_ratio_floor:.2f}"
+        )
+
+        directional_entry_price_floor = max(
+            0.0,
+            to_float(params.get("directional_min_entry_price_floor", 0.10), 0.10),
+        )
+        rebalance_entry_price_floor = max(
+            directional_entry_price_floor,
+            to_float(params.get("rebalance_min_entry_price_floor", 0.16), 0.16),
+        )
+        default_entry_price_floor = (
+            rebalance_entry_price_floor
+            if active_mode == "rebalance"
+            else directional_entry_price_floor
+        )
+        if regime == "closing":
+            default_entry_price_floor = max(default_entry_price_floor, 0.05)
+        entry_price_floor = clamp(
+            to_float(params.get("min_entry_price_floor"), default_entry_price_floor),
+            0.0,
+            0.99,
+        )
+        entry_price_floor_ok = (
+            entry_price_for_execution is None
+            or entry_price_for_execution >= entry_price_floor
+        )
+        entry_price_floor_detail = (
+            f"entry_price={entry_price_for_execution:.4f} floor={entry_price_floor:.4f}"
+            if entry_price_for_execution is not None
+            else "entry_price unavailable"
+        )
+        directional_entry_price_ceiling = clamp(
+            to_float(params.get("directional_max_entry_price_ceiling", 0.75), 0.75),
+            0.01,
+            1.0,
+        )
+        rebalance_entry_price_ceiling = clamp(
+            to_float(params.get("rebalance_max_entry_price_ceiling", 0.70), 0.70),
+            0.01,
+            1.0,
+        )
+        default_entry_price_ceiling = (
+            rebalance_entry_price_ceiling
+            if active_mode == "rebalance"
+            else directional_entry_price_ceiling
+        )
+        if regime == "opening":
+            default_entry_price_ceiling = min(
+                default_entry_price_ceiling,
+                0.68 if active_mode == "rebalance" else 0.72,
+            )
+        entry_price_ceiling = clamp(
+            to_float(params.get("max_entry_price_ceiling"), default_entry_price_ceiling),
+            0.01,
+            1.0,
+        )
+        if entry_price_ceiling < entry_price_floor:
+            entry_price_ceiling = entry_price_floor
+        entry_price_ceiling_ok = (
+            entry_price_for_execution is None
+            or entry_price_for_execution <= entry_price_ceiling
+        )
+        entry_price_ceiling_detail = (
+            f"entry_price={entry_price_for_execution:.4f} ceiling={entry_price_ceiling:.4f}"
+            if entry_price_for_execution is not None
+            else "entry_price unavailable"
+        )
 
         # --- Decision checks ---
         checks = [
@@ -2379,6 +2769,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 detail=signal_freshness_detail,
             ),
             DecisionCheck(
+                "market_data_freshness",
+                "Market data freshness",
+                market_data_fresh_ok,
+                score=market_data_age_ms,
+                detail=market_data_freshness_detail,
+            ),
+            DecisionCheck(
                 "entry_window",
                 "Minimum seconds-left entry window",
                 entry_window_ok,
@@ -2406,6 +2803,16 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 ),
             ),
             DecisionCheck(
+                "timeframe_hardening",
+                "Hardened timeframe allowlist",
+                timeframe_hardening_ok,
+                detail=(
+                    f"timeframe={signal_timeframe or 'unknown'} "
+                    f"allowed={','.join(hard_allowed_timeframes) or 'none'} "
+                    f"enforced={enforce_hard_timeframe_allowlist}"
+                ),
+            ),
+            DecisionCheck(
                 "liquidity",
                 "Minimum liquidity",
                 liquidity_ok,
@@ -2413,11 +2820,39 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 detail=liquidity_detail,
             ),
             DecisionCheck(
+                "volume",
+                "Minimum volume",
+                volume_ok,
+                score=signal_volume_usd,
+                detail=volume_detail,
+            ),
+            DecisionCheck(
                 "spread",
                 "Maximum spread",
                 spread_ok,
                 score=signal_spread,
                 detail=spread_detail,
+            ),
+            DecisionCheck(
+                "spread_widening",
+                "Spread widening guard",
+                spread_widening_ok,
+                score=spread_widening_bps,
+                detail=spread_widening_detail,
+            ),
+            DecisionCheck(
+                "orderbook_imbalance",
+                "Orderbook imbalance guard",
+                orderbook_imbalance_ok,
+                score=orderbook_imbalance,
+                detail=orderbook_imbalance_detail,
+            ),
+            DecisionCheck(
+                "recent_move_zscore",
+                "Recent move z-score guard",
+                recent_move_ok,
+                score=recent_move_zscore,
+                detail=recent_move_detail,
             ),
             DecisionCheck(
                 "oracle_freshness",
@@ -2439,6 +2874,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 detail=guardrail_detail,
             ),
             DecisionCheck(
+                "direction_policy",
+                "Direction policy",
+                direction_policy_ok,
+                detail=direction_policy_detail,
+            ),
+            DecisionCheck(
                 "edge",
                 "Edge threshold",
                 edge_for_gate >= required_edge,
@@ -2446,11 +2887,46 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 detail=f"mode={active_mode} regime={regime} min={required_edge:.2f}",
             ),
             DecisionCheck(
+                "edge_persistence",
+                "Edge persistence",
+                edge_persistence_ok,
+                score=edge_persistence_elapsed_ms,
+                detail=edge_persistence_detail,
+            ),
+            DecisionCheck(
                 "confidence",
                 "Confidence threshold",
                 confidence >= required_conf,
                 score=confidence,
                 detail=f"min={required_conf:.2f}",
+            ),
+            DecisionCheck(
+                "entry_price_floor",
+                "Entry price floor",
+                entry_price_floor_ok,
+                score=entry_price_for_execution,
+                detail=entry_price_floor_detail,
+            ),
+            DecisionCheck(
+                "entry_price_ceiling",
+                "Entry price ceiling",
+                entry_price_ceiling_ok,
+                score=entry_price_for_execution,
+                detail=entry_price_ceiling_detail,
+            ),
+            DecisionCheck(
+                "entry_exitability",
+                "Entry exitability under stress",
+                entry_exitability_ok,
+                score=estimated_size_for_checks,
+                detail=entry_exitability_detail,
+            ),
+            DecisionCheck(
+                "reentry_cooldown",
+                "Re-entry cooldown",
+                reentry_cooldown_ok,
+                score=reentry_cooldown_elapsed_ms,
+                detail=reentry_cooldown_detail,
             ),
             DecisionCheck(
                 "execution_edge",
@@ -2496,16 +2972,44 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             "min_seconds_left_for_entry": float(min_seconds_left_for_entry),
             "signal_age_seconds": signal_age_seconds,
             "max_signal_age_seconds": float(max_signal_age_seconds),
+            "market_data_age_ms": market_data_age_ms,
+            "max_market_data_age_ms": float(max_market_data_age_ms),
+            "enforce_market_data_freshness": bool(market_data_freshness_enforced),
+            "require_market_data_age_for_sources": sorted(require_market_data_age_for_sources),
             "signal_timestamp_used": _to_iso_utc(signal_timestamp_used),
             "signal_created_at": _to_iso_utc(signal_created_at),
             "signal_updated_at": _to_iso_utc(signal_updated_at),
             "liquidity_usd": signal_liquidity_usd,
             "min_liquidity_usd": float(min_liquidity_usd),
+            "volume_usd": signal_volume_usd,
+            "min_volume_usd": float(min_volume_usd),
             "spread": signal_spread,
             "max_spread_pct": float(max_spread_pct),
+            "spread_widening_bps": spread_widening_bps,
+            "max_spread_widening_bps": float(max_spread_widening_bps),
+            "orderbook_imbalance": orderbook_imbalance,
+            "max_orderbook_imbalance": float(max_orderbook_imbalance),
+            "move_5m_percent": move_5m_pct,
+            "move_30m_percent": move_30m_pct,
+            "move_2h_percent": move_2h_pct,
+            "recent_move_zscore": recent_move_zscore,
+            "max_recent_move_zscore_for_entry": float(max_recent_move_zscore_for_entry),
             "oracle_age_seconds": oracle_age_seconds,
             "max_oracle_age_seconds": float(max_oracle_age_seconds),
             "require_oracle_for_directional": bool(require_oracle_for_directional),
+            "edge_persistence_elapsed_ms": edge_persistence_elapsed_ms,
+            "min_edge_persistence_ms": int(min_edge_persistence_ms),
+            "force_disable_reentry_cooldown": bool(force_disable_reentry_cooldown),
+            "reentry_cooldown_elapsed_ms": reentry_cooldown_elapsed_ms,
+            "reentry_cooldown_seconds_per_market": float(reentry_cooldown_seconds),
+            "entry_price": entry_price_for_execution,
+            "entry_price_floor": float(entry_price_floor),
+            "entry_price_ceiling": float(entry_price_ceiling),
+            "entry_exitability_ratio_floor": float(executable_exit_ratio_floor),
+            "entry_exitability_required_size_usd": float(required_size_for_exitability),
+            "entry_exitability_estimated_size_usd": float(estimated_size_for_checks),
+            "entry_exitability_min_order_size_usd": float(min_order_size_usd),
+            "max_trade_notional_hint_usd": max_trade_notional_hint,
             "direction_guardrail": {
                 "enabled": guardrail_enabled,
                 "blocked": guardrail_blocked,
@@ -2519,10 +3023,16 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "up_price": up_price,
                 "down_price": down_price,
             },
+            "direction_policy": {
+                "allowed": bool(direction_policy_ok),
+                "detail": direction_policy_detail,
+            },
             "include_assets": include_assets,
             "exclude_assets": exclude_assets,
             "include_timeframes": include_timeframes,
             "exclude_timeframes": exclude_timeframes,
+            "enforce_hard_timeframe_allowlist": bool(enforce_hard_timeframe_allowlist),
+            "hard_allowed_timeframes": sorted(hard_allowed_timeframes),
             "live_market_context": {
                 "available": bool(live_market.get("available")),
                 "fetched_at": live_market.get("fetched_at"),
@@ -2556,6 +3066,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             * conf_boost
         )
         size = max(1.0, min(max_size, size))
+        if market_id:
+            self._last_selected_at_ms_by_market[market_id] = now_ms
+        if edge_tracker_key:
+            self._edge_first_seen_ms.pop(edge_tracker_key, None)
 
         return StrategyDecision(
             decision="selected",
@@ -2566,19 +3080,28 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             payload=decision_payload,
         )
 
-    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
-        """Crypto: tight TP/SL with short max hold."""
-        if market_state.get("is_resolved"):
-            return self.default_exit_check(position, market_state)
-        config = getattr(position, "config", None) or {}
-        config = dict(config)
+    def _evaluate_local_exit(self, position: Any, market_state: dict) -> dict[str, Any]:
+        state = market_state if isinstance(market_state, dict) else {}
+        base_config = getattr(position, "config", None)
+        config = dict(base_config) if isinstance(base_config, dict) else {}
+        defaults = StrategySDK.crypto_highfreq_scope_defaults()
+
         strategy_context = getattr(position, "strategy_context", None)
-        context_payload = strategy_context if isinstance(strategy_context, dict) else {}
+        if isinstance(strategy_context, dict):
+            context_payload = strategy_context
+        else:
+            context_payload = {}
+            try:
+                setattr(position, "strategy_context", context_payload)
+            except Exception:
+                pass
+
         timeframe = _normalize_timeframe(
             context_payload.get("timeframe")
             or context_payload.get("cadence")
             or context_payload.get("interval")
         )
+
         default_stop_loss_activation_by_timeframe = {
             "5m": 45.0,
             "15m": 120.0,
@@ -2603,22 +3126,168 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             "1h": 120.0,
             "4h": 360.0,
         }
-        config.setdefault("take_profit_pct", 8.0)
-        config.setdefault("stop_loss_pct", 5.0)
-        config.setdefault("stop_loss_policy", "near_close_only")
+        default_rapid_exit_window_by_timeframe = {
+            "5m": 1.0,
+            "15m": 2.0,
+            "1h": 6.0,
+            "4h": 15.0,
+        }
+        default_underwater_dwell_minutes_by_timeframe = {
+            "5m": 0.75,
+            "15m": 2.0,
+            "1h": 6.0,
+            "4h": 18.0,
+        }
+        default_underwater_recovery_ratio_by_timeframe = {
+            "5m": 0.30,
+            "15m": 0.35,
+            "1h": 0.40,
+            "4h": 0.45,
+        }
+        default_underwater_rebound_pct_by_timeframe = {
+            "5m": 0.8,
+            "15m": 1.2,
+            "1h": 1.8,
+            "4h": 2.4,
+        }
+        default_underwater_exit_fade_pct_by_timeframe = {
+            "5m": 0.35,
+            "15m": 0.45,
+            "1h": 0.6,
+            "4h": 0.8,
+        }
+        default_force_flatten_seconds_left_by_timeframe = {
+            "5m": to_float(defaults.get("force_flatten_seconds_left_5m"), 30.0),
+            "15m": to_float(defaults.get("force_flatten_seconds_left_15m"), 75.0),
+            "1h": to_float(defaults.get("force_flatten_seconds_left_1h"), 240.0),
+            "4h": to_float(defaults.get("force_flatten_seconds_left_4h"), 600.0),
+        }
+        default_underwater_timeout_minutes_by_timeframe = {
+            "5m": 2.0,
+            "15m": 6.0,
+            "1h": 18.0,
+            "4h": 45.0,
+        }
+        default_executable_time_pressure_seconds_by_timeframe = {
+            "5m": 40.0,
+            "15m": 120.0,
+            "1h": 300.0,
+            "4h": 900.0,
+        }
+
+        config.setdefault("rapid_take_profit_pct", defaults.get("rapid_take_profit_pct", 10.0))
+        config.setdefault("take_profit_pct", defaults.get("take_profit_pct", 8.0))
+        config.setdefault("stop_loss_pct", to_float(defaults.get("stop_loss_pct"), 4.0))
+        default_stop_loss_policy = str(defaults.get("stop_loss_policy") or "always").strip().lower()
+        if default_stop_loss_policy in {"near_close", "near_close_only", "close_window"}:
+            default_stop_loss_policy = "always"
+        config.setdefault("stop_loss_policy", default_stop_loss_policy)
         config.setdefault(
             "stop_loss_activation_seconds",
-            default_stop_loss_activation_by_timeframe.get(timeframe, 90.0),
+            default_stop_loss_activation_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("stop_loss_activation_seconds"), 90.0),
+            ),
         )
-        config.setdefault("trailing_stop_pct", 3.0)
+        config.setdefault("trailing_stop_pct", defaults.get("trailing_stop_pct", 3.0))
         config.setdefault(
             "trailing_stop_activation_profit_pct",
-            default_trailing_activation_profit_by_timeframe.get(timeframe, 4.0),
+            default_trailing_activation_profit_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("trailing_stop_activation_profit_pct"), 4.0),
+            ),
         )
-        config.setdefault("min_hold_minutes", default_min_hold_by_timeframe.get(timeframe, 1.0))
-        config.setdefault("max_hold_minutes", default_max_hold_by_timeframe.get(timeframe, 60.0))
+        config.setdefault(
+            "min_hold_minutes",
+            default_min_hold_by_timeframe.get(timeframe, to_float(defaults.get("min_hold_minutes"), 1.0)),
+        )
+        config.setdefault(
+            "max_hold_minutes",
+            default_max_hold_by_timeframe.get(timeframe, to_float(defaults.get("max_hold_minutes"), 60.0)),
+        )
+        config.setdefault(
+            "rapid_exit_window_minutes",
+            default_rapid_exit_window_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("rapid_exit_window_minutes"), 2.0),
+            ),
+        )
+        config.setdefault("rapid_exit_min_increase_pct", defaults.get("rapid_exit_min_increase_pct", 0.0))
+        config.setdefault("rapid_exit_breakeven_buffer_pct", defaults.get("rapid_exit_breakeven_buffer_pct", 0.0))
+        config.setdefault(
+            "underwater_rebound_exit_enabled",
+            to_bool(defaults.get("underwater_rebound_exit_enabled"), True),
+        )
+        config.setdefault(
+            "underwater_dwell_minutes",
+            default_underwater_dwell_minutes_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("underwater_dwell_minutes"), 2.5),
+            ),
+        )
+        config.setdefault(
+            "underwater_recovery_ratio_min",
+            default_underwater_recovery_ratio_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("underwater_recovery_ratio_min"), 0.35),
+            ),
+        )
+        config.setdefault(
+            "underwater_rebound_pct_min",
+            default_underwater_rebound_pct_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("underwater_rebound_pct_min"), 1.2),
+            ),
+        )
+        config.setdefault(
+            "underwater_exit_fade_pct",
+            default_underwater_exit_fade_pct_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("underwater_exit_fade_pct"), 0.45),
+            ),
+        )
+        config.setdefault(
+            "underwater_timeout_minutes",
+            default_underwater_timeout_minutes_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("underwater_timeout_minutes"), 10.0),
+            ),
+        )
+        config.setdefault("underwater_timeout_loss_pct", defaults.get("underwater_timeout_loss_pct", 8.0))
+        config.setdefault(
+            "force_flatten_seconds_left",
+            default_force_flatten_seconds_left_by_timeframe.get(
+                timeframe,
+                to_float(defaults.get("force_flatten_seconds_left"), 120.0),
+            ),
+        )
+        config.setdefault("force_flatten_max_profit_pct", to_float(defaults.get("force_flatten_max_profit_pct"), 1.0))
+        config.setdefault("force_flatten_headroom_floor", to_float(defaults.get("force_flatten_headroom_floor"), 1.15))
+        config.setdefault("force_flatten_min_loss_pct", to_float(defaults.get("force_flatten_min_loss_pct"), 0.0))
+        config.setdefault("resolution_risk_flatten_enabled", to_bool(defaults.get("resolution_risk_flatten_enabled"), True))
+        config.setdefault("resolution_risk_seconds_left", to_float(defaults.get("resolution_risk_seconds_left"), 180.0))
+        config.setdefault("resolution_risk_max_profit_pct", to_float(defaults.get("resolution_risk_max_profit_pct"), 6.0))
+        config.setdefault("resolution_risk_min_loss_pct", to_float(defaults.get("resolution_risk_min_loss_pct"), 2.0))
+        config.setdefault(
+            "resolution_risk_min_headroom_ratio",
+            to_float(defaults.get("resolution_risk_min_headroom_ratio"), 0.9),
+        )
+        config.setdefault(
+            "resolution_risk_disable_when_take_profit_armed",
+            to_bool(defaults.get("resolution_risk_disable_when_take_profit_armed"), True),
+        )
+        config.setdefault("executable_exit_headroom_urgent", 1.35)
+        config.setdefault("executable_exit_headroom_warn", 2.0)
+        config.setdefault("executable_exit_hazard_threshold", 0.62)
+        config.setdefault(
+            "executable_exit_time_pressure_seconds",
+            default_executable_time_pressure_seconds_by_timeframe.get(timeframe, 120.0),
+        )
+
         if timeframe:
             for key in (
+                "rapid_take_profit_pct",
+                "rapid_exit_window_minutes",
                 "take_profit_pct",
                 "stop_loss_pct",
                 "stop_loss_policy",
@@ -2627,13 +3296,550 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "trailing_stop_activation_profit_pct",
                 "min_hold_minutes",
                 "max_hold_minutes",
+                "underwater_dwell_minutes",
+                "underwater_recovery_ratio_min",
+                "underwater_rebound_pct_min",
+                "underwater_exit_fade_pct",
+                "underwater_timeout_minutes",
+                "force_flatten_seconds_left",
+                "force_flatten_max_profit_pct",
+                "force_flatten_min_loss_pct",
+                "resolution_risk_seconds_left",
+                "resolution_risk_max_profit_pct",
+                "resolution_risk_min_loss_pct",
+                "resolution_risk_min_headroom_ratio",
+                "executable_exit_headroom_urgent",
+                "executable_exit_headroom_warn",
+                "executable_exit_hazard_threshold",
+                "executable_exit_time_pressure_seconds",
             ):
                 override = _timeframe_override(config, key, timeframe)
                 if override is not None:
                     config[key] = override
-        if timeframe:
             config["timeframe"] = timeframe
-        position.config = config
+
+        entry_price = self._float(getattr(position, "entry_price", None))
+        current_price = self._float(state.get("current_price"))
+        if entry_price is not None and entry_price > 0.0 and current_price is not None and current_price > 0.0:
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+            take_profit_pct = max(0.1, to_float(config.get("take_profit_pct"), 8.0))
+            rapid_take_profit_pct = max(0.1, to_float(config.get("rapid_take_profit_pct"), 10.0))
+            rapid_arm_pct = max(
+                0.1,
+                min(
+                    rapid_take_profit_pct,
+                    max(take_profit_pct, rapid_take_profit_pct * 0.85),
+                ),
+            )
+            rapid_hard_cap_pct = max(rapid_take_profit_pct + 6.0, rapid_take_profit_pct * 1.8)
+            trailing_stop_pct = max(0.5, to_float(config.get("trailing_stop_pct"), 3.0))
+
+            timeframe_backside_factor = {
+                "5m": 0.85,
+                "15m": 1.0,
+                "1h": 1.2,
+                "4h": 1.35,
+            }.get(timeframe, 1.0)
+            base_backside_pct = clamp(
+                trailing_stop_pct * 0.58 * timeframe_backside_factor,
+                0.45,
+                max(0.9, trailing_stop_pct * 0.98),
+            )
+
+            rapid_window_minutes = max(0.0, to_float(config.get("rapid_exit_window_minutes"), 0.0))
+            min_increase_pct = max(0.0, to_float(config.get("rapid_exit_min_increase_pct"), 0.0))
+            breakeven_buffer_pct = max(0.0, to_float(config.get("rapid_exit_breakeven_buffer_pct"), 0.0))
+
+            rapid_state_key = "_crypto_hf_rapid_exit_state"
+            raw_rapid_state = context_payload.get(rapid_state_key)
+            rapid_state = dict(raw_rapid_state) if isinstance(raw_rapid_state, dict) else {}
+            highest_seen = self._float(getattr(position, "highest_price", None))
+            tracked_peak = self._float(rapid_state.get("peak_price"))
+            peak_price = entry_price
+            if highest_seen is not None:
+                peak_price = max(peak_price, highest_seen)
+            if tracked_peak is not None:
+                peak_price = max(peak_price, tracked_peak)
+            peak_price = max(peak_price, current_price)
+            rapid_state["peak_price"] = peak_price
+            rapid_state["peak_pnl_pct"] = ((peak_price - entry_price) / entry_price) * 100.0
+            rapid_state["arm_pct"] = rapid_arm_pct
+            rapid_state["hard_cap_pct"] = rapid_hard_cap_pct
+
+            age_minutes = self._float(getattr(position, "age_minutes", None))
+            evaluated = bool(rapid_state.get("evaluated"))
+            if not evaluated and (rapid_window_minutes <= 0.0 or (age_minutes is not None and age_minutes >= rapid_window_minutes)):
+                required_peak = entry_price * (1.0 + (min_increase_pct / 100.0))
+                rapid_state["evaluated"] = True
+                rapid_state["stalled"] = peak_price <= (required_peak + 1e-9)
+                rapid_state["evaluated_at_minutes"] = age_minutes
+                rapid_state["required_peak_price"] = required_peak
+                rapid_state["window_minutes"] = rapid_window_minutes
+
+            token_id = str(
+                state.get("token_id")
+                or context_payload.get("token_id")
+                or ""
+            ).strip()
+            if not token_id:
+                execution_plan = context_payload.get("execution_plan")
+                if isinstance(execution_plan, dict):
+                    legs = execution_plan.get("legs")
+                    if isinstance(legs, list):
+                        for leg in legs:
+                            if not isinstance(leg, dict):
+                                continue
+                            candidate = str(leg.get("token_id") or "").strip()
+                            if candidate:
+                                token_id = candidate
+                                break
+
+            flow_imbalance: float | None = None
+            momentum_short_pct: float | None = None
+            recent_range_pct: float | None = None
+            if token_id:
+                price_history = StrategySDK.get_price_history(token_id, max_snapshots=24)
+                mids: list[float] = []
+                for snapshot in price_history:
+                    if not isinstance(snapshot, dict):
+                        continue
+                    mid = self._float(snapshot.get("mid"))
+                    if mid is None or mid <= 0.0:
+                        continue
+                    mids.append(float(mid))
+                    if len(mids) >= 18:
+                        break
+                if len(mids) >= 3:
+                    lookback_idx = min(len(mids) - 1, 6)
+                    anchor_price = mids[lookback_idx]
+                    if anchor_price > 0.0:
+                        momentum_short_pct = ((mids[0] - anchor_price) / anchor_price) * 100.0
+                    window = mids[: min(len(mids), 8)]
+                    window_max = max(window)
+                    window_min = min(window)
+                    if window_max > 0.0:
+                        recent_range_pct = ((window_max - window_min) / window_max) * 100.0
+                raw_imbalance = self._float(StrategySDK.get_buy_sell_imbalance(token_id, lookback_seconds=20.0))
+                if raw_imbalance is not None:
+                    flow_imbalance = clamp(raw_imbalance, -1.0, 1.0)
+
+            dynamic_backside_pct = base_backside_pct
+            if recent_range_pct is not None:
+                dynamic_backside_pct *= clamp(1.0 + (recent_range_pct / 16.0), 0.85, 1.35)
+            if flow_imbalance is not None:
+                dynamic_backside_pct *= clamp(1.0 + (flow_imbalance * 0.30), 0.65, 1.35)
+            if momentum_short_pct is not None:
+                dynamic_backside_pct *= clamp(1.0 + (momentum_short_pct / 5.0), 0.60, 1.25)
+            dynamic_backside_pct = clamp(
+                dynamic_backside_pct,
+                0.45,
+                max(1.2, trailing_stop_pct * 0.95),
+            )
+
+            drawdown_from_peak_pct = 0.0
+            if peak_price > 0.0:
+                drawdown_from_peak_pct = max(0.0, ((peak_price - current_price) / peak_price) * 100.0)
+
+            min_order_size_usd = max(0.01, to_float(state.get("min_order_size_usd"), 1.0))
+            filled_size = self._float(getattr(position, "filled_size", None))
+            if filled_size is None or filled_size <= 0.0:
+                position_notional = self._float(getattr(position, "notional_usd", None))
+                if position_notional is None:
+                    position_notional = self._float(state.get("notional_usd"))
+                if position_notional is not None and position_notional > 0.0:
+                    filled_size = position_notional / entry_price
+
+            min_exit_price = None
+            panic_exit_price = None
+            exit_notional_estimate = None
+            exit_headroom_ratio = None
+            if filled_size is not None and filled_size > 0.0:
+                min_exit_price = min_order_size_usd / filled_size
+                panic_exit_price = min_exit_price * 1.35
+                exit_notional_estimate = filled_size * current_price
+                if min_order_size_usd > 0.0:
+                    exit_headroom_ratio = exit_notional_estimate / min_order_size_usd
+
+            urgent_headroom_ratio = max(1.0, to_float(config.get("executable_exit_headroom_urgent"), 1.35))
+            warn_headroom_ratio = max(urgent_headroom_ratio + 0.05, to_float(config.get("executable_exit_headroom_warn"), 2.0))
+            hazard_threshold = clamp(to_float(config.get("executable_exit_hazard_threshold"), 0.62), 0.0, 1.0)
+            time_pressure_seconds = max(1.0, to_float(config.get("executable_exit_time_pressure_seconds"), 120.0))
+
+            seconds_left = self._float(
+                _first_present(
+                    state.get("seconds_left"),
+                    context_payload.get("seconds_left"),
+                    context_payload.get("live_market_context", {}).get("seconds_left")
+                    if isinstance(context_payload.get("live_market_context"), dict)
+                    else None,
+                )
+            )
+            time_pressure = 0.0
+            if seconds_left is not None and seconds_left >= 0.0:
+                time_pressure = clamp((time_pressure_seconds - seconds_left) / time_pressure_seconds, 0.0, 1.0)
+            headroom_stress = 0.0
+            if exit_headroom_ratio is not None:
+                denom = max(0.05, warn_headroom_ratio - 1.0)
+                headroom_stress = clamp((warn_headroom_ratio - exit_headroom_ratio) / denom, 0.0, 1.0)
+            flow_neg = clamp(-(flow_imbalance or 0.0), 0.0, 1.0)
+            momentum_neg = clamp(-((momentum_short_pct or 0.0) / 2.0), 0.0, 1.0)
+            hazard_score = clamp(
+                (headroom_stress * 0.55)
+                + (flow_neg * 0.25)
+                + (momentum_neg * 0.15)
+                + (time_pressure * 0.05),
+                0.0,
+                1.0,
+            )
+
+            if exit_headroom_ratio is not None:
+                dynamic_backside_pct *= clamp(exit_headroom_ratio / 3.0, 0.30, 1.0)
+                dynamic_backside_pct = clamp(dynamic_backside_pct, 0.30, max(1.2, trailing_stop_pct * 0.95))
+
+            rapid_state["token_id"] = token_id or None
+            rapid_state["flow_imbalance"] = flow_imbalance
+            rapid_state["momentum_short_pct"] = momentum_short_pct
+            rapid_state["recent_range_pct"] = recent_range_pct
+            rapid_state["dynamic_backside_pct"] = dynamic_backside_pct
+            rapid_state["drawdown_from_peak_pct"] = drawdown_from_peak_pct
+            rapid_state["min_exit_price"] = min_exit_price
+            rapid_state["panic_exit_price"] = panic_exit_price
+            rapid_state["exit_notional_estimate"] = exit_notional_estimate
+            rapid_state["exit_headroom_ratio"] = exit_headroom_ratio
+            rapid_state["executable_hazard_score"] = hazard_score
+            rapid_state["time_pressure"] = time_pressure
+
+            if (
+                exit_headroom_ratio is not None
+                and exit_headroom_ratio <= urgent_headroom_ratio
+                and pnl_pct <= 0.5
+            ):
+                context_payload[rapid_state_key] = rapid_state
+                return {
+                    "config": config,
+                    "decision": {
+                        "action": "close",
+                        "reason": (
+                            "Executable-notional guard (headroom emergency) "
+                            f"(headroom={exit_headroom_ratio:.2f}x <= {urgent_headroom_ratio:.2f}x)"
+                        ),
+                        "close_price": current_price,
+                    },
+                }
+
+            if panic_exit_price is not None and current_price <= panic_exit_price and pnl_pct <= 0.0:
+                context_payload[rapid_state_key] = rapid_state
+                return {
+                    "config": config,
+                    "decision": {
+                        "action": "close",
+                        "reason": (
+                            "Executable-notional guard "
+                            f"({current_price:.4f} <= {panic_exit_price:.4f}, min_exit={min_exit_price:.4f})"
+                        ),
+                        "close_price": current_price,
+                    },
+                }
+
+            if (
+                exit_headroom_ratio is not None
+                and hazard_score >= hazard_threshold
+                and pnl_pct <= max(1.0, rapid_take_profit_pct * 0.20)
+            ):
+                context_payload[rapid_state_key] = rapid_state
+                return {
+                    "config": config,
+                    "decision": {
+                        "action": "close",
+                        "reason": (
+                            "Executable hazard exit "
+                            f"(hazard={hazard_score:.2f} >= {hazard_threshold:.2f}, "
+                            f"headroom={exit_headroom_ratio:.2f}x)"
+                        ),
+                        "close_price": current_price,
+                    },
+                }
+
+            if pnl_pct >= rapid_arm_pct:
+                rapid_state["armed"] = True
+                if rapid_state.get("armed_at_minutes") is None:
+                    rapid_state["armed_at_minutes"] = age_minutes
+                if rapid_state.get("armed_price") is None:
+                    rapid_state["armed_price"] = current_price
+                rapid_state["armed_peak_price"] = peak_price
+
+            should_flatten_resolution_risk, resolution_risk_detail = (
+                StrategySDK.crypto_highfreq_should_flatten_resolution_risk(
+                    config,
+                    timeframe=timeframe,
+                    seconds_left=seconds_left,
+                    pnl_percent=pnl_pct,
+                    exit_headroom_ratio=exit_headroom_ratio,
+                    take_profit_armed=bool(rapid_state.get("armed")),
+                )
+            )
+            if should_flatten_resolution_risk:
+                context_payload[rapid_state_key] = rapid_state
+                return {
+                    "config": config,
+                    "decision": {
+                        "action": "close",
+                        "reason": f"Resolution-risk flatten ({resolution_risk_detail})",
+                        "close_price": current_price,
+                    },
+                }
+
+            if bool(rapid_state.get("armed")):
+                config["take_profit_pct"] = max(take_profit_pct, rapid_hard_cap_pct + 1.0)
+                if pnl_pct >= rapid_hard_cap_pct:
+                    context_payload[rapid_state_key] = rapid_state
+                    return {
+                        "config": config,
+                        "decision": {
+                            "action": "close",
+                            "reason": f"Rapid hard-cap take profit ({pnl_pct:.1f}% >= {rapid_hard_cap_pct:.1f}%)",
+                            "close_price": current_price,
+                        },
+                    }
+
+                reversal_signal = (
+                    drawdown_from_peak_pct >= (dynamic_backside_pct * 0.55)
+                    and (
+                        (momentum_short_pct is not None and momentum_short_pct <= -0.25)
+                        or (flow_imbalance is not None and flow_imbalance <= -0.2)
+                    )
+                )
+                if drawdown_from_peak_pct >= dynamic_backside_pct or reversal_signal:
+                    context_payload[rapid_state_key] = rapid_state
+                    return {
+                        "config": config,
+                        "decision": {
+                            "action": "close",
+                            "reason": (
+                                "Adaptive backside peak exit "
+                                f"(drawdown={drawdown_from_peak_pct:.2f}% "
+                                f"threshold={dynamic_backside_pct:.2f}%, "
+                                f"flow={flow_imbalance if flow_imbalance is not None else 0.0:.2f}, "
+                                f"momentum={momentum_short_pct if momentum_short_pct is not None else 0.0:.2f}%)"
+                            ),
+                            "close_price": current_price,
+                        },
+                    }
+
+            context_payload[rapid_state_key] = rapid_state
+            if bool(rapid_state.get("stalled")):
+                breakeven_floor = entry_price * (1.0 + (breakeven_buffer_pct / 100.0))
+                if current_price >= (breakeven_floor - 1e-9):
+                    return {
+                        "config": config,
+                        "decision": {
+                            "action": "close",
+                            "reason": (
+                                "Rapid window stalled without upside; exiting at breakeven+ "
+                                f"({current_price:.4f} >= {breakeven_floor:.4f})"
+                            ),
+                            "close_price": current_price,
+                        },
+                    }
+
+            underwater_state_key = "_crypto_hf_loss_recovery_state"
+            if to_bool(config.get("underwater_rebound_exit_enabled"), True):
+                raw_underwater_state = context_payload.get(underwater_state_key)
+                underwater_state = dict(raw_underwater_state) if isinstance(raw_underwater_state, dict) else {}
+                underwater_dwell_minutes = max(0.0, to_float(config.get("underwater_dwell_minutes"), 0.0))
+                underwater_recovery_ratio_min = clamp(
+                    to_float(config.get("underwater_recovery_ratio_min"), 0.35),
+                    0.0,
+                    1.0,
+                )
+                underwater_rebound_pct_min = max(0.0, to_float(config.get("underwater_rebound_pct_min"), 1.2))
+                underwater_exit_fade_pct = max(0.0, to_float(config.get("underwater_exit_fade_pct"), 0.45))
+                underwater_timeout_minutes = max(0.0, to_float(config.get("underwater_timeout_minutes"), 0.0))
+                underwater_timeout_loss_pct = max(0.0, to_float(config.get("underwater_timeout_loss_pct"), 0.0))
+
+                if current_price < (entry_price - 1e-9):
+                    lowest_seen = self._float(getattr(position, "lowest_price", None))
+                    prior_trough = self._float(underwater_state.get("trough_price"))
+                    trough_price = current_price
+                    if lowest_seen is not None and lowest_seen > 0.0:
+                        trough_price = min(trough_price, lowest_seen)
+                    if prior_trough is not None and prior_trough > 0.0:
+                        trough_price = min(trough_price, prior_trough)
+
+                    underwater_since_minutes = self._float(underwater_state.get("underwater_since_age_minutes"))
+                    if underwater_since_minutes is None and age_minutes is not None:
+                        underwater_since_minutes = age_minutes
+                    if (
+                        age_minutes is not None
+                        and underwater_since_minutes is not None
+                        and underwater_since_minutes > age_minutes
+                    ):
+                        underwater_since_minutes = age_minutes
+
+                    dwell_elapsed_minutes = None
+                    if age_minutes is not None and underwater_since_minutes is not None:
+                        dwell_elapsed_minutes = max(0.0, age_minutes - underwater_since_minutes)
+
+                    rebound_distance = max(0.0, current_price - trough_price)
+                    drawdown_distance = max(0.0, entry_price - trough_price)
+                    recovery_ratio = 0.0
+                    if drawdown_distance > 0.0:
+                        recovery_ratio = clamp(rebound_distance / drawdown_distance, 0.0, 2.5)
+                    rebound_pct = 0.0
+                    if trough_price > 0.0:
+                        rebound_pct = max(0.0, ((current_price - trough_price) / trough_price) * 100.0)
+
+                    rebound_peak_price = current_price
+                    previous_rebound_peak = self._float(underwater_state.get("rebound_peak_price"))
+                    if previous_rebound_peak is not None and previous_rebound_peak > 0.0:
+                        rebound_peak_price = max(rebound_peak_price, previous_rebound_peak)
+                    fade_from_rebound_peak_pct = 0.0
+                    if rebound_peak_price > 0.0:
+                        fade_from_rebound_peak_pct = max(
+                            0.0,
+                            ((rebound_peak_price - current_price) / rebound_peak_price) * 100.0,
+                        )
+
+                    reversal_pressure = (
+                        (momentum_short_pct is not None and momentum_short_pct <= -0.20)
+                        or (flow_imbalance is not None and flow_imbalance <= -0.15)
+                        or (drawdown_from_peak_pct >= max(0.30, dynamic_backside_pct * 0.45))
+                    )
+                    rebound_fading = fade_from_rebound_peak_pct >= underwater_exit_fade_pct
+                    soft_fade = fade_from_rebound_peak_pct >= (underwater_exit_fade_pct * 0.60)
+                    dwell_ready = (
+                        dwell_elapsed_minutes is not None
+                        and dwell_elapsed_minutes >= underwater_dwell_minutes
+                    )
+                    recovery_ready = (
+                        rebound_pct >= underwater_rebound_pct_min
+                        and recovery_ratio >= underwater_recovery_ratio_min
+                    )
+
+                    underwater_state["underwater_since_age_minutes"] = underwater_since_minutes
+                    underwater_state["dwell_elapsed_minutes"] = dwell_elapsed_minutes
+                    underwater_state["trough_price"] = trough_price
+                    underwater_state["rebound_peak_price"] = rebound_peak_price
+                    underwater_state["rebound_pct"] = rebound_pct
+                    underwater_state["recovery_ratio"] = recovery_ratio
+                    underwater_state["fade_from_rebound_peak_pct"] = fade_from_rebound_peak_pct
+                    underwater_state["reversal_pressure"] = reversal_pressure
+                    underwater_state["timeout_loss_pct"] = underwater_timeout_loss_pct
+
+                    if (
+                        exit_headroom_ratio is not None
+                        and recovery_ready
+                        and soft_fade
+                        and exit_headroom_ratio <= warn_headroom_ratio * 1.1
+                    ):
+                        context_payload[underwater_state_key] = underwater_state
+                        return {
+                            "config": config,
+                            "decision": {
+                                "action": "close",
+                                "reason": (
+                                    "Underwater executable salvage exit "
+                                    f"(headroom={exit_headroom_ratio:.2f}x, "
+                                    f"recovery={recovery_ratio:.2f}, fade={fade_from_rebound_peak_pct:.2f}%)"
+                                ),
+                                "close_price": current_price,
+                            },
+                        }
+
+                    if dwell_ready and recovery_ready and (rebound_fading or (soft_fade and reversal_pressure)):
+                        context_payload[underwater_state_key] = underwater_state
+                        return {
+                            "config": config,
+                            "decision": {
+                                "action": "close",
+                                "reason": (
+                                    "Underwater rebound salvage exit "
+                                    f"(dwell={dwell_elapsed_minutes if dwell_elapsed_minutes is not None else 0.0:.2f}m, "
+                                    f"recovery={recovery_ratio:.2f}, rebound={rebound_pct:.2f}%, "
+                                    f"fade={fade_from_rebound_peak_pct:.2f}%)"
+                                ),
+                                "close_price": current_price,
+                            },
+                        }
+
+                    if (
+                        underwater_timeout_minutes > 0.0
+                        and underwater_timeout_loss_pct > 0.0
+                        and dwell_elapsed_minutes is not None
+                        and dwell_elapsed_minutes >= underwater_timeout_minutes
+                        and pnl_pct <= -abs(underwater_timeout_loss_pct)
+                    ):
+                        context_payload[underwater_state_key] = underwater_state
+                        return {
+                            "config": config,
+                            "decision": {
+                                "action": "close",
+                                "reason": (
+                                    "Underwater timeout stop "
+                                    f"(dwell={dwell_elapsed_minutes:.2f}m >= {underwater_timeout_minutes:.2f}m, "
+                                    f"loss={pnl_pct:.2f}% <= -{underwater_timeout_loss_pct:.2f}%)"
+                                ),
+                                "close_price": current_price,
+                            },
+                        }
+                    context_payload[underwater_state_key] = underwater_state
+                else:
+                    context_payload.pop(underwater_state_key, None)
+            else:
+                context_payload.pop(underwater_state_key, None)
+
+        stop_loss_policy = str(config.get("stop_loss_policy") or "near_close_only").strip().lower()
+        if stop_loss_policy == "volatility_adaptive":
+            spread = self._float(context_payload.get("spread"))
+            if spread is None:
+                spread = self._float(state.get("spread"))
+            liquidity = self._float(context_payload.get("liquidity"))
+            if liquidity is None:
+                liquidity = self._float(state.get("liquidity"))
+            seconds_left = self._float(state.get("seconds_left"))
+            timeframe_seconds = self._timeframe_seconds(timeframe)
+
+            volatility_factor = 1.0
+            if spread is not None:
+                volatility_factor += min(0.8, max(0.0, (spread * 100.0) / 6.0))
+            if liquidity is not None and liquidity > 0.0:
+                volatility_factor += min(0.7, 6000.0 / max(liquidity, 1.0))
+            if seconds_left is not None and seconds_left >= 0.0:
+                close_ratio = 1.0 - clamp(seconds_left / float(max(1, timeframe_seconds)), 0.0, 1.0)
+                volatility_factor += close_ratio * 0.4
+
+            base_stop_loss_pct = max(0.5, to_float(config.get("stop_loss_pct"), 5.0))
+            adaptive_stop_loss_pct = clamp(
+                base_stop_loss_pct * volatility_factor,
+                max(0.5, base_stop_loss_pct * 0.8),
+                max(1.0, base_stop_loss_pct * 1.9),
+            )
+            config["stop_loss_pct"] = adaptive_stop_loss_pct
+
+            trailing_activation = max(0.1, to_float(config.get("trailing_stop_activation_profit_pct"), 4.0))
+            config["trailing_stop_activation_profit_pct"] = clamp(
+                trailing_activation / max(1.0, volatility_factor * 0.85),
+                0.1,
+                100.0,
+            )
+
+        return {"config": config, "decision": None}
+
+    def should_exit(self, position: Any, market_state: dict) -> ExitDecision:
+        if market_state.get("is_resolved"):
+            return self.default_exit_check(position, market_state)
+        evaluation = self._evaluate_local_exit(position, market_state)
+        config = evaluation.get("config")
+        if isinstance(config, dict):
+            position.config = config
+        decision = evaluation.get("decision")
+        if isinstance(decision, dict) and str(decision.get("action") or "").strip().lower() == "close":
+            close_price = self._float(decision.get("close_price"))
+            return ExitDecision(
+                "close",
+                str(decision.get("reason") or "High-frequency exit"),
+                close_price=close_price,
+            )
         return self.default_exit_check(position, market_state)
 
     # ------------------------------------------------------------------
@@ -2746,6 +3952,19 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             )
             start_time = str(market.get("start_time") or "").strip() or None
             end_time = str(market.get("end_time") or "").strip() or None
+            live_market_fetched_at = str(
+                market.get("fetched_at")
+                or market.get("snapshot_fetched_at")
+                or ""
+            ).strip() or None
+            market_data_age_ms = self._float(market.get("market_data_age_ms"))
+            if market_data_age_ms is None and live_market_fetched_at:
+                parsed_fetched_at = _parse_datetime_utc(live_market_fetched_at)
+                if parsed_fetched_at is not None:
+                    market_data_age_ms = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - parsed_fetched_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+                    )
 
             regime = self._crypto_regime(seconds_left, timeframe_seconds)
 
@@ -2875,17 +4094,21 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                             "oracle_updated_at_ms": self._float(market.get("oracle_updated_at_ms")),
                             "dominant_strategy": dominant_strategy,
                             "spread": spread,
+                            "spread_widening_bps": self._float(market.get("spread_widening_bps")),
+                            "orderbook_imbalance": self._float(
+                                _first_present(
+                                    market.get("orderbook_imbalance"),
+                                    market.get("book_imbalance"),
+                                    market.get("imbalance"),
+                                )
+                            ),
                             "liquidity": liquidity,
                             "volume": self._float(market.get("volume")) or 0.0,
                             "price_to_beat": price_to_beat,
                             "oracle_price": oracle_price,
                             "execution_penalty_percent": round(execution_penalty, 6),
-                            "live_market_fetched_at": str(
-                                market.get("fetched_at")
-                                or market.get("snapshot_fetched_at")
-                                or ""
-                            ).strip()
-                            or None,
+                            "live_market_fetched_at": live_market_fetched_at,
+                            "market_data_age_ms": market_data_age_ms,
                         },
                     }
                 ],
@@ -2920,17 +4143,21 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "oracle_updated_at_ms": self._float(market.get("oracle_updated_at_ms")),
                     "dominant_strategy": dominant_strategy,
                     "spread": spread,
+                    "spread_widening_bps": self._float(market.get("spread_widening_bps")),
+                    "orderbook_imbalance": self._float(
+                        _first_present(
+                            market.get("orderbook_imbalance"),
+                            market.get("book_imbalance"),
+                            market.get("imbalance"),
+                        )
+                    ),
                     "liquidity": liquidity,
                     "volume": self._float(market.get("volume")) or 0.0,
                     "price_to_beat": price_to_beat,
                     "oracle_price": oracle_price,
                     "execution_penalty_percent": round(execution_penalty, 6),
-                    "live_market_fetched_at": str(
-                        market.get("fetched_at")
-                        or market.get("snapshot_fetched_at")
-                        or ""
-                    ).strip()
-                    or None,
+                    "live_market_fetched_at": live_market_fetched_at,
+                    "market_data_age_ms": market_data_age_ms,
                 }
                 opportunities.append(opp)
 

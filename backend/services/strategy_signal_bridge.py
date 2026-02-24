@@ -7,7 +7,7 @@ pattern shared by all signal sources.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,44 @@ from services.signal_bus import (
     upsert_trade_signal,
 )
 from services.worker_state import _commit_with_retry
+from utils.logger import get_logger
 from utils.utcnow import utcnow
+
+logger = get_logger(__name__)
+
+
+def _parse_datetime_utc(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts <= 0:
+            return None
+        if ts > 1_000_000_000_000:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _to_iso_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 async def bridge_opportunities_to_signals(
@@ -66,11 +103,17 @@ async def bridge_opportunities_to_signals(
                 now=now,
                 drop_stale=False,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to refresh opportunity prices before bridging signals",
+                source=str(source),
+                opportunities=len(opportunities),
+                exc_info=exc,
+            )
     emitted = 0
     keep_dedupe_keys: set[str] = set()
     signal_ids: list[str] = []
+    market_data_ages_ms: list[int] = []
 
     for opp in opportunities:
         market_id, direction, entry_price, market_question, payload_json, strategy_context_json = (
@@ -86,6 +129,42 @@ async def bridge_opportunities_to_signals(
         )
         keep_dedupe_keys.add(dedupe_key)
         expires = opp.resolution_date or (now + timedelta(minutes=default_ttl_minutes))
+        ingested_at = now.astimezone(timezone.utc)
+        ingested_at_iso = _to_iso_utc(ingested_at)
+
+        payload = dict(payload_json or {})
+        strategy_context = dict(strategy_context_json or {}) if isinstance(strategy_context_json, dict) else {}
+
+        source_observed_at = _parse_datetime_utc(
+            payload.get("source_observed_at")
+            or payload.get("live_market_fetched_at")
+            or payload.get("signal_updated_at")
+            or payload.get("signal_emitted_at")
+            or strategy_context.get("source_observed_at")
+            or strategy_context.get("live_market_fetched_at")
+            or strategy_context.get("fetched_at")
+        )
+        source_observed_iso = _to_iso_utc(source_observed_at)
+        market_data_age_ms: int | None = None
+        if source_observed_at is not None:
+            market_data_age_ms = max(
+                0,
+                int((ingested_at - source_observed_at.astimezone(timezone.utc)).total_seconds() * 1000),
+            )
+            market_data_ages_ms.append(market_data_age_ms)
+
+        payload["ingested_at"] = ingested_at_iso
+        payload["signal_emitted_at"] = payload.get("signal_emitted_at") or ingested_at_iso
+        payload["source_observed_at"] = source_observed_iso
+        payload["market_data_age_ms"] = market_data_age_ms
+        payload["bridge_source"] = str(source)
+        payload["bridge_run_at"] = ingested_at_iso
+
+        strategy_context["ingested_at"] = ingested_at_iso
+        strategy_context["source_observed_at"] = source_observed_iso
+        strategy_context["market_data_age_ms"] = market_data_age_ms
+        strategy_context["bridge_source"] = str(source)
+        strategy_context["bridge_run_at"] = ingested_at_iso
 
         opp_quality_passed: Optional[bool] = None
         opp_rejection_reasons: Optional[list] = None
@@ -117,8 +196,8 @@ async def bridge_opportunities_to_signals(
             confidence=float(opp.confidence),
             liquidity=float(opp.min_liquidity or 0.0),
             expires_at=expires,
-            payload_json=payload_json,
-            strategy_context_json=strategy_context_json,
+            payload_json=payload,
+            strategy_context_json=strategy_context or None,
             quality_passed=opp_quality_passed,
             quality_rejection_reasons=opp_rejection_reasons,
             dedupe_key=dedupe_key,
@@ -147,8 +226,19 @@ async def bridge_opportunities_to_signals(
                     "signal_ids": signal_ids[:500],
                     "emitted_at": now.isoformat(),
                     "trigger": "strategy_signal_bridge",
+                    "market_data_age_ms_avg": (
+                        round(sum(market_data_ages_ms) / len(market_data_ages_ms), 2)
+                        if market_data_ages_ms
+                        else None
+                    ),
+                    "market_data_age_ms_max": max(market_data_ages_ms) if market_data_ages_ms else None,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to publish trade_signal_batch event",
+                source=str(source),
+                signal_count=len(signal_ids),
+                exc_info=exc,
+            )
     return emitted

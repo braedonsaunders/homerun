@@ -78,6 +78,9 @@ class MarketMakingStrategy(BaseStrategy):
         "inventory_skew_gamma": 0.1,
         "vol_spread_multiplier": 2.0,
         "vol_lookback_periods": 20,
+        "reward_midpoint_band": 0.03,
+        "flatten_inventory_trigger": 0.85,
+        "reward_score_weight": 0.35,
     }
 
     pipeline_defaults = {
@@ -385,6 +388,12 @@ class MarketMakingStrategy(BaseStrategy):
         inv_skew_gamma = max(0.0, to_float(self.config.get("inventory_skew_gamma", 0.1), 0.1))
         vol_multiplier = max(0.0, to_float(self.config.get("vol_spread_multiplier", 2.0), 2.0))
         vol_lookback = max(2, int(to_float(self.config.get("vol_lookback_periods", 20), 20)))
+        reward_band = max(0.005, to_float(self.config.get("reward_midpoint_band", 0.03), 0.03))
+        flatten_inventory_trigger = max(
+            0.50,
+            min(0.99, to_float(self.config.get("flatten_inventory_trigger", 0.85), 0.85)),
+        )
+        reward_score_weight = max(0.0, min(1.0, to_float(self.config.get("reward_score_weight", 0.35), 0.35)))
 
         opportunities: list[Opportunity] = []
 
@@ -487,8 +496,15 @@ class MarketMakingStrategy(BaseStrategy):
             buy_price = round(fair_value - half_spread - skew, 4)
             sell_price = round(fair_value + half_spread - skew, 4)
 
+            midpoint = yes_price
+            # Keep quotes near midpoint where liquidity rewards are highest.
+            buy_price = max(buy_price, round(midpoint - reward_band, 4))
+            sell_price = min(sell_price, round(midpoint + reward_band, 4))
+
             # Ensure prices are valid (within 0-1 range)
             if buy_price <= 0 or sell_price >= 1.0:
+                continue
+            if buy_price >= sell_price:
                 continue
 
             spread_dislocation = effective_spread - as_optimal_spread
@@ -514,6 +530,13 @@ class MarketMakingStrategy(BaseStrategy):
                 market.liquidity * 0.05,
                 max_inventory_usd,
             )
+            inventory_ratio = abs(inventory) / max(max_inventory_usd, 1e-6) if max_inventory_usd > 0 else 0.0
+            if max_inventory_usd > 0 and inventory_ratio >= flatten_inventory_trigger:
+                # Approaching inventory cap: suspend new quoting for this market
+                # so lifecycle exits can flatten existing inventory.
+                continue
+            if max_inventory_usd > 0:
+                max_position *= max(0.0, 1.0 - inventory_ratio)
 
             # --- Hard filters (matching create_opportunity gate) ---
             if roi > settings.MAX_PLAUSIBLE_ROI:
@@ -596,6 +619,8 @@ class MarketMakingStrategy(BaseStrategy):
                 opp.risk_factors = risk_factors
                 if opp.markets:
                     opp.markets[0]["condition_id"] = market.condition_id
+                reward_distance = max(abs(midpoint - buy_price), abs(sell_price - midpoint))
+                liquidity_reward_score = max(0.0, min(1.0, 1.0 - (reward_distance / reward_band)))
                 opp.strategy_context["inventory"] = inventory
                 opp.strategy_context["inventory_skew"] = skew
                 opp.strategy_context["realized_vol"] = realized_vol
@@ -604,12 +629,16 @@ class MarketMakingStrategy(BaseStrategy):
                 opp.strategy_context["effective_spread"] = effective_spread
                 opp.strategy_context["adjusted_bid"] = buy_price
                 opp.strategy_context["adjusted_ask"] = sell_price
-
-            opportunities.append(opp)
+                opp.strategy_context["liquidity_reward_score"] = liquidity_reward_score
+                opportunities.append(opp)
 
         # --- Rank by expected profit vs risk ---
         # Score = ROI / risk_score (higher ROI and lower risk = better)
-        opportunities.sort(key=lambda o: o.roi_percent / max(o.risk_score, 0.01), reverse=True)
+        opportunities.sort(
+            key=lambda o: (o.roi_percent / max(o.risk_score, 0.01))
+            * (1.0 + reward_score_weight * float((o.strategy_context or {}).get("liquidity_reward_score", 0.0))),
+            reverse=True,
+        )
 
         return opportunities
 
