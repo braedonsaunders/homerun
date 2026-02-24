@@ -124,16 +124,18 @@ def compute_fifo_pnl(trades: List[dict], market_id: str) -> FIFOResult:
                 matched = min(sell_remaining, oldest.remaining)
                 pnl = (t["price"] - oldest.price) * matched
 
-                closed_lots.append(TradeLot(
-                    open_ts=oldest.ts,
-                    close_ts=t["ts"],
-                    entry_price=oldest.price,
-                    exit_price=t["price"],
-                    size=matched,
-                    side="buy",
-                    market_id=market_id,
-                    realized_pnl=pnl,
-                ))
+                closed_lots.append(
+                    TradeLot(
+                        open_ts=oldest.ts,
+                        close_ts=t["ts"],
+                        entry_price=oldest.price,
+                        exit_price=t["price"],
+                        size=matched,
+                        side="buy",
+                        market_id=market_id,
+                        realized_pnl=pnl,
+                    )
+                )
                 total_realized += pnl
 
                 oldest.remaining -= matched
@@ -145,16 +147,18 @@ def compute_fifo_pnl(trades: List[dict], market_id: str) -> FIFOResult:
     open_lots: List[TradeLot] = []
     for lot in buy_queue:
         if lot.remaining > 1e-12:
-            open_lots.append(TradeLot(
-                open_ts=lot.ts,
-                close_ts=None,
-                entry_price=lot.price,
-                exit_price=None,
-                size=lot.remaining,
-                side="buy",
-                market_id=market_id,
-                realized_pnl=None,
-            ))
+            open_lots.append(
+                TradeLot(
+                    open_ts=lot.ts,
+                    close_ts=None,
+                    entry_price=lot.price,
+                    exit_price=None,
+                    size=lot.remaining,
+                    side="buy",
+                    market_id=market_id,
+                    realized_pnl=None,
+                )
+            )
 
     # Summary statistics
     winning = sum(1 for c in closed_lots if c.realized_pnl is not None and c.realized_pnl > 0)

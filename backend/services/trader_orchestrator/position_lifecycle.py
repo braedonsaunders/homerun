@@ -350,11 +350,7 @@ async def _emit_armed_reverse_signal(
             pending["token_id"] = token_id
 
     source = str(row.source or "").strip().lower() or "scanner"
-    strategy_type = str(
-        pending.get("strategy_type")
-        or payload.get("strategy_type")
-        or ""
-    ).strip().lower() or None
+    strategy_type = str(pending.get("strategy_type") or payload.get("strategy_type") or "").strip().lower() or None
     signal_type = str(pending.get("signal_type") or f"{source}_reverse").strip().lower()
     if not signal_type:
         signal_type = "strategy_reverse"
@@ -403,12 +399,12 @@ async def _emit_armed_reverse_signal(
         str(pending.get("armed_at") or ""),
     )
     source_item_id = str(pending.get("source_signal_id") or row.signal_id or row.id or "")
-    market_question = str(
-        payload_json.get("market_question")
-        or payload_json.get("question")
-        or getattr(row, "market_id", "")
-        or ""
-    ).strip() or None
+    market_question = (
+        str(
+            payload_json.get("market_question") or payload_json.get("question") or getattr(row, "market_id", "") or ""
+        ).strip()
+        or None
+    )
     expires_at_dt = _parse_iso_utc_naive(pending.get("expires_at"))
     if expires_at_dt is None:
         expires_seconds = max(5.0, safe_float(pending.get("expires_in_seconds"), 60.0) or 60.0)
@@ -696,12 +692,7 @@ def _extract_live_token_id(payload: dict[str, Any]) -> str:
     if isinstance(provider_reconciliation, dict):
         snapshot = provider_reconciliation.get("snapshot")
         if isinstance(snapshot, dict):
-            token_id = str(
-                snapshot.get("asset_id")
-                or snapshot.get("asset")
-                or snapshot.get("token_id")
-                or ""
-            ).strip()
+            token_id = str(snapshot.get("asset_id") or snapshot.get("asset") or snapshot.get("token_id") or "").strip()
             if token_id:
                 return token_id
     return ""
@@ -802,11 +793,7 @@ def _remaining_exit_size(
 
 
 def _pending_exit_provider_clob_id(pending_exit: dict[str, Any]) -> str:
-    direct = str(
-        pending_exit.get("provider_clob_order_id")
-        or pending_exit.get("exit_order_clob_id")
-        or ""
-    ).strip()
+    direct = str(pending_exit.get("provider_clob_order_id") or pending_exit.get("exit_order_clob_id") or "").strip()
     if direct:
         return direct
     fallback = str(pending_exit.get("exit_order_id") or "").strip()
@@ -825,21 +812,12 @@ def _pending_exit_provider_clob_id(pending_exit: dict[str, Any]) -> str:
 
 def _extract_wallet_trade_token_id(trade: dict[str, Any]) -> str:
     return str(
-        trade.get("asset_id")
-        or trade.get("asset")
-        or trade.get("token_id")
-        or trade.get("tokenId")
-        or ""
+        trade.get("asset_id") or trade.get("asset") or trade.get("token_id") or trade.get("tokenId") or ""
     ).strip()
 
 
 def _extract_wallet_trade_side(trade: dict[str, Any]) -> str:
-    return str(
-        trade.get("side")
-        or trade.get("trade_side")
-        or trade.get("type")
-        or ""
-    ).strip().lower()
+    return str(trade.get("side") or trade.get("trade_side") or trade.get("type") or "").strip().lower()
 
 
 def _extract_wallet_trade_size(trade: dict[str, Any]) -> float:
@@ -994,12 +972,7 @@ async def _load_execution_wallet_positions_by_token() -> dict[str, dict[str, Any
     for position in positions:
         if not isinstance(position, dict):
             continue
-        token_id = str(
-            position.get("asset")
-            or position.get("asset_id")
-            or position.get("token_id")
-            or ""
-        ).strip()
+        token_id = str(position.get("asset") or position.get("asset_id") or position.get("token_id") or "").strip()
         if not token_id:
             continue
         by_token[token_id] = position
@@ -1021,19 +994,12 @@ async def _load_execution_wallet_recent_sell_trades_by_token() -> dict[str, dict
     market_cache_by_condition: dict[str, Optional[dict[str, Any]]] = {}
 
     async def _infer_trade_token_id(trade: dict[str, Any]) -> str:
-        condition_id = str(
-            trade.get("conditionId")
-            or trade.get("condition_id")
-            or trade.get("market")
-            or ""
-        ).strip()
+        condition_id = str(trade.get("conditionId") or trade.get("condition_id") or trade.get("market") or "").strip()
         if not condition_id:
             return ""
 
         if condition_id not in market_cache_by_condition:
-            market_cache_by_condition[condition_id] = await polymarket_client.get_market_by_condition_id(
-                condition_id
-            )
+            market_cache_by_condition[condition_id] = await polymarket_client.get_market_by_condition_id(condition_id)
         market_info = market_cache_by_condition.get(condition_id)
         if not isinstance(market_info, dict):
             return ""
@@ -1053,20 +1019,14 @@ async def _load_execution_wallet_recent_sell_trades_by_token() -> dict[str, dict
             outcomes = [str(outcome or "").strip().lower() for outcome in outcomes_raw]
 
         outcome_idx = safe_float(
-            trade.get("outcomeIndex")
-            if trade.get("outcomeIndex") is not None
-            else trade.get("outcome_index")
+            trade.get("outcomeIndex") if trade.get("outcomeIndex") is not None else trade.get("outcome_index")
         )
         if outcome_idx is not None:
             idx = int(outcome_idx)
             if 0 <= idx < len(token_ids):
                 return token_ids[idx]
 
-        outcome_text = str(
-            trade.get("outcome")
-            or trade.get("token_outcome")
-            or ""
-        ).strip().lower()
+        outcome_text = str(trade.get("outcome") or trade.get("token_outcome") or "").strip().lower()
         if outcome_text and outcomes:
             for idx, outcome_label in enumerate(outcomes):
                 if outcome_label == outcome_text and idx < len(token_ids):
@@ -1089,10 +1049,7 @@ async def _load_execution_wallet_recent_sell_trades_by_token() -> dict[str, dict
             continue
         price = _extract_wallet_trade_price(trade)
         timestamp = _parse_wallet_trade_time(
-            trade.get("timestamp")
-            or trade.get("created_at")
-            or trade.get("createdAt")
-            or trade.get("time")
+            trade.get("timestamp") or trade.get("created_at") or trade.get("createdAt") or trade.get("time")
         )
         record = {
             "trade_id": str(trade.get("id") or trade.get("order_id") or trade.get("orderId") or "").strip(),
@@ -1717,7 +1674,9 @@ async def reconcile_live_positions(
         required_exit_size = max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0)
         _entry_notional, _entry_size, _entry_price = _extract_live_fill_metrics(payload)
         if _entry_size <= 0.0 and _entry_notional > 0.0:
-            _fallback_entry_price = _entry_price if _entry_price and _entry_price > 0 else safe_float(row.effective_price)
+            _fallback_entry_price = (
+                _entry_price if _entry_price and _entry_price > 0 else safe_float(row.effective_price)
+            )
             if _fallback_entry_price is None or _fallback_entry_price <= 0:
                 _fallback_entry_price = safe_float(row.entry_price)
             if _fallback_entry_price and _fallback_entry_price > 0:
@@ -1784,10 +1743,7 @@ async def reconcile_live_positions(
     token_ids_for_prices = sorted(
         {
             token_id
-            for token_id in (
-                _extract_live_token_id(dict(row.payload_json or {}))
-                for row in candidates
-            )
+            for token_id in (_extract_live_token_id(dict(row.payload_json or {})) for row in candidates)
             if token_id
         }
     )
@@ -1824,6 +1780,7 @@ async def reconcile_live_positions(
                 pass
         unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in redis_mid_prices]
         if unresolved_token_ids:
+
             async def _fetch_clob_midpoint(token_id: str) -> tuple[str, Optional[float]]:
                 try:
                     midpoint = await asyncio.wait_for(
@@ -1851,10 +1808,7 @@ async def reconcile_live_positions(
     pending_exit_provider_ids = sorted(
         {
             _pending_exit_provider_clob_id(pending_exit)
-            for pending_exit in (
-                (dict((row.payload_json or {})).get("pending_live_exit"))
-                for row in candidates
-            )
+            for pending_exit in ((dict((row.payload_json or {})).get("pending_live_exit")) for row in candidates)
             if isinstance(pending_exit, dict)
             and str(pending_exit.get("status") or "").strip().lower() in {"submitted", "pending"}
             and _pending_exit_provider_clob_id(pending_exit)
@@ -1863,9 +1817,7 @@ async def reconcile_live_positions(
     pending_exit_snapshots: dict[str, dict[str, Any]] = {}
     if pending_exit_provider_ids:
         try:
-            pending_exit_snapshots = await trading_service.get_order_snapshots_by_clob_ids(
-                pending_exit_provider_ids
-            )
+            pending_exit_snapshots = await trading_service.get_order_snapshots_by_clob_ids(pending_exit_provider_ids)
         except Exception:
             pending_exit_snapshots = {}
 
@@ -1924,11 +1876,7 @@ async def reconcile_live_positions(
                 else (
                     pending_market_side_price
                     if pending_market_side_price is not None
-                    else (
-                        pending_snapshot_side_price
-                        if pending_snapshot_side_price is not None
-                        else wallet_mark_price
-                    )
+                    else (pending_snapshot_side_price if pending_snapshot_side_price is not None else wallet_mark_price)
                 )
             )
         )
@@ -2013,7 +1961,11 @@ async def reconcile_live_positions(
             if trade_after_entry:
                 close_price = safe_float(latest_wallet_sell_trade.get("price"))
                 if close_price is None or close_price <= 0.0:
-                    close_price = wallet_mark_price if wallet_mark_price is not None and wallet_mark_price > 0.0 else entry_fill_price
+                    close_price = (
+                        wallet_mark_price
+                        if wallet_mark_price is not None and wallet_mark_price > 0.0
+                        else entry_fill_price
+                    )
                 if close_price is not None and close_price > 0.0:
                     close_qty = entry_fill_size
                     close_notional = close_qty * close_price
@@ -2076,15 +2028,12 @@ async def reconcile_live_positions(
 
         pending_exit = payload.get("pending_live_exit")
         pending_exit_status = (
-            str(pending_exit.get("status") or "").strip().lower()
-            if isinstance(pending_exit, dict)
-            else ""
+            str(pending_exit.get("status") or "").strip().lower() if isinstance(pending_exit, dict) else ""
         )
         pending_exit_kind = (
-            str(pending_exit.get("kind") or "").strip().lower()
-            if isinstance(pending_exit, dict)
-            else ""
+            str(pending_exit.get("kind") or "").strip().lower() if isinstance(pending_exit, dict) else ""
         )
+
         def _attach_pending_state(target_payload: dict[str, Any]) -> None:
             if pending_state_changed:
                 target_payload["position_state"] = pending_next_state
@@ -2181,11 +2130,7 @@ async def reconcile_live_positions(
             provider_clob_order_id = _pending_exit_provider_clob_id(pending_exit)
             if provider_clob_order_id:
                 pending_exit["provider_clob_order_id"] = provider_clob_order_id
-            snapshot = (
-                pending_exit_snapshots.get(provider_clob_order_id)
-                if provider_clob_order_id
-                else None
-            )
+            snapshot = pending_exit_snapshots.get(provider_clob_order_id) if provider_clob_order_id else None
             snapshot_status = str((snapshot or {}).get("normalized_status") or "").strip().lower()
             snapshot_filled_size = max(0.0, safe_float((snapshot or {}).get("filled_size"), 0.0) or 0.0)
             snapshot_fill_price = safe_float((snapshot or {}).get("average_fill_price"))
@@ -2226,17 +2171,13 @@ async def reconcile_live_positions(
                 pending_exit["last_snapshot_at"] = _iso_utc(now)
 
             terminal_provider_status = snapshot_status in {"filled", "matched", "executed"}
-            wallet_flat_confirmed = (
-                wallet_position_size <= _WALLET_SIZE_EPSILON
-                and (
-                    wallet_position_observed
-                    or bool(wallet_positions_by_token)
-                    or isinstance(latest_wallet_sell_trade, dict)
-                )
+            wallet_flat_confirmed = wallet_position_size <= _WALLET_SIZE_EPSILON and (
+                wallet_position_observed
+                or bool(wallet_positions_by_token)
+                or isinstance(latest_wallet_sell_trade, dict)
             )
-            close_fill_threshold_met = (
-                required_exit_size > 0.0
-                and snapshot_filled_size >= (required_exit_size * threshold_ratio)
+            close_fill_threshold_met = required_exit_size > 0.0 and snapshot_filled_size >= (
+                required_exit_size * threshold_ratio
             )
             close_fill_terminal_with_wallet_confirmation = (
                 required_exit_size > 0.0
@@ -2245,9 +2186,7 @@ async def reconcile_live_positions(
                 and wallet_flat_confirmed
             )
             close_fill_unknown_but_wallet_flat = (
-                required_exit_size <= 0.0
-                and terminal_provider_status
-                and wallet_flat_confirmed
+                required_exit_size <= 0.0 and terminal_provider_status and wallet_flat_confirmed
             )
             if (
                 close_fill_threshold_met
@@ -2280,10 +2219,7 @@ async def reconcile_live_positions(
                     row.actual_profit = _pnl
                     row.updated_at = now
                     pending_exit["status"] = "filled"
-                    if (
-                        close_fill_terminal_with_wallet_confirmation
-                        and not close_fill_threshold_met
-                    ):
+                    if close_fill_terminal_with_wallet_confirmation and not close_fill_threshold_met:
                         pending_exit["allow_partial_fill_terminal"] = True
                     pending_exit["filled_at"] = _iso_utc(now)
                     payload["pending_live_exit"] = pending_exit
@@ -2368,9 +2304,7 @@ async def reconcile_live_positions(
                 if not dry_run:
                     pending_exit["status"] = "cancelled"
                     pending_exit["cancelled_at"] = _iso_utc(now)
-                    pending_exit["cancel_reason"] = str(
-                        pending_exit.get("last_error") or "take_profit_limit_inactive"
-                    )
+                    pending_exit["cancel_reason"] = str(pending_exit.get("last_error") or "take_profit_limit_inactive")
                     payload["pending_live_exit"] = pending_exit
                     _attach_pending_state(payload)
                     row.payload_json = payload
@@ -2475,9 +2409,7 @@ async def reconcile_live_positions(
             )
             now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
             seconds_since_attempt = (
-                (now_naive - last_attempt_dt).total_seconds()
-                if last_attempt_dt is not None
-                else float("inf")
+                (now_naive - last_attempt_dt).total_seconds() if last_attempt_dt is not None else float("inf")
             )
 
             if retry_count >= _FAILED_EXIT_MAX_RETRIES:
@@ -2486,9 +2418,7 @@ async def reconcile_live_positions(
                     pending_exit["exhausted_at"] = _iso_utc(now)
                     pending_exit["retry_count"] = retry_count
                     pending_exit["last_attempt_at"] = _iso_utc(now)
-                    pending_exit["last_error"] = str(
-                        pending_exit.get("last_error") or "exit_retry_exhausted"
-                    )
+                    pending_exit["last_error"] = str(pending_exit.get("last_error") or "exit_retry_exhausted")
                     pending_exit["next_retry_at"] = None
                     payload["pending_live_exit"] = pending_exit
                     _attach_pending_state(payload)
@@ -2523,11 +2453,7 @@ async def reconcile_live_positions(
                 max(0.0, safe_float(pending_exit.get("exit_size"), 0.0) or 0.0),
                 _fill_sz_r if _fill_sz_r > 0 else 0.0,
             )
-            wallet_exit_size_cap = (
-                wallet_position_size
-                if wallet_position_size > _WALLET_SIZE_EPSILON
-                else 0.0
-            )
+            wallet_exit_size_cap = wallet_position_size if wallet_position_size > _WALLET_SIZE_EPSILON else 0.0
             if exit_size <= 0.0 and wallet_exit_size_cap > 0.0:
                 exit_size = wallet_exit_size_cap
             if exit_size > 0.0:
@@ -2585,7 +2511,9 @@ async def reconcile_live_positions(
                     if exec_result.status in {"executed", "open", "submitted"}:
                         logger.info(
                             "Exit retry succeeded for order=%s attempt=%d status=%s",
-                            row.id, retry_count + 1, exec_result.status,
+                            row.id,
+                            retry_count + 1,
+                            exec_result.status,
                         )
                         if not dry_run:
                             pending_exit["status"] = "submitted"
@@ -2606,7 +2534,9 @@ async def reconcile_live_positions(
                     else:
                         logger.warning(
                             "Exit retry failed for order=%s attempt=%d error=%s",
-                            row.id, retry_count + 1, exec_result.error_message,
+                            row.id,
+                            retry_count + 1,
+                            exec_result.error_message,
                         )
                         if not dry_run:
                             pending_exit["status"] = "failed"
@@ -2626,7 +2556,9 @@ async def reconcile_live_positions(
                 except Exception as exc:
                     logger.warning(
                         "Exit retry exception for order=%s attempt=%d: %s",
-                        row.id, retry_count + 1, exc,
+                        row.id,
+                        retry_count + 1,
+                        exc,
                     )
                     if not dry_run:
                         pending_exit["status"] = "failed"
@@ -2662,7 +2594,10 @@ async def reconcile_live_positions(
                 held += 1
                 continue
 
-        if isinstance(pending_exit, dict) and pending_exit.get("status") in {"blocked_min_notional", "blocked_retry_exhausted"}:
+        if isinstance(pending_exit, dict) and pending_exit.get("status") in {
+            "blocked_min_notional",
+            "blocked_retry_exhausted",
+        }:
             if pending_winning_idx is None and wallet_settlement_price is None:
                 if not dry_run and pending_state_changed:
                     payload["position_state"] = pending_next_state
@@ -2737,11 +2672,7 @@ async def reconcile_live_positions(
                 else (
                     market_side_price
                     if market_side_price is not None
-                    else (
-                        snapshot_side_price
-                        if snapshot_side_price is not None
-                        else wallet_mark_price
-                    )
+                    else (snapshot_side_price if snapshot_side_price is not None else wallet_mark_price)
                 )
             )
         )
@@ -2849,7 +2780,9 @@ async def reconcile_live_positions(
                             pos_view.age_minutes = age_minutes
                             pos_view.pnl_percent = pnl_pct
                             pos_view.filled_size = (
-                                filled_size if filled_size > 0.0 else (notional / entry_price if entry_price > 0 else 0.0)
+                                filled_size
+                                if filled_size > 0.0
+                                else (notional / entry_price if entry_price > 0 else 0.0)
                             )
                             pos_view.notional_usd = notional
                             if "strategy_context" not in payload:
@@ -2914,9 +2847,7 @@ async def reconcile_live_positions(
                         now=now,
                     )
                     close_price = (
-                        strategy_exit.close_price
-                        if strategy_exit.close_price is not None
-                        else exit_eval_price
+                        strategy_exit.close_price if strategy_exit.close_price is not None else exit_eval_price
                     )
                     close_trigger = f"strategy:{strategy_exit.reason}"
                     price_source = exit_eval_price_source
@@ -3085,11 +3016,7 @@ async def reconcile_live_positions(
                 exit_size = filled_size if filled_size > 0.0 else quantity
                 if exit_size > 0.0:
                     exit_record["exit_size"] = float(exit_size)
-                wallet_exit_size_cap = (
-                    wallet_position_size
-                    if wallet_position_size > _WALLET_SIZE_EPSILON
-                    else 0.0
-                )
+                wallet_exit_size_cap = wallet_position_size if wallet_position_size > _WALLET_SIZE_EPSILON else 0.0
                 if wallet_exit_size_cap > 0.0:
                     if exit_size <= 0.0:
                         exit_size = wallet_exit_size_cap
@@ -3151,7 +3078,9 @@ async def reconcile_live_positions(
                             exit_record["last_attempt_at"] = _iso_utc(now)
                             logger.info(
                                 "Exit order placed for order=%s trigger=%s status=%s",
-                                row.id, close_trigger, exec_result.status,
+                                row.id,
+                                close_trigger,
+                                exec_result.status,
                             )
                         else:
                             exit_record["status"] = "failed"
@@ -3163,7 +3092,9 @@ async def reconcile_live_positions(
                             )
                             logger.warning(
                                 "Exit order failed for order=%s trigger=%s error=%s",
-                                row.id, close_trigger, exec_result.error_message,
+                                row.id,
+                                close_trigger,
+                                exec_result.error_message,
                             )
                     except Exception as exc:
                         exit_record["status"] = "failed"
@@ -3175,7 +3106,9 @@ async def reconcile_live_positions(
                         )
                         logger.warning(
                             "Exit order exception for order=%s trigger=%s: %s",
-                            row.id, close_trigger, exc,
+                            row.id,
+                            close_trigger,
+                            exc,
                         )
                 else:
                     exit_record["status"] = "failed"

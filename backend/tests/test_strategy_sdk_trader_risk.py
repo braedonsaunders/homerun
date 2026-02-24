@@ -43,18 +43,27 @@ def test_validate_trader_filter_config_normalizes_min_order_size_fields():
 
 
 def test_resolve_min_order_size_prefers_mode_specific_then_base_then_portfolio():
-    assert StrategySDK.resolve_min_order_size_usd(
-        {"min_order_size_usd": 2.0, "live_min_order_size_usd": 5.0},
-        mode="live",
-        fallback=1.0,
-    ) == 5.0
-    assert StrategySDK.resolve_min_order_size_usd(
-        {"min_order_size_usd": 2.0},
-        mode="live",
-        fallback=1.0,
-    ) == 2.0
-    assert StrategySDK.resolve_min_order_size_usd(
-        {"portfolio": {"min_order_notional_usd": 6.0}},
-        mode="live",
-        fallback=1.0,
-    ) == 6.0
+    assert (
+        StrategySDK.resolve_min_order_size_usd(
+            {"min_order_size_usd": 2.0, "live_min_order_size_usd": 5.0},
+            mode="live",
+            fallback=1.0,
+        )
+        == 5.0
+    )
+    assert (
+        StrategySDK.resolve_min_order_size_usd(
+            {"min_order_size_usd": 2.0},
+            mode="live",
+            fallback=1.0,
+        )
+        == 2.0
+    )
+    assert (
+        StrategySDK.resolve_min_order_size_usd(
+            {"portfolio": {"min_order_notional_usd": 6.0}},
+            mode="live",
+            fallback=1.0,
+        )
+        == 6.0
+    )

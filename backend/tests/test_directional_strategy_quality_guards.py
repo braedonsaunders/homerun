@@ -232,4 +232,3 @@ def test_market_making_skips_multileg_contracts():
     )
     opps = strategy.detect(events=[], markets=[market], prices={})
     assert opps == []
-

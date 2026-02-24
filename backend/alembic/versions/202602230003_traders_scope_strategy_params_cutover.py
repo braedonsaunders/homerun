@@ -86,9 +86,7 @@ def upgrade() -> None:
         values: dict[str, object] = {"source_configs_json": next_source_configs}
         if has_updated_at:
             values["updated_at"] = now
-        bind.execute(
-            traders.update().where(traders.c.id == row.get("id")).values(**values)
-        )
+        bind.execute(traders.update().where(traders.c.id == row.get("id")).values(**values))
 
 
 def downgrade() -> None:

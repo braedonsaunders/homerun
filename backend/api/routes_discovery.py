@@ -2254,7 +2254,9 @@ async def get_traders_network_graph(
                 if str(edge.get("kind") or "") == "cluster_membership"
                 and str(edge.get("target") or "") in selected_wallet_ids
             ]
-            cluster_node_ids = {str(edge.get("source") or "") for edge in cluster_edges if str(edge.get("source") or "")}
+            cluster_node_ids = {
+                str(edge.get("source") or "") for edge in cluster_edges if str(edge.get("source") or "")
+            }
 
         node_by_id = {str(node.get("id") or ""): node for node in base_nodes if str(node.get("id") or "")}
         cluster_nodes = [dict(node_by_id[node_id]) for node_id in cluster_node_ids if node_id in node_by_id]
@@ -2282,9 +2284,7 @@ async def get_traders_network_graph(
                 ]
                 members = [address for address in members if address]
                 linked_wallet_ids = [
-                    f"wallet:{address}"
-                    for address in members
-                    if f"wallet:{address}" in selected_wallet_ids
+                    f"wallet:{address}" for address in members if f"wallet:{address}" in selected_wallet_ids
                 ]
                 if not linked_wallet_ids:
                     continue
@@ -2345,9 +2345,7 @@ async def get_traders_network_graph(
             node["group_links"] = int(group_links.get(node_id, 0))
             node["cluster_links"] = int(cluster_links.get(node_id, 0))
             node["degree"] = int(
-                co_trade_degree.get(node_id, 0)
-                + group_links.get(node_id, 0)
-                + cluster_links.get(node_id, 0)
+                co_trade_degree.get(node_id, 0) + group_links.get(node_id, 0) + cluster_links.get(node_id, 0)
             )
 
         visible_wallet_addresses = {

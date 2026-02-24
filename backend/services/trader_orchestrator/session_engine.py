@@ -115,7 +115,9 @@ def _execution_profile_for_signal(
     strategy_context = payload.get("strategy_context")
     if not isinstance(strategy_context, dict):
         strategy_context = payload.get("strategy_context_json")
-    context_source = str(strategy_context.get("source_key") or "").strip().lower() if isinstance(strategy_context, dict) else ""
+    context_source = (
+        str(strategy_context.get("source_key") or "").strip().lower() if isinstance(strategy_context, dict) else ""
+    )
 
     is_traders = (
         source_key == "traders"
@@ -245,7 +247,9 @@ class ExecutionSessionEngine:
                 1,
                 safe_int(
                     risk_limits.get("session_timeout_seconds"),
-                    safe_int(profile_constraints.get("session_timeout_seconds"), constraints["session_timeout_seconds"]),
+                    safe_int(
+                        profile_constraints.get("session_timeout_seconds"), constraints["session_timeout_seconds"]
+                    ),
                 ),
             )
         if "max_reprice_attempts" not in raw_constraints:
@@ -263,7 +267,9 @@ class ExecutionSessionEngine:
                     1.0,
                     safe_float(
                         risk_limits.get("leg_fill_tolerance_ratio"),
-                        safe_float(profile_constraints.get("leg_fill_tolerance_ratio"), constraints["leg_fill_tolerance_ratio"]),
+                        safe_float(
+                            profile_constraints.get("leg_fill_tolerance_ratio"), constraints["leg_fill_tolerance_ratio"]
+                        ),
                     ),
                 ),
             )
@@ -941,9 +947,7 @@ class ExecutionSessionEngine:
                 if hedging_deadline_at is None:
                     hedging_deadline_at = hedging_started_at + timedelta(seconds=hedge_timeout_seconds)
                 if now >= hedging_deadline_at:
-                    timeout_reason = (
-                        f"Hedge timeout exceeded ({hedge_timeout_seconds}s); escalating session to failed."
-                    )
+                    timeout_reason = f"Hedge timeout exceeded ({hedge_timeout_seconds}s); escalating session to failed."
                     await create_execution_session_event(
                         self.db,
                         session_id=row.id,

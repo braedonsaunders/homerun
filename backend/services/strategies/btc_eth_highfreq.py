@@ -2135,8 +2135,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 (datetime.now(timezone.utc) - live_context_fetched_at.astimezone(timezone.utc)).total_seconds(),
             )
         live_context_fresh_ok = (
-            live_context_age_seconds is None
-            or live_context_age_seconds <= max_live_context_age_seconds
+            live_context_age_seconds is None or live_context_age_seconds <= max_live_context_age_seconds
         )
 
         signal_timestamp_used = _parse_datetime_utc(
@@ -2164,7 +2163,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 0.0,
                 (datetime.now(timezone.utc) - signal_ts_utc.astimezone(timezone.utc)).total_seconds(),
             )
-        max_signal_age_seconds_cfg = self._float(_timeframe_override(params, "max_signal_age_seconds", signal_timeframe))
+        max_signal_age_seconds_cfg = self._float(
+            _timeframe_override(params, "max_signal_age_seconds", signal_timeframe)
+        )
         if max_signal_age_seconds_cfg is None:
             max_signal_age_seconds_cfg = to_float(params.get("max_signal_age_seconds", 20.0), 20.0)
         max_signal_age_seconds = max(0.1, float(max_signal_age_seconds_cfg))
@@ -2193,7 +2194,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     0.0,
                     (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
                 )
-        max_market_data_age_ms_cfg = self._float(_timeframe_override(params, "max_market_data_age_ms", signal_timeframe))
+        max_market_data_age_ms_cfg = self._float(
+            _timeframe_override(params, "max_market_data_age_ms", signal_timeframe)
+        )
         if max_market_data_age_ms_cfg is None:
             max_market_data_age_ms_cfg = to_float(params.get("max_market_data_age_ms", 900.0), 900.0)
         max_market_data_age_ms = max(50.0, float(max_market_data_age_ms_cfg))
@@ -2202,7 +2205,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             for item in _as_list(_first_present(params.get("require_market_data_age_for_sources"), ["crypto"]))
             if str(item or "").strip()
         }
-        require_market_data_age = str(getattr(signal, "source", "") or "").strip().lower() in require_market_data_age_for_sources
+        require_market_data_age = (
+            str(getattr(signal, "source", "") or "").strip().lower() in require_market_data_age_for_sources
+        )
         market_data_freshness_enforced = to_bool(params.get("enforce_market_data_freshness"), True)
         market_data_fresh_ok = (
             (not market_data_freshness_enforced)
@@ -2229,10 +2234,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 else default_min_seconds_by_timeframe.get(signal_timeframe, 0.0)
             )
         )
-        entry_window_ok = (
-            signal_seconds_left < 0
-            or signal_seconds_left >= float(min_seconds_left_for_entry)
-        )
+        entry_window_ok = signal_seconds_left < 0 or signal_seconds_left >= float(min_seconds_left_for_entry)
 
         if signal_seconds_left >= 0 and signal_timeframe:
             regime = self._crypto_regime(signal_seconds_left, self._timeframe_seconds(signal_timeframe))
@@ -2365,21 +2367,33 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         move_5m_pct = self._float(
             _first_present(
-                ((history_summary.get("move_5m") or {}).get("percent") if isinstance(history_summary.get("move_5m"), dict) else None),
+                (
+                    (history_summary.get("move_5m") or {}).get("percent")
+                    if isinstance(history_summary.get("move_5m"), dict)
+                    else None
+                ),
                 payload.get("move_5m_percent"),
                 payload.get("move_5m_pct"),
             )
         )
         move_30m_pct = self._float(
             _first_present(
-                ((history_summary.get("move_30m") or {}).get("percent") if isinstance(history_summary.get("move_30m"), dict) else None),
+                (
+                    (history_summary.get("move_30m") or {}).get("percent")
+                    if isinstance(history_summary.get("move_30m"), dict)
+                    else None
+                ),
                 payload.get("move_30m_percent"),
                 payload.get("move_30m_pct"),
             )
         )
         move_2h_pct = self._float(
             _first_present(
-                ((history_summary.get("move_2h") or {}).get("percent") if isinstance(history_summary.get("move_2h"), dict) else None),
+                (
+                    (history_summary.get("move_2h") or {}).get("percent")
+                    if isinstance(history_summary.get("move_2h"), dict)
+                    else None
+                ),
                 payload.get("move_2h_percent"),
                 payload.get("move_2h_pct"),
             )
@@ -2397,10 +2411,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.2,
             to_float(params.get("max_recent_move_zscore_for_entry", 2.0), 2.0),
         )
-        recent_move_ok = (
-            recent_move_zscore is None
-            or recent_move_zscore <= max_recent_move_zscore_for_entry
-        )
+        recent_move_ok = recent_move_zscore is None or recent_move_zscore <= max_recent_move_zscore_for_entry
         recent_move_detail = (
             f"z={recent_move_zscore:.2f} max={max_recent_move_zscore_for_entry:.2f} "
             f"move_5m={move_5m_pct if move_5m_pct is not None else 'n/a'} "
@@ -2422,10 +2433,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.0,
             to_float(params.get("max_spread_widening_bps", 20.0), 20.0),
         )
-        spread_widening_ok = (
-            spread_widening_bps is None
-            or spread_widening_bps <= max_spread_widening_bps
-        )
+        spread_widening_ok = spread_widening_bps is None or spread_widening_bps <= max_spread_widening_bps
         spread_widening_detail = (
             f"widening_bps={spread_widening_bps:.2f} max={max_spread_widening_bps:.2f}"
             if spread_widening_bps is not None
@@ -2452,10 +2460,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             1.0,
             max(0.5, to_float(params.get("max_orderbook_imbalance", 0.88), 0.88)),
         )
-        orderbook_imbalance_ok = (
-            orderbook_imbalance is None
-            or orderbook_imbalance <= max_orderbook_imbalance
-        )
+        orderbook_imbalance_ok = orderbook_imbalance is None or orderbook_imbalance <= max_orderbook_imbalance
         orderbook_imbalance_detail = (
             f"imbalance={orderbook_imbalance:.3f} max={max_orderbook_imbalance:.3f}"
             if orderbook_imbalance is not None
@@ -2490,15 +2495,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         oracle_required = require_oracle_for_directional and active_mode in {"directional", "rebalance"}
         if oracle_required:
             oracle_fresh_ok = (
-                oracle_available
-                and oracle_age_seconds is not None
-                and oracle_age_seconds <= max_oracle_age_seconds
+                oracle_available and oracle_age_seconds is not None and oracle_age_seconds <= max_oracle_age_seconds
             )
         else:
             oracle_fresh_ok = (
-                not oracle_available
-                or oracle_age_seconds is None
-                or oracle_age_seconds <= max_oracle_age_seconds
+                not oracle_available or oracle_age_seconds is None or oracle_age_seconds <= max_oracle_age_seconds
             )
         oracle_freshness_detail = (
             (
@@ -2693,9 +2694,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             to_float(params.get("rebalance_min_entry_price_floor", 0.16), 0.16),
         )
         default_entry_price_floor = (
-            rebalance_entry_price_floor
-            if active_mode == "rebalance"
-            else directional_entry_price_floor
+            rebalance_entry_price_floor if active_mode == "rebalance" else directional_entry_price_floor
         )
         if regime == "closing":
             default_entry_price_floor = max(default_entry_price_floor, 0.05)
@@ -2704,10 +2703,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.0,
             0.99,
         )
-        entry_price_floor_ok = (
-            entry_price_for_execution is None
-            or entry_price_for_execution >= entry_price_floor
-        )
+        entry_price_floor_ok = entry_price_for_execution is None or entry_price_for_execution >= entry_price_floor
         entry_price_floor_detail = (
             f"entry_price={entry_price_for_execution:.4f} floor={entry_price_floor:.4f}"
             if entry_price_for_execution is not None
@@ -2724,9 +2720,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             1.0,
         )
         default_entry_price_ceiling = (
-            rebalance_entry_price_ceiling
-            if active_mode == "rebalance"
-            else directional_entry_price_ceiling
+            rebalance_entry_price_ceiling if active_mode == "rebalance" else directional_entry_price_ceiling
         )
         if regime == "opening":
             default_entry_price_ceiling = min(
@@ -2740,10 +2734,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         )
         if entry_price_ceiling < entry_price_floor:
             entry_price_ceiling = entry_price_floor
-        entry_price_ceiling_ok = (
-            entry_price_for_execution is None
-            or entry_price_for_execution <= entry_price_ceiling
-        )
+        entry_price_ceiling_ok = entry_price_for_execution is None or entry_price_for_execution <= entry_price_ceiling
         entry_price_ceiling_detail = (
             f"entry_price={entry_price_for_execution:.4f} ceiling={entry_price_ceiling:.4f}"
             if entry_price_for_execution is not None
@@ -3108,9 +3099,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 pass
 
         timeframe = _normalize_timeframe(
-            context_payload.get("timeframe")
-            or context_payload.get("cadence")
-            or context_payload.get("interval")
+            context_payload.get("timeframe") or context_payload.get("cadence") or context_payload.get("interval")
         )
 
         default_stop_loss_activation_by_timeframe = {
@@ -3275,9 +3264,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         config.setdefault("force_flatten_max_profit_pct", to_float(defaults.get("force_flatten_max_profit_pct"), 1.0))
         config.setdefault("force_flatten_headroom_floor", to_float(defaults.get("force_flatten_headroom_floor"), 1.15))
         config.setdefault("force_flatten_min_loss_pct", to_float(defaults.get("force_flatten_min_loss_pct"), 0.0))
-        config.setdefault("resolution_risk_flatten_enabled", to_bool(defaults.get("resolution_risk_flatten_enabled"), True))
+        config.setdefault(
+            "resolution_risk_flatten_enabled", to_bool(defaults.get("resolution_risk_flatten_enabled"), True)
+        )
         config.setdefault("resolution_risk_seconds_left", to_float(defaults.get("resolution_risk_seconds_left"), 180.0))
-        config.setdefault("resolution_risk_max_profit_pct", to_float(defaults.get("resolution_risk_max_profit_pct"), 6.0))
+        config.setdefault(
+            "resolution_risk_max_profit_pct", to_float(defaults.get("resolution_risk_max_profit_pct"), 6.0)
+        )
         config.setdefault("resolution_risk_min_loss_pct", to_float(defaults.get("resolution_risk_min_loss_pct"), 2.0))
         config.setdefault(
             "resolution_risk_min_headroom_ratio",
@@ -3379,7 +3372,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
             age_minutes = self._float(getattr(position, "age_minutes", None))
             evaluated = bool(rapid_state.get("evaluated"))
-            if not evaluated and (rapid_window_minutes <= 0.0 or (age_minutes is not None and age_minutes >= rapid_window_minutes)):
+            if not evaluated and (
+                rapid_window_minutes <= 0.0 or (age_minutes is not None and age_minutes >= rapid_window_minutes)
+            ):
                 required_peak = entry_price * (1.0 + (min_increase_pct / 100.0))
                 rapid_state["evaluated"] = True
                 rapid_state["stalled"] = peak_price <= (required_peak + 1e-9)
@@ -3387,11 +3382,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 rapid_state["required_peak_price"] = required_peak
                 rapid_state["window_minutes"] = rapid_window_minutes
 
-            token_id = str(
-                state.get("token_id")
-                or context_payload.get("token_id")
-                or ""
-            ).strip()
+            token_id = str(state.get("token_id") or context_payload.get("token_id") or "").strip()
             if not token_id:
                 execution_plan = context_payload.get("execution_plan")
                 if isinstance(execution_plan, dict):
@@ -3472,7 +3463,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     exit_headroom_ratio = exit_notional_estimate / min_order_size_usd
 
             urgent_headroom_ratio = max(1.0, to_float(config.get("executable_exit_headroom_urgent"), 1.35))
-            warn_headroom_ratio = max(urgent_headroom_ratio + 0.05, to_float(config.get("executable_exit_headroom_warn"), 2.0))
+            warn_headroom_ratio = max(
+                urgent_headroom_ratio + 0.05, to_float(config.get("executable_exit_headroom_warn"), 2.0)
+            )
             hazard_threshold = clamp(to_float(config.get("executable_exit_hazard_threshold"), 0.62), 0.0, 1.0)
             time_pressure_seconds = max(1.0, to_float(config.get("executable_exit_time_pressure_seconds"), 120.0))
 
@@ -3495,10 +3488,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             flow_neg = clamp(-(flow_imbalance or 0.0), 0.0, 1.0)
             momentum_neg = clamp(-((momentum_short_pct or 0.0) / 2.0), 0.0, 1.0)
             hazard_score = clamp(
-                (headroom_stress * 0.55)
-                + (flow_neg * 0.25)
-                + (momentum_neg * 0.15)
-                + (time_pressure * 0.05),
+                (headroom_stress * 0.55) + (flow_neg * 0.25) + (momentum_neg * 0.15) + (time_pressure * 0.05),
                 0.0,
                 1.0,
             )
@@ -3520,11 +3510,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             rapid_state["executable_hazard_score"] = hazard_score
             rapid_state["time_pressure"] = time_pressure
 
-            if (
-                exit_headroom_ratio is not None
-                and exit_headroom_ratio <= urgent_headroom_ratio
-                and pnl_pct <= 0.5
-            ):
+            if exit_headroom_ratio is not None and exit_headroom_ratio <= urgent_headroom_ratio and pnl_pct <= 0.5:
                 context_payload[rapid_state_key] = rapid_state
                 return {
                     "config": config,
@@ -3613,12 +3599,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                         },
                     }
 
-                reversal_signal = (
-                    drawdown_from_peak_pct >= (dynamic_backside_pct * 0.55)
-                    and (
-                        (momentum_short_pct is not None and momentum_short_pct <= -0.25)
-                        or (flow_imbalance is not None and flow_imbalance <= -0.2)
-                    )
+                reversal_signal = drawdown_from_peak_pct >= (dynamic_backside_pct * 0.55) and (
+                    (momentum_short_pct is not None and momentum_short_pct <= -0.25)
+                    or (flow_imbalance is not None and flow_imbalance <= -0.2)
                 )
                 if drawdown_from_peak_pct >= dynamic_backside_pct or reversal_signal:
                     context_payload[rapid_state_key] = rapid_state
@@ -3719,12 +3702,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     rebound_fading = fade_from_rebound_peak_pct >= underwater_exit_fade_pct
                     soft_fade = fade_from_rebound_peak_pct >= (underwater_exit_fade_pct * 0.60)
                     dwell_ready = (
-                        dwell_elapsed_minutes is not None
-                        and dwell_elapsed_minutes >= underwater_dwell_minutes
+                        dwell_elapsed_minutes is not None and dwell_elapsed_minutes >= underwater_dwell_minutes
                     )
                     recovery_ready = (
-                        rebound_pct >= underwater_rebound_pct_min
-                        and recovery_ratio >= underwater_recovery_ratio_min
+                        rebound_pct >= underwater_rebound_pct_min and recovery_ratio >= underwater_recovery_ratio_min
                     )
 
                     underwater_state["underwater_since_age_minutes"] = underwater_since_minutes
@@ -3956,25 +3937,20 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 else:
                     seconds_left = float(timeframe_seconds)
             is_live = bool(market.get("is_live")) if isinstance(market.get("is_live"), bool) else (seconds_left > 0.0)
-            is_current = (
-                bool(market.get("is_current"))
-                if isinstance(market.get("is_current"), bool)
-                else is_live
-            )
+            is_current = bool(market.get("is_current")) if isinstance(market.get("is_current"), bool) else is_live
             start_time = str(market.get("start_time") or "").strip() or None
             end_time = str(market.get("end_time") or "").strip() or None
-            live_market_fetched_at = str(
-                market.get("fetched_at")
-                or market.get("snapshot_fetched_at")
-                or ""
-            ).strip() or None
+            live_market_fetched_at = (
+                str(market.get("fetched_at") or market.get("snapshot_fetched_at") or "").strip() or None
+            )
             market_data_age_ms = self._float(market.get("market_data_age_ms"))
             if market_data_age_ms is None and live_market_fetched_at:
                 parsed_fetched_at = _parse_datetime_utc(live_market_fetched_at)
                 if parsed_fetched_at is not None:
                     market_data_age_ms = max(
                         0.0,
-                        (datetime.now(timezone.utc) - parsed_fetched_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+                        (datetime.now(timezone.utc) - parsed_fetched_at.astimezone(timezone.utc)).total_seconds()
+                        * 1000.0,
                     )
 
             regime = self._crypto_regime(seconds_left, timeframe_seconds)

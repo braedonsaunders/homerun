@@ -121,9 +121,7 @@ class FeeModel:
         else:
             venue = str(platform or "polymarket").strip().lower()
             normalized_prices = [
-                max(0.0, min(1.0, float(p)))
-                for p in (entry_prices or [])
-                if isinstance(p, (int, float))
+                max(0.0, min(1.0, float(p))) for p in (entry_prices or []) if isinstance(p, (int, float))
             ]
             if normalized_prices and venue == "polymarket":
                 winner_fee = _to_decimal(sum(polymarket_taker_fee(price) for price in normalized_prices))

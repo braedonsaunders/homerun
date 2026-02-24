@@ -982,7 +982,9 @@ RETURNING target.id
                     trade_signal_emission_days=config.get(
                         "trade_signal_emission_days", self.DEFAULT_TRADE_SIGNAL_EMISSION_AGE
                     ),
-                    trade_signal_update_days=config.get("trade_signal_update_days", self.DEFAULT_TRADE_SIGNAL_UPDATE_AGE),
+                    trade_signal_update_days=config.get(
+                        "trade_signal_update_days", self.DEFAULT_TRADE_SIGNAL_UPDATE_AGE
+                    ),
                     wallet_activity_rollup_days=config.get(
                         "wallet_activity_rollup_days", self.DEFAULT_WALLET_ACTIVITY_ROLLUP_AGE
                     ),

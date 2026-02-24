@@ -235,7 +235,9 @@ async def _run_reconciliation_cycle(
         summary["traders_processed"] = int(summary["traders_processed"]) + 1
         if not bool(provider.get("provider_ready", True)):
             summary["provider_unavailable_traders"] = int(summary["provider_unavailable_traders"]) + 1
-        summary["provider_active_seen"] = int(summary["provider_active_seen"]) + int(provider.get("active_seen", 0) or 0)
+        summary["provider_active_seen"] = int(summary["provider_active_seen"]) + int(
+            provider.get("active_seen", 0) or 0
+        )
         summary["provider_status_changes"] = int(summary["provider_status_changes"]) + int(
             provider.get("status_changes", 0) or 0
         )
@@ -246,7 +248,9 @@ async def _run_reconciliation_cycle(
         summary["provider_price_updates"] = int(summary["provider_price_updates"]) + int(
             provider.get("price_updates", 0) or 0
         )
-        summary["positions_would_close"] = int(summary["positions_would_close"]) + int(lifecycle.get("would_close", 0) or 0)
+        summary["positions_would_close"] = int(summary["positions_would_close"]) + int(
+            lifecycle.get("would_close", 0) or 0
+        )
         summary["positions_closed"] = int(summary["positions_closed"]) + int(lifecycle.get("closed", 0) or 0)
         summary["inventory_open_positions"] = int(summary["inventory_open_positions"]) + int(
             inventory.get("open_positions", 0) or 0
@@ -406,11 +410,7 @@ async def run_worker_loop() -> None:
                     emit_event = True
                     requested_run = False
                 else:
-                    wait_seconds = (
-                        _ACTIVE_POSITION_TICK_SECONDS
-                        if last_open_positions > 0
-                        else float(interval_seconds)
-                    )
+                    wait_seconds = _ACTIVE_POSITION_TICK_SECONDS if last_open_positions > 0 else float(interval_seconds)
                     try:
                         event_type = await asyncio.wait_for(
                             trigger_queue.get(),

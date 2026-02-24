@@ -1646,7 +1646,6 @@ class CrossPlatformTracker:
 
 
 class WhaleCohortAnalyzer:
-
     MAX_WALLETS = 500
     MIN_SHARED_MARKETS = 3
     MIN_COMBINED_SCORE = 0.5
@@ -1729,7 +1728,7 @@ class WhaleCohortAnalyzer:
                     continue
                 wallet_map.setdefault(address, {"address": address})
 
-        return list(wallet_map.values())[:self.MAX_WALLETS]
+        return list(wallet_map.values())[: self.MAX_WALLETS]
 
     async def _fetch_rollups(self, addresses: List[str]) -> List[WalletActivityRollup]:
         cutoff = utcnow() - timedelta(days=self.LOOKBACK_DAYS)
@@ -1753,9 +1752,7 @@ class WhaleCohortAnalyzer:
             return "SELL"
         return side
 
-    def _build_participation_matrix(
-        self, rollups: List[WalletActivityRollup]
-    ) -> Dict[str, Dict[str, dict]]:
+    def _build_participation_matrix(self, rollups: List[WalletActivityRollup]) -> Dict[str, Dict[str, dict]]:
         matrix: Dict[str, Dict[str, dict]] = defaultdict(dict)
         for r in rollups:
             addr = (r.wallet_address or "").strip().lower()
@@ -1774,9 +1771,7 @@ class WhaleCohortAnalyzer:
                     existing["side"] = side
         return dict(matrix)
 
-    def _compute_pairwise_scores(
-        self, participation: Dict[str, Dict[str, dict]]
-    ) -> Dict[Tuple[str, str], dict]:
+    def _compute_pairwise_scores(self, participation: Dict[str, Dict[str, dict]]) -> Dict[Tuple[str, str], dict]:
         wallets = list(participation.keys())
         pair_scores: Dict[Tuple[str, str], dict] = {}
 
@@ -1815,11 +1810,7 @@ class WhaleCohortAnalyzer:
             # Normalize shared market count (log scale against max)
             shared_markets_norm = min(math.log(shared_count + 1) / math.log(max_shared + 1), 1.0)
 
-            combined = (
-                shared_markets_norm * 0.3
-                + direction_agreement * 0.4
-                + timing_correlation * 0.3
-            )
+            combined = shared_markets_norm * 0.3 + direction_agreement * 0.4 + timing_correlation * 0.3
 
             if combined > self.MIN_COMBINED_SCORE:
                 pair_scores[(w_a, w_b)] = {
@@ -1863,7 +1854,7 @@ class WhaleCohortAnalyzer:
     ) -> List[dict]:
         # Build adjacency from qualifying pairs
         adj: Dict[str, Set[str]] = defaultdict(set)
-        for (w_a, w_b) in pair_scores:
+        for w_a, w_b in pair_scores:
             adj[w_a].add(w_b)
             adj[w_b].add(w_a)
 
@@ -1909,12 +1900,14 @@ class WhaleCohortAnalyzer:
                     all_markets.update(participation[w].keys())
 
             pair_count = len(list(combinations(members, 2)))
-            cohorts.append({
-                "wallet_addresses": sorted(members),
-                "avg_combined_score": round(sum(scores) / len(scores), 4),
-                "shared_market_count": total_shared // max(pair_count, 1),
-                "direction_agreement": round(sum(direction_agreements) / len(direction_agreements), 4),
-            })
+            cohorts.append(
+                {
+                    "wallet_addresses": sorted(members),
+                    "avg_combined_score": round(sum(scores) / len(scores), 4),
+                    "shared_market_count": total_shared // max(pair_count, 1),
+                    "direction_agreement": round(sum(direction_agreements) / len(direction_agreements), 4),
+                }
+            )
 
         cohorts.sort(key=lambda c: c["avg_combined_score"], reverse=True)
         return cohorts
@@ -2042,9 +2035,9 @@ class WhaleCohortAnalyzer:
             reverse=True,
         ):
             member_profiles = [profiles.get(address, {}) for address in members]
-            avg_composite_score = (
-                sum(float(profile.get("composite_score") or 0.0) for profile in member_profiles) / max(len(member_profiles), 1)
-            )
+            avg_composite_score = sum(
+                float(profile.get("composite_score") or 0.0) for profile in member_profiles
+            ) / max(len(member_profiles), 1)
             combined_pnl = sum(float(profile.get("total_pnl") or 0.0) for profile in member_profiles)
             tracked_member_count = sum(1 for profile in member_profiles if bool(profile.get("tracked")))
             cluster_label = ""
@@ -2102,13 +2095,7 @@ class WhaleCohortAnalyzer:
         if not addresses:
             return {}
 
-        normalized_addresses = sorted(
-            {
-                str(address).strip().lower()
-                for address in addresses
-                if str(address).strip()
-            }
-        )
+        normalized_addresses = sorted({str(address).strip().lower() for address in addresses if str(address).strip()})
         discovered_by_address: Dict[str, DiscoveredWallet] = {}
         tracked_labels: Dict[str, str] = {}
 

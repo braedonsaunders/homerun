@@ -727,7 +727,9 @@ class WalletWebSocketMonitor:
         if not self._rpc_urls:
             return None
 
-        limits = httpx.Limits(max_connections=max(6, len(self._rpc_urls) * 2), max_keepalive_connections=len(self._rpc_urls))
+        limits = httpx.Limits(
+            max_connections=max(6, len(self._rpc_urls) * 2), max_keepalive_connections=len(self._rpc_urls)
+        )
         async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT, limits=limits) as client:
             for endpoint in self._rpc_urls:
                 endpoint_error: Optional[Exception] = None
@@ -795,7 +797,9 @@ class WalletWebSocketMonitor:
                             await asyncio.sleep(0.2 * (endpoint_attempt + 1))
                             continue
                         now = time.monotonic()
-                        if (now - self._rpc_last_endpoint_failure_log_at) >= self._rpc_endpoint_failure_log_interval_seconds:
+                        if (
+                            now - self._rpc_last_endpoint_failure_log_at
+                        ) >= self._rpc_endpoint_failure_log_interval_seconds:
                             self._rpc_last_endpoint_failure_log_at = now
                             logger.warning(
                                 "Wallet monitor RPC request failed",

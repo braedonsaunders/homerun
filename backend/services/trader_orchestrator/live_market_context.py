@@ -398,8 +398,7 @@ async def build_live_signal_contexts(
 
     market_ids = sorted({row["market_lookup_id"] for row in signal_rows})
     market_infos: dict[str, dict[str, Any]] = {
-        market_id: dict(market_hints_by_lookup_id.get(market_id) or {})
-        for market_id in market_ids
+        market_id: dict(market_hints_by_lookup_id.get(market_id) or {}) for market_id in market_ids
     }
     market_sem = asyncio.Semaphore(max(1, int(max_market_concurrency)))
 

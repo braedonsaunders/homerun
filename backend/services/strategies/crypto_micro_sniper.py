@@ -123,15 +123,15 @@ class CryptoMicroSniperStrategy(BaseStrategy):
         origin_ok = bool(payload.get("strategy_origin") == "crypto_worker") or signal_type.startswith("crypto_worker")
         edge_ok = edge >= min_edge
         confidence_ok = confidence >= min_conf
-        price_window_ok = (
-            selected_price is not None and entry_price_min <= selected_price <= entry_price_max
-        )
+        price_window_ok = selected_price is not None and entry_price_min <= selected_price <= entry_price_max
         spread_ok = spread_bps is None or spread_bps <= max_spread_bps
         liquidity_ok = liquidity >= min_liquidity_usd
 
         checks = [
             DecisionCheck("source", "Crypto source", source_ok, detail="Requires source=crypto"),
-            DecisionCheck("origin", "Crypto worker origin", origin_ok, detail="Requires worker-generated crypto signal"),
+            DecisionCheck(
+                "origin", "Crypto worker origin", origin_ok, detail="Requires worker-generated crypto signal"
+            ),
             DecisionCheck("edge", "Edge threshold", edge_ok, score=edge, detail=f"min={min_edge:.2f}%"),
             DecisionCheck(
                 "confidence",

@@ -456,9 +456,7 @@ async def test_bridge_serializes_datetime_strategy_context(tmp_path):
             )
             assert emitted == 1
 
-            rows = (
-                (await session.execute(select(TradeSignal).where(TradeSignal.source == "traders"))).scalars().all()
-            )
+            rows = (await session.execute(select(TradeSignal).where(TradeSignal.source == "traders"))).scalars().all()
             assert len(rows) == 1
             context = dict(rows[0].strategy_context_json or {})
             assert isinstance(context.get("observed_at"), str)

@@ -23,9 +23,7 @@ def _unique_constraint_names(table_name: str) -> set[str]:
     if table_name not in set(inspector.get_table_names()):
         return set()
     return {
-        constraint.get("name")
-        for constraint in inspector.get_unique_constraints(table_name)
-        if constraint.get("name")
+        constraint.get("name") for constraint in inspector.get_unique_constraints(table_name) if constraint.get("name")
     }
 
 

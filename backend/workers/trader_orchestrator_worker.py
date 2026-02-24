@@ -307,7 +307,9 @@ def _accepted_signal_strategy_types(source_config: dict[str, Any]) -> set[str]:
 
     strategy_instance = _strategy_instance_for_source_config(source_config)
     if strategy_instance is not None:
-        allowed.update(_normalize_strategy_type_values(getattr(strategy_instance, "accepted_signal_strategy_types", None)))
+        allowed.update(
+            _normalize_strategy_type_values(getattr(strategy_instance, "accepted_signal_strategy_types", None))
+        )
 
     return allowed
 
@@ -486,9 +488,7 @@ async def _enforce_source_open_order_timeouts(
     now_utc = utcnow()
 
     expired_keys = [
-        key
-        for key, until in _open_order_timeout_cleanup_failure_cooldown_until.items()
-        if until <= now_utc
+        key for key, until in _open_order_timeout_cleanup_failure_cooldown_until.items() if until <= now_utc
     ]
     for key in expired_keys:
         _open_order_timeout_cleanup_failure_cooldown_until.pop(key, None)
@@ -905,9 +905,7 @@ def _live_risk_clamp_event_due(trader_id: str, now: datetime) -> bool:
     cooldown_until = _live_risk_clamp_event_cooldown_until.get(trader_id)
     if cooldown_until is not None and now < cooldown_until:
         return False
-    _live_risk_clamp_event_cooldown_until[trader_id] = now + timedelta(
-        seconds=_LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS
-    )
+    _live_risk_clamp_event_cooldown_until[trader_id] = now + timedelta(seconds=_LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS)
     return True
 
 
@@ -1921,6 +1919,7 @@ async def _run_trader_once(
 
             if run_mode == "live":
                 from services.trader_orchestrator.position_lifecycle import reconcile_live_positions
+
                 try:
                     safe_exit_result = await reconcile_live_positions(
                         session,
@@ -3271,10 +3270,16 @@ async def run_worker_loop() -> None:
                             f"Manage-only[{trigger_label}] ({reasons}) signals={total_processed_signals} "
                             f"decisions={total_decisions} orders={total_orders}"
                         )
-                    elif total_processed_signals == 0 and total_decisions == 0 and total_orders == 0 and open_orders > 0:
-                        activity = f"Cycle[{trigger_label}] monitoring open orders={open_orders} (no new pending signals)"
+                    elif (
+                        total_processed_signals == 0 and total_decisions == 0 and total_orders == 0 and open_orders > 0
+                    ):
+                        activity = (
+                            f"Cycle[{trigger_label}] monitoring open orders={open_orders} (no new pending signals)"
+                        )
                     elif high_frequency_crypto_active and total_processed_signals == 0:
-                        activity = f"Cycle[{trigger_label}] high-frequency crypto monitor active (no new pending signals)"
+                        activity = (
+                            f"Cycle[{trigger_label}] high-frequency crypto monitor active (no new pending signals)"
+                        )
                     await _write_orchestrator_snapshot_best_effort(
                         session,
                         running=True,

@@ -109,13 +109,9 @@ async def execute_live_order(
         try:
             live_quote = None
             if normalized_side == OrderSide.BUY:
-                live_quote = safe_float(
-                    await polymarket_client.get_price(normalized_token_id, side="BUY")
-                )
+                live_quote = safe_float(await polymarket_client.get_price(normalized_token_id, side="BUY"))
             else:
-                live_quote = safe_float(
-                    await polymarket_client.get_price(normalized_token_id, side="SELL")
-                )
+                live_quote = safe_float(await polymarket_client.get_price(normalized_token_id, side="SELL"))
             if live_quote is not None and live_quote > 0:
                 live_notional = float(live_quote) * requested_size
                 fallback_notional = (float(fallback) * requested_size) if fallback is not None and fallback > 0 else 0.0

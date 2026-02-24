@@ -1012,7 +1012,9 @@ class BaseStrategy(ABC):
                 if soc.near_resolution_exit:
                     seconds_left = self._seconds_left_for_position(position, market_state)
                     if seconds_left is not None and seconds_left <= soc.near_resolution_hours * 3600.0:
-                        spread_change_bps = abs(current_price - entry_price) / entry_price * 10000.0 if entry_price > 0 else 0.0
+                        spread_change_bps = (
+                            abs(current_price - entry_price) / entry_price * 10000.0 if entry_price > 0 else 0.0
+                        )
                         if spread_change_bps >= soc.near_resolution_spread_widen_bps:
                             return ExitDecision(
                                 "close",

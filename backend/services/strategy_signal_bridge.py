@@ -227,9 +227,7 @@ async def bridge_opportunities_to_signals(
                     "emitted_at": now.isoformat(),
                     "trigger": "strategy_signal_bridge",
                     "market_data_age_ms_avg": (
-                        round(sum(market_data_ages_ms) / len(market_data_ages_ms), 2)
-                        if market_data_ages_ms
-                        else None
+                        round(sum(market_data_ages_ms) / len(market_data_ages_ms), 2) if market_data_ages_ms else None
                     ),
                     "market_data_age_ms_max": max(market_data_ages_ms) if market_data_ages_ms else None,
                 },

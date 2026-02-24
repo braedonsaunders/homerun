@@ -1080,13 +1080,16 @@ class ParameterOptimizer:
         opportunities = await self._load_opportunity_history()
         result = _replay_opportunities(opportunities, trading_params)
         requested_seed = str((params or {}).get("run_seed") or "").strip() if isinstance(params, dict) else ""
-        run_seed = requested_seed or _stable_hash(
-            {
-                "mode": "param_optimizer_backtest",
-                "params": trading_params.to_dict(),
-                "opportunity_count": len(opportunities),
-            }
-        )[:16]
+        run_seed = (
+            requested_seed
+            or _stable_hash(
+                {
+                    "mode": "param_optimizer_backtest",
+                    "params": trading_params.to_dict(),
+                    "opportunity_count": len(opportunities),
+                }
+            )[:16]
+        )
         dataset_hash = _stable_hash(
             [
                 {

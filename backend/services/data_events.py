@@ -156,10 +156,7 @@ class DataEvent:
     def __post_init__(self) -> None:
         event_key = str(self.event_type or "").strip()
         if event_key not in EventType._ALL:
-            raise ValueError(
-                f"Unsupported event_type '{event_key}'. "
-                f"Valid event types: {sorted(EventType._ALL)}"
-            )
+            raise ValueError(f"Unsupported event_type '{event_key}'. Valid event types: {sorted(EventType._ALL)}")
         if not isinstance(self.timestamp, datetime):
             raise TypeError("timestamp must be a datetime instance")
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:

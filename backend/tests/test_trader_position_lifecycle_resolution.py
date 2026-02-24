@@ -635,7 +635,9 @@ async def test_live_pending_exit_closes_when_fill_threshold_met_with_stale_open_
 
 
 @pytest.mark.asyncio
-async def test_live_pending_exit_closes_when_provider_filled_and_wallet_flat_with_lower_fill_ratio(tmp_path, monkeypatch):
+async def test_live_pending_exit_closes_when_provider_filled_and_wallet_flat_with_lower_fill_ratio(
+    tmp_path, monkeypatch
+):
     engine, session_factory = await _build_session_factory(tmp_path)
     try:
         async with session_factory() as session:
@@ -928,9 +930,11 @@ async def test_paper_strategy_reverse_intent_emits_reverse_signal(tmp_path, monk
 
             monkeypatch.setattr(
                 "services.strategy_loader.strategy_loader.get_strategy",
-                lambda strategy_key: SimpleNamespace(instance=_ReverseExitStrategy())
-                if str(strategy_key or "").strip().lower() == "reverse_test"
-                else None,
+                lambda strategy_key: (
+                    SimpleNamespace(instance=_ReverseExitStrategy())
+                    if str(strategy_key or "").strip().lower() == "reverse_test"
+                    else None
+                ),
             )
 
             upsert_mock = AsyncMock(return_value=SimpleNamespace(id="reverse-signal-paper-1"))

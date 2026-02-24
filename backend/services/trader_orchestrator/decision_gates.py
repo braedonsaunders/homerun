@@ -221,12 +221,11 @@ def _runtime_signal_market_data_context(runtime_signal: Any) -> dict[str, Any]:
         or live_market.get("cadence")
         or live_market.get("interval")
     )
-    source = str(
-        getattr(runtime_signal, "source", None)
-        or payload.get("source")
-        or strategy_context.get("source")
-        or ""
-    ).strip().lower()
+    source = (
+        str(getattr(runtime_signal, "source", None) or payload.get("source") or strategy_context.get("source") or "")
+        .strip()
+        .lower()
+    )
 
     age_ms = safe_float(
         payload.get("market_data_age_ms")
@@ -505,9 +504,7 @@ def apply_platform_decision_gates(
 
     if final_decision == "selected":
         freshness_enforced = _coerce_bool(params.get("enforce_market_data_freshness"), True)
-        required_sources = _normalize_text_list(
-            params.get("require_market_data_age_for_sources", ["crypto"])
-        )
+        required_sources = _normalize_text_list(params.get("require_market_data_age_for_sources", ["crypto"]))
         source = str(market_data_context.get("source") or "")
         timeframe = str(market_data_context.get("timeframe") or "")
         age_ms = safe_float(market_data_context.get("age_ms"), None)
@@ -532,9 +529,7 @@ def apply_platform_decision_gates(
                         f"age_ms={age_ms:.0f} max={max_age_ms} source={source or 'unknown'} "
                         f"timeframe={timeframe or 'unknown'}"
                         if age_ms is not None
-                        else (
-                            f"age unavailable; source={source or 'unknown'} required={age_required}"
-                        )
+                        else (f"age unavailable; source={source or 'unknown'} required={age_required}")
                     )
                 ),
                 "payload": {
@@ -643,17 +638,9 @@ def apply_platform_decision_gates(
             "up",
             "down",
         }
-        should_enforce_directional_gate = (
-            directional_gate_enabled
-            and is_directional_signal
-            and source == "crypto"
-        )
-        directional_gate_passed = (
-            (not should_enforce_directional_gate)
-            or (
-                timeframe_minutes is not None
-                and timeframe_minutes + 1e-9 >= min_timeframe_minutes
-            )
+        should_enforce_directional_gate = directional_gate_enabled and is_directional_signal and source == "crypto"
+        directional_gate_passed = (not should_enforce_directional_gate) or (
+            timeframe_minutes is not None and timeframe_minutes + 1e-9 >= min_timeframe_minutes
         )
         checks_payload.append(
             {
@@ -662,10 +649,7 @@ def apply_platform_decision_gates(
                 "passed": directional_gate_passed,
                 "score": timeframe_minutes,
                 "detail": (
-                    (
-                        f"timeframe={timeframe} ({timeframe_minutes:.0f}m) "
-                        f">= required {min_timeframe_minutes:.0f}m"
-                    )
+                    (f"timeframe={timeframe} ({timeframe_minutes:.0f}m) >= required {min_timeframe_minutes:.0f}m")
                     if should_enforce_directional_gate and timeframe_minutes is not None and directional_gate_passed
                     else (
                         f"timeframe={timeframe or 'unknown'} below required {min_timeframe_minutes:.0f}m"
@@ -714,11 +698,7 @@ def apply_platform_decision_gates(
             platform_gates.append(
                 {
                     "gate": "directional_min_timeframe",
-                    "status": (
-                        "passed"
-                        if should_enforce_directional_gate
-                        else "skipped"
-                    ),
+                    "status": ("passed" if should_enforce_directional_gate else "skipped"),
                     "detail": (
                         f"Directional signal timeframe satisfied ({timeframe or 'unknown'})"
                         if should_enforce_directional_gate
@@ -770,16 +750,14 @@ def apply_platform_decision_gates(
             stop_loss_activation_seconds = 120.0
         stop_loss_activation_seconds = max(0.0, float(stop_loss_activation_seconds))
         signal_seconds_left = _runtime_signal_seconds_left(runtime_payload)
-        stop_loss_armed = (
-            (not stop_loss_near_close_only)
-            or (signal_seconds_left is not None and signal_seconds_left <= stop_loss_activation_seconds)
+        stop_loss_armed = (not stop_loss_near_close_only) or (
+            signal_seconds_left is not None and signal_seconds_left <= stop_loss_activation_seconds
         )
         configured_exit_price_ratio = safe_float(params.get("live_exit_price_ratio_floor"), None)
         if configured_exit_price_ratio is None:
             configured_exit_price_ratio = safe_float(params.get("exit_price_ratio_floor"), None)
-        if (
-            configured_exit_price_ratio is not None
-            and (configured_exit_price_ratio <= 0.0 or configured_exit_price_ratio >= 1.0)
+        if configured_exit_price_ratio is not None and (
+            configured_exit_price_ratio <= 0.0 or configured_exit_price_ratio >= 1.0
         ):
             configured_exit_price_ratio = None
         fallback_exit_price_ratio = 0.5
@@ -830,9 +808,7 @@ def apply_platform_decision_gates(
                         else (
                             f"size {size_usd:.2f} meets min_order_size_usd={min_order_size_usd:.2f} (entry price unavailable)"
                             if min_exit_notional_passed
-                            else (
-                                f"size {size_usd:.2f} is below required min feasible size {required_size_usd:.2f}"
-                            )
+                            else (f"size {size_usd:.2f} is below required min feasible size {required_size_usd:.2f}")
                         )
                     )
                 ),
@@ -884,9 +860,7 @@ def apply_platform_decision_gates(
                 {
                     "gate": "min_exit_notional",
                     "status": "passed",
-                    "detail": (
-                        f"Size supports min exit notional with required_size_usd={required_size_usd:.2f}"
-                    ),
+                    "detail": (f"Size supports min exit notional with required_size_usd={required_size_usd:.2f}"),
                 }
             )
         else:

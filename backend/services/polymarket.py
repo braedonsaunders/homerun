@@ -854,8 +854,10 @@ class PolymarketClient:
                 pass
             try:
                 parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-                return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(
-                    tzinfo=timezone.utc
+                return (
+                    parsed.astimezone(timezone.utc)
+                    if parsed.tzinfo is not None
+                    else parsed.replace(tzinfo=timezone.utc)
                 )
             except ValueError:
                 return None

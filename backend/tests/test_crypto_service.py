@@ -161,8 +161,8 @@ def test_fetch_all_overlays_live_clob_prices_on_current_market(monkeypatch):
 
 
 def test_update_price_to_beat_uses_crypto_price_api_for_cold_start(monkeypatch):
-    start_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    start_time = (
+        (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
     market = crypto_service.CryptoMarket(
         slug="btc-updown-15m-test",
@@ -197,8 +197,8 @@ def test_update_price_to_beat_uses_crypto_price_api_for_cold_start(monkeypatch):
 
 
 def test_update_price_to_beat_falls_back_to_chainlink_history_when_api_missing(monkeypatch):
-    start_time = (datetime.now(timezone.utc) - timedelta(minutes=3)).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    start_time = (
+        (datetime.now(timezone.utc) - timedelta(minutes=3)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
     market = crypto_service.CryptoMarket(
         slug="eth-updown-15m-test",

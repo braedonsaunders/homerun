@@ -635,8 +635,10 @@ class MarketMakingStrategy(BaseStrategy):
         # --- Rank by expected profit vs risk ---
         # Score = ROI / risk_score (higher ROI and lower risk = better)
         opportunities.sort(
-            key=lambda o: (o.roi_percent / max(o.risk_score, 0.01))
-            * (1.0 + reward_score_weight * float((o.strategy_context or {}).get("liquidity_reward_score", 0.0))),
+            key=lambda o: (
+                (o.roi_percent / max(o.risk_score, 0.01))
+                * (1.0 + reward_score_weight * float((o.strategy_context or {}).get("liquidity_reward_score", 0.0)))
+            ),
             reverse=True,
         )
 

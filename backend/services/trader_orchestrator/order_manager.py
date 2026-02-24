@@ -577,7 +577,12 @@ async def submit_execution_leg(
                 status="failed",
                 effective_price=None,
                 error_message="Missing condition_id for CTF execution leg.",
-                payload={"mode": mode_key, "leg": dict(leg), "reason": "missing_condition_id", "ctf_action": ctf_action},
+                payload={
+                    "mode": mode_key,
+                    "leg": dict(leg),
+                    "reason": "missing_condition_id",
+                    "ctf_action": ctf_action,
+                },
                 shares=None,
                 notional_usd=notional,
             )

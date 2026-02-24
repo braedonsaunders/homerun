@@ -108,7 +108,9 @@ class TestScaleOutTargets:
         decision = strategy.default_exit_check(pos, _market_state(0.52))
 
         assert decision.action == "hold"
-        assert "_scale_out_targets_hit" not in pos.strategy_context or pos.strategy_context["_scale_out_targets_hit"] == []
+        assert (
+            "_scale_out_targets_hit" not in pos.strategy_context or pos.strategy_context["_scale_out_targets_hit"] == []
+        )
 
     def test_already_hit_target_not_retriggered(self):
         strategy = _ScaleOutStrategy()
@@ -240,9 +242,7 @@ class TestScaleOutNearResolution:
         )
         # Spread change = |0.54 - 0.50| / 0.50 * 10000 = 800 bps >= 50 bps threshold
 
-        decision = strategy.default_exit_check(
-            pos, _market_state(0.54, seconds_left=3600.0)
-        )
+        decision = strategy.default_exit_check(pos, _market_state(0.54, seconds_left=3600.0))
 
         assert decision.action == "close"
         assert "Near-resolution exit" in decision.reason
@@ -258,9 +258,7 @@ class TestScaleOutNearResolution:
             },
         )
 
-        decision = strategy.default_exit_check(
-            pos, _market_state(0.54, seconds_left=100000.0)
-        )
+        decision = strategy.default_exit_check(pos, _market_state(0.54, seconds_left=100000.0))
 
         # 100000s = ~27.8h > 24h threshold
         assert decision.action == "hold"
@@ -277,9 +275,7 @@ class TestScaleOutNearResolution:
         )
         # Spread change = |0.5001 - 0.50| / 0.50 * 10000 = 2 bps < 50 bps threshold
 
-        decision = strategy.default_exit_check(
-            pos, _market_state(0.5001, seconds_left=3600.0)
-        )
+        decision = strategy.default_exit_check(pos, _market_state(0.5001, seconds_left=3600.0))
 
         assert decision.action == "hold"
 
@@ -305,9 +301,7 @@ class TestScaleOutNearResolution:
             },
         )
 
-        decision = strategy.default_exit_check(
-            pos, _market_state(0.54, seconds_left=3600.0)
-        )
+        decision = strategy.default_exit_check(pos, _market_state(0.54, seconds_left=3600.0))
 
         assert decision.action == "hold"
 
@@ -361,9 +355,7 @@ class TestScaleOutFallbackToDefault:
         strategy = _ScaleOutStrategy()
         pos = _make_position(entry_price=0.50, current_price=0.525)
 
-        decision = strategy.default_exit_check(
-            pos, _market_state(0.525, is_resolved=True, winning_outcome=0)
-        )
+        decision = strategy.default_exit_check(pos, _market_state(0.525, is_resolved=True, winning_outcome=0))
 
         assert decision.action == "close"
         assert "Market resolved" in decision.reason

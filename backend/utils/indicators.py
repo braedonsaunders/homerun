@@ -6,7 +6,7 @@ def ema(prices: List[float], period: int) -> List[float]:
     n = len(prices)
     if n == 0 or period < 1:
         return []
-    result = [float('nan')] * n
+    result = [float("nan")] * n
     if period > n:
         return result
     alpha = 2.0 / (period + 1)
@@ -25,7 +25,7 @@ def sma(prices: List[float], period: int) -> List[float]:
     n = len(prices)
     if n == 0 or period < 1:
         return []
-    result = [float('nan')] * n
+    result = [float("nan")] * n
     if period > n:
         return result
     window_sum = sum(prices[:period])
@@ -40,7 +40,7 @@ def rsi(prices: List[float], period: int = 14) -> List[float]:
     n = len(prices)
     if n == 0 or period < 1:
         return []
-    result = [float('nan')] * n
+    result = [float("nan")] * n
     if n < period + 1:
         return result
     # Calculate price changes
@@ -81,7 +81,7 @@ def macd(
         return [], [], []
     fast_ema = ema(prices, fast)
     slow_ema = ema(prices, slow)
-    macd_line = [float('nan')] * n
+    macd_line = [float("nan")] * n
     for i in range(n):
         if math.isnan(fast_ema[i]) or math.isnan(slow_ema[i]):
             continue
@@ -92,8 +92,8 @@ def macd(
         if not math.isnan(macd_line[i]):
             macd_valid_start = i
             break
-    signal_line = [float('nan')] * n
-    histogram = [float('nan')] * n
+    signal_line = [float("nan")] * n
+    histogram = [float("nan")] * n
     if macd_valid_start < 0:
         return macd_line, signal_line, histogram
     # Extract valid MACD values and compute EMA of those
@@ -114,13 +114,13 @@ def bollinger_bands(
     n = len(prices)
     if n == 0 or period < 1:
         return [], [], []
-    upper = [float('nan')] * n
-    middle = [float('nan')] * n
-    lower = [float('nan')] * n
+    upper = [float("nan")] * n
+    middle = [float("nan")] * n
+    lower = [float("nan")] * n
     if period > n:
         return upper, middle, lower
     for i in range(period - 1, n):
-        window = prices[i - period + 1:i + 1]
+        window = prices[i - period + 1 : i + 1]
         mean = sum(window) / period
         variance = sum((x - mean) ** 2 for x in window) / period
         std = math.sqrt(variance)
@@ -138,8 +138,8 @@ def atr(
 ) -> List[float]:
     n = len(highs)
     if n == 0 or len(lows) != n or len(closes) != n or period < 1:
-        return [float('nan')] * max(len(highs), 0)
-    result = [float('nan')] * n
+        return [float("nan")] * max(len(highs), 0)
+    result = [float("nan")] * n
     if n < period + 1:
         return result
     # True range: first element has no previous close
@@ -150,7 +150,7 @@ def atr(
         lc = abs(lows[i] - closes[i - 1])
         tr.append(max(hl, hc, lc))
     # Seed ATR with simple mean of first `period` true ranges (starting at index 1)
-    first_avg = sum(tr[1:period + 1]) / period
+    first_avg = sum(tr[1 : period + 1]) / period
     result[period] = first_avg
     prev = first_avg
     # Wilder's smoothing
@@ -164,8 +164,8 @@ def atr(
 def vwap(prices: List[float], volumes: List[float]) -> List[float]:
     n = len(prices)
     if n == 0 or len(volumes) != n:
-        return [float('nan')] * max(len(prices), 0)
-    result = [float('nan')] * n
+        return [float("nan")] * max(len(prices), 0)
+    result = [float("nan")] * n
     cum_pv = 0.0
     cum_vol = 0.0
     for i in range(n):

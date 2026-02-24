@@ -239,9 +239,12 @@ class ExecutionSimulator:
         end_dt = self._to_utc(payload.get("end_at") or run_row.requested_end_at)
         start_ms = self._to_epoch_ms(start_dt)
         end_ms = self._to_epoch_ms(end_dt)
-        run_seed = requested_seed or hashlib.sha256(
-            f"{run_row.id}|{strategy_key}|{source_key}|{start_ms}|{end_ms}".encode("utf-8")
-        ).hexdigest()[:16]
+        run_seed = (
+            requested_seed
+            or hashlib.sha256(
+                f"{run_row.id}|{strategy_key}|{source_key}|{start_ms}|{end_ms}".encode("utf-8")
+            ).hexdigest()[:16]
+        )
         fee_bps = max(0.0, self._to_float(payload.get("fee_bps"), 200.0))
         fee_rate = fee_bps / 10000.0
 
@@ -542,7 +545,9 @@ class ExecutionSimulator:
             filled += 1
             fill_price = max(0.0001, min(0.9999, self._to_float(submission.effective_price, target_price)))
             filled_notional = max(0.0, self._to_float(submission.notional_usd, notional_usd))
-            quantity = max(0.0, self._to_float(submission.shares, filled_notional / fill_price if fill_price > 0 else 0.0))
+            quantity = max(
+                0.0, self._to_float(submission.shares, filled_notional / fill_price if fill_price > 0 else 0.0)
+            )
             entry_fees = filled_notional * fee_rate
             total_fees += entry_fees
             open_positions.append(

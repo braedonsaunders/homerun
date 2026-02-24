@@ -760,10 +760,34 @@ class StrategySDK:
                 "min": 1,
                 "max": 86400,
             },
-            {"key": "max_signal_age_seconds_5m", "label": "Max Signal Age (5m sec)", "type": "number", "min": 0.1, "max": 300},
-            {"key": "max_signal_age_seconds_15m", "label": "Max Signal Age (15m sec)", "type": "number", "min": 0.1, "max": 900},
-            {"key": "max_signal_age_seconds_1h", "label": "Max Signal Age (1h sec)", "type": "number", "min": 0.1, "max": 3600},
-            {"key": "max_signal_age_seconds_4h", "label": "Max Signal Age (4h sec)", "type": "number", "min": 0.1, "max": 14400},
+            {
+                "key": "max_signal_age_seconds_5m",
+                "label": "Max Signal Age (5m sec)",
+                "type": "number",
+                "min": 0.1,
+                "max": 300,
+            },
+            {
+                "key": "max_signal_age_seconds_15m",
+                "label": "Max Signal Age (15m sec)",
+                "type": "number",
+                "min": 0.1,
+                "max": 900,
+            },
+            {
+                "key": "max_signal_age_seconds_1h",
+                "label": "Max Signal Age (1h sec)",
+                "type": "number",
+                "min": 0.1,
+                "max": 3600,
+            },
+            {
+                "key": "max_signal_age_seconds_4h",
+                "label": "Max Signal Age (4h sec)",
+                "type": "number",
+                "min": 0.1,
+                "max": 14400,
+            },
             {
                 "key": "max_market_data_age_ms",
                 "label": "Max Market Data Age (ms)",
@@ -771,10 +795,34 @@ class StrategySDK:
                 "min": 50,
                 "max": 300000,
             },
-            {"key": "max_market_data_age_ms_5m", "label": "Max Data Age 5m (ms)", "type": "integer", "min": 50, "max": 300000},
-            {"key": "max_market_data_age_ms_15m", "label": "Max Data Age 15m (ms)", "type": "integer", "min": 50, "max": 300000},
-            {"key": "max_market_data_age_ms_1h", "label": "Max Data Age 1h (ms)", "type": "integer", "min": 50, "max": 300000},
-            {"key": "max_market_data_age_ms_4h", "label": "Max Data Age 4h (ms)", "type": "integer", "min": 50, "max": 300000},
+            {
+                "key": "max_market_data_age_ms_5m",
+                "label": "Max Data Age 5m (ms)",
+                "type": "integer",
+                "min": 50,
+                "max": 300000,
+            },
+            {
+                "key": "max_market_data_age_ms_15m",
+                "label": "Max Data Age 15m (ms)",
+                "type": "integer",
+                "min": 50,
+                "max": 300000,
+            },
+            {
+                "key": "max_market_data_age_ms_1h",
+                "label": "Max Data Age 1h (ms)",
+                "type": "integer",
+                "min": 50,
+                "max": 300000,
+            },
+            {
+                "key": "max_market_data_age_ms_4h",
+                "label": "Max Data Age 4h (ms)",
+                "type": "integer",
+                "min": 50,
+                "max": 300000,
+            },
             {"key": "enforce_market_data_freshness", "label": "Enforce Market Data Freshness", "type": "boolean"},
             {"key": "require_market_data_age_for_sources", "label": "Require Data Age For Sources", "type": "list"},
             {
@@ -929,10 +977,34 @@ class StrategySDK:
                 "options": ["5m", "15m", "1h", "4h"],
             },
             {"key": "rapid_take_profit_pct", "label": "Rapid Take Profit (%)", "type": "number", "min": 0, "max": 100},
-            {"key": "rapid_take_profit_pct_5m", "label": "Rapid Take Profit 5m (%)", "type": "number", "min": 0, "max": 100},
-            {"key": "rapid_take_profit_pct_15m", "label": "Rapid Take Profit 15m (%)", "type": "number", "min": 0, "max": 100},
-            {"key": "rapid_take_profit_pct_1h", "label": "Rapid Take Profit 1h (%)", "type": "number", "min": 0, "max": 100},
-            {"key": "rapid_take_profit_pct_4h", "label": "Rapid Take Profit 4h (%)", "type": "number", "min": 0, "max": 100},
+            {
+                "key": "rapid_take_profit_pct_5m",
+                "label": "Rapid Take Profit 5m (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "rapid_take_profit_pct_15m",
+                "label": "Rapid Take Profit 15m (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "rapid_take_profit_pct_1h",
+                "label": "Rapid Take Profit 1h (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
+            {
+                "key": "rapid_take_profit_pct_4h",
+                "label": "Rapid Take Profit 4h (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
             {
                 "key": "rapid_exit_window_minutes",
                 "label": "Rapid Exit Window (min)",
@@ -1019,9 +1091,21 @@ class StrategySDK:
                 "min": 0,
                 "max": 1,
             },
-            {"key": "reverse_min_edge_percent", "label": "Reverse Min Edge (%)", "type": "number", "min": 0, "max": 100},
+            {
+                "key": "reverse_min_edge_percent",
+                "label": "Reverse Min Edge (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+            },
             {"key": "reverse_confidence", "label": "Reverse Confidence", "type": "number", "min": 0, "max": 1},
-            {"key": "reverse_size_multiplier", "label": "Reverse Size Multiplier", "type": "number", "min": 0.1, "max": 10},
+            {
+                "key": "reverse_size_multiplier",
+                "label": "Reverse Size Multiplier",
+                "type": "number",
+                "min": 0.1,
+                "max": 10,
+            },
             {
                 "key": "reverse_signal_ttl_seconds",
                 "label": "Reverse Signal TTL (sec)",
@@ -1709,9 +1793,7 @@ class StrategySDK:
             "min_seconds_left": StrategySDK._coerce_float(cfg.get("min_seconds_left"), 0.0, 0.0, 86_400.0),
             "min_price_headroom": StrategySDK._coerce_float(cfg.get("min_price_headroom"), 0.0, 0.0, 1.0),
             "expires_in_seconds": StrategySDK._coerce_float(cfg.get("expires_in_seconds"), 60.0, 5.0, 3_600.0),
-            "max_reentries_per_position": StrategySDK._coerce_int(
-                cfg.get("max_reentries_per_position"), 1, 0, 10
-            ),
+            "max_reentries_per_position": StrategySDK._coerce_int(cfg.get("max_reentries_per_position"), 1, 0, 10),
             "cooldown_seconds": StrategySDK._coerce_float(cfg.get("cooldown_seconds"), 0.0, 0.0, 3_600.0),
         }
 
@@ -1815,7 +1897,9 @@ class StrategySDK:
             "cooldown_seconds": cooldown_seconds,
             "max_reentries_per_position": max_reentries_per_position,
         }
-        normalized = StrategySDK.normalize_reverse_intent(raw, fallback_direction=direction, default_signal_type=signal_type)
+        normalized = StrategySDK.normalize_reverse_intent(
+            raw, fallback_direction=direction, default_signal_type=signal_type
+        )
         return dict(normalized or {})
 
     @staticmethod
@@ -2283,10 +2367,7 @@ class StrategySDK:
 
         pnl_text = f"{pnl_percent:.2f}%" if pnl_percent is not None else "unknown"
         headroom_text = f"{exit_headroom_ratio:.2f}x" if exit_headroom_ratio is not None else "unknown"
-        detail = (
-            f"seconds_left={seconds_left:.1f}s <= {seconds_budget:.1f}s, "
-            f"pnl={pnl_text}, headroom={headroom_text}"
-        )
+        detail = f"seconds_left={seconds_left:.1f}s <= {seconds_budget:.1f}s, pnl={pnl_text}, headroom={headroom_text}"
         return True, detail
 
     @staticmethod

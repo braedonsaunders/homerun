@@ -116,7 +116,9 @@ def test_live_risk_clamps_tighten_aggressive_limits():
 
 
 def test_live_provider_infra_error_detection_excludes_allowance_rejections():
-    assert trader_orchestrator_worker._is_live_provider_infra_error("dial tcp 127.0.0.1:5432: connect: connection refused")
+    assert trader_orchestrator_worker._is_live_provider_infra_error(
+        "dial tcp 127.0.0.1:5432: connect: connection refused"
+    )
     assert trader_orchestrator_worker._is_live_provider_infra_error("database system is not yet accepting connections")
     assert not trader_orchestrator_worker._is_live_provider_infra_error("not enough balance / allowance")
 
@@ -969,8 +971,12 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_kill_switch_enabled(m
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _SessionContext())
-    monkeypatch.setattr(trader_orchestrator_worker, "_ensure_orchestrator_cycle_lock_owner", AsyncMock(return_value=True))
-    monkeypatch.setattr(trader_orchestrator_worker, "_release_orchestrator_cycle_lock_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        trader_orchestrator_worker, "_ensure_orchestrator_cycle_lock_owner", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker, "_release_orchestrator_cycle_lock_owner", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(trader_orchestrator_worker, "ensure_all_strategies_seeded", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "refresh_strategy_runtime_if_needed", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "expire_stale_signals", AsyncMock(return_value=None))

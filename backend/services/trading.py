@@ -543,11 +543,13 @@ class TradingService:
             from py_clob_client.config import get_contract_config
 
             _rpc_candidates = [
-                url for url in [
+                url
+                for url in [
                     settings.POLYGON_RPC_URL,
                     "https://rpc-mainnet.matic.quiknode.pro",
                     "https://polygon.gateway.tenderly.co",
-                ] if url
+                ]
+                if url
             ]
             w3 = None
             for rpc_url in _rpc_candidates:
@@ -567,17 +569,17 @@ class TradingService:
 
             exchange_addr = Web3.to_checksum_address(contract_cfg.exchange)
             # getPolyProxyWalletAddress(address) → address
-            _ABI = [{
-                "name": "getPolyProxyWalletAddress",
-                "type": "function",
-                "inputs": [{"name": "_addr", "type": "address"}],
-                "outputs": [{"name": "", "type": "address"}],
-                "stateMutability": "view",
-            }]
+            _ABI = [
+                {
+                    "name": "getPolyProxyWalletAddress",
+                    "type": "function",
+                    "inputs": [{"name": "_addr", "type": "address"}],
+                    "outputs": [{"name": "", "type": "address"}],
+                    "stateMutability": "view",
+                }
+            ]
             exchange = w3.eth.contract(address=exchange_addr, abi=_ABI)
-            proxy = exchange.functions.getPolyProxyWalletAddress(
-                Web3.to_checksum_address(eoa_address)
-            ).call()
+            proxy = exchange.functions.getPolyProxyWalletAddress(Web3.to_checksum_address(eoa_address)).call()
             return Web3.to_checksum_address(proxy)
         except Exception as exc:
             logger.warning("Failed to derive proxy funder address: %s", exc)
@@ -680,11 +682,13 @@ class TradingService:
 
                 def _do_on_chain_approve(private_key: str, chain_id: int) -> str:
                     _rpc_candidates = [
-                        url for url in [
+                        url
+                        for url in [
                             settings.POLYGON_RPC_URL,
                             "https://rpc-mainnet.matic.quiknode.pro",
                             "https://polygon.gateway.tenderly.co",
-                        ] if url
+                        ]
+                        if url
                     ]
                     w3 = None
                     last_err = None
@@ -726,9 +730,7 @@ class TradingService:
 
                 private_key, _, _, _, _ = await self._resolve_polymarket_credentials()
                 if private_key:
-                    result = await asyncio.to_thread(
-                        _do_on_chain_approve, private_key, settings.CHAIN_ID
-                    )
+                    result = await asyncio.to_thread(_do_on_chain_approve, private_key, settings.CHAIN_ID)
                     logger.info("USDC on-chain allowance check/approve: %s", result)
                 else:
                     logger.warning("No private key available for on-chain USDC approve")
@@ -870,7 +872,13 @@ class TradingService:
         """
         init_lock = self._get_init_lock()
         async with init_lock:
-            private_key, api_key, api_secret, api_passphrase, credential_source = await self._resolve_polymarket_credentials()
+            (
+                private_key,
+                api_key,
+                api_secret,
+                api_passphrase,
+                credential_source,
+            ) = await self._resolve_polymarket_credentials()
             if not all([private_key, api_key, api_secret, api_passphrase]):
                 logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
                 return False
@@ -1170,10 +1178,7 @@ class TradingService:
         runtime_id = self._runtime_state_id(wallet)
         last_trade_at = _normalize_utc_datetime(self._stats.last_trade_at)
         daily_reset_at = datetime.combine(self._daily_volume_reset, datetime.min.time(), tzinfo=timezone.utc)
-        market_positions_json = {
-            str(token_id): str(exposure)
-            for token_id, exposure in self._market_positions.items()
-        }
+        market_positions_json = {str(token_id): str(exposure) for token_id, exposure in self._market_positions.items()}
 
         persist_lock = self._get_persist_lock()
         async with persist_lock:
@@ -1729,28 +1734,34 @@ class TradingService:
                 ).strip()
                 if not token_id:
                     token_id = clob_order_id
-                side_raw = str(
-                    server_order.get("side")
-                    or server_order.get("order_side")
-                    or server_order.get("direction")
-                    or "BUY"
-                ).strip().upper()
+                side_raw = (
+                    str(
+                        server_order.get("side")
+                        or server_order.get("order_side")
+                        or server_order.get("direction")
+                        or "BUY"
+                    )
+                    .strip()
+                    .upper()
+                )
                 side = OrderSide.SELL if side_raw == OrderSide.SELL.value else OrderSide.BUY
-                order_type_raw = str(
-                    server_order.get("order_type")
-                    or server_order.get("orderType")
-                    or server_order.get("type")
-                    or "GTC"
-                ).strip().upper()
+                order_type_raw = (
+                    str(
+                        server_order.get("order_type")
+                        or server_order.get("orderType")
+                        or server_order.get("type")
+                        or "GTC"
+                    )
+                    .strip()
+                    .upper()
+                )
                 try:
                     order_type = OrderType(order_type_raw)
                 except ValueError:
                     order_type = OrderType.GTC
 
                 created_at = _parse_provider_datetime(
-                    server_order.get("created_at")
-                    or server_order.get("createdAt")
-                    or server_order.get("timestamp")
+                    server_order.get("created_at") or server_order.get("createdAt") or server_order.get("timestamp")
                 )
                 local_order = Order(
                     id=order_id,
@@ -1776,12 +1787,15 @@ class TradingService:
                 existing_by_clob[clob_order_id] = candidates
 
             if not local_order.market_question:
-                local_order.market_question = str(
-                    server_order.get("market_question")
-                    or server_order.get("question")
-                    or server_order.get("title")
-                    or ""
-                ) or None
+                local_order.market_question = (
+                    str(
+                        server_order.get("market_question")
+                        or server_order.get("question")
+                        or server_order.get("title")
+                        or ""
+                    )
+                    or None
+                )
             if local_order.size <= 0:
                 local_order.size = float(snapshot.get("size") or snapshot.get("filled_size") or 0.0)
             if local_order.price <= 0:
@@ -2137,9 +2151,7 @@ class TradingService:
                     logger.info(f"Order placed successfully: {order.clob_order_id}")
                     break
 
-                error_message = str(
-                    response.get("errorMsg", response.get("error", "Unknown error"))
-                )
+                error_message = str(response.get("errorMsg", response.get("error", "Unknown error")))
                 if (
                     attempt == 0
                     and self._is_invalid_signature_error(error_message)
@@ -2401,10 +2413,7 @@ class TradingService:
             message = f"Cancelled {cancelled_count} order(s)."
         elif cancelled_count > 0:
             status = "partial_failure"
-            message = (
-                f"Cancelled {cancelled_count} of {len(targets)} order(s); "
-                f"{failed_count} cancellation(s) failed."
-            )
+            message = f"Cancelled {cancelled_count} of {len(targets)} order(s); {failed_count} cancellation(s) failed."
         else:
             status = "failed"
             message = f"Failed to cancel {failed_count} order(s)."
@@ -2428,11 +2437,7 @@ class TradingService:
     async def get_open_orders(self) -> list[Order]:
         """Get all open orders"""
         open_orders = await self._sync_provider_open_orders()
-        clob_ids = [
-            str(order.clob_order_id).strip()
-            for order in open_orders
-            if str(order.clob_order_id or "").strip()
-        ]
+        clob_ids = [str(order.clob_order_id).strip() for order in open_orders if str(order.clob_order_id or "").strip()]
         if clob_ids:
             try:
                 await self.get_order_snapshots_by_clob_ids(clob_ids)
@@ -2482,14 +2487,17 @@ class TradingService:
                 if not token_id:
                     continue
 
-                market_id = _read_text(
-                    pos,
-                    "market",
-                    "conditionId",
-                    "condition_id",
-                    "market_id",
-                    "marketId",
-                ) or token_id
+                market_id = (
+                    _read_text(
+                        pos,
+                        "market",
+                        "conditionId",
+                        "condition_id",
+                        "market_id",
+                        "marketId",
+                    )
+                    or token_id
+                )
                 market_question = _read_text(pos, "title", "market_question", "marketQuestion", "question") or "Unknown"
                 outcome = _read_text(pos, "outcome", "position_side", "side") or "UNKNOWN"
 
@@ -2535,7 +2543,11 @@ class TradingService:
                 if average_cost is None:
                     average_cost = 0.0
 
-                if (current_price is None or current_price <= 0.0) and current_value is not None and current_value > 0.0:
+                if (
+                    (current_price is None or current_price <= 0.0)
+                    and current_value is not None
+                    and current_value > 0.0
+                ):
                     current_price = current_value / size
 
                 if current_price is None:
@@ -2830,12 +2842,8 @@ class TradingService:
                 primary_snapshot = None
 
             best_snapshot = primary_snapshot
-            needs_probe = (
-                primary_snapshot is None
-                or (
-                    primary_snapshot["balance"] <= 0.0
-                    and primary_snapshot["available"] <= 0.0
-                )
+            needs_probe = primary_snapshot is None or (
+                primary_snapshot["balance"] <= 0.0 and primary_snapshot["available"] <= 0.0
             )
 
             if needs_probe:

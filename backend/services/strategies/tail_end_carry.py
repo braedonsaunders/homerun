@@ -287,12 +287,11 @@ class TailEndCarryStrategy(BaseStrategy):
         max_days = max(min_days + 0.005, to_float(params.get("max_days_to_resolution", 1.0), 1.0))
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
-        strategy_type = str(
-            payload.get("strategy")
-            or payload.get("strategy_type")
-            or getattr(signal, "strategy_type", "")
-            or ""
-        ).strip().lower()
+        strategy_type = (
+            str(payload.get("strategy") or payload.get("strategy_type") or getattr(signal, "strategy_type", "") or "")
+            .strip()
+            .lower()
+        )
         strategy_ok = strategy_type == "tail_end_carry"
 
         entry_price = to_float(getattr(signal, "entry_price", 0.0), 0.0)

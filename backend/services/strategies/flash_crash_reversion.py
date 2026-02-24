@@ -320,12 +320,11 @@ class FlashCrashReversionStrategy(BaseStrategy):
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
         direction = str(getattr(signal, "direction", "") or "").strip().lower()
-        strategy_type = str(
-            payload.get("strategy")
-            or payload.get("strategy_type")
-            or getattr(signal, "strategy_type", "")
-            or ""
-        ).strip().lower()
+        strategy_type = (
+            str(payload.get("strategy") or payload.get("strategy_type") or getattr(signal, "strategy_type", "") or "")
+            .strip()
+            .lower()
+        )
         strategy_ok = strategy_type == "flash_crash_reversion"
 
         liquidity = max(0.0, to_float(getattr(signal, "liquidity", 0.0), 0.0))

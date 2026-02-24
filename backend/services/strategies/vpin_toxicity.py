@@ -306,12 +306,11 @@ class VPINToxicityStrategy(BaseStrategy):
         payload: dict,
     ) -> list[DecisionCheck]:
         """Verify that VPIN data exists for the signal's token."""
-        strategy_type = str(
-            payload.get("strategy")
-            or payload.get("strategy_type")
-            or getattr(signal, "strategy_type", "")
-            or ""
-        ).strip().lower()
+        strategy_type = (
+            str(payload.get("strategy") or payload.get("strategy_type") or getattr(signal, "strategy_type", "") or "")
+            .strip()
+            .lower()
+        )
         strategy_ok = strategy_type == "vpin_toxicity"
 
         # Check that we have bucket data (i.e. VPIN was actually computed)

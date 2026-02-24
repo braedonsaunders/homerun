@@ -638,9 +638,7 @@ async def _fetch_market_data() -> tuple[list[Any], list[Any], dict[str, dict]]:
     ):
         events = list(scanner._cached_events)
         markets = list(scanner._cached_markets)
-        prices = (
-            dict(scanner._cached_prices) if hasattr(scanner, "_cached_prices") and scanner._cached_prices else {}
-        )
+        prices = dict(scanner._cached_prices) if hasattr(scanner, "_cached_prices") and scanner._cached_prices else {}
 
     if not events or not markets:
         from services.polymarket import polymarket_client
@@ -673,9 +671,7 @@ async def _detect_for_config(
         loaded = loader.load(bt_slug, source_code, config)
         strategy = loaded.instance
 
-        opportunities = await _run_detect_once(
-            strategy, events, markets, base_prices, timeout_seconds=30.0
-        )
+        opportunities = await _run_detect_once(strategy, events, markets, base_prices, timeout_seconds=30.0)
 
         if not opportunities and timeline and history_by_market:
             replay_run = await _run_ohlc_replay_detection(
@@ -801,13 +797,15 @@ async def run_parameter_sweep(
         scored.params = config
         grid_scores.append((config, scored))
 
-        result.grid_results.append({
-            "params": config,
-            "num_opportunities": scored.num_opportunities,
-            "avg_roi": scored.avg_roi,
-            "total_roi": scored.total_roi,
-            "quality_pass_rate": scored.quality_pass_rate,
-        })
+        result.grid_results.append(
+            {
+                "params": config,
+                "num_opportunities": scored.num_opportunities,
+                "avg_roi": scored.avg_roi,
+                "total_roi": scored.total_roi,
+                "quality_pass_rate": scored.quality_pass_rate,
+            }
+        )
 
         await asyncio.sleep(0)
 
@@ -820,7 +818,7 @@ async def run_parameter_sweep(
         return result
 
     # Take top_k and validate on held-out test window
-    top_candidates = grid_scores[:min(top_k, len(grid_scores))]
+    top_candidates = grid_scores[: min(top_k, len(grid_scores))]
 
     best_config = top_candidates[0][0]
     best_train = top_candidates[0][1].composite_score()

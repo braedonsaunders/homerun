@@ -206,16 +206,10 @@ def _extract_asset_timeframe_from_payload(payload: Any) -> tuple[str, str]:
     timeframe = ""
     for candidate in candidates:
         if not asset:
-            asset = _normalize_crypto_asset(
-                candidate.get("asset")
-                or candidate.get("coin")
-                or candidate.get("symbol")
-            )
+            asset = _normalize_crypto_asset(candidate.get("asset") or candidate.get("coin") or candidate.get("symbol"))
         if not timeframe:
             timeframe = _normalize_crypto_timeframe(
-                candidate.get("timeframe")
-                or candidate.get("cadence")
-                or candidate.get("interval")
+                candidate.get("timeframe") or candidate.get("cadence") or candidate.get("interval")
             )
         if asset and timeframe:
             break
@@ -386,12 +380,7 @@ def _resolve_direction_presentation(
         direction_side = leg_outcome_side
     direction_label = _resolve_direction_label_from_payload(payload_obj)
     if not direction_label and direction_side:
-        resolved_market_id = str(
-            market_id
-            or leg.get("market_id")
-            or payload_obj.get("market_id")
-            or ""
-        ).strip()
+        resolved_market_id = str(market_id or leg.get("market_id") or payload_obj.get("market_id") or "").strip()
         direction_label = _resolve_direction_label_from_signal(
             signal_payload_obj,
             market_id=resolved_market_id,
@@ -1043,17 +1032,8 @@ def _serialize_order(
     pending_live_exit = payload.get("pending_live_exit")
     if not isinstance(pending_live_exit, dict):
         pending_live_exit = {}
-    close_trigger = str(
-        position_close.get("close_trigger")
-        or pending_live_exit.get("close_trigger")
-        or ""
-    ).strip()
-    close_reason = str(
-        position_close.get("reason")
-        or pending_live_exit.get("reason")
-        or row.reason
-        or ""
-    ).strip()
+    close_trigger = str(position_close.get("close_trigger") or pending_live_exit.get("close_trigger") or "").strip()
+    close_reason = str(position_close.get("reason") or pending_live_exit.get("reason") or row.reason or "").strip()
     filled_notional_usd, filled_shares, average_fill_price = _extract_live_fill_metrics(payload)
     price_anchor = average_fill_price
     if price_anchor is None or price_anchor <= 0:
@@ -1080,15 +1060,20 @@ def _serialize_order(
         or provider_snapshot.get("status")
         or payload.get("trading_status")
     )
-    if status_key and status_key not in LIVE_ACTIVE_ORDER_STATUSES and provider_snapshot_status in {
-        "open",
-        "submitted",
-        "pending",
-        "placing",
-        "working",
-        "partially_filled",
-        "partial",
-    }:
+    if (
+        status_key
+        and status_key not in LIVE_ACTIVE_ORDER_STATUSES
+        and provider_snapshot_status
+        in {
+            "open",
+            "submitted",
+            "pending",
+            "placing",
+            "working",
+            "partially_filled",
+            "partial",
+        }
+    ):
         provider_snapshot_status = status_key
     if status_key and status_key not in LIVE_ACTIVE_ORDER_STATUSES and not provider_snapshot_status:
         provider_snapshot_status = status_key
@@ -1102,19 +1087,13 @@ def _serialize_order(
         serialized_payload["provider_reconciliation"] = serialized_provider_reconciliation
 
     cached_market_payload = (
-        cached_market.extra_data
-        if cached_market is not None and isinstance(cached_market.extra_data, dict)
-        else {}
+        cached_market.extra_data if cached_market is not None and isinstance(cached_market.extra_data, dict) else {}
     )
     cached_market_slug = str(
-        cached_market_payload.get("slug")
-        or (cached_market.slug if cached_market is not None else "")
-        or ""
+        cached_market_payload.get("slug") or (cached_market.slug if cached_market is not None else "") or ""
     ).strip()
     cached_event_slug = str(
-        cached_market_payload.get("event_slug")
-        or cached_market_payload.get("eventSlug")
-        or ""
+        cached_market_payload.get("event_slug") or cached_market_payload.get("eventSlug") or ""
     ).strip()
     cached_condition_id = str(
         cached_market_payload.get("condition_id")
@@ -1125,9 +1104,7 @@ def _serialize_order(
     cached_market_id = str(cached_market_payload.get("id") or "").strip()
 
     existing_condition_id = str(
-        serialized_payload.get("condition_id")
-        or serialized_payload.get("conditionId")
-        or ""
+        serialized_payload.get("condition_id") or serialized_payload.get("conditionId") or ""
     ).strip()
     condition_id = existing_condition_id or cached_condition_id or _extract_order_condition_id(row)
     if condition_id:
@@ -1146,11 +1123,7 @@ def _serialize_order(
         if not str(serialized_payload.get("slug") or "").strip():
             serialized_payload["slug"] = market_slug
 
-    event_slug = str(
-        serialized_payload.get("event_slug")
-        or serialized_payload.get("eventSlug")
-        or ""
-    ).strip()
+    event_slug = str(serialized_payload.get("event_slug") or serialized_payload.get("eventSlug") or "").strip()
     if not event_slug:
         event_slug = cached_event_slug
     if event_slug:
@@ -1163,9 +1136,7 @@ def _serialize_order(
         or ""
     ).strip()
     existing_polymarket_url = str(
-        serialized_payload.get("polymarket_url")
-        or serialized_payload.get("polymarketUrl")
-        or ""
+        serialized_payload.get("polymarket_url") or serialized_payload.get("polymarketUrl") or ""
     ).strip()
     market_url = existing_market_url or existing_polymarket_url
     if not market_url:
@@ -1185,14 +1156,15 @@ def _serialize_order(
         if not existing_polymarket_url and "polymarket.com" in market_url.lower():
             serialized_payload["polymarket_url"] = market_url
 
-    mark_updated_at = str(
-        position_state.get("last_marked_at")
-        or provider_reconciliation.get("reconciled_at")
-        or ""
-    )
+    mark_updated_at = str(position_state.get("last_marked_at") or provider_reconciliation.get("reconciled_at") or "")
 
     unrealized_pnl = None
-    if status_key in {"submitted", "open", "executed"} and current_price is not None and current_price > 0 and quantity > 0:
+    if (
+        status_key in {"submitted", "open", "executed"}
+        and current_price is not None
+        and current_price > 0
+        and quantity > 0
+    ):
         unrealized_pnl = (quantity * current_price) - filled_notional_display
 
     signal_payload = signal.payload_json if signal is not None and isinstance(signal.payload_json, dict) else {}
@@ -1224,7 +1196,9 @@ def _serialize_order(
         "provider_snapshot_status": provider_snapshot_status,
         "filled_shares": float(max(0.0, filled_shares)),
         "filled_notional_usd": float(max(0.0, filled_notional_display)),
-        "average_fill_price": float(average_fill_price) if average_fill_price is not None and average_fill_price > 0 else None,
+        "average_fill_price": float(average_fill_price)
+        if average_fill_price is not None and average_fill_price > 0
+        else None,
         "current_price": float(current_price) if current_price is not None and current_price > 0 else None,
         "mark_source": str(position_state.get("last_mark_source") or ""),
         "mark_updated_at": mark_updated_at,
@@ -1731,7 +1705,9 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
     open_other_orders = int(open_order_summary.get("other", 0))
     open_total_orders = int(open_order_summary.get("total", 0))
 
-    if (open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0) and not force:
+    if (
+        open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0
+    ) and not force:
         raise ValueError(
             f"Trader {trader_id} has live/unknown exposure: "
             f"{open_live_positions} live open position(s), "
@@ -2792,7 +2768,9 @@ async def reconcile_live_provider_orders(
     try:
         provider_ready = bool(await trading_service.ensure_initialized())
     except Exception as exc:
-        logger.warning("Live provider reconciliation failed to initialize trading service", trader_id=trader_id, exc_info=exc)
+        logger.warning(
+            "Live provider reconciliation failed to initialize trading service", trader_id=trader_id, exc_info=exc
+        )
         provider_ready = False
     if not provider_ready:
         return {
@@ -2836,7 +2814,9 @@ async def reconcile_live_provider_orders(
         linked_sessions = list(
             (
                 await session.execute(
-                    select(ExecutionSession.id, ExecutionSession.status).where(ExecutionSession.id.in_(list(linked_session_ids)))
+                    select(ExecutionSession.id, ExecutionSession.status).where(
+                        ExecutionSession.id.in_(list(linked_session_ids))
+                    )
                 )
             ).all()
         )
@@ -2947,7 +2927,12 @@ async def reconcile_live_provider_orders(
                 linked_session_terminal = True
                 break
 
-        if linked_session_terminal and mapped_status in {"submitted", "open"} and filled_notional_usd <= 0.0 and filled_size <= 0.0:
+        if (
+            linked_session_terminal
+            and mapped_status in {"submitted", "open"}
+            and filled_notional_usd <= 0.0
+            and filled_size <= 0.0
+        ):
             cancel_targets: list[str] = []
             if provider_clob_order_id:
                 cancel_targets.append(provider_clob_order_id)
@@ -3066,7 +3051,9 @@ async def reconcile_live_provider_orders(
             updated_execution_order_rows[str(session_order_row.id)] = session_order_row
             leg_state_updates[str(session_order_row.leg_id)] = {
                 "status": mapped_status,
-                "filled_notional_usd": float(next_notional if mapped_status in {"submitted", "open", "executed"} else 0.0),
+                "filled_notional_usd": float(
+                    next_notional if mapped_status in {"submitted", "open", "executed"} else 0.0
+                ),
                 "filled_shares": float(filled_size),
                 "avg_fill_price": float(avg_fill_price) if avg_fill_price is not None and avg_fill_price > 0 else None,
                 "provider_order_id": provider_order_id,
@@ -3164,7 +3151,9 @@ async def reconcile_live_provider_orders(
     if broadcast and (updated_order_rows or updated_execution_order_rows or updated_execution_session_rows):
         order_payloads = [_serialize_order(row) for row in updated_order_rows.values()]
         execution_order_payloads = [_serialize_execution_order(row) for row in updated_execution_order_rows.values()]
-        execution_session_payloads = [_serialize_execution_session(row) for row in updated_execution_session_rows.values()]
+        execution_session_payloads = [
+            _serialize_execution_session(row) for row in updated_execution_session_rows.values()
+        ]
 
         for payload in order_payloads:
             try:
@@ -3265,8 +3254,10 @@ async def sync_trader_position_inventory(
         row_notional = safe_float(row.notional_usd, 0.0) or 0.0
         notional = _live_active_notional(row.mode, row.status, row_notional, payload)
         _, _, fill_price = _extract_live_fill_metrics(payload)
-        entry_price = fill_price if fill_price is not None and fill_price > 0 else (
-            safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0)
+        entry_price = (
+            fill_price
+            if fill_price is not None and fill_price > 0
+            else (safe_float(row.effective_price, 0.0) or safe_float(row.entry_price, 0.0))
         )
         mark_price = safe_float(position_state.get("last_mark_price"))
         mark_source = str(position_state.get("last_mark_source") or "")
@@ -3344,7 +3335,9 @@ async def sync_trader_position_inventory(
             avg_entry_price = float(bucket.get("weighted_entry_numerator") or 0.0) / weighted_den
         position_payload = {
             "sync_source": "order_inventory",
-            "open_order_ids": list(dict.fromkeys([str(order_id) for order_id in list(bucket.get("open_order_ids") or [])])),
+            "open_order_ids": list(
+                dict.fromkeys([str(order_id) for order_id in list(bucket.get("open_order_ids") or [])])
+            ),
             "last_mark_price": bucket.get("last_mark_price"),
             "last_mark_source": str(bucket.get("last_mark_source") or ""),
             "last_marked_at": str(bucket.get("last_marked_at") or ""),
@@ -3440,7 +3433,9 @@ async def get_open_position_count_for_trader(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
+            position_query = position_query.where(
+                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"])
+            )
         else:
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
     position_rows = (await session.execute(position_query)).all()
@@ -3508,7 +3503,9 @@ async def get_open_market_ids_for_trader(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
+            position_query = position_query.where(
+                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"])
+            )
         else:
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
 
@@ -4451,25 +4448,25 @@ async def list_serialized_trader_decisions(
     signal_ids = sorted({str(row.signal_id).strip() for row in rows if str(row.signal_id or "").strip()})
     signals_by_id: dict[str, TradeSignal] = {}
     if signal_ids:
-        signal_rows = (
-            await session.execute(
-                select(TradeSignal).where(TradeSignal.id.in_(signal_ids))
-            )
-        ).scalars().all()
+        signal_rows = (await session.execute(select(TradeSignal).where(TradeSignal.id.in_(signal_ids)))).scalars().all()
         signals_by_id = {str(signal_row.id): signal_row for signal_row in signal_rows}
 
     failed_checks_by_decision: dict[str, list[dict[str, Any]]] = {}
     if decision_ids:
         failed_check_rows = (
-            await session.execute(
-                select(TraderDecisionCheck)
-                .where(
-                    TraderDecisionCheck.decision_id.in_(decision_ids),
-                    TraderDecisionCheck.passed.is_(False),
+            (
+                await session.execute(
+                    select(TraderDecisionCheck)
+                    .where(
+                        TraderDecisionCheck.decision_id.in_(decision_ids),
+                        TraderDecisionCheck.passed.is_(False),
+                    )
+                    .order_by(TraderDecisionCheck.created_at.asc())
                 )
-                .order_by(TraderDecisionCheck.created_at.asc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for check_row in failed_check_rows:
             decision_key = str(check_row.decision_id or "").strip()
             if not decision_key:
@@ -4512,21 +4509,21 @@ async def list_serialized_trader_orders(
     signal_ids = sorted({str(row.signal_id).strip() for row in rows if str(row.signal_id or "").strip()})
     signals_by_id: dict[str, TradeSignal] = {}
     if signal_ids:
-        signal_rows = (
-            await session.execute(
-                select(TradeSignal).where(TradeSignal.id.in_(signal_ids))
-            )
-        ).scalars().all()
+        signal_rows = (await session.execute(select(TradeSignal).where(TradeSignal.id.in_(signal_ids)))).scalars().all()
         signals_by_id = {str(signal_row.id): signal_row for signal_row in signal_rows}
     condition_ids_for_rows = [_extract_order_condition_id(row) for row in rows]
     condition_ids = sorted({condition_id for condition_id in condition_ids_for_rows if condition_id})
     cached_markets_by_condition_id: dict[str, CachedMarket] = {}
     if condition_ids:
         cached_market_rows = (
-            await session.execute(
-                select(CachedMarket).where(func.lower(CachedMarket.condition_id).in_(condition_ids))
+            (
+                await session.execute(
+                    select(CachedMarket).where(func.lower(CachedMarket.condition_id).in_(condition_ids))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for cached_market in cached_market_rows:
             key = _normalize_condition_id(cached_market.condition_id)
             if key:

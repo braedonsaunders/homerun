@@ -224,7 +224,9 @@ def _read_live_truth_report(path: Path | None, *, max_alerts: int) -> dict[str, 
     if path is None or not path.exists() or not path.is_file():
         return report
 
-    safe_alert_limit = _clamp_int(max_alerts, _LIVE_TRUTH_MONITOR_DEFAULT_MAX_ALERTS, 1, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS)
+    safe_alert_limit = _clamp_int(
+        max_alerts, _LIVE_TRUTH_MONITOR_DEFAULT_MAX_ALERTS, 1, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS
+    )
     alerts_by_rule: dict[str, int] = {}
     alert_samples: list[dict[str, Any]] = []
     heartbeat_count = 0
@@ -352,7 +354,9 @@ class ValidationService:
         *,
         max_alerts: int = _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS,
     ) -> Optional[dict[str, Any]]:
-        safe_max_alerts = _clamp_int(max_alerts, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS, 1, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS)
+        safe_max_alerts = _clamp_int(
+            max_alerts, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS, 1, _LIVE_TRUTH_MONITOR_MAX_EXPORT_ALERTS
+        )
         async with AsyncSessionLocal() as session:
             row = await session.get(ValidationJob, job_id)
             if row is None:
@@ -376,7 +380,9 @@ class ValidationService:
             "payload": payload,
             "monitor": {
                 "summary": summary_json if summary_json else dict(monitor.get("summary") or {}),
-                "summary_path": str(summary_path) if summary_path is not None else str(monitor.get("summary_path") or ""),
+                "summary_path": str(summary_path)
+                if summary_path is not None
+                else str(monitor.get("summary_path") or ""),
                 "report_path": str(report_path) if report_path is not None else str(monitor.get("report_path") or ""),
                 "stdout_events": list(monitor.get("stdout_events") or []),
                 "report": report_json,
@@ -442,7 +448,9 @@ class ValidationService:
             "payload": payload,
             "monitor": {
                 "summary": summary_json if summary_json else dict(monitor.get("summary") or {}),
-                "summary_path": str(summary_path) if summary_path is not None else str(monitor.get("summary_path") or ""),
+                "summary_path": str(summary_path)
+                if summary_path is not None
+                else str(monitor.get("summary_path") or ""),
                 "report_path": str(report_path) if report_path is not None else str(monitor.get("report_path") or ""),
                 "stdout_events": list(monitor.get("stdout_events") or []),
                 "report": report_json,
@@ -545,16 +553,10 @@ class ValidationService:
         summary = dict(monitor_result.get("summary") or {})
         report = dict(monitor_result.get("report") or {})
         target_trader_id = str(
-            summary.get("target_trader_id")
-            or monitor_result.get("trader_id")
-            or payload.get("trader_id")
-            or ""
+            summary.get("target_trader_id") or monitor_result.get("trader_id") or payload.get("trader_id") or ""
         ).strip()
         strategy_key_hint = str(
-            monitor_result.get("strategy_key")
-            or payload.get("strategy_key")
-            or summary.get("strategy_key")
-            or ""
+            monitor_result.get("strategy_key") or payload.get("strategy_key") or summary.get("strategy_key") or ""
         ).strip()
 
         strategy_context = await self._load_live_truth_strategy_context(
@@ -788,7 +790,7 @@ class ValidationService:
         stderr_bytes = await stderr_task if stderr_task is not None else b""
         stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
         if len(stderr_text) > _LIVE_TRUTH_MONITOR_STDERR_TAIL_CHARS:
-            stderr_text = "..." + stderr_text[-_LIVE_TRUTH_MONITOR_STDERR_TAIL_CHARS :]
+            stderr_text = "..." + stderr_text[-_LIVE_TRUTH_MONITOR_STDERR_TAIL_CHARS:]
 
         if return_code != 0:
             detail = stderr_text or "No stderr output."
@@ -820,16 +822,10 @@ class ValidationService:
             "duration_seconds": duration_seconds,
             "poll_seconds": poll_seconds,
             "trader_id": str(
-                summary_json.get("target_trader_id")
-                or monitor_start.get("trader_id")
-                or trader_id
-                or ""
+                summary_json.get("target_trader_id") or monitor_start.get("trader_id") or trader_id or ""
             ).strip(),
             "trader_name": str(
-                summary_json.get("target_trader_name")
-                or monitor_start.get("trader_name")
-                or trader_name
-                or ""
+                summary_json.get("target_trader_name") or monitor_start.get("trader_name") or trader_name or ""
             ).strip(),
             "strategy_key": str(monitor_start.get("strategy_key") or "").strip(),
             "summary_path": str(summary_path) if summary_path is not None else "",

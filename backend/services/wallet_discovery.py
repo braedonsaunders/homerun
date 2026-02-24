@@ -408,12 +408,7 @@ class WalletDiscoveryEngine:
 
         trades_by_market: dict[str, list[dict]] = {}
         for t in trades:
-            mid = (
-                t.get("market")
-                or t.get("condition_id")
-                or t.get("asset")
-                or ""
-            )
+            mid = t.get("market") or t.get("condition_id") or t.get("asset") or ""
             if not mid:
                 continue
             trades_by_market.setdefault(mid, []).append(t)
@@ -436,20 +431,12 @@ class WalletDiscoveryEngine:
             total_losing += result.losing_lots
             total_realized += result.total_realized_pnl
             total_closed_lots += len(result.closed_lots)
-            total_hold_seconds += result.avg_hold_seconds * len(
-                result.closed_lots
-            )
+            total_hold_seconds += result.avg_hold_seconds * len(result.closed_lots)
 
             if result.closed_lots:
-                mpnl = sum(
-                    c.realized_pnl
-                    for c in result.closed_lots
-                    if c.realized_pnl is not None
-                )
+                mpnl = sum(c.realized_pnl for c in result.closed_lots if c.realized_pnl is not None)
                 fifo_market_pnls.append(mpnl)
-                mcost = sum(
-                    c.entry_price * c.size for c in result.closed_lots
-                )
+                mcost = sum(c.entry_price * c.size for c in result.closed_lots)
                 if mcost > 0:
                     fifo_market_rois.append((mpnl / mcost) * 100.0)
 
@@ -457,36 +444,20 @@ class WalletDiscoveryEngine:
             stats["wins"] = total_winning
             stats["losses"] = total_losing
             closed_total = total_winning + total_losing
-            stats["win_rate"] = (
-                total_winning / closed_total if closed_total > 0 else 0.0
-            )
-            stats["avg_hold_time_hours"] = (
-                (total_hold_seconds / total_closed_lots) / 3600.0
-            )
+            stats["win_rate"] = total_winning / closed_total if closed_total > 0 else 0.0
+            stats["avg_hold_time_hours"] = (total_hold_seconds / total_closed_lots) / 3600.0
             stats["_market_pnls"] = fifo_market_pnls
             if fifo_market_rois:
                 stats["_market_rois"] = fifo_market_rois
-                stats["avg_roi"] = (
-                    sum(fifo_market_rois) / len(fifo_market_rois)
-                )
+                stats["avg_roi"] = sum(fifo_market_rois) / len(fifo_market_rois)
                 stats["max_roi"] = max(fifo_market_rois)
                 stats["min_roi"] = min(fifo_market_rois)
-                stats["roi_std"] = (
-                    self._std_dev(fifo_market_rois)
-                    if len(fifo_market_rois) > 1
-                    else 0.0
-                )
+                stats["roi_std"] = self._std_dev(fifo_market_rois) if len(fifo_market_rois) > 1 else 0.0
 
         stats["fifo_realized_pnl"] = total_realized
         stats["fifo_closed_lots"] = total_closed_lots
-        stats["fifo_open_lots"] = sum(
-            len(r.open_lots) for r in fifo_results.values()
-        )
-        stats["fifo_accuracy"] = (
-            total_winning / total_closed_lots
-            if total_closed_lots > 0
-            else 0.0
-        )
+        stats["fifo_open_lots"] = sum(len(r.open_lots) for r in fifo_results.values())
+        stats["fifo_accuracy"] = total_winning / total_closed_lots if total_closed_lots > 0 else 0.0
 
         return stats
 
@@ -856,7 +827,13 @@ class WalletDiscoveryEngine:
             ("timing_24h", 1440),
         ]
         WEIGHTS = {"timing_5m": 0.35, "timing_30m": 0.30, "timing_4h": 0.20, "timing_24h": 0.15}
-        DEFAULT = {"timing_5m": 0.5, "timing_30m": 0.5, "timing_4h": 0.5, "timing_24h": 0.5, "timing_skill_composite": 0.5}
+        DEFAULT = {
+            "timing_5m": 0.5,
+            "timing_30m": 0.5,
+            "timing_4h": 0.5,
+            "timing_24h": 0.5,
+            "timing_skill_composite": 0.5,
+        }
 
         closed = [p for p in positions if isinstance(p, dict) and self._to_float(p.get("realizedPnl")) != 0.0]
         if len(closed) < MIN_TRADES_FOR_ANALYSIS:
