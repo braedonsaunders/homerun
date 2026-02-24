@@ -526,3 +526,38 @@ Use `atomWithStorage` for anything that should survive page refresh. Use plain `
 ## Proactive Cleanup
 
 When working in a file or area of the codebase, **actively clean up dead code** you encounter — unused imports, orphaned types, stale references, dead functions, and unreachable branches. Dead code hides bugs and adds confusion. If removing something would require changes across many files, do it; follow the dependency chain to completion. Do not leave partial cleanup behind.
+
+---
+
+## Cursor Cloud specific instructions
+
+### Services
+
+| Service | How to start | Port |
+|---------|-------------|------|
+| PostgreSQL | `sudo pg_ctlcluster 16 main start` | 5432 |
+| Redis | `redis-server --bind 127.0.0.1 --port 6379 --save "" --appendonly no --daemonize yes` | 6379 |
+| Backend (FastAPI) | `cd backend && source venv/bin/activate && DATABASE_URL="postgresql+asyncpg://homerun:homerun@127.0.0.1:5432/homerun" uvicorn main:app --host 0.0.0.0 --port 8000 --reload` | 8000 |
+| Frontend (Vite) | `cd frontend && npm run dev` | 3000 |
+
+### Startup order
+
+1. Start PostgreSQL and Redis first (they must be running before the backend).
+2. The `homerun` database, user (password `homerun`), and schema are pre-provisioned by the update script.
+3. Start backend — it auto-runs Alembic migrations on startup and spawns 10+ background workers (scanner, traders, news, weather, crypto, discovery, etc.).
+4. Start frontend — Vite proxies `/api` to the backend on port 8000 (configured in `vite.config.ts`).
+
+### Gotchas
+
+- The backend loads a sentence-transformers ML model on first startup (~5-10 seconds). Wait for the `uvicorn` "Application startup complete" or for the scanner log before sending API requests.
+- `tests/test_chainlink_feed.py::test_handle_message_parses_snapshot_rows_with_parent_symbol` has a pre-existing failure; skip it with `--ignore=tests/test_chainlink_feed.py` if running the full test suite.
+- Some tests may hang if they depend on network access to external APIs (Polymarket, Kalshi). Use `pytest --timeout=30` (requires `pytest-timeout`) to guard against hangs.
+- The `DATABASE_URL` env var must use the `postgresql+asyncpg://` scheme (not plain `postgresql://`).
+
+### Lint / Test / Build commands
+
+See `Makefile` and `docs/CONTRIBUTING.md` for canonical commands. Quick reference:
+- **Python lint:** `cd backend && source venv/bin/activate && ruff check .`
+- **Python tests:** `cd backend && source venv/bin/activate && python -m pytest tests/ -q`
+- **TypeScript check:** `cd frontend && npx tsc --noEmit`
+- **Frontend build:** `cd frontend && npm run build`
