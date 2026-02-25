@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -47,10 +47,34 @@ import {
 type ViewMode = 'simulation' | 'live' | 'all'
 type TimeRange = '7d' | '30d' | '90d' | 'all'
 
+type VenuePresentation = {
+  label: string
+  detail: string
+  className: string
+}
+
 type UnifiedTrade = {
   id: string
   source: 'sandbox' | 'live'
   strategy: string
+  marketQuestion: string
+  marketId?: string
+  directionLabel: string
+  lifecycleLabel: string
+  outcomeHeadline: string
+  outcomeDetail: string
+  outcomeDetailCompact: string
+  modeLabel: string
+  venuePresentation: VenuePresentation
+  fillPx: number
+  fillProgressPercent: number | null
+  markPx: number
+  unrealized: number
+  dynamicEdgePercent: number
+  exitProgressPercent: number | null
+  providerSnapshotStatus?: string
+  createdAt?: string
+  updatedAt?: string
   cost: number
   pnl: number | null
   status: string
@@ -89,6 +113,21 @@ const RANGE_OPTIONS: Array<{ id: TimeRange; label: string }> = [
   { id: '90d', label: '90D' },
   { id: 'all', label: 'All Time' },
 ]
+const TRADE_TAPE_PAGE_SIZE = 100
+
+const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
+const RESOLVED_ORDER_STATUSES = new Set([
+  'resolved',
+  'resolved_win',
+  'resolved_loss',
+  'closed_win',
+  'closed_loss',
+  'win',
+  'loss',
+])
+const FAILED_ORDER_STATUSES = new Set(['failed', 'rejected', 'error', 'cancelled'])
+const WIN_ORDER_STATUSES = new Set(['resolved_win', 'closed_win', 'win'])
+const LOSS_ORDER_STATUSES = new Set(['resolved_loss', 'closed_loss', 'loss'])
 
 function formatCurrency(value: number, compact = false): string {
   if (!Number.isFinite(value)) return '$0.00'
@@ -113,9 +152,9 @@ function formatSignedCurrency(value: number, compact = false): string {
   return `${prefix}${formatCurrency(Math.abs(value), compact)}`
 }
 
-function formatPercent(value: number): string {
+function formatPercent(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return '0.0%'
-  return `${value.toFixed(1)}%`
+  return `${value.toFixed(digits)}%`
 }
 
 function formatDateLabel(dateStr: string): string {
@@ -127,33 +166,307 @@ function formatDateLabel(dateStr: string): string {
   })
 }
 
-function getTradeStatusClass(status: string): string {
-  switch (status.toLowerCase()) {
-    case 'resolved_win':
-    case 'closed_win':
-    case 'win':
-      return 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
-    case 'resolved_loss':
-    case 'closed_loss':
-    case 'loss':
-      return 'bg-red-100 text-red-800 border-red-300 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30'
-    case 'resolved':
-      return 'bg-slate-100 text-slate-800 border-slate-300 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30'
-    case 'open':
-    case 'executed':
-      return 'bg-cyan-100 text-cyan-800 border-cyan-300 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-500/30'
-    case 'pending':
-    case 'queued':
-      return 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30'
-    default:
-      return 'bg-muted text-muted-foreground border-border'
+function normalizeStatus(value: unknown): string {
+  return String(value || 'unknown').trim().toLowerCase()
+}
+
+function toTs(value: string | null | undefined): number {
+  if (!value) return 0
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) ? ts : 0
+}
+
+function formatRelativeAge(value: string | null | undefined): string {
+  const ts = toTs(value)
+  if (ts <= 0) return '—'
+  const ageMs = Math.max(0, Date.now() - ts)
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s`
+  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m`
+  if (ageMs < 86_400_000) return `${Math.round(ageMs / 3_600_000)}h`
+  return `${Math.round(ageMs / 86_400_000)}d`
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function clamp(value: number, minValue: number, maxValue: number): number {
+  if (value < minValue) return minValue
+  if (value > maxValue) return maxValue
+  return value
+}
+
+function normalizeEdgePercent(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (Math.abs(value) <= 1) return value * 100
+  if (Math.abs(value) > 200) return value / 100
+  return value
+}
+
+function titleCaseStatusLabel(value: string): string {
+  const normalized = normalizeStatus(value)
+  if (!normalized) return 'Unknown'
+  return normalized
+    .split('_')
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ')
+}
+
+function resolveOrderLifecycleLabel(status: string): string {
+  if (status === 'submitted' || status === 'pending' || status === 'queued') return 'Submitted'
+  if (status === 'open') return 'Working'
+  if (status === 'executed') return 'Filled'
+  if (status === 'cancelled') return 'Canceled'
+  if (status === 'rejected') return 'Rejected'
+  if (status === 'failed' || status === 'error') return 'Failed'
+  if (status === 'resolved_win') return 'Settled (Profit)'
+  if (status === 'resolved_loss') return 'Settled (Loss)'
+  if (status === 'closed_win') return 'Closed (Profit)'
+  if (status === 'closed_loss') return 'Closed (Loss)'
+  if (status === 'win') return 'Settled (Profit)'
+  if (status === 'loss') return 'Settled (Loss)'
+  if (status === 'resolved') return 'Settled'
+  return titleCaseStatusLabel(status)
+}
+
+function resolveOrderStatusBadgePresentation(
+  status: string,
+  pnl: number
+): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className: string } {
+  if (status === 'cancelled') {
+    return {
+      variant: 'outline',
+      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/20 dark:text-zinc-100',
+    }
   }
+  if (status === 'open') {
+    return {
+      variant: 'outline',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/20 dark:text-sky-100',
+    }
+  }
+  if (status === 'executed') {
+    return {
+      variant: 'outline',
+      className: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/45 dark:bg-indigo-500/20 dark:text-indigo-100',
+    }
+  }
+  if (status === 'submitted' || status === 'pending' || status === 'queued') {
+    return {
+      variant: 'outline',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/20 dark:text-amber-100',
+    }
+  }
+  if (WIN_ORDER_STATUSES.has(status)) {
+    return {
+      variant: 'outline',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
+    }
+  }
+  if (LOSS_ORDER_STATUSES.has(status) || FAILED_ORDER_STATUSES.has(status)) {
+    return {
+      variant: 'outline',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
+    }
+  }
+  if (status === 'resolved') {
+    return {
+      variant: 'outline',
+      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
+    }
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    if (pnl > 0) {
+      return {
+        variant: 'outline',
+        className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
+      }
+    }
+    if (pnl < 0) {
+      return {
+        variant: 'outline',
+        className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
+      }
+    }
+    return {
+      variant: 'outline',
+      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
+    }
+  }
+  return {
+    variant: 'outline',
+    className: 'border-border bg-muted/50 text-foreground',
+  }
+}
+
+function resolveOrderOutcomeBadgeClassName(status: string): string {
+  if (status === 'cancelled') {
+    return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200'
+  }
+  if (FAILED_ORDER_STATUSES.has(status)) {
+    return 'border-red-300/90 bg-red-100/80 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    return 'border-emerald-300/90 bg-emerald-100/80 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200'
+  }
+  return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-800 dark:border-zinc-500/45 dark:bg-zinc-500/12 dark:text-zinc-200'
+}
+
+function resolveVenueStatusPresentation(providerSnapshotStatus: string): VenuePresentation {
+  const key = normalizeStatus(providerSnapshotStatus)
+  if (key === 'filled') {
+    return {
+      label: 'Filled',
+      detail: 'Venue reports the order as filled.',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
+    }
+  }
+  if (key === 'partially_filled') {
+    return {
+      label: 'Partial',
+      detail: 'Venue reports a partial fill.',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+    }
+  }
+  if (key === 'open') {
+    return {
+      label: 'Working',
+      detail: 'Venue order remains working on book.',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+    }
+  }
+  if (key === 'pending') {
+    return {
+      label: 'Pending',
+      detail: 'Venue has accepted but not yet worked the order.',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
+    }
+  }
+  if (key === 'cancelled' || key === 'expired') {
+    return {
+      label: 'Canceled',
+      detail: 'Venue confirms cancellation/expiry.',
+      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200',
+    }
+  }
+  if (key === 'failed' || key === 'rejected') {
+    return {
+      label: 'Rejected',
+      detail: 'Venue reports failed/rejected execution.',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200',
+    }
+  }
+  return {
+    label: '—',
+    detail: 'No venue status snapshot available.',
+    className: 'border-border bg-muted/50 text-muted-foreground',
+  }
+}
+
+function compactText(value: string, maxChars = 96): string {
+  const text = String(value || '').trim()
+  if (!text) return 'No reason provided'
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`
+}
+
+function resolveOutcomePresentation(params: {
+  status: string
+  pnl: number | null
+  reason: string
+}): {
+  headline: string
+  detail: string
+  detailCompact: string
+} {
+  const { status, pnl, reason } = params
+  if (FAILED_ORDER_STATUSES.has(status)) {
+    const detail = reason || 'Execution did not complete.'
+    return {
+      headline: 'Execution Failed',
+      detail,
+      detailCompact: compactText(detail),
+    }
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    if ((pnl ?? 0) > 0) {
+      const detail = `Realized gain ${formatSignedCurrency(pnl || 0)}.`
+      return { headline: 'Profit Locked', detail, detailCompact: compactText(detail) }
+    }
+    if ((pnl ?? 0) < 0) {
+      const detail = `Realized loss ${formatSignedCurrency(pnl || 0)}.`
+      return { headline: 'Loss Realized', detail, detailCompact: compactText(detail) }
+    }
+    const detail = reason || 'Resolved without realized gain or loss.'
+    return { headline: 'Resolved Flat', detail, detailCompact: compactText(detail) }
+  }
+  if (OPEN_ORDER_STATUSES.has(status)) {
+    const detail = reason || 'Order is open and actively managed.'
+    return { headline: 'Position Open', detail, detailCompact: compactText(detail) }
+  }
+  const detail = reason || titleCaseStatusLabel(status)
+  return {
+    headline: titleCaseStatusLabel(status),
+    detail,
+    detailCompact: compactText(detail),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function resolveDirectionLabel(order: TraderOrder): string {
+  const explicitLabel = String(order.direction_label || '').trim()
+  if (explicitLabel) return explicitLabel
+  const side = String(order.direction_side || order.direction || '').trim().toUpperCase()
+  return side || '—'
+}
+
+function resolvePendingExitProgressPercent(payload: Record<string, unknown> | null): number | null {
+  if (!payload || !isRecord(payload.pending_exit)) return null
+  const pendingExit = payload.pending_exit
+  const fillRatio = toFiniteNumber(pendingExit.fill_ratio)
+  if (fillRatio !== null && fillRatio >= 0) return clamp(fillRatio * 100, 0, 100)
+  const filledSize = toFiniteNumber(pendingExit.filled_size)
+  const exitSize = toFiniteNumber(pendingExit.exit_size)
+  if (filledSize !== null && exitSize !== null && exitSize > 0) {
+    return clamp((Math.max(0, filledSize) / exitSize) * 100, 0, 100)
+  }
+  return null
+}
+
+function computeDynamicEdgePercent(params: {
+  status: string
+  fillPx: number
+  markPx: number
+  pnl: number | null
+  cost: number
+  edgePercent: number
+}): number {
+  const {
+    status,
+    fillPx,
+    markPx,
+    pnl,
+    cost,
+    edgePercent,
+  } = params
+  if (OPEN_ORDER_STATUSES.has(status) && fillPx > 0 && markPx > 0) {
+    return ((markPx - fillPx) / fillPx) * 100
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status) && cost > 0 && pnl !== null) {
+    return (pnl / cost) * 100
+  }
+  return edgePercent
 }
 
 export default function PerformancePanel() {
   const [viewMode, setViewMode] = useState<ViewMode>('all')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
+  const [tradeTapePage, setTradeTapePage] = useState(1)
 
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['simulation-accounts'],
@@ -260,47 +573,103 @@ export default function PerformancePanel() {
 
     if (viewMode === 'simulation' || viewMode === 'all') {
       filteredSimTrades.forEach((trade) => {
-        const status = String(trade.status || 'unknown')
+        const status = normalizeStatus(trade.status)
+        const pnl = typeof trade.actual_pnl === 'number' ? trade.actual_pnl : null
+        const reason = `Sandbox execution · ${trade.strategy_type || 'unknown'}`
+        const outcome = resolveOutcomePresentation({ status, pnl, reason })
+        const cost = Number(trade.total_cost || 0)
+        const isResolved = RESOLVED_ORDER_STATUSES.has(status)
         rows.push({
           id: `sim-${trade.id}`,
           source: 'sandbox',
           strategy: trade.strategy_type || 'unknown',
-          cost: Number(trade.total_cost || 0),
-          pnl: typeof trade.actual_pnl === 'number' ? trade.actual_pnl : null,
+          marketQuestion: trade.opportunity_id || trade.strategy_type || 'sandbox position',
+          marketId: trade.opportunity_id,
+          directionLabel: '—',
+          lifecycleLabel: resolveOrderLifecycleLabel(status),
+          outcomeHeadline: outcome.headline,
+          outcomeDetail: outcome.detail,
+          outcomeDetailCompact: outcome.detailCompact,
+          modeLabel: 'PAPER',
+          venuePresentation: {
+            label: 'Sandbox',
+            detail: 'Paper simulation fill.',
+            className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
+          },
+          fillPx: 0,
+          fillProgressPercent: null,
+          markPx: 0,
+          unrealized: 0,
+          dynamicEdgePercent: pnl !== null && cost > 0 ? (pnl / cost) * 100 : 0,
+          exitProgressPercent: null,
+          createdAt: trade.executed_at,
+          updatedAt: trade.resolved_at || trade.executed_at,
+          cost,
+          pnl,
           status,
           executedAt: trade.executed_at,
           accountName: (trade as SimulationTrade & { accountName?: string }).accountName,
-          isResolved: ['resolved_win', 'resolved_loss', 'closed_win', 'closed_loss'].includes(status),
-          isWin: status === 'resolved_win' || status === 'closed_win',
-          isLoss: status === 'resolved_loss' || status === 'closed_loss',
+          isResolved,
+          isWin: WIN_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) > 0),
+          isLoss: LOSS_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) < 0),
         })
       })
     }
 
     if (viewMode === 'live' || viewMode === 'all') {
       filteredAutoTrades.forEach((trade) => {
-        const status = String(trade.status || 'unknown').toLowerCase()
+        const status = normalizeStatus(trade.status)
         const pnl = typeof trade.actual_profit === 'number' ? trade.actual_profit : null
-        const isResolved = [
-          'resolved',
-          'win',
-          'loss',
-          'resolved_win',
-          'resolved_loss',
-          'closed_win',
-          'closed_loss',
-        ].includes(status)
+        const cost = Number(trade.total_cost || 0)
+        const fillPx = toFiniteNumber(trade.average_fill_price ?? trade.effective_price ?? trade.entry_price) ?? 0
+        const markPx = toFiniteNumber(trade.current_price) ?? 0
+        const filledNotional = toFiniteNumber(trade.filled_notional_usd) ?? 0
+        const fillProgressPercent = cost > 0 && filledNotional > 0
+          ? clamp((filledNotional / cost) * 100, 0, 100)
+          : null
+        const unrealized = toFiniteNumber(trade.unrealized_pnl) ?? 0
+        const edgePercent = normalizeEdgePercent(toFiniteNumber(trade.edge_percent) ?? 0)
+        const payload = isRecord(trade.payload) ? trade.payload : null
+        const exitProgressPercent = resolvePendingExitProgressPercent(payload)
+        const reason = String(trade.close_reason || trade.reason || trade.error_message || '').trim()
+        const outcome = resolveOutcomePresentation({ status, pnl, reason })
+        const isResolved = RESOLVED_ORDER_STATUSES.has(status)
         rows.push({
           id: `live-${trade.id}`,
           source: 'live',
           strategy: String(trade.strategy || 'unknown'),
-          cost: Number(trade.total_cost || 0),
+          marketQuestion: String(trade.market_question || trade.market_id || 'Unknown market'),
+          marketId: String(trade.market_id || ''),
+          directionLabel: resolveDirectionLabel(trade),
+          lifecycleLabel: resolveOrderLifecycleLabel(status),
+          outcomeHeadline: outcome.headline,
+          outcomeDetail: outcome.detail,
+          outcomeDetailCompact: outcome.detailCompact,
+          modeLabel: String(trade.mode || '').trim().toUpperCase() || 'LIVE',
+          venuePresentation: resolveVenueStatusPresentation(String(trade.provider_snapshot_status || '')),
+          fillPx,
+          fillProgressPercent,
+          markPx,
+          unrealized,
+          dynamicEdgePercent: computeDynamicEdgePercent({
+            status,
+            fillPx,
+            markPx,
+            pnl,
+            cost,
+            edgePercent,
+          }),
+          exitProgressPercent,
+          providerSnapshotStatus: normalizeStatus(trade.provider_snapshot_status),
+          createdAt: trade.created_at || trade.executed_at,
+          updatedAt: trade.updated_at || trade.mark_updated_at || trade.executed_at,
+          cost,
           pnl,
           status,
           executedAt: trade.executed_at,
           isResolved,
-          isWin: (pnl ?? 0) > 0 || status === 'win' || status === 'resolved_win' || status === 'closed_win',
-          isLoss: (pnl ?? 0) < 0 || status === 'loss' || status === 'resolved_loss' || status === 'closed_loss',
+          isWin: WIN_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) > 0),
+          isLoss: LOSS_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) < 0),
         })
       })
     }
@@ -308,6 +677,20 @@ export default function PerformancePanel() {
     rows.sort((left, right) => new Date(right.executedAt).getTime() - new Date(left.executedAt).getTime())
     return rows
   }, [filteredAutoTrades, filteredSimTrades, viewMode])
+
+  const tradeTapePageCount = useMemo(
+    () => Math.max(1, Math.ceil(unifiedTrades.length / TRADE_TAPE_PAGE_SIZE)),
+    [unifiedTrades.length]
+  )
+
+  useEffect(() => {
+    setTradeTapePage((current) => Math.min(current, tradeTapePageCount))
+  }, [tradeTapePageCount])
+
+  const pagedUnifiedTrades = useMemo(() => {
+    const start = (tradeTapePage - 1) * TRADE_TAPE_PAGE_SIZE
+    return unifiedTrades.slice(start, start + TRADE_TAPE_PAGE_SIZE)
+  }, [tradeTapePage, unifiedTrades])
 
   const summary = useMemo(() => {
     const resolved = unifiedTrades.filter((trade) => trade.isResolved)
@@ -626,67 +1009,161 @@ export default function PerformancePanel() {
         <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
           <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
             <p className="text-xs font-semibold">Trade Tape</p>
-            <span className="text-[10px] text-muted-foreground">{unifiedTrades.length} trades</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-muted-foreground">
+                {unifiedTrades.length} trades • {TRADE_TAPE_PAGE_SIZE}/page
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-5 px-1.5 text-[10px]"
+                onClick={() => setTradeTapePage((page) => Math.max(1, page - 1))}
+                disabled={tradeTapePage <= 1}
+              >
+                Prev
+              </Button>
+              <span className="min-w-[62px] text-center text-[10px] font-mono text-muted-foreground">
+                {tradeTapePage}/{tradeTapePageCount}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-5 px-1.5 text-[10px]"
+                onClick={() => setTradeTapePage((page) => Math.min(tradeTapePageCount, page + 1))}
+                disabled={tradeTapePage >= tradeTapePageCount}
+              >
+                Next
+              </Button>
+            </div>
           </div>
           <ScrollArea className="flex-1 min-h-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
-                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Timestamp</TableHead>
-                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Source</TableHead>
-                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Strategy</TableHead>
-                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Status</TableHead>
-                  <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">Cost</TableHead>
-                  <TableHead className="h-7 py-1 text-right text-[10px] uppercase tracking-wide">P&L</TableHead>
-                  <TableHead className="h-7 py-1 text-[10px] uppercase tracking-wide">Account</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {unifiedTrades.slice(0, 150).map((trade) => (
-                  <TableRow key={trade.id} className="border-border/40">
-                    <TableCell className="py-1.5 font-mono text-[11px] text-muted-foreground">
-                      {new Date(trade.executedAt).toLocaleString()}
-                    </TableCell>
-                    <TableCell className="py-1.5">
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          'text-[9px] uppercase',
-                          trade.source === 'sandbox'
-                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
-                            : 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200'
-                        )}
-                      >
-                        {trade.source}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="py-1.5 text-xs">{trade.strategy}</TableCell>
-                    <TableCell className="py-1.5">
-                      <Badge variant="outline" className={cn('text-[9px] uppercase', getTradeStatusClass(trade.status))}>
-                        {trade.status.replace(/_/g, ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="py-1.5 text-right font-mono text-[11px]">{formatCurrency(trade.cost)}</TableCell>
-                    <TableCell className={cn(
-                      'py-1.5 text-right font-mono text-[11px]',
-                      (trade.pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'
-                    )}>
-                      {trade.pnl == null ? '—' : formatSignedCurrency(trade.pnl)}
-                    </TableCell>
-                    <TableCell className="py-1.5 text-[11px] text-muted-foreground">
-                      {trade.accountName || (trade.source === 'live' ? 'Orchestrator' : '—')}
-                    </TableCell>
+            <div className="w-full overflow-x-auto">
+              <Table className="w-full table-fixed">
+                <TableHeader>
+                  <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+                    <TableHead className="w-[26%] text-[10px]">Market</TableHead>
+                    <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
+                    <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
+                    <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
+                    <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
+                    <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
+                    <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                    <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
+                    <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
+                    <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
+                    <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
+                    <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
+                    <TableHead className="w-[5%] text-[10px]">Age</TableHead>
                   </TableRow>
-                ))}
-                {unifiedTrades.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
-                      No trades for this view and range.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {pagedUnifiedTrades.map((trade) => {
+                    const statusBadge = resolveOrderStatusBadgePresentation(trade.status, trade.pnl ?? 0)
+                    const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(trade.status)
+                    const updatedAt = trade.updatedAt || trade.executedAt
+                    const venueTitle = `${trade.venuePresentation.detail}`
+                      + (trade.providerSnapshotStatus ? ` • provider:${trade.providerSnapshotStatus}` : '')
+                    return (
+                      <TableRow key={trade.id} className="text-[11px] leading-tight hover:bg-muted/30">
+                        <TableCell className="max-w-[260px] py-0.5">
+                          <div className="flex min-w-0 items-center gap-1">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                'h-4 px-1 text-[9px] font-semibold',
+                                trade.source === 'sandbox'
+                                  ? 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200'
+                                  : 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-400/45 dark:bg-cyan-500/12 dark:text-cyan-200'
+                              )}
+                            >
+                              {trade.source === 'sandbox' ? 'S' : 'L'}
+                            </Badge>
+                            <span className="truncate" title={trade.marketQuestion}>{trade.marketQuestion}</span>
+                          </div>
+                          <p className="truncate text-[9px] leading-none text-muted-foreground" title={`${trade.strategy}${trade.accountName ? ` • ${trade.accountName}` : ''}`}>
+                            {trade.strategy}{trade.accountName ? ` • ${trade.accountName}` : ''}
+                          </p>
+                        </TableCell>
+                        <TableCell className="py-0.5">
+                          <Badge
+                            variant="outline"
+                            className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
+                            title={trade.directionLabel}
+                          >
+                            {trade.directionLabel}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="py-0.5 min-w-[260px]">
+                          <div className="min-w-0 space-y-0">
+                            <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+                              <Badge
+                                variant={statusBadge.variant}
+                                title={`Raw status: ${trade.status}`}
+                                className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
+                              >
+                                {trade.lifecycleLabel}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                title={trade.outcomeDetail}
+                                className={cn('h-4 max-w-[180px] truncate px-1 text-[9px] font-medium', outcomeBadgeClassName)}
+                              >
+                                {trade.outcomeHeadline}
+                              </Badge>
+                              <Badge variant="outline" className="h-4 max-w-[100px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85">
+                                {trade.modeLabel}
+                              </Badge>
+                            </div>
+                            <p className="truncate text-[9px] leading-none text-foreground/85" title={trade.outcomeDetail}>
+                              <span className="font-medium text-muted-foreground">Reason:</span> {trade.outcomeDetailCompact}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(trade.cost, true)}</TableCell>
+                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{trade.fillPx > 0 ? trade.fillPx.toFixed(3) : '—'}</TableCell>
+                        <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                          {trade.fillProgressPercent !== null ? formatPercent(trade.fillProgressPercent, 0) : '—'}
+                        </TableCell>
+                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', trade.markPx > 0 && 'text-sky-300')}>
+                          {trade.markPx > 0 ? trade.markPx.toFixed(3) : '—'}
+                        </TableCell>
+                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', trade.unrealized > 0 ? 'text-emerald-500' : trade.unrealized < 0 ? 'text-red-500' : '')}>
+                          {OPEN_ORDER_STATUSES.has(trade.status) ? formatCurrency(trade.unrealized, true) : '—'}
+                        </TableCell>
+                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(trade.dynamicEdgePercent)}</TableCell>
+                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', (trade.pnl ?? 0) > 0 ? 'text-emerald-500' : (trade.pnl ?? 0) < 0 ? 'text-red-500' : '')}>
+                          {RESOLVED_ORDER_STATUSES.has(trade.status) && trade.pnl !== null ? formatSignedCurrency(trade.pnl) : '—'}
+                        </TableCell>
+                        <TableCell className="py-0.5">
+                          <Badge
+                            variant="outline"
+                            title={venueTitle}
+                            className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', trade.venuePresentation.className)}
+                          >
+                            {trade.venuePresentation.label}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                          {trade.exitProgressPercent !== null ? formatPercent(trade.exitProgressPercent, 0) : '—'}
+                        </TableCell>
+                        <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                          <span title={`${trade.modeLabel} • created:${trade.createdAt ? new Date(trade.createdAt).toLocaleString() : 'n/a'} • updated:${trade.updatedAt ? new Date(trade.updatedAt).toLocaleString() : 'n/a'}`}>
+                            {formatRelativeAge(updatedAt)}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                  {unifiedTrades.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={13} className="py-6 text-center text-xs text-muted-foreground">
+                        No trades for this view and range.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </ScrollArea>
         </div>
       </div>

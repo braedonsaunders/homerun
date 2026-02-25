@@ -15,7 +15,7 @@ from models.database import AsyncSessionLocal, init_database, recover_pool
 from services.event_bus import event_bus
 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from services.trader_orchestrator.position_lifecycle import reconcile_live_positions
 from services.trader_orchestrator_state import (
     create_trader_event,
@@ -116,8 +116,8 @@ def _wallet_monitor_snapshot_stats() -> dict[str, Any]:
 async def _sync_live_wallet_monitor_source(current_wallet: str) -> str:
     execution_wallet = ""
     try:
-        if await trading_service.ensure_initialized():
-            execution_wallet = str(trading_service.get_execution_wallet_address() or "").strip().lower()
+        if await live_execution_service.ensure_initialized():
+            execution_wallet = str(live_execution_service.get_execution_wallet_address() or "").strip().lower()
     except Exception as exc:
         logger.warning("Failed to initialize trading service for wallet WS monitor sync", exc_info=exc)
 

@@ -1389,17 +1389,17 @@ export interface EmergencyStopTradingResult {
 }
 
 export const getTradingStatus = async (): Promise<TradingStatus> => {
-  const { data } = await api.get('/trading/status')
+  const { data } = await api.get('/trader-orchestrator/live/status')
   return unwrapApiData(data)
 }
 
 export const getTradingVpnStatus = async (): Promise<TradingVpnStatus> => {
-  const { data } = await api.get('/trading/vpn-status')
+  const { data } = await api.get('/trader-orchestrator/live/vpn-status')
   return unwrapApiData(data)
 }
 
 export const initializeTrading = async (): Promise<{ status: string; message: string }> => {
-  const { data } = await api.post('/trading/initialize')
+  const { data } = await api.post('/trader-orchestrator/live/initialize')
   return unwrapApiData(data)
 }
 
@@ -1411,37 +1411,37 @@ export const placeOrder = async (params: {
   order_type?: string
   market_question?: string
 }): Promise<Order> => {
-  const { data } = await api.post('/trading/orders', params)
+  const { data } = await api.post('/trader-orchestrator/live/orders', params)
   return unwrapApiData(data)
 }
 
 export const getOrders = async (limit = 100, status?: string): Promise<Order[]> => {
-  const { data } = await api.get('/trading/orders', { params: { limit, status } })
+  const { data } = await api.get('/trader-orchestrator/live/orders', { params: { limit, status } })
   return unwrapApiData(data)
 }
 
 export const getOpenOrders = async (): Promise<Order[]> => {
-  const { data } = await api.get('/trading/orders/open')
+  const { data } = await api.get('/trader-orchestrator/live/orders/open')
   return unwrapApiData(data)
 }
 
 export const cancelOrder = async (orderId: string): Promise<{ status: string; order_id: string }> => {
-  const { data } = await api.delete(`/trading/orders/${orderId}`)
+  const { data } = await api.delete(`/trader-orchestrator/live/orders/${orderId}`)
   return unwrapApiData(data)
 }
 
 export const cancelAllOrders = async (): Promise<CancelAllOrdersResult> => {
-  const { data } = await api.delete('/trading/orders')
+  const { data } = await api.delete('/trader-orchestrator/live/orders')
   return unwrapApiData(data)
 }
 
 export const getTradingPositions = async (): Promise<TradingPosition[]> => {
-  const { data } = await api.get('/trading/positions')
+  const { data } = await api.get('/trader-orchestrator/live/positions')
   return unwrapApiData(data)
 }
 
 export const getTradingBalance = async (): Promise<{ balance: number; available: number; reserved: number; currency: string; timestamp: string }> => {
-  const { data } = await api.get('/trading/balance')
+  const { data } = await api.get('/trader-orchestrator/live/balance')
   return unwrapApiData(data)
 }
 
@@ -1450,12 +1450,12 @@ export const executeOpportunityLive = async (params: {
   positions: any[]
   size_usd: number
 }): Promise<{ status: string; orders: Order[]; message?: string }> => {
-  const { data } = await api.post('/trading/execute-opportunity', params)
+  const { data } = await api.post('/trader-orchestrator/live/execute-opportunity', params)
   return unwrapApiData(data)
 }
 
 export const emergencyStopTrading = async (): Promise<EmergencyStopTradingResult> => {
-  const { data } = await api.post('/trading/emergency-stop')
+  const { data } = await api.post('/trader-orchestrator/live/emergency-stop')
   return unwrapApiData(data)
 }
 
@@ -1474,6 +1474,43 @@ export interface TraderOrchestratorConfig {
   enabled_strategies: string[]
   llm_verify_trades: boolean
   paper_account_id?: string | null
+  global_runtime: {
+    pending_live_exit_guard: {
+      max_pending_exits: number
+      identity_guard_enabled: boolean
+      terminal_statuses: string[]
+    }
+    live_risk_clamps: {
+      enforce_allow_averaging_off: boolean
+      min_cooldown_seconds: number
+      max_consecutive_losses_cap: number
+      max_open_orders_cap: number
+      max_open_positions_cap: number
+      max_trade_notional_usd_cap: number
+      max_orders_per_cycle_cap: number
+      enforce_halt_on_consecutive_losses: boolean
+    }
+    live_market_context: {
+      enabled: boolean
+      history_window_seconds: number
+      history_fidelity_seconds: number
+      max_history_points: number
+      timeout_seconds: number
+    }
+    live_provider_health: {
+      window_seconds: number
+      min_errors: number
+      block_seconds: number
+    }
+    trader_cycle_timeout_seconds: number | null
+  }
+}
+
+export interface TraderOrchestratorSettingsUpdatePayload {
+  run_interval_seconds?: number
+  global_risk?: TraderOrchestratorConfig['global_risk']
+  global_runtime?: TraderOrchestratorConfig['global_runtime']
+  requested_by?: string
 }
 
 export interface WorkerStatus {
@@ -1789,6 +1826,11 @@ export const setTraderOrchestratorLiveKillSwitch = async (enabled: boolean, requ
   return unwrapApiData(data)
 }
 
+export const updateTraderOrchestratorSettings = async (payload: TraderOrchestratorSettingsUpdatePayload) => {
+  const { data } = await api.put('/trader-orchestrator/settings', payload)
+  return unwrapApiData(data)
+}
+
 export type TraderSourceKey = 'scanner' | 'crypto' | 'news' | 'weather' | 'traders'
 
 export interface TraderSourceConfig {
@@ -1801,6 +1843,7 @@ export interface Trader {
   id: string
   name: string
   description?: string | null
+  mode: 'paper' | 'live'
   strategy_version: string
   source_configs: TraderSourceConfig[]
   strategy_key?: string
@@ -1900,6 +1943,14 @@ export interface TraderOrder {
   created_at: string | null
   executed_at: string | null
   updated_at: string | null
+}
+
+export interface TraderMarketHistoryPoint {
+  t: number
+  yes: number
+  no: number
+  idx_0: number
+  idx_1: number
 }
 
 export interface TraderEvent {
@@ -2008,6 +2059,11 @@ function normalizeTraderStrategyKey(value: unknown): string {
   return key || DEFAULT_STRATEGY_KEY
 }
 
+function normalizeTraderMode(value: unknown): 'paper' | 'live' {
+  const mode = String(value || '').trim().toLowerCase()
+  return mode === 'live' ? 'live' : 'paper'
+}
+
 function normalizeTraderStrategyKeyForSource(sourceKey: string, value: unknown): string {
   const key = normalizeTraderStrategyKey(value)
   const normalizedSource = normalizeTraderSourceKey(sourceKey)
@@ -2040,6 +2096,7 @@ function normalizeTraderFields(raw: any): Trader {
 
   return {
     ...raw,
+    mode: normalizeTraderMode(raw?.mode),
     source_configs: normalizedSourceConfigs,
     strategy_key: normalizedStrategy,
     sources: normalizedSources,
@@ -2047,8 +2104,8 @@ function normalizeTraderFields(raw: any): Trader {
   }
 }
 
-export const getTraders = async (): Promise<Trader[]> => {
-  const { data } = await api.get('/traders')
+export const getTraders = async (params?: { mode?: 'paper' | 'live' }): Promise<Trader[]> => {
+  const { data } = await api.get('/traders', { params })
   return (data.traders || []).map(normalizeTraderFields)
 }
 
@@ -2121,6 +2178,30 @@ export const getAllTraderOrders = async (limit = 2000): Promise<TraderOrder[]> =
     params: { limit: Math.max(1, Math.trunc(Number(limit) || 2000)) },
   })
   return data.orders || []
+}
+
+export const getTraderMarketHistory = async (
+  marketIds: string[],
+  limit = 120
+): Promise<Record<string, TraderMarketHistoryPoint[]>> => {
+  const normalizedIds = Array.from(
+    new Set(
+      marketIds
+        .map((value) => String(value || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  )
+  if (normalizedIds.length === 0) return {}
+  const { data } = await api.get('/traders/market-history', {
+    params: {
+      market_ids: normalizedIds.join(','),
+      limit: Math.max(2, Math.min(600, Math.trunc(Number(limit) || 120))),
+    },
+  })
+  const payload = unwrapApiData(data)
+  return (payload?.histories && typeof payload.histories === 'object')
+    ? payload.histories as Record<string, TraderMarketHistoryPoint[]>
+    : {}
 }
 
 export const getTraderEvents = async (
@@ -2395,12 +2476,44 @@ export interface DatabaseFlushResponse {
   message: string
 }
 
+export interface DatabaseMaintenanceStats {
+  db_size_bytes: number | null
+  total_rows: number | null
+  estimated_total_rows?: number | null
+  simulation_trades: {
+    total: number
+    by_status: Record<string, number>
+  }
+  simulation_positions: {
+    total: number
+    open: number
+  }
+  wallet_trades: number
+  wallet_activity_rollups: number
+  trade_signal_emissions: number
+  opportunity_history: number
+  anomalies: {
+    total: number
+    resolved: number
+  }
+  date_range: {
+    oldest_trade: string | null
+    newest_trade: string | null
+  }
+}
+
 export const flushDatabaseData = async (target: DatabaseFlushTarget): Promise<DatabaseFlushResponse> => {
   const { data } = await api.post('/maintenance/flush', {
     target,
     confirm: true,
   })
   return unwrapApiData(data)
+}
+
+export const getDatabaseMaintenanceStats = async (): Promise<DatabaseMaintenanceStats> => {
+  const { data } = await api.get('/maintenance/stats')
+  const payload = unwrapApiData(data)
+  return payload.stats as DatabaseMaintenanceStats
 }
 
 export const setWorkerInterval = async (worker: string, intervalSeconds: number) => {
@@ -2513,7 +2626,7 @@ export interface DiscoverySettings {
   pool_recompute_interval_seconds: number
 }
 
-export interface TradingSettingsConfig {
+export interface LiveExecutionSettingsConfig {
   max_trade_size_usd: number
   max_daily_trade_volume: number
   max_open_positions: number
@@ -2607,7 +2720,7 @@ export interface AllSettings {
   llm: LLMSettings
   notifications: NotificationSettings
   scanner: ScannerSettings
-  trading: TradingSettingsConfig
+  live_execution: LiveExecutionSettingsConfig
   maintenance: MaintenanceSettings
   discovery: DiscoverySettings
   trading_proxy: TradingProxySettings
@@ -2623,7 +2736,7 @@ export interface UpdateSettingsRequest {
   llm?: Partial<LLMSettings>
   notifications?: Partial<NotificationSettings>
   scanner?: Partial<ScannerSettings>
-  trading?: Partial<TradingSettingsConfig>
+  live_execution?: Partial<LiveExecutionSettingsConfig>
   maintenance?: Partial<MaintenanceSettings>
   discovery?: Partial<DiscoverySettings>
   trading_proxy?: Partial<TradingProxySettings>
@@ -2689,8 +2802,10 @@ export const updateScannerSettings = async (settings: Partial<ScannerSettings>):
   return unwrapApiData(data)
 }
 
-export const updateTradingSettings = async (settings: Partial<TradingSettingsConfig>): Promise<{ status: string; message: string }> => {
-  const { data } = await api.put('/settings/trading', settings)
+export const updateLiveExecutionSettings = async (
+  settings: Partial<LiveExecutionSettingsConfig>
+): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/live-execution', settings)
   return unwrapApiData(data)
 }
 
@@ -2800,7 +2915,6 @@ export interface ValidationOverview {
     mae_roi: number
     directional_accuracy: number
   }>
-  combinatorial_validation: Record<string, unknown>
   strategy_health: ValidationStrategyHealth[]
   guardrail_config: ValidationGuardrailConfig
   trader_orchestrator_execution_30d?: {

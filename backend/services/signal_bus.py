@@ -35,6 +35,13 @@ from services.market_tradability import get_market_tradability_map
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
 SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
 SIGNAL_REACTIVATABLE_STATUSES = {"selected", "submitted", "executed", "skipped", "expired", "failed"}
+_SKIPPED_REACTIVATION_VOLATILE_KEYS = {
+    "bridge_run_at",
+    "bridge_source",
+    "ingested_at",
+    "market_data_age_ms",
+    "signal_emitted_at",
+}
 
 
 def _utc_now() -> datetime:
@@ -57,6 +64,99 @@ def _safe_json(value: Any) -> Any:
         return json.loads(json.dumps(value, default=str))
     except Exception:
         return {"raw": str(value)}
+
+
+def _normalize_reactivation_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for raw_key, raw_item in value.items():
+            key = str(raw_key)
+            if key in _SKIPPED_REACTIVATION_VOLATILE_KEYS:
+                continue
+            normalized[key] = _normalize_reactivation_value(raw_item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_normalize_reactivation_value(item) for item in value]
+    if isinstance(value, float):
+        return round(float(value), 10)
+    return value
+
+
+def _normalize_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return round(parsed, 10)
+
+
+def _normalize_reason_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    cleaned = [str(item).strip() for item in values if str(item).strip()]
+    cleaned.sort()
+    return cleaned
+
+
+def _has_skipped_signal_material_change(
+    row: TradeSignal,
+    *,
+    source_item_id: Optional[str],
+    signal_type: str,
+    strategy_type: Optional[str],
+    market_id: str,
+    market_question: Optional[str],
+    direction: Optional[str],
+    entry_price: Optional[float],
+    edge_percent: Optional[float],
+    confidence: Optional[float],
+    liquidity: Optional[float],
+    payload_json: Optional[dict[str, Any]],
+    strategy_context_json: Optional[dict[str, Any]],
+    quality_passed: Optional[bool],
+    quality_rejection_reasons: Optional[list],
+) -> bool:
+    if str(row.source_item_id or "") != str(source_item_id or ""):
+        return True
+    if str(row.signal_type or "") != str(signal_type or ""):
+        return True
+    if str(row.strategy_type or "") != str(strategy_type or ""):
+        return True
+    if str(row.market_id or "") != str(market_id or ""):
+        return True
+    if str(row.market_question or "") != str(market_question or ""):
+        return True
+    if str(row.direction or "") != str(direction or ""):
+        return True
+    if _normalize_number(row.entry_price) != _normalize_number(entry_price):
+        return True
+    if _normalize_number(row.edge_percent) != _normalize_number(edge_percent):
+        return True
+    if _normalize_number(row.confidence) != _normalize_number(confidence):
+        return True
+    if _normalize_number(row.liquidity) != _normalize_number(liquidity):
+        return True
+    existing_payload = _normalize_reactivation_value(_safe_json(row.payload_json))
+    incoming_payload = _normalize_reactivation_value(_safe_json(payload_json))
+    if existing_payload != incoming_payload:
+        return True
+    existing_context = _normalize_reactivation_value(_safe_json(row.strategy_context_json))
+    incoming_context = _normalize_reactivation_value(_safe_json(strategy_context_json))
+    if existing_context != incoming_context:
+        return True
+    if quality_passed is not None:
+        incoming_quality_passed = bool(quality_passed)
+        if bool(row.quality_passed) != incoming_quality_passed:
+            return True
+        existing_reasons = _normalize_reason_list(row.quality_rejection_reasons)
+        incoming_reasons = _normalize_reason_list(quality_rejection_reasons)
+        if existing_reasons != incoming_reasons:
+            return True
+    return False
 
 
 def _parse_price_timestamp(value: Any) -> Optional[datetime]:
@@ -437,6 +537,7 @@ async def upsert_trade_signal(
     row: Optional[TradeSignal] = None
     emission_event_type = "upsert_insert"
     emission_reason: str | None = None
+    publish_signal_emission = True
 
     # Prefer pending in-session rows first so we can avoid query-invoked
     # autoflush while still preserving same-transaction dedupe behavior.
@@ -491,36 +592,60 @@ async def upsert_trade_signal(
         previous_status = str(row.status or "").strip().lower()
         can_update_row = previous_status in SIGNAL_ACTIVE_STATUSES or previous_status in SIGNAL_REACTIVATABLE_STATUSES
         if can_update_row:
-            row.source_item_id = source_item_id
-            row.signal_type = signal_type
-            row.strategy_type = strategy_type
-            row.market_id = market_id
-            row.market_question = market_question
-            row.direction = direction
-            row.entry_price = entry_price
-            row.edge_percent = edge_percent
-            row.confidence = confidence
-            row.liquidity = liquidity
-            row.expires_at = _to_utc_naive(expires_at)
-            row.payload_json = _safe_json(payload_json)
-            row.strategy_context_json = _safe_json(strategy_context_json)
-            if quality_passed is not None:
-                row.quality_passed = quality_passed
-                row.quality_rejection_reasons = quality_rejection_reasons if quality_rejection_reasons else None
-            emission_event_type = "upsert_update"
-            emission_reason = None
-            if previous_status in SIGNAL_REACTIVATABLE_STATUSES:
-                row.status = "pending"
-                row.effective_price = None
-                emission_event_type = "upsert_reactivated"
-                emission_reason = f"reactivated_from:{previous_status}"
-            row.updated_at = _utc_now()
-            await _record_signal_emission(
-                session,
-                row,
-                event_type=emission_event_type,
-                reason=emission_reason,
-            )
+            should_reactivate = previous_status in SIGNAL_REACTIVATABLE_STATUSES
+            if previous_status == "skipped":
+                should_reactivate = _has_skipped_signal_material_change(
+                    row,
+                    source_item_id=source_item_id,
+                    signal_type=signal_type,
+                    strategy_type=strategy_type,
+                    market_id=market_id,
+                    market_question=market_question,
+                    direction=direction,
+                    entry_price=entry_price,
+                    edge_percent=edge_percent,
+                    confidence=confidence,
+                    liquidity=liquidity,
+                    payload_json=payload_json,
+                    strategy_context_json=strategy_context_json,
+                    quality_passed=quality_passed,
+                    quality_rejection_reasons=quality_rejection_reasons,
+                )
+            if previous_status == "skipped" and not should_reactivate:
+                emission_event_type = "upsert_skipped_unchanged"
+                emission_reason = "reactivation_suppressed:skipped_unchanged"
+                publish_signal_emission = False
+            else:
+                row.source_item_id = source_item_id
+                row.signal_type = signal_type
+                row.strategy_type = strategy_type
+                row.market_id = market_id
+                row.market_question = market_question
+                row.direction = direction
+                row.entry_price = entry_price
+                row.edge_percent = edge_percent
+                row.confidence = confidence
+                row.liquidity = liquidity
+                row.expires_at = _to_utc_naive(expires_at)
+                row.payload_json = _safe_json(payload_json)
+                row.strategy_context_json = _safe_json(strategy_context_json)
+                if quality_passed is not None:
+                    row.quality_passed = quality_passed
+                    row.quality_rejection_reasons = quality_rejection_reasons if quality_rejection_reasons else None
+                emission_event_type = "upsert_update"
+                emission_reason = None
+                if should_reactivate:
+                    row.status = "pending"
+                    row.effective_price = None
+                    emission_event_type = "upsert_reactivated"
+                    emission_reason = f"reactivated_from:{previous_status}"
+                row.updated_at = _utc_now()
+                await _record_signal_emission(
+                    session,
+                    row,
+                    event_type=emission_event_type,
+                    reason=emission_reason,
+                )
         else:
             emission_event_type = "upsert_ignored_terminal"
             emission_reason = f"terminal_status:{previous_status}"
@@ -534,11 +659,12 @@ async def upsert_trade_signal(
     if commit:
         await session.commit()
         await refresh_trade_signal_snapshots(session)
-        await _publish_trade_signal_emission(
-            row=row,
-            event_type=emission_event_type,
-            reason=emission_reason,
-        )
+        if publish_signal_emission:
+            await _publish_trade_signal_emission(
+                row=row,
+                event_type=emission_event_type,
+                reason=emission_reason,
+            )
     return row
 
 

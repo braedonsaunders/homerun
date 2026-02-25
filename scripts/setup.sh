@@ -272,11 +272,11 @@ if ! python -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 an
 fi
 
 echo "Installing Python dependencies..."
-pip install -q --upgrade pip
-pip install -q -r requirements.txt
+PIP_USER=0 python -m pip install -q --no-user --upgrade pip
+PIP_USER=0 python -m pip install -q --no-user -r requirements.txt
 if ! python -c "import socksio" >/dev/null 2>&1; then
     echo "Error: SOCKS5 proxy support dependency 'socksio' is missing after install."
-    echo "Run: pip install \"httpx[socks]>=0.27.0,<1.0\""
+    echo "Run: python -m pip install --no-user \"httpx[socks]>=0.27.0,<1.0\""
     exit 1
 fi
 
@@ -286,11 +286,11 @@ if echo "$SSL_LIB" | grep -qi "libressl"; then
     echo ""
     echo "Detected $SSL_LIB (macOS default)."
     echo "Installing pyopenssl for better SSL compatibility..."
-    pip install -q pyopenssl cryptography 2>/dev/null || echo "  (pyopenssl install skipped - non-critical)"
+    PIP_USER=0 python -m pip install -q --no-user pyopenssl cryptography 2>/dev/null || echo "  (pyopenssl install skipped - non-critical)"
 fi
 
 echo "Installing trading dependencies..."
-pip install -q -r requirements-trading.txt
+PIP_USER=0 python -m pip install -q --no-user -r requirements-trading.txt
 if ! python -c "import py_clob_client, eth_account" >/dev/null 2>&1; then
     echo "Error: trading dependencies are missing after install."
     echo "Expected imports: py_clob_client, eth_account"

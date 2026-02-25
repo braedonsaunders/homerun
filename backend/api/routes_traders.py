@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db_session
+from models.database import MarketCatalog, ScannerSnapshot, TradeSignalEmission, get_db_session
+from services.live_price_snapshot import normalize_binary_price_history
 from services.pause_state import global_pause_state
 from services.trader_orchestrator.position_lifecycle import reconcile_live_positions, reconcile_paper_positions
 from services.trader_orchestrator.session_engine import ExecutionSessionEngine
@@ -37,6 +40,8 @@ from services.trader_orchestrator_state import (
     sync_trader_position_inventory,
     update_trader,
 )
+from utils.converters import normalize_market_id
+from utils.market_urls import infer_market_platform
 
 router = APIRouter(prefix="/traders", tags=["Traders"])
 
@@ -50,6 +55,7 @@ class TraderSourceConfigRequest(BaseModel):
 class TraderRequest(BaseModel):
     name: str
     description: Optional[str] = None
+    mode: Optional[str] = None
     copy_from_trader_id: Optional[str] = None
     source_configs: list[TraderSourceConfigRequest] = Field(default_factory=list)
     interval_seconds: int = Field(default=60, ge=1, le=86400)
@@ -64,6 +70,7 @@ class TraderRequest(BaseModel):
 class TraderPatchRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    mode: Optional[str] = None
     source_configs: Optional[list[TraderSourceConfigRequest]] = None
     interval_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
     risk_limits: Optional[dict[str, Any]] = None
@@ -111,6 +118,144 @@ class TraderExecutionSessionControlRequest(BaseModel):
     reason: Optional[str] = None
 
 
+def _collect_market_aliases(raw_market: Any) -> list[str]:
+    if not isinstance(raw_market, dict):
+        return []
+    aliases: list[str] = []
+    for candidate in (
+        raw_market.get("id"),
+        raw_market.get("market_id"),
+        raw_market.get("condition_id"),
+        raw_market.get("conditionId"),
+        raw_market.get("slug"),
+        raw_market.get("market_slug"),
+        raw_market.get("marketSlug"),
+        raw_market.get("event_slug"),
+        raw_market.get("eventSlug"),
+        raw_market.get("event_ticker"),
+        raw_market.get("eventTicker"),
+        raw_market.get("ticker"),
+    ):
+        normalized = normalize_market_id(candidate)
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+    return aliases
+
+
+def _merge_normalized_binary_history(
+    existing: list[dict[str, float]],
+    incoming: list[dict[str, float]],
+    limit: int,
+) -> list[dict[str, float]]:
+    if not existing:
+        return incoming[-limit:]
+    if not incoming:
+        return existing[-limit:]
+
+    merged_by_ts: dict[int, dict[str, float]] = {}
+    for point in existing:
+        try:
+            ts_ms = int(float(point.get("t", 0)))
+        except Exception:
+            continue
+        if ts_ms <= 0:
+            continue
+        merged_by_ts[ts_ms] = point
+
+    for point in incoming:
+        try:
+            ts_ms = int(float(point.get("t", 0)))
+        except Exception:
+            continue
+        if ts_ms <= 0:
+            continue
+        merged_by_ts[ts_ms] = point
+
+    merged = [merged_by_ts[key] for key in sorted(merged_by_ts.keys())]
+    return merged[-limit:]
+
+
+def _bind_market_payload_history(
+    raw_market: Any,
+    normalized_history: dict[str, list[dict[str, float]]],
+    alias_to_history_key: dict[str, str],
+    limit: int,
+    *,
+    keep_existing_aliases: bool = False,
+) -> None:
+    if not isinstance(raw_market, dict):
+        return
+
+    aliases = _collect_market_aliases(raw_market)
+    if not aliases:
+        return
+
+    history_key = next((alias for alias in aliases if alias in normalized_history), None)
+    normalized_points = normalize_binary_price_history(raw_market.get("price_history"))
+    if len(normalized_points) >= 2:
+        resolved_history_key = history_key or aliases[0]
+        merged = _merge_normalized_binary_history(
+            normalized_history.get(resolved_history_key, []),
+            normalized_points,
+            limit,
+        )
+        if len(merged) >= 2:
+            normalized_history[resolved_history_key] = merged
+            history_key = resolved_history_key
+
+    if history_key:
+        for alias in aliases:
+            if keep_existing_aliases and alias in alias_to_history_key:
+                continue
+            alias_to_history_key[alias] = history_key
+
+
+def _signal_payload_market_history_candidates(
+    payload: dict[str, Any],
+    *,
+    fallback_market_id: str,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    raw_markets = payload.get("markets")
+    if isinstance(raw_markets, list):
+        for raw_market in raw_markets:
+            if isinstance(raw_market, dict):
+                candidates.append(raw_market)
+
+    live_market = payload.get("live_market")
+    if isinstance(live_market, dict):
+        history_tail = live_market.get("history_tail")
+        if isinstance(history_tail, list) and len(history_tail) >= 2:
+            candidates.append(
+                {
+                    "id": payload.get("market_id") or live_market.get("id") or fallback_market_id,
+                    "market_id": payload.get("market_id") or live_market.get("market_id"),
+                    "condition_id": payload.get("condition_id") or live_market.get("condition_id"),
+                    "slug": payload.get("market_slug") or payload.get("slug") or live_market.get("slug"),
+                    "event_slug": payload.get("event_slug") or live_market.get("event_slug"),
+                    "ticker": payload.get("ticker") or live_market.get("ticker"),
+                    "price_history": history_tail,
+                }
+            )
+
+    top_level_history = payload.get("price_history")
+    if isinstance(top_level_history, list) and len(top_level_history) >= 2:
+        candidates.append(
+            {
+                "id": payload.get("market_id") or fallback_market_id,
+                "market_id": payload.get("market_id") or fallback_market_id,
+                "condition_id": payload.get("condition_id"),
+                "slug": payload.get("market_slug") or payload.get("slug"),
+                "event_slug": payload.get("event_slug"),
+                "ticker": payload.get("ticker"),
+                "price_history": top_level_history,
+            }
+        )
+
+    return candidates
+
+
 def _assert_not_globally_paused() -> None:
     if global_pause_state.is_paused:
         raise HTTPException(
@@ -120,8 +265,14 @@ def _assert_not_globally_paused() -> None:
 
 
 @router.get("")
-async def get_all_traders(session: AsyncSession = Depends(get_db_session)):
-    return {"traders": await list_traders(session)}
+async def get_all_traders(
+    mode: Optional[str] = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+):
+    mode_key = str(mode or "").strip().lower()
+    if mode_key and mode_key not in {"paper", "live"}:
+        raise HTTPException(status_code=422, detail="mode must be 'paper' or 'live'")
+    return {"traders": await list_traders(session, mode=mode_key or None)}
 
 
 @router.get("/templates")
@@ -207,6 +358,209 @@ async def get_all_trader_orders_all(
             status=status,
             limit=limit,
         )
+    }
+
+
+@router.get("/market-history")
+async def get_trader_market_history(
+    market_ids: str = Query(default=""),
+    limit: int = Query(default=120, ge=2, le=600),
+    session: AsyncSession = Depends(get_db_session),
+):
+    requested_ids: list[str] = []
+    seen: set[str] = set()
+    for raw in str(market_ids or "").split(","):
+        normalized = normalize_market_id(raw)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        requested_ids.append(normalized)
+
+    if not requested_ids:
+        return {"histories": {}, "updated_at": None}
+
+    row = (
+        await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))
+    ).scalar_one_or_none()
+    history_map = row.market_history_json if row is not None and isinstance(row.market_history_json, dict) else {}
+    opportunities = row.opportunities_json if row is not None and isinstance(row.opportunities_json, list) else []
+    market_catalog_row = (
+        await session.execute(select(MarketCatalog).where(MarketCatalog.id == "latest"))
+    ).scalar_one_or_none()
+    market_catalog = (
+        market_catalog_row.markets_json
+        if market_catalog_row is not None and isinstance(market_catalog_row.markets_json, list)
+        else []
+    )
+
+    normalized_history: dict[str, list[dict[str, float]]] = {}
+    for raw_market_id, raw_points in history_map.items():
+        normalized_market_id = normalize_market_id(raw_market_id)
+        if not normalized_market_id:
+            continue
+        normalized_points = normalize_binary_price_history(raw_points)
+        if len(normalized_points) >= 2:
+            normalized_history[normalized_market_id] = _merge_normalized_binary_history(
+                normalized_history.get(normalized_market_id, []),
+                normalized_points,
+                limit,
+            )
+
+    alias_to_history_key: dict[str, str] = {}
+    catalog_by_alias: dict[str, dict[str, Any]] = {}
+    for raw_opportunity in opportunities:
+        if not isinstance(raw_opportunity, dict):
+            continue
+        markets = raw_opportunity.get("markets")
+        if not isinstance(markets, list):
+            continue
+        for raw_market in markets:
+            _bind_market_payload_history(
+                raw_market,
+                normalized_history,
+                alias_to_history_key,
+                limit,
+            )
+
+    for raw_market in market_catalog:
+        if not isinstance(raw_market, dict):
+            continue
+        _bind_market_payload_history(
+            raw_market,
+            normalized_history,
+            alias_to_history_key,
+            limit,
+            keep_existing_aliases=True,
+        )
+        aliases = _collect_market_aliases(raw_market)
+        for alias in aliases:
+            if alias not in catalog_by_alias:
+                catalog_by_alias[alias] = raw_market
+
+    unresolved_market_ids = [
+        market_id
+        for market_id in requested_ids
+        if len(normalized_history.get(alias_to_history_key.get(market_id, market_id), [])) < 2
+    ]
+
+    if unresolved_market_ids:
+        emission_rows = (
+            await session.execute(
+                select(TradeSignalEmission.market_id, TradeSignalEmission.payload_json)
+                .where(func.lower(TradeSignalEmission.market_id).in_(unresolved_market_ids))
+                .order_by(TradeSignalEmission.created_at.desc())
+                .limit(400)
+            )
+        ).all()
+
+        for raw_market_id, raw_payload in emission_rows:
+            fallback_market_id = normalize_market_id(raw_market_id)
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
+            candidates = _signal_payload_market_history_candidates(payload, fallback_market_id=fallback_market_id or "")
+            if not candidates and fallback_market_id:
+                candidates = [{"id": fallback_market_id, "price_history": payload.get("price_history")}]
+            for candidate in candidates:
+                _bind_market_payload_history(
+                    candidate,
+                    normalized_history,
+                    alias_to_history_key,
+                    limit,
+                )
+
+    unresolved_market_ids = [
+        market_id
+        for market_id in requested_ids
+        if len(normalized_history.get(alias_to_history_key.get(market_id, market_id), [])) < 2
+    ]
+
+    if unresolved_market_ids:
+        try:
+            from models.opportunity import Opportunity
+            from services.scanner import scanner as market_scanner
+        except Exception:
+            market_scanner = None
+            Opportunity = None  # type: ignore[assignment]
+
+        if market_scanner is not None and Opportunity is not None:
+            backfill_targets: list[Any] = []
+            for market_id in unresolved_market_ids:
+                catalog_market = catalog_by_alias.get(market_id)
+                market_payload: dict[str, Any] = {
+                    "id": market_id,
+                }
+                if isinstance(catalog_market, dict):
+                    for key in (
+                        "market_id",
+                        "condition_id",
+                        "conditionId",
+                        "slug",
+                        "market_slug",
+                        "marketSlug",
+                        "event_slug",
+                        "eventSlug",
+                        "event_ticker",
+                        "eventTicker",
+                        "ticker",
+                        "yes_price",
+                        "no_price",
+                        "clob_token_ids",
+                        "clobTokenIds",
+                        "token_ids",
+                        "tokenIds",
+                        "tokens",
+                    ):
+                        value = catalog_market.get(key)
+                        if value is not None:
+                            market_payload[key] = value
+
+                market_payload["platform"] = infer_market_platform(market_payload)
+                backfill_targets.append(
+                    Opportunity(
+                        strategy="trader_history",
+                        title=str(market_payload.get("question") or market_id),
+                        description="Trader modal market history hydration",
+                        total_cost=0.0,
+                        expected_payout=1.0,
+                        gross_profit=0.0,
+                        fee=0.0,
+                        net_profit=0.0,
+                        roi_percent=0.0,
+                        risk_score=0.5,
+                        confidence=0.5,
+                        markets=[market_payload],
+                        min_liquidity=0.0,
+                        max_position_size=0.0,
+                        positions_to_take=[],
+                    )
+                )
+
+            if backfill_targets:
+                try:
+                    await market_scanner.attach_price_history_to_opportunities(
+                        backfill_targets,
+                        now=datetime.now(timezone.utc),
+                        timeout_seconds=8.0,
+                        block_for_backfill=True,
+                    )
+                    for opportunity in backfill_targets:
+                        for raw_market in opportunity.markets:
+                            _bind_market_payload_history(
+                                raw_market,
+                                normalized_history,
+                                alias_to_history_key,
+                                limit,
+                            )
+                except Exception:
+                    pass
+
+    histories: dict[str, list[dict[str, float]]] = {}
+    for market_id in requested_ids:
+        resolved_key = alias_to_history_key.get(market_id, market_id)
+        histories[market_id] = normalized_history.get(resolved_key, [])
+
+    return {
+        "histories": histories,
+        "updated_at": row.updated_at.isoformat() if row is not None and row.updated_at is not None else None,
     }
 
 

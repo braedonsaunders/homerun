@@ -11,8 +11,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from config import settings
-from services import trading
-from services.trading import Order, OrderSide, OrderStatus, TradingService
+import services.live_execution_service as live_execution_module
+from services.live_execution_service import Order, OrderSide, OrderStatus, LiveExecutionService
 
 
 class _SequencedClient:
@@ -61,6 +61,28 @@ class _ProviderSnapshotClient:
         return {"canceled": [clob_order_id]}
 
 
+class _ReinitSnapshotClient:
+    def __init__(self):
+        self.get_orders_calls = 0
+
+    def get_orders(self):
+        self.get_orders_calls += 1
+        if self.get_orders_calls == 1:
+            raise RuntimeError("session expired")
+        return [
+            {
+                "id": "clob-reinit",
+                "status": "filled",
+                "size": "12",
+                "size_matched": "12",
+                "avg_price": "0.33",
+            }
+        ]
+
+    def get_order(self, clob_order_id: str):
+        return {"id": clob_order_id, "status": "filled", "size": "12", "size_matched": "12", "avg_price": "0.33"}
+
+
 def _install_fake_clob_modules(monkeypatch) -> None:
     py_clob_client = types.ModuleType("py_clob_client")
     clob_types = types.ModuleType("py_clob_client.clob_types")
@@ -102,10 +124,10 @@ async def test_failed_order_rolls_back_reserved_volume(monkeypatch):
     _install_fake_clob_modules(monkeypatch)
 
     refresh_mock = AsyncMock(return_value=False)
-    monkeypatch.setattr(trading.global_pause_state, "refresh_from_db", refresh_mock)
+    monkeypatch.setattr(live_execution_module.global_pause_state, "refresh_from_db", refresh_mock)
     monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._client = _SequencedClient([False, True])
 
@@ -135,13 +157,13 @@ async def test_sell_order_reduces_market_exposure(monkeypatch):
     _install_fake_clob_modules(monkeypatch)
 
     monkeypatch.setattr(
-        trading.global_pause_state,
+        live_execution_module.global_pause_state,
         "refresh_from_db",
         AsyncMock(return_value=False),
     )
     monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._client = _SequencedClient([True, True])
 
@@ -165,7 +187,7 @@ async def test_sell_order_reduces_market_exposure(monkeypatch):
 
 
 def test_order_cache_is_bounded():
-    service = TradingService()
+    service = LiveExecutionService()
     service._max_order_history = 3
 
     open_order = Order(
@@ -200,7 +222,7 @@ def test_order_cache_is_bounded():
 @pytest.mark.asyncio
 async def test_cancel_order_accepts_provider_clob_id(monkeypatch):
     _configure_limits(monkeypatch)
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     client = _ProviderSnapshotClient()
     service._client = client
@@ -214,7 +236,7 @@ async def test_cancel_order_accepts_provider_clob_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_order_snapshots_parses_provider_fill_values(monkeypatch):
     _configure_limits(monkeypatch)
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._client = _ProviderSnapshotClient()
 
@@ -246,7 +268,7 @@ async def test_get_order_snapshots_maps_invalid_status_to_failed(monkeypatch):
                 "price": "0.24",
             }
 
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._client = _InvalidStatusClient()
     service._remember_order(
@@ -268,3 +290,19 @@ async def test_get_order_snapshots_maps_invalid_status_to_failed(monkeypatch):
     assert snapshots["clob-invalid"]["normalized_status"] == "failed"
     assert service.get_order("order-invalid") is not None
     assert service.get_order("order-invalid").status == OrderStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_get_order_snapshots_retries_after_reinitializing_client(monkeypatch):
+    _configure_limits(monkeypatch)
+    service = LiveExecutionService()
+    service._initialized = True
+    service._client = _ReinitSnapshotClient()
+    ensure_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "ensure_initialized", ensure_mock)
+
+    snapshots = await service.get_order_snapshots_by_clob_ids(["clob-reinit"])
+
+    assert snapshots["clob-reinit"]["normalized_status"] == "filled"
+    assert snapshots["clob-reinit"]["filled_size"] == pytest.approx(12.0)
+    assert ensure_mock.await_count == 1

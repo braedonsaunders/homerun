@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from functools import lru_cache
 import logging
 from typing import Any
 
@@ -15,10 +16,17 @@ from services.trader_orchestrator.sources.registry import (
 from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
 )
+from services.strategy_loader import strategy_loader
 from services.strategy_sdk import StrategySDK
 from services.trader_orchestrator.templates import TRADER_TEMPLATES
 
 logger = logging.getLogger(__name__)
+
+_HIDDEN_PARAM_FIELD_KEYS = {
+    "allowed_timeframes",
+    "enforce_hard_timeframe_allowlist",
+    "hard_allowed_timeframes",
+}
 
 
 def _normalize_strategy_source_key(value: Any) -> str:
@@ -47,14 +55,109 @@ def _row_value(row: Any, key: str) -> Any:
     return getattr(row, key)
 
 
-def _strategy_param_fields(row: Any) -> list[dict[str, Any]]:
+def _dedupe_param_fields(raw_fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for field in raw_fields:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        deduped.append(dict(field))
+        seen.add(key)
+    return deduped
+
+
+def _infer_param_field(key: str, value: Any) -> dict[str, Any] | None:
+    clean_key = str(key or "").strip()
+    if not clean_key or clean_key == "_schema":
+        return None
+    if isinstance(value, bool):
+        field_type = "boolean"
+    elif isinstance(value, int):
+        field_type = "integer"
+    elif isinstance(value, float):
+        field_type = "number"
+    elif isinstance(value, list):
+        field_type = "list"
+    elif isinstance(value, dict):
+        field_type = "json"
+    else:
+        field_type = "string"
+    label = " ".join(part.upper() if len(part) <= 3 else part.capitalize() for part in clean_key.split("_"))
+    return {"key": clean_key, "label": label or clean_key, "type": field_type}
+
+
+@lru_cache(maxsize=1)
+def _system_seed_default_config_map() -> dict[str, dict[str, Any]]:
+    mapping: dict[str, dict[str, Any]] = {}
+    for row in build_system_opportunity_strategy_rows():
+        slug = str(row.get("slug") or "").strip().lower()
+        config = row.get("config")
+        if not slug or not isinstance(config, dict):
+            continue
+        mapping[slug] = dict(config)
+    return mapping
+
+
+def _resolved_default_params(row: Any) -> dict[str, Any]:
+    source_key = _normalize_strategy_source_key(_row_value(row, "source_key"))
+    slug = str(_row_value(row, "slug") or "").strip().lower()
+    defaults: dict[str, Any] = {}
+    if slug:
+        loaded = strategy_loader.get_strategy(slug)
+        instance = getattr(loaded, "instance", None) if loaded is not None else None
+        if instance is not None:
+            configured = getattr(instance, "config", None)
+            if isinstance(configured, dict):
+                defaults = dict(configured)
+            else:
+                declared = getattr(instance, "default_config", None)
+                if isinstance(declared, dict):
+                    defaults = dict(declared)
+    if not defaults and bool(_row_value(row, "is_system")):
+        seed_defaults = _system_seed_default_config_map().get(slug)
+        if isinstance(seed_defaults, dict):
+            defaults = dict(seed_defaults)
+
+    overrides = _row_value(row, "config")
+    merged = {**defaults, **(dict(overrides) if isinstance(overrides, dict) else {})}
+    if source_key == "traders":
+        merged = StrategySDK.validate_trader_filter_config(merged)
+    elif source_key == "news":
+        merged = StrategySDK.validate_news_filter_config(merged)
+    merged = StrategySDK.normalize_strategy_retention_config(merged)
+    for key in ("max_opportunities", "retention_window", "retention_max_age_minutes", "retention_max_opportunities"):
+        merged.pop(key, None)
+    return merged
+
+
+def _strategy_param_fields(row: Any, *, default_params: dict[str, Any]) -> list[dict[str, Any]]:
     schema = _row_value(row, "config_schema")
-    if not isinstance(schema, dict):
-        return []
-    fields = schema.get("param_fields")
-    if isinstance(fields, list):
-        return [field for field in fields if isinstance(field, dict)]
-    return []
+    fields: list[dict[str, Any]] = []
+    if isinstance(schema, dict):
+        raw_fields = schema.get("param_fields")
+        if isinstance(raw_fields, list):
+            fields = [field for field in raw_fields if isinstance(field, dict)]
+    deduped = _dedupe_param_fields(fields)
+    existing_keys = {str(field.get("key") or "").strip() for field in deduped if isinstance(field, dict)}
+
+    for key, value in default_params.items():
+        inferred = _infer_param_field(key, value)
+        if not isinstance(inferred, dict):
+            continue
+        inferred_key = str(inferred.get("key") or "").strip()
+        if not inferred_key or inferred_key in existing_keys:
+            continue
+        deduped.append(inferred)
+        existing_keys.add(inferred_key)
+
+    # Retention controls are scanner-opportunity retention knobs; they do not
+    # affect trader evaluate()/execution flows in the bot flyout.
+    retention_keys = {"max_opportunities", "retention_window", "retention_max_age_minutes", "retention_max_opportunities"}
+    hidden_keys = retention_keys | _HIDDEN_PARAM_FIELD_KEYS
+    return [field for field in deduped if str(field.get("key") or "").strip() not in hidden_keys]
 
 
 async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
@@ -185,8 +288,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
             key = str(_row_value(row, "slug") or "").strip().lower()
             if not key:
                 continue
-            row_defaults = _row_value(row, "config")
-            default_params = dict(row_defaults or {}) if isinstance(row_defaults, dict) else {}
+            default_params = _resolved_default_params(row)
             if not default_params and template_default_params:
                 default_params = dict(template_default_params)
             strategy_options.append(
@@ -195,7 +297,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
                     "label": str(_row_value(row, "name") or key),
                     "description": str(_row_value(row, "description") or ""),
                     "default_params": default_params,
-                    "param_fields": _strategy_param_fields(row),
+                    "param_fields": _strategy_param_fields(row, default_params=default_params),
                     "status": str(_row_value(row, "status") or "unknown"),
                     "version": int(_row_value(row, "version") or 1),
                     "is_system": bool(_row_value(row, "is_system")),

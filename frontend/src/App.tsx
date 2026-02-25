@@ -99,7 +99,7 @@ import RecentTradesPanel from './components/RecentTradesPanel'
 import TrackedTradersPanel from './components/TrackedTradersPanel'
 import SettingsPanel from './components/SettingsPanel'
 import StrategiesPanel from './components/StrategiesPanel'
-import AIPanel from './components/AIPanel'
+import AIPanel, { type AICopilotLaunchOptions } from './components/AIPanel'
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
 import PositionsPanel from './components/PositionsPanel'
@@ -124,6 +124,7 @@ import TradersNetworkPanel from './components/TradersNetworkPanel'
 type Tab = 'opportunities' | 'data' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis' | 'graph'
 type OpportunitiesView = string
+type CopilotSeedPrompt = { id: number; prompt: string; autoSend: boolean }
 
 const ITEMS_PER_PAGE = 20
 const ANALYZE_ALL_IDS_PAGE_SIZE = 500
@@ -382,6 +383,7 @@ function App() {
   const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
+  const [copilotSeedPrompt, setCopilotSeedPrompt] = useState<CopilotSeedPrompt | null>(null)
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
@@ -395,6 +397,7 @@ function App() {
   const headerSearchRef = useRef<HTMLInputElement>(null)
   const headerSearchContainerRef = useRef<HTMLDivElement>(null)
   const analyzeMenuRef = useRef<HTMLDivElement>(null)
+  const copilotSeedCounterRef = useRef(0)
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
   const queryClient = useQueryClient()
   const [localUiLocked, setLocalUiLocked] = useState(false)
@@ -534,11 +537,25 @@ function App() {
     }
   }, [uiLockStatus])
 
-  // Open copilot with context
-  const handleOpenCopilot = useCallback((contextType?: string, contextId?: string, label?: string) => {
-    setCopilotContext({ type: contextType, id: contextId, label })
+  const handleOpenCopilotRequest = useCallback((options?: AICopilotLaunchOptions) => {
+    const payload = options || {}
+    const trimmedPrompt = String(payload.prompt || '').trim()
+    setCopilotContext({ type: payload.contextType, id: payload.contextId, label: payload.label })
+    if (trimmedPrompt) {
+      copilotSeedCounterRef.current += 1
+      setCopilotSeedPrompt({
+        id: copilotSeedCounterRef.current,
+        prompt: trimmedPrompt,
+        autoSend: payload.autoSend !== false,
+      })
+    }
     setCopilotOpen(true)
   }, [])
+
+  // Open copilot with context
+  const handleOpenCopilot = useCallback((contextType?: string, contextId?: string, label?: string) => {
+    handleOpenCopilotRequest({ contextType, contextId, label })
+  }, [handleOpenCopilotRequest])
 
   // Open copilot from opportunity card
   const handleOpenCopilotForOpportunity = useCallback((opp: Opportunity) => {
@@ -2755,8 +2772,10 @@ function App() {
 
             {/* ==================== AI ==================== */}
             {activeTab === 'ai' && (
-              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
-                <AIPanel />
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="flex-1 overflow-hidden px-6 py-4 min-h-0">
+                  <AIPanel onOpenCopilot={handleOpenCopilotRequest} />
+                </div>
               </div>
             )}
 
@@ -2804,6 +2823,7 @@ function App() {
           contextType={copilotContext.type}
           contextId={copilotContext.id}
           contextLabel={copilotContext.label}
+          seedPrompt={copilotSeedPrompt}
         />
 
         {/* AI Command Bar (Cmd+K) */}

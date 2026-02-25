@@ -272,18 +272,12 @@ async def _build_live_markets_from_source(snapshot_markets: list[dict]) -> list[
     return result
 
 
-@router.get("/crypto/markets")
-async def get_crypto_markets(
-    session: AsyncSession = Depends(get_db_session),
+async def _load_crypto_markets(
+    session: AsyncSession,
     viewer_active: bool = False,
-):
-    """Return live crypto markets with stale-snapshot source fallback."""
+) -> list[dict]:
     if viewer_active:
-        # Mark active viewer demand for the crypto worker. The worker uses this
-        # to stay in fast mode while the crypto panel is open.
         try:
-            # Use an isolated session so heartbeat writes cannot trigger
-            # autoflush on the request's read-path session.
             async with AsyncSessionLocal() as heartbeat_session:
                 await request_worker_run(heartbeat_session, "crypto")
         except Exception:
@@ -303,9 +297,6 @@ async def get_crypto_markets(
     ):
         return markets
 
-    # Warm snapshot: data exists but is slightly stale (idle mode).  Return it
-    # immediately — the worker is already triggered to refresh via
-    # request_worker_run above, so the next poll will get fresh data.
     if (
         markets
         and _is_snapshot_warm(snapshot)
@@ -322,16 +313,19 @@ async def get_crypto_markets(
     return markets
 
 
+@router.get("/crypto/markets")
+async def get_crypto_markets(
+    session: AsyncSession = Depends(get_db_session),
+    viewer_active: bool = False,
+):
+    """Return live crypto markets with stale-snapshot source fallback."""
+    return await _load_crypto_markets(session, viewer_active=viewer_active)
+
+
 @router.get("/crypto/oracle-prices")
 async def get_oracle_prices(session: AsyncSession = Depends(get_db_session)):
     """Return latest oracle prices derived from crypto market payload."""
-    snapshot = await read_worker_snapshot(session, "crypto")
-    markets = _snapshot_markets(snapshot)
-
-    if not markets or not (_is_snapshot_fresh(snapshot) or _is_snapshot_warm(snapshot)):
-        live = await _build_live_markets_from_source(markets)
-        if live:
-            markets = live
+    markets = await _load_crypto_markets(session, viewer_active=False)
 
     out: dict[str, dict] = {}
     for market in markets:

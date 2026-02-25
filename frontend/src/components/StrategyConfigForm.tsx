@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -45,6 +45,69 @@ export default function StrategyConfigForm({ schema, values, onChange }: Strateg
           onChange={(val) => updateField(field.key, val)}
         />
       ))}
+    </div>
+  )
+}
+
+function _csvListFromValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
+function CommaSeparatedListInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: ParamField
+  value: unknown
+  onChange: (value: unknown) => void
+}) {
+  const normalizedCsv = useMemo(() => _csvListFromValue(value).join(', '), [value])
+  const [draftCsv, setDraftCsv] = useState(normalizedCsv)
+  const [isFocused, setIsFocused] = useState(false)
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraftCsv(normalizedCsv)
+    }
+  }, [isFocused, normalizedCsv])
+
+  return (
+    <div>
+      <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
+      <Input
+        value={draftCsv}
+        onFocus={() => setIsFocused(true)}
+        onChange={(e) => {
+          setDraftCsv(e.target.value)
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          const parsed = _csvListFromValue(draftCsv)
+          onChange(parsed)
+          setDraftCsv(parsed.join(', '))
+        }}
+        onBlur={() => {
+          setIsFocused(false)
+          const parsed = _csvListFromValue(draftCsv)
+          onChange(parsed)
+          setDraftCsv(parsed.join(', '))
+        }}
+        className="mt-1 h-8 text-xs font-mono"
+        placeholder="value1, value2"
+      />
     </div>
   )
 }
@@ -304,23 +367,7 @@ function ConfigField({
           </div>
         )
       }
-      return (
-        <div>
-          <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
-          <Input
-            value={Array.isArray(value) ? (value as string[]).join(', ') : String(value || '')}
-            onChange={(e) => {
-              const items = e.target.value
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-              onChange(items)
-            }}
-            className="mt-1 h-8 text-xs font-mono"
-            placeholder="value1, value2"
-          />
-        </div>
-      )
+      return <CommaSeparatedListInput field={field} value={value} onChange={onChange} />
 
     case 'object': {
       const properties = Array.isArray(field.properties) ? field.properties : []
@@ -365,23 +412,7 @@ function ConfigField({
       )
 
     case 'list':
-      return (
-        <div>
-          <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
-          <Input
-            value={Array.isArray(value) ? (value as string[]).join(', ') : String(value || '')}
-            onChange={(e) => {
-              const items = e.target.value
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-              onChange(items)
-            }}
-            className="mt-1 h-8 text-xs font-mono"
-            placeholder="value1, value2"
-          />
-        </div>
-      )
+      return <CommaSeparatedListInput field={field} value={value} onChange={onChange} />
 
     case 'json':
       return (

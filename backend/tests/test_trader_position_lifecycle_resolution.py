@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -509,6 +509,7 @@ async def test_live_pending_exit_partial_fill_does_not_close_position(tmp_path, 
                     }
                 ),
             )
+            monkeypatch.setattr(position_lifecycle.polymarket_client, "get_midpoint", AsyncMock(return_value=None))
             monkeypatch.setattr(
                 position_lifecycle,
                 "_load_execution_wallet_positions_by_token",
@@ -520,7 +521,7 @@ async def test_live_pending_exit_partial_fill_does_not_close_position(tmp_path, 
                 AsyncMock(return_value={}),
             )
             monkeypatch.setattr(
-                position_lifecycle.trading_service,
+                position_lifecycle.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={
@@ -554,7 +555,153 @@ async def test_live_pending_exit_partial_fill_does_not_close_position(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_live_pending_exit_closes_when_fill_threshold_met_with_stale_open_status(tmp_path, monkeypatch):
+async def test_live_stale_mark_does_not_trigger_max_hold_exit(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            stale_marked_at = (datetime.utcnow() - timedelta(minutes=4)).isoformat() + "Z"
+            await _seed_order(
+                session,
+                mode="live",
+                status="executed",
+                payload_json={
+                    "token_id": "token-1",
+                    "position_state": {
+                        "last_mark_price": 0.45,
+                        "last_mark_source": "clob_midpoint",
+                        "last_marked_at": stale_marked_at,
+                    },
+                },
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "load_market_info_for_orders",
+                AsyncMock(
+                    return_value={
+                        "market-1": {
+                            "closed": False,
+                            "accepting_orders": True,
+                            "winner": None,
+                            "winning_outcome": None,
+                            "outcome_prices": [],
+                        }
+                    }
+                ),
+            )
+            monkeypatch.setattr(position_lifecycle.polymarket_client, "get_midpoint", AsyncMock(return_value=None))
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_positions_by_token",
+                AsyncMock(return_value={}),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_recent_sell_trades_by_token",
+                AsyncMock(return_value={}),
+            )
+            execute_mock = AsyncMock(
+                return_value=SimpleNamespace(
+                    status="failed",
+                    error_message="mock_exit_failure",
+                    order_id=None,
+                    payload={},
+                )
+            )
+            monkeypatch.setattr("services.live_execution_adapter.execute_live_order", execute_mock)
+
+            result = await position_lifecycle.reconcile_live_positions(
+                session,
+                trader_id="trader-1",
+                trader_params={"live_max_hold_minutes": 0.0},
+                dry_run=False,
+            )
+            order = await session.get(TraderOrder, "order-1")
+
+            assert result["closed"] == 0
+            assert result["held"] >= 1
+            assert order is not None
+            assert order.status == "executed"
+            assert (order.payload_json or {}).get("position_close") is None
+            assert execute_mock.await_count == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_fresh_mark_allows_max_hold_exit_attempt(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            fresh_marked_at = datetime.utcnow().isoformat() + "Z"
+            await _seed_order(
+                session,
+                mode="live",
+                status="executed",
+                payload_json={
+                    "token_id": "token-1",
+                    "position_state": {
+                        "last_mark_price": 0.45,
+                        "last_mark_source": "clob_midpoint",
+                        "last_marked_at": fresh_marked_at,
+                    },
+                },
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "load_market_info_for_orders",
+                AsyncMock(
+                    return_value={
+                        "market-1": {
+                            "closed": False,
+                            "accepting_orders": True,
+                            "winner": None,
+                            "winning_outcome": None,
+                            "outcome_prices": [],
+                        }
+                    }
+                ),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_positions_by_token",
+                AsyncMock(return_value={}),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_recent_sell_trades_by_token",
+                AsyncMock(return_value={}),
+            )
+            execute_mock = AsyncMock(
+                return_value=SimpleNamespace(
+                    status="failed",
+                    error_message="mock_exit_failure",
+                    order_id=None,
+                    payload={},
+                )
+            )
+            monkeypatch.setattr("services.live_execution_adapter.execute_live_order", execute_mock)
+
+            result = await position_lifecycle.reconcile_live_positions(
+                session,
+                trader_id="trader-1",
+                trader_params={"live_max_hold_minutes": 0.0},
+                dry_run=False,
+            )
+            order = await session.get(TraderOrder, "order-1")
+
+            assert result["closed"] == 0
+            assert order is not None
+            pending_exit = (order.payload_json or {}).get("pending_live_exit")
+            assert isinstance(pending_exit, dict)
+            assert pending_exit.get("status") == "failed"
+            assert pending_exit.get("close_trigger") == "max_hold"
+            assert execute_mock.await_count == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_pending_exit_does_not_close_when_fill_threshold_met_but_provider_open(tmp_path, monkeypatch):
     engine, session_factory = await _build_session_factory(tmp_path)
     try:
         async with session_factory() as session:
@@ -603,7 +750,7 @@ async def test_live_pending_exit_closes_when_fill_threshold_met_with_stale_open_
                 AsyncMock(return_value={}),
             )
             monkeypatch.setattr(
-                position_lifecycle.trading_service,
+                position_lifecycle.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={
@@ -624,12 +771,13 @@ async def test_live_pending_exit_closes_when_fill_threshold_met_with_stale_open_
             )
             order = await session.get(TraderOrder, "order-1")
 
-            assert result["closed"] == 1
+            assert result["closed"] == 0
+            assert result["held"] >= 1
             assert order is not None
-            assert order.status == "closed_loss"
+            assert order.status == "open"
             pending_exit = (order.payload_json or {}).get("pending_live_exit", {})
-            assert pending_exit.get("status") == "filled"
-            assert (order.payload_json or {}).get("position_close", {}).get("price_source") == "provider_exit_fill"
+            assert pending_exit.get("status") == "submitted"
+            assert (order.payload_json or {}).get("position_close") is None
     finally:
         await engine.dispose()
 
@@ -691,7 +839,7 @@ async def test_live_pending_exit_closes_when_provider_filled_and_wallet_flat_wit
                 AsyncMock(return_value={}),
             )
             monkeypatch.setattr(
-                position_lifecycle.trading_service,
+                position_lifecycle.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={
@@ -779,7 +927,7 @@ async def test_live_reopens_terminal_order_when_exit_fill_is_partial(tmp_path, m
                 AsyncMock(return_value={}),
             )
             monkeypatch.setattr(
-                position_lifecycle.trading_service,
+                position_lifecycle.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={
@@ -807,6 +955,90 @@ async def test_live_reopens_terminal_order_when_exit_fill_is_partial(tmp_path, m
             assert pending_exit.get("reopen_reason") == "partial_exit_fill_below_threshold"
             assert pending_exit.get("status") == "submitted"
             assert (order.payload_json or {}).get("position_close") is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_does_not_close_when_provider_exit_status_is_open_even_if_fill_ratio_high(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            await _seed_order(
+                session,
+                mode="live",
+                status="open",
+                payload_json={
+                    "token_id": "token-1",
+                    "provider_reconciliation": {
+                        "filled_size": 47.61,
+                        "average_fill_price": 0.1,
+                        "filled_notional_usd": 4.761,
+                    },
+                    "pending_live_exit": {
+                        "status": "submitted",
+                        "close_trigger": "strategy:Trailing stop",
+                        "exit_size": 47.61,
+                        "filled_size": 47.0,
+                        "fill_ratio": 47.0 / 47.61,
+                        "provider_status": "open",
+                        "provider_clob_order_id": "0xexit-order",
+                    },
+                },
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "load_market_info_for_orders",
+                AsyncMock(
+                    return_value={
+                        "market-1": {
+                            "closed": False,
+                            "accepting_orders": True,
+                            "winner": None,
+                            "winning_outcome": None,
+                            "outcome_prices": [0.45, 0.55],
+                        }
+                    }
+                ),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_positions_by_token",
+                AsyncMock(return_value={"token-1": {"asset": "token-1", "size": 0.61, "curPrice": 0.06}}),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_recent_sell_trades_by_token",
+                AsyncMock(return_value={}),
+            )
+            monkeypatch.setattr(
+                position_lifecycle.live_execution_service,
+                "get_order_snapshots_by_clob_ids",
+                AsyncMock(
+                    return_value={
+                        "0xexit-order": {
+                            "normalized_status": "open",
+                            "filled_size": 47.0,
+                            "average_fill_price": 0.06,
+                        }
+                    }
+                ),
+            )
+
+            result = await position_lifecycle.reconcile_live_positions(
+                session,
+                trader_id="trader-1",
+                trader_params={},
+                dry_run=False,
+            )
+            order = await session.get(TraderOrder, "order-1")
+
+            assert result["closed"] == 0
+            assert result["held"] >= 1
+            assert order is not None
+            assert order.status == "open"
+            pending_exit = (order.payload_json or {}).get("pending_live_exit", {})
+            assert pending_exit.get("status") == "submitted"
     finally:
         await engine.dispose()
 
@@ -1038,7 +1270,7 @@ async def test_live_pending_exit_fill_emits_reverse_signal_when_armed(tmp_path, 
                 AsyncMock(return_value={}),
             )
             monkeypatch.setattr(
-                position_lifecycle.trading_service,
+                position_lifecycle.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={

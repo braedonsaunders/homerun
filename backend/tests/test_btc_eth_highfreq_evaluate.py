@@ -9,7 +9,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
+from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy, _extract_oracle_status
 
 
 def _signal(*, created_at: datetime, updated_at: datetime | None = None) -> SimpleNamespace:
@@ -166,7 +166,8 @@ def test_evaluate_blocks_stale_live_market_context():
 def test_evaluate_blocks_stale_oracle_when_directional_requires_it():
     strategy = BtcEthHighFreqStrategy()
     signal = _signal(created_at=datetime.now(timezone.utc))
-    signal.payload_json["oracle_available"] = True
+    signal.payload_json["oracle_price"] = 65200.0
+    signal.payload_json["price_to_beat"] = 65000.0
     signal.payload_json["oracle_age_seconds"] = 45.0
 
     decision = strategy.evaluate(
@@ -192,6 +193,171 @@ def test_evaluate_blocks_stale_oracle_when_directional_requires_it():
     oracle_freshness = _check_by_key(decision, "oracle_freshness")
     assert oracle_freshness.passed is False
     assert "required=True" in str(oracle_freshness.detail)
+
+
+def test_evaluate_degrades_when_chainlink_stale_and_binance_fresh():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.payload_json["price_to_beat"] = 65000.0
+    signal.payload_json["oracle_prices_by_source"] = {
+        "chainlink": {
+            "source": "chainlink",
+            "price": 65200.0,
+            "age_seconds": 42.0,
+        },
+        "binance": {
+            "source": "binance",
+            "price": 65120.0,
+            "age_seconds": 1.1,
+        },
+    }
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "max_oracle_age_seconds": 10.0,
+                "require_oracle_for_directional": True,
+                "min_edge_persistence_ms": 0,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+                "market_data_age_ms": 25.0,
+            },
+        },
+    )
+
+    oracle_freshness = _check_by_key(decision, "oracle_freshness")
+    assert oracle_freshness.passed is True
+    assert decision.payload["oracle_fallback_used"] is True
+    assert decision.payload["oracle_fallback_degraded"] is True
+    assert decision.payload["oracle_effective_source"] == "binance"
+    assert decision.payload["oracle_status"]["availability_state"] == "available_degraded_binance_fallback"
+
+
+def test_evaluate_hard_skips_when_chainlink_stale_and_policy_requires_it():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.payload_json["price_to_beat"] = 65000.0
+    signal.payload_json["oracle_prices_by_source"] = {
+        "chainlink": {
+            "source": "chainlink",
+            "price": 65200.0,
+            "age_seconds": 42.0,
+        },
+        "binance": {
+            "source": "binance",
+            "price": 65120.0,
+            "age_seconds": 1.1,
+        },
+    }
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "max_oracle_age_seconds": 10.0,
+                "require_oracle_for_directional": True,
+                "oracle_source_policy": "hard_skip",
+                "min_edge_persistence_ms": 0,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+                "market_data_age_ms": 25.0,
+            },
+        },
+    )
+
+    assert decision.decision == "skipped"
+    oracle_freshness = _check_by_key(decision, "oracle_freshness")
+    assert oracle_freshness.passed is False
+    oracle_policy = _check_by_key(decision, "oracle_source_policy")
+    assert oracle_policy.passed is False
+    assert decision.payload["oracle_fallback_reason"] == "hard_skip_policy"
+
+
+def test_evaluate_counts_age_present_but_unavailable_oracle():
+    strategy = BtcEthHighFreqStrategy()
+    signal = _signal(created_at=datetime.now(timezone.utc))
+    signal.payload_json["oracle_age_seconds"] = 4.2
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 1.0,
+                "min_confidence": 0.2,
+                "direction_guardrail_enabled": False,
+                "require_oracle_for_directional": True,
+                "min_edge_persistence_ms": 0,
+            },
+            "live_market": {
+                "available": True,
+                "is_live": True,
+                "is_current": True,
+                "seconds_left": 240,
+                "market_data_age_ms": 25.0,
+            },
+        },
+    )
+
+    assert decision.payload["oracle_status"]["availability_state"] == "age_present_but_unavailable"
+    assert "missing_price_to_beat" in decision.payload["oracle_status"]["availability_reasons"]
+    counters = decision.payload["telemetry_counters"]
+    assert counters["age_present_but_unavailable"] == 1
+    assert "oracle_freshness" in counters["skip_by_check"]
+
+
+def test_extract_oracle_status_uses_updated_at_over_conflicting_age_value():
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    updated_at_ms = now_ms - 4200
+
+    status = _extract_oracle_status(
+        live_market={
+            "oracle_status": {
+                "source": "chainlink",
+                "price": 65111.0,
+                "price_to_beat": 65000.0,
+                "updated_at_ms": updated_at_ms,
+                "age_ms": 0.0,
+            }
+        },
+        payload={},
+        now_ms=now_ms,
+    )
+
+    assert status["available"] is True
+    assert status["availability_state"] == "available"
+    assert status["age_ms"] is not None
+    assert status["age_ms"] >= 4000.0
+
+
+def test_extract_oracle_status_reports_missing_fields_when_age_present():
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    status = _extract_oracle_status(
+        live_market={},
+        payload={"oracle_age_seconds": 4.2},
+        now_ms=now_ms,
+    )
+
+    assert status["available"] is False
+    assert status["availability_state"] == "age_present_but_unavailable"
+    assert status["has_timestamp"] is True
+    assert "missing_price" in status["availability_reasons"]
+    assert "missing_price_to_beat" in status["availability_reasons"]
 
 
 def test_evaluate_blocks_when_spread_exceeds_cap():
@@ -278,7 +444,7 @@ def test_evaluate_enforces_reentry_cooldown_by_default():
     assert decision.payload["force_disable_reentry_cooldown"] is False
 
 
-def test_evaluate_blocks_4h_timeframe_by_hardening_allowlist():
+def test_evaluate_4h_uses_include_exclude_timeframe_scope_only():
     strategy = BtcEthHighFreqStrategy()
     signal = _signal(created_at=datetime.now(timezone.utc))
     signal.payload_json["timeframe"] = "4h"
@@ -300,12 +466,9 @@ def test_evaluate_blocks_4h_timeframe_by_hardening_allowlist():
         },
     )
 
-    assert decision.decision == "skipped"
-    timeframe_hardening = _check_by_key(decision, "timeframe_hardening")
-    assert timeframe_hardening.passed is False
-    detail = str(timeframe_hardening.detail)
-    assert "allowed=" in detail
-    assert "5m" in detail and "15m" in detail and "1h" in detail
+    timeframe_scope = _check_by_key(decision, "timeframe_scope")
+    assert timeframe_scope.passed is True
+    assert all(str(getattr(check, "key", "")) != "timeframe_hardening" for check in decision.checks)
 
 
 def test_evaluate_blocks_entry_above_hardened_price_ceiling():

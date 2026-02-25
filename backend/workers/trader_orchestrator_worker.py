@@ -31,7 +31,7 @@ from services.trader_orchestrator.position_lifecycle import (
 )
 from services.polymarket import polymarket_client
 from services.simulation import simulation_service
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from services.trader_orchestrator.risk_manager import evaluate_risk
 from services.trader_orchestrator.decision_gates import (
     apply_platform_decision_gates,
@@ -50,6 +50,10 @@ from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.strategy_sdk import StrategySDK
 from services.event_bus import event_bus
 from services.trader_orchestrator_state import (
+    DEFAULT_LIVE_MARKET_CONTEXT,
+    DEFAULT_LIVE_PROVIDER_HEALTH,
+    DEFAULT_LIVE_RISK_CLAMPS,
+    DEFAULT_PENDING_LIVE_EXIT_GUARD,
     ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     cleanup_trader_open_orders,
     compute_orchestrator_metrics,
@@ -114,9 +118,6 @@ _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
 _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
-_LIVE_PROVIDER_HEALTH_WINDOW_SECONDS = 180
-_LIVE_PROVIDER_HEALTH_MIN_ERRORS = 2
-_LIVE_PROVIDER_HEALTH_BLOCK_SECONDS = 120
 _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
 _LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
 _terminal_stale_order_last_checked_at: datetime | None = None
@@ -972,16 +973,33 @@ async def _live_provider_failure_snapshot(
     }
 
 
-def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _apply_live_risk_clamps(
+    effective_risk_limits: dict[str, Any],
+    live_risk_clamps: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     changes: dict[str, dict[str, Any]] = {}
 
-    configured_allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
-    if configured_allow_averaging:
-        changes["allow_averaging"] = {"configured": configured_allow_averaging, "effective": False}
-    effective_risk_limits["allow_averaging"] = False
+    enforce_allow_averaging_off = bool(
+        live_risk_clamps.get(
+            "enforce_allow_averaging_off",
+            DEFAULT_LIVE_RISK_CLAMPS["enforce_allow_averaging_off"],
+        )
+    )
+    if enforce_allow_averaging_off:
+        configured_allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
+        if configured_allow_averaging:
+            changes["allow_averaging"] = {"configured": configured_allow_averaging, "effective": False}
+        effective_risk_limits["allow_averaging"] = False
 
     configured_cooldown_seconds = max(0, safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
-    clamped_cooldown_seconds = max(configured_cooldown_seconds, 90)
+    min_cooldown_seconds = max(
+        0,
+        safe_int(
+            live_risk_clamps.get("min_cooldown_seconds"),
+            DEFAULT_LIVE_RISK_CLAMPS["min_cooldown_seconds"],
+        ),
+    )
+    clamped_cooldown_seconds = max(configured_cooldown_seconds, min_cooldown_seconds)
     if clamped_cooldown_seconds != configured_cooldown_seconds:
         changes["cooldown_seconds"] = {
             "configured": configured_cooldown_seconds,
@@ -990,7 +1008,14 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
     effective_risk_limits["cooldown_seconds"] = clamped_cooldown_seconds
 
     configured_max_consecutive_losses = max(1, safe_int(effective_risk_limits.get("max_consecutive_losses"), 4))
-    clamped_max_consecutive_losses = min(configured_max_consecutive_losses, 3)
+    max_consecutive_losses_cap = max(
+        1,
+        safe_int(
+            live_risk_clamps.get("max_consecutive_losses_cap"),
+            DEFAULT_LIVE_RISK_CLAMPS["max_consecutive_losses_cap"],
+        ),
+    )
+    clamped_max_consecutive_losses = min(configured_max_consecutive_losses, max_consecutive_losses_cap)
     if clamped_max_consecutive_losses != configured_max_consecutive_losses:
         changes["max_consecutive_losses"] = {
             "configured": configured_max_consecutive_losses,
@@ -999,7 +1024,14 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
     effective_risk_limits["max_consecutive_losses"] = clamped_max_consecutive_losses
 
     configured_max_open_orders = max(1, safe_int(effective_risk_limits.get("max_open_orders"), 20))
-    clamped_max_open_orders = min(configured_max_open_orders, 6)
+    max_open_orders_cap = max(
+        1,
+        safe_int(
+            live_risk_clamps.get("max_open_orders_cap"),
+            DEFAULT_LIVE_RISK_CLAMPS["max_open_orders_cap"],
+        ),
+    )
+    clamped_max_open_orders = min(configured_max_open_orders, max_open_orders_cap)
     if clamped_max_open_orders != configured_max_open_orders:
         changes["max_open_orders"] = {
             "configured": configured_max_open_orders,
@@ -1008,7 +1040,14 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
     effective_risk_limits["max_open_orders"] = clamped_max_open_orders
 
     configured_max_open_positions = max(1, safe_int(effective_risk_limits.get("max_open_positions"), 12))
-    clamped_max_open_positions = min(configured_max_open_positions, 4)
+    max_open_positions_cap = max(
+        1,
+        safe_int(
+            live_risk_clamps.get("max_open_positions_cap"),
+            DEFAULT_LIVE_RISK_CLAMPS["max_open_positions_cap"],
+        ),
+    )
+    clamped_max_open_positions = min(configured_max_open_positions, max_open_positions_cap)
     if clamped_max_open_positions != configured_max_open_positions:
         changes["max_open_positions"] = {
             "configured": configured_max_open_positions,
@@ -1017,7 +1056,14 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
     effective_risk_limits["max_open_positions"] = clamped_max_open_positions
 
     configured_max_trade_notional = max(1.0, safe_float(effective_risk_limits.get("max_trade_notional_usd"), 350.0))
-    clamped_max_trade_notional = min(float(configured_max_trade_notional), 200.0)
+    max_trade_notional_usd_cap = max(
+        1.0,
+        safe_float(
+            live_risk_clamps.get("max_trade_notional_usd_cap"),
+            DEFAULT_LIVE_RISK_CLAMPS["max_trade_notional_usd_cap"],
+        ),
+    )
+    clamped_max_trade_notional = min(float(configured_max_trade_notional), float(max_trade_notional_usd_cap))
     if clamped_max_trade_notional != float(configured_max_trade_notional):
         changes["max_trade_notional_usd"] = {
             "configured": float(configured_max_trade_notional),
@@ -1026,7 +1072,14 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
     effective_risk_limits["max_trade_notional_usd"] = clamped_max_trade_notional
 
     configured_max_orders_per_cycle = max(1, safe_int(effective_risk_limits.get("max_orders_per_cycle"), 50))
-    clamped_max_orders_per_cycle = min(configured_max_orders_per_cycle, 4)
+    max_orders_per_cycle_cap = max(
+        1,
+        safe_int(
+            live_risk_clamps.get("max_orders_per_cycle_cap"),
+            DEFAULT_LIVE_RISK_CLAMPS["max_orders_per_cycle_cap"],
+        ),
+    )
+    clamped_max_orders_per_cycle = min(configured_max_orders_per_cycle, max_orders_per_cycle_cap)
     if clamped_max_orders_per_cycle != configured_max_orders_per_cycle:
         changes["max_orders_per_cycle"] = {
             "configured": configured_max_orders_per_cycle,
@@ -1034,7 +1087,20 @@ def _apply_live_risk_clamps(effective_risk_limits: dict[str, Any]) -> dict[str, 
         }
     effective_risk_limits["max_orders_per_cycle"] = clamped_max_orders_per_cycle
 
-    effective_risk_limits["halt_on_consecutive_losses"] = True
+    enforce_halt_on_consecutive_losses = bool(
+        live_risk_clamps.get(
+            "enforce_halt_on_consecutive_losses",
+            DEFAULT_LIVE_RISK_CLAMPS["enforce_halt_on_consecutive_losses"],
+        )
+    )
+    if enforce_halt_on_consecutive_losses:
+        configured_halt = bool(effective_risk_limits.get("halt_on_consecutive_losses", False))
+        if not configured_halt:
+            changes["halt_on_consecutive_losses"] = {
+                "configured": configured_halt,
+                "effective": True,
+            }
+        effective_risk_limits["halt_on_consecutive_losses"] = True
     return changes
 
 
@@ -1585,6 +1651,33 @@ async def _run_trader_once(
             trader_id,
             mode=run_mode,
         )
+        control_settings = dict(control.get("settings") or {})
+        global_runtime_settings = dict(control_settings.get("global_runtime") or {})
+        pending_live_exit_guard_settings = dict(
+            global_runtime_settings.get("pending_live_exit_guard") or {}
+        )
+        pending_live_exit_max_allowed = max(
+            0,
+            safe_int(
+                pending_live_exit_guard_settings.get("max_pending_exits"),
+                int(DEFAULT_PENDING_LIVE_EXIT_GUARD["max_pending_exits"]),
+            ),
+        )
+        pending_live_exit_identity_guard_enabled = bool(
+            pending_live_exit_guard_settings.get(
+                "identity_guard_enabled",
+                DEFAULT_PENDING_LIVE_EXIT_GUARD["identity_guard_enabled"],
+            )
+        )
+        pending_live_exit_terminal_statuses = pending_live_exit_guard_settings.get("terminal_statuses")
+        if not isinstance(pending_live_exit_terminal_statuses, list) or not pending_live_exit_terminal_statuses:
+            pending_live_exit_terminal_statuses = list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+        live_provider_health_settings = dict(
+            global_runtime_settings.get("live_provider_health") or DEFAULT_LIVE_PROVIDER_HEALTH
+        )
+        live_market_context_settings = dict(
+            global_runtime_settings.get("live_market_context") or DEFAULT_LIVE_MARKET_CONTEXT
+        )
         pending_live_exit_summary = {
             "count": 0,
             "order_ids": [],
@@ -1599,6 +1692,7 @@ async def _run_trader_once(
                 session,
                 trader_id,
                 mode=run_mode,
+                terminal_statuses=pending_live_exit_terminal_statuses,
             )
         pending_live_exit_count = int(pending_live_exit_summary.get("count", 0) or 0)
         effective_open_positions = max(open_positions, open_order_count)
@@ -1633,8 +1727,8 @@ async def _run_trader_once(
                     min(
                         900,
                         safe_int(
-                            default_strategy_params.get("live_provider_health_window_seconds"),
-                            _LIVE_PROVIDER_HEALTH_WINDOW_SECONDS,
+                            live_provider_health_settings.get("window_seconds"),
+                            int(DEFAULT_LIVE_PROVIDER_HEALTH["window_seconds"]),
                         ),
                     ),
                 )
@@ -1645,8 +1739,8 @@ async def _run_trader_once(
                     min(
                         20,
                         safe_int(
-                            default_strategy_params.get("live_provider_health_min_errors"),
-                            _LIVE_PROVIDER_HEALTH_MIN_ERRORS,
+                            live_provider_health_settings.get("min_errors"),
+                            int(DEFAULT_LIVE_PROVIDER_HEALTH["min_errors"]),
                         ),
                     ),
                 )
@@ -1657,8 +1751,8 @@ async def _run_trader_once(
                     min(
                         3600,
                         safe_int(
-                            default_strategy_params.get("live_provider_health_block_seconds"),
-                            _LIVE_PROVIDER_HEALTH_BLOCK_SECONDS,
+                            live_provider_health_settings.get("block_seconds"),
+                            int(DEFAULT_LIVE_PROVIDER_HEALTH["block_seconds"]),
                         ),
                     ),
                 )
@@ -1765,16 +1859,15 @@ async def _run_trader_once(
             )
         )
         scan_batch_size = min(scan_batch_size, max_signals_per_cycle)
-        control_settings = control.get("settings") or {}
-        enable_live_market_context = bool(control_settings.get("enable_live_market_context", True))
+        enable_live_market_context = bool(live_market_context_settings.get("enabled", True))
         history_window_seconds = int(
             max(
                 300,
                 min(
                     21600,
                     safe_int(
-                        control_settings.get("live_market_history_window_seconds", 7200),
-                        7200,
+                        live_market_context_settings.get("history_window_seconds"),
+                        int(DEFAULT_LIVE_MARKET_CONTEXT["history_window_seconds"]),
                     ),
                 ),
             )
@@ -1785,8 +1878,8 @@ async def _run_trader_once(
                 min(
                     1800,
                     safe_int(
-                        control_settings.get("live_market_history_fidelity_seconds", 300),
-                        300,
+                        live_market_context_settings.get("history_fidelity_seconds"),
+                        int(DEFAULT_LIVE_MARKET_CONTEXT["history_fidelity_seconds"]),
                     ),
                 ),
             )
@@ -1797,8 +1890,8 @@ async def _run_trader_once(
                 min(
                     240,
                     safe_int(
-                        control_settings.get("live_market_history_max_points", 120),
-                        120,
+                        live_market_context_settings.get("max_history_points"),
+                        int(DEFAULT_LIVE_MARKET_CONTEXT["max_history_points"]),
                     ),
                 ),
             )
@@ -1809,10 +1902,10 @@ async def _run_trader_once(
                 min(
                     12.0,
                     safe_float(
-                        control_settings.get("live_market_context_timeout_seconds"),
-                        4.0,
+                        live_market_context_settings.get("timeout_seconds"),
+                        float(DEFAULT_LIVE_MARKET_CONTEXT["timeout_seconds"]),
                     )
-                    or 4.0,
+                    or float(DEFAULT_LIVE_MARKET_CONTEXT["timeout_seconds"]),
                 ),
             )
         )
@@ -1828,7 +1921,7 @@ async def _run_trader_once(
 
         now_utc = datetime.now(timezone.utc)
         trading_schedule_ok = is_within_trading_schedule_utc(metadata, now_utc)
-        global_limits = dict((control.get("settings") or {}).get("global_risk") or {})
+        global_limits = dict(control_settings.get("global_risk") or {})
         effective_risk_limits = dict(risk_limits)
         if "max_orders_per_cycle" not in effective_risk_limits:
             fallback_cycle_limit = safe_int(global_limits.get("max_orders_per_cycle"), 50)
@@ -1840,7 +1933,13 @@ async def _run_trader_once(
                 effective_risk_limits["max_daily_loss_usd"] = fallback_daily_loss
         live_risk_clamp_changes: dict[str, dict[str, Any]] = {}
         if run_mode == "live":
-            live_risk_clamp_changes = _apply_live_risk_clamps(effective_risk_limits)
+            live_risk_clamp_settings = dict(
+                global_runtime_settings.get("live_risk_clamps") or DEFAULT_LIVE_RISK_CLAMPS
+            )
+            live_risk_clamp_changes = _apply_live_risk_clamps(
+                effective_risk_limits,
+                live_risk_clamp_settings,
+            )
             if live_risk_clamp_changes and _live_risk_clamp_event_due(trader_id, utcnow()):
                 await create_trader_event(
                     session,
@@ -2517,6 +2616,8 @@ async def _run_trader_once(
                         open_market_ids=open_market_ids,
                         pending_live_exit_count=pending_live_exit_count,
                         pending_live_exit_summary=pending_live_exit_summary,
+                        pending_live_exit_max_allowed=pending_live_exit_max_allowed,
+                        pending_live_exit_identity_guard_enabled=pending_live_exit_identity_guard_enabled,
                         portfolio_allocator=portfolio_allocator,
                         risk_evaluator=risk_evaluator,
                         invoke_hooks=True,
@@ -3085,29 +3186,40 @@ async def run_worker_loop() -> None:
                         logger.warning("Failed stale-terminal-order watchdog pass: %s", exc)
 
                     control = await read_orchestrator_control(session)
+                    mode = str(control.get("mode") or "paper").strip().lower()
                     cycle_interval = max(
                         1,
                         int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
                     )
                     sleep_seconds = cycle_interval
                     default_trader_cycle_timeout = float(max(8, cycle_interval * 2))
+                    control_settings = dict(control.get("settings") or {})
+                    global_runtime_settings = dict(control_settings.get("global_runtime") or {})
+                    configured_trader_cycle_timeout = safe_float(
+                        global_runtime_settings.get("trader_cycle_timeout_seconds"),
+                        0.0,
+                    )
+                    effective_trader_cycle_timeout = (
+                        configured_trader_cycle_timeout
+                        if configured_trader_cycle_timeout > 0
+                        else default_trader_cycle_timeout
+                    )
                     trader_cycle_timeout_seconds = float(
                         max(
                             3.0,
                             min(
                                 120.0,
-                                safe_float(
-                                    (control.get("settings") or {}).get("trader_cycle_timeout_seconds"),
-                                    default_trader_cycle_timeout,
-                                )
-                                or default_trader_cycle_timeout,
+                                effective_trader_cycle_timeout,
                             ),
                         )
                     )
                     manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
 
                     if not control.get("is_enabled"):
-                        traders = await list_traders(session)
+                        traders = await list_traders(
+                            session,
+                            mode=mode if mode in {"paper", "live"} else None,
+                        )
                         has_active_traders = any(
                             bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
                             for trader in traders
@@ -3135,9 +3247,6 @@ async def run_worker_loop() -> None:
                         manage_only_reasons.append("kill_switch")
 
                     if not skip_cycle:
-                        mode = str(control.get("mode") or "paper").strip().lower()
-                        control_settings = control.get("settings") or {}
-
                         if mode == "paper":
                             paper_account_id = str(control_settings.get("paper_account_id") or "").strip()
                             if not paper_account_id:
@@ -3178,7 +3287,7 @@ async def run_worker_loop() -> None:
                                     stats=await compute_orchestrator_metrics(session),
                                 )
                                 skip_cycle = True
-                            elif not await trading_service.ensure_initialized():
+                            elif not await live_execution_service.ensure_initialized():
                                 await _write_orchestrator_snapshot_best_effort(
                                     session,
                                     running=False,
@@ -3191,7 +3300,10 @@ async def run_worker_loop() -> None:
                                 skip_cycle = True
 
                     if not skip_cycle and not traders:
-                        traders = await list_traders(session)
+                        traders = await list_traders(
+                            session,
+                            mode=mode if mode in {"paper", "live"} else None,
+                        )
 
                 if skip_cycle:
                     runtime_trigger_event = _pop_coalesced_trigger()
@@ -3223,6 +3335,11 @@ async def run_worker_loop() -> None:
                 for trader in traders:
                     trader_id = str(trader.get("id") or "")
                     if not trader.get("is_enabled", True):
+                        continue
+                    trader_mode = str(trader.get("mode") or "paper").strip().lower()
+                    if trader_mode not in {"paper", "live"}:
+                        trader_mode = "paper"
+                    if trader_mode != mode:
                         continue
 
                     is_paused = bool(trader.get("is_paused", False))

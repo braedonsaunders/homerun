@@ -14,7 +14,7 @@ from services.polymarket import polymarket_client
 from services.signal_bus import make_dedupe_key, refresh_trade_signal_snapshots, upsert_trade_signal
 from services.simulation import simulation_service
 from services.strategy_sdk import StrategySDK
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from utils.utcnow import utcnow
 from utils.converters import safe_float
 
@@ -26,6 +26,7 @@ _FAILED_EXIT_MAX_RETRIES = 5
 _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS = 15
 _WALLET_SIZE_EPSILON = 1e-9
 _MARK_TOUCH_INTERVAL_SECONDS = 0.5
+_MAX_LIVE_EXIT_FALLBACK_MARK_AGE_SECONDS = 20.0
 
 
 def _iso_utc(value: datetime) -> str:
@@ -802,7 +803,7 @@ def _pending_exit_provider_clob_id(pending_exit: dict[str, Any]) -> str:
     if fallback.startswith("0x") or fallback.isdigit():
         return fallback
     try:
-        cached = trading_service.get_order(fallback)
+        cached = live_execution_service.get_order(fallback)
     except Exception:
         cached = None
     if cached is None:
@@ -931,17 +932,17 @@ def _market_end_time_iso(market_info: Any) -> Optional[str]:
 async def _resolve_execution_wallet_address() -> str:
     wallet = ""
     try:
-        await trading_service.ensure_initialized()
+        await live_execution_service.ensure_initialized()
     except Exception:
         pass
     try:
-        wallet = str(trading_service.get_execution_wallet_address() or "").strip()
+        wallet = str(live_execution_service.get_execution_wallet_address() or "").strip()
     except Exception:
         wallet = ""
     if wallet:
         return wallet
     try:
-        runtime_signature_type = getattr(trading_service, "_balance_signature_type", None)
+        runtime_signature_type = getattr(live_execution_service, "_balance_signature_type", None)
         signature_type = (
             int(runtime_signature_type)
             if isinstance(runtime_signature_type, int)
@@ -950,11 +951,11 @@ async def _resolve_execution_wallet_address() -> str:
     except Exception:
         signature_type = 1
     try:
-        wallet = str(trading_service._funder_for_signature_type(signature_type) or "").strip()
+        wallet = str(live_execution_service._funder_for_signature_type(signature_type) or "").strip()
     except Exception:
         wallet = ""
     if not wallet:
-        wallet = str(trading_service._get_wallet_address() or "").strip()
+        wallet = str(live_execution_service._get_wallet_address() or "").strip()
     return wallet
 
 
@@ -1817,7 +1818,7 @@ async def reconcile_live_positions(
     pending_exit_snapshots: dict[str, dict[str, Any]] = {}
     if pending_exit_provider_ids:
         try:
-            pending_exit_snapshots = await trading_service.get_order_snapshots_by_clob_ids(pending_exit_provider_ids)
+            pending_exit_snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(pending_exit_provider_ids)
         except Exception:
             pending_exit_snapshots = {}
 
@@ -1860,11 +1861,6 @@ async def reconcile_live_positions(
             if pending_outcome_idx is not None
             else None
         )
-        pending_snapshot_side_price = (
-            _extract_signal_side_price(pending_signal_payload, pending_outcome_idx)
-            if pending_outcome_idx is not None
-            else None
-        )
         pending_redis_side_price = redis_mid_prices.get(token_id) if token_id else None
         pending_clob_side_price = clob_mid_prices.get(token_id) if token_id else None
         pending_current_price = (
@@ -1876,7 +1872,7 @@ async def reconcile_live_positions(
                 else (
                     pending_market_side_price
                     if pending_market_side_price is not None
-                    else (pending_snapshot_side_price if pending_snapshot_side_price is not None else wallet_mark_price)
+                    else wallet_mark_price
                 )
             )
         )
@@ -1890,11 +1886,7 @@ async def reconcile_live_positions(
                 else (
                     "market_mark"
                     if pending_market_side_price is not None
-                    else (
-                        "signal_snapshot_mark"
-                        if pending_snapshot_side_price is not None
-                        else ("wallet_mark" if wallet_mark_price is not None else None)
-                    )
+                    else ("wallet_mark" if wallet_mark_price is not None else None)
                 )
             )
         )
@@ -2171,13 +2163,22 @@ async def reconcile_live_positions(
                 pending_exit["last_snapshot_at"] = _iso_utc(now)
 
             terminal_provider_status = snapshot_status in {"filled", "matched", "executed"}
+            provider_status_unknown = snapshot_status in {"", "missing", "invalid", "unknown"}
             wallet_flat_confirmed = wallet_position_size <= _WALLET_SIZE_EPSILON and (
                 wallet_position_observed
                 or bool(wallet_positions_by_token)
                 or isinstance(latest_wallet_sell_trade, dict)
             )
-            close_fill_threshold_met = required_exit_size > 0.0 and snapshot_filled_size >= (
-                required_exit_size * threshold_ratio
+            close_fill_threshold_met = (
+                required_exit_size > 0.0
+                and terminal_provider_status
+                and snapshot_filled_size >= (required_exit_size * threshold_ratio)
+            )
+            close_fill_threshold_with_wallet_confirmation = (
+                required_exit_size > 0.0
+                and provider_status_unknown
+                and snapshot_filled_size >= (required_exit_size * threshold_ratio)
+                and wallet_flat_confirmed
             )
             close_fill_terminal_with_wallet_confirmation = (
                 required_exit_size > 0.0
@@ -2190,6 +2191,7 @@ async def reconcile_live_positions(
             )
             if (
                 close_fill_threshold_met
+                or close_fill_threshold_with_wallet_confirmation
                 or close_fill_terminal_with_wallet_confirmation
                 or close_fill_unknown_but_wallet_flat
             ):
@@ -2300,19 +2302,6 @@ async def reconcile_live_positions(
         # If a previous cycle recorded a pending_live_exit that failed,
         # retry submitting the sell order (with cooldown & max retries).
         if isinstance(pending_exit, dict) and pending_exit.get("status") == "failed":
-            if pending_exit_kind == "take_profit_limit":
-                if not dry_run:
-                    pending_exit["status"] = "cancelled"
-                    pending_exit["cancelled_at"] = _iso_utc(now)
-                    pending_exit["cancel_reason"] = str(pending_exit.get("last_error") or "take_profit_limit_inactive")
-                    payload["pending_live_exit"] = pending_exit
-                    _attach_pending_state(payload)
-                    row.payload_json = payload
-                    row.updated_at = now
-                    state_updates += 1
-                held += 1
-                continue
-
             if pending_winning_idx is not None and pending_outcome_idx is not None:
                 _fill_not, _fill_sz, _fill_px = _extract_live_fill_metrics(payload)
                 _ep = _fill_px if _fill_px and _fill_px > 0 else safe_float(row.effective_price)
@@ -2495,7 +2484,7 @@ async def reconcile_live_positions(
                     from services.live_execution_adapter import execute_live_order
 
                     try:
-                        await trading_service.prepare_sell_balance_allowance(token_id)
+                        await live_execution_service.prepare_sell_balance_allowance(token_id)
                     except Exception:
                         pass
 
@@ -2654,7 +2643,6 @@ async def reconcile_live_positions(
                 winning_idx = inferred_idx
                 winning_idx_inferred = True
         market_side_price = _extract_market_side_price(market_info, outcome_idx)
-        snapshot_side_price = _extract_signal_side_price(signal_payload, outcome_idx)
         redis_side_price = redis_mid_prices.get(token_id) if token_id else None
         clob_side_price = clob_mid_prices.get(token_id) if token_id else None
 
@@ -2672,7 +2660,7 @@ async def reconcile_live_positions(
                 else (
                     market_side_price
                     if market_side_price is not None
-                    else (snapshot_side_price if snapshot_side_price is not None else wallet_mark_price)
+                    else wallet_mark_price
                 )
             )
         )
@@ -2686,11 +2674,7 @@ async def reconcile_live_positions(
                 else (
                     "market_mark"
                     if market_side_price is not None
-                    else (
-                        "signal_snapshot_mark"
-                        if snapshot_side_price is not None
-                        else ("wallet_mark" if wallet_mark_price is not None else None)
-                    )
+                    else ("wallet_mark" if wallet_mark_price is not None else None)
                 )
             )
         )
@@ -2726,17 +2710,23 @@ async def reconcile_live_positions(
             "last_mark_source": current_price_source,
             "last_marked_at": _iso_utc(now),
         }
-        exit_eval_price = (
-            current_price
-            if current_price is not None
-            else _state_price_floor(prev_last_mark if prev_last_mark is not None else entry_price)
+        prev_mark_age_seconds = (
+            max(0.0, (now_naive - prev_marked_at).total_seconds()) if prev_marked_at is not None else None
         )
-        exit_eval_price_source = current_price_source
-        if current_price is None and exit_eval_price is not None:
-            if prev_last_mark is not None:
-                exit_eval_price_source = "position_state_mark"
-            elif entry_price is not None and entry_price > 0:
-                exit_eval_price_source = "entry_price_fallback"
+        fallback_mark_fresh = bool(
+            prev_last_mark is not None
+            and prev_mark_age_seconds is not None
+            and prev_mark_age_seconds <= _MAX_LIVE_EXIT_FALLBACK_MARK_AGE_SECONDS
+        )
+        if current_price is not None:
+            exit_eval_price = current_price
+            exit_eval_price_source = current_price_source
+        elif fallback_mark_fresh:
+            exit_eval_price = _state_price_floor(prev_last_mark)
+            exit_eval_price_source = "position_state_mark"
+        else:
+            exit_eval_price = None
+            exit_eval_price_source = None
 
         if winning_idx is not None:
             close_price = 1.0 if winning_idx == outcome_idx else 0.0
@@ -2988,7 +2978,7 @@ async def reconcile_live_positions(
                     cancel_success = False
                     if cancel_target:
                         try:
-                            cancel_success = bool(await trading_service.cancel_order(cancel_target))
+                            cancel_success = bool(await live_execution_service.cancel_order(cancel_target))
                         except Exception:
                             cancel_success = False
                     existing_tp_limit["cancelled_for_override_at"] = _iso_utc(now)
@@ -3056,7 +3046,7 @@ async def reconcile_live_positions(
                         from services.live_execution_adapter import execute_live_order
 
                         try:
-                            await trading_service.prepare_sell_balance_allowance(token_id)
+                            await live_execution_service.prepare_sell_balance_allowance(token_id)
                         except Exception:
                             pass
 

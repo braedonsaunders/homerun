@@ -49,7 +49,7 @@ import { Input } from './ui/input'
 import { ScrollArea } from './ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from './ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 
 type ViewMode = 'all' | 'sandbox' | 'live'
 type LiveVenueFilter = 'all' | 'polymarket' | 'kalshi'
@@ -62,26 +62,22 @@ type SortDirection = 'asc' | 'desc'
 type ExposureFloor = 'all' | '100' | '500' | '1000' | '5000'
 
 const OPEN_PAPER_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
+const POSITIONS_TABLE_PAGE_SIZE = 100
 
 const VENUE_META: Record<PositionVenue, {
   label: string
-  badgeClassName: string
 }> = {
   sandbox: {
     label: 'Sandbox',
-    badgeClassName: 'bg-amber-500/20 text-amber-300 border-transparent',
   },
   'autotrader-paper': {
     label: 'Autotrader Paper',
-    badgeClassName: 'bg-cyan-500/20 text-cyan-300 border-transparent',
   },
   'polymarket-live': {
     label: 'Polymarket Live',
-    badgeClassName: 'bg-blue-500/20 text-blue-300 border-transparent',
   },
   'kalshi-live': {
     label: 'Kalshi Live',
-    badgeClassName: 'bg-indigo-500/20 text-indigo-300 border-transparent',
   },
 }
 
@@ -162,11 +158,6 @@ function formatOptionalPrice(value: number | null): string {
   return `$${value.toFixed(4)}`
 }
 
-function formatSize(value: number | null): string {
-  if (value === null) return 'n/a'
-  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
 function formatRelativeTime(value: string | null): string {
   if (!value) return 'n/a'
   const ts = toTimestamp(value)
@@ -209,10 +200,6 @@ function sideBadgeClass(): string {
   return 'border-border/80 bg-muted/60 text-muted-foreground'
 }
 
-function venueBadgeClass(venue: PositionVenue): string {
-  return VENUE_META[venue].badgeClassName
-}
-
 function exposureFloorValue(value: ExposureFloor): number {
   if (value === 'all') return 0
   return Number(value)
@@ -248,6 +235,7 @@ export default function PositionsPanel() {
   const [exposureFloor, setExposureFloor] = useState<ExposureFloor>('all')
   const [sortField, setSortField] = useState<SortField>('exposure')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [positionsPage, setPositionsPage] = useState(1)
   const [modalMarket, setModalMarket] = useState<CryptoMarket | null>(null)
   const closeMarketModal = () => setModalMarket(null)
   const themeMode = useAtomValue(themeAtom)
@@ -720,6 +708,20 @@ export default function PositionsPanel() {
     return rows
   }, [filteredRows, sortField, sortDirection])
 
+  const positionsPageCount = useMemo(
+    () => Math.max(1, Math.ceil(sortedRows.length / POSITIONS_TABLE_PAGE_SIZE)),
+    [sortedRows.length]
+  )
+
+  useEffect(() => {
+    setPositionsPage((current) => Math.min(current, positionsPageCount))
+  }, [positionsPageCount])
+
+  const pagedRows = useMemo(() => {
+    const start = (positionsPage - 1) * POSITIONS_TABLE_PAGE_SIZE
+    return sortedRows.slice(start, start + POSITIONS_TABLE_PAGE_SIZE)
+  }, [positionsPage, sortedRows])
+
   const metrics = useMemo(() => {
     const totalCostBasis = sortedRows.reduce((sum, row) => sum + row.costBasis, 0)
     const totalMarketValue = sortedRows.reduce((sum, row) => sum + row.marketValue, 0)
@@ -792,6 +794,10 @@ export default function PositionsPanel() {
 
   const totalExposure = metrics.totalMarketValue
 
+  useEffect(() => {
+    setPositionsPage(1)
+  }, [viewMode, liveVenueFilter, selectedSandboxAccount, searchQuery, sideFilter, markFilter, effectiveAccountFilter, exposureFloor, sortField, sortDirection])
+
   const isLoading = (
     (shouldShowSandbox && (accountsLoading || simulationPositionsLoading || traderOrdersLoading))
     || (shouldFetchPolymarketLive && polymarketLiveLoading)
@@ -823,6 +829,7 @@ export default function PositionsPanel() {
     setExposureFloor('all')
     setSortField('exposure')
     setSortDirection('desc')
+    setPositionsPage(1)
   }
 
   return (
@@ -1028,150 +1035,127 @@ export default function PositionsPanel() {
         ) : (
           <div className="h-full grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px]">
             {/* Left: Position Table */}
-            <ScrollArea className="h-full rounded-md border border-border/60">
-              <Table className="min-w-[1200px]">
-                <TableHeader>
-                  <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
-                    <TableHead className="w-[40px]">#</TableHead>
-                    <TableHead className="w-[320px]">Market</TableHead>
-                    <TableHead className="w-[160px]">Desk</TableHead>
-                    <TableHead className="text-center w-[70px]">Side</TableHead>
-                    <TableHead className="text-right w-[90px]">Size</TableHead>
-                    <TableHead className="text-right w-[90px]">Entry</TableHead>
-                    <TableHead className="text-right w-[90px]">Mark</TableHead>
-                    <TableHead className="text-right w-[100px]">Cost</TableHead>
-                    <TableHead className="text-right w-[110px]">Exposure</TableHead>
-                    <TableHead className="text-right w-[100px]">Move</TableHead>
-                    <TableHead className="text-right w-[120px]">Unrealized</TableHead>
-                    <TableHead className="text-right w-[120px]">Updated</TableHead>
-                    <TableHead className="text-right w-[42px]" />
-                    <TableHead className="w-[32px]" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sortedRows.map((row, index) => {
-                    const share = totalExposure > 0 ? (row.marketValue / totalExposure) * 100 : 0
-                    const priceMove = row.currentPrice !== null && row.entryPrice !== null
-                      ? row.currentPrice - row.entryPrice
-                      : null
-
-                    return (
-                      <TableRow key={row.key}>
-                        <TableCell className="px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{index + 1}</TableCell>
-
-                        <TableCell className="px-2 py-1.5">
-                          <p className="text-xs leading-tight line-clamp-2">{row.marketQuestion}</p>
-                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5">
-                            <span className="font-mono truncate max-w-[120px]">{row.marketId}</span>
-                            {row.status && <span className="uppercase">{row.status}</span>}
-                          </div>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5">
-                          <Badge className={cn('rounded border px-1 py-0 text-[10px] uppercase', venueBadgeClass(row.venue))}>
-                            {row.venueLabel}
-                          </Badge>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">{row.accountLabel}</p>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-center">
-                          <Badge className={cn('rounded border px-1.5 py-0 text-[10px] uppercase', sideBadgeClass())}>
-                            {row.sideLabel}
-                          </Badge>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right font-mono text-xs">{formatSize(row.size)}</TableCell>
-                        <TableCell className="px-2 py-1.5 text-right font-mono text-xs">{formatOptionalPrice(row.entryPrice)}</TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right font-mono text-xs">
-                          {formatOptionalPrice(row.currentPrice)}
-                          <div className="text-[9px] text-muted-foreground">{row.markMode === 'live' ? 'live' : 'est'}</div>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right font-mono text-xs">{formatUsd(row.costBasis)}</TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right">
-                          <div className="font-mono text-xs">{formatUsd(row.marketValue)}</div>
-                          <div className="text-[9px] text-muted-foreground">{share.toFixed(1)}%</div>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right">
-                          {priceMove === null ? (
-                            <span className="text-[11px] text-muted-foreground">n/a</span>
-                          ) : (
-                            <div className={cn('font-mono text-xs', priceMove >= 0 ? 'text-emerald-300' : 'text-red-300')}>
-                              {priceMove >= 0 ? '+' : '-'}${Math.abs(priceMove).toFixed(4)}
-                            </div>
-                          )}
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right">
-                          {row.unrealizedPnl === null ? (
-                            <span className="text-[11px] text-muted-foreground">n/a</span>
-                          ) : (
-                            <>
-                              <div className={cn('font-mono text-xs', row.unrealizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
-                                {formatSignedUsd(row.unrealizedPnl)}
-                              </div>
-                              <div className="text-[9px] text-muted-foreground">
-                                {row.pnlPercent === null ? '' : formatSignedPct(row.pnlPercent)}
-                              </div>
-                            </>
-                          )}
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right">
-                          <div className="text-[11px] text-muted-foreground">{formatRelativeTime(row.openedAt)}</div>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 text-right">
-                          {row.marketUrl ? (
-                            <a
-                              href={row.marketUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex h-6 w-6 items-center justify-center rounded border border-border text-muted-foreground hover:text-foreground hover:border-blue-400/50"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          ) : null}
-                        </TableCell>
-
-                        <TableCell className="px-1 py-1.5">
-                          {cryptoMarketsMap.has(row.marketId) && (
-                            <button
-                              onClick={() => setModalMarket(cryptoMarketsMap.get(row.marketId)!)}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded border border-border/40 text-muted-foreground/60 hover:text-foreground hover:border-border transition-colors"
-                              title="View live market"
-                            >
-                              <Maximize2 className="w-2.5 h-2.5" />
-                            </button>
-                          )}
-                        </TableCell>
+            <div className="flex min-h-0 flex-col gap-1.5">
+              <div className="shrink-0 flex items-center justify-between px-1">
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {sortedRows.length} rows • {POSITIONS_TABLE_PAGE_SIZE}/page
+                </span>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-5 px-2 text-[10px]"
+                    onClick={() => setPositionsPage((page) => Math.max(1, page - 1))}
+                    disabled={positionsPage <= 1}
+                  >
+                    Prev
+                  </Button>
+                  <span className="min-w-[64px] text-center text-[10px] font-mono text-muted-foreground">
+                    {positionsPage}/{positionsPageCount}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-5 px-2 text-[10px]"
+                    onClick={() => setPositionsPage((page) => Math.min(positionsPageCount, page + 1))}
+                    disabled={positionsPage >= positionsPageCount}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+              <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/60">
+                <div className="w-full overflow-x-auto">
+                  <Table className="min-w-[1240px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-[11px]">Market</TableHead>
+                        <TableHead className="text-[11px]">L</TableHead>
+                        <TableHead className="text-[11px]">Dir</TableHead>
+                        <TableHead className="text-[11px] text-right">Exposure</TableHead>
+                        <TableHead className="text-[11px] text-right">Avg Px</TableHead>
+                        <TableHead className="text-[11px] text-right">Mark</TableHead>
+                        <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
+                        <TableHead className="text-[11px] text-right">Edge</TableHead>
+                        <TableHead className="text-[11px] text-right">Conf</TableHead>
+                        <TableHead className="text-[11px] text-right">Orders</TableHead>
+                        <TableHead className="text-[11px] text-right">Mode</TableHead>
+                        <TableHead className="text-[11px]">Updated</TableHead>
                       </TableRow>
-                    )
-                  })}
-                </TableBody>
-                <TableFooter>
-                  <TableRow>
-                    <TableCell colSpan={7} className="px-2 py-1.5 text-xs text-muted-foreground">
-                      Totals · {sortedRows.length} rows
-                    </TableCell>
-                    <TableCell className="px-2 py-1.5 text-right font-mono text-xs">{formatUsd(metrics.totalCostBasis)}</TableCell>
-                    <TableCell className="px-2 py-1.5 text-right font-mono text-xs">{formatUsd(metrics.totalMarketValue)}</TableCell>
-                    <TableCell className="px-2 py-1.5 text-right text-xs text-muted-foreground">-</TableCell>
-                    <TableCell className="px-2 py-1.5 text-right font-mono text-xs">
-                      <span className={cn(metrics.totalUnrealizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
-                        {formatSignedUsd(metrics.totalUnrealizedPnl)}
-                      </span>
-                    </TableCell>
-                    <TableCell colSpan={3} className="px-2 py-1.5 text-right text-xs text-muted-foreground">
-                      {metrics.markCoverage.toFixed(0)}% marked
-                    </TableCell>
-                  </TableRow>
-                </TableFooter>
-              </Table>
-            </ScrollArea>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedRows.map((row) => {
+                        const hasLiveMark = row.markMode === 'live' && row.currentPrice !== null
+                        const modeLabel = row.venue === 'polymarket-live' || row.venue === 'kalshi-live' ? 'LIVE' : 'PAPER'
+                        const exposureShare = totalExposure > 0 ? (row.marketValue / totalExposure) * 100 : 0
+                        return (
+                          <TableRow key={row.key} className="text-xs hover:bg-muted/30">
+                            <TableCell className="max-w-[260px] truncate py-1" title={row.marketQuestion}>
+                              <p className="truncate">{row.marketQuestion}</p>
+                              <p className="text-[10px] text-muted-foreground truncate" title={`${row.marketId} • ${row.accountLabel} • ${row.venueLabel}${row.status ? ` • ${row.status}` : ''}`}>
+                                {row.marketId} • {row.accountLabel} • {row.venueLabel}{row.status ? ` • ${row.status}` : ''}
+                              </p>
+                            </TableCell>
+                            <TableCell className="py-1">
+                              <div className="flex items-center gap-1">
+                                {row.marketUrl ? (
+                                  <a
+                                    href={row.marketUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                    title="Open market"
+                                  >
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                ) : null}
+                                {cryptoMarketsMap.has(row.marketId) ? (
+                                  <button
+                                    onClick={() => setModalMarket(cryptoMarketsMap.get(row.marketId)!)}
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                    title="View live market"
+                                  >
+                                    <Maximize2 className="h-3 w-3" />
+                                  </button>
+                                ) : null}
+                                {!row.marketUrl && !cryptoMarketsMap.has(row.marketId) ? (
+                                  <span className="text-[9px] text-muted-foreground">—</span>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell className="py-1">
+                              <Badge variant="outline" className={cn('h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground', sideBadgeClass())} title={row.sideLabel}>
+                                {row.sideLabel}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right font-mono py-1">
+                              {formatUsd(row.marketValue)}
+                              <div className="text-[9px] text-muted-foreground">{exposureShare.toFixed(1)}%</div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono py-1">{formatOptionalPrice(row.entryPrice)}</TableCell>
+                            <TableCell className={cn('text-right font-mono py-1', hasLiveMark && 'text-sky-300')}>
+                              {formatOptionalPrice(row.currentPrice)}
+                            </TableCell>
+                            <TableCell className={cn('text-right font-mono py-1', (row.unrealizedPnl || 0) > 0 ? 'text-emerald-500' : (row.unrealizedPnl || 0) < 0 ? 'text-red-500' : '')}>
+                              {row.unrealizedPnl !== null ? formatSignedUsd(row.unrealizedPnl) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right font-mono py-1">
+                              {row.pnlPercent !== null ? formatSignedPct(row.pnlPercent) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right font-mono py-1">—</TableCell>
+                            <TableCell className="text-right font-mono py-1">—</TableCell>
+                            <TableCell className="text-right font-mono py-1">{modeLabel}</TableCell>
+                            <TableCell className="py-1 text-[10px] text-muted-foreground">
+                              {formatRelativeTime(row.openedAt)}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </ScrollArea>
+            </div>
 
             {/* Right: Analytics Sidebar */}
             <div className="hidden xl:flex flex-col gap-2 min-h-0">
@@ -1230,12 +1214,6 @@ export default function PositionsPanel() {
         <div className="shrink-0 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
           Failed: {simulationPayload.failedAccounts.join(', ')}
-        </div>
-      )}
-
-      {shouldFetchKalshiLive && !kalshiStatusLoading && !kalshiStatus?.authenticated && (
-        <div className="shrink-0 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100">
-          Kalshi not authenticated — live positions unavailable.
         </div>
       )}
 

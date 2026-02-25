@@ -877,6 +877,14 @@ async def build_live_signal_contexts(
             "spread": safe_float(market_info.get("spread")),
             "model_probability": model_probability,
             "live_edge_percent": live_edge,
+            "oracle_price": safe_float(market_info.get("oracle_price")),
+            "oracle_source": str(market_info.get("oracle_source") or "").strip().lower() or None,
+            "price_to_beat": safe_float(market_info.get("price_to_beat")),
+            "oracle_prices_by_source": (
+                dict(market_info.get("oracle_prices_by_source"))
+                if isinstance(market_info.get("oracle_prices_by_source"), dict)
+                else {}
+            ),
             "oracle_age_seconds": safe_float(market_info.get("oracle_age_seconds")),
             "oracle_updated_at_ms": safe_float(market_info.get("oracle_updated_at_ms")),
             "market_end_time": timing.get("end_time"),

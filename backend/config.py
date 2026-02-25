@@ -696,6 +696,11 @@ async def apply_search_filters():
         ("MIN_LIQUIDITY", "min_liquidity", 1000.0),
         ("SCANNER_MAX_OPPORTUNITIES_TOTAL", "scanner_max_opportunities_total", 500),
         ("SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY", "scanner_max_opportunities_per_strategy", 120),
+        # Trading safety limits (used by live_execution_service order validation + /trader-orchestrator/live/status)
+        ("MAX_TRADE_SIZE_USD", "max_trade_size_usd", 100.0),
+        ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),
+        ("MAX_OPEN_POSITIONS", "max_open_positions", 10),
+        ("MAX_SLIPPAGE_PERCENT", "max_slippage_percent", 2.0),
     ]
 
     for config_attr, db_attr, default in _apply:

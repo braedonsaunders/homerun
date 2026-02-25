@@ -1,5 +1,5 @@
 """
-Trading API Routes
+Orchestrator live execution API routes.
 
 Endpoints for real trading on Polymarket.
 
@@ -15,8 +15,8 @@ import asyncio
 
 from config import settings
 from services.polymarket import polymarket_client
-from services.trading import (
-    trading_service,
+from services.live_execution_service import (
+    live_execution_service,
     Order,
     Position,
     OrderSide,
@@ -27,7 +27,7 @@ from services.trading_proxy import verify_vpn_active, _get_config as get_proxy_c
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/trading", tags=["Trading"])
+router = APIRouter(prefix="/trader-orchestrator/live", tags=["Trader Orchestrator"])
 
 
 # ==================== REQUEST/RESPONSE MODELS ====================
@@ -138,17 +138,17 @@ class TradingStatusResponse(BaseModel):
 @router.get("/status", response_model=TradingStatusResponse)
 async def get_trading_status():
     """Get trading service status and configuration"""
-    stats = trading_service.get_stats()
-    initialized = trading_service.is_ready()
+    stats = live_execution_service.get_stats()
+    initialized = live_execution_service.is_ready()
     authenticated = initialized
     credentials_configured = False
     auth_error: Optional[str] = None
-    execution_wallet_address = str(trading_service.get_execution_wallet_address() or "").strip() or None
-    eoa_wallet_address = str(getattr(trading_service, "_eoa_address", "") or "").strip() or None
-    proxy_funder_wallet = str(getattr(trading_service, "_proxy_funder_address", "") or "").strip() or None
-    wallet_address = execution_wallet_address or trading_service._get_wallet_address()
+    execution_wallet_address = str(live_execution_service.get_execution_wallet_address() or "").strip() or None
+    eoa_wallet_address = str(getattr(live_execution_service, "_eoa_address", "") or "").strip() or None
+    proxy_funder_wallet = str(getattr(live_execution_service, "_proxy_funder_address", "") or "").strip() or None
+    wallet_address = execution_wallet_address or live_execution_service._get_wallet_address()
 
-    private_key, api_key, api_secret, api_passphrase, _ = await trading_service._resolve_polymarket_credentials()
+    private_key, api_key, api_secret, api_passphrase, _ = await live_execution_service._resolve_polymarket_credentials()
     credentials_configured = bool(private_key and api_key and api_secret and api_passphrase)
 
     if not wallet_address and private_key:
@@ -232,15 +232,15 @@ async def initialize_trading():
     """Initialize the trading service with configured credentials.
     If already initialized, re-runs the USDC allowance approval (useful
     after funding the wallet with MATIC for gas)."""
-    if trading_service.is_ready():
+    if live_execution_service.is_ready():
         # Re-run allowance approval in case the wallet was just funded with MATIC.
-        await trading_service._approve_clob_allowance()
+        await live_execution_service._approve_clob_allowance()
         return {
             "status": "already_initialized",
             "message": "Trading service already initialized; USDC allowance re-checked",
         }
 
-    success = await trading_service.initialize()
+    success = await live_execution_service.initialize()
     if success:
         return {"status": "success", "message": "Trading service initialized"}
     else:
@@ -254,9 +254,9 @@ async def initialize_trading():
 async def approve_clob_allowance():
     """Re-run the on-chain USDC approve for the CLOB exchange contract.
     Call this after funding the trading wallet with MATIC for gas fees."""
-    if not trading_service.is_ready():
+    if not live_execution_service.is_ready():
         raise HTTPException(status_code=400, detail="Trading service not initialized")
-    await trading_service._approve_clob_allowance()
+    await live_execution_service._approve_clob_allowance()
     return {"status": "success", "message": "USDC allowance check/approve completed"}
 
 
@@ -267,7 +267,7 @@ async def place_order(request: PlaceOrderRequest):
 
     Requires trading to be initialized.
     """
-    if not trading_service.is_ready():
+    if not live_execution_service.is_ready():
         raise HTTPException(status_code=400, detail="Trading service not initialized")
 
     try:
@@ -280,7 +280,7 @@ async def place_order(request: PlaceOrderRequest):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid order type. Must be GTC, FOK, or GTD")
 
-    order = await trading_service.place_order(
+    order = await live_execution_service.place_order(
         token_id=request.token_id,
         side=side,
         price=request.price,
@@ -305,7 +305,7 @@ async def get_orders(limit: int = 100, status: Optional[str] = None):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid order status filter") from exc
 
-    orders = await trading_service.get_recent_orders(limit=limit, status=filter_status)
+    orders = await live_execution_service.get_recent_orders(limit=limit, status=filter_status)
 
     return [OrderResponse.from_order(o) for o in orders]
 
@@ -313,14 +313,14 @@ async def get_orders(limit: int = 100, status: Optional[str] = None):
 @router.get("/orders/open", response_model=list[OrderResponse])
 async def get_open_orders():
     """Get all open orders"""
-    orders = await trading_service.get_open_orders()
+    orders = await live_execution_service.get_open_orders()
     return [OrderResponse.from_order(o) for o in orders]
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse)
 async def get_order(order_id: str):
     """Get a specific order by ID"""
-    order = trading_service.get_order(order_id)
+    order = live_execution_service.get_order(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return OrderResponse.from_order(order)
@@ -329,7 +329,7 @@ async def get_order(order_id: str):
 @router.delete("/orders/{order_id}")
 async def cancel_order(order_id: str):
     """Cancel an order"""
-    success = await trading_service.cancel_order(order_id)
+    success = await live_execution_service.cancel_order(order_id)
     if success:
         return {"status": "cancelled", "order_id": order_id}
     else:
@@ -339,7 +339,7 @@ async def cancel_order(order_id: str):
 @router.delete("/orders", response_model=CancelAllOrdersResponse)
 async def cancel_all_orders():
     """Cancel all open orders"""
-    result = await trading_service.cancel_all_orders()
+    result = await live_execution_service.cancel_all_orders()
     status = str(result.get("status") or "")
     if status == "partial_failure":
         raise HTTPException(status_code=409, detail=result)
@@ -351,7 +351,7 @@ async def cancel_all_orders():
 @router.get("/positions", response_model=list[PositionResponse])
 async def get_positions():
     """Get current open positions"""
-    positions = await trading_service.sync_positions()
+    positions = await live_execution_service.sync_positions()
     if not positions:
         return []
 
@@ -378,7 +378,7 @@ async def get_positions():
 @router.get("/balance")
 async def get_balance():
     """Get wallet balance"""
-    balance = await trading_service.get_balance()
+    balance = await live_execution_service.get_balance()
     if "error" in balance:
         raise HTTPException(status_code=400, detail=balance["error"])
     return balance
@@ -391,10 +391,10 @@ async def execute_opportunity(request: ExecuteOpportunityRequest):
 
     Takes the positions from an opportunity and places orders.
     """
-    if not trading_service.is_ready():
+    if not live_execution_service.is_ready():
         raise HTTPException(status_code=400, detail="Trading service not initialized")
 
-    orders = await trading_service.execute_opportunity(
+    orders = await live_execution_service.execute_opportunity(
         opportunity_id=request.opportunity_id,
         positions=request.positions,
         size_usd=request.size_usd,
@@ -427,7 +427,7 @@ async def emergency_stop():
     logger.warning("EMERGENCY STOP triggered")
 
     # Cancel all open orders
-    cancellation_result = await trading_service.cancel_all_orders()
+    cancellation_result = await live_execution_service.cancel_all_orders()
     cancellation_status = str(cancellation_result.get("status") or "")
 
     if cancellation_status == "partial_failure":

@@ -383,6 +383,85 @@ def test_pending_live_exit_identity_guard_blocks_matching_market_direction_signa
     )
 
 
+def test_pending_live_exit_guard_allows_configured_inflight_limit():
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=_runtime_signal(),
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=2,
+        pending_live_exit_summary={
+            "count": 2,
+            "order_ids": ["order-1", "order-2"],
+            "market_ids": ["market-1"],
+            "statuses": {"submitted": 2},
+        },
+        pending_live_exit_max_allowed=2,
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+    )
+
+    assert result["final_decision"] == "selected"
+    guard_check = next(check for check in result["checks_payload"] if check["check_key"] == "pending_live_exit_guard")
+    assert guard_check["passed"] is True
+    assert guard_check["payload"]["max_allowed"] == 2
+
+
+def test_pending_live_exit_identity_guard_can_be_disabled():
+    runtime_signal = SimpleNamespace(
+        id="signal-1",
+        market_id="market-1",
+        direction="buy_yes",
+        payload_json={},
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=runtime_signal,
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={
+            "count": 0,
+            "order_ids": [],
+            "market_ids": [],
+            "statuses": {},
+            "identities": [
+                {
+                    "order_id": "order-1",
+                    "market_id": "market-1",
+                    "direction": "buy_yes",
+                    "signal_id": "signal-1",
+                    "status": "submitted",
+                }
+            ],
+            "identity_keys": ["market-1|buy_yes|signal-1"],
+        },
+        pending_live_exit_identity_guard_enabled=False,
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+    )
+
+    assert result["final_decision"] == "selected"
+    assert any(
+        gate["gate"] == "pending_live_exit_identity_guard" and gate["status"] == "skipped"
+        for gate in result["platform_gates"]
+    )
+
+
 def test_directional_min_timeframe_blocks_crypto_sub_5m_signal():
     runtime_signal = SimpleNamespace(
         id="signal-crypto-1",
@@ -415,3 +494,73 @@ def test_directional_min_timeframe_blocks_crypto_sub_5m_signal():
     assert any(
         gate["gate"] == "directional_min_timeframe" and gate["status"] == "blocked" for gate in result["platform_gates"]
     )
+
+
+def test_max_risk_score_guard_blocks_high_risk_signal():
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=SimpleNamespace(
+            id="signal-risk-1",
+            market_id="market-1",
+            risk_score=0.82,
+            payload_json={},
+        ),
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={
+            "enforce_market_data_freshness": False,
+            "max_risk_score": 0.4,
+        },
+    )
+
+    assert result["final_decision"] == "blocked"
+    assert "Max-risk guard blocked" in result["final_reason"]
+    assert any(g["gate"] == "max_risk_score" and g["status"] == "blocked" for g in result["platform_gates"])
+    risk_check = next(check for check in result["checks_payload"] if check["check_key"] == "max_risk_score_guard")
+    assert risk_check["passed"] is False
+    assert float(risk_check["payload"]["signal_risk_score"]) == 0.82
+
+
+def test_max_risk_score_guard_skips_when_signal_risk_unavailable():
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=SimpleNamespace(
+            id="signal-risk-2",
+            market_id="market-1",
+            payload_json={},
+        ),
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={
+            "enforce_market_data_freshness": False,
+            "max_risk_score": 0.4,
+        },
+    )
+
+    assert result["final_decision"] == "selected"
+    assert any(g["gate"] == "max_risk_score" and g["status"] == "passed" for g in result["platform_gates"])
+    risk_check = next(check for check in result["checks_payload"] if check["check_key"] == "max_risk_score_guard")
+    assert risk_check["passed"] is True
+    assert risk_check["payload"]["signal_risk_score"] is None

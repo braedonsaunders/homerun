@@ -34,7 +34,7 @@ from models.database import (  # noqa: E402
 )
 from services.polymarket import polymarket_client  # noqa: E402
 from services.trader_orchestrator_state import _extract_live_fill_metrics  # noqa: E402
-from services.trading import trading_service  # noqa: E402
+from services.live_execution_service import live_execution_service as trading_service  # noqa: E402
 from utils.converters import safe_float, safe_int  # noqa: E402
 
 

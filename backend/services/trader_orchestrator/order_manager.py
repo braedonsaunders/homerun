@@ -9,7 +9,7 @@ from typing import Any
 
 from services.live_execution_adapter import execute_live_order
 from services.polymarket import polymarket_client
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from utils.converters import safe_float
 
 
@@ -886,6 +886,6 @@ async def cancel_live_provider_order(provider_order_id: str) -> bool:
     if not order_id:
         return False
     try:
-        return bool(await trading_service.cancel_order(order_id))
+        return bool(await live_execution_service.cancel_order(order_id))
     except Exception:
         return False

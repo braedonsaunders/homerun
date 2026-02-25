@@ -1525,9 +1525,9 @@ class CopyTradingService:
         Returns order ID on success, None on failure.
         """
         from services.live_execution_adapter import execute_live_order
-        from services.trading import trading_service
+        from services.live_execution_service import live_execution_service
 
-        if not await trading_service.ensure_initialized():
+        if not await live_execution_service.ensure_initialized():
             logger.warning("Live trading not initialized, falling back to simulation")
             return None
 
@@ -1574,9 +1574,9 @@ class CopyTradingService:
     ) -> Optional[str]:
         """Execute a copy SELL via the live trading service."""
         from services.live_execution_adapter import execute_live_order
-        from services.trading import trading_service
+        from services.live_execution_service import live_execution_service
 
-        if not await trading_service.ensure_initialized():
+        if not await live_execution_service.ensure_initialized():
             return None
 
         token_id = trade.get("asset", trade.get("assetId", ""))

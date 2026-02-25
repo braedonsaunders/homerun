@@ -1,6 +1,7 @@
 import sys
 import types
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from config import settings
-from services.trading import Position, TradingService
+import services.live_execution_service as live_execution_module
+from services.live_execution_service import OrderSide, OrderStatus, Position, LiveExecutionService
 
 
 class _BalanceClient:
@@ -43,6 +45,8 @@ class _BalanceClient:
 def _install_balance_allowance_modules(monkeypatch) -> None:
     py_clob_client = types.ModuleType("py_clob_client")
     clob_types = types.ModuleType("py_clob_client.clob_types")
+    order_builder = types.ModuleType("py_clob_client.order_builder")
+    constants = types.ModuleType("py_clob_client.order_builder.constants")
 
     class AssetType:
         COLLATERAL = "COLLATERAL"
@@ -54,16 +58,28 @@ def _install_balance_allowance_modules(monkeypatch) -> None:
             self.signature_type = signature_type
             self.token_id = token_id
 
+    class OrderArgs:
+        def __init__(self, price, size, side, token_id):
+            self.price = price
+            self.size = size
+            self.side = side
+            self.token_id = token_id
+
     clob_types.AssetType = AssetType
     clob_types.BalanceAllowanceParams = BalanceAllowanceParams
+    clob_types.OrderArgs = OrderArgs
+    constants.BUY = "BUY"
+    constants.SELL = "SELL"
 
     monkeypatch.setitem(sys.modules, "py_clob_client", py_clob_client)
     monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", clob_types)
+    monkeypatch.setitem(sys.modules, "py_clob_client.order_builder", order_builder)
+    monkeypatch.setitem(sys.modules, "py_clob_client.order_builder.constants", constants)
 
 
 @pytest.mark.asyncio
 async def test_get_balance_returns_error_when_service_not_initialized():
-    service = TradingService()
+    service = LiveExecutionService()
     service.ensure_initialized = AsyncMock(return_value=False)
     result = await service.get_balance()
     assert result == {"error": "Polymarket credentials not configured"}
@@ -71,7 +87,7 @@ async def test_get_balance_returns_error_when_service_not_initialized():
 
 @pytest.mark.asyncio
 async def test_get_balance_returns_error_when_wallet_address_missing(monkeypatch):
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._client = _BalanceClient({"balance": "0", "allowance": "0"})
     service._wallet_address = None
@@ -83,7 +99,7 @@ async def test_get_balance_returns_error_when_wallet_address_missing(monkeypatch
 
 @pytest.mark.asyncio
 async def test_get_balance_returns_collateral_balance_allowance_and_positions_value():
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._client = _BalanceClient({"balance": "150.25", "allowance": "120.00"})
@@ -123,7 +139,7 @@ async def test_get_balance_returns_collateral_balance_allowance_and_positions_va
 
 @pytest.mark.asyncio
 async def test_get_balance_returns_error_on_unexpected_payload_shape():
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._client = _BalanceClient(["unexpected"])
@@ -134,7 +150,7 @@ async def test_get_balance_returns_error_on_unexpected_payload_shape():
 
 @pytest.mark.asyncio
 async def test_get_balance_uses_cached_values_when_refresh_fails():
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._client = _BalanceClient({"balance": "90.5"}, fail_on_update=True)
@@ -147,7 +163,7 @@ async def test_get_balance_uses_cached_values_when_refresh_fails():
 
 @pytest.mark.asyncio
 async def test_get_balance_converts_collateral_base_units_to_usdc():
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._client = _BalanceClient(
@@ -167,7 +183,7 @@ async def test_get_balance_converts_collateral_base_units_to_usdc():
 
 @pytest.mark.asyncio
 async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._proxy_funder_address = service._wallet_address
@@ -197,7 +213,7 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
 async def test_prepare_sell_balance_allowance_selects_signature_type_with_conditional_balance(monkeypatch):
     _install_balance_allowance_modules(monkeypatch)
 
-    service = TradingService()
+    service = LiveExecutionService()
     service._initialized = True
     service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
     service._proxy_funder_address = service._wallet_address
@@ -216,3 +232,194 @@ async def test_prepare_sell_balance_allowance_selects_signature_type_with_condit
     assert refreshed is True
     assert service._balance_signature_type == 2
     assert service._client.builder.sig_type == 2
+
+
+@pytest.mark.asyncio
+async def test_sell_pre_submit_gate_blocks_when_conditional_shares_insufficient(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 1
+    service._client = _BalanceClient(
+        {
+            1: {"balance": "1.2", "allowance": "1.0"},
+        },
+        builder_sig_type=1,
+    )
+
+    gate_ok, gate_error = await service._enforce_sell_pre_submit_gate(token_id="token-123", size=2.0)
+
+    assert gate_ok is False
+    assert gate_error is not None
+    assert "required_shares=2.0" in gate_error
+    assert "available_shares=1.0" in gate_error
+    assert "signature_type=1" in gate_error
+
+
+@pytest.mark.asyncio
+async def test_sell_pre_submit_gate_rechecks_fresh_snapshot_before_blocking(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+
+    class _StaleThenFreshClient(_BalanceClient):
+        def __init__(self):
+            super().__init__({}, builder_sig_type=1)
+            self.snapshot_calls = 0
+
+        def get_balance_allowance(self, params=None):
+            self.snapshot_calls += 1
+            if self.snapshot_calls == 1:
+                return {"balance": "5.0", "allowance": "1.0"}
+            return {"balance": "5.0", "allowance": "5.0"}
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 1
+    service._client = _StaleThenFreshClient()
+    service._select_signature_type_for_conditional_token = AsyncMock(return_value=1)
+    service._ensure_exchange_approval_for_sells = AsyncMock(return_value=False)
+    service.refresh_conditional_balance_allowance = AsyncMock(return_value=False)
+
+    gate_ok, gate_error = await service._enforce_sell_pre_submit_gate(token_id="token-123", size=2.0)
+
+    assert gate_ok is True
+    assert gate_error is None
+    assert service._client.snapshot_calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_buy_pre_submit_gate_blocks_when_collateral_insufficient(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 1
+    service._client = _BalanceClient(
+        {
+            1: {"balance": "4.0", "allowance": "3.0"},
+        },
+        builder_sig_type=1,
+    )
+
+    gate_ok, gate_error = await service._enforce_buy_pre_submit_gate(
+        token_id="token-123",
+        required_notional_usd=Decimal("5.0"),
+    )
+
+    assert gate_ok is False
+    assert gate_error is not None
+    assert "required_usdc=5.0" in gate_error
+    assert "available_usdc=3.0" in gate_error
+    assert "signature_type=1" in gate_error
+
+
+@pytest.mark.asyncio
+async def test_place_sell_order_fails_before_submit_when_pre_submit_gate_fails(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+    monkeypatch.setattr(settings, "MIN_ORDER_SIZE_USD", 1.0)
+    monkeypatch.setattr(settings, "MAX_TRADE_SIZE_USD", 10_000.0)
+    monkeypatch.setattr(settings, "MAX_DAILY_TRADE_VOLUME", 10_000.0)
+    monkeypatch.setattr(settings, "MAX_OPEN_POSITIONS", 1000)
+    monkeypatch.setattr(settings, "MAX_PER_MARKET_USD", 10_000.0)
+    monkeypatch.setattr(
+        live_execution_module.global_pause_state,
+        "refresh_from_db",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+
+    class _SellGateClient(_BalanceClient):
+        def __init__(self):
+            super().__init__(
+                {
+                    1: {"balance": "1.2", "allowance": "1.0"},
+                },
+                builder_sig_type=1,
+            )
+            self.post_calls = 0
+
+        def create_order(self, order_args):
+            return {"order_args": order_args}
+
+        def post_order(self, signed_order, order_type, post_only=False):
+            self.post_calls += 1
+            return {"success": True, "orderID": "oid-1"}
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 1
+    client = _SellGateClient()
+    service._client = client
+
+    order = await service.place_order(
+        token_id="token-123",
+        side=OrderSide.SELL,
+        price=0.5,
+        size=2.0,
+    )
+
+    assert order.status == OrderStatus.FAILED
+    assert order.error_message is not None
+    assert "SELL pre-submit gate failed" in order.error_message
+    assert client.post_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_place_buy_order_fails_before_submit_when_pre_submit_gate_fails(monkeypatch):
+    _install_balance_allowance_modules(monkeypatch)
+    monkeypatch.setattr(settings, "MIN_ORDER_SIZE_USD", 1.0)
+    monkeypatch.setattr(settings, "MAX_TRADE_SIZE_USD", 10_000.0)
+    monkeypatch.setattr(settings, "MAX_DAILY_TRADE_VOLUME", 10_000.0)
+    monkeypatch.setattr(settings, "MAX_OPEN_POSITIONS", 1000)
+    monkeypatch.setattr(settings, "MAX_PER_MARKET_USD", 10_000.0)
+    monkeypatch.setattr(
+        live_execution_module.global_pause_state,
+        "refresh_from_db",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+
+    class _BuyGateClient(_BalanceClient):
+        def __init__(self):
+            super().__init__(
+                {
+                    1: {"balance": "2.0", "allowance": "2.0"},
+                },
+                builder_sig_type=1,
+            )
+            self.post_calls = 0
+
+        def create_order(self, order_args):
+            return {"order_args": order_args}
+
+        def post_order(self, signed_order, order_type, post_only=False):
+            self.post_calls += 1
+            return {"success": True, "orderID": "oid-1"}
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 1
+    client = _BuyGateClient()
+    service._client = client
+
+    order = await service.place_order(
+        token_id="token-123",
+        side=OrderSide.BUY,
+        price=0.6,
+        size=5.0,
+    )
+
+    assert order.status == OrderStatus.FAILED
+    assert order.error_message is not None
+    assert "BUY pre-submit gate failed" in order.error_message
+    assert client.post_calls == 0

@@ -49,6 +49,16 @@ _VIEWER_HEARTBEAT_SECONDS = 20
 _WS_FEED_RETRY_INITIAL_SECONDS = 1.0
 _WS_FEED_RETRY_MAX_SECONDS = 60.0
 _WS_REACTIVE_DEBOUNCE_SECONDS = 0.2
+_DEFAULT_WS_TRADE_VOLUME_LOOKBACK_SECONDS = 900.0
+_WS_TRADE_VOLUME_LOOKBACK_BY_TIMEFRAME_SECONDS = {
+    "5m": 300.0,
+    "15m": 900.0,
+    "1h": 3600.0,
+    "4h": 14400.0,
+}
+_CHAINLINK_STALE_RESTART_AGE_SECONDS = 45.0
+_CHAINLINK_STALE_RESTART_COOLDOWN_SECONDS = 20.0
+_CHAINLINK_WARMUP_SECONDS = 20.0
 
 
 def _to_float(value: object) -> float | None:
@@ -57,6 +67,28 @@ def _to_float(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
+
+
+def _chainlink_feed_staleness(feed, *, max_age_seconds: float) -> tuple[bool, float | None, int]:
+    if feed is None:
+        return True, None, 0
+    now_ms = int(utcnow().timestamp() * 1000)
+    latest_ms = 0
+    samples = 0
+    try:
+        all_prices = feed.get_all_prices()
+    except Exception:
+        all_prices = {}
+    for oracle in (all_prices or {}).values():
+        updated_at = int(getattr(oracle, "updated_at_ms", 0) or 0)
+        if updated_at <= 0:
+            continue
+        latest_ms = max(latest_ms, updated_at)
+        samples += 1
+    if latest_ms <= 0:
+        return True, None, samples
+    age_seconds = max(0.0, float(now_ms - latest_ms) / 1000.0)
+    return age_seconds > max(0.0, float(max_age_seconds)), age_seconds, samples
 
 
 def _record_oracle_point(asset: str, timestamp_ms: int, price: float) -> None:
@@ -125,14 +157,10 @@ def _collect_ws_prices_for_markets(feed_manager, markets: list) -> dict[str, flo
     return ws_prices
 
 
-def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, float]) -> None:
-    """Prefer fresh WS prices for up/down legs when available."""
-    if not ws_prices:
-        return
-
+def _market_leg_tokens(market) -> tuple[str | None, str | None]:
     tokens = list(getattr(market, "clob_token_ids", None) or [])
     if not tokens:
-        return
+        return None, None
 
     try:
         up_idx = int(getattr(market, "up_token_index", 0) or 0)
@@ -153,6 +181,17 @@ def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, flo
     if not down_token and len(tokens) > 1:
         candidate = str(tokens[1]).strip()
         down_token = candidate or None
+    return up_token, down_token
+
+
+def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, float]) -> None:
+    """Prefer fresh WS prices for up/down legs when available."""
+    if not ws_prices:
+        return
+
+    up_token, down_token = _market_leg_tokens(market)
+    if not up_token and not down_token:
+        return
 
     ws_up = ws_prices.get(up_token) if up_token else None
     ws_down = ws_prices.get(down_token) if down_token else None
@@ -173,6 +212,56 @@ def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, flo
         row["down_price"] = ws_down
         row["up_price"] = min(1.0, max(0.0, 1.0 - ws_down))
         row["combined"] = 1.0
+
+
+def _ws_trade_volume_lookback_seconds(timeframe_value: object) -> float:
+    normalized = str(timeframe_value or "").strip().lower()
+    return _WS_TRADE_VOLUME_LOOKBACK_BY_TIMEFRAME_SECONDS.get(normalized, _DEFAULT_WS_TRADE_VOLUME_LOOKBACK_SECONDS)
+
+
+def _overlay_ws_trade_volume_on_market_row(row: dict, market, feed_manager) -> None:
+    if feed_manager is None or not getattr(feed_manager, "_started", False):
+        return
+
+    price_cache = getattr(feed_manager, "cache", None)
+    if price_cache is None:
+        price_cache = getattr(feed_manager, "price_cache", None)
+    if price_cache is None or not hasattr(price_cache, "get_trade_volume"):
+        return
+
+    lookback_seconds = _ws_trade_volume_lookback_seconds(
+        row.get("timeframe") or getattr(market, "timeframe", None)
+    )
+    up_token, down_token = _market_leg_tokens(market)
+    token_ids = {token for token in (up_token, down_token) if token}
+    if not token_ids:
+        return
+
+    volume_total = 0.0
+    observed = False
+    for token_id in token_ids:
+        try:
+            volume_window = price_cache.get_trade_volume(token_id, lookback_seconds=lookback_seconds)
+        except TypeError:
+            volume_window = price_cache.get_trade_volume(token_id)
+        except Exception:
+            continue
+        if not isinstance(volume_window, dict):
+            continue
+        token_total = _to_float(volume_window.get("total"))
+        if token_total is None or token_total <= 0.0:
+            continue
+        volume_total += token_total
+        observed = True
+
+    if not observed:
+        return
+
+    existing_volume_usd = _to_float(row.get("volume_usd"))
+    if existing_volume_usd is None or existing_volume_usd <= 0.0 or volume_total > existing_volume_usd:
+        row["volume_usd"] = round(volume_total, 6)
+        row["volume_usd_source"] = "ws_trade_cache"
+        row["volume_usd_lookback_seconds"] = lookback_seconds
 
 
 async def _sync_ws_subscriptions(feed_manager, markets: list, subscribed_tokens: set[str]) -> set[str]:
@@ -290,6 +379,7 @@ async def _dispatch_crypto_opportunities(
 
     try:
         async with emit_lock:
+            full_source_sweep = str(trigger or "").strip().lower() == "periodic_scan"
             crypto_event = DataEvent(
                 event_type="crypto_update",
                 source="crypto_worker",
@@ -302,7 +392,7 @@ async def _dispatch_crypto_opportunities(
                     session,
                     opportunities,
                     source="crypto",
-                    sweep_missing=True,
+                    sweep_missing=full_source_sweep,
                 )
             try:
                 await event_bus.publish("crypto_markets_update", {"markets": markets_payload, "trigger": trigger})
@@ -393,6 +483,7 @@ def _build_crypto_market_payload(
     markets: list | None = None,
     *,
     ws_prices: dict[str, float] | None = None,
+    feed_manager=None,
 ) -> list[dict]:
     svc = get_crypto_service()
     feed = get_chainlink_feed()
@@ -436,6 +527,7 @@ def _build_crypto_market_payload(
         row["price_to_beat"] = svc._price_to_beat.get(market.slug)
         row["oracle_history"] = _oracle_history_payload(market.asset)
         _overlay_ws_prices_on_market_row(row, market, ws_prices or {})
+        _overlay_ws_trade_volume_on_market_row(row, market, feed_manager)
 
         if oracle:
             market_regime_classifier.update(market.slug, float(oracle.price), fetched_at)
@@ -508,6 +600,8 @@ async def _run_loop() -> None:
         await chainlink_feed.start()
     except Exception as exc:
         logger.warning("Chainlink feed start failed (continuing): %s", exc)
+    chainlink_feed_started_mono = time.monotonic()
+    chainlink_restart_allowed_after = 0.0
 
     feed_manager = None
     ws_feeds_running = False
@@ -521,6 +615,39 @@ async def _run_loop() -> None:
     ws_reactive_enabled = True
     ws_reactive_callback_registered = False
     emit_lock = asyncio.Lock()
+
+    async def _ensure_chainlink_feed_healthy() -> dict[str, object]:
+        nonlocal chainlink_feed_started_mono
+        nonlocal chainlink_restart_allowed_after
+        feed_started = bool(getattr(chainlink_feed, "started", False))
+        stale, age_seconds, samples = _chainlink_feed_staleness(
+            chainlink_feed,
+            max_age_seconds=_CHAINLINK_STALE_RESTART_AGE_SECONDS,
+        )
+        now_mono = time.monotonic()
+        warm = (now_mono - chainlink_feed_started_mono) < _CHAINLINK_WARMUP_SECONDS
+        should_restart = (
+            (not feed_started) or (stale and not warm)
+        ) and now_mono >= chainlink_restart_allowed_after
+        restarted = False
+        if should_restart:
+            chainlink_restart_allowed_after = now_mono + _CHAINLINK_STALE_RESTART_COOLDOWN_SECONDS
+            try:
+                if feed_started:
+                    await chainlink_feed.stop()
+                await chainlink_feed.start()
+                chainlink_feed_started_mono = time.monotonic()
+                restarted = True
+            except Exception as exc:
+                logger.warning("Chainlink feed health restart failed (continuing): %s", exc)
+            feed_started = bool(getattr(chainlink_feed, "started", False))
+        return {
+            "started": feed_started,
+            "stale": bool(stale and not warm),
+            "age_seconds": age_seconds,
+            "samples": int(samples),
+            "restarted": restarted,
+        }
 
     async def _ensure_ws_feeds_running() -> None:
         nonlocal feed_manager
@@ -578,6 +705,7 @@ async def _run_loop() -> None:
             return {"healthy": False, "started": bool(ws_feeds_running), "enabled": True}
 
     startup_stats["ws_feeds"] = _snapshot_ws_feed_status()
+    startup_stats["chainlink_feed"] = await _ensure_chainlink_feed_healthy()
 
     def _on_ws_price_update(token_id: str, mid: float, bid: float, ask: float) -> None:
         nonlocal ws_reactive_task
@@ -616,6 +744,7 @@ async def _run_loop() -> None:
             payload = _build_crypto_market_payload(
                 selected_markets,
                 ws_prices=ws_prices,
+                feed_manager=feed_manager,
             )
             await _dispatch_crypto_opportunities(
                 payload,
@@ -646,6 +775,7 @@ async def _run_loop() -> None:
         fast_mode = bool(viewer_active or autotrader_active)
         ws_reactive_enabled = bool(enabled and not paused)
         interval = configured_interval if fast_mode else max(configured_interval, _IDLE_INTERVAL_SECONDS)
+        chainlink_feed_status = await _ensure_chainlink_feed_healthy()
 
         if (not enabled or paused) and not viewer_active:
             async with AsyncSessionLocal() as session:
@@ -662,6 +792,7 @@ async def _run_loop() -> None:
                         "signals_emitted_last_run": 0,
                         "markets": [],
                         "ws_feeds": _snapshot_ws_feed_status(),
+                        "chainlink_feed": chainlink_feed_status,
                     },
                 )
             ws_reactive_enabled = False
@@ -701,6 +832,7 @@ async def _run_loop() -> None:
             markets_payload = _build_crypto_market_payload(
                 markets,
                 ws_prices=ws_prices,
+                feed_manager=feed_manager,
             )
             emitted, dispatch_elapsed = await _dispatch_crypto_opportunities(
                 markets_payload,
@@ -729,6 +861,7 @@ async def _run_loop() -> None:
                         "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
                         "ws_feeds": _snapshot_ws_feed_status(),
+                        "chainlink_feed": chainlink_feed_status,
                     },
                 )
 
@@ -765,6 +898,7 @@ async def _run_loop() -> None:
                         "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
                         "ws_feeds": _snapshot_ws_feed_status(),
+                        "chainlink_feed": chainlink_feed_status,
                     },
                 )
 

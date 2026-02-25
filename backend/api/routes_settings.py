@@ -25,7 +25,7 @@ from api.settings_helpers import (
     polymarket_payload,
     scanner_payload,
     search_filters_payload,
-    trading_payload,
+    live_execution_payload,
     trading_proxy_payload,
     ui_lock_payload,
     events_payload,
@@ -139,8 +139,8 @@ class ScannerSettingsModel(BaseModel):
     )
 
 
-class TradingSettings(BaseModel):
-    """Trading safety configuration"""
+class LiveExecutionSettings(BaseModel):
+    """Live execution safety configuration"""
 
     max_trade_size_usd: float = Field(default=100.0, ge=1, description="Maximum single trade size")
     max_daily_trade_volume: float = Field(default=1000.0, ge=10, description="Maximum daily trading volume")
@@ -651,7 +651,7 @@ class AllSettings(BaseModel):
     llm: LLMSettings
     notifications: NotificationSettings
     scanner: ScannerSettingsModel
-    trading: TradingSettings
+    live_execution: LiveExecutionSettings
     maintenance: MaintenanceSettings
     discovery: DiscoverySettings
     trading_proxy: TradingProxySettings
@@ -669,7 +669,7 @@ class UpdateSettingsRequest(BaseModel):
     llm: Optional[LLMSettings] = None
     notifications: Optional[NotificationSettings] = None
     scanner: Optional[ScannerSettingsModel] = None
-    trading: Optional[TradingSettings] = None
+    live_execution: Optional[LiveExecutionSettings] = None
     maintenance: Optional[MaintenanceSettings] = None
     discovery: Optional[DiscoverySettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
@@ -712,7 +712,7 @@ async def get_settings():
             llm=LLMSettings(**llm_payload(settings)),
             notifications=NotificationSettings(**notifications_payload(settings)),
             scanner=ScannerSettingsModel(**scanner_payload(settings)),
-            trading=TradingSettings(**trading_payload(settings)),
+            live_execution=LiveExecutionSettings(**live_execution_payload(settings)),
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
             discovery=DiscoverySettings(**discovery_payload(settings)),
             trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
@@ -895,17 +895,17 @@ async def update_scanner_settings(request: ScannerSettingsModel):
     return await update_settings(UpdateSettingsRequest(scanner=request))
 
 
-@router.get("/trading")
-async def get_trading_settings():
-    """Get trading settings only"""
+@router.get("/live-execution")
+async def get_live_execution_settings():
+    """Get live execution settings only"""
     settings = await get_or_create_settings()
-    return TradingSettings(**trading_payload(settings))
+    return LiveExecutionSettings(**live_execution_payload(settings))
 
 
-@router.put("/trading")
-async def update_trading_settings(request: TradingSettings):
-    """Update trading settings only"""
-    return await update_settings(UpdateSettingsRequest(trading=request))
+@router.put("/live-execution")
+async def update_live_execution_settings(request: LiveExecutionSettings):
+    """Update live execution settings only"""
+    return await update_settings(UpdateSettingsRequest(live_execution=request))
 
 
 @router.get("/maintenance")

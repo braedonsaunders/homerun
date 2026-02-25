@@ -262,50 +262,11 @@ class DependencyAccuracyTracker:
     def __init__(
         self,
         base_threshold: float = MIN_LLM_CONFIDENCE,
-        persistence_path: str | None = None,
     ):
         self._base_threshold = base_threshold
         self._records: list[dict] = []  # {dep_key, correct, timestamp}
         self._accuracy_cache: Optional[float] = None
         self._threshold_override: Optional[float] = None
-        self._persistence_path = persistence_path
-        self._load_from_disk()
-
-    def _load_from_disk(self) -> None:
-        """Load accuracy records from disk if persistence is enabled."""
-        if not self._persistence_path:
-            return
-        try:
-            import json
-            from pathlib import Path
-
-            path = Path(self._persistence_path)
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                self._records = data.get("records", [])
-                self._threshold_override = data.get("threshold_override")
-                self._accuracy_cache = None
-                logger.info(f"Loaded {len(self._records)} dependency accuracy records from disk")
-        except Exception as e:
-            logger.warning(f"Failed to load accuracy data: {e}")
-
-    def _save_to_disk(self) -> None:
-        """Persist accuracy records to disk if persistence is enabled."""
-        if not self._persistence_path:
-            return
-        try:
-            import json
-            from pathlib import Path
-
-            path = Path(self._persistence_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "records": self._records[-500:],  # Keep last 500 records
-                "threshold_override": self._threshold_override,
-            }
-            path.write_text(json.dumps(data), encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"Failed to save accuracy data: {e}")
 
     # Maximum number of records to keep in memory
     _MAX_RECORDS = 500
@@ -325,7 +286,6 @@ class DependencyAccuracyTracker:
         if len(self._records) > self._MAX_RECORDS:
             self._records = self._records[-self._MAX_RECORDS :]
         self._accuracy_cache = None
-        self._save_to_disk()
         return dep_key
 
     def record_resolution(self, market_a_id: str, market_b_id: str, dep_type: str, was_correct: bool) -> None:
@@ -336,7 +296,6 @@ class DependencyAccuracyTracker:
                 record["correct"] = was_correct
                 self._accuracy_cache = None
                 self._update_threshold()
-                self._save_to_disk()
                 return
 
     @property
@@ -864,12 +823,7 @@ class CombinatorialStrategy(BaseStrategy):
         super().__init__()
         self._dependency_cache: OrderedDict[tuple, list] = OrderedDict()
         self._lock = threading.Lock()
-
-        # Persist accuracy data across restarts
-        from pathlib import Path
-
-        persistence_path = str(Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json")
-        self._accuracy_tracker = DependencyAccuracyTracker(persistence_path=persistence_path)
+        self._accuracy_tracker = DependencyAccuracyTracker()
         self._validator = DependencyValidator(self._accuracy_tracker)
 
     def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]:

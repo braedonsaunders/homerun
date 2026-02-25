@@ -6,13 +6,14 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import SimulationAccount, get_db_session
 from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
+    DEFAULT_PENDING_LIVE_EXIT_GUARD,
     arm_live_start,
     compose_trader_orchestrator_config,
     consume_live_arm_token,
@@ -85,6 +86,79 @@ class LiveStopRequest(BaseModel):
     requested_by: Optional[str] = None
 
 
+class GlobalRiskSettingsRequest(BaseModel):
+    max_gross_exposure_usd: float = Field(..., ge=1.0, le=1_000_000.0)
+    max_daily_loss_usd: float = Field(..., ge=0.0, le=1_000_000.0)
+    max_orders_per_cycle: int = Field(..., ge=1, le=1000)
+
+
+class PendingLiveExitGuardSettingsRequest(BaseModel):
+    max_pending_exits: int = Field(default=0, ge=0, le=1000)
+    identity_guard_enabled: bool = True
+    terminal_statuses: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+    )
+
+    @field_validator("terminal_statuses")
+    @classmethod
+    def _validate_terminal_statuses(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for item in value:
+            status = str(item or "").strip().lower()
+            if not status:
+                continue
+            if status in seen:
+                continue
+            seen.add(status)
+            normalized.append(status)
+        if not normalized:
+            return list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+        return normalized
+
+
+class LiveRiskClampsSettingsRequest(BaseModel):
+    enforce_allow_averaging_off: bool = True
+    min_cooldown_seconds: int = Field(default=90, ge=0, le=86400)
+    max_consecutive_losses_cap: int = Field(default=3, ge=1, le=1000)
+    max_open_orders_cap: int = Field(default=6, ge=1, le=1000)
+    max_open_positions_cap: int = Field(default=4, ge=1, le=1000)
+    max_trade_notional_usd_cap: float = Field(default=200.0, ge=1.0, le=1_000_000.0)
+    max_orders_per_cycle_cap: int = Field(default=4, ge=1, le=1000)
+    enforce_halt_on_consecutive_losses: bool = True
+
+
+class LiveMarketContextSettingsRequest(BaseModel):
+    enabled: bool = True
+    history_window_seconds: int = Field(default=7200, ge=300, le=21600)
+    history_fidelity_seconds: int = Field(default=300, ge=30, le=1800)
+    max_history_points: int = Field(default=120, ge=20, le=240)
+    timeout_seconds: float = Field(default=4.0, ge=1.0, le=12.0)
+
+
+class LiveProviderHealthSettingsRequest(BaseModel):
+    window_seconds: int = Field(default=180, ge=30, le=900)
+    min_errors: int = Field(default=2, ge=1, le=20)
+    block_seconds: int = Field(default=120, ge=15, le=3600)
+
+
+class GlobalRuntimeSettingsRequest(BaseModel):
+    pending_live_exit_guard: PendingLiveExitGuardSettingsRequest = Field(
+        default_factory=PendingLiveExitGuardSettingsRequest
+    )
+    live_risk_clamps: LiveRiskClampsSettingsRequest = Field(default_factory=LiveRiskClampsSettingsRequest)
+    live_market_context: LiveMarketContextSettingsRequest = Field(default_factory=LiveMarketContextSettingsRequest)
+    live_provider_health: LiveProviderHealthSettingsRequest = Field(default_factory=LiveProviderHealthSettingsRequest)
+    trader_cycle_timeout_seconds: float | None = Field(default=None, ge=3.0, le=120.0)
+
+
+class UpdateSettingsRequest(BaseModel):
+    run_interval_seconds: int | None = Field(default=None, ge=1, le=300)
+    global_risk: GlobalRiskSettingsRequest | None = None
+    global_runtime: GlobalRuntimeSettingsRequest | None = None
+    requested_by: Optional[str] = None
+
+
 def _assert_not_globally_paused() -> None:
     if global_pause_state.is_paused:
         raise HTTPException(
@@ -113,6 +187,49 @@ async def get_status(session: AsyncSession = Depends(get_db_session)):
     return {
         "control": control,
         "snapshot": snapshot,
+        "config": config,
+    }
+
+
+@router.put("/settings")
+async def update_orchestrator_settings(
+    request: UpdateSettingsRequest,
+    session: AsyncSession = Depends(get_db_session),
+    _auth: None = Depends(_require_orchestrator_auth),
+):
+    update_kwargs: dict[str, object] = {}
+    settings_updates: dict[str, object] = {}
+
+    if request.run_interval_seconds is not None:
+        update_kwargs["run_interval_seconds"] = int(request.run_interval_seconds)
+    if request.global_risk is not None:
+        settings_updates["global_risk"] = request.global_risk.model_dump()
+    if request.global_runtime is not None:
+        settings_updates["global_runtime"] = request.global_runtime.model_dump()
+    if settings_updates:
+        update_kwargs["settings_json"] = settings_updates
+
+    control = await update_orchestrator_control(session, **update_kwargs)
+    config = await compose_trader_orchestrator_config(session)
+
+    if request.requested_by or update_kwargs:
+        await create_trader_event(
+            session,
+            event_type="settings_updated",
+            source="trader_orchestrator",
+            operator=request.requested_by,
+            message="Trader orchestrator settings updated",
+            payload={
+                "updated_fields": sorted(update_kwargs.keys()),
+                "run_interval_seconds": config.get("run_interval_seconds"),
+                "global_risk": config.get("global_risk"),
+                "global_runtime": config.get("global_runtime"),
+            },
+        )
+
+    return {
+        "status": "updated",
+        "control": control,
         "config": config,
     }
 

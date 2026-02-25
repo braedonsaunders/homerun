@@ -34,6 +34,7 @@ import {
   testLLMConnection,
   testTradingProxy,
   flushDatabaseData,
+  getDatabaseMaintenanceStats,
   getLLMModels,
   refreshLLMModels,
   runWorkerOnce,
@@ -107,6 +108,21 @@ const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefin
     ...DEFAULT_DISCOVERY_SETTINGS,
     ...value,
   }
+}
+
+const formatDbBytes = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) {
+    return 'Unavailable'
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let amount = Math.max(0, value)
+  let unitIndex = 0
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024
+    unitIndex += 1
+  }
+  const precision = unitIndex <= 1 ? 0 : 2
+  return `${amount.toFixed(precision)} ${units[unitIndex]}`
 }
 
 function SecretInput({
@@ -248,6 +264,13 @@ export default function SettingsPanel({
   const { data: settings, isLoading } = useQuery({
     queryKey: ['settings'],
     queryFn: getSettings,
+  })
+
+  const maintenanceStatsQuery = useQuery({
+    queryKey: ['maintenance-stats'],
+    queryFn: getDatabaseMaintenanceStats,
+    enabled: expandedSections.has('maintenance'),
+    refetchInterval: expandedSections.has('maintenance') ? 30_000 : false,
   })
 
   // Sync form state with loaded settings
@@ -1530,6 +1553,58 @@ export default function SettingsPanel({
                   {section.id === 'maintenance' && (
                     <div className="space-y-4">
                       <div className="space-y-3">
+                        <Card className="bg-muted">
+                          <CardContent className="p-3 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="font-medium text-sm">Database Metrics</p>
+                                <p className="text-xs text-muted-foreground">Current footprint and row volume</p>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => maintenanceStatsQuery.refetch()}
+                                disabled={maintenanceStatsQuery.isFetching}
+                              >
+                                {maintenanceStatsQuery.isFetching ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                )}
+                              </Button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div className="rounded-lg border border-border/50 bg-card/40 px-3 py-2">
+                                <p className="text-[11px] uppercase tracking-widest text-muted-foreground">DB Size</p>
+                                <p className="text-sm font-semibold">
+                                  {formatDbBytes(maintenanceStatsQuery.data?.db_size_bytes)}
+                                </p>
+                              </div>
+                              <div className="rounded-lg border border-border/50 bg-card/40 px-3 py-2">
+                                <p className="text-[11px] uppercase tracking-widest text-muted-foreground">Total Rows</p>
+                                <p className="text-sm font-semibold">
+                                  {maintenanceStatsQuery.data?.total_rows != null
+                                    ? maintenanceStatsQuery.data.total_rows.toLocaleString()
+                                    : 'Unavailable'}
+                                </p>
+                              </div>
+                            </div>
+
+                            {maintenanceStatsQuery.isError && (
+                              <p className="text-[11px] text-red-400">Unable to load database metrics.</p>
+                            )}
+
+                            {!maintenanceStatsQuery.isLoading && maintenanceStatsQuery.dataUpdatedAt > 0 && (
+                              <p className="text-[10px] text-muted-foreground">
+                                Updated {new Date(maintenanceStatsQuery.dataUpdatedAt).toLocaleString()}
+                              </p>
+                            )}
+                          </CardContent>
+                        </Card>
+
                         <Card className="bg-muted">
                           <CardContent className="flex items-center justify-between p-3">
                             <div>

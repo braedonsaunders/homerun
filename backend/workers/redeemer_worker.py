@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from models.database import AsyncSessionLocal, init_database, recover_pool
 from services.ctf_execution import ctf_execution_service
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from services.worker_state import (
     _is_retryable_db_error,
     clear_worker_run_request,
@@ -31,7 +31,7 @@ _MAX_CONSECUTIVE_DB_FAILURES = 3
 
 
 async def _run_redeem_cycle(*, dry_run: bool) -> dict[str, Any]:
-    if not await trading_service.ensure_initialized():
+    if not await live_execution_service.ensure_initialized():
         return {
             "wallet_address": "",
             "positions_scanned": 0,

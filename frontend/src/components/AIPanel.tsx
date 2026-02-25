@@ -30,7 +30,6 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Input } from './ui/input'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { ScrollArea } from './ui/scroll-area'
 import {
   getAIStatus,
@@ -52,6 +51,18 @@ type AITab = 'analyze' | 'judgments' | 'system'
 type AnalysisTool = 'resolution' | 'market' | 'news'
 type MetricTone = 'good' | 'bad' | 'warn' | 'neutral' | 'info'
 
+export interface AICopilotLaunchOptions {
+  contextType?: string
+  contextId?: string
+  label?: string
+  prompt?: string
+  autoSend?: boolean
+}
+
+interface AIPanelProps {
+  onOpenCopilot?: (options?: AICopilotLaunchOptions) => void
+}
+
 const TONE_CLASSES: Record<MetricTone, string> = {
   good: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200',
   bad: 'border-red-300 bg-red-100 text-red-900 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200',
@@ -60,9 +71,21 @@ const TONE_CLASSES: Record<MetricTone, string> = {
   info: 'border-purple-300 bg-purple-100 text-purple-900 dark:border-purple-500/30 dark:bg-purple-500/10 dark:text-purple-200',
 }
 
-export default function AIPanel() {
+export default function AIPanel({ onOpenCopilot }: AIPanelProps) {
   const [activeTab, setActiveTab] = useState<AITab>('analyze')
   const [analysisTool, setAnalysisTool] = useState<AnalysisTool>('resolution')
+  const { data: aiStatus } = useQuery({
+    queryKey: ['ai-status'],
+    queryFn: async () => {
+      const { data } = await getAIStatus()
+      return data
+    },
+    refetchInterval: 30000,
+  })
+  const providersLabel = aiStatus?.providers_configured?.length
+    ? aiStatus.providers_configured.join(', ')
+    : 'No providers'
+  const usageCost = aiStatus?.usage?.estimated_cost ?? aiStatus?.usage?.total_cost_usd ?? 0
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -81,169 +104,85 @@ export default function AIPanel() {
   }, [])
 
   return (
-    <div className="space-y-5">
-      <HeroHeader />
-
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as AITab)} className="space-y-4">
-        <TabsList className="h-auto w-full justify-start gap-2 rounded-xl border border-border/60 bg-card/70 p-1.5">
-          <TabsTrigger
-            value="analyze"
-            className="h-auto min-w-[200px] items-start justify-start rounded-lg px-3 py-2 data-[state=active]:border data-[state=active]:border-purple-300 data-[state=active]:bg-purple-100 data-[state=active]:text-purple-900 dark:data-[state=active]:border-purple-500/40 dark:data-[state=active]:bg-purple-500/10 dark:data-[state=active]:text-purple-100"
-          >
-            <div className="flex items-start gap-2 text-left">
-              <Brain className="mt-0.5 h-4 w-4 text-purple-700 dark:text-purple-300" />
-              <div>
-                <p className="text-sm font-medium">Analyze</p>
-                <p className="text-[11px] text-muted-foreground">Resolution, market, and news sentiment</p>
-              </div>
-            </div>
-          </TabsTrigger>
-          <TabsTrigger
-            value="judgments"
-            className="h-auto min-w-[200px] items-start justify-start rounded-lg px-3 py-2 data-[state=active]:border data-[state=active]:border-cyan-300 data-[state=active]:bg-cyan-100 data-[state=active]:text-cyan-900 dark:data-[state=active]:border-cyan-500/40 dark:data-[state=active]:bg-cyan-500/10 dark:data-[state=active]:text-cyan-100"
-          >
-            <div className="flex items-start gap-2 text-left">
-              <Target className="mt-0.5 h-4 w-4 text-cyan-700 dark:text-cyan-300" />
-              <div>
-                <p className="text-sm font-medium">Judgments</p>
-                <p className="text-[11px] text-muted-foreground">ML vs LLM agreement and history</p>
-              </div>
-            </div>
-          </TabsTrigger>
-          <TabsTrigger
-            value="system"
-            className="h-auto min-w-[200px] items-start justify-start rounded-lg px-3 py-2 data-[state=active]:border data-[state=active]:border-emerald-300 data-[state=active]:bg-emerald-100 data-[state=active]:text-emerald-900 dark:data-[state=active]:border-emerald-500/40 dark:data-[state=active]:bg-emerald-500/10 dark:data-[state=active]:text-emerald-100"
-          >
-            <div className="flex items-start gap-2 text-left">
-              <Cpu className="mt-0.5 h-4 w-4 text-emerald-700 dark:text-emerald-300" />
-              <div>
-                <p className="text-sm font-medium">System</p>
-                <p className="text-[11px] text-muted-foreground">Usage, sessions, and skills</p>
-              </div>
-            </div>
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="analyze" className="mt-0 space-y-4">
-          <AnalyzeSection tool={analysisTool} onToolChange={setAnalysisTool} />
-        </TabsContent>
-        <TabsContent value="judgments" className="mt-0 space-y-4">
-          <JudgmentsSection />
-        </TabsContent>
-        <TabsContent value="system" className="mt-0 space-y-4">
-          <SystemSection />
-        </TabsContent>
-      </Tabs>
-    </div>
-  )
-}
-
-// ============================================================
-// Hero Header
-// ============================================================
-
-function HeroHeader() {
-  const { data: status, isLoading, error } = useQuery({
-    queryKey: ['ai-status'],
-    queryFn: async () => {
-      const { data } = await getAIStatus()
-      return data
-    },
-    refetchInterval: 30000,
-  })
-
-  if (isLoading) {
-    return (
-      <Card className="overflow-hidden border-border/80 bg-card/80">
-        <CardContent className="p-5">
-          <div className="flex items-center gap-3">
-            <RefreshCw className="w-4 h-4 animate-spin text-purple-400" />
-            <span className="text-sm text-muted-foreground">Connecting to AI module...</span>
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  if (error || !status?.enabled) {
-    return (
-      <Card className="overflow-hidden border-amber-500/20 bg-amber-500/5">
-        <CardContent className="p-5">
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-            <span className="text-sm text-amber-400">
-              {error
-                ? 'Unable to connect to AI module. Check that the backend is running.'
-                : 'Configure an LLM provider (OpenAI or Anthropic) in Settings to enable AI features.'}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const cost = status.usage?.estimated_cost ?? status.usage?.total_cost_usd ?? 0
-  const spendLimit = status.usage?.spend_limit_usd
-  const spendPct = spendLimit ? (cost / spendLimit) * 100 : null
-
-  return (
-    <Card className="overflow-hidden border-border/80 bg-card/80">
-      <CardContent className="p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-purple-300 bg-purple-100 px-2.5 py-1 text-[10px] uppercase tracking-wider text-purple-800 dark:border-purple-500/25 dark:bg-purple-500/10 dark:text-purple-200">
-              <Sparkles className="h-3 w-3" />
-              AI Command Center
-            </div>
-            <h2 className="mt-2 flex items-center gap-2 text-xl font-semibold">
-              <Brain className="h-5 w-5 text-purple-700 dark:text-purple-300" />
-              AI Intelligence
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Resolution analysis, market intelligence, judgment quality, and system diagnostics.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <Badge variant="outline" className="gap-1.5 border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-200">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              Active
-            </Badge>
-            <Badge variant="outline" className="border-purple-300 bg-purple-100 text-purple-800 dark:border-purple-500/25 dark:bg-purple-500/10 dark:text-purple-200">
-              {status.providers_configured?.join(', ') || 'No providers'}
-            </Badge>
-            <Badge variant="outline" className="border-border bg-background/60 text-muted-foreground">
-              {status.skills_available ?? 0} skills
-            </Badge>
-            <Badge variant="outline" className="border-border bg-background/60 text-muted-foreground font-data">
-              {status.usage?.total_requests ?? 0} req
-            </Badge>
-            <Badge variant="outline" className="border-border bg-background/60 text-muted-foreground font-data">
-              {formatNumber(status.usage?.total_tokens ?? 0)} tok
-            </Badge>
-            <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200 font-data">
-              ${cost.toFixed(2)}
-            </Badge>
-            {spendPct != null && (
-              <div className="flex items-center gap-2">
-                <div className="w-20 bg-muted rounded-full h-1.5 border border-border">
-                  <div
-                    className={cn(
-                      'h-full rounded-full transition-all',
-                      spendPct >= 90 ? 'bg-red-500' : spendPct >= 70 ? 'bg-amber-500' : 'bg-emerald-500'
-                    )}
-                    style={{ width: `${Math.min(100, spendPct)}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-muted-foreground whitespace-nowrap font-data">
-                  / ${spendLimit!.toFixed(0)}
-                </span>
-              </div>
+    <div className="h-full min-h-0 flex flex-col gap-3">
+      <div className="shrink-0 px-1 overflow-x-auto">
+        <div className="flex min-w-max items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab('analyze')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              activeTab === 'analyze'
+                ? 'bg-violet-500/20 text-violet-300 border-violet-500/30 hover:bg-violet-500/30 hover:text-violet-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
             )}
-          </div>
+          >
+            <Brain className="h-3.5 w-3.5" />
+            Analyze
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab('judgments')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              activeTab === 'judgments'
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
+            )}
+          >
+            <Target className="h-3.5 w-3.5" />
+            Judgments
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab('system')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              activeTab === 'system'
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
+            )}
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            System
+          </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      <div className="shrink-0 px-1">
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-card/35 px-2.5 py-1.5 text-[11px]">
+          <Badge
+            variant="outline"
+            className={cn(
+              'h-5 border px-1.5 text-[10px]',
+              aiStatus?.enabled
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300'
+            )}
+          >
+            {aiStatus?.enabled ? 'AI Connected' : 'AI Disabled'}
+          </Badge>
+          <Badge variant="outline" className="h-5 max-w-[240px] truncate border-border/60 bg-background/60 px-1.5 text-[10px] text-muted-foreground">
+            {providersLabel}
+          </Badge>
+          <Badge variant="outline" className="h-5 border-border/60 bg-background/60 px-1.5 text-[10px] text-muted-foreground">
+            {aiStatus?.skills_available ?? 0} skills
+          </Badge>
+          <Badge variant="outline" className="h-5 border-border/60 bg-background/60 px-1.5 text-[10px] text-muted-foreground font-data">
+            ${usageCost.toFixed(2)}
+          </Badge>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        {activeTab === 'analyze' && <AnalyzeSection tool={analysisTool} onToolChange={setAnalysisTool} onOpenCopilot={onOpenCopilot} />}
+        {activeTab === 'judgments' && <JudgmentsSection />}
+        {activeTab === 'system' && <SystemSection />}
+      </div>
+    </div>
   )
 }
 
@@ -254,9 +193,11 @@ function HeroHeader() {
 function AnalyzeSection({
   tool,
   onToolChange,
+  onOpenCopilot,
 }: {
   tool: AnalysisTool
   onToolChange: (t: AnalysisTool) => void
+  onOpenCopilot?: (options?: AICopilotLaunchOptions) => void
 }) {
   const [marketId, setMarketId] = useState('')
   const [question, setQuestion] = useState('')
@@ -280,6 +221,7 @@ function AnalyzeSection({
   const [newsContext, setNewsContext] = useState('')
   const [maxArticles, setMaxArticles] = useState(5)
   const [showNewsAdvanced, setShowNewsAdvanced] = useState(false)
+  const [customPrompt, setCustomPrompt] = useState('')
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -380,53 +322,202 @@ function AnalyzeSection({
     },
   })
 
-  const tools = [
-    { id: 'resolution' as const, label: 'Resolution Analysis', icon: Shield, desc: 'Evaluate resolution criteria, ambiguities, and edge cases', color: 'purple' },
-    { id: 'market' as const, label: 'Market Intelligence', icon: TrendingUp, desc: 'Deep-dive analysis with economic indicators and context', color: 'blue' },
-    { id: 'news' as const, label: 'News Sentiment', icon: Newspaper, desc: 'Aggregate and analyze news sentiment for market impact', color: 'orange' },
-  ]
+  const activeToolLabel = tool === 'resolution' ? 'Resolution' : tool === 'market' ? 'Market' : 'News'
+  const activeToolDescription =
+    tool === 'resolution'
+      ? 'Evaluate resolution criteria, ambiguities, and edge-case handling.'
+      : tool === 'market'
+        ? 'Run AI-assisted market context analysis with optional market linking.'
+        : 'Analyze current news sentiment and infer directional market pressure.'
+  const promptTemplates: Array<{ title: string; body: string }> = tool === 'resolution'
+    ? [
+        {
+          title: 'Resolution Ambiguity Sweep',
+          body: `Audit "${question || 'this market'}" for ambiguous resolution edge-cases and list monitoring triggers before settlement.`,
+        },
+        {
+          title: 'Execution Guardrails',
+          body: 'Create a strict pre-trade and post-trade checklist for this resolution setup including risk-off conditions.',
+        },
+        {
+          title: 'Contrarian Failure Modes',
+          body: 'Stress-test the obvious interpretation of this market and map plausible failure modes that can invalidate the trade thesis.',
+        },
+      ]
+    : tool === 'market'
+      ? [
+          {
+            title: 'Probability Tree',
+            body: `Build bull/base/bear probability branches for "${marketQuery || 'the target market thesis'}" with explicit catalyst assumptions.`,
+          },
+          {
+            title: 'Market-Microstructure Read',
+            body: 'Explain what current pricing likely implies about informed flow, crowd positioning, and delayed repricing opportunities.',
+          },
+          {
+            title: 'Actionable Trade Plan',
+            body: 'Convert this market analysis into a concrete execution plan: entries, invalidation levels, and position sizing guidance.',
+          },
+        ]
+      : [
+          {
+            title: 'Narrative Delta',
+            body: `Summarize the dominant news narrative for "${newsQuery || 'this topic'}" and estimate probability impact versus market pricing.`,
+          },
+          {
+            title: 'Signal Reliability Filter',
+            body: 'Separate high-signal news from noise and rank sources by reliability, timeliness, and trade relevance.',
+          },
+          {
+            title: 'Sentiment-To-Execution',
+            body: 'Turn sentiment results into a trade decision rubric with clear thresholds for buy, wait, hedge, or skip.',
+          },
+        ]
 
-  const toolAccent: Record<AnalysisTool, { bg: string; border: string; text: string; bar: string; ring: string }> = {
-    resolution: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', text: 'text-purple-400', bar: 'bg-purple-400', ring: 'focus-visible:ring-purple-500' },
-    market: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-400', bar: 'bg-blue-400', ring: 'focus-visible:ring-blue-500' },
-    news: { bg: 'bg-orange-500/10', border: 'border-orange-500/30', text: 'text-orange-400', bar: 'bg-orange-400', ring: 'focus-visible:ring-orange-500' },
+  const launchPrompt = (prompt: string, autoSend = true) => {
+    if (!onOpenCopilot) return
+    const context = tool === 'resolution' && marketId
+      ? {
+          contextType: 'market',
+          contextId: marketId,
+          label: question || marketId,
+        }
+      : {
+          contextType: 'general',
+          contextId: 'ai-workspace',
+          label: 'AI Workspace',
+        }
+    onOpenCopilot({
+      ...context,
+      prompt,
+      autoSend,
+    })
+  }
+
+  const handleSendCustomPrompt = () => {
+    const trimmed = customPrompt.trim()
+    if (!trimmed) return
+    launchPrompt(trimmed, true)
+    setCustomPrompt('')
   }
 
   return (
     <div className="space-y-4">
-      {/* Tool Picker */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 card-stagger">
-        {tools.map((t) => {
-          const active = tool === t.id
-          const accent = toolAccent[t.id]
-          return (
-            <Card
-              key={t.id}
-              className={cn(
-                'overflow-hidden cursor-pointer transition-all hover:shadow-lg hover:shadow-black/10',
-                active ? `${accent.border}` : 'border-border/60 hover:border-border'
-              )}
-              onClick={() => onToolChange(t.id)}
-            >
-              <div className={cn('h-0.5', active ? accent.bar : 'bg-transparent')} />
-              <CardContent className="p-4">
-                <div className="flex items-start gap-3">
-                  <div className={cn(
-                    'flex items-center justify-center w-9 h-9 rounded-lg shrink-0',
-                    active ? accent.bg : 'bg-muted/60'
-                  )}>
-                    <t.icon className={cn('w-4.5 h-4.5', active ? accent.text : 'text-muted-foreground')} />
-                  </div>
-                  <div className="min-w-0">
-                    <p className={cn('text-sm font-medium', active ? 'text-foreground' : 'text-muted-foreground')}>{t.label}</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">{t.desc}</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )
-        })}
+      <div className="shrink-0 px-1 overflow-x-auto">
+        <div className="flex min-w-max items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onToolChange('resolution')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              tool === 'resolution'
+                ? 'bg-violet-500/20 text-violet-300 border-violet-500/30 hover:bg-violet-500/30 hover:text-violet-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
+            )}
+          >
+            <Shield className="h-3.5 w-3.5" />
+            Resolution
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onToolChange('market')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              tool === 'market'
+                ? 'bg-blue-500/20 text-blue-300 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
+            )}
+          >
+            <TrendingUp className="h-3.5 w-3.5" />
+            Market
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onToolChange('news')}
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              tool === 'news'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-300'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border'
+            )}
+          >
+            <Newspaper className="h-3.5 w-3.5" />
+            News
+          </Button>
+        </div>
       </div>
+
+      <div className="rounded-lg border border-border/60 bg-card/35 px-3 py-2.5">
+        <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Analyze Workspace</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {activeToolLabel} tool active. {activeToolDescription}
+        </p>
+      </div>
+
+      <Card className="overflow-hidden border-border/60 bg-card/45 shadow-none">
+        <div className="h-0.5 bg-gradient-to-r from-violet-500/60 via-cyan-500/50 to-amber-500/50" />
+        <CardContent className="space-y-3 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Prompt Studio</p>
+              <p className="text-xs text-muted-foreground">Launch context-aware prompts directly into the floating AI copilot.</p>
+            </div>
+            <Badge variant="outline" className="h-5 border-border/60 bg-background/60 px-1.5 text-[10px]">
+              Copilot Linked
+            </Badge>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-3">
+            {promptTemplates.map((template) => (
+              <button
+                key={template.title}
+                type="button"
+                onClick={() => launchPrompt(template.body, true)}
+                className="rounded-lg border border-border/60 bg-background/55 p-3 text-left transition-colors hover:border-violet-500/30 hover:bg-violet-500/5"
+                disabled={!onOpenCopilot}
+              >
+                <p className="text-xs font-semibold text-foreground">{template.title}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground line-clamp-3">{template.body}</p>
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-lg border border-border/60 bg-background/55 p-3">
+            <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Custom Prompt Box</p>
+            <textarea
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              rows={3}
+              placeholder="Draft your own request for the copilot..."
+              className="mt-2 w-full resize-none rounded-lg border border-border bg-card/60 px-3 py-2 text-sm focus:outline-none focus:border-violet-500/50"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => launchPrompt(customPrompt.trim(), false)}
+                disabled={!customPrompt.trim() || !onOpenCopilot}
+                className="h-7 gap-1.5 text-[11px]"
+              >
+                <Brain className="h-3 w-3" />
+                Draft In Copilot
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSendCustomPrompt}
+                disabled={!customPrompt.trim() || !onOpenCopilot}
+                className="h-7 gap-1.5 bg-violet-500 text-white hover:bg-violet-600 text-[11px]"
+              >
+                <Sparkles className="h-3 w-3" />
+                Send To Copilot
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Resolution Tool */}
       {tool === 'resolution' && (

@@ -157,6 +157,56 @@ def test_btc_highfreq_stop_loss_arms_inside_near_close_window():
     assert "Stop loss hit" in decision.reason
 
 
+def test_btc_highfreq_close_can_arm_reverse_intent_when_enabled():
+    strategy = BtcEthHighFreqStrategy()
+    position = _make_loss_position(
+        {
+            "reverse_on_adverse_velocity_enabled": True,
+            "reverse_min_loss_pct": 1.0,
+            "reverse_min_adverse_velocity_score": 0.1,
+            "reverse_flow_imbalance_threshold": -0.1,
+            "reverse_momentum_short_pct_threshold": -0.1,
+            "reverse_min_seconds_left": 30.0,
+            "reverse_min_price_headroom": 0.10,
+            "reverse_min_edge_percent": 0.5,
+            "reverse_confidence": 0.6,
+            "reverse_size_multiplier": 1.25,
+            "reverse_signal_ttl_seconds": 45.0,
+            "reverse_cooldown_seconds": 12.0,
+            "reverse_max_reentries_per_position": 2,
+        }
+    )
+    position.direction = "buy_yes"
+    position.strategy_context = {
+        "timeframe": "5m",
+        "_crypto_hf_rapid_exit_state": {
+            "flow_imbalance": -0.4,
+            "momentum_short_pct": -1.2,
+            "executable_hazard_score": 0.75,
+            "token_id": "token-reverse-1",
+        },
+    }
+
+    decision = strategy.should_exit(
+        position,
+        {
+            "current_price": 0.45,
+            "market_tradable": True,
+            "is_resolved": False,
+            "winning_outcome": None,
+            "seconds_left": 180,
+        },
+    )
+
+    assert decision.action == "close"
+    reverse_intent = decision.payload.get("reverse_intent")
+    assert isinstance(reverse_intent, dict)
+    assert reverse_intent["direction"] == "buy_no"
+    assert reverse_intent["strategy_type"] == "btc_eth_highfreq"
+    assert reverse_intent["token_id"] == "token-reverse-1"
+    assert reverse_intent["max_reentries_per_position"] == 2
+
+
 def test_btc_highfreq_stop_loss_timeframe_override_is_applied():
     strategy = BtcEthHighFreqStrategy()
     position = _make_loss_position(

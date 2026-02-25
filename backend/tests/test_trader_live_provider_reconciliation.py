@@ -115,12 +115,12 @@ async def test_reconcile_live_provider_orders_updates_fill_state(tmp_path, monke
             await session.commit()
 
             monkeypatch.setattr(
-                trader_orchestrator_state.trading_service,
+                trader_orchestrator_state.live_execution_service,
                 "ensure_initialized",
                 AsyncMock(return_value=True),
             )
             monkeypatch.setattr(
-                trader_orchestrator_state.trading_service,
+                trader_orchestrator_state.live_execution_service,
                 "get_order_snapshots_by_clob_ids",
                 AsyncMock(
                     return_value={

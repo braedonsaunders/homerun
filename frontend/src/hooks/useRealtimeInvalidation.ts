@@ -361,11 +361,8 @@ export function useRealtimeInvalidation(
     }
     if (messageType === 'crypto_markets_update' && lastMessage.data) {
       // Direct cache update for crypto markets
-      if (lastMessage.data.markets) {
-        queryClient.setQueryData(['crypto-markets'], (old: any) => ({
-          ...old,
-          ...lastMessage.data,
-        }))
+      if (Array.isArray(lastMessage.data.markets)) {
+        queryClient.setQueryData(['crypto-markets'], lastMessage.data.markets)
       }
     }
     if (messageType === 'trader_orchestrator_status' && lastMessage.data) {

@@ -101,7 +101,19 @@ def test_live_risk_clamps_tighten_aggressive_limits():
         "max_trade_notional_usd": 500.0,
         "max_orders_per_cycle": 50,
     }
-    changes = trader_orchestrator_worker._apply_live_risk_clamps(limits)
+    changes = trader_orchestrator_worker._apply_live_risk_clamps(
+        limits,
+        {
+            "enforce_allow_averaging_off": True,
+            "min_cooldown_seconds": 90,
+            "max_consecutive_losses_cap": 3,
+            "max_open_orders_cap": 6,
+            "max_open_positions_cap": 4,
+            "max_trade_notional_usd_cap": 200.0,
+            "max_orders_per_cycle_cap": 4,
+            "enforce_halt_on_consecutive_losses": True,
+        },
+    )
 
     assert limits["allow_averaging"] is False
     assert limits["cooldown_seconds"] == 90
@@ -113,6 +125,40 @@ def test_live_risk_clamps_tighten_aggressive_limits():
     assert limits["halt_on_consecutive_losses"] is True
     assert "allow_averaging" in changes
     assert "max_trade_notional_usd" in changes
+
+
+def test_live_risk_clamps_honor_configured_caps():
+    limits = {
+        "allow_averaging": False,
+        "cooldown_seconds": 0,
+        "max_consecutive_losses": 8,
+        "max_open_orders": 20,
+        "max_open_positions": 12,
+        "max_trade_notional_usd": 500.0,
+        "max_orders_per_cycle": 50,
+        "halt_on_consecutive_losses": False,
+    }
+    trader_orchestrator_worker._apply_live_risk_clamps(
+        limits,
+        {
+            "enforce_allow_averaging_off": False,
+            "min_cooldown_seconds": 0,
+            "max_consecutive_losses_cap": 7,
+            "max_open_orders_cap": 9,
+            "max_open_positions_cap": 8,
+            "max_trade_notional_usd_cap": 420.0,
+            "max_orders_per_cycle_cap": 11,
+            "enforce_halt_on_consecutive_losses": False,
+        },
+    )
+
+    assert limits["cooldown_seconds"] == 0
+    assert limits["max_consecutive_losses"] == 7
+    assert limits["max_open_orders"] == 9
+    assert limits["max_open_positions"] == 8
+    assert limits["max_trade_notional_usd"] == 420.0
+    assert limits["max_orders_per_cycle"] == 11
+    assert limits["halt_on_consecutive_losses"] is False
 
 
 def test_live_provider_infra_error_detection_excludes_allowance_rejections():
@@ -420,7 +466,9 @@ def _base_control_payload() -> dict:
         "mode": "live",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
-            "enable_live_market_context": False,
+            "global_runtime": {
+                "live_market_context": {"enabled": False},
+            },
         },
     }
 
@@ -496,7 +544,9 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
         "mode": "paper",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
-            "enable_live_market_context": False,
+            "global_runtime": {
+                "live_market_context": {"enabled": False},
+            },
             "paper_account_id": "paper-1",
         },
     }
@@ -1630,7 +1680,9 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
         "mode": "paper",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
-            "enable_live_market_context": False,
+            "global_runtime": {
+                "live_market_context": {"enabled": False},
+            },
             "paper_account_id": "paper-1",
         },
     }

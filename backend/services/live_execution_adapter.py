@@ -5,7 +5,7 @@ from typing import Any
 
 from services.polymarket import polymarket_client
 from services.strategy_sdk import StrategySDK
-from services.trading import OrderSide, OrderType, trading_service
+from services.live_execution_service import OrderSide, OrderType, live_execution_service
 from utils.converters import safe_float
 from utils.logger import get_logger
 
@@ -94,7 +94,7 @@ async def execute_live_order(
             error_message="Order size must be greater than zero.",
             payload={**base_payload, "submission": "rejected"},
         )
-    if not await trading_service.ensure_initialized():
+    if not await live_execution_service.ensure_initialized():
         return LiveOrderExecution(
             status="failed",
             effective_price=None,
@@ -154,7 +154,7 @@ async def execute_live_order(
         except ValueError:
             order_type = OrderType.GTC
 
-        order = await trading_service.place_order(
+        order = await live_execution_service.place_order(
             token_id=normalized_token_id,
             side=normalized_side,
             price=resolved_price,

@@ -6,6 +6,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.strategy_sdk import StrategySDK
+from services.strategies.btc_eth_highfreq import (
+    crypto_highfreq_direction_allowed,
+    crypto_highfreq_should_flatten_resolution_risk,
+)
 
 
 def test_parse_duration_minutes_supports_compact_and_words():
@@ -66,18 +70,24 @@ def test_crypto_highfreq_scope_schema_contains_include_exclude_fields():
     assert "live_window_required" in keys
     assert "min_liquidity_usd" in keys
     assert "min_liquidity_usd_opening" in keys
-    assert "min_volume_usd" in keys
-    assert "min_volume_usd_opening" in keys
     assert "opening_directional_buy_yes_enabled" in keys
+    assert "opening_directional_buy_yes_block_elapsed_pct" in keys
+    assert "opening_directional_buy_yes_block_elapsed_pct_5m" in keys
+    assert "opening_directional_buy_yes_block_elapsed_pct_15m" in keys
+    assert "opening_directional_buy_yes_block_elapsed_pct_1h" in keys
+    assert "opening_directional_buy_yes_block_elapsed_pct_4h" in keys
     assert "entry_executable_exit_ratio_floor" in keys
-    assert "enforce_hard_timeframe_allowlist" in keys
-    assert "hard_allowed_timeframes" in keys
     assert "max_spread_pct" in keys
     assert "max_signal_age_seconds" in keys
     assert "max_open_order_seconds" in keys
     assert "max_live_context_age_seconds" in keys
     assert "max_oracle_age_seconds" in keys
+    assert "max_oracle_age_ms" in keys
     assert "require_oracle_for_directional" in keys
+    assert "oracle_source_policy" in keys
+    assert "oracle_fallback_degrade_edge_multiplier" in keys
+    assert "oracle_fallback_degrade_confidence_multiplier" in keys
+    assert "oracle_fallback_degrade_size_multiplier" in keys
     assert "min_seconds_left_for_entry_5m" in keys
     assert "rapid_take_profit_pct" in keys
     assert "rapid_take_profit_pct_5m" in keys
@@ -135,20 +145,24 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["stop_loss_activation_seconds"] == 90
     assert defaults["min_liquidity_usd"] == 250.0
     assert defaults["min_liquidity_usd_opening"] == 4000.0
-    assert defaults["min_volume_usd"] == 1000.0
-    assert defaults["min_volume_usd_opening"] == 5000.0
     assert defaults["max_spread_pct"] == 0.08
     assert defaults["max_signal_age_seconds"] == 35.0
     assert defaults["max_open_order_seconds"] == 14.0
     assert defaults["max_live_context_age_seconds"] == 3.0
     assert defaults["max_oracle_age_seconds"] == 20.0
+    assert defaults["max_oracle_age_ms"] == 20000.0
     assert defaults["require_oracle_for_directional"] is True
+    assert defaults["oracle_source_policy"] == "degrade"
     assert defaults["min_seconds_left_for_entry_5m"] == 60.0
     assert defaults["min_seconds_left_for_entry_15m"] == 180.0
     assert defaults["min_seconds_left_for_entry_1h"] == 360.0
     assert defaults["opening_directional_buy_yes_enabled"] is False
+    assert defaults["opening_directional_buy_yes_block_elapsed_pct"] == 0.10
+    assert defaults["opening_directional_buy_yes_block_elapsed_pct_5m"] == 0.45
+    assert defaults["opening_directional_buy_yes_block_elapsed_pct_15m"] == 0.25
+    assert defaults["opening_directional_buy_yes_block_elapsed_pct_1h"] == 0.10
+    assert defaults["opening_directional_buy_yes_block_elapsed_pct_4h"] == 0.05
     assert defaults["entry_executable_exit_ratio_floor"] == 0.28
-    assert defaults["enforce_hard_timeframe_allowlist"] is True
     assert defaults["rapid_take_profit_pct"] == 10.0
     assert defaults["rapid_take_profit_pct_5m"] == 10.0
     assert defaults["rapid_take_profit_pct_15m"] == 10.0
@@ -259,7 +273,7 @@ def test_resolve_open_order_timeout_seconds_supports_alias_and_default_fallback(
 
 
 def test_crypto_highfreq_direction_policy_blocks_opening_directional_buy_yes_by_default():
-    allowed, detail = StrategySDK.crypto_highfreq_direction_allowed(
+    allowed, detail = crypto_highfreq_direction_allowed(
         {},
         regime="opening",
         active_mode="directional",
@@ -268,7 +282,7 @@ def test_crypto_highfreq_direction_policy_blocks_opening_directional_buy_yes_by_
     assert allowed is False
     assert "opening_directional_buy_yes_enabled=False" in detail
 
-    allowed_no, detail_no = StrategySDK.crypto_highfreq_direction_allowed(
+    allowed_no, detail_no = crypto_highfreq_direction_allowed(
         {},
         regime="opening",
         active_mode="directional",
@@ -278,22 +292,70 @@ def test_crypto_highfreq_direction_policy_blocks_opening_directional_buy_yes_by_
     assert "opening_directional_buy_no_enabled=True" in detail_no
 
 
-def test_crypto_highfreq_min_volume_prefers_regime_specific_overrides():
-    value = StrategySDK.crypto_highfreq_min_volume_usd(
-        {
-            "min_volume_usd": 1000,
-            "min_volume_usd_opening": 5000,
-            "min_volume_usd_opening_5m": 7000,
-        },
-        timeframe="5m",
+def test_crypto_highfreq_direction_policy_uses_elapsed_progress_window_by_timeframe():
+    blocked_1h, blocked_detail_1h = crypto_highfreq_direction_allowed(
+        {},
         regime="opening",
         active_mode="directional",
+        direction="buy_yes",
+        timeframe="1h",
+        seconds_left=3300.0,
     )
-    assert value == 7000.0
+    assert blocked_1h is False
+    assert "min_elapsed=0.100" in blocked_detail_1h
+    assert "timeframe=1h" in blocked_detail_1h
+
+    allowed_1h, allowed_detail_1h = crypto_highfreq_direction_allowed(
+        {},
+        regime="opening",
+        active_mode="directional",
+        direction="buy_yes",
+        timeframe="1h",
+        seconds_left=3000.0,
+    )
+    assert allowed_1h is True
+    assert "min_elapsed=0.100" in allowed_detail_1h
+    assert "timeframe=1h" in allowed_detail_1h
+
+    blocked_15m, blocked_detail_15m = crypto_highfreq_direction_allowed(
+        {},
+        regime="opening",
+        active_mode="directional",
+        direction="buy_yes",
+        timeframe="15m",
+        seconds_left=700.0,
+    )
+    assert blocked_15m is False
+    assert "min_elapsed=0.250" in blocked_detail_15m
+    assert "timeframe=15m" in blocked_detail_15m
+
+    blocked_5m_mid, blocked_detail_5m_mid = crypto_highfreq_direction_allowed(
+        {},
+        regime="mid",
+        active_mode="directional",
+        direction="buy_yes",
+        timeframe="5m",
+        seconds_left=180.0,
+    )
+    assert blocked_5m_mid is False
+    assert "min_elapsed=0.450" in blocked_detail_5m_mid
+    assert "timeframe=5m" in blocked_detail_5m_mid
+
+    allowed_5m_mid, allowed_detail_5m_mid = crypto_highfreq_direction_allowed(
+        {},
+        regime="mid",
+        active_mode="directional",
+        direction="buy_yes",
+        timeframe="5m",
+        seconds_left=150.0,
+    )
+    assert allowed_5m_mid is True
+    assert "min_elapsed=0.450" in allowed_detail_5m_mid
+    assert "timeframe=5m" in allowed_detail_5m_mid
 
 
 def test_crypto_highfreq_resolution_risk_flatten_policy():
-    should_flatten, detail = StrategySDK.crypto_highfreq_should_flatten_resolution_risk(
+    should_flatten, detail = crypto_highfreq_should_flatten_resolution_risk(
         {
             "resolution_risk_flatten_enabled": True,
             "resolution_risk_seconds_left_5m": 105,
@@ -310,7 +372,7 @@ def test_crypto_highfreq_resolution_risk_flatten_policy():
     assert should_flatten is True
     assert "seconds_left=90.0s" in detail
 
-    should_skip_armed, detail_armed = StrategySDK.crypto_highfreq_should_flatten_resolution_risk(
+    should_skip_armed, detail_armed = crypto_highfreq_should_flatten_resolution_risk(
         {},
         timeframe="5m",
         seconds_left=90.0,

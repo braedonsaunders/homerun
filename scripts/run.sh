@@ -555,7 +555,7 @@ backend/venv/bin/python scripts/ensure_postgres_ready.py --database-url "$DATABA
 source backend/venv/bin/activate
 python -c "import textual" 2>/dev/null || {
     echo -e "${CYAN}Installing TUI dependencies...${NC}"
-    pip install -q textual rich
+    PIP_USER=0 python -m pip install -q --no-user textual rich
 }
 
 if [ "$RUN_SERVICE_SMOKE_TEST" -eq 1 ]; then

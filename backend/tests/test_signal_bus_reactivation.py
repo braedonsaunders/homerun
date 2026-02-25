@@ -184,6 +184,154 @@ async def test_upsert_reactivates_executed_signal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_upsert_skipped_signal_stays_skipped_when_only_bridge_metadata_changes(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    signal_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            now = utcnow().replace(microsecond=0)
+            session.add(
+                TradeSignal(
+                    id=signal_id,
+                    source="custom_source",
+                    source_item_id="custom_old",
+                    signal_type="custom_opportunity",
+                    strategy_type="custom_strategy",
+                    market_id="market_3",
+                    market_question="Skipped signal",
+                    direction="buy_yes",
+                    entry_price=0.44,
+                    edge_percent=6.0,
+                    confidence=0.72,
+                    liquidity=88.0,
+                    expires_at=now + timedelta(hours=1),
+                    status="skipped",
+                    dedupe_key="dedupe_traders_3",
+                    payload_json={"id": "stable", "ingested_at": "2026-02-24T00:00:00Z"},
+                    strategy_context_json={"mode": "directional", "bridge_run_at": "2026-02-24T00:00:00Z"},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="custom_old",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_3",
+                market_question="Skipped signal",
+                direction="buy_yes",
+                entry_price=0.44,
+                edge_percent=6.0,
+                confidence=0.72,
+                liquidity=88.0,
+                expires_at=now + timedelta(hours=1),
+                payload_json={"id": "stable", "ingested_at": "2026-02-24T00:00:05Z"},
+                strategy_context_json={"mode": "directional", "bridge_run_at": "2026-02-24T00:00:05Z"},
+                dedupe_key="dedupe_traders_3",
+                commit=True,
+            )
+
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed is not None
+            assert refreshed.status == "skipped"
+            assert refreshed.updated_at == now
+
+            emissions = (
+                (
+                    await session.execute(
+                        select(TradeSignalEmission)
+                        .where(TradeSignalEmission.signal_id == signal_id)
+                        .order_by(TradeSignalEmission.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert not emissions
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upsert_reactivates_skipped_signal_on_material_change(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    signal_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            now = utcnow().replace(microsecond=0)
+            session.add(
+                TradeSignal(
+                    id=signal_id,
+                    source="custom_source",
+                    source_item_id="custom_old",
+                    signal_type="custom_opportunity",
+                    strategy_type="custom_strategy",
+                    market_id="market_4",
+                    market_question="Skipped signal",
+                    direction="buy_yes",
+                    entry_price=0.44,
+                    edge_percent=6.0,
+                    confidence=0.72,
+                    liquidity=88.0,
+                    expires_at=now + timedelta(hours=1),
+                    status="skipped",
+                    dedupe_key="dedupe_traders_4",
+                    payload_json={"id": "stable", "ingested_at": "2026-02-24T00:00:00Z"},
+                    strategy_context_json={"mode": "directional"},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="custom_old",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_4",
+                market_question="Skipped signal",
+                direction="buy_yes",
+                entry_price=0.56,
+                edge_percent=6.0,
+                confidence=0.72,
+                liquidity=88.0,
+                expires_at=now + timedelta(hours=1),
+                payload_json={"id": "stable", "ingested_at": "2026-02-24T00:00:05Z"},
+                strategy_context_json={"mode": "directional"},
+                dedupe_key="dedupe_traders_4",
+                commit=True,
+            )
+
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed is not None
+            assert refreshed.status == "pending"
+            assert refreshed.entry_price == pytest.approx(0.56)
+
+            emissions = (
+                (
+                    await session.execute(
+                        select(TradeSignalEmission)
+                        .where(TradeSignalEmission.signal_id == signal_id)
+                        .order_by(TradeSignalEmission.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert emissions
+            assert emissions[-1].event_type == "upsert_reactivated"
+            assert emissions[-1].reason == "reactivated_from:skipped"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_expire_stale_signals_skips_price_staleness_for_non_scanner_source(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     signal_id = uuid.uuid4().hex

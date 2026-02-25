@@ -10,13 +10,13 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services import live_execution_adapter
-from services.trading import OrderStatus
+from services.live_execution_service import OrderStatus
 
 
 @pytest.mark.asyncio
 async def test_execute_live_order_blocks_when_trading_init_fails(monkeypatch):
     ensure_mock = AsyncMock(return_value=False)
-    monkeypatch.setattr(live_execution_adapter.trading_service, "ensure_initialized", ensure_mock)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
 
     result = await live_execution_adapter.execute_live_order(
         token_id="123456789012345678901",
@@ -44,8 +44,8 @@ async def test_execute_live_order_initializes_and_places_order(monkeypatch):
             filled_size=0.0,
         )
     )
-    monkeypatch.setattr(live_execution_adapter.trading_service, "ensure_initialized", ensure_mock)
-    monkeypatch.setattr(live_execution_adapter.trading_service, "place_order", place_mock)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "place_order", place_mock)
     monkeypatch.setattr(
         live_execution_adapter.polymarket_client,
         "get_price",
@@ -82,8 +82,8 @@ async def test_execute_live_order_uses_fallback_when_live_quote_notional_below_s
             filled_size=0.0,
         )
     )
-    monkeypatch.setattr(live_execution_adapter.trading_service, "ensure_initialized", ensure_mock)
-    monkeypatch.setattr(live_execution_adapter.trading_service, "place_order", place_mock)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "place_order", place_mock)
     monkeypatch.setattr(
         live_execution_adapter.polymarket_client,
         "get_price",

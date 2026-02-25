@@ -666,7 +666,7 @@ export function CryptoMarketCard({
                 fill
                 window={livelineWindow}
                 lerpSpeed={0.1}
-                padding={{ top: 8, right: 10, bottom: 24, left: 14 }}
+                padding={{ top: 8, right: 80, bottom: 24, left: 14 }}
                 tooltipOutline={isDarkTheme}
                 formatValue={(value) => formatPrice(value, 2)}
                 referenceLine={market.price_to_beat !== null ? { value: market.price_to_beat, label: 'Price to beat' } : undefined}

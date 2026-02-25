@@ -316,7 +316,7 @@ def scanner_payload(settings: AppSettings) -> dict[str, Any]:
     }
 
 
-def trading_payload(settings: AppSettings) -> dict[str, Any]:
+def live_execution_payload(settings: AppSettings) -> dict[str, Any]:
     return {
         "max_trade_size_usd": settings.max_trade_size_usd,
         "max_daily_trade_volume": settings.max_daily_trade_volume,
@@ -617,7 +617,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
     llm = getattr(request, "llm", None)
     notifications = getattr(request, "notifications", None)
     scanner = getattr(request, "scanner", None)
-    trading = getattr(request, "trading", None)
+    live_execution = getattr(request, "live_execution", None)
     maintenance = getattr(request, "maintenance", None)
     discovery = getattr(request, "discovery", None)
     search_filters = getattr(request, "search_filters", None)
@@ -714,8 +714,8 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.scanner_max_opportunities_total = int(getattr(scan, "max_opportunities_total", 500))
         settings.scanner_max_opportunities_per_strategy = int(getattr(scan, "max_opportunities_per_strategy", 120))
 
-    if trading:
-        trade = trading
+    if live_execution:
+        trade = live_execution
         settings.max_trade_size_usd = trade.max_trade_size_usd
         settings.max_daily_trade_volume = trade.max_daily_trade_volume
         settings.max_open_positions = trade.max_open_positions
@@ -934,7 +934,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
     return {
         "needs_llm_reinit": bool(llm),
         "needs_proxy_reinit": bool(trading_proxy),
-        "needs_filter_reload": bool(search_filters) or bool(scanner),
+        "needs_filter_reload": bool(search_filters) or bool(scanner) or bool(live_execution),
         "needs_events_reload": events is not None,
         "needs_ui_lock_reload": ui_lock is not None,
         "reset_ui_lock_sessions": ui_lock_password_changed or ui_lock_enabled_changed,

@@ -3,16 +3,19 @@ import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
+  ChevronRight,
   BarChart3,
   Briefcase,
   DollarSign,
   LayoutDashboard,
+  ListChecks,
+  Receipt,
+  RefreshCw,
   Shield,
   TrendingDown,
   TrendingUp,
   Wallet,
   Zap,
-  ArrowUpRight,
   Settings,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
@@ -20,10 +23,12 @@ import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
 import { Card, CardContent } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-import SimulationPanel from './SimulationPanel'
-import LiveAccountPanel from './LiveAccountPanel'
+import { ScrollArea } from './ui/scroll-area'
 import {
+  getAccountPositions,
+  getAccountTrades,
   getAllTraderOrders,
+  getOrders,
   getKalshiBalance,
   getKalshiPositions,
   getKalshiStatus,
@@ -35,6 +40,7 @@ import {
 } from '../services/api'
 
 type AccountsWorkspaceTab = 'overview' | 'sandbox' | 'live'
+type DeskView = 'overview' | 'positions' | 'activity'
 type LiveVenue = 'polymarket' | 'kalshi'
 const OPEN_PAPER_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
 
@@ -102,10 +108,43 @@ function normalizeDirection(raw: string | null | undefined): string {
   return direction
 }
 
+function tradeStatusClass(statusRaw: string): string {
+  const status = String(statusRaw || '').trim().toLowerCase()
+  if (status.includes('win') || status.includes('resolved_win') || status === 'closed_win') {
+    return 'border-emerald-500/40 text-emerald-300'
+  }
+  if (status.includes('loss') || status.includes('failed') || status === 'closed_loss') {
+    return 'border-red-500/40 text-red-300'
+  }
+  if (status.includes('open') || status.includes('pending')) {
+    return 'border-cyan-500/40 text-cyan-300'
+  }
+  return 'border-border/60 text-muted-foreground'
+}
+
+function liveOrderStatusClass(statusRaw: string): string {
+  const status = String(statusRaw || '').trim().toLowerCase()
+  if (status === 'filled' || status === 'executed' || status === 'complete' || status === 'completed') {
+    return 'border-emerald-500/40 text-emerald-300'
+  }
+  if (status === 'open' || status === 'pending' || status === 'partially_filled' || status === 'submitted') {
+    return 'border-cyan-500/40 text-cyan-300'
+  }
+  if (status === 'cancelled' || status === 'canceled') {
+    return 'border-amber-500/40 text-amber-300'
+  }
+  if (status === 'failed' || status === 'rejected') {
+    return 'border-red-500/40 text-red-300'
+  }
+  return 'border-border/60 text-muted-foreground'
+}
+
 export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
   const [accountMode, setAccountMode] = useAtom(accountModeAtom)
   const [selectedAccountId, setSelectedAccountId] = useAtom(selectedAccountIdAtom)
   const [workspaceTab, setWorkspaceTab] = useState<AccountsWorkspaceTab>(accountMode === 'live' ? 'live' : 'overview')
+  const [sandboxView, setSandboxView] = useState<DeskView>('overview')
+  const [liveView, setLiveView] = useState<DeskView>('overview')
 
   const { data: sandboxAccounts = [] } = useQuery({
     queryKey: ['simulation-accounts'],
@@ -329,7 +368,37 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     }
   }, [venueSnapshots])
 
-  const activeSandboxAccount = sandboxAccounts.find((account) => account.id === selectedAccountId)
+  const activeSandboxAccountId = useMemo(() => {
+    if (selectedAccountId && !selectedAccountId.startsWith('live:')) return selectedAccountId
+    return sandboxAccounts[0]?.id || null
+  }, [selectedAccountId, sandboxAccounts])
+
+  const activeSandboxAccount = useMemo(
+    () => sandboxAccounts.find((account) => account.id === activeSandboxAccountId) || null,
+    [sandboxAccounts, activeSandboxAccountId]
+  )
+
+  const { data: sandboxPositions = [] } = useQuery({
+    queryKey: ['accounts-panel', 'sandbox-positions', activeSandboxAccountId],
+    queryFn: () => (activeSandboxAccountId ? getAccountPositions(activeSandboxAccountId) : Promise.resolve([])),
+    enabled: workspaceTab === 'sandbox' && Boolean(activeSandboxAccountId),
+    refetchInterval: 10000,
+  })
+
+  const { data: sandboxTrades = [] } = useQuery({
+    queryKey: ['accounts-panel', 'sandbox-trades', activeSandboxAccountId],
+    queryFn: () => (activeSandboxAccountId ? getAccountTrades(activeSandboxAccountId, 250) : Promise.resolve([])),
+    enabled: workspaceTab === 'sandbox' && Boolean(activeSandboxAccountId),
+    refetchInterval: 10000,
+  })
+
+  const { data: liveOrders = [] } = useQuery({
+    queryKey: ['accounts-panel', 'live-orders'],
+    queryFn: () => getOrders(250),
+    enabled: workspaceTab === 'live' && polymarketReady,
+    refetchInterval: 10000,
+    retry: false,
+  })
 
   const activeContext = useMemo(() => {
     if (selectedAccountId?.startsWith('live:')) {
@@ -421,6 +490,135 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     liveMetrics.totalUnrealizedPnl,
   ])
 
+  const sandboxPositionRows = useMemo(() => {
+    return sandboxPositions
+      .map((position) => {
+        const quantity = toFiniteNumber(position.quantity)
+        const entryPrice = toFiniteNumber(position.entry_price)
+        const markPrice = position.current_price != null ? toFiniteNumber(position.current_price) : entryPrice
+        const entryCost = toFiniteNumber(position.entry_cost) || (quantity * entryPrice)
+        const marketValue = quantity * markPrice
+        const unrealizedPnl = toFiniteNumber(position.unrealized_pnl) || (marketValue - entryCost)
+        return {
+          ...position,
+          quantity,
+          entryPrice,
+          markPrice,
+          entryCost,
+          marketValue,
+          unrealizedPnl,
+        }
+      })
+      .sort((left, right) => Math.abs(right.marketValue) - Math.abs(left.marketValue))
+  }, [sandboxPositions])
+
+  const sandboxTradeRows = useMemo(() => {
+    return [...sandboxTrades].sort(
+      (left, right) => new Date(right.executed_at).getTime() - new Date(left.executed_at).getTime()
+    )
+  }, [sandboxTrades])
+
+  const livePositionRows = useMemo(() => {
+    const polymarketRows = tradingPositions.map((position) => {
+      const size = toFiniteNumber(position.size)
+      const markPrice = toFiniteNumber(position.current_price)
+      const entryPrice = toFiniteNumber(position.average_cost)
+      const marketValue = size * markPrice
+      const costBasis = size * entryPrice
+      const unrealizedPnl = toFiniteNumber(position.unrealized_pnl) || (marketValue - costBasis)
+      return {
+        id: `polymarket:${position.token_id}:${position.market_id}`,
+        venue: 'Polymarket' as const,
+        marketQuestion: String(position.market_question || '').trim() || position.market_id,
+        marketId: String(position.market_id || '').trim(),
+        outcome: normalizeDirection(position.outcome),
+        size,
+        entryPrice,
+        markPrice,
+        costBasis,
+        marketValue,
+        unrealizedPnl,
+      }
+    })
+
+    const kalshiRows = kalshiPositions.map((position) => {
+      const size = toFiniteNumber(position.size)
+      const markPrice = toFiniteNumber(position.current_price)
+      const entryPrice = toFiniteNumber(position.average_cost)
+      const marketValue = size * markPrice
+      const costBasis = size * entryPrice
+      const unrealizedPnl = toFiniteNumber(position.unrealized_pnl) || (marketValue - costBasis)
+      return {
+        id: `kalshi:${position.token_id}:${position.market_id}`,
+        venue: 'Kalshi' as const,
+        marketQuestion: String(position.market_question || '').trim() || position.market_id,
+        marketId: String(position.market_id || '').trim(),
+        outcome: normalizeDirection(position.outcome),
+        size,
+        entryPrice,
+        markPrice,
+        costBasis,
+        marketValue,
+        unrealizedPnl,
+      }
+    })
+
+    return [...polymarketRows, ...kalshiRows].sort((left, right) => Math.abs(right.marketValue) - Math.abs(left.marketValue))
+  }, [tradingPositions, kalshiPositions])
+
+  const liveOrderRows = useMemo(() => {
+    return [...liveOrders].sort(
+      (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+    )
+  }, [liveOrders])
+
+  const liveOpenOrderCount = useMemo(() => {
+    return liveOrderRows.filter((order) => {
+      const status = String(order.status || '').trim().toLowerCase()
+      return status === 'open' || status === 'pending' || status === 'partially_filled' || status === 'submitted'
+    }).length
+  }, [liveOrderRows])
+
+  const selectedSandboxOverlayOpen = activeSandboxAccount && sandboxMetrics.autotraderOverlay.accountId === activeSandboxAccount.id
+    ? sandboxMetrics.autotraderOverlay.openPositions
+    : 0
+  const selectedSandboxOverlayExposure = activeSandboxAccount && sandboxMetrics.autotraderOverlay.accountId === activeSandboxAccount.id
+    ? sandboxMetrics.autotraderOverlay.exposureUsd
+    : 0
+  const selectedSandboxOpenPositions = (activeSandboxAccount?.open_positions || 0) + selectedSandboxOverlayOpen
+  const selectedSandboxTotalPnl = (activeSandboxAccount?.total_pnl || 0) + (activeSandboxAccount?.unrealized_pnl || 0)
+
+  const activeLiveVenue: LiveVenue = selectedAccountId === 'live:kalshi' ? 'kalshi' : 'polymarket'
+  const activeLiveSnapshot = activeLiveVenue === 'kalshi' ? kalshiSnapshot : polymarketSnapshot
+  const activeLivePositions = useMemo(
+    () => livePositionRows.filter((row) => row.venue === (activeLiveVenue === 'kalshi' ? 'Kalshi' : 'Polymarket')),
+    [livePositionRows, activeLiveVenue]
+  )
+
+  const sandboxStrategyRows = useMemo(() => {
+    const rollup = new Map<string, { strategy: string; trades: number; pnl: number; notional: number }>()
+    for (const trade of sandboxTradeRows) {
+      const strategy = String(trade.strategy_type || 'unknown').trim() || 'unknown'
+      const current = rollup.get(strategy) || { strategy, trades: 0, pnl: 0, notional: 0 }
+      current.trades += 1
+      current.pnl += toFiniteNumber(trade.actual_pnl)
+      current.notional += toFiniteNumber(trade.total_cost)
+      rollup.set(strategy, current)
+    }
+    return Array.from(rollup.values()).sort((left, right) => Math.abs(right.pnl) - Math.abs(left.pnl))
+  }, [sandboxTradeRows])
+
+  const sandboxTradeStatusRows = useMemo(() => {
+    const rollup = new Map<string, number>()
+    for (const trade of sandboxTradeRows) {
+      const status = String(trade.status || 'unknown').trim().toLowerCase() || 'unknown'
+      rollup.set(status, (rollup.get(status) || 0) + 1)
+    }
+    return Array.from(rollup.entries())
+      .map(([status, count]) => ({ status, count }))
+      .sort((left, right) => right.count - left.count)
+  }, [sandboxTradeRows])
+
   const openSandboxDesk = (accountId?: string) => {
     if (accountId) {
       setSelectedAccountId(accountId)
@@ -432,23 +630,18 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
 
     setAccountMode('sandbox')
     setWorkspaceTab('sandbox')
+    setSandboxView('overview')
   }
 
   const openLiveDesk = (venue: LiveVenue = 'polymarket') => {
     setSelectedAccountId(`live:${venue}`)
     setAccountMode('live')
     setWorkspaceTab('live')
+    setLiveView('overview')
   }
 
-  const isOverview = workspaceTab === 'overview'
-
   return (
-    <div
-      className={cn(
-        'h-full flex min-h-0 flex-col',
-        isOverview ? 'gap-3' : 'gap-4 overflow-y-auto pr-1'
-      )}
-    >
+    <div className="h-full flex min-h-0 flex-col gap-3">
       <Card className="shrink-0 rounded-xl border border-border bg-card/60 shadow-none">
         <CardContent className="p-0">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/80 px-3 py-2.5">
@@ -472,15 +665,6 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setWorkspaceTab(accountMode === 'live' ? 'live' : 'sandbox')}
-                className="h-8 gap-1.5 bg-background/40 text-xs"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5" />
-                Open Active Desk
-              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -557,35 +741,31 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         </CardContent>
       </Card>
 
-      <div className="shrink-0 rounded-xl border border-border bg-card/40 px-3 py-2.5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">Accounts Workspace</p>
-            <p className="text-xs text-muted-foreground/90">
-              {WORKSPACE_TAB_CONFIG.find((tab) => tab.id === workspaceTab)?.description}
-            </p>
-          </div>
-          <div className="overflow-x-auto">
-            <div className="flex min-w-max items-center gap-1 rounded-lg border border-border/80 bg-background/70 p-1">
-              {WORKSPACE_TAB_CONFIG.map((tab) => (
-                <Button
-                  key={tab.id}
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setWorkspaceTab(tab.id)}
-                  className={cn(
-                    'h-7 gap-1.5 px-2.5 text-xs',
-                    workspaceTab === tab.id
-                      ? 'bg-primary/15 text-primary hover:bg-primary/20'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  <tab.icon className="h-3.5 w-3.5" />
-                  {tab.label}
-                </Button>
-              ))}
-            </div>
-          </div>
+      <div className="shrink-0 px-1 overflow-x-auto">
+        <div className="flex min-w-max items-center gap-1">
+          {WORKSPACE_TAB_CONFIG.map((tab) => (
+            <Button
+              key={tab.id}
+              variant="outline"
+              size="sm"
+              onClick={() => setWorkspaceTab(tab.id)}
+              className={cn(
+                'h-8 gap-1.5 text-xs',
+                workspaceTab === tab.id
+                  ? (
+                    tab.id === 'overview'
+                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400'
+                      : tab.id === 'sandbox'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-300'
+                        : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400'
+                  )
+                  : 'bg-card text-muted-foreground hover:text-foreground border-border'
+              )}
+            >
+              <tab.icon className="h-3.5 w-3.5" />
+              {tab.label}
+            </Button>
+          ))}
         </div>
       </div>
 
@@ -807,13 +987,650 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
       )}
 
       {workspaceTab === 'sandbox' && (
-        <div className="min-h-0 flex-1">
-          <SimulationPanel />
+        <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[250px_minmax(0,1fr)]">
+          <div className="hidden xl:flex min-h-0 flex-col rounded-lg border border-border/70 bg-card overflow-hidden">
+            <div className="shrink-0 border-b border-border/50 px-2.5 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sandbox Accounts</p>
+              <p className="text-[10px] text-muted-foreground">{sandboxAccounts.length} desks configured</p>
+            </div>
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="space-y-1.5 p-1.5">
+                {sandboxAccounts.length === 0 ? (
+                  <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">No sandbox accounts configured.</p>
+                ) : (
+                  sandboxAccounts.map((account) => {
+                    const isActive = activeSandboxAccountId === account.id
+                    const totalPnl = (account.total_pnl || 0) + (account.unrealized_pnl || 0)
+                    const autotraderPositions = sandboxMetrics.autotraderOverlay.accountId === account.id
+                      ? sandboxMetrics.autotraderOverlay.openPositions
+                      : 0
+                    return (
+                      <button
+                        key={account.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAccountId(account.id)
+                          setAccountMode('sandbox')
+                        }}
+                        className={cn(
+                          'w-full rounded-md px-2 py-1.5 text-left transition-colors',
+                          isActive ? 'bg-amber-500/15 text-foreground' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[11px] font-medium">{account.name}</p>
+                          <span className={cn('text-[10px] font-mono', totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {formatSignedUsd(totalPnl)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[9px] text-muted-foreground">
+                          {account.total_trades} trades · {(account.win_rate || 0).toFixed(1)}% WR
+                        </p>
+                        <p className="text-[9px] text-muted-foreground">
+                          {account.open_positions + autotraderPositions} open · {formatUsd(account.current_capital || 0)}
+                        </p>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <div className="min-h-0 flex flex-col gap-2">
+            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Active Desk</p>
+                <p className="truncate text-[12px] font-semibold">{activeSandboxAccount?.name || 'None'}</p>
+                <p className="text-[10px] text-muted-foreground">{activeSandboxAccountId ? activeSandboxAccountId : 'Select account'}</p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Open Positions</p>
+                <p className="text-[12px] font-mono">{selectedSandboxOpenPositions}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {selectedSandboxOverlayOpen > 0 ? `Includes ${selectedSandboxOverlayOpen} autotrader` : 'Manual + strategy fills'}
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Desk P&L</p>
+                <p className={cn('text-[12px] font-mono', selectedSandboxTotalPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                  {formatSignedUsd(selectedSandboxTotalPnl)}
+                </p>
+                <p className="text-[10px] text-muted-foreground">ROI {formatSignedPct(activeSandboxAccount?.roi_percent || 0)}</p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Deployable Cash</p>
+                <p className="text-[12px] font-mono">{formatUsd(Math.max(0, (activeSandboxAccount?.current_capital || 0) - selectedSandboxOverlayExposure))}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {selectedSandboxOverlayExposure > 0 ? `${formatUsd(selectedSandboxOverlayExposure)} auto reserved` : 'No auto reserve'}
+                </p>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-wrap items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSandboxView('overview')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  sandboxView === 'overview'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-300'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <LayoutDashboard className="h-3.5 w-3.5" />
+                Overview
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSandboxView('positions')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  sandboxView === 'positions'
+                    ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <Briefcase className="h-3.5 w-3.5" />
+                Positions
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSandboxView('activity')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  sandboxView === 'activity'
+                    ? 'bg-violet-500/20 text-violet-400 border-violet-500/30 hover:bg-violet-500/30 hover:text-violet-400'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <Receipt className="h-3.5 w-3.5" />
+                Trade Log
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openSandboxDesk(activeSandboxAccountId || undefined)}
+                className="ml-auto h-7 gap-1.5 text-[11px]"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Refresh Desk
+              </Button>
+            </div>
+
+            {sandboxView === 'overview' && (
+              <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+                <div className="min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                  <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Desk Snapshot</span>
+                    <span className="text-[10px] font-mono text-muted-foreground">{sandboxPositionRows.length} positions</span>
+                  </div>
+                  <ScrollArea className="h-[260px] xl:h-full">
+                    <table className="w-full text-[11px]">
+                      <thead className="sticky top-0 z-10 bg-background/95">
+                        <tr className="border-b border-border/70 text-muted-foreground">
+                          <th className="px-2 py-1.5 text-left">Market</th>
+                          <th className="px-2 py-1.5 text-right">Side</th>
+                          <th className="px-2 py-1.5 text-right">Qty</th>
+                          <th className="px-2 py-1.5 text-right">Entry</th>
+                          <th className="px-2 py-1.5 text-right">Mark</th>
+                          <th className="px-2 py-1.5 text-right">U-P&L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sandboxPositionRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-2 py-6 text-center text-muted-foreground">No open positions.</td>
+                          </tr>
+                        ) : (
+                          sandboxPositionRows.map((position) => (
+                            <tr key={position.id} className="border-b border-border/40">
+                              <td className="px-2 py-1.5">
+                                <p className="max-w-[360px] truncate">{position.market_question}</p>
+                                <p className="text-[9px] text-muted-foreground">{position.market_id}</p>
+                              </td>
+                              <td className="px-2 py-1.5 text-right font-mono">{position.side}</td>
+                              <td className="px-2 py-1.5 text-right font-mono">{position.quantity.toFixed(2)}</td>
+                              <td className="px-2 py-1.5 text-right font-mono">{position.entryPrice.toFixed(3)}</td>
+                              <td className="px-2 py-1.5 text-right font-mono">{position.markPrice.toFixed(3)}</td>
+                              <td className={cn('px-2 py-1.5 text-right font-mono', position.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                {formatSignedUsd(position.unrealizedPnl)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </ScrollArea>
+                </div>
+
+                <div className="min-h-0 flex flex-col gap-2">
+                  <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                    <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Strategy Mix</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{sandboxStrategyRows.length} rows</span>
+                    </div>
+                    <div className="space-y-1 p-2">
+                      {sandboxStrategyRows.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground">No trade history available yet.</p>
+                      ) : (
+                        sandboxStrategyRows.slice(0, 8).map((row) => (
+                          <div key={row.strategy} className="rounded border border-border/50 px-2 py-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-[11px]">{row.strategy}</span>
+                              <span className={cn('text-[10px] font-mono', row.pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                {formatSignedUsd(row.pnl)}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>{row.trades} trades</span>
+                              <span>Notional {formatUsd(row.notional)}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                    <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Lifecycle Mix</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{sandboxTradeRows.length} trades</span>
+                    </div>
+                    <div className="space-y-1 p-2">
+                      {sandboxTradeStatusRows.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground">No lifecycle data captured.</p>
+                      ) : (
+                        sandboxTradeStatusRows.map((row) => (
+                          <div key={row.status} className="rounded border border-border/50 px-2 py-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] uppercase">{row.status.replace(/_/g, ' ')}</span>
+                              <span className="text-[10px] font-mono text-muted-foreground">{row.count}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {sandboxView === 'positions' && (
+              <div className="flex-1 min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                <ScrollArea className="h-full min-h-0">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 z-10 bg-background/95">
+                      <tr className="border-b border-border/70 text-muted-foreground">
+                        <th className="px-2 py-1.5 text-left">Market</th>
+                        <th className="px-2 py-1.5 text-right">Side</th>
+                        <th className="px-2 py-1.5 text-right">Qty</th>
+                        <th className="px-2 py-1.5 text-right">Entry Px</th>
+                        <th className="px-2 py-1.5 text-right">Mark Px</th>
+                        <th className="px-2 py-1.5 text-right">Cost</th>
+                        <th className="px-2 py-1.5 text-right">Mkt Value</th>
+                        <th className="px-2 py-1.5 text-right">U-P&L</th>
+                        <th className="px-2 py-1.5 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sandboxPositionRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">No positions for this sandbox desk.</td>
+                        </tr>
+                      ) : (
+                        sandboxPositionRows.map((position) => (
+                          <tr key={position.id} className="border-b border-border/40">
+                            <td className="px-2 py-1.5">
+                              <p className="max-w-[420px] truncate">{position.market_question}</p>
+                              <p className="text-[9px] text-muted-foreground">{position.market_id}</p>
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono">{position.side}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{position.quantity.toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{position.entryPrice.toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{position.markPrice.toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(position.entryCost)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(position.marketValue)}</td>
+                            <td className={cn('px-2 py-1.5 text-right font-mono', position.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                              {formatSignedUsd(position.unrealizedPnl)}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <Badge variant="outline" className="h-4 px-1 text-[9px] uppercase">
+                                {position.status}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </ScrollArea>
+              </div>
+            )}
+
+            {sandboxView === 'activity' && (
+              <div className="flex-1 min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                <ScrollArea className="h-full min-h-0">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 z-10 bg-background/95">
+                      <tr className="border-b border-border/70 text-muted-foreground">
+                        <th className="px-2 py-1.5 text-left">Executed</th>
+                        <th className="px-2 py-1.5 text-left">Strategy</th>
+                        <th className="px-2 py-1.5 text-right">Notional</th>
+                        <th className="px-2 py-1.5 text-right">Expected</th>
+                        <th className="px-2 py-1.5 text-right">Actual P&L</th>
+                        <th className="px-2 py-1.5 text-right">Fees</th>
+                        <th className="px-2 py-1.5 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sandboxTradeRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-2 py-8 text-center text-muted-foreground">No trades for this sandbox desk.</td>
+                        </tr>
+                      ) : (
+                        sandboxTradeRows.map((trade) => (
+                          <tr key={trade.id} className="border-b border-border/40">
+                            <td className="px-2 py-1.5 text-[10px] text-muted-foreground">
+                              {new Date(trade.executed_at).toLocaleString()}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <p className="font-medium">{trade.strategy_type}</p>
+                              <p className="text-[9px] text-muted-foreground">{trade.opportunity_id}</p>
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(trade.total_cost)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(trade.expected_profit || 0)}</td>
+                            <td className={cn('px-2 py-1.5 text-right font-mono', toFiniteNumber(trade.actual_pnl) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                              {trade.actual_pnl == null ? '—' : formatSignedUsd(toFiniteNumber(trade.actual_pnl))}
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(trade.fees_paid || 0)}</td>
+                            <td className="px-2 py-1.5 text-right">
+                              <Badge variant="outline" className={cn('h-4 px-1 text-[9px] uppercase', tradeStatusClass(String(trade.status || 'unknown')))}>
+                                {String(trade.status || 'unknown').replace(/_/g, ' ')}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </ScrollArea>
+              </div>
+            )}
+          </div>
         </div>
       )}
       {workspaceTab === 'live' && (
-        <div className="min-h-0 flex-1">
-          <LiveAccountPanel />
+        <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[250px_minmax(0,1fr)]">
+          <div className="hidden xl:flex min-h-0 flex-col rounded-lg border border-border/70 bg-card overflow-hidden">
+            <div className="shrink-0 border-b border-border/50 px-2.5 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Live Venues</p>
+              <p className="text-[10px] text-muted-foreground">{liveMetrics.connectedVenues}/2 connected</p>
+            </div>
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="space-y-1.5 p-1.5">
+                {venueSnapshots.map((venue) => {
+                  const isActive = selectedAccountId === `live:${venue.id}` || (!selectedAccountId?.startsWith('live:') && venue.id === 'polymarket')
+                  return (
+                    <button
+                      key={venue.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedAccountId(`live:${venue.id}`)
+                        setAccountMode('live')
+                      }}
+                      className={cn(
+                        'w-full rounded-md px-2 py-1.5 text-left transition-colors',
+                        isActive
+                          ? 'bg-emerald-500/15 text-foreground'
+                          : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-medium">{venue.label}</p>
+                        <span className={cn('h-1.5 w-1.5 rounded-full', venue.connected ? 'bg-emerald-400' : 'bg-amber-400')} />
+                      </div>
+                      <p className="mt-0.5 text-[9px] text-muted-foreground">{venue.accountLabel}</p>
+                      <p className="text-[9px] text-muted-foreground">
+                        {formatUsd(venue.balance)} cash · {venue.openPositions} positions
+                      </p>
+                      <p className={cn('text-[9px] font-mono', venue.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                        {formatSignedUsd(venue.unrealizedPnl)}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <div className="min-h-0 flex flex-col gap-2">
+            <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Active Venue</p>
+                <p className="text-[12px] font-semibold">{activeLiveSnapshot.label}</p>
+                <p className={cn('text-[10px]', activeLiveSnapshot.connected ? 'text-emerald-400' : 'text-amber-400')}>
+                  {activeLiveSnapshot.connected ? 'Connected' : 'Disconnected'}
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Free Cash</p>
+                <p className="text-[12px] font-mono">{formatUsd(activeLiveSnapshot.available)}</p>
+                <p className="text-[10px] text-muted-foreground">Balance {formatUsd(activeLiveSnapshot.balance)}</p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Open Risk</p>
+                <p className="text-[12px] font-mono">{activeLiveSnapshot.openPositions} positions</p>
+                <p className="text-[10px] text-muted-foreground">Exposure {formatUsd(activeLiveSnapshot.exposure)}</p>
+              </div>
+              <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Recent Orders</p>
+                <p className="text-[12px] font-mono">{liveOpenOrderCount} open</p>
+                <p className="text-[10px] text-muted-foreground">{liveOrderRows.length} total cached</p>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-wrap items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLiveView('overview')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  liveView === 'overview'
+                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <LayoutDashboard className="h-3.5 w-3.5" />
+                Overview
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLiveView('positions')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  liveView === 'positions'
+                    ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <Briefcase className="h-3.5 w-3.5" />
+                Positions
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLiveView('activity')}
+                className={cn(
+                  'h-7 gap-1.5 text-[11px]',
+                  liveView === 'activity'
+                    ? 'bg-violet-500/20 text-violet-400 border-violet-500/30 hover:bg-violet-500/30 hover:text-violet-400'
+                    : 'bg-card text-muted-foreground hover:text-foreground border-border'
+                )}
+              >
+                <ListChecks className="h-3.5 w-3.5" />
+                Orders
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openLiveDesk(activeLiveVenue)}
+                className="ml-auto h-7 gap-1.5 text-[11px]"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Refresh Venue
+              </Button>
+            </div>
+
+            {liveView === 'overview' && (
+              <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                <div className="min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                  <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Venue Balance Sheet</span>
+                    <span className="text-[10px] font-mono text-muted-foreground">Fleet {formatUsd(liveMetrics.totalBalance)}</span>
+                  </div>
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="border-b border-border/60 text-muted-foreground">
+                        <th className="px-2 py-1.5 text-left">Venue</th>
+                        <th className="px-2 py-1.5 text-right">Balance</th>
+                        <th className="px-2 py-1.5 text-right">Available</th>
+                        <th className="px-2 py-1.5 text-right">Exposure</th>
+                        <th className="px-2 py-1.5 text-right">U-P&L</th>
+                        <th className="px-2 py-1.5 text-right">State</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {venueSnapshots.map((venue) => (
+                        <tr key={venue.id} className="border-b border-border/40">
+                          <td className="px-2 py-1.5">
+                            <p className="font-medium">{venue.label}</p>
+                            <p className="text-[9px] text-muted-foreground">{venue.accountLabel}</p>
+                          </td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatUsd(venue.balance)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatUsd(venue.available)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatUsd(venue.exposure)}</td>
+                          <td className={cn('px-2 py-1.5 text-right font-mono', venue.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {formatSignedUsd(venue.unrealizedPnl)}
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            <Badge variant="outline" className={cn('h-4 px-1 text-[9px]', venue.connected ? 'border-emerald-500/40 text-emerald-300' : 'border-amber-500/40 text-amber-300')}>
+                              {venue.connected ? 'Connected' : 'Offline'}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="min-h-0 flex flex-col gap-2">
+                  <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                    <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Polymarket Limits</span>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 p-2">
+                      <MetricPair label="Max Trade" value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_trade_size_usd))} />
+                      <MetricPair label="Max Daily" value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_daily_volume))} />
+                      <MetricPair label="Max Open" value={`${toFiniteNumber(tradingStatus?.limits.max_open_positions)}`} />
+                      <MetricPair label="Min Order" value={formatUsd(toFiniteNumber(tradingStatus?.limits.min_order_size_usd))} />
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                    <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Active Venue Book</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{activeLivePositions.length} positions</span>
+                    </div>
+                    <div className="space-y-1 p-2">
+                      {activeLivePositions.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground">No open positions on {activeLiveSnapshot.label}.</p>
+                      ) : (
+                        activeLivePositions.slice(0, 8).map((row) => (
+                          <div key={row.id} className="rounded border border-border/50 px-2 py-1">
+                            <p className="truncate text-[11px]" title={row.marketQuestion}>{row.marketQuestion}</p>
+                            <div className="mt-0.5 flex items-center justify-between text-[10px]">
+                              <span className="text-muted-foreground">{row.outcome} · {row.size.toFixed(2)}</span>
+                              <span className={cn('font-mono', row.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                {formatSignedUsd(row.unrealizedPnl)}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {liveView === 'positions' && (
+              <div className="flex-1 min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                <ScrollArea className="h-full min-h-0">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 z-10 bg-background/95">
+                      <tr className="border-b border-border/70 text-muted-foreground">
+                        <th className="px-2 py-1.5 text-left">Market</th>
+                        <th className="px-2 py-1.5 text-right">Venue</th>
+                        <th className="px-2 py-1.5 text-right">Side</th>
+                        <th className="px-2 py-1.5 text-right">Size</th>
+                        <th className="px-2 py-1.5 text-right">Avg</th>
+                        <th className="px-2 py-1.5 text-right">Mark</th>
+                        <th className="px-2 py-1.5 text-right">Cost</th>
+                        <th className="px-2 py-1.5 text-right">Mkt Value</th>
+                        <th className="px-2 py-1.5 text-right">U-P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {livePositionRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">No live positions across connected venues.</td>
+                        </tr>
+                      ) : (
+                        livePositionRows.map((row) => (
+                          <tr key={row.id} className="border-b border-border/40">
+                            <td className="px-2 py-1.5">
+                              <p className="max-w-[420px] truncate">{row.marketQuestion}</p>
+                              <p className="text-[9px] text-muted-foreground">{row.marketId}</p>
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <Badge variant="outline" className={cn('h-4 px-1 text-[9px]', row.venue === 'Polymarket' ? 'border-cyan-500/40 text-cyan-300' : 'border-indigo-500/40 text-indigo-300')}>
+                                {row.venue}
+                              </Badge>
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono">{row.outcome}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{row.size.toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{row.entryPrice.toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{row.markPrice.toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(row.costBasis)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{formatUsd(row.marketValue)}</td>
+                            <td className={cn('px-2 py-1.5 text-right font-mono', row.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                              {formatSignedUsd(row.unrealizedPnl)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </ScrollArea>
+              </div>
+            )}
+
+            {liveView === 'activity' && (
+              <div className="flex-1 min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
+                <ScrollArea className="h-full min-h-0">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 z-10 bg-background/95">
+                      <tr className="border-b border-border/70 text-muted-foreground">
+                        <th className="px-2 py-1.5 text-left">Created</th>
+                        <th className="px-2 py-1.5 text-left">Market</th>
+                        <th className="px-2 py-1.5 text-right">Side</th>
+                        <th className="px-2 py-1.5 text-right">Type</th>
+                        <th className="px-2 py-1.5 text-right">Size</th>
+                        <th className="px-2 py-1.5 text-right">Price</th>
+                        <th className="px-2 py-1.5 text-right">Filled</th>
+                        <th className="px-2 py-1.5 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveOrderRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="px-2 py-8 text-center text-muted-foreground">No live order history available.</td>
+                        </tr>
+                      ) : (
+                        liveOrderRows.map((order) => (
+                          <tr key={order.id} className="border-b border-border/40">
+                            <td className="px-2 py-1.5 text-[10px] text-muted-foreground">
+                              {new Date(order.created_at).toLocaleString()}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <p className="max-w-[360px] truncate">{order.market_question || order.token_id}</p>
+                              <p className="text-[9px] text-muted-foreground">{order.token_id}</p>
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono">{order.side}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{order.order_type}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{toFiniteNumber(order.size).toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{toFiniteNumber(order.price).toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono">{toFiniteNumber(order.filled_size).toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right">
+                              <Badge variant="outline" className={cn('h-4 px-1 text-[9px] uppercase', liveOrderStatusClass(order.status))}>
+                                {order.status}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </ScrollArea>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

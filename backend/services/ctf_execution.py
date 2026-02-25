@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from config import settings
 from services.polymarket import polymarket_client
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from utils.converters import safe_float
 from utils.logger import get_logger
 
@@ -215,15 +215,15 @@ class CTFExecutionService:
     async def _resolve_wallet_context(self) -> dict[str, str]:
         from eth_account import Account
 
-        private_key, _, _, _, _ = await trading_service._resolve_polymarket_credentials()
+        private_key, _, _, _, _ = await live_execution_service._resolve_polymarket_credentials()
         if not private_key:
             raise RuntimeError("Missing Polymarket private key for CTF execution")
 
-        eoa = str(getattr(trading_service, "_eoa_address", "") or "").strip()
+        eoa = str(getattr(live_execution_service, "_eoa_address", "") or "").strip()
         if not eoa:
             eoa = Account.from_key(private_key).address
 
-        execution_wallet = str(trading_service.get_execution_wallet_address() or "").strip()
+        execution_wallet = str(live_execution_service.get_execution_wallet_address() or "").strip()
         if not execution_wallet:
             execution_wallet = eoa
 
@@ -632,7 +632,7 @@ class CTFExecutionService:
         wallet_address: str | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        execution_wallet = str(wallet_address or trading_service.get_execution_wallet_address() or "").strip().lower()
+        execution_wallet = str(wallet_address or live_execution_service.get_execution_wallet_address() or "").strip().lower()
         if not execution_wallet:
             return {
                 "wallet_address": "",

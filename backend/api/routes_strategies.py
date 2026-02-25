@@ -6,6 +6,7 @@ This router provides CRUD, validation, reload, template, and docs endpoints.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 import uuid
 from datetime import datetime
@@ -23,6 +24,7 @@ from models.database import (
     get_db_session,
 )
 from services.opportunity_strategy_catalog import (
+    build_system_opportunity_strategy_rows,
     ensure_system_opportunity_strategies_seeded,
 )
 from services.strategy_loader import (
@@ -68,9 +70,23 @@ def _normalize_strategy_config_for_source(source_key: str, config: Optional[dict
     return StrategySDK.normalize_strategy_retention_config(payload)
 
 
+def _dedupe_param_fields(raw_fields: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for field in raw_fields:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        deduped.append(dict(field))
+        seen.add(key)
+    return deduped
+
+
 def _merge_config_schemas(base_schema: dict, extra_schema: dict) -> dict:
     merged = dict(base_schema or {})
-    base_fields = list(merged.get("param_fields") or [])
+    base_fields = _dedupe_param_fields(list(merged.get("param_fields") or []))
     existing_keys = {str(field.get("key") or "").strip() for field in base_fields if isinstance(field, dict)}
     for field in list((extra_schema or {}).get("param_fields") or []):
         if not isinstance(field, dict):
@@ -190,6 +206,46 @@ def _infer_strategy_type(capabilities: dict) -> str:
     return "detect"
 
 
+@lru_cache(maxsize=1)
+def _system_seed_default_config_map() -> dict[str, dict]:
+    rows = build_system_opportunity_strategy_rows()
+    mapping: dict[str, dict] = {}
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        config = row.get("config")
+        if not slug or not isinstance(config, dict):
+            continue
+        mapping[slug] = dict(config)
+    return mapping
+
+
+def _resolved_strategy_config(row: Strategy) -> dict:
+    source_key = str(row.source_key or "scanner").strip().lower()
+    slug = str(row.slug or "").strip().lower()
+    defaults: dict = {}
+
+    if slug:
+        loaded = strategy_loader.get_strategy(slug)
+        instance = getattr(loaded, "instance", None) if loaded is not None else None
+        if instance is not None:
+            configured = getattr(instance, "config", None)
+            if isinstance(configured, dict):
+                defaults = dict(configured)
+            else:
+                declared = getattr(instance, "default_config", None)
+                if isinstance(declared, dict):
+                    defaults = dict(declared)
+
+    if not defaults and bool(row.is_system):
+        seed_defaults = _system_seed_default_config_map().get(slug)
+        if isinstance(seed_defaults, dict):
+            defaults = dict(seed_defaults)
+
+    overrides = dict(row.config or {})
+    merged = {**defaults, **overrides}
+    return _normalize_strategy_config_for_source(source_key, merged)
+
+
 # ---------------------------------------------------------------------------
 # Serialisation — unified response from Strategy table
 # ---------------------------------------------------------------------------
@@ -199,7 +255,7 @@ def _strategy_to_dict(row: Strategy) -> dict:
     """Convert a Strategy ORM row to the API response dict."""
     capabilities = _detect_capabilities(row.source_code or "")
     source_key = row.source_key or "scanner"
-    normalized_config = _normalize_strategy_config_for_source(source_key, dict(row.config or {}))
+    normalized_config = _resolved_strategy_config(row)
     normalized_schema = _merge_config_schemas(
         dict(row.config_schema or {}),
         StrategySDK.strategy_retention_config_schema(),

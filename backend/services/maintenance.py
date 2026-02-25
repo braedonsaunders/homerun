@@ -130,6 +130,48 @@ class MaintenanceService:
     async def get_database_stats(self) -> dict:
         """Get statistics about database contents"""
         async with AsyncSessionLocal() as session:
+            db_size_bytes: int | None = None
+            total_rows: int | None = None
+            estimated_total_rows: int | None = None
+            bind = session.get_bind()
+            if bind is not None and bind.dialect.name == "postgresql":
+                db_size_result = await session.execute(select(func.pg_database_size(func.current_database())))
+                db_size_value = db_size_result.scalar()
+                db_size_bytes = int(db_size_value) if db_size_value is not None else 0
+
+                estimated_total_rows_result = await session.execute(
+                    text("SELECT COALESCE(SUM(n_live_tup)::bigint, 0) FROM pg_stat_user_tables")
+                )
+                total_rows_value = estimated_total_rows_result.scalar()
+                estimated_total_rows = int(total_rows_value) if total_rows_value is not None else 0
+
+                exact_total_rows_result = await session.execute(
+                    text(
+                        """
+SELECT COALESCE(
+    SUM(
+        (
+            xpath(
+                '/row/c/text()',
+                query_to_xml(
+                    format('SELECT count(*) AS c FROM %I.%I', schemaname, tablename),
+                    true,
+                    true,
+                    ''
+                )
+            )
+        )[1]::text::bigint
+    ),
+    0
+) AS total_rows
+FROM pg_tables
+WHERE schemaname = 'public'
+"""
+                    )
+                )
+                total_rows_value = exact_total_rows_result.scalar()
+                total_rows = int(total_rows_value) if total_rows_value is not None else 0
+
             # Count simulation trades by status
             trade_counts = {}
             for status in TradeStatus:
@@ -139,52 +181,66 @@ class MaintenanceService:
                 trade_counts[status.value] = result.scalar() or 0
 
             # Count total simulation trades
-            total_trades = await session.execute(select(func.count(SimulationTrade.id)))
+            total_trades_result = await session.execute(select(func.count(SimulationTrade.id)))
+            total_trades = int(total_trades_result.scalar() or 0)
 
             # Count simulation positions
-            total_positions = await session.execute(select(func.count(SimulationPosition.id)))
-            open_positions = await session.execute(
+            total_positions_result = await session.execute(select(func.count(SimulationPosition.id)))
+            total_positions = int(total_positions_result.scalar() or 0)
+            open_positions_result = await session.execute(
                 select(func.count(SimulationPosition.id)).where(SimulationPosition.status == TradeStatus.OPEN)
             )
+            open_positions = int(open_positions_result.scalar() or 0)
 
             # Count wallet trades
-            wallet_trades = await session.execute(select(func.count(WalletTrade.id)))
-            wallet_activity_rollups = await session.execute(select(func.count(WalletActivityRollup.id)))
-            trade_signal_emissions = await session.execute(select(func.count(TradeSignalEmission.id)))
+            wallet_trades_result = await session.execute(select(func.count(WalletTrade.id)))
+            wallet_trades = int(wallet_trades_result.scalar() or 0)
+            wallet_activity_rollups_result = await session.execute(select(func.count(WalletActivityRollup.id)))
+            wallet_activity_rollups = int(wallet_activity_rollups_result.scalar() or 0)
+            trade_signal_emissions_result = await session.execute(select(func.count(TradeSignalEmission.id)))
+            trade_signal_emissions = int(trade_signal_emissions_result.scalar() or 0)
 
             # Count opportunity history
-            opportunities = await session.execute(select(func.count(OpportunityHistory.id)))
+            opportunities_result = await session.execute(select(func.count(OpportunityHistory.id)))
+            opportunities = int(opportunities_result.scalar() or 0)
 
             # Count anomalies
-            anomalies = await session.execute(select(func.count(DetectedAnomaly.id)))
-            resolved_anomalies = await session.execute(
+            anomalies_result = await session.execute(select(func.count(DetectedAnomaly.id)))
+            anomalies = int(anomalies_result.scalar() or 0)
+            resolved_anomalies_result = await session.execute(
                 select(func.count(DetectedAnomaly.id)).where(DetectedAnomaly.is_resolved)
             )
+            resolved_anomalies = int(resolved_anomalies_result.scalar() or 0)
 
             # Get oldest and newest trade dates
             oldest_trade = await session.execute(select(func.min(SimulationTrade.executed_at)))
             newest_trade = await session.execute(select(func.max(SimulationTrade.executed_at)))
+            oldest_trade_at = oldest_trade.scalar()
+            newest_trade_at = newest_trade.scalar()
 
             return {
+                "db_size_bytes": db_size_bytes,
+                "total_rows": total_rows,
+                "estimated_total_rows": estimated_total_rows,
                 "simulation_trades": {
-                    "total": total_trades.scalar() or 0,
+                    "total": total_trades,
                     "by_status": trade_counts,
                 },
                 "simulation_positions": {
-                    "total": total_positions.scalar() or 0,
-                    "open": open_positions.scalar() or 0,
+                    "total": total_positions,
+                    "open": open_positions,
                 },
-                "wallet_trades": wallet_trades.scalar() or 0,
-                "wallet_activity_rollups": wallet_activity_rollups.scalar() or 0,
-                "trade_signal_emissions": trade_signal_emissions.scalar() or 0,
-                "opportunity_history": opportunities.scalar() or 0,
+                "wallet_trades": wallet_trades,
+                "wallet_activity_rollups": wallet_activity_rollups,
+                "trade_signal_emissions": trade_signal_emissions,
+                "opportunity_history": opportunities,
                 "anomalies": {
-                    "total": anomalies.scalar() or 0,
-                    "resolved": resolved_anomalies.scalar() or 0,
+                    "total": anomalies,
+                    "resolved": resolved_anomalies,
                 },
                 "date_range": {
-                    "oldest_trade": oldest_trade.scalar().isoformat() if oldest_trade.scalar() else None,
-                    "newest_trade": newest_trade.scalar().isoformat() if newest_trade.scalar() else None,
+                    "oldest_trade": oldest_trade_at.isoformat() if oldest_trade_at else None,
+                    "newest_trade": newest_trade_at.isoformat() if newest_trade_at else None,
                 },
             }
 

@@ -2453,6 +2453,7 @@ class Trader(Base):
     source_configs_json = Column(JSON, default=list)
     risk_limits_json = Column(JSON, default=dict)
     metadata_json = Column(JSON, default=dict)
+    mode = Column(String, nullable=False, default="paper")
     is_enabled = Column(Boolean, default=True)
     is_paused = Column(Boolean, default=False)
     interval_seconds = Column(Integer, default=60)

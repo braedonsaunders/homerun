@@ -24,6 +24,11 @@ interface AICopilotPanelProps {
   contextType?: string
   contextId?: string
   contextLabel?: string
+  seedPrompt?: {
+    id: number
+    prompt: string
+    autoSend: boolean
+  } | null
 }
 
 export default function AICopilotPanel({
@@ -32,13 +37,16 @@ export default function AICopilotPanel({
   contextType,
   contextId,
   contextLabel,
+  seedPrompt,
 }: AICopilotPanelProps) {
   const [messages, setMessages] = useState<AIChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [isExpanded, setIsExpanded] = useState(false)
+  const [isSessionReady, setIsSessionReady] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const lastSeedPromptIdRef = useRef<number | null>(null)
   const sessionStorageKey = useMemo(() => {
     const ctxType = contextType || 'general'
     const ctxId = contextId || 'default'
@@ -60,12 +68,17 @@ export default function AICopilotPanel({
   }, [isOpen])
 
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen) {
+      setIsSessionReady(false)
+      return
+    }
     let cancelled = false
+    setIsSessionReady(false)
     const existingSessionId = window.localStorage.getItem(sessionStorageKey)
     if (!existingSessionId) {
       setSessionId(null)
       setMessages([])
+      setIsSessionReady(true)
       return
     }
 
@@ -78,12 +91,14 @@ export default function AICopilotPanel({
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
         setMessages(restored)
+        setIsSessionReady(true)
       })
       .catch(() => {
         if (cancelled) return
         window.localStorage.removeItem(sessionStorageKey)
         setSessionId(null)
         setMessages([])
+        setIsSessionReady(true)
       })
 
     return () => {
@@ -129,6 +144,24 @@ export default function AICopilotPanel({
     setInput('')
     chatMutation.mutate(trimmed)
   }
+
+  useEffect(() => {
+    if (!isOpen || !isSessionReady || !seedPrompt) return
+    if (lastSeedPromptIdRef.current === seedPrompt.id) return
+    lastSeedPromptIdRef.current = seedPrompt.id
+
+    const prompt = String(seedPrompt.prompt || '').trim()
+    if (!prompt) return
+
+    if (!seedPrompt.autoSend || chatMutation.isPending) {
+      setInput(prompt)
+      setTimeout(() => inputRef.current?.focus(), 40)
+      return
+    }
+
+    setMessages((prev) => [...prev, { role: 'user', content: prompt }])
+    chatMutation.mutate(prompt)
+  }, [isOpen, isSessionReady, seedPrompt, chatMutation])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -305,9 +338,8 @@ export default function AICopilotPanel({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask about this opportunity..."
-            rows={1}
-            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none max-h-24"
-            style={{ minHeight: '24px' }}
+            rows={3}
+            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none min-h-[68px] max-h-40"
           />
           <Button
             onClick={handleSend}

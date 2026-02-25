@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from services.opportunity_recorder import opportunity_recorder
 from services.param_optimizer import param_optimizer
-from services.strategy_loader import strategy_loader
 from services.validation_service import validation_service
 from utils.logger import get_logger
 
@@ -110,20 +109,6 @@ class CodeBacktestOptimizeRequest(BaseModel):
     train_ratio: float = Field(default=0.75, gt=0.1, lt=0.95)
     top_k: int = Field(default=10, ge=1, le=200)
 
-
-def _get_combinatorial_validation_stats() -> dict[str, Any]:
-    for strategy in strategy_loader.get_all_instances():
-        st = getattr(strategy, "strategy_type", None)
-        st_value = getattr(st, "value", st)
-        if st_value == "combinatorial" and hasattr(strategy, "get_validation_stats"):
-            try:
-                return strategy.get_validation_stats()
-            except Exception:
-                logger.warning("Failed to get combinatorial validation stats")
-                return {}
-    return {}
-
-
 _LIVE_TRUTH_EXPORT_ARTIFACTS = {
     "summary_json",
     "report_jsonl",
@@ -148,7 +133,6 @@ async def get_validation_overview():
         decay_30d = await opportunity_recorder.get_decay_analysis(days=30)
         calibration = await validation_service.compute_calibration_metrics(days=90)
         calibration_trend = await validation_service.compute_calibration_trend(days=90, bucket_days=7)
-        combinatorial_validation = _get_combinatorial_validation_stats()
         strategy_health = await validation_service.get_strategy_health()
         guardrail_config = await validation_service.get_guardrail_config()
         trader_orchestrator_execution = await validation_service.compute_trader_orchestrator_execution_metrics(days=30)
@@ -167,7 +151,6 @@ async def get_validation_overview():
             "decay_30d": decay_30d,
             "calibration_90d": calibration,
             "calibration_trend_90d": calibration_trend,
-            "combinatorial_validation": combinatorial_validation,
             "strategy_health": strategy_health,
             "guardrail_config": guardrail_config,
             "trader_orchestrator_execution_30d": trader_orchestrator_execution,

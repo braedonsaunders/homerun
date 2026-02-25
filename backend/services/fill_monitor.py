@@ -94,11 +94,11 @@ class FillMonitor:
         if self._ws_registered:
             return
         try:
-            from services.trading import trading_service
+            from services.live_execution_service import live_execution_service
             from services.wallet_ws_monitor import wallet_ws_monitor
 
-            if trading_service.is_ready():
-                wallet_addr = trading_service.get_execution_wallet_address()
+            if live_execution_service.is_ready():
+                wallet_addr = live_execution_service.get_execution_wallet_address()
                 if wallet_addr:
                     wallet_ws_monitor.add_wallet(wallet_addr)
                     wallet_ws_monitor.add_callback(self._on_ws_fill)
@@ -135,12 +135,12 @@ class FillMonitor:
     async def _check_fills(self):
         """Check for new fills on our orders."""
         try:
-            from services.trading import trading_service
+            from services.live_execution_service import live_execution_service
 
-            if not trading_service.is_ready():
+            if not live_execution_service.is_ready():
                 return
 
-            orders = await trading_service.get_open_orders()
+            orders = await live_execution_service.get_open_orders()
             for order in orders:
                 if order.filled_size > 0 and order.id not in self._known_fills:
                     fill = FillInfo(

@@ -3,23 +3,26 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtom, useAtomValue } from 'jotai'
+import { Liveline } from 'liveline'
+import type { LivelinePoint } from 'liveline'
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
-  Copy,
   ExternalLink,
-  Filter,
   Loader2,
-  Maximize2,
+  PieChart,
   Play,
   Plus,
   Settings,
   ShieldAlert,
   Sparkles,
   Square,
+  Trophy,
+  TrendingUp,
   Zap,
 } from 'lucide-react'
 import {
@@ -27,6 +30,7 @@ import {
   createTrader,
   deleteTrader,
   getAllTraderOrders,
+  getTraderMarketHistory,
   getCryptoMarkets,
   type CryptoMarket,
   getTraderOrders,
@@ -40,7 +44,6 @@ import {
   getTraderSources,
   getSimulationAccounts,
   getTraders,
-  getWallets,
   createCopyConfig,
   disableCopyConfig,
   runTraderOnce,
@@ -69,8 +72,9 @@ import {
   type ActiveCopyMode,
   type CopySourceType,
   type DiscoverySettings,
+  type TraderOrchestratorConfig,
+  updateTraderOrchestratorSettings,
 } from '../services/api'
-import { discoveryApi } from '../services/discoveryApi'
 import { cn } from '../lib/utils'
 import { getOpportunityPlatformLinks, getTraderOrderPlatformLinks } from '../lib/marketUrls'
 import { selectedAccountIdAtom, themeAtom } from '../store/atoms'
@@ -88,11 +92,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { FlashNumber } from './AnimatedNumber'
+import Sparkline from './Sparkline'
 import StrategyConfigForm from './StrategyConfigForm'
-import { CryptoMarketCard } from './CryptoMarketsPanel'
 
 type FeedFilter = 'all' | 'decision' | 'order' | 'event'
 type TradeStatusFilter = 'all' | 'open' | 'resolved' | 'failed'
+type DecisionOutcomeFilter = 'all' | 'selected' | 'blocked' | 'skipped'
 type AllBotsTab = 'overview' | 'trades' | 'positions'
 type TradeAction = 'BUY' | 'SELL'
 type DirectionSide = 'YES' | 'NO'
@@ -121,11 +126,23 @@ type ActivityRow = {
   tone: 'neutral' | 'positive' | 'negative' | 'warning'
 }
 
+type OverviewTrendBucket = {
+  key: string
+  label: string
+  orders: number
+  selected: number
+  resolvedPnl: number
+  failed: number
+  warnings: number
+  cumulativeResolvedPnl: number
+}
+
 type PositionBookRow = {
   key: string
   traderId: string
   traderName: string
   marketId: string
+  marketAliases: string[]
   marketQuestion: string
   sourceSummary: string
   executionSummary: string
@@ -150,6 +167,34 @@ type PositionBookRow = {
   }
 }
 
+type BotMarketModalKind = 'trade' | 'position'
+
+type BotMarketModalScope = {
+  kind: BotMarketModalKind
+  traderId: string | null
+  traderName: string
+  marketId: string
+  marketIds: string[]
+  marketQuestion: string
+  directionSide: DirectionSide | null
+  directionLabel: string
+  anchorOrderId: string | null
+  sourceSummary: string
+  statusSummary: string
+  modeSummary: string
+  executionSummary: string
+  outcomeSummary: string | null
+  links: {
+    polymarket: string | null
+    kalshi: string | null
+  }
+}
+
+type BotMarketModalState = {
+  market: CryptoMarket | null
+  scope: BotMarketModalScope
+}
+
 type TraderRuntimeStatus = 'running' | 'paused_engine' | 'disabled'
 
 type TraderStatusPresentation = {
@@ -160,28 +205,75 @@ type TraderStatusPresentation = {
   badgeClassName: string
 }
 
-const CRYPTO_STRATEGY_MODES = ['auto', 'directional', 'pure_arb', 'rebalance'] as const
-const CRYPTO_ASSET_OPTIONS = ['BTC', 'ETH', 'SOL', 'XRP'] as const
+type PerformanceBucketRow = {
+  key: string
+  label: string
+  orders: number
+  open: number
+  resolved: number
+  wins: number
+  losses: number
+  failed: number
+  resolvedNotional: number
+  pnl: number
+  roiPercent: number
+  fullLosses: number
+}
+
+type StrategyParamGroupKey = 'scope' | 'timing' | 'entry' | 'sizing' | 'exit' | 'risk' | 'advanced'
+
+type StrategyParamGroup = {
+  key: StrategyParamGroupKey
+  label: string
+  fields: Array<Record<string, unknown>>
+}
+
+type DynamicStrategyParamSectionKind = 'strategy' | 'signal_filters' | 'copy_trading'
+
+type DynamicStrategyParamSection = {
+  sectionKey: string
+  sourceLabel: string
+  strategyLabel: string
+  groups: StrategyParamGroup[]
+  fieldKeys: string[]
+  values: Record<string, unknown>
+  kind: DynamicStrategyParamSectionKind
+}
+
 const CRYPTO_STRATEGY_OPTIONS = [
-  { key: 'btc_eth_highfreq', label: 'Crypto High Frequency', timeframe: null },
-  { key: 'crypto_spike_reversion', label: 'Crypto Spike Reversion', timeframe: null },
+  { key: 'btc_eth_highfreq', label: 'Crypto High Frequency' },
+  { key: 'crypto_spike_reversion', label: 'Crypto Spike Reversion' },
 ] as const
-const CRYPTO_TIMEFRAME_OPTIONS = ['5m', '15m', '1h', '4h'] as const
-const CRYPTO_MODE_PARAM_KEYS = ['strategy_mode', 'mode'] as const
-const CRYPTO_INCLUDE_ASSET_PARAM_KEYS = ['include_assets'] as const
-const CRYPTO_EXCLUDE_ASSET_PARAM_KEYS = ['exclude_assets'] as const
-const CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS = ['include_timeframes'] as const
-const CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS = ['exclude_timeframes'] as const
+const PERFORMANCE_TIMEFRAME_ORDER: Record<string, number> = { '5m': 0, '15m': 1, '1h': 2, '4h': 3 }
+const PERFORMANCE_MODE_ORDER: Record<string, number> = {
+  auto: 0,
+  directional: 1,
+  pure_arb: 2,
+  rebalance: 3,
+  dump_hedge: 4,
+  pre_placed_limits: 5,
+  directional_edge: 6,
+}
+const STRATEGY_PARAM_GROUP_ORDER = [
+  'scope',
+  'timing',
+  'entry',
+  'sizing',
+  'exit',
+  'risk',
+  'advanced',
+] as const
+const STRATEGY_PARAM_GROUP_LABELS: Record<StrategyParamGroupKey, string> = {
+  scope: 'Scope & Modes',
+  timing: 'Timing & Freshness',
+  entry: 'Entry Filters',
+  sizing: 'Sizing',
+  exit: 'Exit Controls',
+  risk: 'Risk Guards',
+  advanced: 'Advanced',
+}
 type TradersScopeMode = 'tracked' | 'pool' | 'individual' | 'group'
 type TradingScheduleDay = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'
-
-type TraderAdvancedConfig = {
-  strategyMode: string
-  cryptoAssetsCsv: string
-  cryptoExcludedAssetsCsv: string
-  cryptoIncludedTimeframesCsv: string
-  cryptoExcludedTimeframesCsv: string
-}
 
 type TradingScheduleDraft = {
   enabled: boolean
@@ -220,6 +312,33 @@ type TraderSignalFilters = {
   individual_trade_max_age_minutes: number
 }
 
+type GlobalSettingsDraft = {
+  runIntervalSeconds: string
+  maxGrossExposureUsd: string
+  maxDailyLossUsd: string
+  maxOrdersPerCycle: string
+  pendingExitMaxAllowed: string
+  pendingExitIdentityGuardEnabled: boolean
+  pendingExitTerminalStatuses: string
+  enforceAllowAveragingOff: boolean
+  minCooldownSeconds: string
+  maxConsecutiveLossesCap: string
+  maxOpenOrdersCap: string
+  maxOpenPositionsCap: string
+  maxTradeNotionalUsdCap: string
+  maxOrdersPerCycleCap: string
+  enforceHaltOnConsecutiveLosses: boolean
+  liveMarketContextEnabled: boolean
+  liveMarketHistoryWindowSeconds: string
+  liveMarketHistoryFidelitySeconds: string
+  liveMarketHistoryMaxPoints: string
+  liveMarketContextTimeoutSeconds: string
+  liveProviderHealthWindowSeconds: string
+  liveProviderHealthMinErrors: string
+  liveProviderHealthBlockSeconds: string
+  traderCycleTimeoutSeconds: string
+}
+
 const DEFAULT_COPY_TRADING: CopyTradingFormState = {
   copy_mode_type: 'disabled',
   individual_wallet: '',
@@ -244,6 +363,41 @@ const DEFAULT_SIGNAL_FILTERS: TraderSignalFilters = {
   individual_trade_min_confidence: 0.62,
   individual_trade_max_age_minutes: 180,
 }
+const DEFAULT_ORCHESTRATOR_GLOBAL_RISK = {
+  max_gross_exposure_usd: 5000,
+  max_daily_loss_usd: 500,
+  max_orders_per_cycle: 50,
+} as const
+const DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME = {
+  pending_live_exit_guard: {
+    max_pending_exits: 0,
+    identity_guard_enabled: true,
+    terminal_statuses: ['filled', 'superseded_resolution', 'superseded_external', 'cancelled'],
+  },
+  live_risk_clamps: {
+    enforce_allow_averaging_off: true,
+    min_cooldown_seconds: 90,
+    max_consecutive_losses_cap: 3,
+    max_open_orders_cap: 6,
+    max_open_positions_cap: 4,
+    max_trade_notional_usd_cap: 200,
+    max_orders_per_cycle_cap: 4,
+    enforce_halt_on_consecutive_losses: true,
+  },
+  live_market_context: {
+    enabled: true,
+    history_window_seconds: 7200,
+    history_fidelity_seconds: 300,
+    max_history_points: 120,
+    timeout_seconds: 4,
+  },
+  live_provider_health: {
+    window_seconds: 180,
+    min_errors: 2,
+    block_seconds: 120,
+  },
+  trader_cycle_timeout_seconds: null as number | null,
+} as const
 const TRADING_SCHEDULE_DAYS: TradingScheduleDay[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const TRADING_SCHEDULE_WEEKDAYS: TradingScheduleDay[] = ['mon', 'tue', 'wed', 'thu', 'fri']
 const TRADING_SCHEDULE_WEEKENDS: TradingScheduleDay[] = ['sat', 'sun']
@@ -358,53 +512,101 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function isFixedTimeframeCryptoStrategyKey(value: string): boolean {
-  const key = String(value || '').trim().toLowerCase()
-  return CRYPTO_STRATEGY_OPTIONS.some((option) => option.key === key && Boolean(option.timeframe))
+function clampNumber(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(max, value))
 }
 
-function normalizeCryptoStrategyMode(
-  value: unknown,
-  allowedModes: string[] = [...CRYPTO_STRATEGY_MODES],
-  fallback = 'auto'
-): string {
-  const normalizedAllowed: string[] = []
+function normalizePendingExitTerminalStatusesCsv(value: string): string[] {
   const seen = new Set<string>()
-  for (const raw of allowedModes) {
-    const candidate = String(raw || '').trim().toLowerCase()
-    if (!candidate || seen.has(candidate)) continue
-    seen.add(candidate)
-    normalizedAllowed.push(candidate)
+  const rows = value
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+  const out: string[] = []
+  for (const status of rows) {
+    if (seen.has(status)) continue
+    seen.add(status)
+    out.push(status)
   }
-  const mode = String(value || '').trim().toLowerCase()
-  if (mode && normalizedAllowed.includes(mode)) {
-    return mode
-  }
-  const normalizedFallback = String(fallback || '').trim().toLowerCase()
-  if (normalizedFallback && normalizedAllowed.includes(normalizedFallback)) {
-    return normalizedFallback
-  }
-  if (normalizedAllowed.length > 0) {
-    return normalizedAllowed[0]
-  }
-  return mode || normalizedFallback || 'auto'
+  return out.length > 0
+    ? out
+    : [...DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.terminal_statuses]
 }
 
-function normalizeCryptoAsset(value: unknown): string | null {
-  const asset = String(value || '').trim().toUpperCase()
-  if (!asset) return null
-  if (asset === 'XBT') return 'BTC'
-  return asset
-}
-
-function normalizeCryptoTimeframe(value: unknown): string | null {
-  const tf = String(value || '').trim().toLowerCase()
-  if (!tf) return null
-  if (tf === '5m' || tf === '5min' || tf === '5') return '5m'
-  if (tf === '15m' || tf === '15min' || tf === '15') return '15m'
-  if (tf === '1h' || tf === '1hr' || tf === '60m' || tf === '60min') return '1h'
-  if (tf === '4h' || tf === '4hr' || tf === '240m' || tf === '240min') return '4h'
-  return null
+function buildGlobalSettingsDraft(config: TraderOrchestratorConfig | null | undefined): GlobalSettingsDraft {
+  const globalRisk = config?.global_risk || DEFAULT_ORCHESTRATOR_GLOBAL_RISK
+  const runtime = config?.global_runtime || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME
+  const pending = runtime.pending_live_exit_guard || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard
+  const clamps = runtime.live_risk_clamps || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps
+  const marketContext = runtime.live_market_context || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context
+  const providerHealth = runtime.live_provider_health || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health
+  const pendingTerminalStatuses = toStringList(pending.terminal_statuses)
+  return {
+    runIntervalSeconds: String(config?.run_interval_seconds ?? 5),
+    maxGrossExposureUsd: String(globalRisk.max_gross_exposure_usd ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_gross_exposure_usd),
+    maxDailyLossUsd: String(globalRisk.max_daily_loss_usd ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_daily_loss_usd),
+    maxOrdersPerCycle: String(globalRisk.max_orders_per_cycle ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_orders_per_cycle),
+    pendingExitMaxAllowed: String(pending.max_pending_exits ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.max_pending_exits),
+    pendingExitIdentityGuardEnabled: Boolean(
+      pending.identity_guard_enabled ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.identity_guard_enabled
+    ),
+    pendingExitTerminalStatuses: (
+      pendingTerminalStatuses.length > 0
+        ? pendingTerminalStatuses
+        : [...DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.terminal_statuses]
+    ).join(', '),
+    enforceAllowAveragingOff: Boolean(
+      clamps.enforce_allow_averaging_off ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.enforce_allow_averaging_off
+    ),
+    minCooldownSeconds: String(clamps.min_cooldown_seconds ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.min_cooldown_seconds),
+    maxConsecutiveLossesCap: String(
+      clamps.max_consecutive_losses_cap ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_consecutive_losses_cap
+    ),
+    maxOpenOrdersCap: String(clamps.max_open_orders_cap ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_open_orders_cap),
+    maxOpenPositionsCap: String(
+      clamps.max_open_positions_cap ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_open_positions_cap
+    ),
+    maxTradeNotionalUsdCap: String(
+      clamps.max_trade_notional_usd_cap ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_trade_notional_usd_cap
+    ),
+    maxOrdersPerCycleCap: String(
+      clamps.max_orders_per_cycle_cap ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_orders_per_cycle_cap
+    ),
+    enforceHaltOnConsecutiveLosses: Boolean(
+      clamps.enforce_halt_on_consecutive_losses
+      ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.enforce_halt_on_consecutive_losses
+    ),
+    liveMarketContextEnabled: Boolean(
+      marketContext.enabled ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.enabled
+    ),
+    liveMarketHistoryWindowSeconds: String(
+      marketContext.history_window_seconds
+      ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.history_window_seconds
+    ),
+    liveMarketHistoryFidelitySeconds: String(
+      marketContext.history_fidelity_seconds
+      ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.history_fidelity_seconds
+    ),
+    liveMarketHistoryMaxPoints: String(
+      marketContext.max_history_points ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.max_history_points
+    ),
+    liveMarketContextTimeoutSeconds: String(
+      marketContext.timeout_seconds ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.timeout_seconds
+    ),
+    liveProviderHealthWindowSeconds: String(
+      providerHealth.window_seconds ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.window_seconds
+    ),
+    liveProviderHealthMinErrors: String(
+      providerHealth.min_errors ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.min_errors
+    ),
+    liveProviderHealthBlockSeconds: String(
+      providerHealth.block_seconds ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.block_seconds
+    ),
+    traderCycleTimeoutSeconds: runtime.trader_cycle_timeout_seconds === null
+      ? ''
+      : String(runtime.trader_cycle_timeout_seconds),
+  }
 }
 
 function toStringList(value: unknown): string[] {
@@ -417,30 +619,14 @@ function toStringList(value: unknown): string[] {
   return []
 }
 
-function normalizeCryptoAssetList(value: unknown, allowedAssets?: string[]): string[] {
-  const selected = new Set(
-    toStringList(value)
-      .map((item) => normalizeCryptoAsset(item))
-      .filter((item): item is string => Boolean(item))
-  )
-  const allowed = new Set(
-    (allowedAssets || [])
-      .map((item) => normalizeCryptoAsset(item))
-      .filter((item): item is string => Boolean(item))
-  )
-  if (allowed.size > 0) {
-    return Array.from(allowed).filter((item) => selected.has(item))
-  }
-  return Array.from(selected)
-}
-
-function normalizeCryptoTimeframeList(value: unknown): string[] {
-  const selected = new Set(
-    toStringList(value)
-      .map((item) => normalizeCryptoTimeframe(item))
-      .filter((item): item is string => Boolean(item))
-  )
-  return CRYPTO_TIMEFRAME_OPTIONS.filter((item) => selected.has(item))
+function normalizeCryptoTimeframe(value: unknown): string | null {
+  const tf = String(value || '').trim().toLowerCase()
+  if (!tf) return null
+  if (tf === '5m' || tf === '5min' || tf === '5') return '5m'
+  if (tf === '15m' || tf === '15min' || tf === '15') return '15m'
+  if (tf === '1h' || tf === '1hr' || tf === '60m' || tf === '60min') return '1h'
+  if (tf === '4h' || tf === '4hr' || tf === '240m' || tf === '240min') return '4h'
+  return null
 }
 
 function normalizeStatus(value: string | null | undefined): string {
@@ -451,6 +637,20 @@ function toTs(value: string | null | undefined): number {
   if (!value) return 0
   const ts = new Date(value).getTime()
   return Number.isFinite(ts) ? ts : 0
+}
+
+function utcDayKeyFromTs(ts: number): string | null {
+  if (!(ts > 0)) return null
+  return new Date(ts).toISOString().slice(0, 10)
+}
+
+function formatDayKeyLabel(dayKey: string): string {
+  const ts = Date.parse(`${dayKey}T00:00:00Z`)
+  if (!Number.isFinite(ts)) return dayKey
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
 }
 
 function formatCurrency(value: number, compact = false): string {
@@ -464,6 +664,275 @@ function formatCurrency(value: number, compact = false): string {
 
 function formatPercent(value: number, digits = 1): string {
   return `${value.toFixed(digits)}%`
+}
+
+function formatSignedCurrency(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—'
+  const magnitude = formatCurrency(Math.abs(value))
+  if (value > 0) return `+${magnitude}`
+  if (value < 0) return `-${magnitude}`
+  return magnitude
+}
+
+function formatSignedPercent(value: number | null, digits = 2): string {
+  if (value === null || !Number.isFinite(value)) return '—'
+  const magnitude = `${Math.abs(value).toFixed(digits)}%`
+  if (value > 0) return `+${magnitude}`
+  if (value < 0) return `-${magnitude}`
+  return magnitude
+}
+
+function toUnixSeconds(value: number): number {
+  if (value > 1_000_000_000_000) return Math.floor(value / 1000)
+  if (value > 10_000_000_000) return Math.floor(value / 1000)
+  return Math.floor(value)
+}
+
+function timeframeChartWindowSeconds(timeframe: string | null | undefined): number {
+  const normalized = normalizeCryptoTimeframe(timeframe)
+  if (normalized === '5m') return 300
+  if (normalized === '15m') return 900
+  if (normalized === '1h') return 3600
+  if (normalized === '4h') return 14_400
+  return 900
+}
+
+function historyPointTimestampSeconds(point: Record<string, unknown> | unknown[]): number | null {
+  if (Array.isArray(point)) {
+    const rawTime = toFiniteNumber(point[0])
+    if (rawTime === null) return null
+    return Math.max(1, toUnixSeconds(rawTime))
+  }
+  const raw = point.t ?? point.ts ?? point.time ?? point.timestamp ?? point.date ?? point.created_at ?? point.updated_at
+  const numeric = toFiniteNumber(raw)
+  if (numeric !== null) return Math.max(1, toUnixSeconds(numeric))
+  const isoTs = toTs(typeof raw === 'string' ? raw : null)
+  if (isoTs <= 0) return null
+  return Math.max(1, toUnixSeconds(isoTs))
+}
+
+function historyPointBinaryPrice(
+  point: Record<string, unknown> | unknown[],
+  directionSide: DirectionSide | null
+): number | null {
+  if (Array.isArray(point)) {
+    const yes = toFiniteNumber(point[1] ?? point[0])
+    const no = toFiniteNumber(point[2])
+    if (directionSide === 'YES') return yes ?? (no !== null ? Math.max(0, Math.min(1, 1 - no)) : null)
+    if (directionSide === 'NO') return no ?? (yes !== null ? Math.max(0, Math.min(1, 1 - yes)) : null)
+    return yes ?? no
+  }
+
+  const yes = toFiniteNumber(point.yes ?? point.y ?? point.idx_0 ?? point.up ?? point.up_price)
+  const no = toFiniteNumber(point.no ?? point.n ?? point.idx_1 ?? point.down ?? point.down_price)
+  const mid = toFiniteNumber(point.p ?? point.price ?? point.mid ?? point.value)
+
+  if (directionSide === 'YES') return yes ?? mid ?? (no !== null ? Math.max(0, Math.min(1, 1 - no)) : null)
+  if (directionSide === 'NO') return no ?? mid ?? (yes !== null ? Math.max(0, Math.min(1, 1 - yes)) : null)
+  return yes ?? mid ?? no
+}
+
+function extractLivelinePointsFromSharedHistory(
+  history: unknown[],
+  directionSide: DirectionSide | null,
+): LivelinePoint[] {
+  const points: LivelinePoint[] = []
+  for (const entry of history) {
+    if (!Array.isArray(entry) && !isRecord(entry)) continue
+    const ts = historyPointTimestampSeconds(entry)
+    const value = historyPointBinaryPrice(entry, directionSide)
+    if (ts === null || value === null) continue
+    points.push({ time: ts, value })
+  }
+  points.sort((left, right) => left.time - right.time)
+  return points
+}
+
+function extractLivelinePointsFromOrders(
+  orders: TraderOrder[],
+  directionSide: DirectionSide | null,
+): LivelinePoint[] {
+  const points: LivelinePoint[] = []
+  for (const order of orders) {
+    const orderSide = resolveOrderDirectionPresentation(order).side || directionSide
+    const payload = isRecord(order.payload) ? order.payload : {}
+    const liveMarket = isRecord(payload.live_market) ? payload.live_market : {}
+    const historyCandidates = [
+      liveMarket.history_tail,
+      payload.history_tail,
+      payload.price_history,
+    ]
+    for (const history of historyCandidates) {
+      if (!Array.isArray(history)) continue
+      for (const entry of history) {
+        if (!Array.isArray(entry) && !isRecord(entry)) continue
+        const ts = historyPointTimestampSeconds(entry as Record<string, unknown> | unknown[])
+        const value = historyPointBinaryPrice(entry as Record<string, unknown> | unknown[], orderSide)
+        if (ts === null || value === null) continue
+        points.push({ time: ts, value })
+      }
+    }
+
+    const snapshot = resolveOrderModalSnapshot(order)
+    const value = toFiniteNumber(snapshot.markPrice ?? snapshot.entryPrice ?? order.current_price)
+    if (value === null) continue
+    const tsRaw = order.mark_updated_at || snapshot.updatedAt || order.updated_at || order.executed_at || order.created_at
+    const tsMs = toTs(tsRaw)
+    if (tsMs <= 0) continue
+    points.push({ time: Math.max(1, toUnixSeconds(tsMs)), value })
+  }
+  points.sort((left, right) => left.time - right.time)
+  return points
+}
+
+function buildBotMarketLivelineSeries(params: {
+  sharedHistory: unknown[]
+  historyOrders: TraderOrder[]
+  directionSide: DirectionSide | null
+  markPrice: number | null
+  entryPrice: number | null
+  openedAt: string | null
+  updatedAt: string | null
+}): LivelinePoint[] {
+  const {
+    sharedHistory,
+    historyOrders,
+    directionSide,
+    markPrice,
+    entryPrice,
+    openedAt,
+    updatedAt,
+  } = params
+  const normalized = [
+    ...extractLivelinePointsFromSharedHistory(sharedHistory, directionSide),
+    ...extractLivelinePointsFromOrders(historyOrders, directionSide),
+  ].sort((left, right) => left.time - right.time)
+
+  const deduped: LivelinePoint[] = []
+  for (const point of normalized) {
+    const previous = deduped[deduped.length - 1]
+    if (previous && previous.time === point.time) {
+      deduped[deduped.length - 1] = point
+      continue
+    }
+    deduped.push(point)
+  }
+
+  const livePrice = toFiniteNumber(markPrice ?? entryPrice)
+  const nowSec = Math.floor(Date.now() / 1000)
+  const openedSec = toTs(openedAt) > 0 ? Math.floor(toTs(openedAt) / 1000) : Math.max(1, nowSec - 120)
+  const updatedSec = toTs(updatedAt) > 0 ? Math.floor(toTs(updatedAt) / 1000) : nowSec
+
+  if (deduped.length === 0) {
+    const basePrice = livePrice ?? 0.5
+    const startTime = Math.max(1, Math.min(openedSec, updatedSec - 1))
+    deduped.push({ time: startTime, value: entryPrice ?? basePrice })
+    deduped.push({ time: Math.max(startTime + 1, updatedSec), value: basePrice })
+  }
+
+  if (deduped.length === 1) {
+    const only = deduped[0]
+    deduped.push({ time: only.time + 1, value: only.value })
+  }
+
+  if (livePrice !== null) {
+    const previous = deduped[deduped.length - 1]
+    const liveTime = Math.max(updatedSec, previous.time)
+    if (liveTime > previous.time) {
+      deduped.push({ time: liveTime, value: livePrice })
+    } else if (Math.abs(previous.value - livePrice) > 1e-9) {
+      deduped[deduped.length - 1] = { time: previous.time, value: livePrice }
+    }
+  }
+
+  if (deduped.length <= 800) return deduped
+  return deduped.slice(deduped.length - 800)
+}
+
+function marketMatchesCryptoIdentity(value: string | null | undefined, market: CryptoMarket | null): boolean {
+  if (!market) return false
+  const key = String(value || '').trim().toLowerCase()
+  if (!key) return false
+  const candidates = [market.id, market.condition_id, market.slug, market.event_slug]
+    .map((candidate) => String(candidate || '').trim().toLowerCase())
+    .filter(Boolean)
+  return candidates.includes(key)
+}
+
+type OrderModalSnapshot = {
+  status: string
+  notionalUsd: number
+  filledNotionalUsd: number
+  filledShares: number
+  entryPrice: number | null
+  markPrice: number | null
+  unrealizedPnl: number | null
+  realizedPnl: number
+  edgePercent: number | null
+  confidencePercent: number | null
+  source: string
+  mode: string
+  updatedAt: string | null
+  createdAt: string | null
+}
+
+function resolveOrderModalSnapshot(order: TraderOrder): OrderModalSnapshot {
+  const payload = isRecord(order.payload) ? order.payload : {}
+  const providerReconciliation = isRecord(payload.provider_reconciliation) ? payload.provider_reconciliation : {}
+  const providerSnapshot = isRecord(providerReconciliation.snapshot) ? providerReconciliation.snapshot : {}
+  const positionState = isRecord(payload.position_state) ? payload.position_state : {}
+  const status = normalizeStatus(order.status)
+  const notionalUsd = Math.abs(toNumber(order.notional_usd))
+  const filledNotionalUsd = Math.abs(
+    toNumber(
+      order.filled_notional_usd
+      ?? providerReconciliation.filled_notional_usd
+      ?? providerSnapshot.filled_notional_usd
+      ?? order.notional_usd
+    )
+  )
+  const filledShares = Math.max(
+    0,
+    toNumber(
+      order.filled_shares
+      ?? providerReconciliation.filled_size
+      ?? providerSnapshot.filled_size
+      ?? payload.filled_size
+    )
+  )
+  const entryPrice = toFiniteNumber(
+    order.average_fill_price
+    ?? providerReconciliation.average_fill_price
+    ?? providerSnapshot.average_fill_price
+    ?? order.effective_price
+    ?? order.entry_price
+  )
+  const markPrice = toFiniteNumber(
+    order.current_price
+    ?? positionState.last_mark_price
+    ?? payload.market_price
+    ?? payload.resolved_price
+  )
+  let unrealizedPnl = toFiniteNumber(order.unrealized_pnl)
+  if (unrealizedPnl === null && markPrice !== null && filledShares > 0 && filledNotionalUsd > 0) {
+    unrealizedPnl = (markPrice * filledShares) - filledNotionalUsd
+  }
+  return {
+    status,
+    notionalUsd,
+    filledNotionalUsd,
+    filledShares,
+    entryPrice,
+    markPrice,
+    unrealizedPnl,
+    realizedPnl: toNumber(order.actual_profit),
+    edgePercent: toFiniteNumber(order.edge_percent),
+    confidencePercent: toFiniteNumber(order.confidence),
+    source: String(order.source || '').trim().toUpperCase() || 'UNKNOWN',
+    mode: String(order.mode || '').trim().toUpperCase() || 'N/A',
+    updatedAt: cleanText(order.updated_at) || cleanText(order.mark_updated_at),
+    createdAt: cleanText(order.created_at) || cleanText(order.executed_at),
+  }
 }
 
 function normalizeConfidencePercent(value: number): number {
@@ -576,6 +1045,76 @@ function computePendingExitProgressPercent(pendingExit: Record<string, unknown>)
 function shortId(value: string | null | undefined): string {
   if (!value) return 'n/a'
   return value.length <= 12 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function normalizeMarketAlias(value: unknown): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function collectMarketAliases(values: unknown[]): string[] {
+  const seen = new Set<string>()
+  const aliases: string[] = []
+  for (const value of values) {
+    const normalized = normalizeMarketAlias(value)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    aliases.push(normalized)
+  }
+  return aliases
+}
+
+function collectOrderMarketAliasIds(order: TraderOrder): string[] {
+  const payload = isRecord(order.payload) ? order.payload : {}
+  const liveMarket = isRecord(payload.live_market) ? payload.live_market : {}
+  const executionPlan = isRecord(payload.execution_plan) ? payload.execution_plan : {}
+  const legs = Array.isArray(executionPlan.legs) ? executionPlan.legs : []
+  const aliases = collectMarketAliases([
+    order.market_id,
+    payload.market_id,
+    payload.marketId,
+    payload.condition_id,
+    payload.conditionId,
+    payload.slug,
+    payload.market_slug,
+    payload.marketSlug,
+    payload.event_slug,
+    payload.eventSlug,
+    payload.ticker,
+    payload.event_ticker,
+    payload.eventTicker,
+    liveMarket.id,
+    liveMarket.market_id,
+    liveMarket.condition_id,
+    liveMarket.conditionId,
+    liveMarket.slug,
+    liveMarket.market_slug,
+    liveMarket.marketSlug,
+    liveMarket.event_slug,
+    liveMarket.eventSlug,
+    liveMarket.ticker,
+    liveMarket.event_ticker,
+    liveMarket.eventTicker,
+  ])
+  for (const rawLeg of legs) {
+    if (!isRecord(rawLeg)) continue
+    for (const alias of collectMarketAliases([
+      rawLeg.market_id,
+      rawLeg.marketId,
+      rawLeg.condition_id,
+      rawLeg.conditionId,
+      rawLeg.slug,
+      rawLeg.market_slug,
+      rawLeg.marketSlug,
+      rawLeg.event_slug,
+      rawLeg.eventSlug,
+      rawLeg.ticker,
+      rawLeg.event_ticker,
+      rawLeg.eventTicker,
+    ])) {
+      if (!aliases.includes(alias)) aliases.push(alias)
+    }
+  }
+  return aliases
 }
 
 function compactText(value: string | null | undefined, maxChars = 96): string {
@@ -854,6 +1393,51 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function cleanText(value: unknown): string | null {
   const text = String(value || '').trim()
   return text ? text : null
+}
+
+function normalizeDecisionOutcome(value: unknown): Exclude<DecisionOutcomeFilter, 'all'> {
+  const outcome = String(value || '').trim().toLowerCase()
+  if (outcome === 'selected') return 'selected'
+  if (outcome === 'blocked') return 'blocked'
+  return 'skipped'
+}
+
+function resolveDecisionMarketLabel(decision: {
+  market_id: string | null
+  market_question: string | null
+  signal_payload?: Record<string, unknown>
+}): string {
+  const marketId = cleanText(decision.market_id)
+  const normalizedMarketId = marketId ? marketId.toLowerCase() : null
+  const signalPayload = isRecord(decision.signal_payload) ? decision.signal_payload : null
+  if (signalPayload) {
+    const markets = Array.isArray(signalPayload.markets) ? signalPayload.markets : []
+    let firstQuestion: string | null = null
+    for (const rawMarket of markets) {
+      if (!isRecord(rawMarket)) continue
+      const question = cleanText(rawMarket.question)
+      if (!firstQuestion && question) firstQuestion = question
+      const candidateId = cleanText(rawMarket.id)
+      if (
+        question &&
+        normalizedMarketId &&
+        candidateId &&
+        candidateId.toLowerCase() === normalizedMarketId
+      ) {
+        return question
+      }
+    }
+    if (firstQuestion) return firstQuestion
+  }
+
+  const marketQuestion = cleanText(decision.market_question)
+  if (!marketQuestion) return shortId(marketId)
+  const withoutMoreSuffix = marketQuestion.replace(/\s+\+\d+\s+more$/i, '').trim()
+  const firstSegment = withoutMoreSuffix.split(' | ')[0]?.trim() || withoutMoreSuffix
+  const withoutActionPrefix = firstSegment.replace(/^(buy|sell)\s+(yes|no)\s+/i, '').trim()
+  const withoutPriceSuffix = withoutActionPrefix.replace(/\s+@\d+(?:\.\d+)?$/, '').trim()
+  if (withoutPriceSuffix) return withoutPriceSuffix
+  return shortId(marketId)
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -1633,11 +2217,6 @@ function normalizeCopyTradingConfig(value: Record<string, unknown> | null | unde
   }
 }
 
-function isTraderSourceKey(key: string): boolean {
-  const k = normalizeSourceKey(key)
-  return k === 'traders'
-}
-
 function isCryptoSourceKey(key: string): boolean {
   const k = normalizeSourceKey(key)
   return k === 'crypto'
@@ -1673,94 +2252,6 @@ function sourceStrategyOptions(source: TraderSource): StrategyOption[] {
   return sourceStrategyDetails(source).map((item) => ({ key: item.key, label: item.label }))
 }
 
-function strategyParamKey(
-  strategy: StrategyOptionDetail | null | undefined,
-  candidateKeys: readonly string[]
-): string | null {
-  if (!strategy) return null
-  for (const candidate of candidateKeys) {
-    if (strategy.paramFields.some((field) => String(field.key || '').trim().toLowerCase() === candidate)) {
-      return candidate
-    }
-  }
-  for (const candidate of candidateKeys) {
-    if (Object.prototype.hasOwnProperty.call(strategy.defaultParams, candidate)) {
-      return candidate
-    }
-  }
-  return null
-}
-
-function strategyParamOptions(
-  strategy: StrategyOptionDetail | null | undefined,
-  paramKey: string | null
-): string[] {
-  if (!strategy || !paramKey) return []
-  const field = strategy.paramFields.find(
-    (item) => String(item.key || '').trim().toLowerCase() === paramKey
-  )
-  const rawOptions = Array.isArray(field?.options) ? field.options : []
-  const out: string[] = []
-  const seen = new Set<string>()
-  for (const rawOption of rawOptions) {
-    let normalized = ''
-    if (typeof rawOption === 'string') {
-      normalized = rawOption.trim()
-    } else if (isRecord(rawOption)) {
-      if (typeof rawOption.value === 'string') normalized = rawOption.value.trim()
-      else if (typeof rawOption.label === 'string') normalized = rawOption.label.trim()
-    }
-    if (!normalized) continue
-    const dedupeKey = normalized.toLowerCase()
-    if (seen.has(dedupeKey)) continue
-    seen.add(dedupeKey)
-    out.push(normalized)
-  }
-  return out
-}
-
-function strategyDefaultValuesForKeys(
-  strategy: StrategyOptionDetail | null | undefined,
-  candidateKeys: readonly string[]
-): string[] {
-  if (!strategy) return []
-  for (const candidate of candidateKeys) {
-    const values = toStringList(strategy.defaultParams[candidate])
-    if (values.length > 0) return values
-  }
-  return []
-}
-
-function cryptoModeOptionsForStrategy(strategy: StrategyOptionDetail | null | undefined): string[] {
-  const paramKey = strategyParamKey(strategy, CRYPTO_MODE_PARAM_KEYS)
-  const options = strategyParamOptions(strategy, paramKey)
-    .map((item) => normalizeCryptoStrategyMode(item))
-    .filter(Boolean)
-  const out: string[] = []
-  const seen = new Set<string>()
-  for (const option of options) {
-    const key = option.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(option)
-  }
-  return out
-}
-
-function cryptoAssetOptionsForStrategy(strategy: StrategyOptionDetail | null | undefined): string[] {
-  const paramKey = strategyParamKey(strategy, CRYPTO_INCLUDE_ASSET_PARAM_KEYS)
-  const fieldOptions = normalizeCryptoAssetList(strategyParamOptions(strategy, paramKey))
-  if (fieldOptions.length > 0) return fieldOptions
-  return normalizeCryptoAssetList(strategyDefaultValuesForKeys(strategy, CRYPTO_INCLUDE_ASSET_PARAM_KEYS))
-}
-
-function cryptoTimeframeOptionsForStrategy(strategy: StrategyOptionDetail | null | undefined): string[] {
-  const paramKey = strategyParamKey(strategy, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS)
-  const fieldOptions = normalizeCryptoTimeframeList(strategyParamOptions(strategy, paramKey))
-  if (fieldOptions.length > 0) return fieldOptions
-  return normalizeCryptoTimeframeList(strategyDefaultValuesForKeys(strategy, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS))
-}
-
 function defaultStrategyForSource(sourceKey: string, sourceCatalog: TraderSource[]): string {
   const normalized = normalizeSourceKey(sourceKey)
   const source = sourceCatalog.find((item) => normalizeSourceKey(item.key) === normalized)
@@ -1773,10 +2264,59 @@ function defaultStrategyForSource(sourceKey: string, sourceCatalog: TraderSource
   return DEFAULT_STRATEGY_BY_SOURCE[normalized] || DEFAULT_STRATEGY_KEY
 }
 
-function cryptoTimeframeForStrategyKey(strategyKey: string): string {
-  const normalized = String(strategyKey || '').trim().toLowerCase()
-  const timeframe = CRYPTO_STRATEGY_OPTIONS.find((item) => item.key === normalized)?.timeframe
-  return typeof timeframe === 'string' ? timeframe : ''
+function normalizeTradersScopeConfig(value: unknown): {
+  modes: TradersScopeMode[]
+  individual_wallets: string[]
+  group_ids: string[]
+} {
+  const raw = isRecord(value) ? value : {}
+  const modes: TradersScopeMode[] = []
+  const seenModes = new Set<TradersScopeMode>()
+  for (const rawMode of toStringList(raw.modes)) {
+    const mode = String(rawMode || '').trim().toLowerCase()
+    if (mode !== 'tracked' && mode !== 'pool' && mode !== 'individual' && mode !== 'group') continue
+    if (seenModes.has(mode)) continue
+    seenModes.add(mode)
+    modes.push(mode)
+  }
+  const individual_wallets: string[] = []
+  const seenWallets = new Set<string>()
+  for (const rawWallet of toStringList(raw.individual_wallets)) {
+    const wallet = String(rawWallet || '').trim().toLowerCase()
+    if (!wallet || seenWallets.has(wallet)) continue
+    seenWallets.add(wallet)
+    individual_wallets.push(wallet)
+  }
+  const group_ids: string[] = []
+  const seenGroups = new Set<string>()
+  for (const rawGroupId of toStringList(raw.group_ids)) {
+    const groupId = String(rawGroupId || '').trim()
+    if (!groupId || seenGroups.has(groupId)) continue
+    seenGroups.add(groupId)
+    group_ids.push(groupId)
+  }
+  return {
+    modes: modes.length > 0 ? modes : ['tracked', 'pool'],
+    individual_wallets,
+    group_ids,
+  }
+}
+
+function buildSourceStrategyParams(
+  raw: Record<string, unknown>,
+  sourceKey: string,
+  strategyDetail: StrategyOptionDetail | null
+): Record<string, unknown> {
+  const strategyDefaults = isRecord(strategyDetail?.defaultParams)
+    ? (strategyDetail.defaultParams as Record<string, unknown>)
+    : {}
+  const next: Record<string, unknown> = { ...strategyDefaults, ...raw }
+  if (normalizeSourceKey(sourceKey) === 'traders') {
+    next.traders_scope = normalizeTradersScopeConfig(next.traders_scope)
+    return next
+  }
+  delete next.traders_scope
+  return next
 }
 
 function traderSourceKeys(trader: Trader): string[] {
@@ -1816,115 +2356,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-function defaultAdvancedConfig(): TraderAdvancedConfig {
-  return {
-    strategyMode: 'auto',
-    cryptoAssetsCsv: CRYPTO_ASSET_OPTIONS.join(', '),
-    cryptoExcludedAssetsCsv: '',
-    cryptoIncludedTimeframesCsv: CRYPTO_TIMEFRAME_OPTIONS.join(', '),
-    cryptoExcludedTimeframesCsv: '',
-  }
-}
-
-function computeAdvancedConfig(
-  params: Record<string, unknown>
-): TraderAdvancedConfig {
-  const defaults = defaultAdvancedConfig()
-  const configuredCryptoAssets = normalizeCryptoAssetList(params.include_assets)
-  const excludedCryptoAssets = normalizeCryptoAssetList(params.exclude_assets)
-  const configuredCryptoTimeframes = normalizeCryptoTimeframeList(params.include_timeframes)
-  const excludedCryptoTimeframes = normalizeCryptoTimeframeList(params.exclude_timeframes)
-
-  return {
-    strategyMode: normalizeCryptoStrategyMode(params.strategy_mode ?? params.mode ?? defaults.strategyMode),
-    cryptoAssetsCsv: (configuredCryptoAssets.length > 0 ? configuredCryptoAssets : [...CRYPTO_ASSET_OPTIONS]).join(', '),
-    cryptoExcludedAssetsCsv: excludedCryptoAssets.join(', '),
-    cryptoIncludedTimeframesCsv: (configuredCryptoTimeframes.length > 0 ? configuredCryptoTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]).join(', '),
-    cryptoExcludedTimeframesCsv: excludedCryptoTimeframes.join(', '),
-  }
-}
-
-function withConfiguredParams(
-  raw: Record<string, unknown>,
-  config: TraderAdvancedConfig,
-  sourceKey: string,
-  strategyKey: string,
-  strategyDetail: StrategyOptionDetail | null
-): Record<string, unknown> {
-  const strategyDefaults = isRecord(strategyDetail?.defaultParams)
-    ? (strategyDetail.defaultParams as Record<string, unknown>)
-    : {}
-  const next: Record<string, unknown> = { ...strategyDefaults, ...raw }
-
-  if (normalizeSourceKey(sourceKey) !== 'crypto') {
-    for (const key of CRYPTO_MODE_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_INCLUDE_ASSET_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_EXCLUDE_ASSET_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
-    for (const key of CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
-    return next
-  }
-
-  const supportsFixedTimeframe = isFixedTimeframeCryptoStrategyKey(strategyKey)
-  const modeParamKey = strategyParamKey(strategyDetail, CRYPTO_MODE_PARAM_KEYS)
-  const modeOptions = cryptoModeOptionsForStrategy(strategyDetail)
-  if (modeParamKey || supportsFixedTimeframe) {
-    const targetKey = modeParamKey || 'strategy_mode'
-    const allowedModes = modeOptions.length > 0 ? modeOptions : [...CRYPTO_STRATEGY_MODES]
-    next[targetKey] = normalizeCryptoStrategyMode(config.strategyMode, allowedModes, 'auto')
-  } else {
-    for (const key of CRYPTO_MODE_PARAM_KEYS) delete next[key]
-  }
-
-  const includeAssetParamKey = strategyParamKey(strategyDetail, CRYPTO_INCLUDE_ASSET_PARAM_KEYS)
-  const excludeAssetParamKey = strategyParamKey(strategyDetail, CRYPTO_EXCLUDE_ASSET_PARAM_KEYS)
-  const schemaAssets = cryptoAssetOptionsForStrategy(strategyDetail)
-  const allowedAssets = schemaAssets.length > 0 ? schemaAssets : [...CRYPTO_ASSET_OPTIONS]
-  if (includeAssetParamKey) {
-    const targetKey = includeAssetParamKey
-    const targetAssets = normalizeCryptoAssetList(config.cryptoAssetsCsv, allowedAssets)
-    next[targetKey] = targetAssets.length > 0 ? targetAssets : allowedAssets
-  } else {
-    for (const key of CRYPTO_INCLUDE_ASSET_PARAM_KEYS) delete next[key]
-  }
-  if (excludeAssetParamKey) {
-    const targetKey = excludeAssetParamKey
-    const excludedAssets = normalizeCryptoAssetList(config.cryptoExcludedAssetsCsv, allowedAssets)
-    next[targetKey] = excludedAssets
-  } else {
-    for (const key of CRYPTO_EXCLUDE_ASSET_PARAM_KEYS) delete next[key]
-  }
-
-  const includeTimeframeParamKey = strategyParamKey(strategyDetail, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS)
-  const excludeTimeframeParamKey = strategyParamKey(strategyDetail, CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS)
-  const schemaTimeframes = cryptoTimeframeOptionsForStrategy(strategyDetail)
-  const allowedTimeframes = schemaTimeframes.length > 0 ? schemaTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]
-  const fixedTimeframe = cryptoTimeframeForStrategyKey(strategyKey)
-  if (includeTimeframeParamKey || fixedTimeframe) {
-    const targetKey = includeTimeframeParamKey || 'include_timeframes'
-    if (fixedTimeframe) {
-      next[targetKey] = [fixedTimeframe]
-    } else {
-      const targetTimeframes = normalizeCryptoTimeframeList(config.cryptoIncludedTimeframesCsv)
-      next[targetKey] = targetTimeframes.length > 0 ? targetTimeframes : allowedTimeframes
-    }
-  } else {
-    for (const key of CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
-  }
-
-  if (excludeTimeframeParamKey) {
-    const targetKey = excludeTimeframeParamKey
-    if (fixedTimeframe) {
-      next[targetKey] = []
-    } else {
-      next[targetKey] = normalizeCryptoTimeframeList(config.cryptoExcludedTimeframesCsv)
-    }
-  } else {
-    for (const key of CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS) delete next[key]
-  }
-  return next
-}
-
 function buildPositionBookRows(
   orders: TraderOrder[],
   traderNameById: Record<string, string>,
@@ -1934,6 +2365,7 @@ function buildPositionBookRows(
     traderId: string
     traderName: string
     marketId: string
+    marketAliases: Set<string>
     marketQuestion: string
     sources: Set<string>
     executionTypes: Set<string>
@@ -1973,6 +2405,7 @@ function buildPositionBookRows(
     const directionPresentation = resolveOrderDirectionPresentation(order)
     const directionKey = directionPresentation.side || directionPresentation.label.toUpperCase() || 'UNKNOWN'
     const key = `${traderId}:${marketId}:${directionKey}`
+    const orderAliases = collectOrderMarketAliasIds(order)
     const positionState = isRecord(orderPayload.position_state) ? orderPayload.position_state : {}
     const markPrice = toNumber(
       order.current_price
@@ -2011,6 +2444,7 @@ function buildPositionBookRows(
         traderId,
         traderName,
         marketId,
+        marketAliases: new Set<string>(),
         marketQuestion: String(order.market_question || order.market_id || 'Unknown market'),
         sources: new Set<string>(),
         executionTypes: new Set<string>(),
@@ -2039,6 +2473,9 @@ function buildPositionBookRows(
 
     const bucket = buckets.get(key)
     if (!bucket) continue
+    for (const alias of orderAliases) {
+      bucket.marketAliases.add(alias)
+    }
 
     bucket.exposureUsd += notional
     bucket.weightedPrice += px > 0 && notional > 0 ? px * notional : 0
@@ -2096,6 +2533,7 @@ function buildPositionBookRows(
         traderId: bucket.traderId,
         traderName: bucket.traderName,
         marketId: bucket.marketId,
+        marketAliases: Array.from(bucket.marketAliases),
         marketQuestion: bucket.marketQuestion,
         sourceSummary: Array.from(bucket.sources).join(', '),
         executionSummary: summarizeExecutionTypes(bucket.executionTypes),
@@ -2252,6 +2690,643 @@ function positionMetaLine(row: PositionBookRow): string {
   return `${sourceOrStatus} • ${row.executionSummary}`
 }
 
+function BotTradePositionModal({
+  market,
+  sharedHistory,
+  scope,
+  orders,
+  themeMode,
+  onClose,
+}: {
+  market: CryptoMarket | null
+  sharedHistory: unknown[]
+  scope: BotMarketModalScope
+  orders: TraderOrder[]
+  themeMode: 'dark' | 'light'
+  onClose: () => void
+}) {
+  const scopeMarketIds = useMemo(
+    () => new Set(
+      collectMarketAliases([
+        scope.marketId,
+        ...(Array.isArray(scope.marketIds) ? scope.marketIds : []),
+      ])
+    ),
+    [scope.marketId, scope.marketIds]
+  )
+
+  const relatedOrders = useMemo(() => {
+    const filtered = orders.filter((order) => {
+      if (scope.traderId && String(order.trader_id || '') !== scope.traderId) return false
+      const matchesScopeIds = collectOrderMarketAliasIds(order).some((alias) => scopeMarketIds.has(alias))
+      if (
+        !marketMatchesCryptoIdentity(order.market_id, market)
+        && !matchesScopeIds
+      ) {
+        return false
+      }
+      if (!scope.directionSide) return true
+      const side = resolveOrderDirectionPresentation(order).side
+      return !side || side === scope.directionSide
+    })
+    filtered.sort((left, right) => {
+      const leftTs = Math.max(toTs(left.updated_at), toTs(left.executed_at), toTs(left.created_at))
+      const rightTs = Math.max(toTs(right.updated_at), toTs(right.executed_at), toTs(right.created_at))
+      return rightTs - leftTs
+    })
+    return filtered
+  }, [
+    market,
+    orders,
+    scope.directionSide,
+    scope.marketId,
+    scope.marketIds,
+    scope.traderId,
+    scopeMarketIds,
+  ])
+
+  const anchorOrder = useMemo(() => {
+    if (!scope.anchorOrderId) return relatedOrders[0] || null
+    return relatedOrders.find((order) => order.id === scope.anchorOrderId) || relatedOrders[0] || null
+  }, [relatedOrders, scope.anchorOrderId])
+
+  const scopedOrders = scope.kind === 'trade' && anchorOrder ? [anchorOrder] : relatedOrders
+
+  const metrics = useMemo(() => {
+    const snapshots = scopedOrders.map((order) => resolveOrderModalSnapshot(order))
+    let totalExposure = 0
+    let openExposure = 0
+    let resolvedExposure = 0
+    let openFilledNotional = 0
+    let resolvedFilledNotional = 0
+    let livePnl = 0
+    let realizedPnl = 0
+    let openCount = 0
+    let resolvedCount = 0
+    let failedCount = 0
+    let liveOrderCount = 0
+    let paperOrderCount = 0
+    let weightedEntry = 0
+    let weightedEntryWeight = 0
+    let weightedMark = 0
+    let weightedMarkWeight = 0
+    let weightedEdge = 0
+    let edgeWeight = 0
+    let weightedConfidence = 0
+    let confidenceWeight = 0
+    let openedAt: string | null = null
+    let updatedAt: string | null = null
+    const sourceSet = new Set<string>()
+    const modeSet = new Set<string>()
+    const statusSet = new Set<string>()
+
+    for (const snapshot of snapshots) {
+      const basis = snapshot.filledNotionalUsd > 0 ? snapshot.filledNotionalUsd : snapshot.notionalUsd
+      const status = snapshot.status
+      totalExposure += snapshot.notionalUsd
+      sourceSet.add(snapshot.source)
+      modeSet.add(snapshot.mode)
+      statusSet.add(status)
+
+      if (snapshot.mode.toLowerCase() === 'live') liveOrderCount += 1
+      if (snapshot.mode.toLowerCase() === 'paper') paperOrderCount += 1
+
+      if (basis > 0 && snapshot.entryPrice !== null) {
+        weightedEntry += snapshot.entryPrice * basis
+        weightedEntryWeight += basis
+      }
+      if (basis > 0 && snapshot.markPrice !== null) {
+        weightedMark += snapshot.markPrice * basis
+        weightedMarkWeight += basis
+      }
+      if (snapshot.edgePercent !== null && basis > 0) {
+        weightedEdge += snapshot.edgePercent * basis
+        edgeWeight += basis
+      }
+      if (snapshot.confidencePercent !== null && basis > 0) {
+        weightedConfidence += snapshot.confidencePercent * basis
+        confidenceWeight += basis
+      }
+
+      if (OPEN_ORDER_STATUSES.has(status)) {
+        openCount += 1
+        openExposure += snapshot.notionalUsd
+        openFilledNotional += basis
+        if (snapshot.unrealizedPnl !== null) livePnl += snapshot.unrealizedPnl
+      } else if (RESOLVED_ORDER_STATUSES.has(status)) {
+        resolvedCount += 1
+        resolvedExposure += snapshot.notionalUsd
+        resolvedFilledNotional += basis
+        realizedPnl += snapshot.realizedPnl
+      } else if (FAILED_ORDER_STATUSES.has(status)) {
+        failedCount += 1
+      }
+
+      const candidateOpenedAt = snapshot.createdAt
+      if (candidateOpenedAt && (toTs(candidateOpenedAt) < toTs(openedAt) || !openedAt)) {
+        openedAt = candidateOpenedAt
+      }
+      const candidateUpdatedAt = snapshot.updatedAt
+      if (candidateUpdatedAt && (toTs(candidateUpdatedAt) > toTs(updatedAt) || !updatedAt)) {
+        updatedAt = candidateUpdatedAt
+      }
+    }
+
+    const hasLiveExposure = openCount > 0
+    const activePnl = hasLiveExposure
+      ? livePnl
+      : (resolvedCount > 0 ? realizedPnl : null)
+    const returnBasis = hasLiveExposure
+      ? (openFilledNotional > 0 ? openFilledNotional : openExposure)
+      : (resolvedFilledNotional > 0 ? resolvedFilledNotional : resolvedExposure)
+    const returnPercent = activePnl !== null && returnBasis > 0
+      ? (activePnl / returnBasis) * 100
+      : null
+
+    return {
+      orderCount: snapshots.length,
+      openCount,
+      resolvedCount,
+      failedCount,
+      liveOrderCount,
+      paperOrderCount,
+      exposureUsd: totalExposure,
+      entryPrice: weightedEntryWeight > 0 ? weightedEntry / weightedEntryWeight : null,
+      markPrice: weightedMarkWeight > 0 ? weightedMark / weightedMarkWeight : null,
+      activePnl,
+      returnPercent,
+      avgEdgePercent: edgeWeight > 0 ? normalizeEdgePercent(weightedEdge / edgeWeight) : null,
+      avgConfidencePercent: confidenceWeight > 0 ? normalizeConfidencePercent(weightedConfidence / confidenceWeight) : null,
+      sourceSummary: sourceSet.size > 0 ? Array.from(sourceSet).join(', ') : scope.sourceSummary,
+      modeSummary: modeSet.size > 0 ? Array.from(modeSet).join(' / ') : scope.modeSummary,
+      statusSummary: statusSet.size > 0 ? Array.from(statusSet).join(', ') : scope.statusSummary,
+      openedAt,
+      updatedAt,
+    }
+  }, [
+    scope.modeSummary,
+    scope.sourceSummary,
+    scope.statusSummary,
+    scopedOrders,
+  ])
+
+  const livelineData = useMemo(
+    () => buildBotMarketLivelineSeries({
+      sharedHistory,
+      historyOrders: relatedOrders,
+      directionSide: scope.directionSide,
+      markPrice: metrics.markPrice,
+      entryPrice: metrics.entryPrice,
+      openedAt: metrics.openedAt,
+      updatedAt: metrics.updatedAt,
+    }),
+    [
+      metrics.entryPrice,
+      metrics.markPrice,
+      metrics.openedAt,
+      metrics.updatedAt,
+      relatedOrders,
+      scope.directionSide,
+      sharedHistory,
+    ]
+  )
+  const livelineValue = toFiniteNumber(metrics.markPrice ?? metrics.entryPrice)
+    ?? livelineData[livelineData.length - 1]?.value
+    ?? 0
+  const isDark = themeMode === 'dark'
+  const pnlPositive = (metrics.activePnl ?? 0) >= 0
+  const lineColor = pnlPositive
+    ? (isDark ? '#22c55e' : '#16a34a')
+    : (isDark ? '#f87171' : '#dc2626')
+  const referencePrice = metrics.entryPrice ?? toFiniteNumber(market?.price_to_beat)
+  const livelineWindow = Math.max(
+    timeframeChartWindowSeconds(market?.timeframe),
+    livelineData.length > 1
+      ? livelineData[livelineData.length - 1].time - livelineData[0].time
+      : 0
+  )
+  const pnlLabel = metrics.openCount > 0 ? 'Live P&L' : metrics.resolvedCount > 0 ? 'Realized P&L' : 'P&L'
+  const returnLabel = metrics.openCount > 0 ? 'Live Return' : 'Return'
+  const oracleAgeSeconds = toFiniteNumber(market?.oracle_age_seconds)
+  const markUpdatedAge = formatRelativeAge(metrics.updatedAt)
+
+  return (
+    <Card className="w-[min(1150px,calc(100vw-2rem))] max-h-[90vh] overflow-hidden rounded-2xl border-border/70 bg-background shadow-[0_40px_120px_rgba(0,0,0,0.55)]">
+      <div className="border-b border-border/60 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <h3 className="text-sm font-semibold truncate max-w-[620px]" title={scope.marketQuestion}>
+                {scope.marketQuestion}
+              </h3>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                {scope.kind === 'trade' ? 'Trade' : 'Position'}
+              </Badge>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                {scope.directionLabel || 'N/A'}
+              </Badge>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/80 bg-muted/60 text-muted-foreground">
+                {scope.traderName}
+              </Badge>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {String(market?.asset || 'N/A').toUpperCase()} · {String(market?.timeframe || 'n/a').toUpperCase()} · {metrics.sourceSummary || 'n/a'} · {metrics.modeSummary || 'n/a'}
+            </p>
+          </div>
+          <div className="flex items-center gap-1">
+            {scope.links.polymarket && (
+              <a
+                href={scope.links.polymarket}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
+                title="Open Polymarket market"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )}
+            {scope.links.kalshi && (
+              <a
+                href={scope.links.kalshi}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
+                title="Open Kalshi market"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )}
+            <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-h-[calc(90vh-72px)] overflow-y-auto px-4 py-3 space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{pnlLabel}</p>
+            <p className={cn('text-sm font-mono', (metrics.activePnl ?? 0) > 0 ? 'text-emerald-500' : (metrics.activePnl ?? 0) < 0 ? 'text-red-500' : '')}>
+              {formatSignedCurrency(metrics.activePnl)}
+            </p>
+            <p className="text-[10px] text-muted-foreground">{returnLabel}: {formatSignedPercent(metrics.returnPercent, 2)}</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Exposure</p>
+            <p className="text-sm font-mono">{formatCurrency(metrics.exposureUsd, true)}</p>
+            <p className="text-[10px] text-muted-foreground">{metrics.openCount} open · {metrics.resolvedCount} resolved · {metrics.failedCount} failed</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Entry / Mark</p>
+            <p className="text-sm font-mono">
+              {metrics.entryPrice !== null ? metrics.entryPrice.toFixed(3) : '—'}
+              <span className="mx-1 text-muted-foreground">→</span>
+              {metrics.markPrice !== null ? metrics.markPrice.toFixed(3) : '—'}
+            </p>
+            <p className="text-[10px] text-muted-foreground">mark update {markUpdatedAge}</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Edge / Confidence</p>
+            <p className="text-sm font-mono">
+              {formatSignedPercent(metrics.avgEdgePercent, 2)}
+              <span className="mx-1 text-muted-foreground">·</span>
+              {formatSignedPercent(metrics.avgConfidencePercent, 1)}
+            </p>
+            <p className="text-[10px] text-muted-foreground">{metrics.liveOrderCount} live · {metrics.paperOrderCount} paper</p>
+          </div>
+        </div>
+
+        <div className={cn(
+          'rounded-lg border overflow-hidden',
+          isDark
+            ? 'border-slate-700/40 bg-gradient-to-b from-slate-900/75 via-slate-950/80 to-black/90'
+            : 'border-slate-200/90 bg-gradient-to-b from-white via-slate-50 to-slate-100/70',
+        )}>
+          {livelineData.length >= 2 ? (
+            <Liveline
+              data={livelineData}
+              value={livelineValue}
+              color={lineColor}
+              theme={isDark ? 'dark' : 'light'}
+              showValue
+              valueMomentumColor
+              grid
+              badge
+              pulse
+              fill
+              window={livelineWindow > 0 ? livelineWindow : undefined}
+              lerpSpeed={0.1}
+              padding={{ top: 8, right: 80, bottom: 24, left: 14 }}
+              tooltipOutline={isDark}
+              formatValue={(value) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              referenceLine={referencePrice !== null ? { value: referencePrice, label: metrics.entryPrice !== null ? 'Entry' : 'Price to beat' } : undefined}
+              style={{ height: 280 }}
+            />
+          ) : (
+            <div className="h-[280px] flex items-center justify-center text-xs text-muted-foreground">
+              Waiting for live price history...
+            </div>
+          )}
+        </div>
+
+        <div className="grid gap-2 lg:grid-cols-2">
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lifecycle</p>
+            <p className="text-xs mt-0.5">{scope.executionSummary || '—'}</p>
+            <p className="text-[10px] text-muted-foreground mt-1">{scope.outcomeSummary || scope.statusSummary || metrics.statusSummary || 'n/a'}</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Timing & Feed</p>
+            <p className="text-xs mt-0.5">
+              Opened: {formatTimestamp(metrics.openedAt)}
+              <span className="mx-1 text-muted-foreground">·</span>
+              Updated: {formatTimestamp(metrics.updatedAt)}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Oracle age: {oracleAgeSeconds !== null ? `${Math.round(oracleAgeSeconds)}s` : 'n/a'}
+            </p>
+          </div>
+        </div>
+
+        {scopedOrders.length === 0 && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-700 dark:text-amber-100">
+            No matching order rows were found in the current order window for this market/direction scope.
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function normalizePerformanceTimeframe(value: unknown): string | null {
+  const normalized = normalizeCryptoTimeframe(value)
+  if (normalized) return normalized
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return null
+  if (text === '5min' || text === '5m' || text === '5') return '5m'
+  if (text === '15min' || text === '15m' || text === '15') return '15m'
+  if (text === '1hr' || text === '1h' || text === '60m' || text === '60min') return '1h'
+  if (text === '4hr' || text === '4h' || text === '240m' || text === '240min') return '4h'
+  return text
+}
+
+function normalizePerformanceMode(value: unknown): string | null {
+  const text = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (!text) return null
+  if (text === 'purearb') return 'pure_arb'
+  if (text === 'dumphedge') return 'dump_hedge'
+  if (text === 'preplacedlimits' || text === 'preplaced') return 'pre_placed_limits'
+  if (text === 'directionaledge') return 'directional_edge'
+  return text
+}
+
+function _pushRecord(
+  target: Array<Record<string, unknown>>,
+  value: unknown,
+) {
+  if (isRecord(value)) target.push(value)
+}
+
+function orderPerformanceContexts(
+  order: TraderOrder,
+  decision: Record<string, unknown> | null,
+): Array<Record<string, unknown>> {
+  const contexts: Array<Record<string, unknown>> = []
+  _pushRecord(contexts, order.payload)
+
+  const payload = isRecord(order.payload) ? order.payload : null
+  if (payload) {
+    _pushRecord(contexts, payload.strategy_context)
+    _pushRecord(contexts, payload.signal_payload)
+    _pushRecord(contexts, payload.signal_strategy_context)
+    _pushRecord(contexts, payload.live_market)
+    _pushRecord(contexts, payload.position_state)
+    _pushRecord(contexts, payload.strategy_params)
+    _pushRecord(contexts, payload.position_close)
+  }
+
+  if (decision) {
+    _pushRecord(contexts, decision)
+    _pushRecord(contexts, decision.signal_payload)
+    _pushRecord(contexts, decision.signal_strategy_context)
+    _pushRecord(contexts, decision.payload)
+  }
+
+  return contexts
+}
+
+function readPerformanceContextValue(
+  contexts: Array<Record<string, unknown>>,
+  keys: readonly string[],
+  normalize: (value: unknown) => string | null = cleanText,
+): string | null {
+  for (const context of contexts) {
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(context, key)) continue
+      const normalized = normalize(context[key])
+      if (normalized) return normalized
+    }
+  }
+  return null
+}
+
+function extractOrderPerformanceDimensions(
+  order: TraderOrder,
+  decision: Record<string, unknown> | null,
+): {
+  strategyKey: string
+  timeframe: string
+  mode: string
+  subStrategy: string
+} {
+  const contexts = orderPerformanceContexts(order, decision)
+  const strategyKey = (
+    cleanText(decision?.strategy_key)
+    || readPerformanceContextValue(contexts, ['strategy_key', 'strategy_slug', 'strategy_type', 'strategy'], cleanText)
+    || cleanText(order.source)
+    || 'unknown'
+  ).toLowerCase()
+  const timeframe = readPerformanceContextValue(
+    contexts,
+    ['timeframe', 'cadence', 'interval', 'window'],
+    normalizePerformanceTimeframe,
+  ) || 'unclassified'
+  const mode = readPerformanceContextValue(
+    contexts,
+    ['active_mode', 'requested_mode', 'strategy_mode', 'mode', 'dominant_mode', 'dominant_strategy'],
+    normalizePerformanceMode,
+  ) || 'unclassified'
+  const subStrategy = readPerformanceContextValue(
+    contexts,
+    ['sub_strategy', 'dominant_strategy', 'strategy_variant', 'variant'],
+    normalizePerformanceMode,
+  ) || 'unclassified'
+  return {
+    strategyKey,
+    timeframe,
+    mode,
+    subStrategy,
+  }
+}
+
+function performanceBucketSort(left: PerformanceBucketRow, right: PerformanceBucketRow): number {
+  if (Math.abs(left.pnl) !== Math.abs(right.pnl)) return Math.abs(right.pnl) - Math.abs(left.pnl)
+  if (left.orders !== right.orders) return right.orders - left.orders
+  return left.label.localeCompare(right.label)
+}
+
+function buildPerformanceBuckets(
+  orders: TraderOrder[],
+  bucketKeyForOrder: (order: TraderOrder, index: number) => { key: string; label: string },
+): PerformanceBucketRow[] {
+  const byBucket = new Map<string, PerformanceBucketRow>()
+  for (let index = 0; index < orders.length; index += 1) {
+    const order = orders[index]
+    const bucketMeta = bucketKeyForOrder(order, index)
+    const bucketKey = cleanText(bucketMeta.key) || 'unclassified'
+    const bucketLabel = cleanText(bucketMeta.label) || bucketKey
+    if (!byBucket.has(bucketKey)) {
+      byBucket.set(bucketKey, {
+        key: bucketKey,
+        label: bucketLabel,
+        orders: 0,
+        open: 0,
+        resolved: 0,
+        wins: 0,
+        losses: 0,
+        failed: 0,
+        resolvedNotional: 0,
+        pnl: 0,
+        roiPercent: 0,
+        fullLosses: 0,
+      })
+    }
+    const bucket = byBucket.get(bucketKey)
+    if (!bucket) continue
+
+    const status = normalizeStatus(order.status)
+    const notional = Math.abs(toNumber(order.notional_usd))
+    const pnl = toNumber(order.actual_profit)
+    bucket.orders += 1
+
+    if (OPEN_ORDER_STATUSES.has(status)) bucket.open += 1
+    if (FAILED_ORDER_STATUSES.has(status)) bucket.failed += 1
+    if (RESOLVED_ORDER_STATUSES.has(status)) {
+      bucket.resolved += 1
+      bucket.pnl += pnl
+      bucket.resolvedNotional += notional
+      if (pnl > 0) bucket.wins += 1
+      if (pnl < 0) bucket.losses += 1
+      if (pnl < 0 && notional > 0 && Math.abs(pnl) >= notional * 0.98) {
+        bucket.fullLosses += 1
+      }
+    }
+  }
+
+  const rows = Array.from(byBucket.values())
+  for (const row of rows) {
+    row.roiPercent = row.resolvedNotional > 0 ? (row.pnl / row.resolvedNotional) * 100 : 0
+  }
+  return rows
+}
+
+function classifyStrategyParamGroup(fieldKey: string): StrategyParamGroupKey {
+  const key = String(fieldKey || '').trim().toLowerCase()
+  if (!key) return 'advanced'
+  if (
+    key.startsWith('strategy_mode')
+    || key === 'mode'
+    || key.startsWith('include_')
+    || key.startsWith('exclude_')
+    || key === 'enabled_sub_strategies'
+    || key.includes('sub_strategy')
+  ) {
+    return 'scope'
+  }
+  if (
+    key.includes('signal_age')
+    || key.includes('market_data_age')
+    || key.includes('live_context_age')
+    || key.includes('oracle_age')
+    || key.includes('seconds_left')
+    || key.includes('reentry_cooldown')
+    || key.includes('freshness')
+    || key.includes('timeout')
+  ) {
+    return 'timing'
+  }
+  if (
+    key.includes('edge')
+    || key.includes('confidence')
+    || key.includes('liquidity')
+    || key.includes('spread')
+    || key.includes('imbalance')
+    || key.includes('entry_price')
+    || key.includes('entry_executable')
+    || key.includes('opening_')
+    || key.includes('guardrail')
+    || key.includes('require_oracle')
+  ) {
+    return 'entry'
+  }
+  if (
+    key.includes('size')
+    || key.includes('sizing')
+    || key.includes('notional')
+    || key.includes('position')
+    || key.includes('multiplier')
+    || key.includes('kelly')
+    || key.includes('capital')
+  ) {
+    return 'sizing'
+  }
+  if (
+    key.includes('take_profit')
+    || key.includes('stop_loss')
+    || key.includes('trailing')
+    || key.includes('min_hold')
+    || key.includes('max_hold')
+    || key.startsWith('rapid_')
+    || key.startsWith('reverse_')
+    || key.startsWith('underwater_')
+    || key.startsWith('force_flatten')
+    || key.includes('close_on_inactive')
+    || key.includes('resolve_only')
+    || key.includes('preplace_take_profit')
+    || key.includes('enforce_min_exit_notional')
+  ) {
+    return 'exit'
+  }
+  if (key.startsWith('risk') || key.startsWith('max_risk') || key.startsWith('resolution_risk')) {
+    return 'risk'
+  }
+  return 'advanced'
+}
+
+function groupStrategyParamFields(fields: Array<Record<string, unknown>>): StrategyParamGroup[] {
+  const grouped = new Map<StrategyParamGroupKey, Array<Record<string, unknown>>>()
+  for (const field of fields) {
+    const fieldKey = String(field.key || '').trim()
+    if (!fieldKey) continue
+    const groupKey = classifyStrategyParamGroup(fieldKey)
+    const current = grouped.get(groupKey) || []
+    current.push(field)
+    grouped.set(groupKey, current)
+  }
+  const orderedGroups: StrategyParamGroup[] = []
+  for (const groupKey of STRATEGY_PARAM_GROUP_ORDER) {
+    const fieldsForGroup = grouped.get(groupKey)
+    if (!fieldsForGroup || fieldsForGroup.length === 0) continue
+    orderedGroups.push({
+      key: groupKey,
+      label: STRATEGY_PARAM_GROUP_LABELS[groupKey],
+      fields: fieldsForGroup,
+    })
+  }
+  return orderedGroups
+}
+
 function FlyoutSection({
   title,
   subtitle,
@@ -2320,25 +3395,27 @@ type TradingPanelProps = {
 export default function TradingPanel({ isConnected = false }: TradingPanelProps = {}) {
   const queryClient = useQueryClient()
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
+  const selectedAccountIsLive = Boolean(selectedAccountId?.startsWith('live:'))
+  const selectedAccountMode: 'paper' | 'live' = selectedAccountIsLive ? 'live' : 'paper'
   const [selectedTraderId, setSelectedTraderId] = useState<string | null>(null)
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [traderFeedFilter, setTraderFeedFilter] = useState<FeedFilter>('all')
   const [tradeStatusFilter, setTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [tradeSearch, setTradeSearch] = useState('')
   const [decisionSearch, setDecisionSearch] = useState('')
+  const [decisionOutcomeFilter, setDecisionOutcomeFilter] = useState<DecisionOutcomeFilter>('all')
   const [botRosterSearch, setBotRosterSearch] = useState('')
   const [botRosterHideInactive, setBotRosterHideInactive] = useState(false)
   const [botRosterSort, setBotRosterSort] = useState<BotRosterSort>('name_asc')
   const [botRosterGroupBy, setBotRosterGroupBy] = useState<BotRosterGroupBy>('status')
   const [confirmLiveStartOpen, setConfirmLiveStartOpen] = useState(false)
-  const [workTab, setWorkTab] = useState<'terminal' | 'positions' | 'trades' | 'monitor' | 'decisions' | 'risk'>('terminal')
+  const [globalSettingsFlyoutOpen, setGlobalSettingsFlyoutOpen] = useState(false)
+  const [globalSettingsSaveError, setGlobalSettingsSaveError] = useState<string | null>(null)
+  const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null))
+  const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'monitor' | 'decisions' | 'performance'>('trades')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
   const [allBotsTradeStatusFilter, setAllBotsTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [allBotsTradeSearch, setAllBotsTradeSearch] = useState('')
-  const [positionSearch, setPositionSearch] = useState('')
-  const [positionDirectionFilter, setPositionDirectionFilter] = useState<PositionDirectionFilter>('all')
-  const [positionSortField, setPositionSortField] = useState<PositionSortField>('exposure')
-  const [positionSortDirection, setPositionSortDirection] = useState<PositionSortDirection>('desc')
   const [allBotsPositionSearch, setAllBotsPositionSearch] = useState('')
   const [allBotsPositionDirectionFilter, setAllBotsPositionDirectionFilter] = useState<PositionDirectionFilter>('all')
   const [allBotsPositionSortField, setAllBotsPositionSortField] = useState<PositionSortField>('exposure')
@@ -2352,14 +3429,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [draftSourceStrategies, setDraftSourceStrategies] = useState<Record<string, string>>({})
   const [draftInterval, setDraftInterval] = useState('60')
   const [draftSources, setDraftSources] = useState('')
-  const [draftTradersScopeModes, setDraftTradersScopeModes] = useState<TradersScopeMode[]>(['tracked', 'pool'])
-  const [draftTradersIndividualWallets, setDraftTradersIndividualWallets] = useState<string[]>([])
-  const [draftTradersGroupIds, setDraftTradersGroupIds] = useState<string[]>([])
   const [draftParams, setDraftParams] = useState('{}')
   const [draftRisk, setDraftRisk] = useState('{}')
   const [draftMetadata, setDraftMetadata] = useState('{}')
+  const [draftMode, setDraftMode] = useState<'paper' | 'live'>('paper')
   const [draftCopyFromTraderId, setDraftCopyFromTraderId] = useState('')
-  const [advancedConfig, setAdvancedConfig] = useState<TraderAdvancedConfig>(defaultAdvancedConfig())
+  const [draftCopyFromMode, setDraftCopyFromMode] = useState<'paper' | 'live'>('paper')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [deleteAction, setDeleteAction] = useState<'block' | 'disable' | 'force_delete'>('disable')
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
@@ -2382,8 +3457,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   })
 
   const tradersQuery = useQuery({
-    queryKey: ['traders-list'],
-    queryFn: getTraders,
+    queryKey: ['traders-list', selectedAccountMode],
+    queryFn: () => getTraders({ mode: selectedAccountMode }),
+    refetchInterval: 5000,
+  })
+
+  const allTradersQuery = useQuery({
+    queryKey: ['traders-list', 'all'],
+    queryFn: () => getTraders(),
     refetchInterval: 5000,
   })
 
@@ -2417,51 +3498,55 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     staleTime: 15000,
   })
 
-  const walletsQuery = useQuery({
-    queryKey: ['tracked-wallets'],
-    queryFn: getWallets,
-    staleTime: 30000,
-  })
-
-  const traderGroupsQuery = useQuery({
-    queryKey: ['discovery-trader-groups'],
-    queryFn: () => discoveryApi.getTraderGroups(false, 200),
-    staleTime: 30000,
-  })
-
   const cryptoMarketsQuery = useQuery({
     queryKey: ['crypto-markets'],
     queryFn: () => getCryptoMarkets(),
     refetchInterval: 5000,
   })
+  const cryptoMarkets = useMemo(
+    () => (Array.isArray(cryptoMarketsQuery.data) ? (cryptoMarketsQuery.data as CryptoMarket[]) : []),
+    [cryptoMarketsQuery.data]
+  )
   const cryptoMarketById = useMemo(() => {
     const map = new Map<string, CryptoMarket>()
-    for (const m of (cryptoMarketsQuery.data ?? []) as CryptoMarket[]) {
-      if (m.id) map.set(m.id, m)
+    const register = (value: unknown, market: CryptoMarket) => {
+      const key = String(value || '').trim()
+      if (!key) return
+      map.set(key, market)
+      map.set(key.toLowerCase(), market)
+    }
+    for (const m of cryptoMarkets) {
+      register(m.id, m)
+      register(m.condition_id, m)
+      register(m.slug, m)
+      register(m.event_slug, m)
     }
     return map
-  }, [cryptoMarketsQuery.data])
-  const [allBotsModalMarket, setAllBotsModalMarket] = useState<CryptoMarket | null>(null)
+  }, [cryptoMarkets])
+  const resolveCryptoMarket = (value: string | null | undefined): CryptoMarket | null => {
+    const key = String(value || '').trim()
+    if (!key) return null
+    return cryptoMarketById.get(key) || cryptoMarketById.get(key.toLowerCase()) || null
+  }
+  const [marketModalState, setMarketModalState] = useState<BotMarketModalState | null>(null)
+  const marketModalMarket = marketModalState ? marketModalState.market : null
   const themeMode = useAtomValue(themeAtom)
 
   useEffect(() => {
-    if (!allBotsModalMarket) return
+    if (!marketModalState) return
     document.body.style.overflow = 'hidden'
-    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') setAllBotsModalMarket(null) }
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') setMarketModalState(null) }
     window.addEventListener('keydown', handleEscape)
     return () => { document.body.style.overflow = ''; window.removeEventListener('keydown', handleEscape) }
-  }, [allBotsModalMarket])
+  }, [marketModalState])
 
   const traderConfigSchema: TraderConfigSchema | null = traderConfigSchemaQuery.data ?? null
   const activeCopyMode = activeCopyModeQuery.data ?? null
   const traders = tradersQuery.data || []
+  const allTraders = allTradersQuery.data || []
   const simulationAccounts = simulationAccountsQuery.data || []
   const selectedSandboxAccount = simulationAccounts.find((account) => account.id === selectedAccountId)
-  const selectedAccountIsLive = Boolean(selectedAccountId?.startsWith('live:'))
   const selectedAccountValid = selectedAccountIsLive || Boolean(selectedSandboxAccount)
-  const selectedAccountMode = selectedAccountIsLive ? 'live' : 'paper'
-  const trackedWallets = walletsQuery.data || []
-  const traderGroups = traderGroupsQuery.data || []
   const sourceCatalog = traderConfigSchema?.sources?.length
     ? traderConfigSchema.sources
     : traderSourcesQuery.data?.length
@@ -2474,6 +3559,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const defaultSourceCsv = useMemo(() => defaultSourceKeys.join(', '), [defaultSourceKeys])
 
   const traderIds = useMemo(() => traders.map((trader) => trader.id), [traders])
+  const traderIdSet = useMemo(() => new Set(traderIds), [traderIds])
   const traderIdsKey = useMemo(() => traderIds.join('|'), [traderIds])
 
   const allOrdersQuery = useQuery({
@@ -2488,7 +3574,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const allDecisionsQuery = useQuery({
     queryKey: ['trader-decisions-all', traderIdsKey],
     enabled: traderIds.length > 0,
-    refetchInterval: false,
+    refetchInterval: isConnected ? 15000 : 1000,
+    staleTime: 0,
+    refetchOnMount: 'always',
     queryFn: async () => {
       const grouped = await Promise.all(
         traderIds.map((traderId) => getTraderDecisions(traderId, { limit: 160 }))
@@ -2513,7 +3601,45 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     },
   })
 
-  const allOrders = allOrdersQuery.data || []
+  const allOrders = useMemo(
+    () => (allOrdersQuery.data || []).filter((order) => {
+      if (!traderIdSet.has(String(order.trader_id || ''))) return false
+      const orderMode = String(order.mode || '').trim().toLowerCase()
+      if (orderMode === 'live' || orderMode === 'paper') return orderMode === selectedAccountMode
+      return selectedAccountMode === 'paper'
+    }),
+    [allOrdersQuery.data, selectedAccountMode, traderIdSet]
+  )
+  const marketModalMarketIds = useMemo(
+    () => collectMarketAliases([
+      marketModalState?.scope.marketId,
+      ...(marketModalState?.scope.marketIds || []),
+    ]),
+    [marketModalState]
+  )
+  const marketModalMarketIdsKey = marketModalMarketIds.join('|')
+  const marketHistoryQuery = useQuery({
+    queryKey: ['trader-market-history', marketModalMarketIdsKey],
+    enabled: marketModalMarketIds.length > 0,
+    refetchInterval: marketModalState ? (isConnected ? 15000 : 1000) : false,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    queryFn: async () => {
+      if (marketModalMarketIds.length === 0) return {}
+      return getTraderMarketHistory(marketModalMarketIds, 240)
+    },
+  })
+  const modalSharedHistory = useMemo(
+    () => {
+      const byMarket = marketHistoryQuery.data || {}
+      for (const marketId of marketModalMarketIds) {
+        const history = byMarket[marketId]
+        if (Array.isArray(history) && history.length >= 2) return history
+      }
+      return []
+    },
+    [marketHistoryQuery.data, marketModalMarketIds]
+  )
   const allDecisions = allDecisionsQuery.data || []
   const allEvents = allEventsQuery.data || []
   const decisionSignalPayloadByDecisionId = useMemo(() => {
@@ -2531,6 +3657,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => traders.find((trader) => trader.id === selectedTraderId) || null,
     [traders, selectedTraderId]
   )
+
+  useEffect(() => {
+    setSelectedTraderId((current) => {
+      if (!current) return current
+      return traders.some((trader) => trader.id === current) ? current : null
+    })
+  }, [traders])
 
   const selectedOrdersQuery = useQuery({
     queryKey: ['trader-orders', selectedTraderId],
@@ -2562,6 +3695,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => allEvents.filter((event) => event.trader_id === selectedTraderId),
     [allEvents, selectedTraderId]
   )
+  const selectedDecisionById = useMemo(() => {
+    const byId = new Map<string, Record<string, unknown>>()
+    for (const decision of selectedDecisions) {
+      const decisionId = cleanText(decision.id)
+      if (!decisionId) continue
+      byId.set(decisionId, decision as unknown as Record<string, unknown>)
+    }
+    return byId
+  }, [selectedDecisions])
 
   const sourceCards = useMemo(() => {
     return uniqueSourceList(sourceCatalog.map((source) => source.key))
@@ -2573,9 +3715,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       }))
   }, [sourceCatalog])
 
+  const copySourceTraders = useMemo(
+    () => allTraders
+      .filter((trader) => trader.mode === draftCopyFromMode)
+      .slice()
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    [allTraders, draftCopyFromMode]
+  )
+
   const selectedSourceKeySet = useMemo(
     () => new Set(csvToList(draftSources).map((sourceKey) => normalizeSourceKey(sourceKey))),
     [draftSources]
+  )
+  const tradersSourceEnabled = useMemo(
+    () => selectedSourceKeySet.has('traders'),
+    [selectedSourceKeySet]
   )
 
   const selectedSourceCount = useMemo(
@@ -2643,100 +3797,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => selectedSourceKeySet.has('crypto'),
     [selectedSourceKeySet]
   )
-  const selectedCryptoStrategyDetail = useMemo(
-    () => sourceStrategyDetailsLookup.crypto?.[cryptoStrategyKeyDraft] || null,
-    [cryptoStrategyKeyDraft, sourceStrategyDetailsLookup]
-  )
-  const tradersStrategyKeyDraft = useMemo(
-    () => effectiveSourceStrategies.traders || defaultStrategyForSource('traders', sourceCards),
-    [effectiveSourceStrategies, sourceCards]
-  )
-  const selectedTradersStrategyDetail = useMemo(
-    () => sourceStrategyDetailsLookup.traders?.[tradersStrategyKeyDraft] || null,
-    [sourceStrategyDetailsLookup, tradersStrategyKeyDraft]
-  )
-  const cryptoModeParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_MODE_PARAM_KEYS),
-    [selectedCryptoStrategyDetail]
-  )
-  const cryptoStrategyModeOptions = useMemo(() => {
-    const options = cryptoModeOptionsForStrategy(selectedCryptoStrategyDetail)
-    if (options.length > 0) return options
-    if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_STRATEGY_MODES]
-    return []
-  }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
-  const cryptoIncludeAssetParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_INCLUDE_ASSET_PARAM_KEYS),
-    [selectedCryptoStrategyDetail]
-  )
-  const cryptoExcludeAssetParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_EXCLUDE_ASSET_PARAM_KEYS),
-    [selectedCryptoStrategyDetail]
-  )
-  const cryptoIncludeTimeframeParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_INCLUDE_TIMEFRAME_PARAM_KEYS),
-    [selectedCryptoStrategyDetail]
-  )
-  const cryptoExcludeTimeframeParamKey = useMemo(
-    () => strategyParamKey(selectedCryptoStrategyDetail, CRYPTO_EXCLUDE_TIMEFRAME_PARAM_KEYS),
-    [selectedCryptoStrategyDetail]
-  )
-  const cryptoAssetOptions = useMemo(() => {
-    const options = cryptoAssetOptionsForStrategy(selectedCryptoStrategyDetail)
-    if (options.length > 0) return options
-    if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_ASSET_OPTIONS]
-    return []
-  }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
-  const cryptoTimeframeOptions = useMemo(() => {
-    const options = cryptoTimeframeOptionsForStrategy(selectedCryptoStrategyDetail)
-    if (options.length > 0) return options
-    if (isFixedTimeframeCryptoStrategyKey(cryptoStrategyKeyDraft)) return [...CRYPTO_TIMEFRAME_OPTIONS]
-    return []
-  }, [cryptoStrategyKeyDraft, selectedCryptoStrategyDetail])
-  const cryptoTimeframeDraft = useMemo(
-    () => cryptoTimeframeForStrategyKey(cryptoStrategyKeyDraft),
-    [cryptoStrategyKeyDraft]
-  )
-  const selectedCryptoAssets = useMemo(
-    () =>
-      new Set(
-        normalizeCryptoAssetList(
-          advancedConfig.cryptoAssetsCsv,
-          cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
-        )
-      ),
-    [advancedConfig.cryptoAssetsCsv, cryptoAssetOptions]
-  )
-  const selectedExcludedCryptoAssets = useMemo(
-    () =>
-      new Set(
-        normalizeCryptoAssetList(
-          advancedConfig.cryptoExcludedAssetsCsv,
-          cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
-        )
-      ),
-    [advancedConfig.cryptoExcludedAssetsCsv, cryptoAssetOptions]
-  )
-  const selectedCryptoIncludedTimeframes = useMemo(
-    () =>
-      new Set(
-        normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv)
-      ),
-    [advancedConfig.cryptoIncludedTimeframesCsv]
-  )
-  const selectedCryptoExcludedTimeframes = useMemo(
-    () =>
-      new Set(
-        normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv)
-      ),
-    [advancedConfig.cryptoExcludedTimeframesCsv]
-  )
-  const tradersStrategyFormSchema = useMemo(
-    () => ({
-      param_fields: Array.isArray(selectedTradersStrategyDetail?.paramFields) ? selectedTradersStrategyDetail.paramFields : [],
-    }),
-    [selectedTradersStrategyDetail]
-  )
   const riskFormSchema = useMemo(
     () => ({
       param_fields: Array.isArray(traderConfigSchema?.shared_risk_fields) ? traderConfigSchema.shared_risk_fields : [],
@@ -2755,55 +3815,49 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     const baseFields = Array.isArray(traderConfigSchema?.copy_trading_schema?.param_fields)
       ? traderConfigSchema.copy_trading_schema.param_fields
       : []
+    const accountOptions = simulationAccounts
+      .map((account) => {
+        const value = String(account.id || '').trim()
+        if (!value) return null
+        const label = String(account.name || account.id || '').trim() || value
+        return { value, label }
+      })
+      .filter((option): option is { value: string; label: string } => Boolean(option))
+    const existingAccountId = String(draftCopyTrading.account_id || '').trim()
+    if (existingAccountId && !accountOptions.some((option) => option.value === existingAccountId)) {
+      accountOptions.unshift({ value: existingAccountId, label: existingAccountId })
+    }
     const mode = draftCopyTrading.copy_mode_type
     const tradeMode = draftCopyTrading.copy_trade_mode
     const proportionalSizing = draftCopyTrading.proportional_sizing
+    const filteredFields = baseFields.filter((field: Record<string, unknown>) => {
+      const key = String(field.key || '').trim()
+      if (!key) return false
+      if (mode === 'disabled') {
+        return key === 'copy_mode_type'
+      }
+      if (mode !== 'individual' && key === 'individual_wallet') return false
+      if (tradeMode !== 'arb_only' && key === 'min_roi_threshold') return false
+      if (!proportionalSizing && key === 'proportional_multiplier') return false
+      return true
+    })
+    const accountField = accountOptions.length > 0
+      ? [{ key: 'account_id', label: 'Simulation Account', type: 'enum', options: accountOptions }]
+      : []
     return {
-      param_fields: baseFields.filter((field: Record<string, unknown>) => {
-        const key = String(field.key || '').trim()
-        if (!key) return false
-        if (mode === 'disabled') {
-          return key === 'copy_mode_type'
-        }
-        if (mode !== 'individual' && key === 'individual_wallet') return false
-        if (tradeMode !== 'arb_only' && key === 'min_roi_threshold') return false
-        if (!proportionalSizing && key === 'proportional_multiplier') return false
-        return true
-      }),
+      param_fields: [...accountField, ...filteredFields],
     }
-  }, [draftCopyTrading.copy_mode_type, draftCopyTrading.copy_trade_mode, draftCopyTrading.proportional_sizing, traderConfigSchema])
+  }, [
+    draftCopyTrading.account_id,
+    draftCopyTrading.copy_mode_type,
+    draftCopyTrading.copy_trade_mode,
+    draftCopyTrading.proportional_sizing,
+    simulationAccounts,
+    traderConfigSchema,
+  ])
   const parsedDraftParams = useMemo(() => parseJsonObject(draftParams || '{}'), [draftParams])
   const parsedDraftRisk = useMemo(() => parseJsonObject(draftRisk || '{}'), [draftRisk])
   const parsedDraftMetadata = useMemo(() => parseJsonObject(draftMetadata || '{}'), [draftMetadata])
-  const tradingScheduleDraft = useMemo(
-    () => normalizeTradingScheduleDraft(parsedDraftMetadata.value?.trading_schedule_utc),
-    [parsedDraftMetadata.value]
-  )
-  const riskFormValues = useMemo(
-    () => ({
-      ...(isRecord(traderConfigSchema?.shared_risk_defaults) ? traderConfigSchema.shared_risk_defaults : {}),
-      ...(parsedDraftRisk.value || {}),
-    }),
-    [parsedDraftRisk.value, traderConfigSchema]
-  )
-  const tradersStrategyFormValues = useMemo(
-    () => ({
-      ...(isRecord(selectedTradersStrategyDetail?.defaultParams) ? selectedTradersStrategyDetail?.defaultParams : {}),
-      ...(parsedDraftParams.value || {}),
-      traders_scope: {
-        modes: draftTradersScopeModes,
-        individual_wallets: draftTradersIndividualWallets,
-        group_ids: draftTradersGroupIds,
-      },
-    }),
-    [
-      draftTradersGroupIds,
-      draftTradersIndividualWallets,
-      draftTradersScopeModes,
-      parsedDraftParams.value,
-      selectedTradersStrategyDetail?.defaultParams,
-    ]
-  )
   const defaultSignalFilters = useMemo(
     () =>
       normalizeSignalFiltersConfig(
@@ -2835,7 +3889,123 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }),
     [copyTradingDefaults, defaultCopyTradingAccountId, draftCopyTrading]
   )
+  const dynamicStrategyParamSections = useMemo(() => {
+    const sharedParams = isRecord(parsedDraftParams.value) ? parsedDraftParams.value : {}
+    const sections: DynamicStrategyParamSection[] = []
 
+    for (const sourceKey of effectiveDraftSources) {
+      const strategyKey = normalizeStrategyKey(
+        normalizeStrategyKeyForSource(
+          sourceKey,
+          effectiveSourceStrategies[sourceKey] || defaultStrategyForSource(sourceKey, sourceCards),
+        ),
+      )
+      const strategyDetail = sourceStrategyDetailsLookup[sourceKey]?.[strategyKey] || null
+      if (!strategyDetail || !Array.isArray(strategyDetail.paramFields)) continue
+
+      const filteredFields = strategyDetail.paramFields.filter((field): field is Record<string, unknown> => {
+        if (!isRecord(field)) return false
+        const key = String(field.key || '').trim()
+        return Boolean(key)
+      })
+      if (filteredFields.length === 0) continue
+
+      const fieldKeys = filteredFields
+        .map((field) => String(field.key || '').trim())
+        .filter(Boolean)
+      if (fieldKeys.length === 0) continue
+
+      const defaults = isRecord(strategyDetail.defaultParams) ? strategyDetail.defaultParams : {}
+      const merged = { ...defaults, ...sharedParams }
+      const values: Record<string, unknown> = {}
+      for (const fieldKey of fieldKeys) {
+        if (Object.prototype.hasOwnProperty.call(merged, fieldKey)) {
+          values[fieldKey] = merged[fieldKey]
+        }
+      }
+
+      const sourceLabel = sourceCards.find((source) => normalizeSourceKey(source.key) === sourceKey)?.label || sourceKey.toUpperCase()
+      sections.push({
+        sectionKey: `${sourceKey}:${strategyKey}`,
+        sourceLabel,
+        strategyLabel: strategyDetail.label || strategyLabelForKey(strategyKey, sourceCards),
+        groups: groupStrategyParamFields(filteredFields),
+        fieldKeys,
+        values,
+        kind: 'strategy',
+      })
+    }
+
+    if (tradersSourceEnabled) {
+      const signalFields = traderOpportunityFilterSchema.param_fields.filter((field): field is Record<string, unknown> => {
+        if (!isRecord(field)) return false
+        const key = String(field.key || '').trim()
+        return Boolean(key)
+      })
+      if (signalFields.length > 0) {
+        const fieldKeys = signalFields
+          .map((field) => String(field.key || '').trim())
+          .filter(Boolean)
+        if (fieldKeys.length > 0) {
+          sections.push({
+            sectionKey: 'traders:signal_filters',
+            sourceLabel: 'Wallet Signals',
+            strategyLabel: 'Wallet Signal Filters (Global)',
+            groups: groupStrategyParamFields(signalFields),
+            fieldKeys,
+            values: draftSignalFilters as Record<string, unknown>,
+            kind: 'signal_filters',
+          })
+        }
+      }
+
+      const copyFields = copyTradingSchema.param_fields.filter((field): field is Record<string, unknown> => {
+        if (!isRecord(field)) return false
+        const key = String(field.key || '').trim()
+        return Boolean(key)
+      })
+      if (copyFields.length > 0) {
+        const fieldKeys = copyFields
+          .map((field) => String(field.key || '').trim())
+          .filter(Boolean)
+        if (fieldKeys.length > 0) {
+          sections.push({
+            sectionKey: 'traders:copy_trading',
+            sourceLabel: 'Wallet Signals',
+            strategyLabel: 'Copy Trading',
+            groups: groupStrategyParamFields(copyFields),
+            fieldKeys,
+            values: copyTradingFormValues,
+            kind: 'copy_trading',
+          })
+        }
+      }
+    }
+
+    return sections
+  }, [
+    copyTradingFormValues,
+    copyTradingSchema,
+    draftSignalFilters,
+    effectiveDraftSources,
+    effectiveSourceStrategies,
+    parsedDraftParams.value,
+    sourceCards,
+    sourceStrategyDetailsLookup,
+    traderOpportunityFilterSchema,
+    tradersSourceEnabled,
+  ])
+  const tradingScheduleDraft = useMemo(
+    () => normalizeTradingScheduleDraft(parsedDraftMetadata.value?.trading_schedule_utc),
+    [parsedDraftMetadata.value]
+  )
+  const riskFormValues = useMemo(
+    () => ({
+      ...(isRecord(traderConfigSchema?.shared_risk_defaults) ? traderConfigSchema.shared_risk_defaults : {}),
+      ...(parsedDraftRisk.value || {}),
+    }),
+    [parsedDraftRisk.value, traderConfigSchema]
+  )
   const setSourceStrategy = (sourceKey: string, strategyKey: string) => {
     const normalizedSource = normalizeSourceKey(sourceKey)
     const normalizedStrategy = normalizeStrategyKeyForSource(normalizedSource, strategyKey)
@@ -2887,132 +4057,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDraftSourceStrategies({})
   }
 
-  const toggleCryptoAssetTarget = (asset: string) => {
-    const availableAssets = cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
-    const next = new Set(normalizeCryptoAssetList(advancedConfig.cryptoAssetsCsv, availableAssets))
-    if (next.has(asset)) {
-      next.delete(asset)
-    } else {
-      next.add(asset)
-    }
-    setAdvancedValue('cryptoAssetsCsv', availableAssets.filter((item) => next.has(item)).join(', '))
-  }
-
-  const toggleExcludedCryptoAssetTarget = (asset: string) => {
-    const availableAssets = cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
-    const next = new Set(normalizeCryptoAssetList(advancedConfig.cryptoExcludedAssetsCsv, availableAssets))
-    if (next.has(asset)) {
-      next.delete(asset)
-    } else {
-      next.add(asset)
-    }
-    setAdvancedValue('cryptoExcludedAssetsCsv', availableAssets.filter((item) => next.has(item)).join(', '))
-  }
-
-  const toggleCryptoTimeframeTarget = (timeframe: string) => {
-    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
-    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv))
-    if (next.has(timeframe)) {
-      next.delete(timeframe)
-    } else {
-      next.add(timeframe)
-    }
-    setAdvancedValue('cryptoIncludedTimeframesCsv', availableTimeframes.filter((item) => next.has(item)).join(', '))
-  }
-
-  const toggleExcludedCryptoTimeframeTarget = (timeframe: string) => {
-    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
-    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv))
-    if (next.has(timeframe)) {
-      next.delete(timeframe)
-    } else {
-      next.add(timeframe)
-    }
-    setAdvancedValue('cryptoExcludedTimeframesCsv', availableTimeframes.filter((item) => next.has(item)).join(', '))
-  }
-
-  const enableAllCryptoTargets = () => {
-    const availableAssets = cryptoAssetOptions.length > 0 ? cryptoAssetOptions : [...CRYPTO_ASSET_OPTIONS]
-    const availableTimeframes = cryptoTimeframeOptions.length > 0 ? cryptoTimeframeOptions : [...CRYPTO_TIMEFRAME_OPTIONS]
-    if (availableAssets.length > 0) {
-      setAdvancedValue('cryptoAssetsCsv', availableAssets.join(', '))
-    }
-    setAdvancedValue('cryptoExcludedAssetsCsv', '')
-    if (cryptoTimeframeDraft) {
-      setAdvancedValue('cryptoIncludedTimeframesCsv', cryptoTimeframeDraft)
-      setAdvancedValue('cryptoExcludedTimeframesCsv', '')
-      return
-    }
-    if (availableTimeframes.length > 0) {
-      setAdvancedValue('cryptoIncludedTimeframesCsv', availableTimeframes.join(', '))
-    }
-    setAdvancedValue('cryptoExcludedTimeframesCsv', '')
-  }
+  useEffect(() => {
+    if (traderFlyoutMode !== 'create') return
+    setDraftMode(selectedAccountMode)
+  }, [selectedAccountMode, traderFlyoutMode])
 
   useEffect(() => {
-    if (!isCryptoStrategyDraft || cryptoStrategyModeOptions.length === 0) return
-    const normalizedMode = normalizeCryptoStrategyMode(
-      advancedConfig.strategyMode,
-      cryptoStrategyModeOptions,
-      cryptoStrategyModeOptions[0]
-    )
-    if (normalizedMode === advancedConfig.strategyMode) return
-    setAdvancedConfig((current) => ({ ...current, strategyMode: normalizedMode }))
-  }, [advancedConfig.strategyMode, cryptoStrategyModeOptions, isCryptoStrategyDraft])
-
-  useEffect(() => {
-    if (!isCryptoStrategyDraft || cryptoAssetOptions.length === 0) return
-    const normalizedAssets = normalizeCryptoAssetList(
-      advancedConfig.cryptoAssetsCsv,
-      cryptoAssetOptions
-    ).join(', ')
-    if (normalizedAssets === advancedConfig.cryptoAssetsCsv) return
-    setAdvancedConfig((current) => ({ ...current, cryptoAssetsCsv: normalizedAssets }))
-  }, [advancedConfig.cryptoAssetsCsv, cryptoAssetOptions, isCryptoStrategyDraft])
-
-  useEffect(() => {
-    if (!isCryptoStrategyDraft || cryptoAssetOptions.length === 0) return
-    const normalizedAssets = normalizeCryptoAssetList(
-      advancedConfig.cryptoExcludedAssetsCsv,
-      cryptoAssetOptions
-    ).join(', ')
-    if (normalizedAssets === advancedConfig.cryptoExcludedAssetsCsv) return
-    setAdvancedConfig((current) => ({ ...current, cryptoExcludedAssetsCsv: normalizedAssets }))
-  }, [advancedConfig.cryptoExcludedAssetsCsv, cryptoAssetOptions, isCryptoStrategyDraft])
-
-  useEffect(() => {
-    if (!isCryptoStrategyDraft || cryptoTimeframeOptions.length === 0) return
-    const allowed = new Set(cryptoTimeframeOptions)
-    const normalizedTimeframes = normalizeCryptoTimeframeList(advancedConfig.cryptoIncludedTimeframesCsv)
-      .filter((item) => allowed.has(item))
-      .join(', ')
-    if (normalizedTimeframes === advancedConfig.cryptoIncludedTimeframesCsv) return
-    setAdvancedConfig((current) => ({ ...current, cryptoIncludedTimeframesCsv: normalizedTimeframes }))
-  }, [advancedConfig.cryptoIncludedTimeframesCsv, cryptoTimeframeOptions, isCryptoStrategyDraft])
-
-  useEffect(() => {
-    if (!isCryptoStrategyDraft || cryptoTimeframeOptions.length === 0) return
-    const allowed = new Set(cryptoTimeframeOptions)
-    const normalizedTimeframes = normalizeCryptoTimeframeList(advancedConfig.cryptoExcludedTimeframesCsv)
-      .filter((item) => allowed.has(item))
-      .join(', ')
-    if (normalizedTimeframes === advancedConfig.cryptoExcludedTimeframesCsv) return
-    setAdvancedConfig((current) => ({ ...current, cryptoExcludedTimeframesCsv: normalizedTimeframes }))
-  }, [advancedConfig.cryptoExcludedTimeframesCsv, cryptoTimeframeOptions, isCryptoStrategyDraft])
-
-  useEffect(() => {
-    if (selectedDecisions.length === 0) {
-      setSelectedDecisionId(null)
-      return
+    if (traderFlyoutMode !== 'create') return
+    if (!draftCopyFromTraderId) return
+    const match = allTraders.find((trader) => trader.id === draftCopyFromTraderId)
+    if (!match || match.mode !== draftCopyFromMode) {
+      setDraftCopyFromTraderId('')
     }
-
-    setSelectedDecisionId((current) => {
-      if (current && selectedDecisions.some((decision) => decision.id === current)) {
-        return current
-      }
-      return selectedDecisions[0].id
-    })
-  }, [selectedDecisions])
+  }, [allTraders, draftCopyFromMode, draftCopyFromTraderId, traderFlyoutMode])
 
   const decisionDetailQuery = useQuery({
     queryKey: ['trader-decision-detail', selectedDecisionId],
@@ -3074,7 +4131,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
   const applyTraderDraftSettings = (
     trader: Trader,
-    options: { preserveName?: boolean; preserveCopyFrom?: boolean } = {}
+    options: { preserveName?: boolean; preserveCopyFrom?: boolean; preserveMode?: boolean } = {}
   ) => {
     const traderSourceConfigs = Array.isArray(trader.source_configs) ? trader.source_configs : []
     const normalizedSourceKeys = uniqueSourceList(
@@ -3090,47 +4147,32 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       )
     }
     const primaryParams = (traderSourceConfigs[0]?.strategy_params || {}) as Record<string, unknown>
-    const cryptoParams =
-      (traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'crypto')?.strategy_params ||
-        primaryParams) as Record<string, unknown>
     const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')
       ?.strategy_params?.traders_scope
+    const mergedDraftParams: Record<string, unknown> = { ...primaryParams }
+    if (tradersScope !== undefined) {
+      mergedDraftParams.traders_scope = normalizeTradersScopeConfig(tradersScope)
+    }
 
     if (!options.preserveName) {
       setDraftName(trader.name)
     }
     setDraftDescription(trader.description || '')
+    if (!options.preserveMode) {
+      setDraftMode(trader.mode === 'live' ? 'live' : 'paper')
+    }
     setDraftStrategyKey(normalizeStrategyKey(sourceStrategyMap.crypto || DEFAULT_STRATEGY_KEY))
     setDraftSourceStrategies(sourceStrategyMap)
     setDraftInterval(String(trader.interval_seconds || 60))
     setDraftSources(normalizedSourceKeys.join(', ') || defaultSourceCsv)
     const risk = trader.risk_limits || {}
     const metadata = trader.metadata || {}
-    setDraftParams(JSON.stringify(primaryParams, null, 2))
+    setDraftParams(JSON.stringify(mergedDraftParams, null, 2))
     setDraftRisk(JSON.stringify(risk, null, 2))
     setDraftMetadata(JSON.stringify(metadata, null, 2))
     if (!options.preserveCopyFrom) {
       setDraftCopyFromTraderId('')
     }
-    setAdvancedConfig(computeAdvancedConfig(cryptoParams))
-    const tradersScopeRecord = isRecord(tradersScope) ? tradersScope : {}
-    setDraftTradersScopeModes(
-      (toStringList(tradersScopeRecord.modes).length > 0 ? toStringList(tradersScopeRecord.modes) : ['tracked', 'pool'])
-        .map((mode) => String(mode || '').toLowerCase())
-        .filter((mode): mode is TradersScopeMode =>
-          mode === 'tracked' || mode === 'pool' || mode === 'individual' || mode === 'group'
-        )
-    )
-    setDraftTradersIndividualWallets(
-      toStringList(tradersScopeRecord.individual_wallets)
-        .map((wallet) => String(wallet || '').trim().toLowerCase())
-        .filter(Boolean)
-    )
-    setDraftTradersGroupIds(
-      toStringList(tradersScopeRecord.group_ids)
-        .map((groupId) => String(groupId || '').trim())
-        .filter(Boolean)
-    )
   }
 
   const applyCreateCopyFromSelection = (value: string) => {
@@ -3141,13 +4183,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       return
     }
 
-    const sourceTrader = traders.find((trader) => trader.id === sourceTraderId)
+    const sourceTrader = allTraders.find((trader) => trader.id === sourceTraderId)
     if (!sourceTrader) {
       setSaveError('Selected copy source bot was not found. Refresh and try again.')
       return
     }
 
-    applyTraderDraftSettings(sourceTrader, { preserveName: true, preserveCopyFrom: true })
+    applyTraderDraftSettings(sourceTrader, { preserveName: true, preserveCopyFrom: true, preserveMode: true })
     setSaveError(null)
   }
 
@@ -3163,14 +4205,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDraftSourceStrategies(defaultStrategies)
     setDraftInterval('5')
     setDraftSources(defaultSources.join(', '))
-    setDraftTradersScopeModes(['tracked', 'pool'])
-    setDraftTradersIndividualWallets([])
-    setDraftTradersGroupIds([])
     setDraftParams('{}')
     setDraftRisk(JSON.stringify(isRecord(traderConfigSchema?.shared_risk_defaults) ? traderConfigSchema.shared_risk_defaults : {}, null, 2))
     setDraftMetadata('{}')
+    setDraftMode(selectedAccountMode)
     setDraftCopyFromTraderId('')
-    setAdvancedConfig(defaultAdvancedConfig())
+    setDraftCopyFromMode(selectedAccountMode)
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
@@ -3203,6 +4243,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setSelectedTraderId(trader.id)
     setTraderFlyoutMode('edit')
     applyTraderDraftSettings(trader)
+    setDraftCopyFromMode(trader.mode === 'live' ? 'live' : 'paper')
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
@@ -3231,32 +4272,28 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setTraderFlyoutOpen(true)
   }
 
-  const setCt = (partial: Partial<CopyTradingFormState>) =>
-    setDraftCopyTrading((prev) => normalizeCopyTradingConfig({ ...prev, ...partial }))
-
-  const setAdvancedValue = <K extends keyof TraderAdvancedConfig>(key: K, value: TraderAdvancedConfig[K]) => {
-    setAdvancedConfig((current) => ({ ...current, [key]: value }))
-  }
-
-  const applyTradersStrategyFormValues = (values: Record<string, unknown>) => {
-    const nextValues = { ...values }
-    const rawScope = isRecord(nextValues.traders_scope) ? nextValues.traders_scope : {}
-    const scopeModes = toStringList(rawScope.modes)
-      .map((mode) => String(mode || '').trim().toLowerCase())
-      .filter((mode): mode is TradersScopeMode =>
-        mode === 'tracked' || mode === 'pool' || mode === 'individual' || mode === 'group'
-      )
-    const normalizedScopeModes: TradersScopeMode[] = scopeModes.length > 0 ? scopeModes : ['tracked']
-    const normalizedScope = {
-      modes: normalizedScopeModes,
-      individual_wallets: toStringList(rawScope.individual_wallets).map((wallet) => wallet.toLowerCase()),
-      group_ids: toStringList(rawScope.group_ids),
-    }
-    setDraftTradersScopeModes(normalizedScope.modes)
-    setDraftTradersIndividualWallets(normalizedScope.individual_wallets)
-    setDraftTradersGroupIds(normalizedScope.group_ids)
-    nextValues.traders_scope = normalizedScope
-    setDraftParams(JSON.stringify(nextValues, null, 2))
+  const applyDynamicStrategyFormValues = (
+    fieldKeys: string[],
+    values: Record<string, unknown>,
+  ) => {
+    setDraftParams((current) => {
+      const parsed = parseJsonObject(current || '{}')
+      const nextValues = isRecord(parsed.value) ? { ...parsed.value } : {}
+      for (const key of fieldKeys) {
+        if (!Object.prototype.hasOwnProperty.call(values, key)) continue
+        const value = values[key]
+        if (value === undefined) {
+          delete nextValues[key]
+          continue
+        }
+        if (key === 'traders_scope') {
+          nextValues[key] = normalizeTradersScopeConfig(value)
+        } else {
+          nextValues[key] = value
+        }
+      }
+      return JSON.stringify(nextValues, null, 2)
+    })
   }
 
   const setDraftRiskFromForm = (values: Record<string, unknown>) => {
@@ -3302,29 +4339,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   }
 
   const applyCopyTradingFormValues = (values: Record<string, unknown>) => {
-    setDraftCopyTrading((previous) =>
-      normalizeCopyTradingConfig({
+    setDraftCopyTrading((previous) => {
+      const hasAccountId = Object.prototype.hasOwnProperty.call(values, 'account_id')
+      const nextAccountIdRaw = hasAccountId
+        ? String(values.account_id || '').trim()
+        : String(previous.account_id || '').trim()
+      const nextAccountId = nextAccountIdRaw === '__none__' ? '' : nextAccountIdRaw
+      return normalizeCopyTradingConfig({
         ...previous,
         ...values,
-        account_id: previous.account_id || defaultCopyTradingAccountId,
+        account_id: nextAccountId || defaultCopyTradingAccountId,
       })
-    )
-  }
-
-  const toggleIndividualWallet = (wallet: string) => {
-    const normalized = String(wallet || '').trim().toLowerCase()
-    if (!normalized) return
-    setDraftTradersIndividualWallets((current) =>
-      current.includes(normalized) ? current.filter((item) => item !== normalized) : [...current, normalized]
-    )
-  }
-
-  const toggleTradersGroup = (groupId: string) => {
-    const normalized = String(groupId || '').trim()
-    if (!normalized) return
-    setDraftTradersGroupIds((current) =>
-      current.includes(normalized) ? current.filter((item) => item !== normalized) : [...current, normalized]
-    )
+    })
   }
 
   const buildDraftSourceConfigs = (rawStrategyParams: Record<string, unknown>): TraderSourceConfig[] => {
@@ -3340,19 +4366,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const nextConfig: TraderSourceConfig = {
         source_key: sourceKey,
         strategy_key: strategyKey,
-        strategy_params: withConfiguredParams(rawStrategyParams, advancedConfig, sourceKey, strategyKey, strategyDetail),
-      }
-      if (sourceKey === 'traders') {
-        nextConfig.strategy_params = {
-          ...nextConfig.strategy_params,
-          traders_scope: {
-            modes: draftTradersScopeModes,
-            individual_wallets: draftTradersIndividualWallets,
-            group_ids: draftTradersGroupIds,
-          },
-        }
-      } else if (isRecord(nextConfig.strategy_params)) {
-        delete nextConfig.strategy_params.traders_scope
+        strategy_params: buildSourceStrategyParams(rawStrategyParams, sourceKey, strategyDetail),
       }
       configs.push(nextConfig)
     }
@@ -3471,6 +4485,190 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     onSuccess: refreshAll,
   })
 
+  const updateGlobalSettingsMutation = useMutation({
+    mutationFn: async () => {
+      const runIntervalSeconds = Math.trunc(clampNumber(toNumber(globalSettingsDraft.runIntervalSeconds), 1, 300, 5))
+      const maxGrossExposureUsd = clampNumber(
+        toNumber(globalSettingsDraft.maxGrossExposureUsd),
+        1,
+        1_000_000,
+        DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_gross_exposure_usd,
+      )
+      const maxDailyLossUsd = clampNumber(
+        toNumber(globalSettingsDraft.maxDailyLossUsd),
+        0,
+        1_000_000,
+        DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_daily_loss_usd,
+      )
+      const maxOrdersPerCycle = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxOrdersPerCycle),
+          1,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_orders_per_cycle,
+        )
+      )
+      const pendingExitMaxAllowed = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.pendingExitMaxAllowed),
+          0,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.max_pending_exits,
+        )
+      )
+      const minCooldownSeconds = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.minCooldownSeconds),
+          0,
+          86400,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.min_cooldown_seconds,
+        )
+      )
+      const maxConsecutiveLossesCap = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxConsecutiveLossesCap),
+          1,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_consecutive_losses_cap,
+        )
+      )
+      const maxOpenOrdersCap = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxOpenOrdersCap),
+          1,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_open_orders_cap,
+        )
+      )
+      const maxOpenPositionsCap = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxOpenPositionsCap),
+          1,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_open_positions_cap,
+        )
+      )
+      const maxTradeNotionalUsdCap = clampNumber(
+        toNumber(globalSettingsDraft.maxTradeNotionalUsdCap),
+        1,
+        1_000_000,
+        DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_trade_notional_usd_cap,
+      )
+      const maxOrdersPerCycleCap = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxOrdersPerCycleCap),
+          1,
+          1000,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_risk_clamps.max_orders_per_cycle_cap,
+        )
+      )
+      const liveMarketHistoryWindowSeconds = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveMarketHistoryWindowSeconds),
+          300,
+          21600,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.history_window_seconds,
+        )
+      )
+      const liveMarketHistoryFidelitySeconds = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveMarketHistoryFidelitySeconds),
+          30,
+          1800,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.history_fidelity_seconds,
+        )
+      )
+      const liveMarketHistoryMaxPoints = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveMarketHistoryMaxPoints),
+          20,
+          240,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.max_history_points,
+        )
+      )
+      const liveMarketContextTimeoutSeconds = clampNumber(
+        toNumber(globalSettingsDraft.liveMarketContextTimeoutSeconds),
+        1,
+        12,
+        DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.timeout_seconds,
+      )
+      const liveProviderHealthWindowSeconds = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveProviderHealthWindowSeconds),
+          30,
+          900,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.window_seconds,
+        )
+      )
+      const liveProviderHealthMinErrors = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveProviderHealthMinErrors),
+          1,
+          20,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.min_errors,
+        )
+      )
+      const liveProviderHealthBlockSeconds = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.liveProviderHealthBlockSeconds),
+          15,
+          3600,
+          DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_provider_health.block_seconds,
+        )
+      )
+      const traderCycleTimeoutRaw = globalSettingsDraft.traderCycleTimeoutSeconds.trim()
+      const traderCycleTimeoutSeconds = traderCycleTimeoutRaw
+        ? clampNumber(toNumber(traderCycleTimeoutRaw), 3, 120, 0)
+        : null
+      return updateTraderOrchestratorSettings({
+        run_interval_seconds: runIntervalSeconds,
+        global_risk: {
+          max_gross_exposure_usd: maxGrossExposureUsd,
+          max_daily_loss_usd: maxDailyLossUsd,
+          max_orders_per_cycle: maxOrdersPerCycle,
+        },
+        global_runtime: {
+          pending_live_exit_guard: {
+            max_pending_exits: pendingExitMaxAllowed,
+            identity_guard_enabled: globalSettingsDraft.pendingExitIdentityGuardEnabled,
+            terminal_statuses: normalizePendingExitTerminalStatusesCsv(globalSettingsDraft.pendingExitTerminalStatuses),
+          },
+          live_risk_clamps: {
+            enforce_allow_averaging_off: globalSettingsDraft.enforceAllowAveragingOff,
+            min_cooldown_seconds: minCooldownSeconds,
+            max_consecutive_losses_cap: maxConsecutiveLossesCap,
+            max_open_orders_cap: maxOpenOrdersCap,
+            max_open_positions_cap: maxOpenPositionsCap,
+            max_trade_notional_usd_cap: maxTradeNotionalUsdCap,
+            max_orders_per_cycle_cap: maxOrdersPerCycleCap,
+            enforce_halt_on_consecutive_losses: globalSettingsDraft.enforceHaltOnConsecutiveLosses,
+          },
+          live_market_context: {
+            enabled: globalSettingsDraft.liveMarketContextEnabled,
+            history_window_seconds: liveMarketHistoryWindowSeconds,
+            history_fidelity_seconds: liveMarketHistoryFidelitySeconds,
+            max_history_points: liveMarketHistoryMaxPoints,
+            timeout_seconds: liveMarketContextTimeoutSeconds,
+          },
+          live_provider_health: {
+            window_seconds: liveProviderHealthWindowSeconds,
+            min_errors: liveProviderHealthMinErrors,
+            block_seconds: liveProviderHealthBlockSeconds,
+          },
+          trader_cycle_timeout_seconds: traderCycleTimeoutSeconds,
+        },
+      })
+    },
+    onSuccess: () => {
+      setGlobalSettingsSaveError(null)
+      setGlobalSettingsFlyoutOpen(false)
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setGlobalSettingsSaveError(errorMessage(error, 'Failed to update global orchestrator settings'))
+    },
+  })
+
   const traderEnableMutation = useMutation({
     mutationFn: (traderId: string) => updateTrader(traderId, { is_enabled: true, is_paused: false }),
     onSuccess: refreshAll,
@@ -3557,10 +4755,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         throw new Error('Enable at least one source.')
       }
       const tradersEnabled = effectiveDraftSources.includes('traders')
-      if (tradersEnabled && draftTradersScopeModes.includes('individual') && draftTradersIndividualWallets.length === 0) {
+      const tradersScope = normalizeTradersScopeConfig(parsedParams.value.traders_scope)
+      if (tradersEnabled && tradersScope.modes.includes('individual') && tradersScope.individual_wallets.length === 0) {
         throw new Error('Select at least one individual wallet for wallet scope.')
       }
-      if (tradersEnabled && draftTradersScopeModes.includes('group') && draftTradersGroupIds.length === 0) {
+      if (tradersEnabled && tradersScope.modes.includes('group') && tradersScope.group_ids.length === 0) {
         throw new Error('Select at least one group for wallet scope.')
       }
 
@@ -3569,6 +4768,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const payload: Record<string, unknown> = {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
+        mode: draftMode,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
         source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: parsedRisk.value,
@@ -3615,10 +4815,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         throw new Error('Enable at least one source.')
       }
       const tradersEnabled = effectiveDraftSources.includes('traders')
-      if (tradersEnabled && draftTradersScopeModes.includes('individual') && draftTradersIndividualWallets.length === 0) {
+      const tradersScope = normalizeTradersScopeConfig(parsedParams.value.traders_scope)
+      if (tradersEnabled && tradersScope.modes.includes('individual') && tradersScope.individual_wallets.length === 0) {
         throw new Error('Select at least one individual wallet for wallet scope.')
       }
-      if (tradersEnabled && draftTradersScopeModes.includes('group') && draftTradersGroupIds.length === 0) {
+      if (tradersEnabled && tradersScope.modes.includes('group') && tradersScope.group_ids.length === 0) {
         throw new Error('Select at least one group for wallet scope.')
       }
 
@@ -3627,6 +4828,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       return updateTrader(traderId, {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
+        mode: draftMode,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
         source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: parsedRisk.value,
@@ -3682,17 +4884,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   })
 
   const worker = overviewQuery.data?.worker
+  const orchestratorConfig = overviewQuery.data?.config || null
   const metrics = overviewQuery.data?.metrics
   const killSwitchOn = Boolean(overviewQuery.data?.control?.kill_switch)
-  const globalMode = String(overviewQuery.data?.control?.mode || 'paper').toLowerCase()
   const orchestratorEnabled = Boolean(overviewQuery.data?.control?.is_enabled) && !Boolean(overviewQuery.data?.control?.is_paused)
   const workerActivity = String(worker?.current_activity || '').trim().toLowerCase()
   const orchestratorWorkerRunning = Boolean(worker?.running)
   const orchestratorRunning = orchestratorEnabled && orchestratorWorkerRunning
   const orchestratorBlocked = orchestratorEnabled && !orchestratorWorkerRunning && workerActivity.startsWith('blocked')
   const orchestratorStatusLabel = orchestratorBlocked ? 'BLOCKED' : orchestratorRunning ? 'RUNNING' : 'STOPPED'
-
-  const modeMismatch = selectedAccountValid && orchestratorEnabled && globalMode !== selectedAccountMode
 
   const controlBusy =
     startBySelectedAccountMutation.isPending ||
@@ -3702,11 +4902,97 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     createTraderMutation.isPending ||
     saveTraderMutation.isPending ||
     deleteTraderMutation.isPending
+  const globalSettingsBusy = updateGlobalSettingsMutation.isPending
+
+  useEffect(() => {
+    if (globalSettingsFlyoutOpen) return
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
+  }, [globalSettingsFlyoutOpen, orchestratorConfig])
 
   const traderNameById = useMemo(
     () => Object.fromEntries(traders.map((trader) => [trader.id, trader.name])) as Record<string, string>,
     [traders]
   )
+  const closeMarketModal = () => setMarketModalState(null)
+
+  const openTradeMarketModal = (params: {
+    market: CryptoMarket | null
+    order: TraderOrder
+    directionSide: DirectionSide | null
+    directionLabel: string
+    statusSummary: string
+    executionSummary: string
+    outcomeSummary: string | null
+    links: {
+      polymarket: string | null
+      kalshi: string | null
+    }
+  }) => {
+    const {
+      market,
+      order,
+      directionSide,
+      directionLabel,
+      statusSummary,
+      executionSummary,
+      outcomeSummary,
+      links,
+    } = params
+    const traderId = cleanText(order.trader_id) || null
+    const traderName = traderId ? (traderNameById[traderId] || shortId(traderId)) : 'All Bots'
+    const modeSummary = String(order.mode || '').trim().toUpperCase() || 'N/A'
+    setMarketModalState({
+      market,
+      scope: {
+        kind: 'trade',
+        traderId,
+        traderName,
+        marketId: String(order.market_id || ''),
+        marketIds: collectOrderMarketAliasIds(order),
+        marketQuestion: String(order.market_question || order.market_id || market?.question || 'Unknown market'),
+        directionSide,
+        directionLabel,
+        anchorOrderId: String(order.id || ''),
+        sourceSummary: String(order.source || '').trim().toUpperCase() || 'UNKNOWN',
+        statusSummary,
+        modeSummary,
+        executionSummary,
+        outcomeSummary,
+        links,
+      },
+    })
+  }
+
+  const openPositionMarketModal = (params: {
+    market: CryptoMarket | null
+    row: PositionBookRow
+    traderId?: string | null
+    traderName?: string
+  }) => {
+    const { market, row } = params
+    const traderId = params.traderId ?? row.traderId ?? null
+    const traderName = params.traderName || row.traderName || (traderId ? (traderNameById[traderId] || shortId(traderId)) : 'All Bots')
+    setMarketModalState({
+      market,
+      scope: {
+        kind: 'position',
+        traderId,
+        traderName,
+        marketId: row.marketId,
+        marketIds: row.marketAliases.length > 0 ? row.marketAliases : [normalizeMarketAlias(row.marketId)],
+        marketQuestion: row.marketQuestion,
+        directionSide: row.directionSide,
+        directionLabel: row.direction,
+        anchorOrderId: null,
+        sourceSummary: row.sourceSummary,
+        statusSummary: row.statusSummary,
+        modeSummary: `${row.liveOrderCount}L/${row.paperOrderCount}P`,
+        executionSummary: row.executionSummary,
+        outcomeSummary: null,
+        links: row.links,
+      },
+    })
+  }
 
   const globalSummary = useMemo(() => {
     let resolved = 0
@@ -3874,29 +5160,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [globalPositionBook, selectedTraderId]
   )
 
-  const filteredSelectedPositionBook = useMemo(() => {
-    const query = positionSearch.trim().toLowerCase()
-    const rows = selectedPositionBook.filter((row) => {
-      if (positionDirectionFilter === 'yes' && !isYesDirection(row.directionSide || row.direction)) return false
-      if (positionDirectionFilter === 'no' && !isNoDirection(row.directionSide || row.direction)) return false
-      if (!query) return true
-      const haystack = `${row.marketQuestion} ${row.marketId} ${row.sourceSummary} ${row.statusSummary} ${row.direction} ${row.directionSide || ''} ${row.executionSummary}`.toLowerCase()
-      return haystack.includes(query)
-    })
-    return sortPositionRows(rows, positionSortField, positionSortDirection)
-  }, [
-    positionDirectionFilter,
-    positionSearch,
-    positionSortDirection,
-    positionSortField,
-    selectedPositionBook,
-  ])
-
-  const selectedPositionSummary = useMemo(
-    () => summarizePositionRows(filteredSelectedPositionBook),
-    [filteredSelectedPositionBook]
-  )
-
   const selectedTraderSummary = useMemo(() => {
     let resolved = 0
     let wins = 0
@@ -3964,16 +5227,138 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }
   }, [selectedOrders, selectedDecisions, selectedEvents.length])
 
+  const selectedPerformance = useMemo(() => {
+    const dimensions = selectedOrders.map((order) => {
+      const decisionId = cleanText(order.decision_id)
+      const decision = decisionId ? selectedDecisionById.get(decisionId) || null : null
+      return extractOrderPerformanceDimensions(order, decision)
+    })
+
+    const timeframeRows = buildPerformanceBuckets(selectedOrders, (_order, index) => {
+      const timeframe = dimensions[index]?.timeframe || 'unclassified'
+      return { key: timeframe, label: timeframe }
+    }).sort((left, right) => {
+      const leftRank = PERFORMANCE_TIMEFRAME_ORDER[left.key] ?? 99
+      const rightRank = PERFORMANCE_TIMEFRAME_ORDER[right.key] ?? 99
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return performanceBucketSort(left, right)
+    })
+
+    const modeRows = buildPerformanceBuckets(selectedOrders, (_order, index) => {
+      const mode = dimensions[index]?.mode || 'unclassified'
+      return { key: mode, label: mode }
+    }).sort((left, right) => {
+      const leftRank = PERFORMANCE_MODE_ORDER[left.key] ?? 99
+      const rightRank = PERFORMANCE_MODE_ORDER[right.key] ?? 99
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return performanceBucketSort(left, right)
+    })
+
+    const subStrategyRows = buildPerformanceBuckets(selectedOrders, (_order, index) => {
+      const subStrategy = dimensions[index]?.subStrategy || 'unclassified'
+      return { key: subStrategy, label: subStrategy }
+    }).sort(performanceBucketSort)
+
+    const timeframeModeRows = buildPerformanceBuckets(selectedOrders, (_order, index) => {
+      const timeframe = dimensions[index]?.timeframe || 'unclassified'
+      const mode = dimensions[index]?.mode || 'unclassified'
+      return {
+        key: `${mode}|${timeframe}`,
+        label: `${mode} + ${timeframe}`,
+      }
+    }).sort(performanceBucketSort)
+
+    const strategyRows = buildPerformanceBuckets(selectedOrders, (_order, index) => {
+      const strategyKey = dimensions[index]?.strategyKey || 'unknown'
+      return {
+        key: strategyKey,
+        label: strategyLabelForKey(strategyKey, sourceCatalog),
+      }
+    }).sort(performanceBucketSort)
+
+    let resolvedPnl = 0
+    let resolvedNotional = 0
+    let resolved = 0
+    let wins = 0
+    let losses = 0
+    let failed = 0
+    let open = 0
+    let allowanceErrorCount = 0
+
+    for (const order of selectedOrders) {
+      const status = normalizeStatus(order.status)
+      const pnl = toNumber(order.actual_profit)
+      const notional = Math.abs(toNumber(order.notional_usd))
+      if (RESOLVED_ORDER_STATUSES.has(status)) {
+        resolved += 1
+        resolvedPnl += pnl
+        resolvedNotional += notional
+        if (pnl > 0) wins += 1
+        if (pnl < 0) losses += 1
+      }
+      if (FAILED_ORDER_STATUSES.has(status)) failed += 1
+      if (OPEN_ORDER_STATUSES.has(status)) open += 1
+
+      const payload = isRecord(order.payload) ? order.payload : {}
+      const pendingExit = isRecord(payload.pending_live_exit) ? payload.pending_live_exit : {}
+      const allowanceText = [
+        cleanText(order.error_message),
+        cleanText(payload.error_message),
+        cleanText(payload.error),
+        cleanText(pendingExit.last_error),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      if (allowanceText.includes('not enough balance / allowance')) {
+        allowanceErrorCount += 1
+      }
+    }
+
+    return {
+      timeframeRows,
+      modeRows,
+      subStrategyRows,
+      timeframeModeRows,
+      strategyRows,
+      resolved,
+      wins,
+      losses,
+      failed,
+      open,
+      resolvedPnl,
+      resolvedNotional,
+      roiPercent: resolvedNotional > 0 ? (resolvedPnl / resolvedNotional) * 100 : 0,
+      allowanceErrorCount,
+    }
+  }, [selectedDecisionById, selectedOrders, sourceCatalog])
+
   const filteredDecisions = useMemo(() => {
     const q = decisionSearch.trim().toLowerCase()
     return selectedDecisions
       .filter((decision) => {
+        const outcome = normalizeDecisionOutcome(decision.decision)
+        if (decisionOutcomeFilter !== 'all' && outcome !== decisionOutcomeFilter) return false
         if (!q) return true
-        const haystack = `${decision.source} ${decision.strategy_key} ${decision.reason || ''} ${decision.decision}`.toLowerCase()
+        const marketLabel = resolveDecisionMarketLabel(decision)
+        const haystack = `${marketLabel} ${decision.source} ${decision.strategy_key} ${decision.reason || ''} ${decision.decision}`.toLowerCase()
         return haystack.includes(q)
       })
       .slice(0, 200)
-  }, [selectedDecisions, decisionSearch])
+  }, [selectedDecisions, decisionSearch, decisionOutcomeFilter])
+
+  useEffect(() => {
+    if (filteredDecisions.length === 0) {
+      setSelectedDecisionId(null)
+      return
+    }
+    setSelectedDecisionId((current) => {
+      if (current && filteredDecisions.some((decision) => decision.id === current)) {
+        return current
+      }
+      return filteredDecisions[0].id
+    })
+  }, [filteredDecisions])
 
   const filteredTradeHistory = useMemo(() => {
     const q = tradeSearch.trim().toLowerCase()
@@ -4523,6 +5908,216 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       .slice(0, 12)
   }, [traderPerformanceById, traders])
 
+  const allBotsOverviewBuckets = useMemo(() => {
+    const dayWindow = 14
+    const todayUtc = new Date()
+    todayUtc.setUTCHours(0, 0, 0, 0)
+    const rows: OverviewTrendBucket[] = []
+    for (let offset = dayWindow - 1; offset >= 0; offset -= 1) {
+      const day = new Date(todayUtc)
+      day.setUTCDate(todayUtc.getUTCDate() - offset)
+      const key = day.toISOString().slice(0, 10)
+      rows.push({
+        key,
+        label: formatDayKeyLabel(key),
+        orders: 0,
+        selected: 0,
+        resolvedPnl: 0,
+        failed: 0,
+        warnings: 0,
+        cumulativeResolvedPnl: 0,
+      })
+    }
+
+    const bucketIndexByKey = new Map(rows.map((row, index) => [row.key, index]))
+
+    for (const order of allOrders) {
+      const ts = Math.max(toTs(order.executed_at), toTs(order.updated_at), toTs(order.created_at))
+      const dayKey = utcDayKeyFromTs(ts)
+      if (!dayKey) continue
+      const bucketIndex = bucketIndexByKey.get(dayKey)
+      if (bucketIndex === undefined) continue
+      const bucket = rows[bucketIndex]
+      const status = normalizeStatus(order.status)
+
+      bucket.orders += 1
+      if (RESOLVED_ORDER_STATUSES.has(status)) {
+        bucket.resolvedPnl += toNumber(order.actual_profit)
+      }
+      if (FAILED_ORDER_STATUSES.has(status)) {
+        bucket.failed += 1
+        bucket.warnings += 1
+      }
+    }
+
+    for (const decision of allDecisions) {
+      const ts = toTs(decision.created_at)
+      const dayKey = utcDayKeyFromTs(ts)
+      if (!dayKey) continue
+      const bucketIndex = bucketIndexByKey.get(dayKey)
+      if (bucketIndex === undefined) continue
+      const bucket = rows[bucketIndex]
+      const outcome = String(decision.decision || '').trim().toLowerCase()
+      if (outcome === 'selected') {
+        bucket.selected += 1
+      } else if (outcome === 'blocked' || outcome === 'failed') {
+        bucket.warnings += 1
+      }
+    }
+
+    for (const event of allEvents) {
+      const ts = toTs(event.created_at)
+      const dayKey = utcDayKeyFromTs(ts)
+      if (!dayKey) continue
+      const bucketIndex = bucketIndexByKey.get(dayKey)
+      if (bucketIndex === undefined) continue
+      const bucket = rows[bucketIndex]
+      const severity = String(event.severity || '').trim().toLowerCase()
+      if (severity === 'warn' || severity === 'warning' || severity === 'error' || severity === 'failed') {
+        bucket.warnings += 1
+      }
+    }
+
+    let cumulativeResolvedPnl = 0
+    for (const row of rows) {
+      cumulativeResolvedPnl += row.resolvedPnl
+      row.cumulativeResolvedPnl = cumulativeResolvedPnl
+    }
+
+    return rows
+  }, [allDecisions, allEvents, allOrders])
+
+  const allBotsSourceMixChart = useMemo(() => {
+    const palette = ['#22c55e', '#38bdf8', '#f59e0b', '#a78bfa', '#f97316', '#14b8a6']
+    const topRows = globalSummary.sourceRows.slice(0, 5)
+    if (globalSummary.sourceRows.length > 5) {
+      const remainder = globalSummary.sourceRows.slice(5).reduce(
+        (accumulator, row) => ({
+          source: 'OTHER',
+          orders: accumulator.orders + row.orders,
+          resolved: accumulator.resolved + row.resolved,
+          pnl: accumulator.pnl + row.pnl,
+          notional: accumulator.notional + row.notional,
+          wins: accumulator.wins + row.wins,
+          losses: accumulator.losses + row.losses,
+        }),
+        {
+          source: 'OTHER',
+          orders: 0,
+          resolved: 0,
+          pnl: 0,
+          notional: 0,
+          wins: 0,
+          losses: 0,
+        }
+      )
+      if (remainder.orders > 0) topRows.push(remainder)
+    }
+    const totalOrders = topRows.reduce((sum, row) => sum + row.orders, 0)
+    const totalPnl = topRows.reduce((sum, row) => sum + row.pnl, 0)
+
+    let cursor = 0
+    const slices = topRows.map((row, index) => {
+      const percent = totalOrders > 0 ? (row.orders / totalOrders) * 100 : 0
+      const span = (percent / 100) * 360
+      const start = cursor
+      cursor += span
+      const end = cursor
+      const color = palette[index % palette.length]
+      return {
+        key: String(row.source || 'unknown').toLowerCase(),
+        label: String(row.source || 'UNKNOWN').toUpperCase(),
+        orders: row.orders,
+        pnl: row.pnl,
+        percent,
+        color,
+        segment: `${color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`,
+      }
+    })
+
+    return {
+      totalOrders,
+      totalPnl,
+      slices,
+      gradient: slices.length > 0
+        ? `conic-gradient(${slices.map((slice) => slice.segment).join(', ')})`
+        : 'conic-gradient(#334155 0deg 360deg)',
+    }
+  }, [globalSummary.sourceRows])
+
+  const allBotsLifecycleMixChart = useMemo(() => {
+    const rows = [
+      { key: 'open', label: 'Open', value: globalSummary.open, color: '#38bdf8' },
+      { key: 'resolved', label: 'Resolved', value: globalSummary.resolved, color: '#22c55e' },
+      { key: 'failed', label: 'Failed', value: globalSummary.failed, color: '#ef4444' },
+    ]
+    const total = rows.reduce((sum, row) => sum + row.value, 0)
+    let cursor = 0
+    const slices = rows.map((row) => {
+      const percent = total > 0 ? (row.value / total) * 100 : 0
+      const span = (percent / 100) * 360
+      const start = cursor
+      cursor += span
+      const end = cursor
+      return {
+        ...row,
+        percent,
+        segment: `${row.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`,
+      }
+    })
+
+    return {
+      total,
+      slices,
+      gradient: total > 0
+        ? `conic-gradient(${slices.map((slice) => slice.segment).join(', ')})`
+        : 'conic-gradient(#334155 0deg 360deg)',
+    }
+  }, [globalSummary.failed, globalSummary.open, globalSummary.resolved])
+
+  const allBotsLeaderboardWithTrend = useMemo(() => {
+    const bucketKeys = allBotsOverviewBuckets.map((bucket) => bucket.key)
+    const bucketIndexByKey = new Map(bucketKeys.map((key, index) => [key, index]))
+    const trendByTraderId = new Map<string, number[]>(
+      allBotsLeaderboardRows.map((row) => [row.trader.id, bucketKeys.map(() => 0)])
+    )
+
+    for (const order of allOrders) {
+      const traderId = String(order.trader_id || '')
+      const trend = trendByTraderId.get(traderId)
+      if (!trend) continue
+      if (!RESOLVED_ORDER_STATUSES.has(normalizeStatus(order.status))) continue
+      const ts = Math.max(toTs(order.executed_at), toTs(order.updated_at), toTs(order.created_at))
+      const dayKey = utcDayKeyFromTs(ts)
+      if (!dayKey) continue
+      const bucketIndex = bucketIndexByKey.get(dayKey)
+      if (bucketIndex === undefined) continue
+      trend[bucketIndex] += toNumber(order.actual_profit)
+    }
+
+    let topAbsPnl = 0
+    for (const row of allBotsLeaderboardRows) {
+      topAbsPnl = Math.max(topAbsPnl, Math.abs(row.pnl))
+    }
+    const denominator = topAbsPnl > 0 ? topAbsPnl : 1
+
+    return allBotsLeaderboardRows.map((row, index) => {
+      const dailyTrend = trendByTraderId.get(row.trader.id) || bucketKeys.map(() => 0)
+      const cumulativeTrend: number[] = []
+      let running = 0
+      for (const value of dailyTrend) {
+        running += value
+        cumulativeTrend.push(running)
+      }
+      return {
+        ...row,
+        rank: index + 1,
+        trend: cumulativeTrend,
+        pnlBarPercent: Math.max(10, Math.min(100, (Math.abs(row.pnl) / denominator) * 100)),
+      }
+    })
+  }, [allBotsLeaderboardRows, allBotsOverviewBuckets, allOrders])
+
   const enabledTraderCount = useMemo(
     () => traders.filter((trader) => isTraderExecutionEnabled(trader)).length,
     [traders]
@@ -4540,8 +6135,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     ? 'REAL-TIME (event-driven + high-frequency monitor)'
     : 'REAL-TIME (event-driven)'
   const effectiveGlobalLoopDetail = highFrequencyCryptoLoopActive
-    ? 'Signal events wake the orchestrator immediately with high-frequency monitoring active.'
-    : 'Signal events wake the orchestrator immediately.'
+    ? 'Signal events wake matching bots immediately, with high-frequency monitoring active for crypto bots.'
+    : 'Signal events wake matching bots immediately; fallback intervals apply when no new events arrive.'
 
   const disabledTraderCount = useMemo(
     () => Math.max(0, traders.length - enabledTraderCount),
@@ -4569,11 +6164,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [selectedOrders]
   )
 
-  const failedOrders = useMemo(
-    () => allOrders.filter((order) => FAILED_ORDER_STATUSES.has(normalizeStatus(order.status))).slice(0, 80),
-    [allOrders]
-  )
-
   const selectedDecision = useMemo(
     () => selectedDecisions.find((decision) => decision.id === selectedDecisionId) || null,
     [selectedDecisions, selectedDecisionId]
@@ -4589,7 +6179,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     let blocked = 0
     let skipped = 0
     for (const decision of selectedDecisions) {
-      const outcome = String(decision.decision || '').toLowerCase()
+      const outcome = normalizeDecisionOutcome(decision.decision)
       if (outcome === 'selected') selected += 1
       else if (outcome === 'blocked') blocked += 1
       else skipped += 1
@@ -4624,6 +6214,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const selectedTraderCanDisable = Boolean(selectedTrader && selectedTraderExecutionEnabled)
   const selectedTraderControlPending = traderEnableMutation.isPending || traderDisableMutation.isPending
   const showingAllBotsDashboard = !selectedTraderId
+  const overviewStartLabel = allBotsOverviewBuckets[0]?.label || 'n/a'
+  const overviewEndLabel = allBotsOverviewBuckets[allBotsOverviewBuckets.length - 1]?.label || 'n/a'
+  const overviewLatestBucket = allBotsOverviewBuckets[allBotsOverviewBuckets.length - 1] || null
+  const overviewPreviousBucket = allBotsOverviewBuckets[allBotsOverviewBuckets.length - 2] || null
+  const overviewPnlSeries = allBotsOverviewBuckets.map((bucket) => bucket.cumulativeResolvedPnl)
+  const overviewOrdersSeries = allBotsOverviewBuckets.map((bucket) => bucket.orders)
+  const overviewSelectedSeries = allBotsOverviewBuckets.map((bucket) => bucket.selected)
+  const overviewRiskSeries = allBotsOverviewBuckets.map((bucket) => bucket.warnings)
 
   const requestOrchestratorStart = () => {
     if (selectedAccountIsLive) {
@@ -4636,6 +6234,32 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const confirmLiveStart = () => {
     setConfirmLiveStartOpen(false)
     startBySelectedAccountMutation.mutate()
+  }
+
+  const setGlobalSettingsField = <K extends keyof GlobalSettingsDraft,>(
+    key: K,
+    value: GlobalSettingsDraft[K]
+  ) => {
+    setGlobalSettingsDraft((current) => ({
+      ...current,
+      [key]: value,
+    }))
+  }
+
+  const openGlobalSettingsFlyout = () => {
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
+    setGlobalSettingsSaveError(null)
+    setGlobalSettingsFlyoutOpen(true)
+  }
+
+  const resetGlobalSettingsDraft = () => {
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
+    setGlobalSettingsSaveError(null)
+  }
+
+  const saveGlobalSettings = () => {
+    setGlobalSettingsSaveError(null)
+    updateGlobalSettingsMutation.mutate()
   }
 
   const canStartOrchestrator =
@@ -4725,12 +6349,27 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           </div>
         </div>
 
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span
+            className={cn(
+              'w-1.5 h-1.5 rounded-full',
+              worker?.last_error
+                ? 'bg-amber-400'
+                : orchestratorRunning
+                  ? 'bg-emerald-500'
+                  : 'bg-amber-400'
+            )}
+          />
+          <Clock3 className="w-3 h-3" />
+          {formatTimestamp(worker?.last_run_at)}
+        </div>
+
         <div className="flex items-center gap-1.5">
           <Badge className="h-5 px-1.5 text-[10px]" variant={orchestratorBlocked ? 'destructive' : orchestratorRunning ? 'default' : 'secondary'}>
             {orchestratorStatusLabel}
           </Badge>
-          <Badge className="h-5 px-1.5 text-[10px]" variant={globalMode === 'live' ? 'destructive' : 'outline'}>
-            {globalMode.toUpperCase()}
+          <Badge className="h-5 px-1.5 text-[10px]" variant={selectedAccountMode === 'live' ? 'destructive' : 'outline'}>
+            {selectedAccountMode.toUpperCase()}
           </Badge>
           <Badge className="h-5 px-1.5 text-[10px]" variant={killSwitchOn ? 'destructive' : 'outline'}>
             {killSwitchOn ? 'BLOCKED' : 'OPEN'}
@@ -4738,7 +6377,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         </div>
 
         <div className="hidden lg:flex items-center gap-3 text-[11px] font-mono text-muted-foreground">
-          <span>{tradersRunningDisplay}/{toNumber(metrics?.traders_total)}</span>
+          <span>Bots {tradersRunningDisplay}/{toNumber(metrics?.traders_total)}</span>
           <span className="text-border">|</span>
           <span className={toNumber(metrics?.daily_pnl) >= 0 ? 'text-emerald-500' : 'text-red-500'}>
             {formatCurrency(toNumber(metrics?.daily_pnl))}
@@ -4753,19 +6392,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           <span>Edge {formatPercent(displayAvgEdge)}</span>
         </div>
 
-        <div className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
-          <span
-            className={cn(
-              'w-1.5 h-1.5 rounded-full',
-              worker?.last_error
-                ? 'bg-amber-400'
-                : orchestratorRunning
-                  ? 'bg-emerald-500'
-                  : 'bg-amber-400'
+        <div className="ml-auto flex items-center">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-[10px]"
+            onClick={openGlobalSettingsFlyout}
+            disabled={globalSettingsBusy}
+          >
+            {globalSettingsBusy ? (
+              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+            ) : (
+              <Settings className="w-3 h-3 mr-1" />
             )}
-          />
-          <Clock3 className="w-3 h-3" />
-          {formatTimestamp(worker?.last_run_at)}
+            Settings
+          </Button>
         </div>
       </div>
 
@@ -4836,13 +6478,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     : 'text-muted-foreground hover:bg-muted/40'
                 )}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span>All Bots</span>
-                  <span className={cn('font-mono text-[10px]', globalSummary.resolvedPnl > 0 ? 'text-emerald-500' : globalSummary.resolvedPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <span className="truncate">All Bots</span>
+                  <span className={cn('shrink-0 font-mono text-[10px]', globalSummary.resolvedPnl > 0 ? 'text-emerald-500' : globalSummary.resolvedPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
                     {formatCurrency(globalSummary.resolvedPnl, true)}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[9px] text-muted-foreground">
+                <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
                   Showing {filteredBotRosterRows.length}/{traders.length}
                 </div>
               </button>
@@ -4911,7 +6553,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         </div>
 
         {/* Right — Work Area */}
-        <div className="flex flex-col min-h-0 gap-1.5">
+        <div className="flex flex-col min-h-0 min-w-0 gap-1.5">
           {showingAllBotsDashboard ? (
             <div className="flex-1 min-h-0 overflow-hidden rounded-lg border border-cyan-500/25 bg-card">
               <div className="h-full min-h-0 flex flex-col">
@@ -4956,89 +6598,140 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </div>
 
                   <TabsContent value="overview" className="mt-2 flex-1 min-h-0 overflow-hidden">
-                    <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                    <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
                       <div className="min-h-0 flex flex-col gap-2">
-                        <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/80 overflow-hidden">
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 p-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Resolved P&amp;L</span>
+                              </div>
+                              <span className="text-[9px] font-mono text-muted-foreground">{overviewStartLabel} - {overviewEndLabel}</span>
+                            </div>
+                            <p className={cn('mt-1 text-sm font-mono', globalSummary.resolvedPnl >= 0 ? 'text-emerald-500' : 'text-red-500')}>
+                              {formatCurrency(globalSummary.resolvedPnl)}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground">
+                              Latest day {formatSignedCurrency(overviewLatestBucket?.resolvedPnl ?? 0)}
+                            </p>
+                            <div className="mt-1.5 h-8">
+                              <Sparkline
+                                data={overviewPnlSeries}
+                                width={220}
+                                height={30}
+                                color={globalSummary.resolvedPnl >= 0 ? '#22c55e' : '#ef4444'}
+                                showDots
+                              />
+                            </div>
+                          </div>
+
+                          <div className="rounded-md border border-cyan-500/25 bg-cyan-500/10 p-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <BarChart3 className="w-3.5 h-3.5 text-cyan-500" />
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Order Throughput</span>
+                              </div>
+                              <span className="text-[9px] font-mono text-muted-foreground">14d</span>
+                            </div>
+                            <p className="mt-1 text-sm font-mono">{overviewLatestBucket?.orders ?? 0} orders</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              Prev {(overviewPreviousBucket?.orders ?? 0)} · Failed {(overviewLatestBucket?.failed ?? 0)}
+                            </p>
+                            <div className="mt-1.5 h-8">
+                              <Sparkline
+                                data={overviewOrdersSeries}
+                                width={220}
+                                height={30}
+                                color="#06b6d4"
+                                showDots
+                              />
+                            </div>
+                          </div>
+
+                          <div className="rounded-md border border-violet-500/25 bg-violet-500/10 p-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Selected Signals</span>
+                              </div>
+                              <span className="text-[9px] font-mono text-muted-foreground">{recentSelectedDecisions.length} recent</span>
+                            </div>
+                            <p className="mt-1 text-sm font-mono">{selectedDecisionCountAllBots}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              Latest day {(overviewLatestBucket?.selected ?? 0)} · WR {formatPercent(globalSummary.winRate)}
+                            </p>
+                            <div className="mt-1.5 h-8">
+                              <Sparkline
+                                data={overviewSelectedSeries}
+                                width={220}
+                                height={30}
+                                color="#a78bfa"
+                                showDots
+                              />
+                            </div>
+                          </div>
+
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Risk Pressure</span>
+                              </div>
+                              <span className="text-[9px] font-mono text-muted-foreground">{riskActivityRows.length} alerts</span>
+                            </div>
+                            <p className="mt-1 text-sm font-mono">{overviewLatestBucket?.warnings ?? 0} today</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              Prev {overviewPreviousBucket?.warnings ?? 0}
+                            </p>
+                            <div className="mt-1.5 h-8">
+                              <Sparkline
+                                data={overviewRiskSeries}
+                                width={220}
+                                height={30}
+                                color="#f59e0b"
+                                showDots
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="min-h-0 flex-1 rounded-md border border-border/60 bg-card/80 overflow-hidden">
                           <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <Clock3 className="w-3.5 h-3.5 text-cyan-500" />
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Live Pulse Feed</span>
                             </div>
-                            <span className="text-[10px] font-mono text-muted-foreground">{allBotsActivityRows.length} rows</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">{allBotsActivityRows.length} events</span>
                           </div>
-                          <ScrollArea className="h-[240px] xl:h-full">
-                            <div className="space-y-0.5 p-1.5 font-mono text-[11px]">
+                          <ScrollArea className="h-[260px] xl:h-full">
+                            <div className="space-y-1.5 p-2 text-[11px]">
                               {allBotsActivityRows.length === 0 ? (
-                                <p className="py-8 text-center text-muted-foreground text-xs">No activity captured yet.</p>
+                                <p className="py-10 text-center text-muted-foreground text-xs">No activity captured yet.</p>
                               ) : (
-                                allBotsActivityRows.slice(0, 60).map((row) => (
+                                allBotsActivityRows.slice(0, 40).map((row) => (
                                   <div
                                     key={`${row.kind}:${row.id}`}
                                     className={cn(
-                                      'rounded border px-2 py-1',
-                                      row.tone === 'positive' && 'border-emerald-500/25 text-emerald-700 dark:text-emerald-100',
-                                      row.tone === 'negative' && 'border-red-500/30 text-red-700 dark:text-red-100',
-                                      row.tone === 'warning' && 'border-amber-500/30 text-amber-700 dark:text-amber-100',
-                                      row.tone === 'neutral' && row.action === 'BUY' && 'border-emerald-500/25 bg-emerald-500/5 text-emerald-700 dark:text-emerald-100',
-                                      row.tone === 'neutral' && row.action === 'SELL' && 'border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-100',
-                                      row.tone === 'neutral' && !row.action && 'border-border/50 text-foreground'
+                                      'rounded-md border px-2.5 py-2',
+                                      row.tone === 'positive' && 'border-emerald-500/25 bg-emerald-500/5',
+                                      row.tone === 'negative' && 'border-red-500/30 bg-red-500/5',
+                                      row.tone === 'warning' && 'border-amber-500/30 bg-amber-500/5',
+                                      row.tone === 'neutral' && 'border-border/50 bg-background/40'
                                     )}
                                   >
-                                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                                      <span className="text-muted-foreground">[{formatTimestamp(row.ts)}]</span>
-                                      <span className="uppercase text-[10px]">{row.kind}</span>
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                                      <span className="font-mono">{formatTimestamp(row.ts)}</span>
+                                      <span className="uppercase">{row.kind}</span>
                                       {row.action ? (
-                                        <span className={cn('uppercase text-[10px] font-semibold', row.action === 'BUY' ? 'text-emerald-500' : 'text-red-500')}>
+                                        <span className={cn('uppercase font-semibold', row.action === 'BUY' ? 'text-emerald-500' : 'text-red-500')}>
                                           {row.action}
                                         </span>
                                       ) : null}
-                                      <span className="text-muted-foreground">
-                                        {traderNameById[String(row.traderId || '')] || shortId(row.traderId || '')}
-                                      </span>
-                                      <span className="font-medium">{row.title}</span>
+                                      <span>{traderNameById[String(row.traderId || '')] || shortId(row.traderId || '')}</span>
                                     </div>
-                                    <div className="text-[10px] leading-relaxed text-muted-foreground mt-0.5 break-words">{row.detail}</div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </ScrollArea>
-                        </div>
-
-                        <div className="rounded-md border border-border/60 bg-card/80 overflow-hidden">
-                          <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <Sparkles className="w-3.5 h-3.5 text-cyan-500" />
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recent Selections</span>
-                            </div>
-                            <span className="text-[10px] font-mono text-muted-foreground">{recentSelectedDecisions.length} entries</span>
-                          </div>
-                          <ScrollArea className="h-[180px]">
-                            <div className="space-y-1 p-2">
-                              {recentSelectedDecisions.length === 0 ? (
-                                <p className="text-[11px] text-muted-foreground">No recent selections.</p>
-                              ) : (
-                                recentSelectedDecisions.slice(0, 16).map((decision) => (
-                                  <div key={decision.id} className="rounded border border-border/50 px-2 py-1">
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <p className="text-[11px] leading-tight truncate" title={decision.market_question || ''}>
-                                          {decision.market_question || shortId(decision.market_id)}
-                                        </p>
-                                        <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
-                                          {traderNameById[String(decision.trader_id || '')] || shortId(decision.trader_id || '')}
-                                        </p>
-                                      </div>
-                                      <div className="flex items-center gap-1.5 shrink-0">
-                                        <Badge variant="outline" className="h-4 px-1 text-[9px]">
-                                          {decision.source}
-                                        </Badge>
-                                        <span className="text-[10px] font-mono text-muted-foreground">
-                                          {formatPercent(normalizeEdgePercent(toNumber(decision.edge_percent)))}
-                                        </span>
-                                      </div>
-                                    </div>
-                                    <p className="text-[10px] text-muted-foreground mt-0.5">{formatTimestamp(decision.created_at)}</p>
+                                    <p className="mt-0.5 font-medium break-words">{row.title}</p>
+                                    <p className="mt-0.5 text-[10px] text-muted-foreground break-words">{row.detail}</p>
                                   </div>
                                 ))
                               )}
@@ -5048,97 +6741,145 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       </div>
 
                       <div className="min-h-0 flex flex-col gap-2">
-                        <div className="rounded-md border border-border/60 bg-card/80 overflow-hidden">
-                          <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
-                            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Bot Leaderboard</span>
-                            <span className="text-[10px] font-mono text-muted-foreground">Top {allBotsLeaderboardRows.length}</span>
-                          </div>
-                          <ScrollArea className="h-[240px]">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead className="text-[11px]">Bot</TableHead>
-                                  <TableHead className="text-[11px] text-right">Open</TableHead>
-                                  <TableHead className="text-[11px] text-right">Resolved</TableHead>
-                                  <TableHead className="text-[11px] text-right">WR</TableHead>
-                                  <TableHead className="text-[11px] text-right">P&amp;L</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {allBotsLeaderboardRows.map((row) => {
-                                  const traderStatus = resolveTraderStatusPresentation(row.trader, orchestratorRunning)
-                                  return (
-                                    <TableRow key={row.trader.id} className="text-xs">
-                                      <TableCell className="py-1">
-                                        <div className="flex items-center gap-1.5">
-                                          <span className={cn(
-                                            'w-1.5 h-1.5 rounded-full shrink-0',
-                                            traderStatus.dotClassName
-                                          )} />
-                                          <span className="truncate max-w-[170px]" title={row.trader.name}>{row.trader.name}</span>
-                                        </div>
-                                      </TableCell>
-                                      <TableCell className="text-right font-mono py-1">{row.open}</TableCell>
-                                      <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
-                                      <TableCell className="text-right font-mono py-1">{formatPercent(row.winRate)}</TableCell>
-                                      <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>
-                                        {formatCurrency(row.pnl)}
-                                      </TableCell>
-                                    </TableRow>
-                                  )
-                                })}
-                              </TableBody>
-                            </Table>
-                          </ScrollArea>
-                        </div>
-
-                        <div className="grid gap-2 xl:grid-cols-1 2xl:grid-cols-2">
-                          <div className="rounded-md border border-border/60 bg-card/80 overflow-hidden">
-                            <div className="px-2.5 py-2 border-b border-border/40">
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Source Mix</span>
+                        <div className="rounded-md border border-border/60 bg-card/80 p-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5">
+                              <PieChart className="w-3.5 h-3.5 text-cyan-500" />
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Execution Mix</span>
                             </div>
-                            <div className="space-y-1 p-2">
-                              {globalSummary.sourceRows.length === 0 ? (
-                                <p className="text-[11px] text-muted-foreground">No source activity yet.</p>
-                              ) : (
-                                globalSummary.sourceRows.slice(0, 6).map((row) => (
-                                  <div key={row.source} className="rounded border border-border/50 px-2 py-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="text-[11px] uppercase">{row.source}</span>
-                                      <span className="text-[10px] font-mono text-muted-foreground">{row.orders} orders</span>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-2 text-[10px] mt-0.5">
-                                      <span className="text-muted-foreground">Resolved {row.resolved}</span>
-                                      <span className={cn('font-mono', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
-                                        {formatCurrency(row.pnl)}
-                                      </span>
-                                    </div>
+                            <span className="text-[10px] font-mono text-muted-foreground">{allBotsSourceMixChart.totalOrders} orders</span>
+                          </div>
+                          <div className="mt-2 grid gap-2 md:grid-cols-2">
+                            <div className="rounded-md border border-border/50 bg-background/40 p-2">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Sources</p>
+                              <div className="mt-2 grid grid-cols-[96px_minmax(0,1fr)] gap-2 items-center">
+                                <div className="relative h-24 w-24 rounded-full border border-border/50" style={{ background: allBotsSourceMixChart.gradient }}>
+                                  <div className="absolute inset-[18px] rounded-full border border-border/60 bg-card" />
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                                    <span className="text-sm font-mono">{allBotsSourceMixChart.totalOrders}</span>
+                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">orders</span>
                                   </div>
-                                ))
-                              )}
+                                </div>
+                                <div className="space-y-1">
+                                  {allBotsSourceMixChart.slices.length === 0 ? (
+                                    <p className="text-[10px] text-muted-foreground">No source activity yet.</p>
+                                  ) : (
+                                    allBotsSourceMixChart.slices.map((slice) => (
+                                      <div key={slice.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 text-[10px]">
+                                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: slice.color }} />
+                                        <span className="truncate">{slice.label}</span>
+                                        <span className="font-mono text-muted-foreground">{slice.percent.toFixed(0)}%</span>
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+                              <p className={cn('mt-2 text-[10px] font-mono', allBotsSourceMixChart.totalPnl > 0 ? 'text-emerald-500' : allBotsSourceMixChart.totalPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                                Mix P&amp;L {formatCurrency(allBotsSourceMixChart.totalPnl)}
+                              </p>
                             </div>
-                          </div>
 
-                          <div className="rounded-md border border-border/60 bg-card/80 overflow-hidden">
-                            <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between">
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Risk Watch</span>
-                              <span className="text-[10px] font-mono text-muted-foreground">{riskActivityRows.length} alerts</span>
-                            </div>
-                            <ScrollArea className="h-[188px]">
-                              <div className="space-y-1 p-2">
-                                {riskActivityRows.length === 0 ? (
-                                  <p className="text-[11px] text-muted-foreground">No active risk alerts.</p>
-                                ) : (
-                                  riskActivityRows.slice(0, 10).map((row) => (
-                                    <div key={`${row.kind}:${row.id}`} className={cn('rounded border px-2 py-1', row.tone === 'negative' ? 'border-red-500/30' : 'border-amber-500/30')}>
-                                      <p className="text-[11px] truncate" title={row.title}>{row.title}</p>
-                                      <p className="text-[10px] text-muted-foreground">{formatTimestamp(row.ts)}</p>
+                            <div className="rounded-md border border-border/50 bg-background/40 p-2">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lifecycle</p>
+                              <div className="mt-2 grid grid-cols-[96px_minmax(0,1fr)] gap-2 items-center">
+                                <div className="relative h-24 w-24 rounded-full border border-border/50" style={{ background: allBotsLifecycleMixChart.gradient }}>
+                                  <div className="absolute inset-[18px] rounded-full border border-border/60 bg-card" />
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                                    <span className="text-sm font-mono">{allBotsLifecycleMixChart.total}</span>
+                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">orders</span>
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  {allBotsLifecycleMixChart.slices.map((slice) => (
+                                    <div key={slice.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 text-[10px]">
+                                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: slice.color }} />
+                                      <span>{slice.label}</span>
+                                      <span className="font-mono text-muted-foreground">{slice.value}</span>
                                     </div>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="mt-2 space-y-1">
+                                {riskActivityRows.length === 0 ? (
+                                  <p className="text-[10px] text-muted-foreground">No active risk alerts.</p>
+                                ) : (
+                                  riskActivityRows.slice(0, 3).map((row) => (
+                                    <p key={`${row.kind}:${row.id}`} className="truncate text-[10px] text-muted-foreground" title={row.title}>
+                                      {formatTimestamp(row.ts)} · {row.title}
+                                    </p>
                                   ))
                                 )}
                               </div>
-                            </ScrollArea>
+                            </div>
                           </div>
+                        </div>
+
+                        <div className="min-h-0 flex-1 rounded-md border border-border/60 bg-card/80 overflow-hidden">
+                          <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5">
+                              <Trophy className="w-3.5 h-3.5 text-cyan-500" />
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Bot Leaderboard</span>
+                            </div>
+                            <span className="text-[10px] font-mono text-muted-foreground">Top {allBotsLeaderboardWithTrend.length}</span>
+                          </div>
+                          <ScrollArea className="h-[280px] xl:h-full">
+                            <div className="space-y-1.5 p-2">
+                              {allBotsLeaderboardWithTrend.length === 0 ? (
+                                <p className="py-8 text-center text-[11px] text-muted-foreground">No bot performance data yet.</p>
+                              ) : (
+                                allBotsLeaderboardWithTrend.map((row) => {
+                                  const traderStatus = resolveTraderStatusPresentation(row.trader, orchestratorRunning)
+                                  return (
+                                    <button
+                                      key={row.trader.id}
+                                      type="button"
+                                      onClick={() => setSelectedTraderId(row.trader.id)}
+                                      className={cn(
+                                        'w-full rounded-md border border-border/50 bg-background/40 px-2.5 py-2 text-left transition-colors hover:border-cyan-500/40 hover:bg-cyan-500/5',
+                                        selectedTraderId === row.trader.id && 'border-cyan-500/50 bg-cyan-500/10'
+                                      )}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <span className="w-5 shrink-0 text-center text-[10px] font-mono text-muted-foreground">
+                                          #{row.rank}
+                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', traderStatus.dotClassName)} />
+                                            <span className="truncate text-[11px] font-medium" title={row.trader.name}>{row.trader.name}</span>
+                                          </div>
+                                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted/70">
+                                            <div
+                                              className={cn('h-full rounded-full', row.pnl >= 0 ? 'bg-emerald-500/80' : 'bg-red-500/80')}
+                                              style={{ width: `${row.pnlBarPercent}%` }}
+                                            />
+                                          </div>
+                                        </div>
+                                        <div className="shrink-0 text-right">
+                                          <p className={cn('text-[11px] font-mono', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                                            {formatCurrency(row.pnl, true)}
+                                          </p>
+                                          <p className="text-[9px] text-muted-foreground">WR {formatPercent(row.winRate)}</p>
+                                        </div>
+                                      </div>
+                                      <div className="mt-1.5 flex items-center justify-between gap-2">
+                                        <span className="text-[9px] text-muted-foreground">
+                                          {row.open} open · {row.resolved} resolved
+                                        </span>
+                                        <Sparkline
+                                          data={row.trend}
+                                          width={96}
+                                          height={24}
+                                          color={row.pnl >= 0 ? '#22c55e' : '#ef4444'}
+                                          showDots
+                                        />
+                                      </div>
+                                    </button>
+                                  )
+                                })
+                              )}
+                            </div>
+                          </ScrollArea>
                         </div>
                       </div>
                     </div>
@@ -5171,24 +6912,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No trades matching filters.</div>
                         ) : (
                           <ScrollArea className="h-full min-h-0 rounded-md border border-border/60 bg-card/80">
-                            <Table>
+                            <div className="w-full overflow-x-auto">
+                            <Table className="w-full table-fixed">
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="text-[11px]">Bot</TableHead>
-                                  <TableHead className="text-[11px]">Market</TableHead>
-                                  <TableHead className="text-[11px]">Dir</TableHead>
-                                  <TableHead className="text-[11px]">Lifecycle / Outcome</TableHead>
-                                  <TableHead className="text-[11px] text-right">Notional</TableHead>
-                                  <TableHead className="text-[11px] text-right">Fill Px</TableHead>
-                                  <TableHead className="text-[11px] text-right">Fill Progress</TableHead>
-                                  <TableHead className="text-[11px] text-right">Mark Px</TableHead>
-                                  <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
-                                  <TableHead className="text-[11px] text-right">Edge Δ</TableHead>
-                                  <TableHead className="text-[11px] text-right">R-P&amp;L</TableHead>
-                                  <TableHead className="text-[11px]">Mode</TableHead>
-                                  <TableHead className="text-[11px]">Created</TableHead>
-                                  <TableHead className="text-[11px]">Updated</TableHead>
-                                  <TableHead className="w-[28px]" />
+                                  <TableHead className="w-[26%] text-[10px]">Market</TableHead>
+                                  <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
+                                  <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
+                                  <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
+                                  <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
+                                  <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
+                                  <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                                  <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
+                                  <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
+                                  <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
+                                  <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
+                                  <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
+                                  <TableHead className="w-[5%] text-[10px]">Age</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -5207,6 +6947,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     : {}
                                   const positionState = orderPayload.position_state && typeof orderPayload.position_state === 'object'
                                     ? orderPayload.position_state
+                                    : {}
+                                  const pendingExit = orderPayload.pending_live_exit && typeof orderPayload.pending_live_exit === 'object'
+                                    ? orderPayload.pending_live_exit
                                     : {}
                                   const providerSnapshotStatus = normalizeStatus(
                                     String(
@@ -5262,6 +7005,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     realizedPnl: pnl,
                                     filledNotional,
                                   })
+                                  const exitProgressPercent = computePendingExitProgressPercent(pendingExit as Record<string, unknown>)
                                   const linkedDecisionId = String(order.decision_id || '').trim()
                                   const signalPayload = linkedDecisionId
                                     ? decisionSignalPayloadByDecisionId.get(linkedDecisionId) || null
@@ -5274,12 +7018,27 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   const executionSummary = orderExecutionTypeSummary(order)
                                   const venuePresentation = resolveVenueStatusPresentation(providerSnapshotStatus)
                                   const directionPresentation = resolveOrderDirectionPresentation(order)
+                                  const traderLabel = traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)
+                                  const marketId = String(order.market_id || '').trim()
+                                  const marketForModal = resolveCryptoMarket(marketId)
                                   return (
-                                    <TableRow key={order.id} className="text-xs">
-                                      <TableCell className="py-1 max-w-[140px] truncate" title={traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)}>
-                                        {traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)}
-                                      </TableCell>
-                                      <TableCell className="max-w-[260px] truncate py-1" title={order.market_question || order.market_id}>
+                                  <TableRow
+                                    key={order.id}
+                                    className="text-[11px] leading-tight cursor-pointer hover:bg-muted/30"
+                                    onClick={() => {
+                                      openTradeMarketModal({
+                                        market: marketForModal,
+                                        order,
+                                        directionSide: directionPresentation.side,
+                                        directionLabel: directionPresentation.label,
+                                        statusSummary: lifecycleLabel,
+                                        executionSummary,
+                                        outcomeSummary: outcome.detail,
+                                        links,
+                                      })
+                                    }}
+                                  >
+                                      <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
                                         <div className="flex min-w-0 items-center gap-1">
                                           <div className="flex shrink-0 items-center gap-0.5">
                                             {links.polymarket && (
@@ -5287,6 +7046,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                                 href={links.polymarket}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
+                                                onClick={(event) => event.stopPropagation()}
                                                 className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                                 title="Open Polymarket market"
                                               >
@@ -5298,6 +7058,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                                 href={links.kalshi}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
+                                                onClick={(event) => event.stopPropagation()}
                                                 className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                                 title="Open Kalshi market"
                                               >
@@ -5310,6 +7071,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                               href={primaryMarketLink}
                                               target="_blank"
                                               rel="noopener noreferrer"
+                                              onClick={(event) => event.stopPropagation()}
                                               className="truncate hover:underline underline-offset-2"
                                               title="Open market"
                                             >
@@ -5321,11 +7083,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                             </span>
                                           )}
                                         </div>
+                                        <p className="truncate text-[9px] leading-none text-muted-foreground" title={traderLabel}>
+                                          {traderLabel}
+                                        </p>
                                       </TableCell>
-                                      <TableCell className="py-1">
+                                      <TableCell className="py-0.5">
                                         <Badge
                                           variant="outline"
-                                          className="h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground"
+                                          className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
                                           title={directionPresentation.label}
                                         >
                                           {directionPresentation.label}
@@ -5360,58 +7125,46 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                                 {executionSummary}
                                               </Badge>
                                             )}
-                                            {venuePresentation.label !== '\u2014' && (
-                                              <Badge
-                                                variant="outline"
-                                                title={`Venue: ${venuePresentation.detail} • raw:${providerSnapshotStatus}`}
-                                                className={cn(
-                                                  'h-4 max-w-[120px] truncate px-1 text-[9px] font-medium',
-                                                  venuePresentation.className
-                                                )}
-                                              >
-                                                {`V:${venuePresentation.label}`}
-                                              </Badge>
-                                            )}
                                           </div>
                                           <p className="truncate text-[9px] leading-none text-foreground/85" title={outcome.detail}>
                                             <span className="font-medium text-muted-foreground">Reason:</span> {outcomeDetailCompact}
                                           </p>
                                         </div>
                                       </TableCell>
-                                      <TableCell className="text-right font-mono py-1">{formatCurrency(toNumber(order.notional_usd))}</TableCell>
-                                      <TableCell className="text-right font-mono py-1">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
-                                      <TableCell className="text-right font-mono py-1">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
-                                      <TableCell className="text-right font-mono py-1">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
-                                      <TableCell className={cn('text-right font-mono py-1', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
+                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
                                         {OPEN_ORDER_STATUSES.has(status) ? formatCurrency(unrealized) : '\u2014'}
                                       </TableCell>
-                                      <TableCell className="text-right font-mono py-1">{formatPercent(dynamicEdgePercent)}</TableCell>
-                                      <TableCell className={cn('text-right font-mono py-1', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
+                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
                                         {RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl) : '\u2014'}
                                       </TableCell>
-                                      <TableCell className="py-1 uppercase text-[10px]">{String(order.mode || '').toUpperCase()}</TableCell>
-                                      <TableCell className="py-1 text-[10px] text-muted-foreground">{formatShortDate(order.created_at)}</TableCell>
-                                      <TableCell className="py-1 text-[10px] text-muted-foreground" title={formatTimestamp(updatedAt)}>{formatRelativeAge(updatedAt)}</TableCell>
-                                      <TableCell className="py-1 w-[28px]">
-                                        {(() => {
-                                          const cm = cryptoMarketById.get(String(order.market_id || ''))
-                                          return cm ? (
-                                            <button
-                                              type="button"
-                                              onClick={(e) => { e.stopPropagation(); setAllBotsModalMarket(cm) }}
-                                              className="inline-flex h-5 w-5 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
-                                              title="Expand market"
-                                            >
-                                              <Maximize2 className="h-3 w-3" />
-                                            </button>
-                                          ) : null
-                                        })()}
+                                      <TableCell className="py-0.5">
+                                        <Badge
+                                          variant="outline"
+                                          title={`Venue: ${venuePresentation.detail}${providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : ''}`}
+                                          className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
+                                        >
+                                          {venuePresentation.label}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                                        {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
+                                      </TableCell>
+                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                        <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
+                                          {formatRelativeAge(updatedAt)}
+                                        </span>
                                       </TableCell>
                                     </TableRow>
                                   )
                                 })}
                               </TableBody>
                             </Table>
+                            </div>
                           </ScrollArea>
                         )}
                       </div>
@@ -5510,10 +7263,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No positions matching filters.</div>
                         ) : (
                           <ScrollArea className="h-full min-h-0 rounded-md border border-border/60 bg-card/80">
-                            <Table>
+                            <div className="w-full overflow-x-auto">
+                            <Table className="min-w-[1240px]">
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="text-[11px]">Bot</TableHead>
                                   <TableHead className="text-[11px]">Market</TableHead>
                                   <TableHead className="text-[11px]">L</TableHead>
                                   <TableHead className="text-[11px]">Dir</TableHead>
@@ -5526,19 +7279,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   <TableHead className="text-[11px] text-right">Orders</TableHead>
                                   <TableHead className="text-[11px] text-right">Mode</TableHead>
                                   <TableHead className="text-[11px]">Updated</TableHead>
-                                  <TableHead className="w-[28px]" />
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {filteredAllPositionBook.map((row) => (
-                                  <TableRow key={row.key} className="text-xs">
-                                    <TableCell className="py-1 max-w-[140px] truncate" title={row.traderName}>
-                                      {row.traderName}
-                                    </TableCell>
+                                {filteredAllPositionBook.map((row) => {
+                                  const marketForModal = resolveCryptoMarket(row.marketId)
+                                  return (
+                                  <TableRow
+                                    key={row.key}
+                                    className="text-xs cursor-pointer hover:bg-muted/30"
+                                    onClick={() => {
+                                      openPositionMarketModal({
+                                        market: marketForModal,
+                                        row,
+                                      })
+                                    }}
+                                  >
                                     <TableCell className="max-w-[280px] truncate py-1" title={row.marketQuestion}>
                                       <p className="truncate">{row.marketQuestion}</p>
                                       <p className="text-[10px] text-muted-foreground truncate" title={positionMetaLine(row)}>
-                                        {positionMetaLine(row)}
+                                        {row.traderName} • {positionMetaLine(row)}
                                       </p>
                                     </TableCell>
                                     <TableCell className="py-1">
@@ -5598,67 +7358,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     <TableCell className="text-right font-mono py-1">{row.orderCount}</TableCell>
                                     <TableCell className="text-right font-mono py-1">{row.liveOrderCount}L/{row.paperOrderCount}P</TableCell>
                                     <TableCell className="py-1 text-[10px] text-muted-foreground">{formatShortDate(row.lastUpdated || row.markUpdatedAt)}</TableCell>
-                                    <TableCell className="py-1 w-[28px]">
-                                      {(() => {
-                                        const cm = cryptoMarketById.get(row.marketId)
-                                        return cm ? (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); setAllBotsModalMarket(cm) }}
-                                            className="inline-flex h-5 w-5 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
-                                            title="Expand market"
-                                          >
-                                            <Maximize2 className="h-3 w-3" />
-                                          </button>
-                                        ) : null
-                                      })()}
-                                    </TableCell>
                                   </TableRow>
-                                ))}
+                                  )
+                                })}
                               </TableBody>
                             </Table>
+                            </div>
                           </ScrollArea>
                         )}
                       </div>
                     </div>
                   </TabsContent>
-                </Tabs>
-              </div>
-              {/* Market modal portal for All Bots dashboard */}
-              {createPortal(
-                <AnimatePresence>
-                  {allBotsModalMarket && (
-                    <motion.div
-                      key="allbots-market-modal"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.18 }}
-                      className="fixed inset-0 z-[120] flex items-center justify-center"
-                      onClick={() => setAllBotsModalMarket(null)}
-                    >
-                      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-                      <motion.div
-                        initial={{ scale: 0.94, y: 22, opacity: 0 }}
-                        animate={{ scale: 1, y: 0, opacity: 1 }}
-                        exit={{ scale: 0.94, y: 22, opacity: 0 }}
-                        transition={{ type: 'spring', damping: 28, stiffness: 340, mass: 0.85 }}
-                        className="relative w-[94vw] max-w-5xl max-h-[88vh]"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <CryptoMarketCard
-                          market={allBotsModalMarket}
-                          isModalView
-                          themeMode={themeMode}
-                        />
-                      </motion.div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>,
-                document.body
-              )}
-            </div>
-          ) : (
+	                </Tabs>
+	              </div>
+	            </div>
+	          ) : (
             <>
               {selectedTrader && (
                 <div className="shrink-0 rounded-lg border border-border/70 bg-card px-3 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -5711,12 +7425,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
               <div className="shrink-0 flex items-center gap-0.5 border-b border-border/50 px-1">
                 {([
-                  { key: 'terminal' as const, label: 'Terminal' },
-                  { key: 'positions' as const, label: 'Positions' },
                   { key: 'trades' as const, label: 'Trades' },
+                  { key: 'terminal' as const, label: 'Terminal' },
                   { key: 'monitor' as const, label: 'Monitor' },
                   { key: 'decisions' as const, label: 'Decisions' },
-                  { key: 'risk' as const, label: 'Risk' },
+                  { key: 'performance' as const, label: 'Performance' },
                 ]).map((tab) => (
                   <button
                     key={tab.key}
@@ -5787,191 +7500,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         )}
                       </div>
                     </ScrollArea>
-                  </div>
-                )}
-
-                {workTab === 'positions' && (
-                  <div className="h-full flex flex-col min-h-0 gap-1.5">
-                    <div className="shrink-0 flex flex-wrap items-center gap-1 px-1">
-                      <Input
-                        value={positionSearch}
-                        onChange={(event) => setPositionSearch(event.target.value)}
-                        placeholder="Search market, source..."
-                        className="h-6 w-44 text-[11px]"
-                      />
-                      {(['all', 'yes', 'no'] as PositionDirectionFilter[]).map((direction) => (
-                        <Button
-                          key={direction}
-                          size="sm"
-                          variant={positionDirectionFilter === direction ? 'default' : 'outline'}
-                          onClick={() => setPositionDirectionFilter(direction)}
-                          className="h-5 px-2 text-[10px]"
-                        >
-                          {direction}
-                        </Button>
-                      ))}
-                      <Select
-                        value={positionSortField}
-                        onValueChange={(value) => setPositionSortField(value as PositionSortField)}
-                      >
-                        <SelectTrigger className="h-6 w-[132px] text-[11px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="exposure">Exposure</SelectItem>
-                          <SelectItem value="unrealized">U-P&L</SelectItem>
-                          <SelectItem value="edge">Edge</SelectItem>
-                          <SelectItem value="confidence">Confidence</SelectItem>
-                          <SelectItem value="updated">Updated</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setPositionSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))}
-                        className="h-5 px-2 text-[10px]"
-                      >
-                        {positionSortDirection === 'desc' ? 'desc' : 'asc'}
-                      </Button>
-                      <span className="ml-auto text-[10px] font-mono text-muted-foreground">{filteredSelectedPositionBook.length} rows</span>
-                    </div>
-                    <div className="shrink-0 grid grid-cols-2 gap-1 px-1 sm:grid-cols-4 lg:grid-cols-8">
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Positions</p>
-                        <p className="text-xs font-mono">{selectedPositionSummary.totalRows}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">YES / NO</p>
-                        <p className="text-xs font-mono">{selectedPositionSummary.yesRows} / {selectedPositionSummary.noRows}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Exposure</p>
-                        <p className="text-xs font-mono">{formatCurrency(selectedPositionSummary.totalExposure, true)}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">U-P&amp;L</p>
-                        <p className={cn(
-                          'text-xs font-mono',
-                          selectedPositionSummary.totalUnrealizedPnl > 0 ? 'text-emerald-500' : selectedPositionSummary.totalUnrealizedPnl < 0 ? 'text-red-500' : ''
-                        )}
-                        >
-                          {selectedPositionSummary.rowsWithUnrealized > 0
-                            ? formatCurrency(selectedPositionSummary.totalUnrealizedPnl, true)
-                            : '—'}
-                        </p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Avg Edge</p>
-                        <p className="text-xs font-mono">{formatPercent(selectedPositionSummary.avgEdge)}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Avg Conf</p>
-                        <p className="text-xs font-mono">{formatPercent(normalizeConfidencePercent(selectedPositionSummary.avgConfidence))}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Live / Paper</p>
-                        <p className="text-xs font-mono">{selectedPositionSummary.liveOrders} / {selectedPositionSummary.paperOrders}</p>
-                      </div>
-                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Marks</p>
-                        <p className="text-xs font-mono">{selectedPositionSummary.freshMarks} / {selectedPositionSummary.markedRows}</p>
-                      </div>
-                    </div>
-                    <div className="flex-1 min-h-0 overflow-hidden px-1">
-                      {filteredSelectedPositionBook.length === 0 ? (
-                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No positions matching filters.</div>
-                      ) : (
-                        <ScrollArea className="h-full min-h-0 rounded-md border border-border/60 bg-card/60">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead className="text-[11px]">Market</TableHead>
-                                <TableHead className="text-[11px]">L</TableHead>
-                                <TableHead className="text-[11px]">Dir</TableHead>
-                                <TableHead className="text-[11px] text-right">Exposure</TableHead>
-                                <TableHead className="text-[11px] text-right">Avg Px</TableHead>
-                                <TableHead className="text-[11px] text-right">Mark</TableHead>
-                                <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
-                                <TableHead className="text-[11px] text-right">Edge</TableHead>
-                                <TableHead className="text-[11px] text-right">Conf</TableHead>
-                                <TableHead className="text-[11px] text-right">Orders</TableHead>
-                                <TableHead className="text-[11px] text-right">Mode</TableHead>
-                                <TableHead className="text-[11px]">Updated</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {filteredSelectedPositionBook.map((row) => (
-                                <TableRow key={row.key} className="text-xs">
-                                  <TableCell className="max-w-[260px] truncate py-1" title={row.marketQuestion}>
-                                    <p className="truncate">{row.marketQuestion}</p>
-                                    <p className="text-[10px] text-muted-foreground truncate" title={positionMetaLine(row)}>
-                                      {positionMetaLine(row)}
-                                    </p>
-                                  </TableCell>
-                                  <TableCell className="py-1">
-                                    <div className="flex items-center gap-1">
-                                      {row.links.polymarket && (
-                                        <a
-                                          href={row.links.polymarket}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          onClick={(event) => event.stopPropagation()}
-                                          className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                          title="Open Polymarket market"
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                        </a>
-                                      )}
-                                      {row.links.kalshi && (
-                                        <a
-                                          href={row.links.kalshi}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          onClick={(event) => event.stopPropagation()}
-                                          className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                          title="Open Kalshi market"
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                        </a>
-                                      )}
-                                      {!row.links.polymarket && !row.links.kalshi && (
-                                        <span className="text-[9px] text-muted-foreground">—</span>
-                                      )}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="py-1">
-                                    <Badge variant="outline" className="h-5 max-w-[140px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-muted-foreground" title={row.direction}>
-                                      {row.direction}
-                                    </Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{formatCurrency(row.exposureUsd)}</TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.averagePrice !== null ? row.averagePrice.toFixed(3) : '—'}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.markFresh && 'text-sky-300')}>
-                                    {row.markPrice !== null ? (
-                                      <FlashNumber
-                                        value={row.markPrice}
-                                        decimals={3}
-                                        className={cn('font-mono text-xs', row.markFresh ? 'data-glow-blue' : '')}
-                                        positiveClass="data-glow-green"
-                                        negativeClass="data-glow-red"
-                                      />
-                                    ) : '—'}
-                                  </TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', (row.unrealizedPnl || 0) > 0 ? 'text-emerald-500' : (row.unrealizedPnl || 0) < 0 ? 'text-red-500' : '')}>
-                                    {row.unrealizedPnl !== null ? formatCurrency(row.unrealizedPnl) : '—'}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.weightedEdge !== null ? formatPercent(row.weightedEdge) : '—'}</TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.weightedConfidence !== null ? formatPercent(normalizeConfidencePercent(row.weightedConfidence)) : '—'}</TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.orderCount}</TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.liveOrderCount}L/{row.paperOrderCount}P</TableCell>
-                                  <TableCell className="py-1 text-[10px] text-muted-foreground">{formatShortDate(row.lastUpdated || row.markUpdatedAt)}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </ScrollArea>
-                      )}
-                    </div>
                   </div>
                 )}
 
@@ -6065,6 +7593,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   pendingExit,
                                   markFresh,
                                   links,
+                                  directionSide,
                                   directionLabel,
                                   executionSummary,
                                   outcomeHeadline,
@@ -6083,8 +7612,25 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   : `E:${pendingExitStatus.slice(0, 4).toUpperCase()}`
                                 const statusBadge = resolveOrderStatusBadgePresentation(status, pnl)
                                 const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(status)
+                                const marketId = String(order.market_id || '').trim()
+                                const marketForModal = resolveCryptoMarket(marketId)
                                 return (
-                                  <TableRow key={order.id} className="text-[11px] leading-tight">
+                                  <TableRow
+                                    key={order.id}
+                                    className="text-[11px] leading-tight cursor-pointer hover:bg-muted/30"
+                                    onClick={() => {
+                                      openTradeMarketModal({
+                                        market: marketForModal,
+                                        order,
+                                        directionSide,
+                                        directionLabel,
+                                        statusSummary: lifecycleLabel,
+                                        executionSummary,
+                                        outcomeSummary: outcomeDetail,
+                                        links,
+                                      })
+                                    }}
+                                  >
                                     <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
                                       <div className="flex min-w-0 items-center gap-1">
                                         <div className="flex shrink-0 items-center gap-0.5">
@@ -6093,6 +7639,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                               href={links.polymarket}
                                               target="_blank"
                                               rel="noopener noreferrer"
+                                              onClick={(event) => event.stopPropagation()}
                                               className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                               title="Open Polymarket market"
                                             >
@@ -6104,6 +7651,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                               href={links.kalshi}
                                               target="_blank"
                                               rel="noopener noreferrer"
+                                              onClick={(event) => event.stopPropagation()}
                                               className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                               title="Open Kalshi market"
                                             >
@@ -6510,19 +8058,58 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] px-1">
                     <div className="flex flex-col gap-1.5 min-h-0 overflow-hidden">
                       <Input value={decisionSearch} onChange={(event) => setDecisionSearch(event.target.value)} placeholder="Search decisions..." className="h-6 text-[11px] shrink-0" />
+                      <div className="shrink-0 flex items-center justify-between gap-2">
+                        <p className="text-[10px] text-muted-foreground">Showing {filteredDecisions.length}/{selectedDecisions.length}</p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={decisionOutcomeFilter === 'all' ? 'default' : 'outline'}
+                          className="h-5 px-2 text-[10px]"
+                          onClick={() => setDecisionOutcomeFilter('all')}
+                        >
+                          all
+                        </Button>
+                      </div>
                       <div className="shrink-0 grid gap-1 grid-cols-3">
-                        <div className="rounded border border-emerald-500/30 bg-emerald-500/5 px-2 py-1 text-center">
+                        <button
+                          type="button"
+                          onClick={() => setDecisionOutcomeFilter((current) => (current === 'selected' ? 'all' : 'selected'))}
+                          className={cn(
+                            'rounded border px-2 py-1 text-center transition-colors',
+                            decisionOutcomeFilter === 'selected'
+                              ? 'border-cyan-500/50 bg-cyan-500/10'
+                              : 'border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10'
+                          )}
+                        >
                           <p className="text-[9px] uppercase text-muted-foreground">Selected</p>
                           <p className="text-xs font-mono text-emerald-500">{decisionOutcomeSummary.selected}</p>
-                        </div>
-                        <div className="rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-center">
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDecisionOutcomeFilter((current) => (current === 'blocked' ? 'all' : 'blocked'))}
+                          className={cn(
+                            'rounded border px-2 py-1 text-center transition-colors',
+                            decisionOutcomeFilter === 'blocked'
+                              ? 'border-cyan-500/50 bg-cyan-500/10'
+                              : 'border-red-500/30 bg-red-500/5 hover:bg-red-500/10'
+                          )}
+                        >
                           <p className="text-[9px] uppercase text-muted-foreground">Blocked</p>
                           <p className="text-xs font-mono text-red-500">{decisionOutcomeSummary.blocked}</p>
-                        </div>
-                        <div className="rounded border border-border/70 bg-background/70 px-2 py-1 text-center">
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDecisionOutcomeFilter((current) => (current === 'skipped' ? 'all' : 'skipped'))}
+                          className={cn(
+                            'rounded border px-2 py-1 text-center transition-colors',
+                            decisionOutcomeFilter === 'skipped'
+                              ? 'border-cyan-500/50 bg-cyan-500/10'
+                              : 'border-border/70 bg-background/70 hover:bg-muted/40'
+                          )}
+                        >
                           <p className="text-[9px] uppercase text-muted-foreground">Skipped</p>
                           <p className="text-xs font-mono">{decisionOutcomeSummary.skipped}</p>
-                        </div>
+                        </button>
                       </div>
                       <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
                         <div className="space-y-0.5 p-1.5 text-xs">
@@ -6531,7 +8118,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           ) : (
                             filteredDecisions.map((decision) => {
                               const isActive = decision.id === selectedDecisionId
-                              const outcome = String(decision.decision || '').toLowerCase()
+                              const outcome = normalizeDecisionOutcome(decision.decision)
+                              const marketLabel = resolveDecisionMarketLabel(decision)
                               return (
                                 <button
                                   key={decision.id}
@@ -6545,7 +8133,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   )}
                                 >
                                   <div className="flex items-center justify-between gap-2 font-mono">
-                                    <span className="truncate max-w-[180px]" title={decision.market_question || decision.market_id || ''}>{decision.market_question || shortId(decision.market_id)}</span>
+                                    <span className="truncate max-w-[180px]" title={marketLabel}>{marketLabel}</span>
                                     <Badge variant={outcome === 'selected' ? 'default' : outcome === 'blocked' ? 'destructive' : 'outline'} className="text-[9px] h-4 px-1 shrink-0">{outcome}</Badge>
                                   </div>
                                   <p className="text-[10px] text-muted-foreground truncate">{decision.reason || decision.strategy_key}</p>
@@ -6561,7 +8149,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       {selectedDecision ? (
                         <>
                           <div className="shrink-0 rounded-md border border-border p-2 text-xs space-y-1">
-                            <p className="font-medium">{selectedDecision.market_question || shortId(selectedDecision.market_id)}</p>
+                            <p className="font-medium">{resolveDecisionMarketLabel(selectedDecision)}</p>
                             <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
                               <span>Source: {selectedDecision.source}</span>
                               <span>Strategy: {selectedDecision.strategy_key}</span>
@@ -6628,80 +8216,240 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </div>
                 )}
 
-                {workTab === 'risk' && (
-                  <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] px-1">
-                    <div className="flex flex-col min-h-0 gap-1.5 overflow-hidden">
-                      <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-1">Governance</div>
-                      <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
-                        <div className="space-y-2 p-2">
-                          <div className="rounded border border-border/70 p-2 text-xs space-y-1.5">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Control State</p>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Mode</span><Badge variant={globalMode === 'live' ? 'destructive' : 'outline'}>{globalMode.toUpperCase()}</Badge></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Engine</span><span className={cn('font-medium', orchestratorBlocked ? 'text-amber-400' : '')}>{orchestratorStatusLabel}</span></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Block orders</span><span className={cn('font-medium', killSwitchOn ? 'text-red-400' : 'text-emerald-400')}>{killSwitchOn ? 'Active' : 'Inactive'}</span></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Run interval</span><span className="font-mono">{toNumber(overviewQuery.data?.control?.run_interval_seconds)}s</span></div>
-                          </div>
-                          <div className={cn('rounded border p-2 text-xs space-y-1.5', !selectedAccountValid || modeMismatch ? 'border-amber-500/35 bg-amber-500/5' : 'border-border/70')}>
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Governance</p>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Account selected</span><span className="font-medium">{selectedAccountValid ? 'Yes' : 'No'}</span></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Mode sync</span><span className="font-medium">{modeMismatch ? 'No' : 'Yes'}</span></div>
-                          </div>
-                          <div className="rounded border border-border/70 p-2 text-xs space-y-1.5">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Live Guardrails</p>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Preflight + arm</span><Badge variant="outline" className="text-[9px] h-4">Enforced</Badge></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Kill switch guard</span><Badge variant="outline" className="text-[9px] h-4">Enforced</Badge></div>
-                            <div className="flex items-center justify-between"><span className="text-muted-foreground">Worker pause override</span><Badge variant="outline" className="text-[9px] h-4">Enforced</Badge></div>
-                          </div>
-                        </div>
-                      </ScrollArea>
+                {workTab === 'performance' && (
+                  <div className="h-full min-h-0 flex flex-col gap-2 px-1">
+                    <div className="shrink-0 grid gap-1 sm:grid-cols-2 lg:grid-cols-6">
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Realized P&amp;L</p>
+                        <p className={cn('text-xs font-mono', selectedPerformance.resolvedPnl > 0 ? 'text-emerald-500' : selectedPerformance.resolvedPnl < 0 ? 'text-red-500' : '')}>
+                          {formatCurrency(selectedPerformance.resolvedPnl)}
+                        </p>
+                      </div>
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Resolved ROI</p>
+                        <p className={cn('text-xs font-mono', selectedPerformance.roiPercent > 0 ? 'text-emerald-500' : selectedPerformance.roiPercent < 0 ? 'text-red-500' : '')}>
+                          {selectedPerformance.roiPercent > 0 ? '+' : ''}{formatPercent(selectedPerformance.roiPercent, 2)}
+                        </p>
+                      </div>
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Resolved</p>
+                        <p className="text-xs font-mono">{selectedPerformance.resolved}</p>
+                      </div>
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Win / Loss</p>
+                        <p className="text-xs font-mono">{selectedPerformance.wins} / {selectedPerformance.losses}</p>
+                      </div>
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Open</p>
+                        <p className="text-xs font-mono">{selectedPerformance.open}</p>
+                      </div>
+                      <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                        <p className="text-[9px] uppercase text-muted-foreground">Failed</p>
+                        <p className="text-xs font-mono">{selectedPerformance.failed}</p>
+                      </div>
                     </div>
 
-                    <div className="flex flex-col min-h-0 gap-1.5 overflow-hidden">
-                      <div className="shrink-0 flex items-center gap-3 px-1">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Risk Terminal</span>
-                        <div className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground">
-                          <span>{riskActivityRows.length} warnings</span>
-                          <span className="text-border">|</span>
-                          <span>{failedOrders.length} failed</span>
-                        </div>
+                    {selectedPerformance.allowanceErrorCount > 0 ? (
+                      <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100">
+                        Found {selectedPerformance.allowanceErrorCount} orders with `not enough balance / allowance` in execution payloads.
                       </div>
-                      <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
-                        <div className="space-y-0.5 p-1.5 font-mono text-[11px] leading-relaxed">
-                          {riskActivityRows.length === 0 ? (
-                            <div className="rounded border border-emerald-500/25 px-2 py-1 text-emerald-700 dark:text-emerald-100">[HEALTHY] no warning or failure events captured.</div>
-                          ) : (
-                            riskActivityRows.map((row) => (
-                              <div key={`${row.kind}:${row.id}`} className={cn('rounded border px-2 py-1', row.tone === 'negative' ? 'border-red-500/30 text-red-700 dark:text-red-100' : 'border-amber-500/30 text-amber-700 dark:text-amber-100')}>
-                                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                                  <span className="text-muted-foreground">[{formatTimestamp(row.ts)}]</span>
-                                  <span className="uppercase text-[10px]">{row.kind}</span>
-                                  {row.action && (
-                                    <span className={cn(
-                                      'uppercase text-[10px] font-semibold',
-                                      row.action === 'BUY' ? 'text-emerald-500' : 'text-red-500'
-                                    )}
-                                    >
-                                      {row.action}
-                                    </span>
-                                  )}
-                                  <span className="font-medium">{row.title}</span>
-                                </div>
-                                <div className="text-[10px] leading-relaxed text-muted-foreground mt-0.5 break-words">{row.detail}</div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </ScrollArea>
+                    ) : null}
+
+                    <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-2">
+                      <div className="min-h-0 rounded-md border border-border/60 bg-card/60">
+                        <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe Performance</div>
+                        <ScrollArea className="h-[32%] min-h-[150px]">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-[10px]">Timeframe</TableHead>
+                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                <TableHead className="text-[10px] text-right">W/L</TableHead>
+                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPerformance.timeframeRows.map((row) => (
+                                <TableRow key={`tf-${row.key}`} className="text-xs">
+                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.wins}/{row.losses}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
+                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Mode Performance</div>
+                        <ScrollArea className="h-[32%] min-h-[150px]">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-[10px]">Mode</TableHead>
+                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPerformance.modeRows.map((row) => (
+                                <TableRow key={`mode-${row.key}`} className="text-xs">
+                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
+                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Mode + Timeframe</div>
+                        <ScrollArea className="h-[32%] min-h-[150px]">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-[10px]">Bucket</TableHead>
+                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPerformance.timeframeModeRows.slice(0, 24).map((row) => (
+                                <TableRow key={`combo-${row.key}`} className="text-xs">
+                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                      </div>
+
+                      <div className="min-h-0 rounded-md border border-border/60 bg-card/60">
+                        <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Performance</div>
+                        <ScrollArea className="h-[49%] min-h-[220px]">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-[10px]">Strategy</TableHead>
+                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                <TableHead className="text-[10px] text-right">W/L</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPerformance.strategyRows.map((row) => (
+                                <TableRow key={`strategy-${row.key}`} className="text-xs">
+                                  <TableCell className="py-1">
+                                    <div className="font-medium">{row.label}</div>
+                                    <div className="text-[9px] font-mono text-muted-foreground">{row.key}</div>
+                                  </TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.wins}/{row.losses}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Sub-Strategy Performance</div>
+                        <ScrollArea className="h-[49%] min-h-[220px]">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-[10px]">Sub-Strategy</TableHead>
+                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPerformance.subStrategyRows.slice(0, 24).map((row) => (
+                                <TableRow key={`sub-${row.key}`} className="text-xs">
+                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
+                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                      </div>
                     </div>
                   </div>
                 )}
+
               </div>
             </>
           )}
         </div>
-      </div>
+	      </div>
 
-      <Dialog open={confirmLiveStartOpen} onOpenChange={setConfirmLiveStartOpen}>
+	      {createPortal(
+	        <AnimatePresence>
+	          {marketModalState && (
+	            <motion.div
+	              key="trading-market-modal"
+	              initial={{ opacity: 0 }}
+	              animate={{ opacity: 1 }}
+	              exit={{ opacity: 0 }}
+	              transition={{ duration: 0.18 }}
+	              className="fixed inset-0 z-[120] flex items-center justify-center"
+	              onClick={closeMarketModal}
+	            >
+	              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+	              <motion.div
+	                initial={{ scale: 0.94, y: 22, opacity: 0 }}
+	                animate={{ scale: 1, y: 0, opacity: 1 }}
+	                exit={{ scale: 0.94, y: 22, opacity: 0 }}
+	                transition={{ type: 'spring', damping: 28, stiffness: 340, mass: 0.85 }}
+	                className="relative w-[96vw] max-w-[1180px] max-h-[92vh]"
+	                onClick={(event) => event.stopPropagation()}
+	              >
+	                <BotTradePositionModal
+	                  market={marketModalMarket}
+	                  sharedHistory={modalSharedHistory}
+	                  scope={marketModalState.scope}
+	                  orders={allOrders}
+	                  themeMode={themeMode}
+	                  onClose={closeMarketModal}
+	                />
+	              </motion.div>
+	            </motion.div>
+	          )}
+	        </AnimatePresence>,
+	        document.body
+	      )}
+
+	      <Dialog open={confirmLiveStartOpen} onOpenChange={setConfirmLiveStartOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm Live Trading Start</DialogTitle>
@@ -6741,6 +8489,330 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       </Dialog>
 
       <Sheet
+        open={globalSettingsFlyoutOpen}
+        onOpenChange={(open) => {
+          setGlobalSettingsFlyoutOpen(open)
+          if (!open) {
+            setGlobalSettingsSaveError(null)
+          }
+        }}
+      >
+        <SheetContent side="right" className="w-full sm:max-w-xl p-0">
+          <div className="h-full min-h-0 flex flex-col">
+            <div className="border-b border-border px-4 py-3">
+              <SheetHeader className="space-y-1 text-left">
+                <SheetTitle className="text-base">Global Settings</SheetTitle>
+                <SheetDescription>
+                  Configure orchestrator-wide live/paper runtime controls, risk clamps, and pending-exit behavior.
+                </SheetDescription>
+              </SheetHeader>
+            </div>
+
+            <ScrollArea className="flex-1 min-h-0 px-4 py-3">
+              <div className="space-y-3 pb-2">
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Loop</p>
+                  <div>
+                    <Label>Run Interval (seconds)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={300}
+                      value={globalSettingsDraft.runIntervalSeconds}
+                      onChange={(event) => setGlobalSettingsField('runIntervalSeconds', event.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label>Trader Cycle Timeout (seconds, blank = auto)</Label>
+                    <Input
+                      type="number"
+                      min={3}
+                      max={120}
+                      placeholder="auto"
+                      value={globalSettingsDraft.traderCycleTimeoutSeconds}
+                      onChange={(event) => setGlobalSettingsField('traderCycleTimeoutSeconds', event.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Global Risk</p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <Label>Max Gross Exposure (USD)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxGrossExposureUsd}
+                        onChange={(event) => setGlobalSettingsField('maxGrossExposureUsd', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Daily Loss (USD)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={globalSettingsDraft.maxDailyLossUsd}
+                        onChange={(event) => setGlobalSettingsField('maxDailyLossUsd', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Orders / Cycle</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxOrdersPerCycle}
+                        onChange={(event) => setGlobalSettingsField('maxOrdersPerCycle', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending Live Exits</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <Label>Max Pending Exits Allowed</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={globalSettingsDraft.pendingExitMaxAllowed}
+                        onChange={(event) => setGlobalSettingsField('pendingExitMaxAllowed', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">Identity Guard Enabled</span>
+                      <Switch
+                        checked={globalSettingsDraft.pendingExitIdentityGuardEnabled}
+                        onCheckedChange={(checked) => setGlobalSettingsField('pendingExitIdentityGuardEnabled', checked)}
+                      />
+                    </label>
+                  </div>
+                  <div>
+                    <Label>Terminal Pending-Exit Statuses (comma-separated)</Label>
+                    <Input
+                      value={globalSettingsDraft.pendingExitTerminalStatuses}
+                      onChange={(event) => setGlobalSettingsField('pendingExitTerminalStatuses', event.target.value)}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Risk Clamps</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">Force Averaging Off</span>
+                      <Switch
+                        checked={globalSettingsDraft.enforceAllowAveragingOff}
+                        onCheckedChange={(checked) => setGlobalSettingsField('enforceAllowAveragingOff', checked)}
+                      />
+                    </label>
+                    <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">Force Halt on Loss Streak</span>
+                      <Switch
+                        checked={globalSettingsDraft.enforceHaltOnConsecutiveLosses}
+                        onCheckedChange={(checked) => setGlobalSettingsField('enforceHaltOnConsecutiveLosses', checked)}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <Label>Min Cooldown (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={globalSettingsDraft.minCooldownSeconds}
+                        onChange={(event) => setGlobalSettingsField('minCooldownSeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Consecutive Losses Cap</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxConsecutiveLossesCap}
+                        onChange={(event) => setGlobalSettingsField('maxConsecutiveLossesCap', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Open Orders Cap</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxOpenOrdersCap}
+                        onChange={(event) => setGlobalSettingsField('maxOpenOrdersCap', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Open Positions Cap</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxOpenPositionsCap}
+                        onChange={(event) => setGlobalSettingsField('maxOpenPositionsCap', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Trade Notional Cap (USD)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxTradeNotionalUsdCap}
+                        onChange={(event) => setGlobalSettingsField('maxTradeNotionalUsdCap', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Orders / Cycle Cap</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxOrdersPerCycleCap}
+                        onChange={(event) => setGlobalSettingsField('maxOrdersPerCycleCap', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Market Context</p>
+                  <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">Enabled</span>
+                    <Switch
+                      checked={globalSettingsDraft.liveMarketContextEnabled}
+                      onCheckedChange={(checked) => setGlobalSettingsField('liveMarketContextEnabled', checked)}
+                    />
+                  </label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <Label>History Window (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={300}
+                        value={globalSettingsDraft.liveMarketHistoryWindowSeconds}
+                        onChange={(event) => setGlobalSettingsField('liveMarketHistoryWindowSeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>History Fidelity (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={30}
+                        value={globalSettingsDraft.liveMarketHistoryFidelitySeconds}
+                        onChange={(event) => setGlobalSettingsField('liveMarketHistoryFidelitySeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max History Points</Label>
+                      <Input
+                        type="number"
+                        min={20}
+                        value={globalSettingsDraft.liveMarketHistoryMaxPoints}
+                        onChange={(event) => setGlobalSettingsField('liveMarketHistoryMaxPoints', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Context Timeout (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.liveMarketContextTimeoutSeconds}
+                        onChange={(event) => setGlobalSettingsField('liveMarketContextTimeoutSeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Provider Health Guard</p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <Label>Window (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={30}
+                        value={globalSettingsDraft.liveProviderHealthWindowSeconds}
+                        onChange={(event) => setGlobalSettingsField('liveProviderHealthWindowSeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Min Errors</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.liveProviderHealthMinErrors}
+                        onChange={(event) => setGlobalSettingsField('liveProviderHealthMinErrors', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Block (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={15}
+                        value={globalSettingsDraft.liveProviderHealthBlockSeconds}
+                        onChange={(event) => setGlobalSettingsField('liveProviderHealthBlockSeconds', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+
+            <div className="border-t border-border px-4 py-3 flex flex-wrap items-center justify-end gap-2">
+              {globalSettingsSaveError ? (
+                <div className="mr-auto text-xs text-red-500 max-w-[65%] break-words leading-tight" title={globalSettingsSaveError}>
+                  {globalSettingsSaveError}
+                </div>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={resetGlobalSettingsDraft}
+                disabled={globalSettingsBusy}
+              >
+                Reset
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setGlobalSettingsFlyoutOpen(false)}
+                disabled={globalSettingsBusy}
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                onClick={saveGlobalSettings}
+                disabled={globalSettingsBusy}
+              >
+                {globalSettingsBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                Save Settings
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
         open={traderFlyoutOpen}
         onOpenChange={(open) => {
           setTraderFlyoutOpen(open)
@@ -6773,6 +8845,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   icon={Sparkles}
                   subtitle="Name this bot and configure source-specific execution strategies below."
                 >
+                  <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Bot Mode</p>
+                      <Badge className="h-5 px-1.5 text-[10px]" variant={draftMode === 'live' ? 'destructive' : 'outline'}>
+                        {draftMode.toUpperCase()}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-[10px] text-muted-foreground/75">
+                      This bot is scoped to {draftMode === 'live' ? 'live' : 'sandbox'} execution only.
+                    </p>
+                  </div>
+
                   <div>
                     <Label>Name</Label>
                     <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
@@ -6786,6 +8870,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   {traderFlyoutMode === 'create' ? (
                     <div>
                       <Label>Copy Settings From Existing Bot (Optional)</Label>
+                      <div className="mt-1 flex items-center gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={draftCopyFromMode === 'paper' ? 'default' : 'outline'}
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => setDraftCopyFromMode('paper')}
+                        >
+                          Sandbox Bots
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={draftCopyFromMode === 'live' ? 'default' : 'outline'}
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => setDraftCopyFromMode('live')}
+                        >
+                          Live Bots
+                        </Button>
+                      </div>
                       <Select
                         value={draftCopyFromTraderId || '__none__'}
                         onValueChange={applyCreateCopyFromSelection}
@@ -6795,13 +8899,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">Start from scratch</SelectItem>
-                          {traders.map((trader) => (
+                          {copySourceTraders.map((trader) => (
                             <SelectItem key={trader.id} value={trader.id}>
                               {trader.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {copySourceTraders.length === 0 ? (
+                        <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
+                          No {draftCopyFromMode === 'live' ? 'live' : 'sandbox'} bots available to copy from.
+                        </p>
+                      ) : null}
                       <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
                         Creates a new bot with copied source config, strategy params, interval, risk limits, and schedule settings
                         from the selected bot. Trades, decisions, orders, and events are never copied.
@@ -6886,326 +8995,75 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     })}
                   </div>
 
-                  {/* Crypto inline config — shown when any crypto source is enabled */}
-                  {sourceCards.some((s) => isCryptoSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
-                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-2.5 space-y-2 mt-2">
+                  {dynamicStrategyParamSections.length > 0 && (
+                    <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-2.5 space-y-2 mt-2">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-400">Crypto Settings</p>
-                        {(Boolean(cryptoIncludeAssetParamKey) ||
-                          Boolean(cryptoIncludeTimeframeParamKey) ||
-                          cryptoAssetOptions.length > 0 ||
-                          cryptoTimeframeOptions.length > 0) && (
-                          <Button type="button" size="sm" variant="outline" className="h-5 px-2 text-[10px]" onClick={enableAllCryptoTargets}>
-                            Use all
-                          </Button>
-                        )}
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-400">Dynamic Parameters</p>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300">
+                          {dynamicStrategyParamSections.reduce((sum, section) => sum + section.fieldKeys.length, 0)} fields
+                        </span>
                       </div>
-                      {(Boolean(cryptoIncludeAssetParamKey) || cryptoAssetOptions.length > 0) && (
-                        <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">Include Assets</p>
-                          {cryptoAssetOptions.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {cryptoAssetOptions.map((asset) => (
-                                <Button
-                                  key={asset}
-                                  type="button"
-                                  size="sm"
-                                  variant={selectedCryptoAssets.has(asset) ? 'default' : 'outline'}
-                                  className="h-6 px-2 text-[11px]"
-                                  onClick={() => toggleCryptoAssetTarget(asset)}
-                                >
-                                  {asset}
-                                </Button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-muted-foreground/75">No asset options exposed by this strategy schema.</p>
-                          )}
-                        </div>
-                      )}
-
-                      {Boolean(cryptoExcludeAssetParamKey) && (
-                        <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">Exclude Assets</p>
-                          {cryptoAssetOptions.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {cryptoAssetOptions.map((asset) => (
-                                <Button
-                                  key={`exclude-${asset}`}
-                                  type="button"
-                                  size="sm"
-                                  variant={selectedExcludedCryptoAssets.has(asset) ? 'destructive' : 'outline'}
-                                  className="h-6 px-2 text-[11px]"
-                                  onClick={() => toggleExcludedCryptoAssetTarget(asset)}
-                                >
-                                  {asset}
-                                </Button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-muted-foreground/75">No asset options exposed by this strategy schema.</p>
-                          )}
-                        </div>
-                      )}
-
-                      {cryptoTimeframeDraft ? (
-                        <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">
-                            Timeframe is fixed by selected crypto strategy ({cryptoTimeframeDraft}).
-                          </p>
-                        </div>
-                      ) : null}
-
-                      {(Boolean(cryptoIncludeTimeframeParamKey) || cryptoTimeframeOptions.length > 0) && !cryptoTimeframeDraft && (
-                        <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">Include Timeframes</p>
-                          {cryptoTimeframeOptions.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {cryptoTimeframeOptions.map((timeframe) => (
-                                <Button
-                                  key={timeframe}
-                                  type="button"
-                                  size="sm"
-                                  variant={selectedCryptoIncludedTimeframes.has(timeframe) ? 'default' : 'outline'}
-                                  className="h-6 px-2 text-[11px]"
-                                  onClick={() => toggleCryptoTimeframeTarget(timeframe)}
-                                >
-                                  {timeframe}
-                                </Button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-muted-foreground/75">No timeframe options exposed by this strategy schema.</p>
-                          )}
-                        </div>
-                      )}
-
-                      {Boolean(cryptoExcludeTimeframeParamKey) && !cryptoTimeframeDraft && (
-                        <div className="space-y-1.5">
-                          <p className="text-[11px] text-muted-foreground/80">Exclude Timeframes</p>
-                          {cryptoTimeframeOptions.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {cryptoTimeframeOptions.map((timeframe) => (
-                                <Button
-                                  key={`exclude-${timeframe}`}
-                                  type="button"
-                                  size="sm"
-                                  variant={selectedCryptoExcludedTimeframes.has(timeframe) ? 'destructive' : 'outline'}
-                                  className="h-6 px-2 text-[11px]"
-                                  onClick={() => toggleExcludedCryptoTimeframeTarget(timeframe)}
-                                >
-                                  {timeframe}
-                                </Button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-muted-foreground/75">No timeframe options exposed by this strategy schema.</p>
-                          )}
-                        </div>
-                      )}
-
-                      {(Boolean(cryptoModeParamKey) || cryptoStrategyModeOptions.length > 0) && (
-                        <div className="mt-1">
-                          <Label className="text-[11px] text-muted-foreground">Strategy Mode</Label>
-                          <Select
-                            value={normalizeCryptoStrategyMode(
-                              advancedConfig.strategyMode,
-                              cryptoStrategyModeOptions,
-                              cryptoStrategyModeOptions[0] || 'auto'
-                            )}
-                            onValueChange={(value) =>
-                              setAdvancedValue(
-                                'strategyMode',
-                                normalizeCryptoStrategyMode(
-                                  value,
-                                  cryptoStrategyModeOptions,
-                                  cryptoStrategyModeOptions[0] || 'auto'
-                                )
-                              )
-                            }
-                          >
-                            <SelectTrigger className="h-7 text-xs mt-0.5">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {cryptoStrategyModeOptions.map((mode) => (
-                                <SelectItem key={mode} value={mode} className="text-xs">{mode}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-                      {!cryptoTimeframeDraft &&
-                        !(Boolean(cryptoIncludeAssetParamKey) || cryptoAssetOptions.length > 0) &&
-                        !Boolean(cryptoExcludeAssetParamKey) &&
-                        !(Boolean(cryptoIncludeTimeframeParamKey) || cryptoTimeframeOptions.length > 0) &&
-                        !Boolean(cryptoExcludeTimeframeParamKey) &&
-                        !(Boolean(cryptoModeParamKey) || cryptoStrategyModeOptions.length > 0) && (
-                        <p className="text-[10px] text-muted-foreground/75">
-                          Selected strategy does not expose dedicated crypto controls in its schema.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Wallet-signal inline config — shown when traders source is enabled */}
-                  {sourceCards.some((s) => isTraderSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
-                    <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-2.5 space-y-3 mt-2">
-                      <div className="border border-orange-500/30 bg-background/60 rounded-md p-2.5 space-y-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Strategy Parameters</p>
-                        {tradersStrategyFormSchema.param_fields.length > 0 ? (
-                          <StrategyConfigForm
-                            schema={tradersStrategyFormSchema as { param_fields: any[] }}
-                            values={tradersStrategyFormValues}
-                            onChange={applyTradersStrategyFormValues}
-                          />
-                        ) : (
-                          <p className="text-[10px] text-muted-foreground/80">No strategy schema available for selected wallet source strategy.</p>
-                        )}
-                        {draftTradersScopeModes.includes('individual') ? (
-                          <div className="space-y-1.5">
-                            <p className="text-[11px] text-muted-foreground leading-tight">Individual Wallets</p>
-                            <div className="max-h-28 overflow-auto rounded border border-border/70 p-1.5 space-y-1">
-                              {trackedWallets.length === 0 ? (
-                                <p className="text-[10px] text-muted-foreground">No tracked wallets found.</p>
-                              ) : (
-                                trackedWallets.map((wallet) => {
-                                  const address = String(wallet.address || '').toLowerCase()
-                                  const selected = draftTradersIndividualWallets.includes(address)
-                                  return (
-                                    <label key={wallet.address} className="flex items-center gap-1.5 text-[10px]">
-                                      <input
-                                        type="checkbox"
-                                        checked={selected}
-                                        onChange={() => toggleIndividualWallet(address)}
-                                        className="accent-orange-500"
-                                      />
-                                      <span className="font-mono">{wallet.label ? `${wallet.label} (${wallet.address})` : wallet.address}</span>
-                                    </label>
-                                  )
-                                })
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
-                        {draftTradersScopeModes.includes('group') ? (
-                          <div className="space-y-1.5">
-                            <p className="text-[11px] text-muted-foreground leading-tight">Discovery Groups</p>
-                            <div className="max-h-28 overflow-auto rounded border border-border/70 p-1.5 space-y-1">
-                              {traderGroups.length === 0 ? (
-                                <p className="text-[10px] text-muted-foreground">No groups found.</p>
-                              ) : (
-                                traderGroups.map((group) => {
-                                  const selected = draftTradersGroupIds.includes(group.id)
-                                  return (
-                                    <label key={group.id} className="flex items-center gap-1.5 text-[10px]">
-                                      <input
-                                        type="checkbox"
-                                        checked={selected}
-                                        onChange={() => toggleTradersGroup(group.id)}
-                                        className="accent-orange-500"
-                                      />
-                                      <span>{group.name}</span>
-                                    </label>
-                                  )
-                                })
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-
+                      <p className="text-[10px] text-muted-foreground/75">
+                        Strategy and wallet-signal controls are grouped automatically based on active source selections.
+                      </p>
                       <div className="space-y-2">
-                        <div className="flex items-center gap-1.5">
-                          <Filter className="w-3.5 h-3.5 text-orange-400" />
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Wallet Signal Filters (Global)</p>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground/80">
-                          These filters are shared with wallet-opportunity discovery settings.
-                        </p>
-                        {traderOpportunityFilterSchema.param_fields.length > 0 ? (
-                          <StrategyConfigForm
-                            schema={traderOpportunityFilterSchema as { param_fields: any[] }}
-                            values={draftSignalFilters as Record<string, unknown>}
-                            onChange={applySignalFilterFormValues}
-                          />
-                        ) : (
-                          <p className="text-[10px] text-muted-foreground/80">No trader-opportunity filter schema available.</p>
-                        )}
-                      </div>
-
-                      <div className="border-t border-orange-500/20 pt-3 space-y-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <Copy className="w-3.5 h-3.5 text-green-400" />
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-green-400">Copy Trading</p>
-                          {draftCopyTrading.copy_mode_type !== 'disabled' && (
-                            <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">ACTIVE</span>
-                          )}
-                        </div>
-                        <div className="grid gap-2.5 md:grid-cols-2">
-                          <div>
-                            <Label className="text-[11px] text-muted-foreground leading-tight">Simulation Account</Label>
-                            <Select
-                              value={copyTradingFormValues.account_id ? String(copyTradingFormValues.account_id) : '__none__'}
-                              onValueChange={(value) => setCt({ account_id: value === '__none__' ? '' : value })}
-                            >
-                              <SelectTrigger className="mt-0.5 h-7 text-xs">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__none__">Unassigned</SelectItem>
-                                {simulationAccounts.map((account) => (
-                                  <SelectItem key={account.id} value={account.id}>
-                                    {account.name || account.id}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          {draftCopyTrading.copy_mode_type === 'individual' ? (
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground leading-tight">Wallet Address</Label>
-                              <Input
-                                type="text"
-                                value={draftCopyTrading.individual_wallet}
-                                onChange={(event) => setCt({ individual_wallet: event.target.value })}
-                                placeholder="0x..."
-                                className="mt-0.5 text-xs h-7 font-mono"
-                              />
+                        {dynamicStrategyParamSections.map((section) => (
+                          <details key={section.sectionKey} className="rounded-md border border-border/60 bg-background/50 p-2">
+                            <summary className="cursor-pointer text-[11px] font-medium flex items-center justify-between">
+                              <span>{section.sourceLabel} · {section.strategyLabel}</span>
+                              <span className="text-[9px] text-muted-foreground">{section.fieldKeys.length} fields</span>
+                            </summary>
+                            <div className="mt-2 space-y-2">
+                              {section.groups.map((group) => (
+                                <details key={`${section.sectionKey}:${group.key}`} className="rounded-md border border-border/50 bg-background/70 p-2" open={group.key === 'scope'}>
+                                  <summary className="cursor-pointer text-[10px] font-medium flex items-center justify-between">
+                                    <span>{group.label}</span>
+                                    <span className="text-[9px] text-muted-foreground">{group.fields.length}</span>
+                                  </summary>
+                                  <div className="mt-2">
+                                    <StrategyConfigForm
+                                      schema={{ param_fields: group.fields as any[] }}
+                                      values={section.values}
+                                      onChange={(nextValues) => {
+                                        if (section.kind === 'strategy') {
+                                          applyDynamicStrategyFormValues(section.fieldKeys, nextValues)
+                                          return
+                                        }
+                                        if (section.kind === 'signal_filters') {
+                                          applySignalFilterFormValues(nextValues)
+                                          return
+                                        }
+                                        applyCopyTradingFormValues(nextValues)
+                                      }}
+                                    />
+                                  </div>
+                                </details>
+                              ))}
+                              {section.kind === 'copy_trading' && activeCopyMode && activeCopyMode.stats && activeCopyMode.mode !== 'disabled' && (
+                                <div className="grid grid-cols-4 gap-2 pt-1">
+                                  <div className="text-center">
+                                    <p className="text-[10px] text-muted-foreground">Copied</p>
+                                    <p className="text-xs font-medium">{activeCopyMode.stats.total_copied}</p>
+                                  </div>
+                                  <div className="text-center">
+                                    <p className="text-[10px] text-muted-foreground">Success</p>
+                                    <p className="text-xs font-medium text-green-400">{activeCopyMode.stats.successful_copies}</p>
+                                  </div>
+                                  <div className="text-center">
+                                    <p className="text-[10px] text-muted-foreground">Failed</p>
+                                    <p className="text-xs font-medium text-red-400">{activeCopyMode.stats.failed_copies}</p>
+                                  </div>
+                                  <div className="text-center">
+                                    <p className="text-[10px] text-muted-foreground">PnL</p>
+                                    <p className={cn('text-xs font-medium', activeCopyMode.stats.total_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                                      ${activeCopyMode.stats.total_pnl.toFixed(2)}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                          ) : null}
-                        </div>
-                        {copyTradingSchema.param_fields.length > 0 ? (
-                          <StrategyConfigForm
-                            schema={copyTradingSchema as { param_fields: any[] }}
-                            values={copyTradingFormValues}
-                            onChange={applyCopyTradingFormValues}
-                          />
-                        ) : (
-                          <p className="text-[10px] text-muted-foreground/80">No copy-trading schema available.</p>
-                        )}
-                        {activeCopyMode && activeCopyMode.stats && activeCopyMode.mode !== 'disabled' && (
-                          <div className="grid grid-cols-4 gap-2 pt-1">
-                            <div className="text-center">
-                              <p className="text-[10px] text-muted-foreground">Copied</p>
-                              <p className="text-xs font-medium">{activeCopyMode.stats.total_copied}</p>
-                            </div>
-                            <div className="text-center">
-                              <p className="text-[10px] text-muted-foreground">Success</p>
-                              <p className="text-xs font-medium text-green-400">{activeCopyMode.stats.successful_copies}</p>
-                            </div>
-                            <div className="text-center">
-                              <p className="text-[10px] text-muted-foreground">Failed</p>
-                              <p className="text-xs font-medium text-red-400">{activeCopyMode.stats.failed_copies}</p>
-                            </div>
-                            <div className="text-center">
-                              <p className="text-[10px] text-muted-foreground">PnL</p>
-                              <p className={cn('text-xs font-medium', activeCopyMode.stats.total_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
-                                ${activeCopyMode.stats.total_pnl.toFixed(2)}
-                              </p>
-                            </div>
-                          </div>
-                        )}
+                          </details>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -7213,15 +9071,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </FlyoutSection>
 
                 <FlyoutSection
-                  title="Run Cadence"
+                  title="Fallback Interval"
                   icon={Clock3}
                   iconClassName="text-sky-500"
                   count={`${Number(draftInterval || 0)}s`}
-                  subtitle="Scheduling only. Strategy/selection logic is configured in source strategy schemas."
+                  subtitle="Idle-sweep fallback cadence. Real-time signal events can trigger this bot sooner."
                 >
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                     <div>
-                      <Label>Bot Interval Seconds</Label>
+                      <Label>Fallback Interval Seconds</Label>
                       <Input
                         type="number"
                         min={1}
@@ -7231,6 +9089,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                       <p className="mt-1 text-[10px] text-muted-foreground/70">
                         Saves to this bot&apos;s <span className="font-mono">interval_seconds</span>.
+                      </p>
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">
+                        Real-time trade-signal events wake matching bots immediately. If no new events arrive, this bot still runs when this fallback interval elapses.
                       </p>
                     </div>
                     <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">

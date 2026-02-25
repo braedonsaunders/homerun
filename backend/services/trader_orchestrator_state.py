@@ -44,7 +44,7 @@ from services.worker_state import (
     read_worker_snapshot,
 )
 from services.simulation import simulation_service
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
@@ -77,6 +77,33 @@ PENDING_LIVE_EXIT_TERMINAL_STATUSES = {
     "superseded_external",
     "cancelled",
 }
+DEFAULT_PENDING_LIVE_EXIT_GUARD = {
+    "max_pending_exits": 0,
+    "identity_guard_enabled": True,
+    "terminal_statuses": sorted(PENDING_LIVE_EXIT_TERMINAL_STATUSES),
+}
+DEFAULT_LIVE_RISK_CLAMPS = {
+    "enforce_allow_averaging_off": True,
+    "min_cooldown_seconds": 90,
+    "max_consecutive_losses_cap": 3,
+    "max_open_orders_cap": 6,
+    "max_open_positions_cap": 4,
+    "max_trade_notional_usd_cap": 200.0,
+    "max_orders_per_cycle_cap": 4,
+    "enforce_halt_on_consecutive_losses": True,
+}
+DEFAULT_LIVE_MARKET_CONTEXT = {
+    "enabled": True,
+    "history_window_seconds": 7200,
+    "history_fidelity_seconds": 300,
+    "max_history_points": 120,
+    "timeout_seconds": 4.0,
+}
+DEFAULT_LIVE_PROVIDER_HEALTH = {
+    "window_seconds": 180,
+    "min_errors": 2,
+    "block_seconds": 120,
+}
 LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS = 8.0
 REALIZED_WIN_ORDER_STATUSES = {"resolved_win", "closed_win", "win"}
 REALIZED_LOSS_ORDER_STATUSES = {"resolved_loss", "closed_loss", "loss"}
@@ -97,6 +124,7 @@ _LEGACY_STRATEGY_KEY_ALIASES = {
     "crypto_15m": "btc_eth_highfreq",
     "crypto_5m": "btc_eth_highfreq",
 }
+_TRADER_MODES = {"paper", "live"}
 
 
 def _now() -> datetime:
@@ -116,6 +144,249 @@ def _normalize_mode_key(mode: Any) -> str:
 
 def _normalize_status_key(status: Any) -> str:
     return str(status or "").strip().lower()
+
+
+def _coerce_string_list(value: Any, fallback: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return list(fallback)
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out or list(fallback)
+
+
+def _normalize_pending_live_exit_terminal_statuses(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        status = _normalize_status_key(item)
+        if not status or status in seen:
+            continue
+        seen.add(status)
+        out.append(status)
+    return out or list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+
+
+def _normalize_pending_live_exit_guard(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "max_pending_exits": max(0, min(1000, safe_int(source.get("max_pending_exits"), 0))),
+        "identity_guard_enabled": bool(
+            source.get("identity_guard_enabled", DEFAULT_PENDING_LIVE_EXIT_GUARD["identity_guard_enabled"])
+        ),
+        "terminal_statuses": _normalize_pending_live_exit_terminal_statuses(source.get("terminal_statuses")),
+    }
+
+
+def _normalize_live_risk_clamps(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enforce_allow_averaging_off": bool(
+            source.get("enforce_allow_averaging_off", DEFAULT_LIVE_RISK_CLAMPS["enforce_allow_averaging_off"])
+        ),
+        "min_cooldown_seconds": max(
+            0,
+            min(
+                86400,
+                safe_int(source.get("min_cooldown_seconds"), DEFAULT_LIVE_RISK_CLAMPS["min_cooldown_seconds"]),
+            ),
+        ),
+        "max_consecutive_losses_cap": max(
+            1,
+            min(
+                1000,
+                safe_int(
+                    source.get("max_consecutive_losses_cap"),
+                    DEFAULT_LIVE_RISK_CLAMPS["max_consecutive_losses_cap"],
+                ),
+            ),
+        ),
+        "max_open_orders_cap": max(
+            1,
+            min(1000, safe_int(source.get("max_open_orders_cap"), DEFAULT_LIVE_RISK_CLAMPS["max_open_orders_cap"])),
+        ),
+        "max_open_positions_cap": max(
+            1,
+            min(
+                1000,
+                safe_int(source.get("max_open_positions_cap"), DEFAULT_LIVE_RISK_CLAMPS["max_open_positions_cap"]),
+            ),
+        ),
+        "max_trade_notional_usd_cap": max(
+            1.0,
+            min(
+                1_000_000.0,
+                safe_float(
+                    source.get("max_trade_notional_usd_cap"),
+                    DEFAULT_LIVE_RISK_CLAMPS["max_trade_notional_usd_cap"],
+                ),
+            ),
+        ),
+        "max_orders_per_cycle_cap": max(
+            1,
+            min(
+                1000,
+                safe_int(source.get("max_orders_per_cycle_cap"), DEFAULT_LIVE_RISK_CLAMPS["max_orders_per_cycle_cap"]),
+            ),
+        ),
+        "enforce_halt_on_consecutive_losses": bool(
+            source.get(
+                "enforce_halt_on_consecutive_losses",
+                DEFAULT_LIVE_RISK_CLAMPS["enforce_halt_on_consecutive_losses"],
+            )
+        ),
+    }
+
+
+def _normalize_live_market_context(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": bool(source.get("enabled", DEFAULT_LIVE_MARKET_CONTEXT["enabled"])),
+        "history_window_seconds": max(
+            300,
+            min(
+                21600,
+                safe_int(source.get("history_window_seconds"), DEFAULT_LIVE_MARKET_CONTEXT["history_window_seconds"]),
+            ),
+        ),
+        "history_fidelity_seconds": max(
+            30,
+            min(
+                1800,
+                safe_int(
+                    source.get("history_fidelity_seconds"),
+                    DEFAULT_LIVE_MARKET_CONTEXT["history_fidelity_seconds"],
+                ),
+            ),
+        ),
+        "max_history_points": max(
+            20,
+            min(240, safe_int(source.get("max_history_points"), DEFAULT_LIVE_MARKET_CONTEXT["max_history_points"])),
+        ),
+        "timeout_seconds": max(
+            1.0,
+            min(12.0, safe_float(source.get("timeout_seconds"), DEFAULT_LIVE_MARKET_CONTEXT["timeout_seconds"]) or 4.0),
+        ),
+    }
+
+
+def _normalize_live_provider_health(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "window_seconds": max(
+            30,
+            min(
+                900,
+                safe_int(source.get("window_seconds"), DEFAULT_LIVE_PROVIDER_HEALTH["window_seconds"]),
+            ),
+        ),
+        "min_errors": max(1, min(20, safe_int(source.get("min_errors"), DEFAULT_LIVE_PROVIDER_HEALTH["min_errors"]))),
+        "block_seconds": max(
+            15,
+            min(3600, safe_int(source.get("block_seconds"), DEFAULT_LIVE_PROVIDER_HEALTH["block_seconds"])),
+        ),
+    }
+
+
+def _normalize_global_runtime_settings(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    timeout_override = source.get("trader_cycle_timeout_seconds")
+    timeout_value = safe_float(timeout_override, 0.0)
+    trader_cycle_timeout_seconds = None if timeout_value <= 0 else max(3.0, min(120.0, float(timeout_value)))
+    return {
+        "pending_live_exit_guard": _normalize_pending_live_exit_guard(source.get("pending_live_exit_guard")),
+        "live_risk_clamps": _normalize_live_risk_clamps(source.get("live_risk_clamps")),
+        "live_market_context": _normalize_live_market_context(source.get("live_market_context")),
+        "live_provider_health": _normalize_live_provider_health(source.get("live_provider_health")),
+        "trader_cycle_timeout_seconds": trader_cycle_timeout_seconds,
+    }
+
+
+def _normalize_global_risk(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "max_gross_exposure_usd": max(
+            1.0,
+            min(1_000_000.0, safe_float(source.get("max_gross_exposure_usd"), DEFAULT_GLOBAL_RISK["max_gross_exposure_usd"])),
+        ),
+        "max_daily_loss_usd": max(
+            0.0,
+            min(1_000_000.0, safe_float(source.get("max_daily_loss_usd"), DEFAULT_GLOBAL_RISK["max_daily_loss_usd"])),
+        ),
+        "max_orders_per_cycle": max(
+            1,
+            min(1000, safe_int(source.get("max_orders_per_cycle"), DEFAULT_GLOBAL_RISK["max_orders_per_cycle"])),
+        ),
+    }
+
+
+def _normalize_control_settings(value: Any) -> dict[str, Any]:
+    settings = dict(value) if isinstance(value, dict) else {}
+    legacy_runtime_keys = {
+        "enable_live_market_context",
+        "live_market_history_window_seconds",
+        "live_market_history_fidelity_seconds",
+        "live_market_history_max_points",
+        "live_market_context_timeout_seconds",
+        "trader_cycle_timeout_seconds",
+    }
+    normalized_keys = {
+        "global_risk",
+        "global_runtime",
+        "trading_domains",
+        "enabled_strategies",
+        "llm_verify_trades",
+        "paper_account_id",
+    }
+
+    legacy_runtime: dict[str, Any] = {}
+    legacy_live_market: dict[str, Any] = {}
+    if "enable_live_market_context" in settings:
+        legacy_live_market["enabled"] = bool(settings.get("enable_live_market_context"))
+    if "live_market_history_window_seconds" in settings:
+        legacy_live_market["history_window_seconds"] = settings.get("live_market_history_window_seconds")
+    if "live_market_history_fidelity_seconds" in settings:
+        legacy_live_market["history_fidelity_seconds"] = settings.get("live_market_history_fidelity_seconds")
+    if "live_market_history_max_points" in settings:
+        legacy_live_market["max_history_points"] = settings.get("live_market_history_max_points")
+    if "live_market_context_timeout_seconds" in settings:
+        legacy_live_market["timeout_seconds"] = settings.get("live_market_context_timeout_seconds")
+    if legacy_live_market:
+        legacy_runtime["live_market_context"] = legacy_live_market
+    if "trader_cycle_timeout_seconds" in settings:
+        legacy_runtime["trader_cycle_timeout_seconds"] = settings.get("trader_cycle_timeout_seconds")
+
+    runtime_seed = dict(settings.get("global_runtime") or {})
+    for key, runtime_value in legacy_runtime.items():
+        if key == "live_market_context":
+            merged_live_market = dict(runtime_seed.get("live_market_context") or {})
+            merged_live_market.update(runtime_value)
+            runtime_seed["live_market_context"] = merged_live_market
+            continue
+        runtime_seed[key] = runtime_value
+
+    normalized = {
+        "global_risk": _normalize_global_risk(settings.get("global_risk")),
+        "global_runtime": _normalize_global_runtime_settings(runtime_seed),
+        "trading_domains": _coerce_string_list(settings.get("trading_domains"), ["event_markets", "crypto"]),
+        "enabled_strategies": _coerce_string_list(settings.get("enabled_strategies"), list_system_strategy_keys()),
+        "llm_verify_trades": bool(settings.get("llm_verify_trades", False)),
+        "paper_account_id": (str(settings.get("paper_account_id") or "").strip() or None),
+    }
+    for key, raw_value in settings.items():
+        if key in normalized_keys or key in legacy_runtime_keys:
+            continue
+        normalized[key] = raw_value
+    return normalized
 
 
 def _normalize_condition_id(value: Any) -> str:
@@ -659,6 +930,15 @@ def _normalize_strategy_key(value: Any) -> str:
     return _LEGACY_STRATEGY_KEY_ALIASES.get(key, key)
 
 
+def _normalize_trader_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if not mode:
+        return "paper"
+    if mode not in _TRADER_MODES:
+        raise ValueError("mode must be 'paper' or 'live'")
+    return mode
+
+
 def _normalize_strategy_for_source(source_key: str, strategy_key: str) -> str:
     """Normalize strategy key for a given source."""
     return _normalize_strategy_key(strategy_key)
@@ -827,13 +1107,7 @@ def _derive_fields_from_source_configs(
 
 
 def _default_control_settings() -> dict[str, Any]:
-    return {
-        "global_risk": dict(DEFAULT_GLOBAL_RISK),
-        "trading_domains": ["event_markets", "crypto"],
-        "enabled_strategies": list_system_strategy_keys(),
-        "llm_verify_trades": False,
-        "paper_account_id": None,
-    }
+    return _normalize_control_settings({})
 
 
 def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
@@ -845,7 +1119,7 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
         "run_interval_seconds": int(row.run_interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
         "requested_run_at": to_iso(row.requested_run_at),
         "kill_switch": bool(row.kill_switch),
-        "settings": row.settings_json or {},
+        "settings": _normalize_control_settings(row.settings_json),
         "updated_at": to_iso(row.updated_at),
     }
 
@@ -901,6 +1175,7 @@ def _serialize_trader(row: Trader) -> dict[str, Any]:
         "id": row.id,
         "name": row.name,
         "description": row.description,
+        "mode": _normalize_trader_mode(row.mode),
         "strategy_version": row.strategy_version,
         "source_configs": source_configs,
         "risk_limits": row.risk_limits_json or {},
@@ -1344,7 +1619,14 @@ async def ensure_orchestrator_control(session: AsyncSession) -> TraderOrchestrat
         session.add(row)
         await _commit_with_retry(session)
         await session.refresh(row)
-    elif not isinstance(row.settings_json, dict):
+    else:
+        normalized_settings = _normalize_control_settings(row.settings_json)
+        if row.settings_json != normalized_settings:
+            row.settings_json = normalized_settings
+            row.updated_at = _now()
+            await _commit_with_retry(session)
+            await session.refresh(row)
+    if not isinstance(row.settings_json, dict):
         row.settings_json = _default_control_settings()
         row.updated_at = _now()
         await _commit_with_retry(session)
@@ -1409,9 +1691,9 @@ async def update_orchestrator_control(session: AsyncSession, **updates: Any) -> 
         payload["requested_run_at"] = updates["requested_run_at"]
 
     if isinstance(updates.get("settings_json"), dict):
-        merged = dict(row.settings_json or {})
+        merged = dict(_normalize_control_settings(row.settings_json))
         merged.update(updates["settings_json"])
-        payload["settings_json"] = merged
+        payload["settings_json"] = _normalize_control_settings(merged)
 
     payload["updated_at"] = _now()
 
@@ -1518,6 +1800,7 @@ async def _normalize_trader_payload(
     return {
         "name": str(payload.get("name") or "").strip(),
         "description": payload.get("description"),
+        "mode": _normalize_trader_mode(payload.get("mode")),
         "source_configs": source_configs,
         "risk_limits": risk_limits,
         "metadata": metadata,
@@ -1527,8 +1810,12 @@ async def _normalize_trader_payload(
     }
 
 
-async def list_traders(session: AsyncSession) -> list[dict[str, Any]]:
-    rows = (await session.execute(select(Trader).order_by(Trader.name.asc()))).scalars().all()
+async def list_traders(session: AsyncSession, mode: Optional[str] = None) -> list[dict[str, Any]]:
+    query = select(Trader)
+    if mode is not None:
+        mode_key = _normalize_trader_mode(mode)
+        query = query.where(func.lower(func.coalesce(Trader.mode, "paper")) == mode_key)
+    rows = (await session.execute(query.order_by(Trader.name.asc()))).scalars().all()
     return [_serialize_trader(row) for row in rows]
 
 
@@ -1562,6 +1849,7 @@ async def seed_default_traders(session: AsyncSession) -> None:
                 source_configs_json=source_configs,
                 risk_limits_json=template.get("risk_limits") or {},
                 metadata_json={"template_id": template["id"]},
+                mode="paper",
                 is_enabled=True,
                 is_paused=False,
                 interval_seconds=int(template.get("interval_seconds", 60) or 60),
@@ -1616,6 +1904,7 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
         source_configs_json=normalized["source_configs"],
         risk_limits_json=normalized["risk_limits"],
         metadata_json=normalized["metadata"],
+        mode=normalized["mode"],
         is_enabled=normalized["is_enabled"],
         is_paused=normalized["is_paused"],
         interval_seconds=normalized["interval_seconds"],
@@ -1676,6 +1965,8 @@ async def update_trader(
         row.risk_limits_json = normalized["risk_limits"]
     if "metadata" in payload:
         row.metadata_json = normalized["metadata"]
+    if "mode" in payload:
+        row.mode = normalized["mode"]
     if "is_enabled" in payload:
         row.is_enabled = bool(payload.get("is_enabled"))
     if "is_paused" in payload:
@@ -2766,7 +3057,7 @@ async def reconcile_live_provider_orders(
     order_ids = [str(row.id) for row in active_rows]
     provider_ready = False
     try:
-        provider_ready = bool(await trading_service.ensure_initialized())
+        provider_ready = bool(await live_execution_service.ensure_initialized())
     except Exception as exc:
         logger.warning(
             "Live provider reconciliation failed to initialize trading service", trader_id=trader_id, exc_info=exc
@@ -2851,7 +3142,7 @@ async def reconcile_live_provider_orders(
     snapshots: dict[str, dict[str, Any]] = {}
     if provider_clob_ids:
         try:
-            snapshots = await trading_service.get_order_snapshots_by_clob_ids(sorted(provider_clob_ids))
+            snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(sorted(provider_clob_ids))
         except Exception as exc:
             logger.warning("Live provider reconciliation failed to fetch snapshots", trader_id=trader_id, exc_info=exc)
             snapshots = {}
@@ -2941,7 +3232,7 @@ async def reconcile_live_provider_orders(
             cancel_success = False
             for cancel_target in cancel_targets:
                 try:
-                    if await trading_service.cancel_order(cancel_target):
+                    if await live_execution_service.cancel_order(cancel_target):
                         cancel_success = True
                         break
                 except Exception as exc:
@@ -3625,17 +3916,22 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
     return summary
 
 
-def _pending_live_exit_is_non_terminal(value: Any) -> bool:
+def _pending_live_exit_is_non_terminal(
+    value: Any,
+    terminal_statuses: set[str] | None = None,
+) -> bool:
     if not isinstance(value, dict):
         return False
     status_key = _normalize_status_key(value.get("status"))
-    return status_key not in PENDING_LIVE_EXIT_TERMINAL_STATUSES
+    terminal_set = terminal_statuses or set(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"])
+    return status_key not in terminal_set
 
 
 async def get_pending_live_exit_summary_for_trader(
     session: AsyncSession,
     trader_id: str,
     mode: str = "live",
+    terminal_statuses: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     mode_key = _normalize_mode_key(mode)
     if mode_key != "live":
@@ -3645,6 +3941,7 @@ async def get_pending_live_exit_summary_for_trader(
             "market_ids": [],
             "signal_ids": [],
             "statuses": {},
+            "terminal_statuses": list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"]),
             "identities": [],
             "identity_keys": [],
         }
@@ -3664,6 +3961,10 @@ async def get_pending_live_exit_summary_for_trader(
         )
     ).all()
 
+    configured_terminal_statuses = _normalize_pending_live_exit_terminal_statuses(
+        list(terminal_statuses) if isinstance(terminal_statuses, (list, set, tuple)) else None
+    )
+    terminal_status_set = set(configured_terminal_statuses)
     order_ids: list[str] = []
     market_ids: set[str] = set()
     signal_ids: set[str] = set()
@@ -3675,7 +3976,7 @@ async def get_pending_live_exit_summary_for_trader(
             continue
         payload = dict(row.payload_json or {})
         pending_live_exit = payload.get("pending_live_exit")
-        if not _pending_live_exit_is_non_terminal(pending_live_exit):
+        if not _pending_live_exit_is_non_terminal(pending_live_exit, terminal_status_set):
             continue
         order_id = str(row.id or "").strip()
         market_id = str(row.market_id or "").strip()
@@ -3707,6 +4008,7 @@ async def get_pending_live_exit_summary_for_trader(
         "market_ids": sorted(market_ids),
         "signal_ids": sorted(signal_ids),
         "statuses": statuses,
+        "terminal_statuses": configured_terminal_statuses,
         "identities": identities,
         "identity_keys": sorted(identity_keys),
     }
@@ -3845,7 +4147,7 @@ async def cleanup_trader_open_orders(
                     last_target = target
                     try:
                         cancelled = await asyncio.wait_for(
-                            trading_service.cancel_order(target),
+                            live_execution_service.cancel_order(target),
                             timeout=LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS,
                         )
                     except asyncio.TimeoutError:
@@ -4243,8 +4545,17 @@ async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
 
 async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str, Any]:
     control = await read_orchestrator_control(session)
-    settings_json = control.get("settings") or {}
-    global_risk = settings_json.get("global_risk") or dict(DEFAULT_GLOBAL_RISK)
+    settings_json = _normalize_control_settings(control.get("settings") or {})
+    global_risk = dict(settings_json.get("global_risk") or _normalize_global_risk({}))
+    global_runtime = dict(settings_json.get("global_runtime") or _normalize_global_runtime_settings({}))
+    pending_live_exit_guard = dict(
+        global_runtime.get("pending_live_exit_guard") or _normalize_pending_live_exit_guard({})
+    )
+    live_risk_clamps = dict(global_runtime.get("live_risk_clamps") or _normalize_live_risk_clamps({}))
+    live_market_context = dict(global_runtime.get("live_market_context") or _normalize_live_market_context({}))
+    live_provider_health = dict(
+        global_runtime.get("live_provider_health") or _normalize_live_provider_health({})
+    )
     return {
         "mode": control.get("mode", "paper"),
         "kill_switch": bool(control.get("kill_switch", False)),
@@ -4258,6 +4569,49 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
         "enabled_strategies": settings_json.get("enabled_strategies") or [],
         "llm_verify_trades": bool(settings_json.get("llm_verify_trades", False)),
         "paper_account_id": settings_json.get("paper_account_id"),
+        "global_runtime": {
+            "pending_live_exit_guard": {
+                "max_pending_exits": int(pending_live_exit_guard.get("max_pending_exits", 0) or 0),
+                "identity_guard_enabled": bool(pending_live_exit_guard.get("identity_guard_enabled", True)),
+                "terminal_statuses": list(
+                    pending_live_exit_guard.get("terminal_statuses")
+                    or DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"]
+                ),
+            },
+            "live_risk_clamps": {
+                "enforce_allow_averaging_off": bool(
+                    live_risk_clamps.get("enforce_allow_averaging_off", True)
+                ),
+                "min_cooldown_seconds": int(live_risk_clamps.get("min_cooldown_seconds", 0) or 0),
+                "max_consecutive_losses_cap": int(live_risk_clamps.get("max_consecutive_losses_cap", 1) or 1),
+                "max_open_orders_cap": int(live_risk_clamps.get("max_open_orders_cap", 1) or 1),
+                "max_open_positions_cap": int(live_risk_clamps.get("max_open_positions_cap", 1) or 1),
+                "max_trade_notional_usd_cap": float(live_risk_clamps.get("max_trade_notional_usd_cap", 1.0) or 1.0),
+                "max_orders_per_cycle_cap": int(live_risk_clamps.get("max_orders_per_cycle_cap", 1) or 1),
+                "enforce_halt_on_consecutive_losses": bool(
+                    live_risk_clamps.get("enforce_halt_on_consecutive_losses", True)
+                ),
+            },
+            "live_market_context": {
+                "enabled": bool(live_market_context.get("enabled", True)),
+                "history_window_seconds": int(live_market_context.get("history_window_seconds", 7200) or 7200),
+                "history_fidelity_seconds": int(
+                    live_market_context.get("history_fidelity_seconds", 300) or 300
+                ),
+                "max_history_points": int(live_market_context.get("max_history_points", 120) or 120),
+                "timeout_seconds": float(live_market_context.get("timeout_seconds", 4.0) or 4.0),
+            },
+            "live_provider_health": {
+                "window_seconds": int(live_provider_health.get("window_seconds", 180) or 180),
+                "min_errors": int(live_provider_health.get("min_errors", 2) or 2),
+                "block_seconds": int(live_provider_health.get("block_seconds", 120) or 120),
+            },
+            "trader_cycle_timeout_seconds": (
+                float(global_runtime.get("trader_cycle_timeout_seconds"))
+                if global_runtime.get("trader_cycle_timeout_seconds") is not None
+                else None
+            ),
+        },
     }
 
 

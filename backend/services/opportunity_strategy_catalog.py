@@ -314,10 +314,24 @@ def _infer_param_field(key: str, default_value: object) -> dict | None:
     return {"key": clean_key, "label": _label_from_key(clean_key), "type": field_type}
 
 
+def _dedupe_param_fields(raw_fields: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for field in raw_fields:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        deduped.append(dict(field))
+        seen.add(key)
+    return deduped
+
+
 def _with_retention_schema(schema: dict | None, default_config: dict | None = None) -> dict:
     merged = dict(schema or {})
     raw_param_fields = list(merged.get("param_fields") or [])
-    param_fields = [dict(field) for field in raw_param_fields if isinstance(field, dict)]
+    param_fields = _dedupe_param_fields([dict(field) for field in raw_param_fields if isinstance(field, dict)])
     existing_keys = {str(field.get("key") or "").strip() for field in param_fields if isinstance(field, dict)}
 
     if isinstance(default_config, dict):
@@ -540,7 +554,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "key": "strategy_mode",
                     "label": "Strategy Mode",
                     "type": "enum",
-                    "options": ["auto", "5m", "15m", "1h", "4h"],
+                    "options": ["auto", "directional", "pure_arb", "rebalance"],
                 },
                 *StrategySDK.crypto_highfreq_scope_config_schema().get("param_fields", []),
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
@@ -785,6 +799,10 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
             continue
 
         if bool(current.is_system):
+            current_config = dict(current.config or {})
+            seed_defaults = dict(row.get("config") or {})
+            merged_config = {**seed_defaults, **current_config}
+            config_changed = current_config != merged_config
             source_changed = (
                 str(current.source_key or "") != str(row["source_key"])
                 or str(current.name or "") != str(row["name"])
@@ -808,6 +826,9 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
                 current.sort_order = row["sort_order"]
                 current.updated_at = row["updated_at"]
                 rewritten += 1
+            if config_changed:
+                current.config = merged_config
+                current.updated_at = row["updated_at"]
             continue
 
         continue

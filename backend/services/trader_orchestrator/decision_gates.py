@@ -263,6 +263,29 @@ def _runtime_signal_market_data_context(runtime_signal: Any) -> dict[str, Any]:
     }
 
 
+def _runtime_signal_risk_score(runtime_signal: Any) -> float | None:
+    direct = safe_float(getattr(runtime_signal, "risk_score", None), None)
+    if direct is not None:
+        return max(0.0, min(1.0, float(direct)))
+
+    payload = getattr(runtime_signal, "payload_json", None)
+    payload = payload if isinstance(payload, dict) else {}
+    strategy_context = payload.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    live_market = payload.get("live_market")
+    live_market = live_market if isinstance(live_market, dict) else {}
+
+    for candidate in (
+        payload.get("risk_score"),
+        strategy_context.get("risk_score"),
+        live_market.get("risk_score"),
+    ):
+        parsed = safe_float(candidate, None)
+        if parsed is not None:
+            return max(0.0, min(1.0, float(parsed)))
+    return None
+
+
 def _normalize_schedule_days(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -409,6 +432,8 @@ def apply_platform_decision_gates(
     invoke_hooks: bool,
     pending_live_exit_count: int = 0,
     pending_live_exit_summary: dict[str, Any] | None = None,
+    pending_live_exit_max_allowed: int = 0,
+    pending_live_exit_identity_guard_enabled: bool = True,
     strategy_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     final_decision = str(getattr(decision_obj, "decision", "failed") or "failed")
@@ -418,6 +443,7 @@ def apply_platform_decision_gates(
     min_order_floor = StrategySDK.resolve_min_order_size_usd(params, fallback=0.01)
     size_usd = float(max(min_order_floor, safe_float(getattr(decision_obj, "size_usd", None), 10.0)))
     pending_exit_count = max(0, int(pending_live_exit_count or 0))
+    pending_exit_max_allowed = max(0, int(pending_live_exit_max_allowed or 0))
     pending_exit_summary = dict(pending_live_exit_summary or {})
     risk_snapshot: dict[str, Any] = {}
     platform_gates: list[dict[str, Any]] = []
@@ -710,6 +736,88 @@ def apply_platform_decision_gates(
         platform_gates.append(
             {
                 "gate": "directional_min_timeframe",
+                "status": "skipped",
+                "detail": f"Skipped because decision is '{final_decision}'",
+            }
+        )
+
+    if final_decision == "selected":
+        max_risk_score = safe_float(params.get("max_risk_score"), None)
+        signal_risk_score = _runtime_signal_risk_score(runtime_signal)
+        risk_gate_enabled = max_risk_score is not None
+        risk_gate_passed = (
+            (not risk_gate_enabled)
+            or signal_risk_score is None
+            or signal_risk_score <= float(max_risk_score)
+        )
+        checks_payload.append(
+            {
+                "check_key": "max_risk_score_guard",
+                "check_label": "Maximum risk score",
+                "passed": risk_gate_passed,
+                "score": signal_risk_score,
+                "detail": (
+                    "Guard disabled (max_risk_score unset)"
+                    if not risk_gate_enabled
+                    else (
+                        f"risk_score={signal_risk_score:.3f} <= max={float(max_risk_score):.3f}"
+                        if signal_risk_score is not None and risk_gate_passed
+                        else (
+                            "Signal risk unavailable; guard skipped"
+                            if signal_risk_score is None
+                            else f"risk_score={signal_risk_score:.3f} exceeds max={float(max_risk_score):.3f}"
+                        )
+                    )
+                ),
+                "payload": {
+                    "enabled": risk_gate_enabled,
+                    "signal_risk_score": signal_risk_score,
+                    "max_risk_score": float(max_risk_score) if max_risk_score is not None else None,
+                },
+            }
+        )
+        if risk_gate_enabled and signal_risk_score is not None and not risk_gate_passed:
+            final_decision = "blocked"
+            final_reason = (
+                f"Max-risk guard blocked: risk_score={signal_risk_score:.3f} "
+                f"> max_risk_score={float(max_risk_score):.3f}"
+            )
+            platform_gates.append(
+                {
+                    "gate": "max_risk_score",
+                    "status": "blocked",
+                    "detail": final_reason,
+                }
+            )
+            if invoke_hooks and strategy is not None and hasattr(strategy, "on_blocked"):
+                strategy.on_blocked(
+                    runtime_signal,
+                    BlockReason.RISK_TRADE_NOTIONAL,
+                    {
+                        "signal_risk_score": signal_risk_score,
+                        "max_risk_score": float(max_risk_score),
+                    },
+                )
+        else:
+            platform_gates.append(
+                {
+                    "gate": "max_risk_score",
+                    "status": "passed" if risk_gate_enabled else "skipped",
+                    "detail": (
+                        f"risk_score={signal_risk_score:.3f} max={float(max_risk_score):.3f}"
+                        if risk_gate_enabled and signal_risk_score is not None
+                        else (
+                            "Signal risk unavailable; guard skipped"
+                            if risk_gate_enabled
+                            else "Guard not configured"
+                        )
+                    ),
+                }
+            )
+    else:
+        platform_gates.append(
+            {
+                "gate": "max_risk_score",
                 "status": "skipped",
                 "detail": f"Skipped because decision is '{final_decision}'",
             }
@@ -1029,20 +1137,26 @@ def apply_platform_decision_gates(
         )
 
     if final_decision == "selected":
-        pending_exit_guard_passed = pending_exit_count <= 0
+        pending_exit_guard_passed = pending_exit_count <= pending_exit_max_allowed
+        pending_exit_detail = (
+            f"Pending live exits <= {pending_exit_max_allowed} (current={pending_exit_count})"
+            if pending_exit_max_allowed > 0
+            else (
+                "No non-terminal pending live exits detected"
+                if pending_exit_guard_passed
+                else f"{pending_exit_count} non-terminal pending live exit(s) detected"
+            )
+        )
         checks_payload.append(
             {
                 "check_key": "pending_live_exit_guard",
                 "check_label": "Pending live exits clear",
                 "passed": pending_exit_guard_passed,
                 "score": float(pending_exit_count),
-                "detail": (
-                    "No non-terminal pending live exits detected"
-                    if pending_exit_guard_passed
-                    else f"{pending_exit_count} non-terminal pending live exit(s) detected"
-                ),
+                "detail": pending_exit_detail,
                 "payload": {
                     "count": pending_exit_count,
+                    "max_allowed": pending_exit_max_allowed,
                     "statuses": dict(pending_exit_summary.get("statuses") or {}),
                     "order_ids": list(pending_exit_summary.get("order_ids") or []),
                     "market_ids": list(pending_exit_summary.get("market_ids") or []),
@@ -1057,13 +1171,14 @@ def apply_platform_decision_gates(
                 {
                     "gate": "pending_live_exit_guard",
                     "status": "passed",
-                    "detail": "No pending live exits",
+                    "detail": pending_exit_detail,
                 }
             )
         else:
             final_decision = "blocked"
             final_reason = (
-                f"Pending live exit guard blocked: {pending_exit_count} pending close order(s) still in-flight"
+                "Pending live exit guard blocked: "
+                f"{pending_exit_count} pending close order(s) in-flight (max_allowed={pending_exit_max_allowed})"
             )
             platform_gates.append(
                 {
@@ -1088,7 +1203,7 @@ def apply_platform_decision_gates(
             }
         )
 
-    if final_decision == "selected":
+    if final_decision == "selected" and pending_live_exit_identity_guard_enabled:
         signal_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
         signal_direction = str(getattr(runtime_signal, "direction", "") or "").strip().lower()
         signal_id = str(getattr(runtime_signal, "id", "") or "").strip()
@@ -1160,6 +1275,26 @@ def apply_platform_decision_gates(
                         BlockReason.RISK_OPEN_POSITIONS,
                         {"pending_live_exit_identity": matching_pending_identity},
                     )
+    elif final_decision == "selected":
+        checks_payload.append(
+            {
+                "check_key": "pending_live_exit_identity_guard",
+                "check_label": "Pending live exit identity clear",
+                "passed": True,
+                "score": None,
+                "detail": "Disabled by global runtime setting",
+                "payload": {
+                    "enabled": False,
+                },
+            }
+        )
+        platform_gates.append(
+            {
+                "gate": "pending_live_exit_identity_guard",
+                "status": "skipped",
+                "detail": "Disabled by global runtime setting",
+            }
+        )
     else:
         platform_gates.append(
             {

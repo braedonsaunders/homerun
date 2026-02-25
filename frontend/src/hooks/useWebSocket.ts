@@ -131,7 +131,10 @@ function sharedDisconnect() {
   }
   clearPingLoop()
   if (sharedWs) {
-    try { sharedWs.close() } catch { /* ignore */ }
+    const ws = sharedWs
+    if (ws.readyState !== WebSocket.CONNECTING) {
+      try { ws.close() } catch { /* ignore */ }
+    }
     sharedWs = null
   }
   notifyStatus(false)

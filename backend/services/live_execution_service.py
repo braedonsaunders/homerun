@@ -227,7 +227,7 @@ class TradingStats:
     last_trade_at: Optional[datetime] = None
 
 
-class TradingService:
+class LiveExecutionService:
     """
     Service for executing real trades on Polymarket.
 
@@ -836,6 +836,23 @@ class TradingService:
             )
             return False
 
+    async def _ensure_exchange_approval_for_sells(self) -> bool:
+        try:
+            from services.ctf_execution import ctf_execution_service
+
+            result = await ctf_execution_service.ensure_exchange_approval()
+            if str(result.status or "").strip().lower() == "executed":
+                return True
+            logger.warning(
+                "Conditional exchange approval check failed before sell",
+                status=str(result.status or ""),
+                error=str(result.error_message or ""),
+            )
+            return False
+        except Exception as exc:
+            logger.warning("Conditional exchange approval check failed before sell", exc_info=exc)
+            return False
+
     async def prepare_sell_balance_allowance(self, token_id: str) -> bool:
         token_key = str(token_id or "").strip()
         if token_key:
@@ -843,7 +860,7 @@ class TradingService:
                 await self._select_signature_type_for_conditional_token(token_key)
             except Exception:
                 pass
-        collateral_refreshed = await self.refresh_collateral_balance_allowance()
+        exchange_approval_checked = await self._ensure_exchange_approval_for_sells()
         conditional_refreshed = False
         if token_key:
             conditional_refreshed = await self.refresh_conditional_balance_allowance(token_key)
@@ -856,7 +873,179 @@ class TradingService:
                     if await self.refresh_conditional_balance_allowance(token_key):
                         conditional_refreshed = True
                         break
-        return collateral_refreshed or conditional_refreshed
+        return conditional_refreshed or exchange_approval_checked
+
+    async def _enforce_buy_pre_submit_gate(
+        self,
+        *,
+        token_id: str,
+        required_notional_usd: Decimal,
+    ) -> tuple[bool, Optional[str]]:
+        token_key = str(token_id or "").strip()
+        required_usdc = max(ZERO, required_notional_usd)
+        if required_usdc <= ZERO:
+            return False, "BUY pre-submit gate failed: required notional must be greater than zero."
+
+        balance = await self.get_balance()
+        if not isinstance(balance, dict):
+            logger.warning(
+                "Buy pre-submit gate skipped; balance payload unavailable",
+                token_id=token_key,
+            )
+            return True, None
+        if balance.get("error"):
+            logger.warning(
+                "Buy pre-submit gate skipped; could not fetch collateral balance/allowance",
+                token_id=token_key,
+                error=str(balance.get("error")),
+            )
+            return True, None
+
+        available_raw = safe_float(balance.get("available"))
+        balance_raw = safe_float(balance.get("balance"))
+        if available_raw is None or balance_raw is None:
+            logger.warning(
+                "Buy pre-submit gate skipped; missing collateral balance fields",
+                token_id=token_key,
+                payload_keys=sorted(balance.keys()),
+            )
+            return True, None
+
+        available = max(ZERO, _to_decimal(available_raw))
+        collateral_balance = max(ZERO, _to_decimal(balance_raw))
+        if available >= required_usdc:
+            return True, None
+
+        signature_value_raw = balance.get("signature_type")
+        signature_value = int(signature_value_raw) if isinstance(signature_value_raw, int) else self._resolved_signature_type()
+        funder_wallet = str(self._funder_for_signature_type(signature_value) or self._execution_wallet_address() or "").strip()
+        shortfall = max(ZERO, required_usdc - available)
+        error_message = (
+            "BUY pre-submit gate failed: not enough collateral balance/allowance. "
+            f"token_id={token_key} "
+            f"required_usdc={required_usdc} available_usdc={available} shortfall_usdc={shortfall} "
+            f"balance_usdc={collateral_balance} "
+            f"signature_type={signature_value} funder_wallet={funder_wallet or 'unknown'}. "
+            "Collateral may be held under a different funder/signature wallet or reserved by open orders."
+        )
+        logger.warning(
+            "Buy pre-submit balance gate blocked order",
+            token_id=token_key,
+            required_usdc=str(required_usdc),
+            available_usdc=str(available),
+            balance_usdc=str(collateral_balance),
+            signature_type=signature_value,
+            funder_wallet=funder_wallet or "unknown",
+        )
+        return False, error_message
+
+    async def _enforce_sell_pre_submit_gate(self, *, token_id: str, size: float) -> tuple[bool, Optional[str]]:
+        token_key = str(token_id or "").strip()
+        required_shares = _to_decimal(size)
+        if not token_key:
+            return False, "SELL pre-submit gate failed: token_id is missing."
+        if required_shares <= ZERO:
+            return False, "SELL pre-submit gate failed: order size must be greater than zero."
+        if not self.is_ready() and not await self.ensure_initialized():
+            return False, "SELL pre-submit gate failed: trading service is not initialized."
+        if not self.is_ready():
+            return False, "SELL pre-submit gate failed: trading service is not initialized."
+
+        signature_type = await self._select_signature_type_for_conditional_token(token_key)
+        if signature_type is None:
+            resolved = self._resolved_signature_type()
+            signature_type = resolved if self._signature_type_supported(resolved) else None
+
+        if not isinstance(signature_type, int):
+            logger.warning(
+                "Sell pre-submit gate skipped; no supported signature type available",
+                token_id=token_key,
+            )
+            return True, None
+
+        snapshot = await self._fetch_conditional_balance_snapshot(
+            token_key,
+            signature_type,
+            refresh=False,
+        )
+        snapshot_refreshed = False
+        if snapshot is None:
+            snapshot = await self._fetch_conditional_balance_snapshot(
+                token_key,
+                signature_type,
+                refresh=True,
+            )
+            snapshot_refreshed = snapshot is not None
+        if snapshot is None:
+            logger.warning(
+                "Sell pre-submit gate skipped; conditional balance snapshot unavailable",
+                token_id=token_key,
+                signature_type=signature_type,
+            )
+            return True, None
+
+        balance_raw = max(ZERO, snapshot["balance_raw"])
+        allowance_raw = max(ZERO, snapshot["allowance_raw"])
+        available_raw = max(ZERO, snapshot["available_raw"])
+        required_raw = max(ZERO, required_shares)
+
+        if available_raw >= required_raw:
+            return True, None
+
+        if not snapshot_refreshed:
+            refreshed_snapshot = await self._fetch_conditional_balance_snapshot(
+                token_key,
+                int(snapshot["signature_type"]),
+                refresh=True,
+            )
+            if refreshed_snapshot is not None:
+                snapshot = refreshed_snapshot
+                balance_raw = max(ZERO, snapshot["balance_raw"])
+                allowance_raw = max(ZERO, snapshot["allowance_raw"])
+                available_raw = max(ZERO, snapshot["available_raw"])
+                if available_raw >= required_raw:
+                    return True, None
+
+        if balance_raw >= required_raw and allowance_raw < required_raw:
+            await self._ensure_exchange_approval_for_sells()
+            await self.refresh_conditional_balance_allowance(token_key)
+            refreshed_signature_type = await self._select_signature_type_for_conditional_token(token_key)
+            if isinstance(refreshed_signature_type, int):
+                refreshed_snapshot = await self._fetch_conditional_balance_snapshot(
+                    token_key,
+                    refreshed_signature_type,
+                    refresh=True,
+                )
+                if refreshed_snapshot is not None:
+                    snapshot = refreshed_snapshot
+                    balance_raw = max(ZERO, snapshot["balance_raw"])
+                    allowance_raw = max(ZERO, snapshot["allowance_raw"])
+                    available_raw = max(ZERO, snapshot["available_raw"])
+                    if available_raw >= required_raw:
+                        return True, None
+
+        signature_value = int(snapshot["signature_type"])
+        funder_wallet = str(self._funder_for_signature_type(signature_value) or self._execution_wallet_address() or "").strip()
+        shortfall = max(ZERO, required_raw - available_raw)
+        error_message = (
+            "SELL pre-submit gate failed: not enough conditional token balance/allowance. "
+            f"token_id={token_key} "
+            f"required_shares={required_raw} available_shares={available_raw} shortfall_shares={shortfall} "
+            f"balance_shares={balance_raw} allowance_shares={allowance_raw} "
+            f"signature_type={signature_value} funder_wallet={funder_wallet or 'unknown'}. "
+            "Shares may be held under a different funder/signature wallet or reserved by open orders."
+        )
+        logger.warning(
+            "Sell pre-submit balance gate blocked order",
+            token_id=token_key,
+            required_shares=str(required_raw),
+            available_shares=str(available_raw),
+            balance_shares=str(balance_raw),
+            allowance_shares=str(allowance_raw),
+            signature_type=signature_value,
+            funder_wallet=funder_wallet or "unknown",
+        )
+        return False, error_message
 
     async def ensure_initialized(self) -> bool:
         if self.is_ready():
@@ -1575,24 +1764,46 @@ class TradingService:
                 cached_fallback[clob_id] = cached_snapshot
 
         if not self.is_ready():
-            return cached_fallback
+            try:
+                await self.ensure_initialized()
+            except Exception:
+                pass
+            if not self.is_ready():
+                return cached_fallback
 
         snapshots: dict[str, dict[str, Any]] = {}
         provider_fetch_ok = False
         per_order_not_found: set[str] = set()
 
-        try:
-            response = self._client.get_orders()
+        def _ingest_open_orders(response_payload: Any) -> None:
+            nonlocal provider_fetch_ok
             provider_fetch_ok = True
-            for server_order in self._extract_server_orders(response):
+            for server_order in self._extract_server_orders(response_payload):
                 snapshot = self._parse_provider_order_snapshot(server_order)
                 if snapshot is None:
                     continue
                 clob_id = str(snapshot["clob_order_id"])
                 if clob_id in requested:
                     snapshots[clob_id] = snapshot
+
+        try:
+            response = self._client.get_orders()
+            _ingest_open_orders(response)
         except Exception as exc:
             logger.error("Failed to fetch open provider orders", exc_info=exc)
+            try:
+                reinitialized = await self.ensure_initialized()
+            except Exception:
+                reinitialized = False
+            if reinitialized and self.is_ready():
+                try:
+                    response = self._client.get_orders()
+                    _ingest_open_orders(response)
+                except Exception as retry_exc:
+                    logger.error(
+                        "Failed to fetch open provider orders after reinitializing trading client",
+                        exc_info=retry_exc,
+                    )
 
         missing = requested.difference(snapshots.keys())
         if missing and hasattr(self._client, "get_order"):
@@ -2064,8 +2275,21 @@ class TradingService:
             await self._sync_trading_transport()
             await self._refresh_signature_type()
             sell_allowance_retry_used = False
+            if side == OrderSide.BUY:
+                buy_gate_ok, buy_gate_error = await self._enforce_buy_pre_submit_gate(
+                    token_id=token_id,
+                    required_notional_usd=size_usd,
+                )
+                if not buy_gate_ok:
+                    raise RuntimeError(buy_gate_error or "BUY pre-submit gate failed")
             if side == OrderSide.SELL:
                 await self.prepare_sell_balance_allowance(token_id)
+                sell_gate_ok, sell_gate_error = await self._enforce_sell_pre_submit_gate(
+                    token_id=token_id,
+                    size=size,
+                )
+                if not sell_gate_ok:
+                    raise RuntimeError(sell_gate_error or "SELL pre-submit gate failed")
 
             # Build and sign order using py-clob-client
             from py_clob_client.clob_types import OrderArgs
@@ -2890,4 +3114,4 @@ class TradingService:
 
 
 # Singleton instance
-trading_service = TradingService()
+live_execution_service = LiveExecutionService()

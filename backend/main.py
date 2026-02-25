@@ -30,7 +30,7 @@ from api import router, handle_websocket
 from api.routes_simulation import simulation_router
 from api.routes_copy_trading import copy_trading_router
 from api.routes_anomaly import anomaly_router
-from api.routes_trading import router as trading_router
+from api.routes_orchestrator_live import router as orchestrator_live_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from api.routes_ui_lock import router as ui_lock_router
@@ -52,7 +52,7 @@ from api.routes_data_sources import router as data_sources_router
 from api.routes_traders import router as traders_router
 from services.wallet_tracker import wallet_tracker
 from services.copy_trader import copy_trader
-from services.trading import trading_service
+from services.live_execution_service import live_execution_service
 from services.wallet_discovery import wallet_discovery
 from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
@@ -531,12 +531,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Fill monitor start failed (non-critical): {e}")
 
-        # Initialize trading service if credentials are configured
-        trading_initialized = await trading_service.initialize()
+        # Initialize live execution service if credentials are configured
+        trading_initialized = await live_execution_service.initialize()
         if trading_initialized:
-            logger.info("Trading service initialized")
+            logger.info("Live execution service initialized")
         else:
-            logger.info("Trading service not initialized - credentials not configured")
+            logger.info("Live execution service not initialized - credentials not configured")
 
         # Start background cleanup if enabled (DB settings override env defaults).
         cleanup_enabled = bool(settings.AUTO_CLEANUP_ENABLED)
@@ -831,7 +831,7 @@ app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
 app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
-app.include_router(trading_router, prefix="/api", tags=["Trading"])
+app.include_router(orchestrator_live_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(traders_router, prefix="/api", tags=["Traders"])
 app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
@@ -1098,8 +1098,8 @@ async def detailed_health_check():
                 "active_configs": len(copy_trader._active_configs),
             },
             "trading": {
-                "initialized": trading_service.is_ready(),
-                "stats": trading_service.get_stats().__dict__ if trading_service.is_ready() else None,
+                "initialized": live_execution_service.is_ready(),
+                "stats": live_execution_service.get_stats().__dict__ if live_execution_service.is_ready() else None,
             },
             "trader_orchestrator": {
                 "running": bool(orchestrator_snapshot.get("running", False)),
