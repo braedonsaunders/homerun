@@ -332,7 +332,7 @@ async def test_place_sell_order_fails_before_submit_when_pre_submit_gate_fails(m
         "refresh_from_db",
         AsyncMock(return_value=False),
     )
-    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+    monkeypatch.setattr(live_execution_module, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
     class _SellGateClient(_BalanceClient):
         def __init__(self):
@@ -385,7 +385,7 @@ async def test_place_buy_order_fails_before_submit_when_pre_submit_gate_fails(mo
         "refresh_from_db",
         AsyncMock(return_value=False),
     )
-    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+    monkeypatch.setattr(live_execution_module, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
     class _BuyGateClient(_BalanceClient):
         def __init__(self):

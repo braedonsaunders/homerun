@@ -32,7 +32,7 @@ def _quote_ident(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def postgres_session_factory():
     engine, session_factory = await build_postgres_session_factory(Base, "trader_orchestrator_no_auto_seed")
     try:

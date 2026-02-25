@@ -125,7 +125,7 @@ async def test_failed_order_rolls_back_reserved_volume(monkeypatch):
 
     refresh_mock = AsyncMock(return_value=False)
     monkeypatch.setattr(live_execution_module.global_pause_state, "refresh_from_db", refresh_mock)
-    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+    monkeypatch.setattr(live_execution_module, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
     service = LiveExecutionService()
     service._initialized = True
@@ -161,7 +161,7 @@ async def test_sell_order_reduces_market_exposure(monkeypatch):
         "refresh_from_db",
         AsyncMock(return_value=False),
     )
-    monkeypatch.setattr(trading, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
+    monkeypatch.setattr(live_execution_module, "pre_trade_vpn_check", AsyncMock(return_value=(True, "")))
 
     service = LiveExecutionService()
     service._initialized = True
