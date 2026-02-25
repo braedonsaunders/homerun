@@ -17,7 +17,7 @@ def _make_request(trading_section):
         llm=None,
         notifications=None,
         scanner=None,
-        trading=trading_section,
+        live_execution=trading_section,
         maintenance=None,
         discovery=None,
         search_filters=None,

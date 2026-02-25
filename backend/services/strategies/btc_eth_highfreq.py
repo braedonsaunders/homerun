@@ -3126,7 +3126,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 else None
             )
         )
-        chainlink_fresh = chainlink_age_ms is not None and chainlink_age_ms <= max_oracle_age_ms
         binance_fresh = binance_age_ms is not None and binance_age_ms <= max_oracle_age_ms
         chainlink_stale_binance_fresh = (
             chainlink_age_ms is not None
