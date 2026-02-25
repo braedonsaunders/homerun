@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 
-from models.database import AsyncSessionLocal, Strategy, TradeSignal, Trader, TraderDecision, TraderOrder
+from models.database import AsyncSessionLocal, TradeSignal, Trader, TraderDecision, TraderOrder
 from services.ai import get_llm_manager
 from services.ai.agent import AgentTool, run_agent_to_completion
 from services.strategy_experiments import (

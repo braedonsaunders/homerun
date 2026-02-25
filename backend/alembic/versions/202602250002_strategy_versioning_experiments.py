@@ -7,6 +7,7 @@ Create Date: 2026-02-25 12:30:00.000000
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import sqlalchemy as sa
@@ -178,9 +179,9 @@ def _backfill_strategy_versions_from_current_rows() -> None:
                     "description": row.get("description"),
                     "source_code": str(row.get("source_code") or ""),
                     "class_name": row.get("class_name"),
-                    "config": row.get("config") if isinstance(row.get("config"), dict) else {},
-                    "config_schema": row.get("config_schema") if isinstance(row.get("config_schema"), dict) else {},
-                    "aliases": row.get("aliases") if isinstance(row.get("aliases"), list) else [],
+                    "config": json.dumps(row.get("config") if isinstance(row.get("config"), dict) else {}),
+                    "config_schema": json.dumps(row.get("config_schema") if isinstance(row.get("config_schema"), dict) else {}),
+                    "aliases": json.dumps(row.get("aliases") if isinstance(row.get("aliases"), list) else []),
                     "enabled": bool(row.get("enabled")),
                     "is_system": bool(row.get("is_system")),
                     "sort_order": int(row.get("sort_order") or 0),

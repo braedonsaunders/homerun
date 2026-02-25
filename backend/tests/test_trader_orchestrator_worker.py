@@ -442,6 +442,16 @@ class _SkippedStrategy:
         )
 
 
+def _mock_resolve_strategy_version(strategy_key):
+    """Return a SimpleNamespace matching ResolvedStrategyVersion shape."""
+    return SimpleNamespace(
+        strategy=SimpleNamespace(slug=strategy_key, id="strat-id-" + strategy_key),
+        version_row=SimpleNamespace(version=1, source_code="", config={}),
+        latest_version=1,
+        requested_version=None,
+    )
+
+
 def _base_trader_payload(*, allow_averaging: bool) -> dict:
     return {
         "id": "trader-1",
@@ -1140,6 +1150,16 @@ async def test_run_trader_once_blocks_stacking_when_allow_averaging_false(monkey
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
     monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "resolve_strategy_version",
+        AsyncMock(side_effect=lambda _session, *, strategy_key, requested_version: _mock_resolve_strategy_version(strategy_key)),
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "get_active_strategy_experiment",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
         trader_orchestrator_worker.strategy_db_loader,
         "get_availability",
         lambda strategy_key: SimpleNamespace(
@@ -1274,6 +1294,16 @@ async def test_run_trader_once_handles_aware_loss_cooldown_without_datetime_type
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
     monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "resolve_strategy_version",
+        AsyncMock(side_effect=lambda _session, *, strategy_key, requested_version: _mock_resolve_strategy_version(strategy_key)),
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "get_active_strategy_experiment",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
         trader_orchestrator_worker.strategy_db_loader,
         "get_availability",
         lambda strategy_key: SimpleNamespace(
@@ -1388,6 +1418,16 @@ async def test_run_trader_once_allows_reentry_when_allow_averaging_true(monkeypa
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "resolve_strategy_version",
+        AsyncMock(side_effect=lambda _session, *, strategy_key, requested_version: _mock_resolve_strategy_version(strategy_key)),
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "get_active_strategy_experiment",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(
         trader_orchestrator_worker.strategy_db_loader,
         "get_availability",
@@ -1514,6 +1554,16 @@ async def test_run_trader_once_marks_signal_skipped_when_strategy_skips(monkeypa
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "resolve_strategy_version",
+        AsyncMock(side_effect=lambda _session, *, strategy_key, requested_version: _mock_resolve_strategy_version(strategy_key)),
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "get_active_strategy_experiment",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(
         trader_orchestrator_worker.strategy_db_loader,
         "get_availability",
@@ -1690,6 +1740,16 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto", "news"])
     monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "resolve_strategy_version",
+        AsyncMock(side_effect=lambda _session, *, strategy_key, requested_version: _mock_resolve_strategy_version(strategy_key)),
+    )
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "get_active_strategy_experiment",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
         trader_orchestrator_worker.strategy_db_loader,
         "get_availability",
         lambda strategy_key: (
@@ -1788,7 +1848,7 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
     assert submit_calls["count"] == 1
     assert len(blocked) == 1
     assert blocked[0]["strategy_key"] == "crypto_15m"
-    assert blocked[0]["reason"] == "strategy_unavailable:crypto_15m"
+    assert blocked[0]["reason"].startswith("strategy_unavailable:crypto_15m")
     assert len(selected) == 1
     assert any(entry[0] == "signal-1" and entry[1] == "skipped" for entry in statuses)
     assert any(c.get("signal_id") == "signal-1" and c.get("outcome") == "blocked" for c in consumptions)

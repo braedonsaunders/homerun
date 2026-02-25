@@ -2038,10 +2038,8 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
                 row.description = next_description
                 snapshot_fields_changed.add("description")
 
-        enabled_changed = False
         if req.enabled is not None and req.enabled != row.enabled:
             row.enabled = req.enabled
-            enabled_changed = True
             snapshot_fields_changed.add("enabled")
             reload_required = True
 
