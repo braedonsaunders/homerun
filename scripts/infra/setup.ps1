@@ -66,8 +66,33 @@ function Find-PostgresBinDir {
     return $null
 }
 
+function Find-MemuraiServer {
+    if ($env:MEMURAI_EXE -and (Test-Path $env:MEMURAI_EXE)) {
+        return $env:MEMURAI_EXE
+    }
+
+    $wellKnown = "C:\Program Files\Memurai\memurai.exe"
+    if (Test-Path $wellKnown) { return $wellKnown }
+
+    return $null
+}
+
+function Test-DockerRuntimeAvailable {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+
+    try {
+        docker info *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Test-RedisRuntimeAvailable {
-    if (Get-Command docker -ErrorAction SilentlyContinue) { return $true }
+    if (Test-DockerRuntimeAvailable) { return $true }
+    if (Find-MemuraiServer) { return $true }
     if (Find-RedisServer) { return $true }
     try {
         $svc = Get-Service -Name "Memurai" -ErrorAction SilentlyContinue
@@ -89,9 +114,9 @@ function Ensure-RedisRuntime {
 
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
-        # Memurai first — it's a native Windows Redis-compatible server that
+        # Memurai first - it's a native Windows Redis-compatible server that
         # supports modern Redis features (Streams, consumer groups, etc.)
-        # Redis.Redis installs the ancient 3.0.504 Microsoft port — last resort only.
+        # Redis.Redis installs the ancient 3.0.504 Microsoft port - last resort only.
         $wingetIds = @(
             "Memurai.MemuraiDeveloper",
             "Redis.Redis"
@@ -100,7 +125,7 @@ function Ensure-RedisRuntime {
             try {
                 winget install --id $id --exact --silent --accept-source-agreements --accept-package-agreements *> $null
                 if (Test-RedisRuntimeAvailable) {
-                    $label = if ($id -eq "Redis.Redis") { "$id (WARNING: v3.0 — no Streams support)" } else { $id }
+                    $label = if ($id -eq "Redis.Redis") { "$id (WARNING: v3.0 - no Streams support)" } else { $id }
                     Write-Host "Redis runtime installed via winget ($label)." -ForegroundColor Green
                     return $true
                 }
@@ -114,7 +139,7 @@ function Ensure-RedisRuntime {
         try {
             choco install redis-64 -y *> $null
             if (Test-RedisRuntimeAvailable) {
-                Write-Host "Redis runtime installed via Chocolatey (WARNING: redis-64 is v3.0 — no Streams support)." -ForegroundColor Yellow
+                Write-Host "Redis runtime installed via Chocolatey (WARNING: redis-64 is v3.0 - no Streams support)." -ForegroundColor Yellow
                 Write-Host "Consider installing Memurai for full feature support: winget install Memurai.MemuraiDeveloper" -ForegroundColor Cyan
                 return $true
             }
@@ -128,7 +153,7 @@ function Ensure-RedisRuntime {
 }
 
 function Test-PostgresRuntimeAvailable {
-    if (Get-Command docker -ErrorAction SilentlyContinue) { return $true }
+    if (Test-DockerRuntimeAvailable) { return $true }
     return [bool](Find-PostgresBinDir)
 }
 

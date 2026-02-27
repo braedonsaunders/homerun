@@ -166,8 +166,33 @@ function Find-PostgresBinDir {
     return $null
 }
 
+function Find-MemuraiServer {
+    if ($env:MEMURAI_EXE -and (Test-Path $env:MEMURAI_EXE)) {
+        return $env:MEMURAI_EXE
+    }
+
+    $wellKnown = "C:\Program Files\Memurai\memurai.exe"
+    if (Test-Path $wellKnown) { return $wellKnown }
+
+    return $null
+}
+
+function Test-DockerRuntimeAvailable {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+
+    try {
+        docker info *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Test-RedisRuntimeAvailable {
-    if (Get-Command docker -ErrorAction SilentlyContinue) { return $true }
+    if (Test-DockerRuntimeAvailable) { return $true }
+    if (Find-MemuraiServer) { return $true }
     if (Find-RedisServer) { return $true }
     foreach ($svcName in @("Redis", "Memurai")) {
         try {
@@ -348,7 +373,7 @@ function Start-RedisLocal {
         [int]$RedisPort
     )
 
-    # Prefer Memurai service first — it supports Redis 5+ features (Streams)
+    # Prefer Memurai service first - it supports Redis 5+ features (Streams)
     # The old Redis.Redis/redis-64 packages install Redis 3.0 which does NOT
     # support Streams and will silently break trade signal streaming.
     foreach ($svcName in @("Memurai", "Redis")) {
@@ -360,6 +385,15 @@ function Start-RedisLocal {
                 }
                 return $true
             }
+        } catch {
+        }
+    }
+
+    $memuraiPath = Find-MemuraiServer
+    if ($memuraiPath) {
+        try {
+            Start-Process -FilePath $memuraiPath -ArgumentList @("--bind", $RedisHost, "--port", "$RedisPort") -WindowStyle Hidden | Out-Null
+            return $true
         } catch {
         }
     }
@@ -416,7 +450,7 @@ function Ensure-Redis {
             Write-Host "Running Redis is too old for Streams support. Attempting Docker upgrade..." -ForegroundColor Yellow
             $dockerStarted = Start-RedisDocker -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName -Image $Image
             if (-not $dockerStarted) {
-                # Can't replace it — warn and continue with degraded mode
+                # Can't replace it - warn and continue with degraded mode
                 Warn-RedisVersionIfOld -RedisHost $RedisHost -RedisPort $RedisPort
                 return
             }
@@ -426,7 +460,7 @@ function Ensure-Redis {
                 Warn-RedisVersionIfOld -RedisHost $RedisHost -RedisPort $RedisPort
                 return
             }
-            # Docker started but can't reach it — fall through, old Redis still works
+            # Docker started but can't reach it - fall through, old Redis still works
             Warn-RedisVersionIfOld -RedisHost $RedisHost -RedisPort $RedisPort
             return
         }
@@ -443,7 +477,7 @@ function Ensure-Redis {
 
     Write-Host "Starting Redis..." -ForegroundColor Cyan
 
-    # Prefer Docker (redis:7-alpine) — guaranteed modern Redis with Streams support
+    # Prefer Docker (redis:7-alpine) - guaranteed modern Redis with Streams support
     $dockerStarted = Start-RedisDocker -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName -Image $Image
     if ($dockerStarted -and (Wait-ForService -TargetHost $RedisHost -Port $RedisPort)) {
         $script:redisStartedByScript = $true
@@ -502,7 +536,7 @@ function Cleanup-StartedRedis {
 }
 
 function Test-PostgresRuntimeAvailable {
-    if (Get-Command docker -ErrorAction SilentlyContinue) { return $true }
+    if (Test-DockerRuntimeAvailable) { return $true }
     return [bool](Find-PostgresBinDir)
 }
 
@@ -664,7 +698,7 @@ function Ensure-PostgresFirewallRule {
             -Profile Any `
             -ErrorAction Stop | Out-Null
     } catch {
-        # Not elevated — fall back to netsh which sometimes works or just warn
+        # Not elevated - fall back to netsh which sometimes works or just warn
         try {
             netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP program="$pgExe" profile=any *> $null
         } catch {

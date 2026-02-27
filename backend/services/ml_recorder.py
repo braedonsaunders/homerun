@@ -15,9 +15,8 @@ import logging
 import math
 import time
 import uuid
-from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 
 from models.database import AsyncSessionLocal, MLRecorderConfig, MLTrainingSnapshot
 from utils.utcnow import utcnow

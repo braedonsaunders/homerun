@@ -2004,6 +2004,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # Direction from oracle SIGN only -- never buy against oracle
         best_side = "UP" if diff_pct > 0 else "DOWN"
         buy_price = c.yes_price if best_side == "UP" else c.no_price
+        market_up_prob = c.yes_price
 
         # Edge = oracle signal magnitude scaled by time urgency
         if remaining_secs is not None:

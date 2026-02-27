@@ -455,7 +455,7 @@ class CryptoService:
                 best_ask = _coerce_probability(mkt.get("bestAsk"))
 
                 # NOTE: Real-time CLOB prices are overlaid by the crypto_worker
-                # via WS feed cache (_overlay_ws_prices_on_market_row).  We
+                # via WS feed cache (_overlay_ws_prices_on_market_row). We
                 # intentionally skip per-token CLOB HTTP calls here to keep
                 # each series fetch to a single Gamma API round-trip (~200ms).
 

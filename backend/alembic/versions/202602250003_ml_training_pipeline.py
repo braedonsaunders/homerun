@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
-from alembic_helpers import column_names, index_names, table_names
+from alembic_helpers import index_names, table_names
 
 
 revision = "202602250003"

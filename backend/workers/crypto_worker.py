@@ -956,9 +956,9 @@ async def _run_loop() -> None:
 
             # Record ML training snapshots if enabled.
             try:
-                ml_snapshots_written = await ml_recorder.maybe_record(markets_payload)
+                await ml_recorder.maybe_record(markets_payload)
             except Exception:
-                ml_snapshots_written = 0
+                pass
 
             # Periodic ML snapshot pruning (once per hour).
             if (time.monotonic() - _ml_last_prune_mono) > _ml_prune_interval_seconds:

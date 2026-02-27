@@ -136,11 +136,39 @@ class SnapshotBroadcaster:
             )
         if event_type == "crypto_markets_update":
             markets = data.get("markets") or []
-            return (
-                len(markets),
-                ((markets[0] or {}).get("id") if markets else None),
-                ((markets[0] or {}).get("oracle_updated_at_ms") if markets else None),
-            )
+            rows: list[tuple[str, float | None, float | None, float | None, Any, Any]] = []
+
+            def _to_price_sig(value: Any) -> float | None:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return None
+                if parsed != parsed:
+                    return None
+                return round(parsed, 6)
+
+            for market in markets:
+                if not isinstance(market, dict):
+                    continue
+                market_id = str(
+                    market.get("id")
+                    or market.get("slug")
+                    or market.get("condition_id")
+                    or ""
+                )
+                rows.append(
+                    (
+                        market_id,
+                        _to_price_sig(market.get("up_price")),
+                        _to_price_sig(market.get("down_price")),
+                        _to_price_sig(market.get("combined")),
+                        market.get("oracle_updated_at_ms"),
+                        market.get("updated_at_ms"),
+                    )
+                )
+
+            rows.sort(key=lambda row: row[0])
+            return (len(rows), tuple(rows))
         if event_type == "weather_status":
             return (
                 data.get("running"),

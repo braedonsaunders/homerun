@@ -130,7 +130,7 @@ def aggregate_neutral(
     Returns (p_neutral, cluster_metadata, influence_items).
     """
     clusters = cluster_by_origin(evidence)
-    l = logit(p0)
+    log_odds = logit(p0)
     meta: list[ClusterMeta] = []
     contrib: dict[str, float] = {}
 
@@ -142,7 +142,7 @@ def aggregate_neutral(
         mean_llr = trimmed_mean(llrs, trim_fraction)
         c = m_eff * mean_llr
         contrib[cid] = c
-        l += c
+        log_odds += c
         meta.append(ClusterMeta(
             cluster_id=cid,
             size=m,
@@ -152,7 +152,7 @@ def aggregate_neutral(
             contribution=c,
         ))
 
-    p_neutral = sigmoid(l)
+    p_neutral = sigmoid(log_odds)
 
     # Leave-one-out influence per evidence item
     influence: list[InfluenceItem] = []
@@ -169,8 +169,8 @@ def aggregate_neutral(
                     [evidence_log_lr(x) for x in others], trim_fraction
                 )
                 alt = m_eff_alt * mean_alt
-            l_without = l - contrib[cid] + alt
-            p_without = sigmoid(l_without)
+            log_odds_without = log_odds - contrib[cid] + alt
+            p_without = sigmoid(log_odds_without)
             influence.append(InfluenceItem(
                 evidence_id=ev.id,
                 claim=ev.claim,

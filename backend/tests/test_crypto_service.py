@@ -146,16 +146,9 @@ def test_fetch_all_requests_events_sorted_by_latest_end_date(monkeypatch):
     assert params["ascending"] == "true"
 
 
-def test_fetch_all_overlays_live_clob_prices_on_current_market(monkeypatch):
+def test_fetch_all_keeps_gamma_prices_and_skips_clob_http_on_hot_path(monkeypatch):
     fake_events = [_event("btc-updown-5m-test", "2099-01-01T00:05:00Z")]
-    fake_client = _FakeClient(
-        fake_events,
-        midpoint_by_token={"tok_up": 0.98, "tok_down": 0.02},
-        price_by_token_side={
-            ("tok_up", "sell"): 0.97,
-            ("tok_up", "buy"): 0.99,
-        },
-    )
+    fake_client = _FakeClient(fake_events)
     monkeypatch.setattr(crypto_service.httpx, "Client", lambda timeout=10.0: fake_client)
     monkeypatch.setattr(crypto_service, "_get_series_configs", lambda: [("10684", "BTC", "5min")])
 
@@ -164,10 +157,11 @@ def test_fetch_all_overlays_live_clob_prices_on_current_market(monkeypatch):
 
     assert len(markets) == 1
     market = markets[0]
-    assert market.up_price == 0.98
-    assert market.down_price == 0.02
-    assert market.best_bid == 0.97
-    assert market.best_ask == 0.99
+    assert market.up_price == 0.52
+    assert market.down_price == 0.48
+    assert market.best_bid == 0.51
+    assert market.best_ask == 0.53
+    assert all(url.endswith("/events") for url, _ in fake_client.calls)
 
 
 def test_update_price_to_beat_uses_crypto_price_api_for_cold_start(monkeypatch):
