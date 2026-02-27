@@ -579,7 +579,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "key": "strategy_mode",
                     "label": "Strategy Mode",
                     "type": "enum",
-                    "options": ["auto", "directional", "pure_arb", "rebalance"],
+                    "options": ["auto", "directional", "maker_quote", "convergence"],
                 },
                 *StrategySDK.crypto_highfreq_scope_config_schema().get("param_fields", []),
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},

@@ -157,6 +157,7 @@ ALLOWED_IMPORT_PREFIXES = {
     "services.weather",
     "services.data_events",
     "services.event_dispatcher",
+    "services.forecasting",
     "config",
     "utils",
     # Standard library (safe subset)

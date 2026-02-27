@@ -662,7 +662,7 @@ class StrategySDK:
                 "key": "enabled_sub_strategies",
                 "label": "Enabled Sub-Strategies",
                 "type": "array[string]",
-                "options": ["pure_arb", "dump_hedge", "pre_placed_limits", "directional_edge"],
+                "options": ["maker_quote", "directional_edge", "convergence"],
             },
             {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
             {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
@@ -928,16 +928,6 @@ class StrategySDK:
                 "type": "boolean",
             },
             {
-                "key": "opening_rebalance_buy_yes_enabled",
-                "label": "Opening Rebalance Buy-Yes Enabled",
-                "type": "boolean",
-            },
-            {
-                "key": "opening_rebalance_buy_no_enabled",
-                "label": "Opening Rebalance Buy-No Enabled",
-                "type": "boolean",
-            },
-            {
                 "key": "entry_executable_exit_ratio_floor",
                 "label": "Entry Exitability Ratio Floor",
                 "type": "number",
@@ -959,8 +949,8 @@ class StrategySDK:
                 "max": 0.99,
             },
             {
-                "key": "rebalance_min_entry_price_floor",
-                "label": "Rebalance Min Entry Price",
+                "key": "maker_min_entry_price_floor",
+                "label": "Maker Min Entry Price",
                 "type": "number",
                 "min": 0.0,
                 "max": 0.99,
@@ -973,8 +963,8 @@ class StrategySDK:
                 "max": 1.0,
             },
             {
-                "key": "rebalance_max_entry_price_ceiling",
-                "label": "Rebalance Max Entry Price",
+                "key": "maker_max_entry_price_ceiling",
+                "label": "Maker Max Entry Price",
                 "type": "number",
                 "min": 0.01,
                 "max": 1.0,

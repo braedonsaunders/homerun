@@ -33,7 +33,6 @@ import {
   getTraderMarketHistory,
   getCryptoMarkets,
   type CryptoMarket,
-  getTraderOrders,
   getTraderDecisionDetail,
   getTraderDecisions,
   getTraderEvents,
@@ -654,6 +653,26 @@ function toTs(value: string | null | undefined): number {
   return Number.isFinite(ts) ? ts : 0
 }
 
+function latestTimestampValue(...values: Array<string | null | undefined>): string {
+  let bestValue = ''
+  let bestTs = 0
+  for (const rawValue of values) {
+    const value = String(rawValue || '').trim()
+    if (!value) continue
+    const ts = toTs(value)
+    if (ts > bestTs) {
+      bestTs = ts
+      bestValue = value
+    }
+  }
+  if (bestValue) return bestValue
+  for (const rawValue of values) {
+    const value = String(rawValue || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
 function utcDayKeyFromTs(ts: number): string | null {
   if (!(ts > 0)) return null
   return new Date(ts).toISOString().slice(0, 10)
@@ -814,7 +833,13 @@ function extractLivelinePointsFromOrders(
     const snapshot = resolveOrderModalSnapshot(order)
     const value = toFiniteNumber(snapshot.markPrice ?? snapshot.entryPrice ?? order.current_price)
     if (value === null) continue
-    const tsRaw = order.mark_updated_at || snapshot.updatedAt || order.updated_at || order.executed_at || order.created_at
+    const tsRaw = latestTimestampValue(
+      order.mark_updated_at,
+      snapshot.updatedAt,
+      order.updated_at,
+      order.executed_at,
+      order.created_at
+    )
     const tsMs = toTs(tsRaw)
     if (tsMs <= 0) continue
     points.push({ time: Math.max(1, toUnixSeconds(tsMs)), value })
@@ -983,7 +1008,13 @@ function resolveOrderModalSnapshot(order: TraderOrder): OrderModalSnapshot {
     confidencePercent: toFiniteNumber(order.confidence),
     source: String(order.source || '').trim().toUpperCase() || 'UNKNOWN',
     mode: String(order.mode || '').trim().toUpperCase() || 'N/A',
-    updatedAt: cleanText(order.updated_at) || cleanText(order.mark_updated_at),
+    updatedAt: latestTimestampValue(
+      cleanText(order.updated_at),
+      cleanText(order.mark_updated_at),
+      cleanText(positionState.last_marked_at),
+      cleanText(order.executed_at),
+      cleanText(order.created_at)
+    ),
     createdAt: cleanText(order.created_at) || cleanText(order.executed_at),
   }
 }
@@ -1912,6 +1943,31 @@ function orderCloseHeadlineFromReason(reason: string): string {
   return 'Closed'
 }
 
+function isAllowanceErrorText(raw: string): boolean {
+  const text = String(raw || '').toLowerCase()
+  if (!text) return false
+  return (
+    text.includes('not enough balance / allowance')
+    || text.includes('balance/allowance')
+    || text.includes('conditional token balance/allowance')
+    || (text.includes('allowance') && text.includes('not enough'))
+  )
+}
+
+function isGasErrorText(raw: string): boolean {
+  const text = String(raw || '').toLowerCase()
+  if (!text) return false
+  if (text.includes('not enough gas')) return true
+  if (text.includes('insufficient funds for gas')) return true
+  if (text.includes('out of gas')) return true
+  if (text.includes('intrinsic gas too low')) return true
+  if (text.includes('base fee') && text.includes('gas')) return true
+  if (text.includes('gas required exceeds allowance')) return true
+  if (text.includes('insufficient') && (text.includes('matic') || text.includes('polygon') || text.includes('native token'))) return true
+  if (text.includes('insufficient') && text.includes('gas')) return true
+  return false
+}
+
 function orderFailureHeadline(order: TraderOrder): string {
   const reason = orderReasonDetail(order)
   const normalizedReason = reason.toLowerCase()
@@ -1934,7 +1990,10 @@ function orderFailureHeadline(order: TraderOrder): string {
   if (normalizedReason.includes('maximum open positions')) {
     return 'Position cap hit'
   }
-  if (normalizedReason.includes('allowance') || normalizedReason.includes('not enough balance')) {
+  if (isGasErrorText(normalizedReason)) {
+    return 'Insufficient gas'
+  }
+  if (isAllowanceErrorText(normalizedReason) || normalizedReason.includes('not enough balance')) {
     return 'Balance/allowance'
   }
   if (normalizedReason.includes('invalid signature')) {
@@ -3937,7 +3996,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryKey: ['trader-orders-all'],
     queryFn: () => getAllTraderOrders(5000),
     enabled: traderIds.length > 0,
-    refetchInterval: isConnected ? 15000 : 1000,
+    refetchInterval: isConnected ? 2000 : 1000,
     staleTime: 0,
     refetchOnMount: 'always',
   })
@@ -4043,25 +4102,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     })
   }, [traders])
 
-  const selectedOrdersQuery = useQuery({
-    queryKey: ['trader-orders', selectedTraderId],
-    enabled: Boolean(selectedTraderId),
-    refetchInterval: selectedTraderId ? (isConnected ? 15000 : 1000) : false,
-    queryFn: () => getTraderOrders(String(selectedTraderId), { limit: 5000 }),
-    staleTime: 0,
-    refetchOnMount: 'always',
-  })
-
   const selectedOrders = useMemo(
-    () => {
-      if (!selectedTraderId) return []
-      const queryRows = selectedOrdersQuery.data
-      if (Array.isArray(queryRows)) {
-        return queryRows
-      }
-      return allOrders.filter((order) => order.trader_id === selectedTraderId)
-    },
-    [allOrders, selectedOrdersQuery.data, selectedTraderId]
+    () => (selectedTraderId ? allOrders.filter((order) => order.trader_id === selectedTraderId) : []),
+    [allOrders, selectedTraderId]
   )
 
   const selectedDecisions = useMemo(
@@ -4402,11 +4445,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [parsedDraftMetadata.value]
   )
   const riskFormValues = useMemo(
-    () => ({
-      ...(isRecord(traderConfigSchema?.shared_risk_defaults) ? traderConfigSchema.shared_risk_defaults : {}),
-      ...(parsedDraftRisk.value || {}),
-    }),
-    [parsedDraftRisk.value, traderConfigSchema]
+    () => (isRecord(parsedDraftRisk.value) ? parsedDraftRisk.value : {}),
+    [parsedDraftRisk.value]
   )
   const setSourceStrategy = (sourceKey: string, strategyKey: string) => {
     const normalizedSource = normalizeSourceKey(sourceKey)
@@ -6106,6 +6146,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     let failed = 0
     let open = 0
     let allowanceErrorCount = 0
+    let gasErrorCount = 0
 
     for (const order of selectedOrders) {
       const status = normalizeStatus(order.status)
@@ -6132,8 +6173,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
-      if (allowanceText.includes('not enough balance / allowance')) {
+      if (isAllowanceErrorText(allowanceText) || allowanceText.includes('not enough balance / allowance')) {
         allowanceErrorCount += 1
+      }
+      if (isGasErrorText(allowanceText)) {
+        gasErrorCount += 1
       }
     }
 
@@ -6152,6 +6196,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       resolvedNotional,
       roiPercent: resolvedNotional > 0 ? (resolvedPnl / resolvedNotional) * 100 : 0,
       allowanceErrorCount,
+      gasErrorCount,
     }
   }, [selectedDecisionById, selectedOrders, sourceCatalog])
 
@@ -6275,7 +6320,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         filledNotional,
       })
       const exitProgressPercent = computePendingExitProgressPercent(pendingExit as Record<string, unknown>)
-      const updatedAt = String(order.updated_at || order.mark_updated_at || order.created_at || '')
+      const updatedAt = latestTimestampValue(
+        order.mark_updated_at,
+        positionState.last_marked_at,
+        order.updated_at,
+        order.executed_at,
+        order.created_at
+      )
       const markUpdatedAtRaw = String(order.mark_updated_at || positionState.last_marked_at || '')
       const markUpdatedTs = toTs(markUpdatedAtRaw)
       const markFresh = markUpdatedTs > 0 && (Date.now() - markUpdatedTs) <= 15_000
@@ -7896,7 +7947,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     : null
                                   const links = buildOrderMarketLinks(order, orderPayload, signalPayload)
                                   const primaryMarketLink = links.polymarket || links.kalshi
-                                  const updatedAt = String(order.updated_at || order.mark_updated_at || order.created_at || '')
+                                  const updatedAt = latestTimestampValue(
+                                    order.mark_updated_at,
+                                    positionState.last_marked_at,
+                                    order.updated_at,
+                                    order.executed_at,
+                                    order.created_at
+                                  )
                                   const outcome = orderOutcomeSummary(order)
                                   const outcomeDetailCompact = compactText(outcome.detail, 120)
                                   const executionSummary = orderExecutionTypeSummary(order)
@@ -9532,6 +9589,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     {selectedPerformance.allowanceErrorCount > 0 ? (
                       <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100">
                         Found {selectedPerformance.allowanceErrorCount} orders with `not enough balance / allowance` in execution payloads.
+                      </div>
+                    ) : null}
+                    {selectedPerformance.gasErrorCount > 0 ? (
+                      <div className="shrink-0 rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-700 dark:text-orange-100">
+                        Found {selectedPerformance.gasErrorCount} orders with `not enough gas` / native-token gas funding errors.
                       </div>
                     ) : null}
 

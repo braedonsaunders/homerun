@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 _GAMMA_FETCH_TIMEOUT_SECONDS = 4.0
 _CLOB_FETCH_TIMEOUT_SECONDS = 2.0
-_CRYPTO_FETCH_MAX_WORKERS = 4
+_CRYPTO_FETCH_MAX_WORKERS = 16
 _CRYPTO_PRICE_TO_BEAT_API_URL = "https://polymarket.com/api/crypto/crypto-price"
 _CRYPTO_PRICE_TO_BEAT_TIMEOUT_SECONDS = 2.0
 _BINANCE_KLINES_API_URL = "https://api.binance.com/api/v3/klines"
@@ -303,6 +303,8 @@ class CryptoService:
         self._price_to_beat: dict[str, float] = {}
         self._price_to_beat_retry_after: dict[str, float] = {}
         self._price_to_beat_api_cooldown_until: float = 0.0
+        # Track seen market IDs to detect rotations.
+        self._prev_market_ids: set[str] = set()
 
     @property
     def is_stale(self) -> bool:
@@ -314,6 +316,21 @@ class CryptoService:
             try:
                 fetched = self._fetch_all()
                 if fetched is not None:
+                    new_ids = {str(m.id) for m in fetched if m.id}
+                    # Log market rotations — new IDs that weren't in previous set.
+                    if self._prev_market_ids:
+                        appeared = new_ids - self._prev_market_ids
+                        disappeared = self._prev_market_ids - new_ids
+                        if appeared:
+                            new_descs = [f"{m.asset} {m.timeframe}" for m in fetched if str(m.id) in appeared]
+                            logger.info(
+                                "Market rotation: %d new market(s) appeared: %s",
+                                len(appeared),
+                                ", ".join(new_descs[:6]),
+                            )
+                        if disappeared:
+                            logger.debug("Market rotation: %d market(s) expired", len(disappeared))
+                    self._prev_market_ids = new_ids
                     self._cache = fetched
                     self._last_fetch = time.monotonic()
             except Exception as e:
@@ -366,7 +383,12 @@ class CryptoService:
         timeframe: str,
         now_iso: str,
     ) -> Optional[CryptoMarket]:
-        """Fetch one series row (live market + upcoming) with live CLOB overlays."""
+        """Fetch one series row (market discovery only — single Gamma HTTP call).
+
+        Real-time prices come from the WS feed overlay in crypto_worker, NOT
+        from per-token CLOB HTTP calls here.  This keeps each series fetch to
+        a single ~200ms Gamma API call instead of 5+ sequential HTTP calls.
+        """
         if not str(series_id or "").strip():
             return None
 
@@ -432,24 +454,10 @@ class CryptoService:
                 best_bid = _coerce_probability(mkt.get("bestBid"))
                 best_ask = _coerce_probability(mkt.get("bestAsk"))
 
-                # Gamma outcomePrices can lag on short windows. Overlay with
-                # direct live CLOB token pricing whenever token IDs are present.
-                up_token = clob_ids[up_idx] if up_idx < len(clob_ids) else None
-                down_token = clob_ids[down_idx] if down_idx < len(clob_ids) else None
-                if up_token:
-                    live_up = self._fetch_clob_midpoint(client, up_token)
-                    if live_up is not None:
-                        up_price = live_up
-                    live_bid = self._fetch_clob_price(client, up_token, "sell")
-                    live_ask = self._fetch_clob_price(client, up_token, "buy")
-                    if live_bid is not None:
-                        best_bid = live_bid
-                    if live_ask is not None:
-                        best_ask = live_ask
-                if down_token:
-                    live_down = self._fetch_clob_midpoint(client, down_token)
-                    if live_down is not None:
-                        down_price = live_down
+                # NOTE: Real-time CLOB prices are overlaid by the crypto_worker
+                # via WS feed cache (_overlay_ws_prices_on_market_row).  We
+                # intentionally skip per-token CLOB HTTP calls here to keep
+                # each series fetch to a single Gamma API round-trip (~200ms).
 
                 # Build upcoming market summaries
                 upcoming = []

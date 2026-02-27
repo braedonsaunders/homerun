@@ -4546,6 +4546,7 @@ async def get_consecutive_loss_count(
     trader_id: str,
     mode: Optional[str] = None,
     limit: int = 100,
+    since: Optional[datetime] = None,
 ) -> int:
     query = (
         select(TraderOrder.status, TraderOrder.updated_at)
@@ -4560,6 +4561,9 @@ async def get_consecutive_loss_count(
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
         else:
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    if since is not None:
+        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
+        query = query.where(TraderOrder.updated_at >= since_utc)
 
     rows = (await session.execute(query)).all()
     losses = 0
@@ -4578,6 +4582,7 @@ async def get_last_resolved_loss_at(
     *,
     trader_id: str,
     mode: Optional[str] = None,
+    since: Optional[datetime] = None,
 ) -> Optional[datetime]:
     query = select(func.max(TraderOrder.updated_at)).where(
         TraderOrder.trader_id == trader_id,
@@ -4589,6 +4594,9 @@ async def get_last_resolved_loss_at(
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
         else:
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    if since is not None:
+        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
+        query = query.where(TraderOrder.updated_at >= since_utc)
     return (await session.execute(query)).scalar_one_or_none()
 
 

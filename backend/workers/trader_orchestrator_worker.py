@@ -118,6 +118,7 @@ _HIGH_FREQUENCY_CRYPTO_MAINTENANCE_INTERVAL_SECONDS = 1.0
 _STANDARD_MAX_SIGNALS_PER_CYCLE = 500
 _STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE = 200
 _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE = 5000
+_LOSS_STREAK_RESET_AT_KEY = "loss_streak_reset_at"
 _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
 _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
@@ -1833,6 +1834,7 @@ async def _run_trader_once(
         if position_cap_scope not in {"market_direction", "market", "asset_timeframe"}:
             position_cap_scope = "market_direction"
         metadata = StrategySDK.validate_trader_runtime_metadata(trader.get("metadata"))
+        loss_streak_reset_at = _parse_iso(str(metadata.get(_LOSS_STREAK_RESET_AT_KEY) or "").strip())
         run_mode = str(control.get("mode") or "paper").strip().lower()
         resume_policy = _normalize_resume_policy(metadata.get("resume_policy"))
         cursor_created_at, cursor_signal_id = await get_trader_signal_cursor(
@@ -2326,11 +2328,13 @@ async def _run_trader_once(
             session,
             trader_id=trader_id,
             mode=run_mode,
+            since=loss_streak_reset_at,
         )
         last_loss_at = await get_last_resolved_loss_at(
             session,
             trader_id=trader_id,
             mode=run_mode,
+            since=loss_streak_reset_at,
         )
         cooldown_seconds = max(0, safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
         cooldown_active = False

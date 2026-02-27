@@ -46,10 +46,11 @@ async def test_execute_live_order_initializes_and_places_order(monkeypatch):
     )
     monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
     monkeypatch.setattr(live_execution_adapter.live_execution_service, "place_order", place_mock)
+    get_price_mock = AsyncMock(side_effect=[0.40, 0.42])
     monkeypatch.setattr(
         live_execution_adapter.polymarket_client,
         "get_price",
-        AsyncMock(return_value=0.42),
+        get_price_mock,
     )
 
     result = await live_execution_adapter.execute_live_order(
@@ -67,6 +68,9 @@ async def test_execute_live_order_initializes_and_places_order(monkeypatch):
     assert result.effective_price == pytest.approx(0.42)
     ensure_mock.assert_awaited_once()
     place_mock.assert_awaited_once()
+    assert get_price_mock.await_count == 2
+    assert get_price_mock.await_args_list[0].kwargs["side"] == "BUY"
+    assert get_price_mock.await_args_list[1].kwargs["side"] == "SELL"
 
 
 @pytest.mark.asyncio
@@ -84,10 +88,11 @@ async def test_execute_live_order_uses_fallback_when_live_quote_notional_below_s
     )
     monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
     monkeypatch.setattr(live_execution_adapter.live_execution_service, "place_order", place_mock)
+    get_price_mock = AsyncMock(side_effect=[0.70, 0.71])
     monkeypatch.setattr(
         live_execution_adapter.polymarket_client,
         "get_price",
-        AsyncMock(return_value=0.70),
+        get_price_mock,
     )
 
     result = await live_execution_adapter.execute_live_order(
@@ -103,3 +108,4 @@ async def test_execute_live_order_uses_fallback_when_live_quote_notional_below_s
     assert result.payload["resolved_price"] == pytest.approx(0.80)
     _, kwargs = place_mock.await_args
     assert kwargs["price"] == pytest.approx(0.80)
+    assert get_price_mock.await_count == 2

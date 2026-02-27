@@ -146,7 +146,7 @@ async def test_create_trader_copies_settings_from_existing_trader(postgres_sessi
                     {
                         "source_key": "crypto",
                         "strategy_key": "btc_eth_highfreq",
-                        "strategy_params": {"strategy_mode": "pure_arb"},
+                        "strategy_params": {"strategy_mode": "maker_quote"},
                     }
                 ],
                 "interval_seconds": 9,

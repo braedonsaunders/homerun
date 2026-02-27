@@ -41,10 +41,12 @@ from services.trader_orchestrator_state import (
     sync_trader_position_inventory,
     update_trader,
 )
-from utils.converters import normalize_market_id
+from utils.converters import normalize_market_id, to_iso
 from utils.market_urls import infer_market_platform
 
 router = APIRouter(prefix="/traders", tags=["Traders"])
+_LOSS_STREAK_RESET_AT_KEY = "loss_streak_reset_at"
+_LOSS_STREAK_RESET_REASON_KEY = "loss_streak_reset_reason"
 
 
 class TraderSourceConfigRequest(BaseModel):
@@ -271,6 +273,19 @@ def _assert_not_globally_paused() -> None:
             status_code=409,
             detail="Global pause is active. Use /workers/resume-all first.",
         )
+
+
+def _apply_loss_streak_reset_metadata(
+    metadata: dict[str, Any],
+    *,
+    reason: str,
+) -> tuple[dict[str, Any], str]:
+    stamped = dict(metadata or {})
+    reset_at = to_iso(datetime.now(timezone.utc))
+    if reset_at:
+        stamped[_LOSS_STREAK_RESET_AT_KEY] = reset_at
+    stamped[_LOSS_STREAK_RESET_REASON_KEY] = reason
+    return stamped, reset_at or ""
 
 
 @router.get("")
@@ -590,6 +605,22 @@ async def update_trader_route(
         raise HTTPException(status_code=404, detail="Trader not found")
 
     payload = request.model_dump(exclude_none=True, exclude={"requested_by", "reason"})
+    was_running = bool(before.get("is_enabled", True)) and not bool(before.get("is_paused", False))
+    will_be_enabled = bool(payload.get("is_enabled", before.get("is_enabled", True)))
+    will_be_paused = bool(payload.get("is_paused", before.get("is_paused", False)))
+    will_be_running = will_be_enabled and not will_be_paused
+    loss_streak_reset_at = ""
+    if will_be_running and not was_running:
+        merged_metadata = dict(before.get("metadata") or {})
+        incoming_metadata = payload.get("metadata")
+        if isinstance(incoming_metadata, dict):
+            merged_metadata.update(incoming_metadata)
+        merged_metadata, loss_streak_reset_at = _apply_loss_streak_reset_metadata(
+            merged_metadata,
+            reason="operator_resume",
+        )
+        payload["metadata"] = merged_metadata
+
     try:
         after = await update_trader(session, trader_id, payload)
     except ValueError as exc:
@@ -607,6 +638,9 @@ async def update_trader_route(
         trader_before=before,
         trader_after=after,
     )
+    event_payload: dict[str, Any] = {"changes": payload}
+    if loss_streak_reset_at:
+        event_payload["loss_streak_reset_at"] = loss_streak_reset_at
     await create_trader_event(
         session,
         trader_id=trader_id,
@@ -614,7 +648,7 @@ async def update_trader_route(
         source="operator",
         operator=request.requested_by,
         message="Trader updated",
-        payload={"changes": payload},
+        payload=event_payload,
     )
     return after
 
@@ -749,7 +783,22 @@ async def delete_trader_route(
 @router.post("/{trader_id}/start")
 async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_session)):
     _assert_not_globally_paused()
-    trader = await set_trader_paused(session, trader_id, False)
+    before = await get_trader(session, trader_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+    metadata, loss_streak_reset_at = _apply_loss_streak_reset_metadata(
+        dict(before.get("metadata") or {}),
+        reason="operator_start",
+    )
+    trader = await update_trader(
+        session,
+        trader_id,
+        {
+            "is_enabled": True,
+            "is_paused": False,
+            "metadata": metadata,
+        },
+    )
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
 
@@ -788,6 +837,7 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
         event_type="trader_started",
         source="operator",
         message="Trader resumed",
+        payload={_LOSS_STREAK_RESET_AT_KEY: loss_streak_reset_at} if loss_streak_reset_at else {},
     )
     return trader
 

@@ -81,6 +81,9 @@ class TailEndCarryStrategy(BaseStrategy):
         "panic_window_points": 6,
         "panic_recovery_ratio_max": 0.20,
         "take_profit_pct": 8.0,
+        "price_policy": "taker_limit",
+        "time_in_force": "IOC",
+        "session_timeout_seconds": 90,
     }
 
     def __init__(self) -> None:

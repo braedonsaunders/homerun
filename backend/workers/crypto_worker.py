@@ -61,6 +61,33 @@ _CHAINLINK_STALE_RESTART_AGE_SECONDS = 45.0
 _CHAINLINK_STALE_RESTART_COOLDOWN_SECONDS = 20.0
 _CHAINLINK_WARMUP_SECONDS = 20.0
 
+# ---------------------------------------------------------------------------
+# Market boundary prefetch
+# ---------------------------------------------------------------------------
+# Polymarket crypto markets open on predictable time boundaries.  When we are
+# within ``_BOUNDARY_PREFETCH_WINDOW_SECONDS`` of a boundary, we force-refresh
+# the Gamma API so new market IDs are picked up within a single poll cycle.
+_BOUNDARY_INTERVALS_SECONDS = [300, 900, 3600, 14400]  # 5m, 15m, 1h, 4h
+_BOUNDARY_PREFETCH_WINDOW_SECONDS = 15  # start prefetching this many seconds before boundary
+_BOUNDARY_LINGER_WINDOW_SECONDS = 10   # keep force-refreshing this many seconds after boundary
+_last_boundary_force_mono: float = 0.0
+
+
+def _near_market_boundary() -> bool:
+    """Return True if current UTC time is within the prefetch window of any
+    crypto market time boundary (5m / 15m / 1h / 4h)."""
+    now_ts = time.time()
+    for interval in _BOUNDARY_INTERVALS_SECONDS:
+        seconds_into = now_ts % interval
+        seconds_until_next = interval - seconds_into
+        # Near UPCOMING boundary
+        if seconds_until_next <= _BOUNDARY_PREFETCH_WINDOW_SECONDS:
+            return True
+        # Just PAST a boundary (new market should exist)
+        if seconds_into <= _BOUNDARY_LINGER_WINDOW_SECONDS:
+            return True
+    return False
+
 
 def _to_float(value: object) -> float | None:
     try:
@@ -884,7 +911,17 @@ async def _run_loop() -> None:
 
         try:
             svc = get_crypto_service()
-            markets = await asyncio.to_thread(svc.get_live_markets)
+            # Force-refresh near market time boundaries so new market IDs are
+            # discovered within a single poll cycle instead of waiting for TTL.
+            boundary_force = False
+            if fast_mode and _near_market_boundary():
+                global _last_boundary_force_mono
+                now_mono = time.monotonic()
+                # Rate-limit force-refreshes to at most once per 2 seconds
+                if (now_mono - _last_boundary_force_mono) >= 2.0:
+                    boundary_force = True
+                    _last_boundary_force_mono = now_mono
+            markets = await asyncio.to_thread(svc.get_live_markets, boundary_force)
             if markets is None:
                 markets = []
             if ws_feeds_running and feed_manager is not None:
@@ -897,9 +934,21 @@ async def _run_loop() -> None:
                 ws_prices=ws_prices,
                 feed_manager=feed_manager,
             )
+
+            # Log when boundary prefetch discovers new markets.
+            if boundary_force and markets_payload:
+                prev_slugs = {str(m.get("slug") or "") for m in (startup_stats.get("markets") or []) if isinstance(m, dict)}
+                new_slugs = {str(m.get("slug") or "") for m in markets_payload if isinstance(m, dict)} - prev_slugs
+                if new_slugs:
+                    logger.info(
+                        "Boundary prefetch discovered %d new market(s): %s",
+                        len(new_slugs),
+                        ", ".join(sorted(new_slugs)[:6]),
+                    )
+
             emitted, dispatch_elapsed = await _dispatch_crypto_opportunities(
                 markets_payload,
-                trigger="periodic_scan",
+                trigger="boundary_prefetch" if boundary_force else "periodic_scan",
                 run_at=run_at,
                 emit_lock=emit_lock,
             )
@@ -934,6 +983,7 @@ async def _run_loop() -> None:
                         "signals_emitted_last_run": int(emitted),
                         "run_duration_seconds": elapsed,
                         "fast_mode": fast_mode,
+                        "boundary_force_refresh": boundary_force,
                         "ws_prices_used": int(bool(ws_prices)),
                         "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
@@ -983,6 +1033,9 @@ async def _run_loop() -> None:
 
         if err_text:
             sleep_for = 0.5
+        elif fast_mode and boundary_force:
+            # Near a market boundary — poll as fast as possible to pick up new IDs.
+            sleep_for = 0.2
         elif fast_mode:
             # Keep fast mode responsive while avoiding back-to-back cache-only spins.
             sleep_for = 0.5

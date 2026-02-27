@@ -456,7 +456,32 @@ local_postgres_listener_on_requested_port() {
     if ! kill -0 "$pid" >/dev/null 2>&1; then
         return 1
     fi
+    if ! tcp_ping "$POSTGRES_HOST" "$port"; then
+        return 1
+    fi
     [ "$port" = "$POSTGRES_PORT" ]
+}
+
+local_postgres_listener_port_for_data_dir() {
+    local pid_file="$POSTGRES_DATA_DIR/postmaster.pid"
+    if [ ! -f "$pid_file" ]; then
+        return 1
+    fi
+
+    local pid
+    local port
+    pid="$(sed -n '1p' "$pid_file" 2>/dev/null || true)"
+    port="$(sed -n '4p' "$pid_file" 2>/dev/null || true)"
+    if [ -z "$pid" ] || [ -z "$port" ]; then
+        return 1
+    fi
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! tcp_ping "$POSTGRES_HOST" "$port"; then
+        return 1
+    fi
+    echo "$port"
 }
 
 postgres_listener_owned_by_launcher() {
@@ -477,6 +502,14 @@ find_available_postgres_port() {
 }
 
 ensure_postgres() {
+    local existing_data_dir_port
+    existing_data_dir_port="$(local_postgres_listener_port_for_data_dir 2>/dev/null || true)"
+    if [ -n "$existing_data_dir_port" ]; then
+        POSTGRES_PORT="$existing_data_dir_port"
+        echo -e "${GREEN}Postgres already running from ${POSTGRES_DATA_DIR} on ${POSTGRES_HOST}:${POSTGRES_PORT}${NC}"
+        return 0
+    fi
+
     if postgres_ping; then
         if postgres_listener_owned_by_launcher; then
             echo -e "${GREEN}Postgres already running on ${POSTGRES_HOST}:${POSTGRES_PORT}${NC}"

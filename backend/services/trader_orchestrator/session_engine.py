@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import ExecutionSessionLeg, TraderOrder
 from services.event_bus import event_bus
 from services.live_execution_adapter import execute_live_order
+from services.live_execution_service import live_execution_service
 from services.signal_bus import set_trade_signal_status
 from services.strategy_sdk import StrategySDK
 from services.worker_state import _commit_with_retry
@@ -748,6 +749,10 @@ class ExecutionSessionEngine:
                     and exit_size > 0.0
                 ):
                     target_price = min(0.999, max(0.001, entry_fill_price * (1.0 + (take_profit_pct / 100.0))))
+                    try:
+                        await live_execution_service.prepare_sell_balance_allowance(token_id)
+                    except Exception:
+                        pass
                     tp_submit = await execute_live_order(
                         token_id=token_id,
                         side="SELL",
@@ -758,7 +763,7 @@ class ExecutionSessionEngine:
                         ),
                         opportunity_id=str(getattr(signal, "id", "") or ""),
                         time_in_force="GTC",
-                        post_only=False,
+                        post_only=True,
                         resolve_live_price=False,
                     )
                     bracket_timestamp = _iso_utc(utcnow())
@@ -773,6 +778,7 @@ class ExecutionSessionEngine:
                         "entry_fill_price": float(entry_fill_price),
                         "market_tradable": True,
                         "exit_size": float(exit_size),
+                        "post_only": True,
                         "retry_count": 0,
                         "reason": "entry_bracket_take_profit",
                     }

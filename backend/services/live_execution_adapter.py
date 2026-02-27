@@ -142,13 +142,23 @@ async def execute_live_order(
                     except Exception:
                         pass
 
-            # Slow path: HTTP API call (50-500ms)
+            # Slow path: HTTP API calls (50-500ms)
             if live_quote is None:
-                if normalized_side == OrderSide.BUY:
-                    live_quote = safe_float(await polymarket_client.get_price(normalized_token_id, side="BUY"))
-                else:
-                    live_quote = safe_float(await polymarket_client.get_price(normalized_token_id, side="SELL"))
-                if live_quote is not None and live_quote > 0:
+                quote_buy = None
+                quote_sell = None
+                try:
+                    quote_buy = safe_float(await polymarket_client.get_price(normalized_token_id, side="BUY"))
+                except Exception:
+                    quote_buy = None
+                try:
+                    quote_sell = safe_float(await polymarket_client.get_price(normalized_token_id, side="SELL"))
+                except Exception:
+                    quote_sell = None
+
+                quote_candidates = [q for q in (quote_buy, quote_sell) if q is not None and q > 0]
+                if quote_candidates:
+                    # Use marketable-side pricing regardless of provider side-label semantics.
+                    live_quote = max(quote_candidates) if normalized_side == OrderSide.BUY else min(quote_candidates)
                     price_resolution = "live_quote"
 
             # Apply the resolved price with min notional guard

@@ -124,3 +124,110 @@ async def test_get_all_traders_rejects_invalid_mode():
 
     assert excinfo.value.status_code == 422
     assert excinfo.value.detail == "mode must be 'paper' or 'live'"
+
+
+@pytest.mark.asyncio
+async def test_start_trader_enables_and_unpauses(monkeypatch):
+    session_obj = object()
+    trader_id = "trader-1"
+    existing = {
+        "id": trader_id,
+        "name": "Any Trader",
+        "is_enabled": False,
+        "is_paused": True,
+        "metadata": {"resume_policy": "resume_full"},
+    }
+    updated = {
+        "id": trader_id,
+        "name": "Any Trader",
+        "is_enabled": True,
+        "is_paused": False,
+        "mode": "live",
+    }
+    update_trader_mock = AsyncMock(return_value=updated)
+    read_control_mock = AsyncMock(return_value={"mode": "live"})
+    sync_inventory_mock = AsyncMock(return_value=None)
+    open_summary_mock = AsyncMock(return_value={"live": 0, "paper": 0})
+    create_event_mock = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(routes_traders, "_assert_not_globally_paused", lambda: None)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value=existing))
+    monkeypatch.setattr(routes_traders, "update_trader", update_trader_mock)
+    monkeypatch.setattr(routes_traders, "read_orchestrator_control", read_control_mock)
+    monkeypatch.setattr(routes_traders, "sync_trader_position_inventory", sync_inventory_mock)
+    monkeypatch.setattr(routes_traders, "get_open_position_summary_for_trader", open_summary_mock)
+    monkeypatch.setattr(routes_traders, "create_trader_event", create_event_mock)
+
+    result = await routes_traders.start_trader(trader_id=trader_id, session=session_obj)
+
+    assert result == updated
+    update_trader_mock.assert_awaited_once()
+    update_payload = update_trader_mock.await_args.args[2]
+    assert update_payload["is_enabled"] is True
+    assert update_payload["is_paused"] is False
+    assert update_payload["metadata"]["loss_streak_reset_reason"] == "operator_start"
+    assert isinstance(update_payload["metadata"]["loss_streak_reset_at"], str)
+    assert update_payload["metadata"]["loss_streak_reset_at"]
+    create_event_mock.assert_awaited_once()
+    event_kwargs = create_event_mock.await_args.kwargs
+    assert event_kwargs["event_type"] == "trader_started"
+    assert event_kwargs["message"] == "Trader resumed"
+    assert event_kwargs["payload"]["loss_streak_reset_at"] == update_payload["metadata"]["loss_streak_reset_at"]
+
+
+@pytest.mark.asyncio
+async def test_start_trader_returns_404_when_missing(monkeypatch):
+    monkeypatch.setattr(routes_traders, "_assert_not_globally_paused", lambda: None)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value=None))
+    monkeypatch.setattr(routes_traders, "update_trader", AsyncMock(return_value=None))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.start_trader(trader_id="missing", session=object())
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == "Trader not found"
+
+
+@pytest.mark.asyncio
+async def test_update_trader_route_resume_resets_loss_streak(monkeypatch):
+    session_obj = object()
+    trader_id = "trader-1"
+    before = {
+        "id": trader_id,
+        "name": "Any Trader",
+        "is_enabled": False,
+        "is_paused": False,
+        "metadata": {"resume_policy": "resume_full"},
+    }
+    after = {
+        "id": trader_id,
+        "name": "Any Trader",
+        "is_enabled": True,
+        "is_paused": False,
+        "metadata": {"resume_policy": "resume_full"},
+    }
+    update_trader_mock = AsyncMock(return_value=after)
+    create_config_revision_mock = AsyncMock(return_value=None)
+    create_event_mock = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value=before))
+    monkeypatch.setattr(routes_traders, "update_trader", update_trader_mock)
+    monkeypatch.setattr(routes_traders, "create_config_revision", create_config_revision_mock)
+    monkeypatch.setattr(routes_traders, "create_trader_event", create_event_mock)
+
+    request = routes_traders.TraderPatchRequest(
+        is_enabled=True,
+        is_paused=False,
+        requested_by="tester",
+    )
+    result = await routes_traders.update_trader_route(trader_id=trader_id, request=request, session=session_obj)
+
+    assert result == after
+    update_payload = update_trader_mock.await_args.args[2]
+    assert update_payload["is_enabled"] is True
+    assert update_payload["is_paused"] is False
+    assert update_payload["metadata"]["loss_streak_reset_reason"] == "operator_resume"
+    assert isinstance(update_payload["metadata"]["loss_streak_reset_at"], str)
+    assert update_payload["metadata"]["loss_streak_reset_at"]
+    event_payload = create_event_mock.await_args.kwargs["payload"]
+    assert event_payload["loss_streak_reset_at"] == update_payload["metadata"]["loss_streak_reset_at"]

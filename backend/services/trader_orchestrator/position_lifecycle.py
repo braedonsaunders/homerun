@@ -82,6 +82,48 @@ def _failed_exit_retry_delay_seconds(last_error: Any) -> int:
     return _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS
 
 
+def _is_allowance_error(error: Any) -> bool:
+    error_text = str(error or "").strip().lower()
+    return "not enough balance / allowance" in error_text or "allowance" in error_text
+
+
+def _bump_allowance_error_counter(pending_exit: dict[str, Any], error: Any) -> None:
+    if _is_allowance_error(error):
+        pending_exit["allowance_error_count"] = int(pending_exit.get("allowance_error_count", 0) or 0) + 1
+        return
+    pending_exit["allowance_error_count"] = 0
+
+
+def _take_profit_price_floor(pending_exit: dict[str, Any]) -> Optional[float]:
+    """Compute the minimum price for a take-profit-limit exit.
+
+    Returns None if the TP should be abandoned (market moved against us
+    below entry price — caller should convert to a market sell).
+    """
+    kind = str(pending_exit.get("kind") or "").strip().lower()
+    if kind != "take_profit_limit":
+        return None
+    close_price = safe_float(pending_exit.get("close_price"))
+    entry_fill_price = safe_float(pending_exit.get("entry_fill_price"))
+
+    current_price = safe_float(pending_exit.get("current_mid_price"))
+    if current_price is not None and entry_fill_price is not None and entry_fill_price > 0.0:
+        if current_price < entry_fill_price * 0.995:
+            return None
+
+    target_take_profit_pct = max(0.0, safe_float(pending_exit.get("target_take_profit_pct"), 0.0) or 0.0)
+    fee_buffer_pct = max(0.0, safe_float(pending_exit.get("take_profit_fee_buffer_pct"), 0.35) or 0.35)
+    floor_candidates: list[float] = []
+    if close_price is not None and close_price > 0.0:
+        floor_candidates.append(close_price)
+    if entry_fill_price is not None and entry_fill_price > 0.0:
+        floor_candidates.append(entry_fill_price * (1.0 + (target_take_profit_pct / 100.0)))
+        floor_candidates.append(entry_fill_price * (1.0 + (fee_buffer_pct / 100.0)))
+    if not floor_candidates:
+        return None
+    return min(0.999, max(0.01, max(floor_candidates)))
+
+
 def _safe_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -2345,8 +2387,8 @@ async def reconcile_live_positions(
             reprice_attempts = int(safe_float(pending_exit.get("reprice_attempts"), 0) or 0)
             max_reprice_attempts_default = (
                 8
-                if rapid_exit_requote_enabled or take_profit_requote_enabled
-                else 6
+                if rapid_exit_requote_enabled
+                else (4 if take_profit_requote_enabled else 6)
             )
             max_reprice_attempts = max(
                 1,
@@ -2419,6 +2461,8 @@ async def reconcile_live_positions(
                                 base_min_order_size_usd,
                                 pending_close_trigger,
                             )
+                            pending_exit["current_mid_price"] = pending_current_price
+                            take_profit_floor_price = _take_profit_price_floor(pending_exit)
                             fallback_exit_price = (
                                 pending_current_price
                                 if pending_current_price is not None and pending_current_price > 0.0
@@ -2428,17 +2472,46 @@ async def reconcile_live_positions(
                                     else 0.01
                                 )
                             )
-                            exec_result = await execute_live_order(
-                                token_id=token_id,
-                                side="SELL",
-                                size=remaining_exit_size,
-                                fallback_price=fallback_exit_price,
-                                min_order_size_usd=min_order_size_usd,
-                                time_in_force="IOC",
-                                resolve_live_price=True,
-                            )
+                            if take_profit_floor_price is None and pending_exit_kind == "take_profit_limit":
+                                pending_exit["close_trigger"] = "tp_underwater_market_sell"
+                                pending_exit["post_only"] = False
+                                try:
+                                    await live_execution_service.prepare_sell_balance_allowance(token_id)
+                                except Exception:
+                                    pass
+                                exec_result = await execute_live_order(
+                                    token_id=token_id,
+                                    side="SELL",
+                                    size=remaining_exit_size,
+                                    fallback_price=fallback_exit_price,
+                                    min_order_size_usd=min_order_size_usd,
+                                    time_in_force="IOC",
+                                    post_only=False,
+                                    resolve_live_price=True,
+                                )
+                            else:
+                                if take_profit_floor_price is not None:
+                                    fallback_exit_price = max(fallback_exit_price, take_profit_floor_price)
+                                    pending_exit["close_price"] = float(fallback_exit_price)
+                                    pending_exit["post_only"] = True
+                                try:
+                                    await live_execution_service.prepare_sell_balance_allowance(token_id)
+                                except Exception:
+                                    pass
+                                requote_as_rapid_exit = rapid_exit_requote_enabled
+                                exec_result = await execute_live_order(
+                                    token_id=token_id,
+                                    side="SELL",
+                                    size=remaining_exit_size,
+                                    fallback_price=fallback_exit_price,
+                                    min_order_size_usd=min_order_size_usd,
+                                    time_in_force="IOC" if requote_as_rapid_exit else "GTC",
+                                    post_only=bool(take_profit_requote_enabled and not requote_as_rapid_exit),
+                                    resolve_live_price=requote_as_rapid_exit,
+                                )
                             if exec_result.status in {"executed", "open", "submitted"}:
                                 pending_exit["status"] = "submitted"
+                                pending_exit["allowance_error_count"] = 0
                                 pending_exit["exit_order_id"] = str(exec_result.order_id or "")
                                 pending_exit["provider_clob_order_id"] = str(
                                     (exec_result.payload or {}).get("clob_order_id") or ""
@@ -2467,6 +2540,7 @@ async def reconcile_live_positions(
                                 pending_exit["status"] = "failed"
                                 pending_exit["retry_count"] = int(pending_exit.get("retry_count", 0) or 0) + 1
                                 pending_exit["last_error"] = str(exec_result.error_message or "exit_requote_failed")
+                                _bump_allowance_error_counter(pending_exit, pending_exit["last_error"])
                                 pending_exit["next_retry_at"] = _iso_utc(
                                     now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
                                 )
@@ -2474,6 +2548,7 @@ async def reconcile_live_positions(
                             pending_exit["status"] = "failed"
                             pending_exit["retry_count"] = int(pending_exit.get("retry_count", 0) or 0) + 1
                             pending_exit["last_error"] = str(exc)
+                            _bump_allowance_error_counter(pending_exit, pending_exit["last_error"])
                             pending_exit["next_retry_at"] = _iso_utc(
                                 now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
                             )
@@ -2481,6 +2556,7 @@ async def reconcile_live_positions(
                         pending_exit["status"] = "failed"
                         pending_exit["retry_count"] = int(pending_exit.get("retry_count", 0) or 0) + 1
                         pending_exit["last_error"] = "exit_requote_cancel_failed"
+                        _bump_allowance_error_counter(pending_exit, pending_exit["last_error"])
                         pending_exit["next_retry_at"] = _iso_utc(
                             now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
                         )
@@ -2622,6 +2698,8 @@ async def reconcile_live_positions(
             next_retry_iso = pending_exit.get("next_retry_at")
             next_retry_dt = _parse_iso_utc_naive(next_retry_iso)
             pending_close_trigger = str(pending_exit.get("close_trigger") or "").strip().lower()
+            pending_exit_kind = str(pending_exit.get("kind") or "").strip().lower()
+            allowance_error_count = int(pending_exit.get("allowance_error_count", 0) or 0)
             allow_unbounded_retry = (
                 bool(token_id)
                 and wallet_position_size > _WALLET_SIZE_EPSILON
@@ -2630,7 +2708,10 @@ async def reconcile_live_positions(
             )
             if allow_unbounded_retry and retry_count >= _FAILED_EXIT_MAX_RETRIES:
                 retry_count = _FAILED_EXIT_MAX_RETRIES - 1
-            if _is_rapid_close_trigger(pending_close_trigger):
+            force_rapid_retry = _is_rapid_close_trigger(pending_close_trigger) or (
+                allowance_error_count >= 2 and pending_exit_kind != "take_profit_limit"
+            )
+            if force_rapid_retry:
                 min_retry_seconds = max(0.5, safe_float(pending_exit.get("rapid_retry_seconds"), 1.0) or 1.0)
             else:
                 min_retry_seconds = max(
@@ -2696,6 +2777,11 @@ async def reconcile_live_positions(
             if exit_size > 0.0:
                 pending_exit["remaining_size"] = float(exit_size)
             exit_price = safe_float(pending_exit.get("close_price")) or 0.01
+            take_profit_floor_price = _take_profit_price_floor(pending_exit)
+            if take_profit_floor_price is not None:
+                exit_price = max(exit_price, take_profit_floor_price)
+                pending_exit["close_price"] = float(exit_price)
+                pending_exit["post_only"] = True
             base_min_order_size_usd = _resolve_position_min_order_size_usd(
                 trader_params=params,
                 payload=payload,
@@ -2733,7 +2819,8 @@ async def reconcile_live_positions(
                     except Exception:
                         pass
 
-                    rapid_retry_exit = _is_rapid_close_trigger(pending_exit.get("close_trigger"))
+                    rapid_retry_exit = force_rapid_retry
+                    post_only_retry = bool(pending_exit_kind == "take_profit_limit" and not rapid_retry_exit)
                     exec_result = await execute_live_order(
                         token_id=token_id,
                         side="SELL",
@@ -2741,6 +2828,7 @@ async def reconcile_live_positions(
                         fallback_price=exit_price,
                         min_order_size_usd=min_order_size_usd,
                         time_in_force="IOC" if rapid_retry_exit else "GTC",
+                        post_only=post_only_retry,
                         resolve_live_price=rapid_retry_exit,
                     )
                     if exec_result.status in {"executed", "open", "submitted"}:
@@ -2753,6 +2841,7 @@ async def reconcile_live_positions(
                         if not dry_run:
                             pending_exit["status"] = "submitted"
                             pending_exit["retry_count"] = retry_count + 1
+                            pending_exit["allowance_error_count"] = 0
                             pending_exit["last_attempt_at"] = _iso_utc(now)
                             pending_exit["next_retry_at"] = None
                             pending_exit["exit_order_id"] = exec_result.order_id
@@ -2777,6 +2866,7 @@ async def reconcile_live_positions(
                         pending_exit["retry_count"] = retry_count + 1
                         pending_exit["last_attempt_at"] = _iso_utc(now)
                         pending_exit["last_error"] = str(exec_result.error_message or "unknown")
+                        _bump_allowance_error_counter(pending_exit, pending_exit["last_error"])
                         pending_exit["next_retry_at"] = _iso_utc(
                             now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
                         )
@@ -2799,6 +2889,7 @@ async def reconcile_live_positions(
                         pending_exit["retry_count"] = retry_count + 1
                         pending_exit["last_attempt_at"] = _iso_utc(now)
                         pending_exit["last_error"] = str(exc)
+                        _bump_allowance_error_counter(pending_exit, pending_exit["last_error"])
                         pending_exit["next_retry_at"] = _iso_utc(
                             now + timedelta(seconds=_failed_exit_retry_delay_seconds(pending_exit["last_error"]))
                         )
@@ -3321,6 +3412,7 @@ async def reconcile_live_positions(
                         else:
                             exit_record["status"] = "failed"
                             exit_record["last_error"] = str(exec_result.error_message or "unknown")
+                            _bump_allowance_error_counter(exit_record, exit_record["last_error"])
                             exit_record["last_attempt_at"] = _iso_utc(now)
                             exit_record["retry_count"] = 1
                             exit_record["next_retry_at"] = _iso_utc(
@@ -3335,6 +3427,7 @@ async def reconcile_live_positions(
                     except Exception as exc:
                         exit_record["status"] = "failed"
                         exit_record["last_error"] = str(exc)
+                        _bump_allowance_error_counter(exit_record, exit_record["last_error"])
                         exit_record["last_attempt_at"] = _iso_utc(now)
                         exit_record["retry_count"] = 1
                         exit_record["next_retry_at"] = _iso_utc(

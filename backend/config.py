@@ -229,16 +229,16 @@ class Settings(BaseSettings):
     BTC_ETH_HF_SERIES_SOL_15M: str = "10423"
     BTC_ETH_HF_SERIES_XRP_15M: str = "10422"
     BTC_ETH_HF_SERIES_BTC_5M: str = "10684"
-    BTC_ETH_HF_SERIES_ETH_5M: str = ""
-    BTC_ETH_HF_SERIES_SOL_5M: str = ""
-    BTC_ETH_HF_SERIES_XRP_5M: str = ""
+    BTC_ETH_HF_SERIES_ETH_5M: str = "10683"
+    BTC_ETH_HF_SERIES_SOL_5M: str = "10686"
+    BTC_ETH_HF_SERIES_XRP_5M: str = "10685"
     BTC_ETH_HF_SERIES_BTC_1H: str = "10114"
     BTC_ETH_HF_SERIES_ETH_1H: str = "10117"
     BTC_ETH_HF_SERIES_SOL_1H: str = "10122"
     BTC_ETH_HF_SERIES_XRP_1H: str = "10123"
     BTC_ETH_HF_SERIES_BTC_4H: str = "10331"
     BTC_ETH_HF_SERIES_ETH_4H: str = "10332"
-    BTC_ETH_HF_SERIES_SOL_4H: str = "10326"
+    BTC_ETH_HF_SERIES_SOL_4H: str = "10333"
     BTC_ETH_HF_SERIES_XRP_4H: str = "10327"
     BTC_ETH_HF_MAKER_MODE: bool = True  # Place maker (limit) orders to avoid fees & earn rebates
     BTC_ETH_HF_FEE_ESTIMATE: float = 0.0156  # Midpoint taker fee estimate at 50% probability
@@ -699,22 +699,24 @@ async def apply_search_filters():
         ("BTC_ETH_HF_PURE_ARB_MAX_COMBINED", "btc_eth_pure_arb_max_combined", 0.98),
         ("BTC_ETH_HF_DUMP_THRESHOLD", "btc_eth_dump_hedge_drop_pct", 0.05),
         ("BTC_ETH_HF_THIN_LIQUIDITY_USD", "btc_eth_thin_liquidity_usd", 500.0),
-        ("BTC_ETH_HF_SERIES_BTC_15M", "btc_eth_hf_series_btc_15m", "10192"),
-        ("BTC_ETH_HF_SERIES_ETH_15M", "btc_eth_hf_series_eth_15m", "10191"),
-        ("BTC_ETH_HF_SERIES_SOL_15M", "btc_eth_hf_series_sol_15m", "10423"),
-        ("BTC_ETH_HF_SERIES_XRP_15M", "btc_eth_hf_series_xrp_15m", "10422"),
-        ("BTC_ETH_HF_SERIES_BTC_5M", "btc_eth_hf_series_btc_5m", "10684"),
-        ("BTC_ETH_HF_SERIES_ETH_5M", "btc_eth_hf_series_eth_5m", ""),
-        ("BTC_ETH_HF_SERIES_SOL_5M", "btc_eth_hf_series_sol_5m", ""),
-        ("BTC_ETH_HF_SERIES_XRP_5M", "btc_eth_hf_series_xrp_5m", ""),
-        ("BTC_ETH_HF_SERIES_BTC_1H", "btc_eth_hf_series_btc_1h", "10114"),
-        ("BTC_ETH_HF_SERIES_ETH_1H", "btc_eth_hf_series_eth_1h", "10117"),
-        ("BTC_ETH_HF_SERIES_SOL_1H", "btc_eth_hf_series_sol_1h", "10122"),
-        ("BTC_ETH_HF_SERIES_XRP_1H", "btc_eth_hf_series_xrp_1h", "10123"),
-        ("BTC_ETH_HF_SERIES_BTC_4H", "btc_eth_hf_series_btc_4h", "10331"),
-        ("BTC_ETH_HF_SERIES_ETH_4H", "btc_eth_hf_series_eth_4h", "10332"),
-        ("BTC_ETH_HF_SERIES_SOL_4H", "btc_eth_hf_series_sol_4h", "10326"),
-        ("BTC_ETH_HF_SERIES_XRP_4H", "btc_eth_hf_series_xrp_4h", "10327"),
+        # Series IDs: single source of truth is the Settings class attribute.
+        # Default=None here tells the apply loop to use the class default.
+        ("BTC_ETH_HF_SERIES_BTC_15M", "btc_eth_hf_series_btc_15m", None),
+        ("BTC_ETH_HF_SERIES_ETH_15M", "btc_eth_hf_series_eth_15m", None),
+        ("BTC_ETH_HF_SERIES_SOL_15M", "btc_eth_hf_series_sol_15m", None),
+        ("BTC_ETH_HF_SERIES_XRP_15M", "btc_eth_hf_series_xrp_15m", None),
+        ("BTC_ETH_HF_SERIES_BTC_5M", "btc_eth_hf_series_btc_5m", None),
+        ("BTC_ETH_HF_SERIES_ETH_5M", "btc_eth_hf_series_eth_5m", None),
+        ("BTC_ETH_HF_SERIES_SOL_5M", "btc_eth_hf_series_sol_5m", None),
+        ("BTC_ETH_HF_SERIES_XRP_5M", "btc_eth_hf_series_xrp_5m", None),
+        ("BTC_ETH_HF_SERIES_BTC_1H", "btc_eth_hf_series_btc_1h", None),
+        ("BTC_ETH_HF_SERIES_ETH_1H", "btc_eth_hf_series_eth_1h", None),
+        ("BTC_ETH_HF_SERIES_SOL_1H", "btc_eth_hf_series_sol_1h", None),
+        ("BTC_ETH_HF_SERIES_XRP_1H", "btc_eth_hf_series_xrp_1h", None),
+        ("BTC_ETH_HF_SERIES_BTC_4H", "btc_eth_hf_series_btc_4h", None),
+        ("BTC_ETH_HF_SERIES_ETH_4H", "btc_eth_hf_series_eth_4h", None),
+        ("BTC_ETH_HF_SERIES_SOL_4H", "btc_eth_hf_series_sol_4h", None),
+        ("BTC_ETH_HF_SERIES_XRP_4H", "btc_eth_hf_series_xrp_4h", None),
         # Risk scoring
         ("RISK_VERY_SHORT_DAYS", "risk_very_short_days", 2),
         ("RISK_SHORT_DAYS", "risk_short_days", 7),
@@ -745,14 +747,17 @@ async def apply_search_filters():
     ]
 
     for config_attr, db_attr, default in _apply:
+        # When default is None, use the Settings class attribute as the single
+        # source of truth (avoids duplicating literal values in two places).
+        effective_default = default if default is not None else getattr(settings, config_attr, None)
         db_val = getattr(db, db_attr, None)
-        if isinstance(db_val, str) and not str(db_val).strip() and default is not None:
-            db_val = default
+        if isinstance(db_val, str) and not str(db_val).strip() and effective_default is not None:
+            db_val = effective_default
         if db_attr == "min_profit_threshold" and db_val is not None:
             db_val = db_val / 100.0
 
-        current = getattr(settings, config_attr, default)
-        resolved = _resolve_runtime_override(db_val, current, default)
+        current = getattr(settings, config_attr, effective_default)
+        resolved = _resolve_runtime_override(db_val, current, effective_default)
         object.__setattr__(settings, config_attr, resolved)
 
 

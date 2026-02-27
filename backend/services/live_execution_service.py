@@ -2748,11 +2748,27 @@ class LiveExecutionService:
             price = position.get("price")
             position_usd = size_usd / len(valid_positions)
             shares = position_usd / price
+            maker_mode_raw = position.get("_maker_mode")
+            if isinstance(maker_mode_raw, str):
+                maker_mode = maker_mode_raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+            else:
+                maker_mode = bool(maker_mode_raw)
+
+            post_only_raw = position.get("post_only")
+            if post_only_raw is None:
+                post_only_raw = position.get("_post_only")
+            if isinstance(post_only_raw, str):
+                post_only = post_only_raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+            elif post_only_raw is None:
+                post_only = False
+            else:
+                post_only = bool(post_only_raw)
+            post_only = post_only or maker_mode
 
             # Crypto 15-min markets: use maker mode to avoid taker fees
             # and earn rebates.  Place at best_bid (or 1 tick below ask)
             # to sit on the book as a maker order.
-            if position.get("_maker_mode"):
+            if maker_mode:
                 maker_price = position.get("_maker_price", price)
                 # Round down to tick size (0.01 for crypto markets)
                 maker_price = max(0.01, round(maker_price - 0.005, 2))
@@ -2764,6 +2780,7 @@ class LiveExecutionService:
                 side=OrderSide.BUY,
                 price=price,
                 size=shares,
+                post_only=post_only,
                 market_question=position.get("market"),
                 opportunity_id=opportunity_id,
             )

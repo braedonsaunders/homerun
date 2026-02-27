@@ -1,21 +1,26 @@
 """
-Strategy: BTC/ETH High-Frequency Arbitrage
+Strategy: BTC/ETH High-Frequency Market Making
 
 Specialized strategy for Bitcoin and Ethereum binary markets on Polymarket,
-targeting the highly liquid 15-minute and 1-hour "up or down" markets.
+targeting the highly liquid 5-minute, 15-minute, 1-hour and 4-hour
+"up or down" markets.
 
-These markets are the most liquid arbitrage venue on Polymarket. The "gabagool"
-bot reportedly earns ~$58 every 15 minutes by exploiting inefficiencies in
-BTC 15-min markets alone.
+Three-layer architecture:
 
-This strategy uses dynamic sub-strategy selection (Option C):
-  A. Pure Arbitrage   -- Buy YES + NO when combined < $1.00
-  B. Dump-Hedge       -- Buy the dumped side after a >5% drop, then hedge
-  C. Pre-Placed Limits -- Pre-place limit orders at $0.45-$0.47 on new markets
+  Layer 1: Maker Quote (PRIMARY)
+    Two-sided post_only limit orders on YES and NO sides.
+    Earns bid-ask spread + maker rebates (0% taker fee).
+    Oracle-gated inventory skew tilts quotes toward the predicted winner.
 
-The selector scores each sub-strategy against current market conditions
-(price levels, volatility, time to expiry, liquidity, order book state) and
-returns opportunities from the best-fitting sub-strategy.
+  Layer 2: Directional Edge
+    Oracle-gated directional bet with fee-aware entry gating.
+    Edge must exceed 2x taker fee to enter, preventing the historical
+    pattern of sub-fee-threshold entries that caused 100% loss records.
+
+  Layer 3: Convergence
+    Near-expiry (5-45 seconds) maker order on the oracle-predicted
+    winning side at $0.85-$0.95.  The market converges to $1.00/$0.00
+    at resolution, so any fill is profitable.
 """
 
 from __future__ import annotations
@@ -47,20 +52,20 @@ logger = get_logger(__name__)
 # Evaluate-method constants (ported from BaseCryptoTimeframeStrategy)
 # ---------------------------------------------------------------------------
 
-_ALLOWED_MODES = {"auto", "directional", "pure_arb", "rebalance"}
+_ALLOWED_MODES = {"auto", "directional", "maker_quote", "convergence"}
 _REGIMES = {"opening", "mid", "closing"}
 
 _EDGE_MODE_FACTORS: dict[str, dict[str, float]] = {
-    "opening": {"auto": 1.0, "directional": 1.05, "pure_arb": 0.90, "rebalance": 1.05},
-    "mid": {"auto": 1.0, "directional": 1.00, "pure_arb": 0.85, "rebalance": 1.00},
-    "closing": {"auto": 0.9, "directional": 0.90, "pure_arb": 0.80, "rebalance": 0.85},
+    "opening": {"auto": 1.0, "directional": 1.05, "maker_quote": 0.90, "convergence": 0.95},
+    "mid": {"auto": 1.0, "directional": 1.00, "maker_quote": 0.85, "convergence": 0.90},
+    "closing": {"auto": 0.9, "directional": 0.90, "maker_quote": 0.80, "convergence": 0.85},
 }
 
 _CONF_MODE_FACTORS: dict[str, float] = {
     "auto": 1.0,
     "directional": 1.0,
-    "pure_arb": 0.9,
-    "rebalance": 0.95,
+    "maker_quote": 0.9,
+    "convergence": 0.95,
 }
 
 _REGIME_CONF_FACTORS: dict[str, float] = {
@@ -72,8 +77,8 @@ _REGIME_CONF_FACTORS: dict[str, float] = {
 _MODE_SIZE_FACTORS: dict[str, float] = {
     "auto": 1.0,
     "directional": 1.0,
-    "pure_arb": 0.85,
-    "rebalance": 0.9,
+    "maker_quote": 0.85,
+    "convergence": 0.9,
 }
 
 _REGIME_SIZE_FACTORS: dict[str, float] = {
@@ -182,7 +187,7 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "exclude_assets": [],
     "include_timeframes": ["5m", "15m", "1h", "4h"],
     "exclude_timeframes": [],
-    "enabled_sub_strategies": ["pure_arb", "dump_hedge", "pre_placed_limits", "directional_edge"],
+    "enabled_sub_strategies": ["maker_quote", "directional_edge", "convergence"],
     "live_window_required": True,
     "min_liquidity_usd": 250.0,
     "min_liquidity_usd_opening": 4000.0,
@@ -227,14 +232,12 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "opening_directional_buy_yes_block_elapsed_pct_1h": 0.10,
     "opening_directional_buy_yes_block_elapsed_pct_4h": 0.05,
     "opening_directional_buy_no_enabled": True,
-    "opening_rebalance_buy_yes_enabled": True,
-    "opening_rebalance_buy_no_enabled": True,
     "entry_executable_exit_ratio_floor": 0.28,
     "entry_executable_exit_ratio_floor_closing": 0.24,
-    "directional_min_entry_price_floor": 0.10,
-    "rebalance_min_entry_price_floor": 0.16,
+    "directional_min_entry_price_floor": 0.25,
+    "maker_min_entry_price_floor": 0.16,
     "directional_max_entry_price_ceiling": 0.75,
-    "rebalance_max_entry_price_ceiling": 0.70,
+    "maker_max_entry_price_ceiling": 0.70,
     "rapid_take_profit_pct": 10.0,
     "rapid_take_profit_pct_5m": 10.0,
     "rapid_take_profit_pct_15m": 10.0,
@@ -333,7 +336,7 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "resolution_risk_disable_when_take_profit_armed": True,
     "resolve_only": False,
     "close_on_inactive_market": False,
-    "preplace_take_profit_exit": True,
+    "preplace_take_profit_exit": False,
     "enforce_min_exit_notional": True,
 }
 
@@ -369,15 +372,6 @@ def crypto_highfreq_direction_allowed(
         no_enabled = _coerce_bool(
             cfg.get("opening_directional_buy_no_enabled"),
             _coerce_bool(defaults.get("opening_directional_buy_no_enabled"), True),
-        )
-    elif mode == "rebalance":
-        yes_enabled = _coerce_bool(
-            cfg.get("opening_rebalance_buy_yes_enabled"),
-            _coerce_bool(defaults.get("opening_rebalance_buy_yes_enabled"), True),
-        )
-        no_enabled = _coerce_bool(
-            cfg.get("opening_rebalance_buy_no_enabled"),
-            _coerce_bool(defaults.get("opening_rebalance_buy_no_enabled"), True),
         )
     else:
         return True, "mode_not_gated"
@@ -573,8 +567,8 @@ def _get_component_edge(payload: dict[str, Any], direction: str, mode: str) -> f
 
     per_mode_key = {
         "directional": "directional_edge",
-        "pure_arb": "pure_arb_edge",
-        "rebalance": "rebalance_edge",
+        "maker_quote": "maker_quote_edge",
+        "convergence": "convergence_edge",
     }.get(mode)
     if per_mode_key is None:
         return 0.0
@@ -1100,69 +1094,9 @@ def polymarket_fee_pct(price: float) -> float:
     return polymarket_fee_curve(price) / price
 
 
-# Strategy selector thresholds — read from config (persisted in DB via Settings UI)
-
-
-def _pure_arb_max_combined():
-    return _cfg.BTC_ETH_HF_PURE_ARB_MAX_COMBINED
-
-
-def _dump_hedge_drop_pct():
-    return _cfg.BTC_ETH_HF_DUMP_THRESHOLD
-
-
-def _thin_liquidity_usd():
-    return _cfg.BTC_ETH_HF_THIN_LIQUIDITY_USD
-
-
 # ---------------------------------------------------------------------------
 # Sub-strategy scoring constants
 # ---------------------------------------------------------------------------
-
-# -- Pure Arb scoring --
-_PURE_ARB_NET_PROFIT_SCALE = 1000.0  # Converts net profit to score points (0.02 -> 20 pts)
-_PURE_ARB_HIGH_LIQUIDITY_USD = 5000.0  # Liquidity threshold for full bonus
-_PURE_ARB_HIGH_LIQUIDITY_BONUS = 15.0
-_PURE_ARB_MED_LIQUIDITY_USD = 2000.0  # Liquidity threshold for medium bonus
-_PURE_ARB_MED_LIQUIDITY_BONUS = 8.0
-_PURE_ARB_LOW_LIQUIDITY_USD = 1000.0  # Liquidity threshold for small bonus
-_PURE_ARB_LOW_LIQUIDITY_BONUS = 3.0
-_PURE_ARB_BALANCE_SCALE = 5.0  # Score weight for balanced yes/no prices
-
-# -- Dump-Hedge scoring --
-_DUMP_HEDGE_NEAR_RESOLVED_THRESHOLD = 0.05  # Below this, market is effectively resolved
-_DUMP_HEDGE_FAIR_VALUE = 0.50  # Fair value for 50/50 binary up-or-down market
-_DUMP_HEDGE_DROP_SCORE_SCALE = 200.0  # Score scale for drop magnitude
-_DUMP_HEDGE_EV_PROFIT_SCALE = 500.0  # Score scale for expected-value profit
-_DUMP_HEDGE_GUARANTEED_SCALE = 1000.0  # Score scale for guaranteed arb component
-_DUMP_HEDGE_VOLATILITY_SCALE = 50.0  # Score scale for recent volatility
-_DUMP_HEDGE_HIGH_LIQUIDITY_USD = 3000.0  # Above this, full liquidity bonus
-_DUMP_HEDGE_HIGH_LIQUIDITY_BONUS = 5.0
-_DUMP_HEDGE_LOW_LIQUIDITY_USD = 1000.0  # Below this, heavy penalty
-_DUMP_HEDGE_LOW_LIQUIDITY_PENALTY = 0.5  # Multiplied against score
-
-# -- Pre-Placed Limits scoring --
-_LIMIT_ORDER_TARGET_LOW = 0.45  # Lower limit order price
-_LIMIT_ORDER_TARGET_HIGH = 0.47  # Upper limit order price
-_LIMIT_ORDER_MIN_TARGET = 0.42  # Absolute minimum limit order price
-_LIMIT_ORDER_FEE_REFERENCE_PRICE = 0.48  # Typical limit price for fee calculation
-_LIMIT_ORDER_MIN_PROFIT_MARGIN = 0.01  # Minimum profit margin after fees
-_LIMIT_ORDER_BASE_SCORE = 10.0  # Base score for thin-book opportunity
-_LIMIT_VERY_THIN_LIQUIDITY_USD = 100.0  # Very thin book threshold
-_LIMIT_VERY_THIN_BONUS = 20.0
-_LIMIT_THIN_LIQUIDITY_USD = 250.0  # Thin book threshold
-_LIMIT_THIN_BONUS = 10.0
-_LIMIT_MODERATE_LIQUIDITY_USD = 400.0  # Moderate book threshold
-_LIMIT_MODERATE_BONUS = 3.0
-_LIMIT_NEAR_HALF_BONUS = 15.0  # Bonus when prices are near 0.50
-_LIMIT_VERY_NEW_VOLUME_USD = 100.0  # Almost certainly new market
-_LIMIT_VERY_NEW_BONUS = 20.0
-_LIMIT_NEW_VOLUME_USD = 500.0  # Very new market
-_LIMIT_NEW_BONUS = 12.0
-_LIMIT_PROFIT_SCORE_SCALE = 300.0  # Score scale for expected profit
-_LIMIT_SIGNIFICANT_VOLUME_USD = 10000.0  # High volume reduces fill probability
-_LIMIT_SIGNIFICANT_VOLUME_PENALTY = 0.4  # Multiplied against score
-_NEW_MARKET_VOLUME_THRESHOLD = 5000.0  # Markets with volume below this are "new"
 
 # -- Directional Edge scoring (oracle-based) --
 _DIRECTIONAL_EARLY_PHASE_MINUTES = 10.0  # Remaining minutes for early/mid boundary
@@ -1181,19 +1115,29 @@ _DIRECTIONAL_ORACLE_PROB_MAX = 0.97
 _DIRECTIONAL_BASE_SCALE = 0.50  # Base sigmoid scale (diff_pct / scale)
 _DIRECTIONAL_MIN_SCALE = 0.08  # Min sigmoid scale (late in window)
 
-# -- Passive Quote (market-making) scoring --
-_PASSIVE_QUOTE_MIN_SPREAD = 0.02  # Minimum bid-ask spread ($0.02 = 2 cents)
-_PASSIVE_QUOTE_MIN_LIQUIDITY = 500.0  # Minimum market liquidity in USD
-_PASSIVE_QUOTE_MIN_SECONDS_LEFT = 60.0  # Minimum time remaining
-_PASSIVE_QUOTE_TICK_SIZE = 0.01  # 1 tick = $0.01
-_PASSIVE_QUOTE_BASE_SCORE = 15.0  # Base score for qualifying markets
-_PASSIVE_QUOTE_SPREAD_SCORE_SCALE = 300.0  # Score scale for spread width
-_PASSIVE_QUOTE_MAX_SCORE = 70.0  # Cap on passive quote score
-_PASSIVE_QUOTE_THIN_BOOK_USD = 1000.0  # Below this, higher fill probability
-_PASSIVE_QUOTE_THIN_BOOK_BONUS = 12.0
-_PASSIVE_QUOTE_MIN_SIZE_USD = 5.0  # Minimum position size per side
-_PASSIVE_QUOTE_MAX_SIZE_USD = 15.0  # Maximum position size per side
-_PASSIVE_QUOTE_RESOLUTION_RISK_SECONDS = 90.0  # Extra risk near resolution
+# -- Maker Quote (two-sided market-making) scoring --
+_MAKER_QUOTE_MIN_SPREAD = 0.01  # Minimum bid-ask spread ($0.01 — makers get 0% fee)
+_MAKER_QUOTE_MIN_LIQUIDITY = 200.0  # Minimum market liquidity (thin books are BETTER)
+_MAKER_QUOTE_MIN_SECONDS_LEFT = 30.0  # Can quote until near expiry
+_MAKER_QUOTE_TICK_SIZE = 0.01  # 1 tick = $0.01
+_MAKER_QUOTE_BASE_SCORE = 25.0  # PRIMARY strategy — highest base score
+_MAKER_QUOTE_SPREAD_SCORE_SCALE = 400.0  # Score scale for spread width
+_MAKER_QUOTE_MAX_SCORE = 90.0  # Highest possible score
+_MAKER_QUOTE_THIN_BOOK_USD = 1000.0  # Below this, higher fill probability
+_MAKER_QUOTE_THIN_BOOK_BONUS = 15.0
+_MAKER_QUOTE_MIN_SIZE_USD = 5.0  # Minimum position size per side
+_MAKER_QUOTE_MAX_SIZE_USD = 25.0  # Maximum position size per side
+_MAKER_QUOTE_RESOLUTION_RISK_SECONDS = 45.0  # Extra risk near resolution
+_MAKER_QUOTE_SKEW_MAX = 0.03  # Max skew per side from oracle signal ($0.03)
+
+# -- Convergence (near-expiry) scoring --
+_CONVERGENCE_MIN_SECONDS_LEFT = 5.0
+_CONVERGENCE_MAX_SECONDS_LEFT = 45.0
+_CONVERGENCE_MIN_ORACLE_DIFF_PCT = 0.30
+_CONVERGENCE_BASE_SCORE = 20.0
+_CONVERGENCE_MAX_SCORE = 85.0
+_CONVERGENCE_MIN_PRICE = 0.85
+_CONVERGENCE_MAX_ENTRY_PRICE = 0.95
 
 # Price history defaults
 _DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
@@ -1463,32 +1407,25 @@ def _get_crypto_fetcher() -> _CryptoMarketFetcher:
 
 
 class SubStrategy(str, Enum):
-    PURE_ARB = "pure_arb"
-    DUMP_HEDGE = "dump_hedge"
-    PRE_PLACED_LIMITS = "pre_placed_limits"
-    DIRECTIONAL_EDGE = "directional_edge"
-    PASSIVE_QUOTE = "passive_quote"
+    MAKER_QUOTE = "maker_quote"           # Two-sided maker quoting (Layer 1 - PRIMARY)
+    DIRECTIONAL_EDGE = "directional_edge"  # Oracle-gated directional (Layer 2 - skew amplifier)
+    CONVERGENCE = "convergence"            # Near-expiry convergence (Layer 3)
 
 
 _SUB_STRATEGY_ALIASES: dict[str, SubStrategy] = {
-    "pure_arb": SubStrategy.PURE_ARB,
-    "purearb": SubStrategy.PURE_ARB,
-    "arb": SubStrategy.PURE_ARB,
-    "dump_hedge": SubStrategy.DUMP_HEDGE,
-    "dumphedge": SubStrategy.DUMP_HEDGE,
-    "hedge_dump": SubStrategy.DUMP_HEDGE,
-    "pre_placed_limits": SubStrategy.PRE_PLACED_LIMITS,
-    "preplaced_limits": SubStrategy.PRE_PLACED_LIMITS,
-    "preplaced": SubStrategy.PRE_PLACED_LIMITS,
-    "pre_limits": SubStrategy.PRE_PLACED_LIMITS,
+    "maker_quote": SubStrategy.MAKER_QUOTE,
+    "makerquote": SubStrategy.MAKER_QUOTE,
+    "maker": SubStrategy.MAKER_QUOTE,
+    "market_make": SubStrategy.MAKER_QUOTE,
+    "passive_quote": SubStrategy.MAKER_QUOTE,
+    "passivequote": SubStrategy.MAKER_QUOTE,
+    "passive": SubStrategy.MAKER_QUOTE,
     "directional_edge": SubStrategy.DIRECTIONAL_EDGE,
     "directional": SubStrategy.DIRECTIONAL_EDGE,
     "edge_directional": SubStrategy.DIRECTIONAL_EDGE,
-    "passive_quote": SubStrategy.PASSIVE_QUOTE,
-    "passivequote": SubStrategy.PASSIVE_QUOTE,
-    "passive": SubStrategy.PASSIVE_QUOTE,
-    "market_make": SubStrategy.PASSIVE_QUOTE,
-    "maker": SubStrategy.PASSIVE_QUOTE,
+    "convergence": SubStrategy.CONVERGENCE,
+    "converge": SubStrategy.CONVERGENCE,
+    "near_expiry": SubStrategy.CONVERGENCE,
 }
 
 
@@ -1520,18 +1457,18 @@ def _resolve_enabled_sub_strategies(config: Any) -> set[SubStrategy]:
 def _resolve_enabled_active_modes(config: Any) -> set[str]:
     enabled_sub_strategies = _resolve_enabled_sub_strategies(config)
     if not enabled_sub_strategies:
-        return {"directional", "pure_arb", "rebalance"}
+        return {"directional", "maker_quote", "convergence"}
 
     enabled_modes: set[str] = set()
     if SubStrategy.DIRECTIONAL_EDGE in enabled_sub_strategies:
         enabled_modes.add("directional")
-    if SubStrategy.PURE_ARB in enabled_sub_strategies:
-        enabled_modes.add("pure_arb")
-    if SubStrategy.DUMP_HEDGE in enabled_sub_strategies or SubStrategy.PRE_PLACED_LIMITS in enabled_sub_strategies:
-        enabled_modes.add("rebalance")
+    if SubStrategy.MAKER_QUOTE in enabled_sub_strategies:
+        enabled_modes.add("maker_quote")
+    if SubStrategy.CONVERGENCE in enabled_sub_strategies:
+        enabled_modes.add("convergence")
 
     if not enabled_modes:
-        return {"directional", "pure_arb", "rebalance"}
+        return {"directional", "maker_quote", "convergence"}
     return enabled_modes
 
 
@@ -1615,6 +1552,8 @@ class HighFreqCandidate:
     timeframe: str  # "5min", "15min", "1hr", or "4hr"
     yes_price: float
     no_price: float
+    oracle_price: Optional[float] = None
+    price_to_beat: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1639,15 +1578,14 @@ class SubStrategyScore:
 
 class BtcEthHighFreqStrategy(BaseStrategy):
     """
-    High-frequency arbitrage strategy for BTC and ETH binary markets.
+    High-frequency market-making strategy for BTC/ETH binary markets.
 
-    Dynamically selects among three sub-strategies based on current market
-    conditions:
-      A. Pure Arbitrage   -- guaranteed profit when YES + NO < $1.00
-      B. Dump-Hedge       -- buy a dumped side, hedge with opposite
-      C. Pre-Placed Limits -- limit orders on new/thin markets
+    Three-layer architecture:
+      Layer 1: Maker Quote   -- two-sided post_only limit orders (PRIMARY)
+      Layer 2: Directional   -- oracle-gated directional with fee-aware entry
+      Layer 3: Convergence   -- near-expiry maker order on predicted winner
 
-    Designed for Polymarket's 15-min and 1-hr BTC/ETH up-or-down markets.
+    Designed for Polymarket's 5m/15m/1h/4h BTC/ETH/SOL/XRP up-or-down markets.
     """
 
     strategy_type = "btc_eth_highfreq"
@@ -1945,11 +1883,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         A sub-strategy with score <= 0 is considered non-viable.
         """
         candidate_scores: list[SubStrategyScore] = [
-            self._score_pure_arb(candidate),
-            self._score_dump_hedge(candidate),
-            self._score_pre_placed_limits(candidate),
+            self._score_maker_quote(candidate),
             self._score_directional_edge(candidate),
-            self._score_passive_quote(candidate),
+            self._score_convergence(candidate),
         ]
         scores: list[SubStrategyScore] = []
         for score in candidate_scores:
@@ -1971,304 +1907,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         best = scores[0] if scores[0].score > 0 else None
         return best, scores
 
-    # -- Sub-strategy A: Pure Arbitrage scoring --
-
-    def _score_pure_arb(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score pure arbitrage opportunity (YES + NO < $1.00).
-
-        Higher score when combined cost is lower (larger guaranteed spread).
-        Select when combined < 0.98.
-        """
-        combined = c.yes_price + c.no_price
-        # Use actual Polymarket fee curve: fee depends on the winning price
-        # For pure arb we buy both sides, winner is at ~$1 so fee is near 0.
-        # Conservative: use fee at the more expensive side.
-        fee_cost = polymarket_fee_curve(max(c.yes_price, c.no_price))
-
-        # Net profit per $1 payout after fees
-        net_profit = 1.0 - combined - fee_cost
-        if net_profit <= 0:
-            return SubStrategyScore(
-                strategy=SubStrategy.PURE_ARB,
-                score=0.0,
-                reason=f"No spread after fees (combined={combined:.4f}, fee={fee_cost:.4f})",
-            )
-
-        if combined >= _pure_arb_max_combined():
-            return SubStrategyScore(
-                strategy=SubStrategy.PURE_ARB,
-                score=0.0,
-                reason=f"Combined cost {combined:.4f} >= {_pure_arb_max_combined()} threshold",
-            )
-
-        # Base score proportional to net profit (scale: 1 cent = 10 points)
-        base_score = net_profit * _PURE_ARB_NET_PROFIT_SCALE
-
-        # Bonus for high liquidity (confidence we can fill)
-        liquidity = c.market.liquidity
-        if liquidity >= _PURE_ARB_HIGH_LIQUIDITY_USD:
-            base_score += _PURE_ARB_HIGH_LIQUIDITY_BONUS
-        elif liquidity >= _PURE_ARB_MED_LIQUIDITY_USD:
-            base_score += _PURE_ARB_MED_LIQUIDITY_BONUS
-        elif liquidity >= _PURE_ARB_LOW_LIQUIDITY_USD:
-            base_score += _PURE_ARB_LOW_LIQUIDITY_BONUS
-
-        # Bonus for balanced prices (both sides near 0.49-0.50 = most liquid)
-        balance = 1.0 - abs(c.yes_price - c.no_price)
-        base_score += balance * _PURE_ARB_BALANCE_SCALE
-
-        return SubStrategyScore(
-            strategy=SubStrategy.PURE_ARB,
-            score=base_score,
-            reason=(f"Pure arb: combined={combined:.4f}, net_profit={net_profit:.4f}, liquidity=${liquidity:.0f}"),
-            params={
-                "combined_cost": combined,
-                "net_profit": net_profit,
-                "yes_price": c.yes_price,
-                "no_price": c.no_price,
-            },
-        )
-
-    # -- Sub-strategy B: Dump-Hedge scoring --
-
-    def _score_dump_hedge(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score dump-hedge opportunity.
-
-        Triggered when one side drops > 5% in the recent window. Buy the dumped
-        side (now cheap), wait for partial recovery, then hedge with the other
-        side. If the combined cost after hedge < target, there is profit.
-
-        For high-frequency up/down markets that open at 0.50/0.50, any
-        deviation from 0.50 on first observation represents a dump from
-        the opening price — we don't need historical snapshots to detect it.
-        """
-        history = self._get_history(c.market.id)
-
-        # For 15-min/1-hr up-or-down markets, the opening price is always 0.50.
-        # If we have no history yet, infer the "dump" from deviation off 0.50.
-        if history is None or not history.has_data:
-            yes_dev = _DUMP_HEDGE_FAIR_VALUE - c.yes_price  # positive if YES dropped below 0.50
-            no_dev = _DUMP_HEDGE_FAIR_VALUE - c.no_price  # positive if NO dropped below 0.50
-            max_drop = max(yes_dev, no_dev, 0.0)
-            dumped_side = "YES" if yes_dev >= no_dev else "NO"
-        else:
-            yes_drop = history.max_drop_yes()
-            no_drop = history.max_drop_no()
-            max_drop = max(yes_drop, no_drop)
-            dumped_side = "YES" if yes_drop >= no_drop else "NO"
-
-        if max_drop < _dump_hedge_drop_pct():
-            return SubStrategyScore(
-                strategy=SubStrategy.DUMP_HEDGE,
-                score=0.0,
-                reason=(f"Insufficient dump: max drop {max_drop:.4f} < {_dump_hedge_drop_pct()} threshold"),
-            )
-
-        # Profit model for up-or-down markets: these are ~50/50 binary
-        # outcomes, so the fair value of each side is ~$0.50.  When one
-        # side dumps to e.g. $0.40, expected value = 0.50 - 0.40 = $0.10
-        # minus fees.  We can also attempt to hedge with the other side
-        # if combined < $1.00.
-        dumped_price = c.yes_price if dumped_side == "YES" else c.no_price
-
-        # Skip near-resolved markets: if the dumped side is below $0.05,
-        # the market has effectively resolved (one outcome is ~certain)
-        # and this is NOT a temporary dump worth trading.
-        if dumped_price < _DUMP_HEDGE_NEAR_RESOLVED_THRESHOLD:
-            return SubStrategyScore(
-                strategy=SubStrategy.DUMP_HEDGE,
-                score=0.0,
-                reason=(
-                    f"Market effectively resolved ({dumped_side} at ${dumped_price:.4f} "
-                    f"< ${_DUMP_HEDGE_NEAR_RESOLVED_THRESHOLD} threshold)"
-                ),
-            )
-
-        fair_value = _DUMP_HEDGE_FAIR_VALUE
-        dump_fee = polymarket_fee_curve(dumped_price)
-        ev_profit = fair_value - dumped_price - dump_fee
-
-        combined = c.yes_price + c.no_price
-        # If combined < $1.00 there's also a guaranteed arb component
-        arb_fee = polymarket_fee_curve(max(c.yes_price, c.no_price))
-        guaranteed_component = max(1.0 - combined - arb_fee, 0.0)
-
-        if ev_profit <= 0 and guaranteed_component <= 0:
-            return SubStrategyScore(
-                strategy=SubStrategy.DUMP_HEDGE,
-                score=0.0,
-                reason=(
-                    f"No profit after fees: dumped={dumped_side}@{dumped_price:.4f}, "
-                    f"EV profit={ev_profit:.4f}, combined={combined:.4f}"
-                ),
-            )
-
-        # Score: larger drop and larger EV profit = better
-        base_score = max_drop * _DUMP_HEDGE_DROP_SCORE_SCALE
-        base_score += max(ev_profit, 0) * _DUMP_HEDGE_EV_PROFIT_SCALE
-        base_score += guaranteed_component * _DUMP_HEDGE_GUARANTEED_SCALE
-
-        # Volatility bonus: higher volatility means more dump-hedge opportunities
-        volatility = history.recent_volatility() if (history and history.has_data) else 0.0
-        base_score += volatility * _DUMP_HEDGE_VOLATILITY_SCALE
-
-        # Liquidity matters: need to be able to fill quickly
-        if c.market.liquidity >= _DUMP_HEDGE_HIGH_LIQUIDITY_USD:
-            base_score += _DUMP_HEDGE_HIGH_LIQUIDITY_BONUS
-        elif c.market.liquidity < _DUMP_HEDGE_LOW_LIQUIDITY_USD:
-            base_score *= _DUMP_HEDGE_LOW_LIQUIDITY_PENALTY
-
-        return SubStrategyScore(
-            strategy=SubStrategy.DUMP_HEDGE,
-            score=base_score,
-            reason=(
-                f"Dump-hedge: {dumped_side} dropped {max_drop:.4f} "
-                f"(price={dumped_price:.4f}), EV profit={ev_profit:.4f}, "
-                f"combined={combined:.4f}, volatility={volatility:.4f}"
-            ),
-            params={
-                "dumped_side": dumped_side,
-                "drop_amount": max_drop,
-                "dumped_price": dumped_price,
-                "ev_profit": ev_profit,
-                "combined_cost": combined,
-                "guaranteed_component": guaranteed_component,
-                "volatility": volatility,
-                "yes_price": c.yes_price,
-                "no_price": c.no_price,
-            },
-        )
-
-    # -- Sub-strategy C: Pre-Placed Limits scoring --
-
-    def _calculate_dynamic_limit_prices(self, c: HighFreqCandidate) -> tuple[float, float]:
-        """Calculate optimal limit order prices based on current market state.
-
-        Instead of fixed $0.45-$0.47, adjusts based on:
-        - Current market prices (bid closer to current for fill probability)
-        - Liquidity level (thinner book = can be more aggressive)
-        - Required minimum profit margin
-        """
-        # Base targets
-        min_target = _LIMIT_ORDER_MIN_TARGET
-
-        # Start from the aggressive end
-        base_price = _LIMIT_ORDER_TARGET_LOW
-
-        # Adjust based on liquidity: thinner book = can be more aggressive
-        if c.market.liquidity < _LIMIT_VERY_THIN_LIQUIDITY_USD:
-            base_price = min_target  # Very thin, be aggressive
-        elif c.market.liquidity < _LIMIT_THIN_LIQUIDITY_USD:
-            base_price = 0.44
-        elif c.market.liquidity < _LIMIT_MODERATE_LIQUIDITY_USD:
-            base_price = _LIMIT_ORDER_TARGET_LOW
-        else:
-            base_price = 0.46  # Moderate book, bid closer to fill
-
-        # Ensure combined still profits: need combined < 1.0 - fee
-        # If we bid base_price on both sides, combined = 2 * base_price
-        # Need: 2 * base_price + fee < 1.0
-        limit_fee = polymarket_fee_curve(_LIMIT_ORDER_FEE_REFERENCE_PRICE)
-        max_combined = 1.0 - limit_fee - _LIMIT_ORDER_MIN_PROFIT_MARGIN
-        max_per_side = max_combined / 2.0
-
-        target_price = min(base_price, max_per_side)
-        target_price = max(target_price, min_target)  # Never go below absolute min
-
-        return target_price, target_price
-
-    def _score_pre_placed_limits(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score pre-placed limit order opportunity.
-
-        For markets about to open or with very thin order books, pre-place
-        limit orders at $0.45-$0.47 on both sides. If both fill, combined cost
-        is $0.90-$0.94 for guaranteed $1.00 payout.
-
-        Select when: new market detected with thin order book.
-        """
-        liquidity = c.market.liquidity
-
-        # This sub-strategy targets thin/new markets
-        if liquidity > _thin_liquidity_usd():
-            return SubStrategyScore(
-                strategy=SubStrategy.PRE_PLACED_LIMITS,
-                score=0.0,
-                reason=(
-                    f"Market too liquid (${liquidity:.0f}) for pre-placed limits "
-                    f"(threshold=${_thin_liquidity_usd():.0f})"
-                ),
-            )
-
-        # Check if prices are near the sweet spot (0.45-0.55 per side = new market)
-        both_near_half = _LIMIT_ORDER_TARGET_LOW <= c.yes_price <= (
-            1.0 - _LIMIT_ORDER_TARGET_LOW
-        ) and _LIMIT_ORDER_TARGET_LOW <= c.no_price <= (1.0 - _LIMIT_ORDER_TARGET_LOW)
-
-        # Calculate dynamic limit prices based on market conditions
-        target_yes, target_no = self._calculate_dynamic_limit_prices(c)
-        target_combined = target_yes + target_no
-        target_fee = polymarket_fee_curve(max(target_yes, target_no))
-        target_profit = 1.0 - target_combined - target_fee
-
-        if target_profit <= 0:
-            return SubStrategyScore(
-                strategy=SubStrategy.PRE_PLACED_LIMITS,
-                score=0.0,
-                reason=f"No profit at target prices (combined=${target_combined:.4f})",
-            )
-
-        # Base score: thin book is a strong signal
-        base_score = _LIMIT_ORDER_BASE_SCORE
-
-        # Lower liquidity = more opportunity for limit fills
-        if liquidity < _LIMIT_VERY_THIN_LIQUIDITY_USD:
-            base_score += _LIMIT_VERY_THIN_BONUS
-        elif liquidity < _LIMIT_THIN_LIQUIDITY_USD:
-            base_score += _LIMIT_THIN_BONUS
-        else:
-            base_score += _LIMIT_MODERATE_BONUS
-
-        # Near-half prices suggest a freshly opened market (ideal)
-        if both_near_half:
-            base_score += _LIMIT_NEAR_HALF_BONUS
-
-        # Market age proxy: very low volume = likely just opened
-        if c.market.volume < _LIMIT_VERY_NEW_VOLUME_USD:
-            base_score += _LIMIT_VERY_NEW_BONUS
-        elif c.market.volume < _LIMIT_NEW_VOLUME_USD:
-            base_score += _LIMIT_NEW_BONUS
-        elif c.market.volume < _NEW_MARKET_VOLUME_THRESHOLD:
-            base_score += 5.0  # Relatively new
-
-        # Bonus for the expected profit
-        base_score += target_profit * _LIMIT_PROFIT_SCORE_SCALE
-
-        # Penalty: if the market already has significant volume, limits are
-        # less likely to fill at our targets
-        if c.market.volume > _LIMIT_SIGNIFICANT_VOLUME_USD:
-            base_score *= _LIMIT_SIGNIFICANT_VOLUME_PENALTY
-
-        return SubStrategyScore(
-            strategy=SubStrategy.PRE_PLACED_LIMITS,
-            score=base_score,
-            reason=(
-                f"Pre-placed limits: liquidity=${liquidity:.0f}, "
-                f"target_combined=${target_combined:.4f}, "
-                f"target_profit=${target_profit:.4f}, "
-                f"prices_near_half={both_near_half}"
-            ),
-            params={
-                "target_yes_price": target_yes,
-                "target_no_price": target_no,
-                "target_combined": target_combined,
-                "target_profit": target_profit,
-                "current_yes_price": c.yes_price,
-                "current_no_price": c.no_price,
-                "liquidity": liquidity,
-            },
-        )
-
-    # -- Sub-strategy D: Directional Edge scoring --
+    # -- Sub-strategy: Directional Edge scoring (Layer 2) --
 
     def _score_directional_edge(self, c: HighFreqCandidate) -> SubStrategyScore:
         """Score directional edge using oracle price vs price-to-beat.
@@ -2347,14 +1986,34 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 ),
             )
 
-        # --- Sigmoid model: oracle vs price_to_beat ---
+        # --- Oracle direction: diff_pct sign determines side ---
         diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
 
-        # Scale by time remaining: more aggressive (smaller scale) late in window
+        # Minimum oracle diff to have ANY directional edge
+        _MIN_DIFF_FOR_DIRECTIONAL = 0.15  # %
+        if abs(diff_pct) < _MIN_DIFF_FOR_DIRECTIONAL:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason=(
+                    f"Oracle diff too small for directional: |{diff_pct:.4f}%| < "
+                    f"{_MIN_DIFF_FOR_DIRECTIONAL}%"
+                ),
+            )
+
+        # Direction from oracle SIGN only -- never buy against oracle
+        best_side = "UP" if diff_pct > 0 else "DOWN"
+        buy_price = c.yes_price if best_side == "UP" else c.no_price
+
+        # Edge = oracle signal magnitude scaled by time urgency
         if remaining_secs is not None:
-            time_ratio = clamp(remaining_secs / float(max(1, timeframe_seconds)), 0.08, 1.0)
+            time_ratio = clamp(remaining_secs / float(max(1, timeframe_seconds)), 0.01, 1.0)
         else:
             time_ratio = 1.0
+        time_multiplier = 1.0 + 2.0 * (1.0 - time_ratio)
+        best_edge = abs(diff_pct) * time_multiplier / 100.0  # as fraction
+
+        # Sigmoid for model_up (used by generate for expected payout calc)
         directional_scale = max(_DIRECTIONAL_MIN_SCALE, _DIRECTIONAL_BASE_SCALE * time_ratio)
         directional_z = clamp(diff_pct / directional_scale, -60.0, 60.0)
         model_up = clamp(
@@ -2362,18 +2021,19 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             _DIRECTIONAL_ORACLE_PROB_MIN,
             _DIRECTIONAL_ORACLE_PROB_MAX,
         )
-        model_down = 1.0 - model_up
 
-        # Market-implied probabilities
-        market_up_prob = c.yes_price
-        market_down_prob = c.no_price
-
-        # Calculate edge: model vs market
-        edge_up = model_up - market_up_prob
-        edge_down = model_down - market_down_prob
-
-        best_side = "UP" if edge_up > edge_down else "DOWN"
-        best_edge = edge_up if best_side == "UP" else edge_down
+        # Fee-aware entry gate: edge must exceed 2x taker fee
+        taker_fee_pct = polymarket_fee_pct(buy_price) if buy_price > 0 else 0.0
+        min_fee_edge = taker_fee_pct * 2.0
+        if best_edge < min_fee_edge:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason=(
+                    f"Edge below fee threshold: {best_side} edge={best_edge:.4f} < "
+                    f"2xfee={min_fee_edge:.4f} (fee_pct={taker_fee_pct:.4f} at price={buy_price:.3f})"
+                ),
+            )
 
         # Time-phase awareness
         remaining_min = (remaining_secs / 60.0) if remaining_secs is not None else 15.0
@@ -2411,8 +2071,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if phase == "LATE":
             score += _DIRECTIONAL_LATE_PHASE_BONUS
 
-        # The price we'd buy at
-        buy_price = market_up_prob if best_side == "UP" else market_down_prob
         buy_fee = polymarket_fee_curve(buy_price)
 
         return SubStrategyScore(
@@ -2421,7 +2079,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             reason=(
                 f"Directional {best_side} ({phase}, {remaining_min:.0f}m left): "
                 f"edge={best_edge:.3f}, model_up={model_up:.2f}, "
-                f"market_up={market_up_prob:.3f}, "
+                f"market_yes={c.yes_price:.3f}, market_no={c.no_price:.3f}, "
                 f"oracle={oracle_price:.2f}, ptb={price_to_beat:.2f}, "
                 f"diff_pct={diff_pct:+.4f}%, fee={buy_fee:.4f}"
             ),
@@ -2429,9 +2087,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "side": best_side,
                 "edge": best_edge,
                 "model_up": model_up,
-                "model_down": model_down,
-                "market_up": market_up_prob,
-                "market_down": market_down_prob,
+                "model_down": 1.0 - model_up,
+                "market_up": c.yes_price,
+                "market_down": c.no_price,
                 "buy_price": buy_price,
                 "oracle_price": oracle_price,
                 "price_to_beat": price_to_beat,
@@ -2441,38 +2099,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             },
         )
 
-    # -- Sub-strategy E: Passive Quote (market-making) scoring --
+    # -- Helper: remaining seconds until resolution --
 
-    def _score_passive_quote(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score passive quoting (market-making) opportunity.
-
-        Places post_only limit orders on BOTH YES and NO sides to earn
-        the bid-ask spread plus maker rebates.  Direction-agnostic: does
-        not need to predict whether the asset goes up or down.
-
-        Requirements:
-          - Spread > 2 cents (otherwise not worth the resolution risk)
-          - Liquidity > $500 (need reasonable fill probability)
-          - Seconds remaining > 60 (avoid resolution-window risk)
-        """
-        spread = abs(1.0 - c.yes_price - c.no_price)
-        if spread < _PASSIVE_QUOTE_MIN_SPREAD:
-            return SubStrategyScore(
-                strategy=SubStrategy.PASSIVE_QUOTE,
-                score=0.0,
-                reason=f"Spread too narrow ({spread:.4f} < {_PASSIVE_QUOTE_MIN_SPREAD})",
-            )
-
-        liquidity = c.market.liquidity
-        if liquidity < _PASSIVE_QUOTE_MIN_LIQUIDITY:
-            return SubStrategyScore(
-                strategy=SubStrategy.PASSIVE_QUOTE,
-                score=0.0,
-                reason=f"Liquidity too low (${liquidity:.0f} < ${_PASSIVE_QUOTE_MIN_LIQUIDITY:.0f})",
-            )
-
-        # Calculate seconds remaining
-        remaining_secs: Optional[float] = None
+    def _remaining_seconds(self, c: HighFreqCandidate) -> Optional[float]:
         if c.market.end_date:
             try:
                 if hasattr(c.market.end_date, "timestamp"):
@@ -2480,83 +2109,113 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 else:
                     end_str = str(c.market.end_date)
                     end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                remaining_secs = max(0.0, end_ts - time.time())
+                return max(0.0, end_ts - time.time())
             except (ValueError, AttributeError):
                 pass
+        return None
 
-        if remaining_secs is not None and remaining_secs < _PASSIVE_QUOTE_MIN_SECONDS_LEFT:
+    # -- Sub-strategy: Maker Quote scoring (Layer 1 - PRIMARY) --
+
+    def _score_maker_quote(self, c: HighFreqCandidate) -> SubStrategyScore:
+        """Score two-sided maker quoting opportunity (Layer 1).
+
+        Places post_only limit buy orders on BOTH YES and NO sides.
+        Primary strategy: earns bid-ask spread + maker rebates.
+        When oracle data available, skews quotes for directional edge.
+        """
+        spread = abs(1.0 - c.yes_price - c.no_price)
+        if spread < _MAKER_QUOTE_MIN_SPREAD:
             return SubStrategyScore(
-                strategy=SubStrategy.PASSIVE_QUOTE,
+                strategy=SubStrategy.MAKER_QUOTE,
                 score=0.0,
-                reason=f"Too close to resolution ({remaining_secs:.0f}s < {_PASSIVE_QUOTE_MIN_SECONDS_LEFT:.0f}s)",
+                reason=f"Spread too narrow ({spread:.4f} < {_MAKER_QUOTE_MIN_SPREAD})",
             )
 
-        # Quote prices: 1 tick below each side's current ask
-        quote_yes = c.yes_price - _PASSIVE_QUOTE_TICK_SIZE
-        quote_no = c.no_price - _PASSIVE_QUOTE_TICK_SIZE
-
-        if quote_yes <= 0.01 or quote_no <= 0.01:
+        liquidity = c.market.liquidity
+        if liquidity < _MAKER_QUOTE_MIN_LIQUIDITY:
             return SubStrategyScore(
-                strategy=SubStrategy.PASSIVE_QUOTE,
+                strategy=SubStrategy.MAKER_QUOTE,
+                score=0.0,
+                reason=f"Liquidity too low (${liquidity:.0f} < ${_MAKER_QUOTE_MIN_LIQUIDITY:.0f})",
+            )
+
+        # Calculate seconds remaining
+        remaining_secs = self._remaining_seconds(c)
+
+        if remaining_secs is not None and remaining_secs < _MAKER_QUOTE_MIN_SECONDS_LEFT:
+            return SubStrategyScore(
+                strategy=SubStrategy.MAKER_QUOTE,
+                score=0.0,
+                reason=f"Too close to resolution ({remaining_secs:.0f}s < {_MAKER_QUOTE_MIN_SECONDS_LEFT:.0f}s)",
+            )
+
+        # Base quote prices: 1 tick below each side's current ask
+        base_quote_yes = c.yes_price - _MAKER_QUOTE_TICK_SIZE
+        base_quote_no = c.no_price - _MAKER_QUOTE_TICK_SIZE
+
+        if base_quote_yes <= 0.01 or base_quote_no <= 0.01:
+            return SubStrategyScore(
+                strategy=SubStrategy.MAKER_QUOTE,
                 score=0.0,
                 reason="Quote price too low after tick adjustment",
             )
 
-        # Expected spread capture per pair: if both sides fill,
-        # we pay (quote_yes + quote_no) and receive $1.00 at resolution.
+        # Oracle-gated inventory skew (Layer 2 integration)
+        oracle_skew = 0.0
+        oracle_direction = None
+        oracle_price = c.oracle_price
+        price_to_beat = c.price_to_beat
+        if oracle_price is not None and price_to_beat is not None and price_to_beat > 0:
+            diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
+            oracle_skew = clamp(diff_pct * 0.015, -_MAKER_QUOTE_SKEW_MAX, _MAKER_QUOTE_SKEW_MAX)
+            oracle_direction = "up" if diff_pct > 0 else "down"
+
+        # Apply skew: if oracle says UP, tighten YES quote (more aggressive), widen NO quote
+        quote_yes = clamp(base_quote_yes - oracle_skew, 0.01, 0.99)
+        quote_no = clamp(base_quote_no + oracle_skew, 0.01, 0.99)
+
         combined_cost = quote_yes + quote_no
         spread_capture = max(0.0, 1.0 - combined_cost)
 
-        # Fill probability: higher when liquidity is lower (thin books fill more)
-        if liquidity < _PASSIVE_QUOTE_THIN_BOOK_USD:
-            fill_prob = clamp(0.6 + 0.3 * (1.0 - liquidity / _PASSIVE_QUOTE_THIN_BOOK_USD), 0.3, 0.9)
+        # Fill probability
+        if liquidity < _MAKER_QUOTE_THIN_BOOK_USD:
+            fill_prob = clamp(0.6 + 0.3 * (1.0 - liquidity / _MAKER_QUOTE_THIN_BOOK_USD), 0.3, 0.9)
         else:
             fill_prob = clamp(0.5 - 0.2 * (liquidity / 10000.0), 0.1, 0.5)
 
-        # Resolution risk: if only one side fills, we're exposed directionally.
-        # Risk increases as we approach resolution.
-        if remaining_secs is not None and remaining_secs < _PASSIVE_QUOTE_RESOLUTION_RISK_SECONDS:
-            resolution_risk = 0.15 * (1.0 - remaining_secs / _PASSIVE_QUOTE_RESOLUTION_RISK_SECONDS)
+        # Resolution risk
+        if remaining_secs is not None and remaining_secs < _MAKER_QUOTE_RESOLUTION_RISK_SECONDS:
+            resolution_risk = 0.10 * (1.0 - remaining_secs / _MAKER_QUOTE_RESOLUTION_RISK_SECONDS)
         else:
             resolution_risk = 0.0
 
         expected_profit = spread_capture * fill_prob - resolution_risk
         if expected_profit <= 0.0:
             return SubStrategyScore(
-                strategy=SubStrategy.PASSIVE_QUOTE,
+                strategy=SubStrategy.MAKER_QUOTE,
                 score=0.0,
-                reason=(
-                    f"Negative EV: spread_capture={spread_capture:.4f}, "
-                    f"fill_prob={fill_prob:.2f}, resolution_risk={resolution_risk:.4f}"
-                ),
+                reason=f"Negative EV: spread_capture={spread_capture:.4f}, fill_prob={fill_prob:.2f}, resolution_risk={resolution_risk:.4f}",
             )
 
-        # Build score
-        score = _PASSIVE_QUOTE_BASE_SCORE + spread_capture * _PASSIVE_QUOTE_SPREAD_SCORE_SCALE
+        score = _MAKER_QUOTE_BASE_SCORE + spread_capture * _MAKER_QUOTE_SPREAD_SCORE_SCALE
+        if liquidity < _MAKER_QUOTE_THIN_BOOK_USD:
+            score += _MAKER_QUOTE_THIN_BOOK_BONUS
+        # Oracle skew bonus: having directional edge on top of spread is extra valuable
+        if abs(oracle_skew) > 0.005:
+            score += 10.0
+        score = min(score, _MAKER_QUOTE_MAX_SCORE)
 
-        # Thin book bonus
-        if liquidity < _PASSIVE_QUOTE_THIN_BOOK_USD:
-            score += _PASSIVE_QUOTE_THIN_BOOK_BONUS
-
-        score = min(score, _PASSIVE_QUOTE_MAX_SCORE)
-
-        # Position size: scale between min and max based on spread
         size_ratio = clamp(spread_capture / 0.06, 0.0, 1.0)
-        size_usd = _PASSIVE_QUOTE_MIN_SIZE_USD + size_ratio * (
-            _PASSIVE_QUOTE_MAX_SIZE_USD - _PASSIVE_QUOTE_MIN_SIZE_USD
-        )
+        size_usd = _MAKER_QUOTE_MIN_SIZE_USD + size_ratio * (_MAKER_QUOTE_MAX_SIZE_USD - _MAKER_QUOTE_MIN_SIZE_USD)
 
         return SubStrategyScore(
-            strategy=SubStrategy.PASSIVE_QUOTE,
+            strategy=SubStrategy.MAKER_QUOTE,
             score=score,
             reason=(
-                f"Passive quote: spread={spread:.4f}, "
-                f"combined=${combined_cost:.4f}, "
-                f"spread_capture=${spread_capture:.4f}, "
-                f"fill_prob={fill_prob:.2f}, "
-                f"EV=${expected_profit:.4f}, "
-                f"liq=${liquidity:.0f}, "
-                f"size=${size_usd:.1f}/side"
+                f"Maker quote: spread={spread:.4f}, combined=${combined_cost:.4f}, "
+                f"spread_capture=${spread_capture:.4f}, fill_prob={fill_prob:.2f}, "
+                f"EV=${expected_profit:.4f}, liq=${liquidity:.0f}, "
+                f"oracle_skew={oracle_skew:+.4f}, size=${size_usd:.1f}/side"
             ),
             params={
                 "quote_yes": quote_yes,
@@ -2569,6 +2228,104 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "size_usd": size_usd,
                 "liquidity": liquidity,
                 "remaining_seconds": remaining_secs,
+                "oracle_skew": oracle_skew,
+                "oracle_direction": oracle_direction,
+            },
+        )
+
+    # -- Sub-strategy: Convergence scoring (Layer 3) --
+
+    def _score_convergence(self, c: HighFreqCandidate) -> SubStrategyScore:
+        """Score near-expiry convergence opportunity (Layer 3).
+
+        In the final 5-45 seconds before resolution, if the oracle strongly
+        indicates a direction (diff > 0.3%), place a maker order at $0.85-$0.95
+        on the winning side. The market converges to $1.00/$0.00 at resolution,
+        so any fill below $0.95 is profitable.
+        """
+        remaining_secs = self._remaining_seconds(c)
+        if remaining_secs is None:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason="Cannot determine seconds remaining",
+            )
+
+        if remaining_secs > _CONVERGENCE_MAX_SECONDS_LEFT or remaining_secs < _CONVERGENCE_MIN_SECONDS_LEFT:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason=f"Not in convergence window ({remaining_secs:.0f}s, need {_CONVERGENCE_MIN_SECONDS_LEFT}-{_CONVERGENCE_MAX_SECONDS_LEFT}s)",
+            )
+
+        # Need oracle data to determine winning side
+        oracle_price = c.oracle_price
+        price_to_beat = c.price_to_beat
+        if oracle_price is None or price_to_beat is None or price_to_beat <= 0:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason="No oracle data for convergence",
+            )
+
+        diff_pct = abs((oracle_price - price_to_beat) / price_to_beat) * 100.0
+        if diff_pct < _CONVERGENCE_MIN_ORACLE_DIFF_PCT:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason=f"Oracle diff too small ({diff_pct:.3f}% < {_CONVERGENCE_MIN_ORACLE_DIFF_PCT}%)",
+            )
+
+        # Determine winning side
+        oracle_says_up = oracle_price > price_to_beat
+        winning_side = "YES" if oracle_says_up else "NO"
+        winning_price = c.yes_price if oracle_says_up else c.no_price
+
+        # Entry price must be reasonable: between $0.85 and $0.95
+        if winning_price < _CONVERGENCE_MIN_PRICE:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason=f"Winning side price too low ({winning_price:.3f} < {_CONVERGENCE_MIN_PRICE})",
+            )
+        if winning_price > _CONVERGENCE_MAX_ENTRY_PRICE:
+            return SubStrategyScore(
+                strategy=SubStrategy.CONVERGENCE,
+                score=0.0,
+                reason=f"Winning side already converged ({winning_price:.3f} > {_CONVERGENCE_MAX_ENTRY_PRICE})",
+            )
+
+        # Edge: expected $1.00 payout minus entry price
+        edge = 1.0 - winning_price
+
+        # Score based on edge and time to expiry (less time = more certainty)
+        time_certainty = clamp(1.0 - remaining_secs / _CONVERGENCE_MAX_SECONDS_LEFT, 0.0, 1.0)
+        oracle_strength = clamp(diff_pct / 1.0, 0.0, 1.0)
+        score = _CONVERGENCE_BASE_SCORE + edge * 200.0 * time_certainty + oracle_strength * 20.0
+        score = min(score, _CONVERGENCE_MAX_SCORE)
+
+        # Quote price: 1 tick below current winning side (maker order)
+        entry_price = winning_price - _MAKER_QUOTE_TICK_SIZE
+        entry_price = clamp(entry_price, 0.01, 0.99)
+
+        return SubStrategyScore(
+            strategy=SubStrategy.CONVERGENCE,
+            score=score,
+            reason=(
+                f"Convergence: {winning_side} @ ${winning_price:.3f}, "
+                f"edge={edge:.3f}, diff={diff_pct:.3f}%, "
+                f"{remaining_secs:.0f}s left, oracle_strength={oracle_strength:.2f}"
+            ),
+            params={
+                "winning_side": winning_side,
+                "winning_price": winning_price,
+                "entry_price": entry_price,
+                "edge": edge,
+                "diff_pct": diff_pct,
+                "remaining_seconds": remaining_secs,
+                "oracle_says_up": oracle_says_up,
+                "time_certainty": time_certainty,
+                "oracle_strength": oracle_strength,
             },
         )
 
@@ -2588,16 +2345,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         sub = selected.strategy
         params = selected.params
 
-        if sub == SubStrategy.PURE_ARB:
-            return self._generate_pure_arb(candidate, params)
-        elif sub == SubStrategy.DUMP_HEDGE:
-            return self._generate_dump_hedge(candidate, params)
-        elif sub == SubStrategy.PRE_PLACED_LIMITS:
-            return self._generate_pre_placed_limits(candidate, params)
+        if sub == SubStrategy.MAKER_QUOTE:
+            return self._generate_maker_quote(candidate, params)
         elif sub == SubStrategy.DIRECTIONAL_EDGE:
             return self._generate_directional_edge(candidate, params)
-        elif sub == SubStrategy.PASSIVE_QUOTE:
-            return self._generate_passive_quote(candidate, params)
+        elif sub == SubStrategy.CONVERGENCE:
+            return self._generate_convergence(candidate, params)
 
         logger.warning(
             "BtcEthHighFreq: unknown sub-strategy %s for market %s",
@@ -2605,177 +2358,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             market.id,
         )
         return None
-
-    def _generate_pure_arb(
-        self,
-        c: HighFreqCandidate,
-        params: dict,
-    ) -> Optional[Opportunity]:
-        """Generate opportunity for sub-strategy A: Pure Arbitrage."""
-        market = c.market
-        yes_price = params["yes_price"]
-        no_price = params["no_price"]
-        combined = params["combined_cost"]
-
-        positions = self._build_both_sides_positions(market, yes_price, no_price)
-
-        opp = self.create_opportunity(
-            title=(f"BTC/ETH HF Pure Arb: {c.asset} {c.timeframe} ({market.question[:40]})"),
-            description=(
-                f"Pure arbitrage on {c.asset} {c.timeframe} market. "
-                f"Buy YES (${yes_price:.4f}) + NO (${no_price:.4f}) = "
-                f"${combined:.4f} for guaranteed $1.00 payout."
-            ),
-            total_cost=combined,
-            markets=[market],
-            positions=positions,
-            min_liquidity_hard=200.0,
-            min_position_size=10.0,
-            min_absolute_profit=2.0,
-        )
-
-        if opp is not None:
-            self._attach_highfreq_metadata(opp, c, SubStrategy.PURE_ARB, params)
-        return opp
-
-    def _generate_dump_hedge(
-        self,
-        c: HighFreqCandidate,
-        params: dict,
-    ) -> Optional[Opportunity]:
-        """Generate opportunity for sub-strategy B: Dump-Hedge.
-
-        Modeled as a directional bet: buy only the dumped side at a price
-        below fair value ($0.50 for 50/50 binary markets).  The hedge
-        (buying the opposite side) is an optional follow-up, not part of
-        the initial cost.
-        """
-        market = c.market
-        dumped_side = params["dumped_side"]
-        drop_amount = params["drop_amount"]
-        dumped_price = params.get(
-            "dumped_price",
-            params["yes_price"] if dumped_side == "YES" else params["no_price"],
-        )
-        ev_profit = params.get("ev_profit", 0)
-        params["yes_price"]
-        params["no_price"]
-        combined = params["combined_cost"]
-
-        # Build position for the dumped side only (directional bet).
-        # The "hedge" is a potential follow-up, not an immediate action.
-        positions = []
-        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
-            token_idx = 0 if dumped_side == "YES" else 1
-            positions = [
-                {
-                    "action": "BUY",
-                    "outcome": dumped_side,
-                    "price": dumped_price,
-                    "token_id": market.clob_token_ids[token_idx],
-                    "role": "primary",
-                    "note": (f"Buy dumped side ({dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f})"),
-                },
-            ]
-
-        opp = self.create_opportunity(
-            title=(f"BTC/ETH HF Dump-Hedge: {c.asset} {c.timeframe} ({dumped_side} dropped to {dumped_price:.2f})"),
-            description=(
-                f"Dump-hedge on {c.asset} {c.timeframe} market. "
-                f"{dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f} — "
-                f"buy dumped side (EV profit ~${ev_profit:.4f}). "
-                f"Fair value $0.50 for 50/50 binary. "
-                f"Optional hedge: buy {('NO' if dumped_side == 'YES' else 'YES')} "
-                f"if combined (${combined:.4f}) drops below $1.00."
-            ),
-            total_cost=dumped_price,
-            expected_payout=0.50,  # EV: 50% probability * $1.00 payout
-            is_guaranteed=False,
-            markets=[market],
-            positions=positions,
-            min_liquidity_hard=200.0,
-            min_position_size=5.0,
-            min_absolute_profit=1.0,
-        )
-
-        if opp is not None:
-            self._attach_highfreq_metadata(opp, c, SubStrategy.DUMP_HEDGE, params)
-            opp.risk_factors.insert(
-                0,
-                f"Directional bet: profit depends on {dumped_side} recovering toward fair value ($0.50)",
-            )
-        return opp
-
-    def _generate_pre_placed_limits(
-        self,
-        c: HighFreqCandidate,
-        params: dict,
-    ) -> Optional[Opportunity]:
-        """Generate opportunity for sub-strategy C: Pre-Placed Limits.
-
-        Hard filters are relaxed because these are LIMIT orders on newly
-        opened / thin-book markets.  Current liquidity may be very low
-        (or zero), but the orders will fill as liquidity arrives.
-        """
-        market = c.market
-        target_yes = params["target_yes_price"]
-        target_no = params["target_no_price"]
-        target_combined = params["target_combined"]
-
-        positions = []
-        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
-            positions = [
-                {
-                    "action": "LIMIT_BUY",
-                    "outcome": "YES",
-                    "price": target_yes,
-                    "token_id": market.clob_token_ids[0],
-                    "note": f"Limit order at ${target_yes:.2f}",
-                },
-                {
-                    "action": "LIMIT_BUY",
-                    "outcome": "NO",
-                    "price": target_no,
-                    "token_id": market.clob_token_ids[1],
-                    "note": f"Limit order at ${target_no:.2f}",
-                },
-            ]
-
-        # Relax hard filters: limit orders on new/thin markets don't
-        # depend on current liquidity for execution — they fill when
-        # liquidity arrives.  Zero-liquidity markets are expected.
-        opp = self.create_opportunity(
-            title=(f"BTC/ETH HF Pre-Limits: {c.asset} {c.timeframe} (thin book)"),
-            description=(
-                f"Pre-placed limit orders on {c.asset} {c.timeframe} market "
-                f"(liquidity=${params.get('liquidity', 0):.0f}). "
-                f"Target: YES@${target_yes:.2f} + NO@${target_no:.2f} = "
-                f"${target_combined:.4f} for $1.00 payout."
-            ),
-            total_cost=target_combined,
-            markets=[market],
-            positions=positions,
-            min_liquidity_hard=0.0,  # New markets may have $0 liquidity
-            min_position_size=0.0,  # Limit orders, not market orders
-            min_absolute_profit=0.0,  # Profit realized on fill, not now
-        )
-
-        if opp is not None:
-            # Set a reasonable position size for limit orders (not
-            # constrained by current liquidity like market orders).
-            opp.max_position_size = max(opp.max_position_size, 50.0)
-
-            self._attach_highfreq_metadata(
-                opp,
-                c,
-                SubStrategy.PRE_PLACED_LIMITS,
-                params,
-            )
-            opp.risk_factors.insert(
-                0,
-                "Pre-placed limits: profit only if BOTH sides fill at target prices",
-            )
-        return opp
 
     def _generate_directional_edge(
         self,
@@ -2851,16 +2433,17 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             )
         return opp
 
-    def _generate_passive_quote(
+    def _generate_maker_quote(
         self,
         c: HighFreqCandidate,
         params: dict,
     ) -> Optional[Opportunity]:
-        """Generate opportunity for sub-strategy E: Passive Quote.
+        """Generate opportunity for Layer 1: Maker Quote.
 
         Places post_only limit buy orders on BOTH YES and NO sides,
         1 tick below each side's current ask.  Earns the bid-ask spread
-        plus maker rebates when both sides fill.
+        plus maker rebates when both sides fill.  Oracle skew tilts quotes
+        toward the predicted winner for additional directional edge.
         """
         market = c.market
         quote_yes = params["quote_yes"]
@@ -2879,7 +2462,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "post_only": True,
                     "_maker_mode": True,
                     "_maker_price": quote_yes,
-                    "note": f"Passive quote YES @ ${quote_yes:.2f}",
+                    "note": f"Maker quote YES @ ${quote_yes:.2f}",
                 },
                 {
                     "action": "LIMIT_BUY",
@@ -2889,23 +2472,24 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "post_only": True,
                     "_maker_mode": True,
                     "_maker_price": quote_no,
-                    "note": f"Passive quote NO @ ${quote_no:.2f}",
+                    "note": f"Maker quote NO @ ${quote_no:.2f}",
                 },
             ]
 
         spread_capture = params["spread_capture"]
-        expected_profit = params["expected_profit"]
+        oracle_skew = params.get("oracle_skew", 0.0)
 
         opp = self.create_opportunity(
             title=(
-                f"BTC/ETH HF Passive Quote: {c.asset} {c.timeframe} "
+                f"BTC/ETH HF Maker Quote: {c.asset} {c.timeframe} "
                 f"(spread ${spread_capture:.3f})"
             ),
             description=(
-                f"Passive quoting on {c.asset} {c.timeframe} market. "
+                f"Two-sided maker quoting on {c.asset} {c.timeframe} market. "
                 f"Quote YES@${quote_yes:.2f} + NO@${quote_no:.2f} = "
                 f"${combined_cost:.4f} for $1.00 payout. "
                 f"Spread capture: ${spread_capture:.4f}. "
+                f"Oracle skew: {oracle_skew:+.4f}. "
                 f"Post-only maker orders (0% taker fee + rebates)."
             ),
             total_cost=combined_cost,
@@ -2923,51 +2507,69 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             self._attach_highfreq_metadata(
                 opp,
                 c,
-                SubStrategy.PASSIVE_QUOTE,
+                SubStrategy.MAKER_QUOTE,
                 params,
             )
             opp.risk_factors.insert(
                 0,
-                "Passive quote: profit requires BOTH sides filling; "
+                "Maker quote: profit requires BOTH sides filling; "
                 "single-side fill creates directional exposure",
             )
+        return opp
+
+    def _generate_convergence(
+        self,
+        c: HighFreqCandidate,
+        params: dict,
+    ) -> Optional[Opportunity]:
+        """Generate opportunity for Layer 3: Near-expiry convergence."""
+        market = c.market
+        winning_side = params["winning_side"]
+        entry_price = params["entry_price"]
+        edge = params["edge"]
+
+        positions: list[dict] = []
+        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
+            token_idx = 0 if winning_side == "YES" else 1
+            positions = [
+                {
+                    "action": "LIMIT_BUY",
+                    "outcome": winning_side,
+                    "price": entry_price,
+                    "token_id": market.clob_token_ids[token_idx],
+                    "post_only": True,
+                    "_maker_mode": True,
+                    "_maker_price": entry_price,
+                    "note": f"Convergence {winning_side} @ ${entry_price:.3f} ({params['remaining_seconds']:.0f}s left)",
+                }
+            ]
+
+        opp = self.create_opportunity(
+            title=f"BTC/ETH HF Convergence: {c.asset} {c.timeframe} ({winning_side} @ ${entry_price:.2f})",
+            description=(
+                f"Near-expiry convergence on {c.asset} {c.timeframe}. "
+                f"Oracle diff {params['diff_pct']:.2f}%, {winning_side} @ ${entry_price:.2f}, "
+                f"{params['remaining_seconds']:.0f}s to resolution. "
+                f"Edge: {edge:.1%}. Post-only maker order."
+            ),
+            total_cost=entry_price,
+            expected_payout=1.0,
+            markets=[market],
+            positions=positions,
+            is_guaranteed=False,
+            min_liquidity_hard=0.0,
+            min_position_size=0.0,
+            min_absolute_profit=0.0,
+        )
+
+        if opp is not None:
+            self._attach_highfreq_metadata(opp, c, SubStrategy.CONVERGENCE, params)
+            opp.risk_factors.insert(0, f"Convergence bet: {params['remaining_seconds']:.0f}s to resolution")
         return opp
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_both_sides_positions(
-        market: Market,
-        yes_price: float,
-        no_price: float,
-    ) -> list[dict]:
-        """Build standard BUY YES + BUY NO position list."""
-        maker_mode = _cfg.BTC_ETH_HF_MAKER_MODE
-        positions: list[dict] = []
-        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
-            positions = [
-                {
-                    "action": "BUY",
-                    "outcome": "YES",
-                    "price": yes_price,
-                    "token_id": market.clob_token_ids[0],
-                    "_maker_mode": maker_mode,
-                    "_maker_price": yes_price,
-                    "post_only": maker_mode,
-                },
-                {
-                    "action": "BUY",
-                    "outcome": "NO",
-                    "price": no_price,
-                    "token_id": market.clob_token_ids[1],
-                    "_maker_mode": maker_mode,
-                    "_maker_price": no_price,
-                    "post_only": maker_mode,
-                },
-            ]
-        return positions
 
     @staticmethod
     def _attach_highfreq_metadata(
@@ -3092,7 +2694,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         dominant_mode = _normalize_mode(payload.get("dominant_strategy"))
         active_mode = dominant_mode if requested_mode == "auto" and dominant_mode != "auto" else requested_mode
         if active_mode == "auto":
-            active_mode = "directional"
+            active_mode = "maker_quote"
         enabled_active_modes = _resolve_enabled_active_modes(params)
         mode_allowlist_ok = active_mode in enabled_active_modes
 
@@ -3760,6 +3362,33 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                         f"blocked contrarian buy_yes: model_prob_no={model_prob_no:.3f} down_price={down_price:.3f}"
                     )
 
+        # --- Oracle direction agreement (hard gate, ALL modes/regimes) ---
+        # If the oracle says UP (diff > 0), ONLY buy_yes is allowed.
+        # If the oracle says DOWN (diff < 0), ONLY buy_no is allowed.
+        # Prevents rebalance-in-disguise where edge comes from model-vs-market
+        # deviation rather than oracle signal strength.
+        oracle_diff_pct_for_gate = to_float(payload.get("oracle_diff_pct"), 0.0)
+        oracle_direction_ok = True
+        oracle_direction_detail = "no oracle diff data"
+        if oracle_available and oracle_diff_pct_for_gate is not None and abs(oracle_diff_pct_for_gate) > 0.01:
+            oracle_says_up = oracle_diff_pct_for_gate > 0
+            if oracle_says_up and direction == "buy_no":
+                oracle_direction_ok = False
+                oracle_direction_detail = (
+                    f"BLOCKED: oracle says UP (diff={oracle_diff_pct_for_gate:+.4f}%) "
+                    f"but direction=buy_no"
+                )
+            elif not oracle_says_up and direction == "buy_yes":
+                oracle_direction_ok = False
+                oracle_direction_detail = (
+                    f"BLOCKED: oracle says DOWN (diff={oracle_diff_pct_for_gate:+.4f}%) "
+                    f"but direction=buy_yes"
+                )
+            else:
+                oracle_direction_detail = (
+                    f"oracle agrees: diff={oracle_diff_pct_for_gate:+.4f}% direction={direction}"
+                )
+
         # --- Adaptive edge gating ---
         edge_for_gate = min(edge, mode_edge) if mode_edge > 0.0 else edge
         now_ms = int(time.time() * 1000.0)
@@ -3850,7 +3479,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             "4h": 0.26,
         }
         default_entry_exit_ratio_floor = default_exit_ratio_floor_by_timeframe.get(signal_timeframe, 0.38)
-        if active_mode == "rebalance":
+        if active_mode == "maker_quote":
             default_entry_exit_ratio_floor -= 0.08
         elif active_mode == "directional":
             default_entry_exit_ratio_floor -= 0.03
@@ -3880,12 +3509,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.0,
             to_float(params.get("directional_min_entry_price_floor", 0.25), 0.25),
         )
-        rebalance_entry_price_floor = max(
+        maker_entry_price_floor = max(
             directional_entry_price_floor,
-            to_float(params.get("rebalance_min_entry_price_floor", 0.16), 0.16),
+            to_float(params.get("maker_min_entry_price_floor", 0.16), 0.16),
         )
         default_entry_price_floor = (
-            rebalance_entry_price_floor if active_mode == "rebalance" else directional_entry_price_floor
+            maker_entry_price_floor if active_mode == "maker_quote" else directional_entry_price_floor
         )
         if regime == "closing":
             default_entry_price_floor = max(default_entry_price_floor, 0.05)
@@ -3905,18 +3534,18 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             0.01,
             1.0,
         )
-        rebalance_entry_price_ceiling = clamp(
-            to_float(params.get("rebalance_max_entry_price_ceiling", 0.70), 0.70),
+        maker_entry_price_ceiling = clamp(
+            to_float(params.get("maker_max_entry_price_ceiling", 0.70), 0.70),
             0.01,
             1.0,
         )
         default_entry_price_ceiling = (
-            rebalance_entry_price_ceiling if active_mode == "rebalance" else directional_entry_price_ceiling
+            maker_entry_price_ceiling if active_mode == "maker_quote" else directional_entry_price_ceiling
         )
         if regime == "opening":
             default_entry_price_ceiling = min(
                 default_entry_price_ceiling,
-                0.68 if active_mode == "rebalance" else 0.72,
+                0.68 if active_mode == "maker_quote" else 0.72,
             )
         entry_price_ceiling = clamp(
             to_float(params.get("max_entry_price_ceiling"), default_entry_price_ceiling),
@@ -4079,6 +3708,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "Direction policy",
                 direction_policy_ok,
                 detail=direction_policy_detail,
+            ),
+            DecisionCheck(
+                "oracle_direction_agreement",
+                "Oracle direction agreement",
+                oracle_direction_ok,
+                detail=oracle_direction_detail,
             ),
             DecisionCheck(
                 "edge",
@@ -5406,11 +5041,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         )
 
     def _detect_from_crypto_markets(self, markets: list[dict]) -> list[Opportunity]:
-        """Replicate the multi-strategy signal logic from the former emit_crypto_market_signals.
+        """Oracle-only directional signal logic for the crypto worker hot path.
 
-        For each crypto market dict, compute regime-weighted edge across
-        directional / pure_arb / rebalance sub-strategies and return
-        Opportunity objects for markets with positive net edge.
+        For each crypto market dict, compute oracle-based directional edge
+        with fee-aware gating. No rebalance, no pure_arb -- direction is
+        determined SOLELY by the oracle signal when oracle is available.
         """
         opportunities: list[Opportunity] = []
 
@@ -5484,102 +5119,56 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
             regime = self._crypto_regime(seconds_left, timeframe_seconds)
 
-            # Directional edge (oracle-based)
+            # --- Oracle-only directional edge ---
+            # Direction is determined SOLELY by oracle sign.  Edge is the
+            # oracle signal strength scaled by time remaining -- NOT
+            # model_prob vs market_price (that is rebalance in disguise).
+            _MIN_ORACLE_DIFF_FOR_EDGE = 0.15  # % -- below this, no signal
             if has_oracle and price_to_beat is not None and oracle_price is not None:
                 diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
-                time_ratio = clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
-                directional_scale = max(0.08, 0.50 * time_ratio)
-                directional_z = clamp(diff_pct / directional_scale, -60.0, 60.0)
-                model_prob_yes = clamp(1.0 / (1.0 + math.exp(-directional_z)), 0.03, 0.97)
-                model_prob_no = 1.0 - model_prob_yes
-                directional_yes = max(0.0, (model_prob_yes - up_price) * 100.0)
-                directional_no = max(0.0, (model_prob_no - down_price) * 100.0)
             else:
                 diff_pct = 0.0
-                directional_yes = 0.0
-                directional_no = 0.0
 
-            # Pure arb edge
-            combined = up_price + down_price
-            underround = max(0.0, 1.0 - combined)
-            pure_arb_yes = underround * 100.0
-            pure_arb_no = underround * 100.0
-
-            # Rebalance edge
-            neutrality = clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
-            rebalance_yes = max(0.0, (0.5 - up_price) * 100.0) * neutrality
-            rebalance_no = max(0.0, (0.5 - down_price) * 100.0) * neutrality
-
-            # Regime weights
-            if has_oracle:
-                weights = self._regime_weights(regime)
-            else:
-                weights = self._regime_weights_without_oracle(regime)
-
-            gross_yes = (
-                (directional_yes * weights["directional"])
-                + (pure_arb_yes * weights["pure_arb"])
-                + (rebalance_yes * weights["rebalance"])
-            )
-            gross_no = (
-                (directional_no * weights["directional"])
-                + (pure_arb_no * weights["pure_arb"])
-                + (rebalance_no * weights["rebalance"])
-            )
-
-            # Execution penalties
-            spread = clamp(self._float(market.get("spread")) or 0.0, 0.0, 0.10)
-            liquidity = max(0.0, self._float(market.get("liquidity")) or 0.0)
-            fees_enabled = bool(market.get("fees_enabled", False))
-
-            fee_penalty = 0.45 if fees_enabled else 0.25
-            spread_penalty = spread * 100.0 * 0.35
-            liquidity_scale = clamp(liquidity / 250000.0, 0.0, 1.0)
-            regime_slippage_factor = 1.1 if regime == "closing" else 1.0
-            slippage_penalty = (1.35 - (0.95 * liquidity_scale)) * regime_slippage_factor
-            execution_penalty = fee_penalty + spread_penalty + slippage_penalty
-
-            net_yes = gross_yes - execution_penalty
-            net_no = gross_no - execution_penalty
-            direction = "buy_yes" if net_yes >= net_no else "buy_no"
-            entry_price = up_price if direction == "buy_yes" else down_price
-            edge_percent = net_yes if direction == "buy_yes" else net_no
-
-            if edge_percent < 1.0:
+            if abs(diff_pct) < _MIN_ORACLE_DIFF_FOR_EDGE:
+                # Oracle diff too small to be meaningful -- skip
                 continue
 
-            # Confidence
-            edge_gap = abs(net_yes - net_no)
-            selected_components = (
-                {"directional": directional_yes, "pure_arb": pure_arb_yes, "rebalance": rebalance_yes}
-                if direction == "buy_yes"
-                else {"directional": directional_no, "pure_arb": pure_arb_no, "rebalance": rebalance_no}
-            )
-            weighted_components = {k: selected_components[k] * weights[k] for k in selected_components}
-            dominant_strategy = max(weighted_components, key=lambda k: weighted_components[k])
-            dominant_weighted_edge = weighted_components[dominant_strategy]
-            component_edges = {
-                "buy_yes": {
-                    "directional": directional_yes,
-                    "pure_arb": pure_arb_yes,
-                    "rebalance": rebalance_yes,
-                },
-                "buy_no": {
-                    "directional": directional_no,
-                    "pure_arb": pure_arb_no,
-                    "rebalance": rebalance_no,
-                },
-            }
-            net_edges = {
-                "buy_yes": net_yes,
-                "buy_no": net_no,
-            }
+            # Direction from oracle SIGN only -- never buy against oracle
+            if diff_pct > 0:
+                direction = "buy_yes"
+                entry_price = up_price
+            else:
+                direction = "buy_no"
+                entry_price = down_price
 
+            # Edge = oracle magnitude scaled by time urgency.
+            # Late in the window the oracle is more predictive.
+            time_ratio = clamp(seconds_left / float(max(1, timeframe_seconds)), 0.01, 1.0)
+            time_multiplier = 1.0 + 2.0 * (1.0 - time_ratio)  # 1x early, 3x at expiry
+            edge_percent = abs(diff_pct) * time_multiplier
+
+            # Fee-aware entry gate
+            taker_fee_pct = polymarket_fee_pct(entry_price) if entry_price > 0 else 0.0
+            min_required_edge = taker_fee_pct * 200.0  # 2x fee as percentage points
+            if edge_percent < max(1.0, min_required_edge):
+                continue
+
+            # Execution penalties (simplified -- no rebalance/pure_arb)
+            spread = clamp(self._float(market.get("spread")) or 0.0, 0.0, 0.10)
+            liquidity = max(0.0, self._float(market.get("liquidity")) or 0.0)
+            spread_penalty = spread * 100.0 * 0.35
+            liquidity_scale = clamp(liquidity / 250000.0, 0.0, 1.0)
+            slippage_penalty = (1.35 - (0.95 * liquidity_scale))
+            net_edge = edge_percent - spread_penalty - slippage_penalty
+            if net_edge < 1.0:
+                continue
+            edge_percent = net_edge
+
+            # Confidence -- based on oracle diff strength and edge magnitude
             confidence = clamp(
                 0.32
                 + clamp(edge_percent / 20.0, 0.0, 0.35)
-                + clamp(edge_gap / 18.0, 0.0, 0.12)
-                + clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
+                + clamp(abs(diff_pct) / 1.0, 0.0, 0.20),
                 0.05,
                 0.97,
             )
@@ -5596,7 +5185,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             opp = self.create_opportunity(
                 title=f"Crypto HF: {slug} {side}",
                 description=(
-                    f"{regime} regime, {dominant_strategy} dominant | edge={edge_percent:.1f}%, conf={confidence:.0%}"
+                    f"{regime} regime, oracle directional | edge={edge_percent:.1f}%, conf={confidence:.0%}"
                 ),
                 total_cost=entry_price,
                 expected_payout=entry_price + (edge_percent / 100.0),
@@ -5607,10 +5196,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                         "outcome": side,
                         "price": entry_price,
                         "token_id": position_token_id,
-                        # Carry crypto-specific context through positions payload
+                        "post_only": True,
+                        "_maker_mode": True,
+                        "_maker_price": entry_price,
                         "_crypto_context": {
-                            "signal_version": "crypto_worker_v2",
-                            "signal_family": "crypto_multistrategy",
+                            "signal_version": "crypto_worker_v3",
+                            "signal_family": "crypto_maker",
                             "strategy_origin": "crypto_worker",
                             "selected_direction": direction,
                             "asset": asset,
@@ -5627,7 +5218,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                             "oracle_status": dict(oracle_status),
                             "oracle_source": oracle_status.get("source"),
                             "oracle_prices_by_source": _json_safe(market.get("oracle_prices_by_source") or {}),
-                            "dominant_strategy": dominant_strategy,
+                            "oracle_diff_pct": diff_pct,
+                            "taker_fee_gate": min_required_edge,
+                            "edge_percent": edge_percent,
                             "spread": spread,
                             "spread_widening_bps": self._float(market.get("spread_widening_bps")),
                             "orderbook_imbalance": self._float(
@@ -5641,26 +5234,23 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                             "volume": self._float(market.get("volume")) or 0.0,
                             "price_to_beat": price_to_beat,
                             "oracle_price": oracle_price,
-                            "execution_penalty_percent": round(execution_penalty, 6),
                             "live_market_fetched_at": live_market_fetched_at,
                             "market_data_age_ms": market_data_age_ms,
-                            "component_edges": component_edges,
-                            "net_edges": net_edges,
                         },
                     }
                 ],
                 is_guaranteed=False,
-                skip_fee_model=True,  # Crypto uses its own execution penalty model
+                skip_fee_model=True,
                 custom_roi_percent=edge_percent,
                 custom_risk_score=1.0 - confidence,
                 confidence=confidence,
             )
             if opp is not None:
-                # Attach crypto-specific risk factors (bypassed by custom_risk_score)
                 opp.risk_factors = [
                     f"Crypto {regime} regime",
-                    f"Dominant: {dominant_strategy} ({dominant_weighted_edge:.1f}%)",
+                    f"Oracle directional (diff={diff_pct:+.3f}%)",
                     f"Oracle: {'available' if has_oracle else 'unavailable'}",
+                    f"Fee gate: edge {edge_percent:.1f}% > 2x fee {min_required_edge:.1f}%",
                 ]
                 opp.strategy_context = {
                     "source_key": "crypto",
@@ -5681,7 +5271,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "oracle_status": dict(oracle_status),
                     "oracle_source": oracle_status.get("source"),
                     "oracle_prices_by_source": _json_safe(market.get("oracle_prices_by_source") or {}),
-                    "dominant_strategy": dominant_strategy,
+                    "oracle_diff_pct": diff_pct,
+                    "taker_fee_gate": min_required_edge,
+                    "edge_percent": edge_percent,
                     "spread": spread,
                     "spread_widening_bps": self._float(market.get("spread_widening_bps")),
                     "orderbook_imbalance": self._float(
@@ -5695,11 +5287,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "volume": self._float(market.get("volume")) or 0.0,
                     "price_to_beat": price_to_beat,
                     "oracle_price": oracle_price,
-                    "execution_penalty_percent": round(execution_penalty, 6),
                     "live_market_fetched_at": live_market_fetched_at,
                     "market_data_age_ms": market_data_age_ms,
-                    "component_edges": component_edges,
-                    "net_edges": net_edges,
                 }
                 opportunities.append(opp)
 
@@ -5735,22 +5324,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if ratio < 0.33:
             return "closing"
         return "mid"
-
-    @staticmethod
-    def _regime_weights(regime: str) -> dict[str, float]:
-        if regime == "opening":
-            return {"directional": 0.65, "pure_arb": 0.25, "rebalance": 0.10}
-        if regime == "closing":
-            return {"directional": 0.35, "pure_arb": 0.20, "rebalance": 0.45}
-        return {"directional": 0.50, "pure_arb": 0.25, "rebalance": 0.25}
-
-    @staticmethod
-    def _regime_weights_without_oracle(regime: str) -> dict[str, float]:
-        if regime == "opening":
-            return {"directional": 0.0, "pure_arb": 0.60, "rebalance": 0.40}
-        if regime == "closing":
-            return {"directional": 0.0, "pure_arb": 0.45, "rebalance": 0.55}
-        return {"directional": 0.0, "pure_arb": 0.55, "rebalance": 0.45}
 
     # ------------------------------------------------------------------
     # Platform gate hooks
