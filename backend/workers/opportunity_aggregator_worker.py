@@ -123,8 +123,15 @@ async def _run_with_deadline(
     remaining = cycle_deadline_monotonic - time.monotonic()
     if remaining <= 0:
         raise asyncio.TimeoutError("aggregator global run deadline exceeded")
-    timeout = max(0.01, min(float(step_timeout), float(remaining)))
-    return await asyncio.wait_for(coro, timeout=timeout)
+    timeout_budget = max(0.01, min(float(step_timeout), float(remaining)))
+    started = time.monotonic()
+    result = await coro
+    elapsed = time.monotonic() - started
+    if elapsed > timeout_budget:
+        raise asyncio.TimeoutError(
+            f"aggregator step exceeded timeout budget ({elapsed:.3f}s > {timeout_budget:.3f}s)"
+        )
+    return result
 
 
 async def _run_loop() -> None:

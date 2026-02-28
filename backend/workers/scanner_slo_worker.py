@@ -100,16 +100,17 @@ async def _run_loop() -> None:
 
     try:
         while True:
+            try:
+                await apply_runtime_settings_overrides()
+            except Exception as exc:
+                logger.warning("Scanner SLO runtime settings refresh failed: %s", exc)
+
             async with AsyncSessionLocal() as session:
                 control = await read_worker_control(
                     session,
                     worker_name,
                     default_interval=default_interval,
                 )
-                try:
-                    await apply_runtime_settings_overrides()
-                except Exception as exc:
-                    logger.warning("Scanner SLO runtime settings refresh failed: %s", exc)
 
             interval_seconds = max(1, int(control.get("interval_seconds") or default_interval))
             paused = bool(control.get("is_paused", False))
@@ -225,6 +226,8 @@ async def _run_loop() -> None:
 
                 incident_actions: list[dict[str, Any]] = []
                 breached_metric_names: list[str] = []
+                degrade_trigger_metrics = {"coverage_ratio", "full_coverage_completion_time"}
+                alert_payload: dict[str, Any] | None = None
 
                 async with AsyncSessionLocal() as session:
                     for metric_name, check in checks.items():
@@ -252,10 +255,15 @@ async def _run_loop() -> None:
                     scanner_control = await read_scanner_control(session)
                     forced_degraded = bool(scanner_control.get("heavy_lane_forced_degraded", False))
                     forced_reason = str(scanner_control.get("heavy_lane_degraded_reason") or "")
+                    breached_for_degrade = [
+                        metric for metric in breached_metric_names if metric in degrade_trigger_metrics
+                    ]
 
                     degrade_action = "none"
-                    if auto_degrade_enabled and breached_metric_names:
-                        reason = "slo_breach:" + ",".join(sorted(breached_metric_names)[:5])
+                    if auto_degrade_enabled and breached_for_degrade and (
+                        not forced_degraded or not forced_reason.startswith("slo_breach:")
+                    ):
+                        reason = "slo_breach:" + ",".join(sorted(breached_for_degrade)[:5])
                         await set_scanner_heavy_lane_degraded(
                             session,
                             enabled=True,
@@ -274,20 +282,21 @@ async def _run_loop() -> None:
                     state["breached_metrics"] = len(breached_metric_names)
                     state["heavy_lane_forced_degraded"] = bool(forced_degraded)
 
-                    should_publish = bool(incident_actions) or degrade_action != "none"
+                    should_publish = bool(incident_actions) or degrade_action in {"enabled", "disabled"}
                     if should_publish:
-                        await event_bus.publish(
-                            "scanner_slo_alert",
-                            {
-                                "run_id": state.get("run_id"),
-                                "at": utcnow().isoformat(),
-                                "breached_metrics": sorted(breached_metric_names),
-                                "open_incidents": open_incidents,
-                                "incident_actions": incident_actions,
-                                "degrade_action": degrade_action,
-                                "heavy_lane_forced_degraded": bool(forced_degraded),
-                            },
-                        )
+                        alert_payload = {
+                            "run_id": state.get("run_id"),
+                            "at": utcnow().isoformat(),
+                            "breached_metrics": sorted(breached_metric_names),
+                            "breached_for_degrade": sorted(breached_for_degrade),
+                            "open_incidents": open_incidents,
+                            "incident_actions": incident_actions,
+                            "degrade_action": degrade_action,
+                            "heavy_lane_forced_degraded": bool(forced_degraded),
+                        }
+
+                if alert_payload is not None:
+                    await event_bus.publish("scanner_slo_alert", alert_payload)
 
                 state["last_error"] = None
                 state["last_run_at"] = utcnow()
