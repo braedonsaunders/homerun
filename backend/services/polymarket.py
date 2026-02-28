@@ -37,6 +37,8 @@ class PolymarketClient:
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._persistent_cache = None  # Lazy-loaded MarketCacheService
         self._closed_positions_warning_cooldown_until: float = 0.0
+        self._network_error_last_log_at: float = 0.0
+        self._network_error_log_interval_seconds: float = 10.0
 
     async def _get_persistent_cache(self):
         """Lazy-load the persistent market cache service."""
@@ -96,16 +98,26 @@ class PolymarketClient:
                 # failures are retried instead of escaping at response.json().
                 await response.aread()
             except httpx.TransportError as exc:
+                await self._reset_failed_client(client)
                 if attempt < _MAX_RETRIES - 1:
                     delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
                     delay *= 0.5 + random.random()
-                    _logger.warning(
-                        "Network error, retrying",
-                        url=url,
-                        attempt=attempt + 1,
-                        delay=round(delay, 2),
-                        error=str(exc),
-                    )
+                    now = time.monotonic()
+                    if (now - self._network_error_last_log_at) >= self._network_error_log_interval_seconds:
+                        self._network_error_last_log_at = now
+                        _logger.warning(
+                            "Network error, retrying",
+                            url=url,
+                            attempt=attempt + 1,
+                            delay=round(delay, 2),
+                            error=str(exc),
+                        )
+                    else:
+                        _logger.debug(
+                            "Network error retry suppressed",
+                            url=url,
+                            attempt=attempt + 1,
+                        )
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -139,6 +151,23 @@ class PolymarketClient:
 
         # Should not be reached, but just in case
         return last_response  # type: ignore[return-value]
+
+    async def _reset_failed_client(self, client: Optional[httpx.AsyncClient]) -> None:
+        if client is None:
+            return
+        if client is self._client:
+            self._client = None
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            return
+        if client is self._trading_client:
+            self._trading_client = None
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
     async def close(self):
         if self._client and not self._client.is_closed:

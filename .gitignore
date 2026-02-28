@@ -50,6 +50,9 @@ data/postgres/
 *.log
 logs/
 
+# Redis artifacts
+*.rdb
+
 # Test / debug artifacts
 output/
 .playwright-cli/

@@ -216,13 +216,13 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "oracle_fallback_degrade_edge_multiplier_direct": 1.15,
     "oracle_fallback_degrade_confidence_multiplier_direct": 1.04,
     "oracle_fallback_degrade_size_multiplier_direct": 0.70,
-    "min_edge_persistence_ms": 1400,
+    "min_edge_persistence_ms": 600,
     "max_recent_move_zscore_for_entry": 2.25,
     "max_spread_widening_bps": 28.0,
     "max_orderbook_imbalance": 0.92,
     "reentry_cooldown_seconds_per_market": 15,
     "min_seconds_left_for_entry_5m": 60.0,
-    "min_seconds_left_for_entry_15m": 180.0,
+    "min_seconds_left_for_entry_15m": 90.0,
     "min_seconds_left_for_entry_1h": 360.0,
     "min_seconds_left_for_entry_4h": 600.0,
     "opening_directional_buy_yes_enabled": False,
@@ -236,8 +236,8 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "entry_executable_exit_ratio_floor_closing": 0.24,
     "directional_min_entry_price_floor": 0.25,
     "maker_min_entry_price_floor": 0.16,
-    "directional_max_entry_price_ceiling": 0.75,
-    "maker_max_entry_price_ceiling": 0.70,
+    "directional_max_entry_price_ceiling": 0.99,
+    "maker_max_entry_price_ceiling": 0.95,
     "rapid_take_profit_pct": 10.0,
     "rapid_take_profit_pct_5m": 10.0,
     "rapid_take_profit_pct_15m": 10.0,
@@ -302,6 +302,18 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "immediate_stop_loss_pct_15m": 2.0,
     "immediate_stop_loss_pct_1h": 3.0,
     "immediate_stop_loss_pct_4h": 4.0,
+    "immediate_stop_loss_enabled": True,
+    "immediate_stop_loss_requires_time_pressure": True,
+    "immediate_stop_loss_seconds_left": 120.0,
+    "immediate_stop_loss_seconds_left_5m": 75.0,
+    "immediate_stop_loss_seconds_left_15m": 210.0,
+    "immediate_stop_loss_seconds_left_1h": 480.0,
+    "immediate_stop_loss_seconds_left_4h": 900.0,
+    "immediate_stop_loss_elapsed_pct": 0.70,
+    "immediate_stop_loss_elapsed_pct_5m": 0.55,
+    "immediate_stop_loss_elapsed_pct_15m": 0.65,
+    "immediate_stop_loss_elapsed_pct_1h": 0.72,
+    "immediate_stop_loss_elapsed_pct_4h": 0.78,
     "stop_loss_activation_seconds": 90,
     "stop_loss_activation_seconds_5m": 45.0,
     "stop_loss_activation_seconds_15m": 120.0,
@@ -465,18 +477,22 @@ def crypto_highfreq_should_flatten_resolution_risk(
     min_headroom_raw = _crypto_hf_param_value(cfg, "resolution_risk_min_headroom_ratio", timeframe)
     min_headroom_ratio = _coerce_float(min_headroom_raw, 0.0, 0.0, 100.0)
 
+    loss_pressure = False
     if pnl_percent is not None:
         if pnl_percent > max_profit_pct:
             return False, f"pnl={pnl_percent:.2f}% > max_profit={max_profit_pct:.2f}%"
         if pnl_percent < -abs(min_loss_pct):
-            return False, f"pnl={pnl_percent:.2f}% < -max_loss={min_loss_pct:.2f}%"
+            loss_pressure = True
 
     if exit_headroom_ratio is not None and exit_headroom_ratio < min_headroom_ratio:
         return False, f"headroom={exit_headroom_ratio:.2f}x < min={min_headroom_ratio:.2f}x"
 
     pnl_text = f"{pnl_percent:.2f}%" if pnl_percent is not None else "unknown"
     headroom_text = f"{exit_headroom_ratio:.2f}x" if exit_headroom_ratio is not None else "unknown"
-    detail = f"seconds_left={seconds_left:.1f}s <= {seconds_budget:.1f}s, pnl={pnl_text}, headroom={headroom_text}"
+    detail = (
+        f"seconds_left={seconds_left:.1f}s <= {seconds_budget:.1f}s, pnl={pnl_text}, "
+        f"headroom={headroom_text}, loss_pressure={loss_pressure}"
+    )
     return True, detail
 
 
@@ -2635,6 +2651,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         requested_mode = _normalize_mode(params.get("strategy_mode") or params.get("mode"))
         direction = str(getattr(signal, "direction", "") or "").strip().lower()
         regime = _normalize_regime(payload.get("regime"))
+        enabled_active_modes = _resolve_enabled_active_modes(params)
 
         # --- Asset / timeframe extraction ---
         signal_asset = _normalize_asset(
@@ -2694,9 +2711,14 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # --- Active mode resolution ---
         dominant_mode = _normalize_mode(payload.get("dominant_strategy"))
         active_mode = dominant_mode if requested_mode == "auto" and dominant_mode != "auto" else requested_mode
-        if active_mode == "auto":
-            active_mode = "maker_quote"
-        enabled_active_modes = _resolve_enabled_active_modes(params)
+        if requested_mode == "auto":
+            if active_mode == "auto" or active_mode not in enabled_active_modes:
+                for candidate_mode in ("maker_quote", "directional", "convergence"):
+                    if candidate_mode in enabled_active_modes:
+                        active_mode = candidate_mode
+                        break
+            if active_mode == "auto" or active_mode not in enabled_active_modes:
+                active_mode = "maker_quote"
         mode_allowlist_ok = active_mode in enabled_active_modes
 
         # --- Source / origin checks ---
@@ -4264,20 +4286,76 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if entry_price is not None and entry_price > 0.0 and current_price is not None and current_price > 0.0:
             pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
 
+            seconds_left = self._float(
+                _first_present(
+                    state.get("seconds_left"),
+                    context_payload.get("seconds_left"),
+                    context_payload.get("live_market_context", {}).get("seconds_left")
+                    if isinstance(context_payload.get("live_market_context"), dict)
+                    else None,
+                )
+            )
+            timeframe_seconds = self._timeframe_seconds(timeframe)
+            elapsed_ratio = None
+            if seconds_left is not None and seconds_left >= 0.0 and timeframe_seconds > 0:
+                elapsed_ratio = clamp(1.0 - (seconds_left / float(timeframe_seconds)), 0.0, 1.0)
+
             # --- IMMEDIATE stop-loss (always active, regardless of policy) ---
             immediate_stop_loss_pct = max(0.5, to_float(config.get("immediate_stop_loss_pct"), 2.0))
             immediate_stop_loss_pct_override = _timeframe_override(config, "immediate_stop_loss_pct", timeframe)
             if immediate_stop_loss_pct_override is not None:
                 immediate_stop_loss_pct = max(0.5, to_float(immediate_stop_loss_pct_override, 2.0))
-            if pnl_pct <= -immediate_stop_loss_pct:
+            immediate_stop_enabled = to_bool(config.get("immediate_stop_loss_enabled"), True)
+            immediate_stop_requires_time_pressure = to_bool(config.get("immediate_stop_loss_requires_time_pressure"), True)
+            immediate_stop_seconds_left = _timeframe_override(config, "immediate_stop_loss_seconds_left", timeframe)
+            if immediate_stop_seconds_left is None:
+                immediate_stop_seconds_left = config.get("immediate_stop_loss_seconds_left")
+            if immediate_stop_seconds_left is None:
+                immediate_stop_seconds_left = _timeframe_override(config, "force_flatten_seconds_left", timeframe)
+            immediate_stop_seconds_left = max(0.0, to_float(immediate_stop_seconds_left, 120.0))
+
+            immediate_stop_elapsed_pct = _timeframe_override(config, "immediate_stop_loss_elapsed_pct", timeframe)
+            if immediate_stop_elapsed_pct is None:
+                immediate_stop_elapsed_pct = config.get("immediate_stop_loss_elapsed_pct")
+            if immediate_stop_elapsed_pct is None:
+                immediate_stop_elapsed_pct = {
+                    "5m": 0.55,
+                    "15m": 0.65,
+                    "1h": 0.72,
+                    "4h": 0.78,
+                }.get(timeframe, 0.70)
+            immediate_stop_elapsed_pct = clamp(to_float(immediate_stop_elapsed_pct, 0.70), 0.0, 1.0)
+
+            near_close_seconds_trigger = (
+                seconds_left is not None
+                and seconds_left >= 0.0
+                and seconds_left <= immediate_stop_seconds_left
+            )
+            near_close_elapsed_trigger = (
+                elapsed_ratio is not None and elapsed_ratio >= immediate_stop_elapsed_pct
+            )
+            immediate_stop_time_pressure = near_close_seconds_trigger or near_close_elapsed_trigger
+
+            if immediate_stop_enabled and pnl_pct <= -immediate_stop_loss_pct and (
+                not immediate_stop_requires_time_pressure or immediate_stop_time_pressure
+            ):
                 context_payload["_crypto_hf_rapid_exit_state"] = context_payload.get("_crypto_hf_rapid_exit_state", {})
+                pressure_detail = []
+                if near_close_seconds_trigger:
+                    pressure_detail.append(f"seconds_left={seconds_left:.1f}s <= {immediate_stop_seconds_left:.1f}s")
+                if near_close_elapsed_trigger and elapsed_ratio is not None:
+                    pressure_detail.append(
+                        f"elapsed={elapsed_ratio:.3f} >= {immediate_stop_elapsed_pct:.3f}"
+                    )
+                pressure_text = f" ({', '.join(pressure_detail)})" if pressure_detail else ""
                 return {
                     "config": config,
                     "decision": {
                         "action": "close",
                         "reason": (
-                            f"Immediate stop-loss triggered "
+                            f"Immediate stop-loss (time-pressure) triggered "
                             f"(pnl={pnl_pct:.2f}% <= -{immediate_stop_loss_pct:.1f}%)"
+                            f"{pressure_text}"
                         ),
                         "close_price": current_price,
                     },
@@ -4459,15 +4537,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             hazard_threshold = clamp(to_float(config.get("executable_exit_hazard_threshold"), 0.62), 0.0, 1.0)
             time_pressure_seconds = max(1.0, to_float(config.get("executable_exit_time_pressure_seconds"), 120.0))
 
-            seconds_left = self._float(
-                _first_present(
-                    state.get("seconds_left"),
-                    context_payload.get("seconds_left"),
-                    context_payload.get("live_market_context", {}).get("seconds_left")
-                    if isinstance(context_payload.get("live_market_context"), dict)
-                    else None,
-                )
-            )
             time_pressure = 0.0
             if seconds_left is not None and seconds_left >= 0.0:
                 time_pressure = clamp((time_pressure_seconds - seconds_left) / time_pressure_seconds, 0.0, 1.0)

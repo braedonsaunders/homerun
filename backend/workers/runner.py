@@ -11,6 +11,9 @@ import importlib
 import sys
 from typing import Callable, Awaitable
 
+if sys.platform == "win32" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 async def _run_worker(module_name: str) -> None:
     module = importlib.import_module(module_name)

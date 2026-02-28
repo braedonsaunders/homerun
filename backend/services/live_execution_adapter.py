@@ -12,6 +12,9 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+_POST_ONLY_REPRICE_TICK = 0.01
+
+
 def _normalize_side(value: Any) -> OrderSide | None:
     if isinstance(value, OrderSide):
         return value
@@ -32,6 +35,17 @@ def _map_trading_status(status: Any) -> str:
     if key == "pending":
         return "submitted"
     return "failed"
+
+
+def _is_post_only_cross_reject(error_message: str | None) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    return "post-only" in text and "crosses book" in text
+
+
+def _clamp_binary_price(value: float) -> float:
+    return max(_POST_ONLY_REPRICE_TICK, min(0.99, float(value)))
 
 
 @dataclass
@@ -72,6 +86,7 @@ async def execute_live_order(
         "side": str(getattr(normalized_side, "value", normalized_side) or ""),
         "requested_size": requested_size,
         "fallback_price": fallback,
+        "post_only": bool(post_only),
     }
 
     if not normalized_token_id:
@@ -157,9 +172,24 @@ async def execute_live_order(
 
                 quote_candidates = [q for q in (quote_buy, quote_sell) if q is not None and q > 0]
                 if quote_candidates:
-                    # Use marketable-side pricing regardless of provider side-label semantics.
-                    live_quote = max(quote_candidates) if normalized_side == OrderSide.BUY else min(quote_candidates)
-                    price_resolution = "live_quote"
+                    if post_only:
+                        if normalized_side == OrderSide.BUY:
+                            if quote_sell is not None and quote_sell > 0:
+                                live_quote = quote_sell
+                                price_resolution = "live_quote_post_only_bid"
+                            elif quote_buy is not None and quote_buy > 0:
+                                live_quote = _clamp_binary_price(float(quote_buy) - _POST_ONLY_REPRICE_TICK)
+                                price_resolution = "live_quote_post_only_from_ask"
+                        else:
+                            if quote_buy is not None and quote_buy > 0:
+                                live_quote = quote_buy
+                                price_resolution = "live_quote_post_only_ask"
+                            elif quote_sell is not None and quote_sell > 0:
+                                live_quote = _clamp_binary_price(float(quote_sell) + _POST_ONLY_REPRICE_TICK)
+                                price_resolution = "live_quote_post_only_from_bid"
+                    if live_quote is None:
+                        live_quote = max(quote_candidates) if normalized_side == OrderSide.BUY else min(quote_candidates)
+                        price_resolution = "live_quote"
 
             # Apply the resolved price with min notional guard
             if live_quote is not None and live_quote > 0:
@@ -214,6 +244,38 @@ async def execute_live_order(
             market_question=market_question,
             opportunity_id=opportunity_id,
         )
+
+        order_status = _map_trading_status(getattr(order, "status", None))
+        order_error_message = getattr(order, "error_message", None) if order_status == "failed" else None
+        if post_only and order_status == "failed" and _is_post_only_cross_reject(order_error_message):
+            retry_price = _clamp_binary_price(
+                resolved_price - _POST_ONLY_REPRICE_TICK
+                if normalized_side == OrderSide.BUY
+                else resolved_price + _POST_ONLY_REPRICE_TICK
+            )
+            if abs(retry_price - resolved_price) >= 1e-9:
+                retry_order = await live_execution_service.place_order(
+                    token_id=normalized_token_id,
+                    side=normalized_side,
+                    price=retry_price,
+                    size=requested_size,
+                    order_type=order_type,
+                    post_only=post_only,
+                    min_order_size_usd=min_order_size,
+                    market_question=market_question,
+                    opportunity_id=opportunity_id,
+                )
+                retry_status = _map_trading_status(getattr(retry_order, "status", None))
+                if retry_status != "failed":
+                    order = retry_order
+                    resolved_price = retry_price
+                    price_resolution = f"{price_resolution}|post_only_retry_1tick"
+                else:
+                    retry_error_message = getattr(retry_order, "error_message", None)
+                    if retry_error_message:
+                        order.error_message = (
+                            f"{str(order.error_message or '')} | post_only_retry_price={retry_price:.4f} failed: {retry_error_message}"
+                        ).strip(" |")
     except Exception as exc:
         logger.error(
             "Live order placement failed",

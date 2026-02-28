@@ -53,6 +53,10 @@ def _is_expected_close(exc: Exception) -> bool:
 
     if isinstance(exc, (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError)):
         close_code = getattr(exc, "code", None)
+        if close_code is None:
+            received = getattr(exc, "rcvd", None)
+            sent = getattr(exc, "sent", None)
+            close_code = getattr(received, "code", None) or getattr(sent, "code", None)
         return close_code in {1000, 1001}
     return False
 
@@ -66,6 +70,8 @@ KALSHI_WS_URL = settings.KALSHI_WS_URL
 
 DEFAULT_STALE_TTL = float(settings.WS_PRICE_STALE_SECONDS)
 DEFAULT_HEARTBEAT_INTERVAL = 10.0  # seconds between keep-alive pings
+DEFAULT_HEARTBEAT_PONG_TIMEOUT = 12.0
+DEFAULT_HEARTBEAT_MAX_MISSES = 2
 DEFAULT_RECONNECT_BASE_DELAY = 1.0  # initial backoff delay in seconds
 DEFAULT_RECONNECT_MAX_DELAY = 60.0  # maximum backoff ceiling
 DEFAULT_RECONNECT_MULTIPLIER = 2.0  # exponential multiplier per attempt
@@ -528,6 +534,8 @@ class PolymarketWSFeed:
         self._cache = cache
         self._ws_url = ws_url
         self._heartbeat_interval = heartbeat_interval
+        self._heartbeat_pong_timeout = DEFAULT_HEARTBEAT_PONG_TIMEOUT
+        self._heartbeat_max_misses = DEFAULT_HEARTBEAT_MAX_MISSES
         self._reconnect_base_delay = reconnect_base_delay
         self._reconnect_max_delay = reconnect_max_delay
 
@@ -738,22 +746,37 @@ class PolymarketWSFeed:
                 assets=len(token_ids),
             )
         except Exception as exc:
-            logger.warning(f"Polymarket WS subscribe send failed: {exc!r}")
+            if _is_expected_close(exc):
+                logger.info("Polymarket WS subscribe interrupted by clean close")
+            else:
+                logger.warning(f"Polymarket WS subscribe send failed: {exc!r}")
 
     async def _heartbeat_loop(self, ws: Any) -> None:
         """Periodically send a ping frame to keep the connection alive."""
+        consecutive_misses = 0
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_interval)
                 try:
+                    last_message_at = float(self.stats.last_message_at or 0.0)
+                    if last_message_at > 0 and (time.monotonic() - last_message_at) <= self._heartbeat_interval:
+                        consecutive_misses = 0
+                        continue
                     pong = await ws.ping()
                     start = time.monotonic()
-                    await asyncio.wait_for(pong, timeout=5.0)
+                    await asyncio.wait_for(pong, timeout=self._heartbeat_pong_timeout)
                     self.stats.last_latency_ms = (time.monotonic() - start) * 1000
+                    consecutive_misses = 0
                 except asyncio.TimeoutError:
-                    logger.warning("Polymarket WS heartbeat pong timeout")
-                    await ws.close()
-                    return
+                    consecutive_misses += 1
+                    logger.warning(
+                        "Polymarket WS heartbeat pong timeout",
+                        misses=consecutive_misses,
+                        threshold=self._heartbeat_max_misses,
+                    )
+                    if consecutive_misses >= self._heartbeat_max_misses:
+                        await ws.close()
+                        return
                 except Exception:
                     return
         except asyncio.CancelledError:

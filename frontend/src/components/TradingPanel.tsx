@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -113,6 +113,7 @@ type PositionSortField = 'exposure' | 'updated' | 'edge' | 'confidence' | 'unrea
 type PositionSortDirection = 'asc' | 'desc'
 type BotRosterSort = 'name_asc' | 'name_desc' | 'pnl_desc' | 'pnl_asc' | 'open_desc' | 'activity_desc'
 type BotRosterGroupBy = 'none' | 'status' | 'source'
+type TerminalDensity = 'compact' | 'expanded'
 
 type TerminalLeg = {
   action: TradeAction | null
@@ -248,6 +249,12 @@ type DynamicStrategyParamSection = {
   values: Record<string, unknown>
   kind: DynamicStrategyParamSectionKind
 }
+
+const TERMINAL_ACTIVITY_MAX_ROWS = 320
+const TERMINAL_SELECTED_MAX_ROWS = 220
+const TERMINAL_ALL_BOTS_MAX_ROWS = 120
+const TERMINAL_COMPACT_ROW_HEIGHT = 34
+const TERMINAL_COMPACT_OVERSCAN = 16
 
 const CRYPTO_STRATEGY_OPTIONS = [
   { key: 'btc_eth_highfreq', label: 'Crypto High Frequency' },
@@ -1834,6 +1841,32 @@ function renderMarketsDetail(legs: TerminalLeg[], fallback: string | null): stri
     rendered.push(`+${legs.length - 3} more`)
   }
   return rendered.join(' | ')
+}
+
+function normalizeActivityText(value: string | null): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function activityDuplicateFingerprint(
+  traderId: string | null,
+  timestamp: string | null,
+  reason: string,
+  market: string | null,
+): string {
+  const bucketSeconds = Math.floor(toTs(timestamp) / 1000)
+  return [
+    normalizeActivityText(traderId),
+    String(bucketSeconds),
+    normalizeActivityText(reason),
+    normalizeActivityText(market),
+  ].join('|')
+}
+
+function areReasonsEquivalent(left: string, right: string): boolean {
+  const a = normalizeActivityText(left)
+  const b = normalizeActivityText(right)
+  if (!a || !b) return false
+  return a === b || a.includes(b) || b.includes(a)
 }
 
 function decisionReasonDetail(decision: {
@@ -3805,6 +3838,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [selectedTraderId, setSelectedTraderId] = useState<string | null>(null)
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [traderFeedFilter, setTraderFeedFilter] = useState<FeedFilter>('all')
+  const [terminalDensity, setTerminalDensity] = useState<TerminalDensity>('compact')
+  const [terminalScrollTop, setTerminalScrollTop] = useState(0)
+  const [terminalViewportHeight, setTerminalViewportHeight] = useState(0)
   const [tradeStatusFilter, setTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [tradeSearch, setTradeSearch] = useState('')
   const [decisionSearch, setDecisionSearch] = useState('')
@@ -3825,6 +3861,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [allBotsPositionDirectionFilter, setAllBotsPositionDirectionFilter] = useState<PositionDirectionFilter>('all')
   const [allBotsPositionSortField, setAllBotsPositionSortField] = useState<PositionSortField>('exposure')
   const [allBotsPositionSortDirection, setAllBotsPositionSortDirection] = useState<PositionSortDirection>('desc')
+  const terminalViewportRef = useRef<HTMLDivElement | null>(null)
 
   const [traderFlyoutOpen, setTraderFlyoutOpen] = useState(false)
   const [traderFlyoutMode, setTraderFlyoutMode] = useState<'create' | 'edit'>('create')
@@ -4004,7 +4041,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const allDecisionsQuery = useQuery({
     queryKey: ['trader-decisions-all', traderIdsKey],
     enabled: traderIds.length > 0,
-    refetchInterval: isConnected ? 15000 : 1000,
+    refetchInterval: isConnected ? 30000 : 3000,
     staleTime: 0,
     refetchOnMount: 'always',
     queryFn: async () => {
@@ -4020,7 +4057,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const allEventsQuery = useQuery({
     queryKey: ['trader-events-all', traderIdsKey],
     enabled: traderIds.length > 0,
-    refetchInterval: false,
+    refetchInterval: isConnected ? 30000 : 5000,
     queryFn: async () => {
       const grouped = await Promise.all(
         traderIds.map((traderId) => getTraderEvents(traderId, { limit: 80 }))
@@ -6468,6 +6505,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const activityRows = useMemo(() => {
     const decisionsById = new Map(allDecisions.map((decision) => [decision.id, decision]))
     const latestOrderByDecisionId = new Map<string, TraderOrder>()
+    const decisionEchoFingerprints = new Set<string>()
+    const decisionReasonById = new Map<string, string>()
     for (const order of allOrders) {
       const decisionId = cleanText(order.decision_id)
       if (!decisionId || latestOrderByDecisionId.has(decisionId)) continue
@@ -6487,6 +6526,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         decisionKey === 'failed' || decisionKey === 'blocked' ? 'negative' :
         decisionKey === 'skipped' ? 'warning' :
         'neutral'
+      decisionReasonById.set(decision.id, reason)
+      decisionEchoFingerprints.add(
+        activityDuplicateFingerprint(
+          cleanText(decision.trader_id),
+          decision.created_at,
+          reason,
+          fallbackMarket || marketLabel,
+        )
+      )
 
       return {
         kind: 'decision',
@@ -6542,7 +6590,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       }
     })
 
-    const eventRows: ActivityRow[] = allEvents.map((event) => {
+    const eventRows: ActivityRow[] = []
+    for (const event of allEvents) {
       const payload = isRecord(event.payload) ? event.payload : null
       const linkedDecisionId = payload ? cleanText(payload.decision_id) : null
       const linkedDecision = linkedDecisionId ? decisionsById.get(linkedDecisionId) || null : null
@@ -6565,12 +6614,29 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       )
       const reason = eventReasonDetail(event)
       const severity = String(event.severity || '').trim().toLowerCase()
+      const eventType = String(event.event_type || '').trim().toLowerCase()
+      const decisionFingerprint = activityDuplicateFingerprint(
+        cleanText(event.trader_id),
+        event.created_at,
+        reason,
+        fallbackMarket || marketLabel,
+      )
+      const linkedDecisionReason = linkedDecisionId ? decisionReasonById.get(linkedDecisionId) || '' : ''
+      if (
+        eventType === 'decision'
+        && (
+          (linkedDecision && areReasonsEquivalent(reason, linkedDecisionReason))
+          || decisionEchoFingerprints.has(decisionFingerprint)
+        )
+      ) {
+        continue
+      }
       const tone: ActivityRow['tone'] =
         severity === 'warn' || severity === 'warning' ? 'warning' :
         severity === 'error' || severity === 'failed' ? 'negative' :
         'neutral'
 
-      return {
+      eventRows.push({
         kind: 'event',
         id: event.id,
         ts: event.created_at,
@@ -6579,24 +6645,64 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         detail: `Markets: ${renderMarketsDetail(linkedLegs, fallbackMarket)} :: Reason: ${reason}`,
         action,
         tone,
-      }
-    })
+      })
+    }
 
     return [...decisionRows, ...orderRows, ...eventRows]
       .sort((a, b) => toTs(b.ts) - toTs(a.ts))
-      .slice(0, 350)
+      .slice(0, TERMINAL_ACTIVITY_MAX_ROWS)
   }, [allDecisions, allOrders, allEvents])
 
   const selectedTraderActivityRows = useMemo(
-    () => activityRows.filter((row) => row.traderId === selectedTraderId),
+    () => activityRows.filter((row) => row.traderId === selectedTraderId).slice(0, TERMINAL_SELECTED_MAX_ROWS),
     [activityRows, selectedTraderId]
   )
 
   const filteredTraderActivityRows = useMemo(() => {
     return selectedTraderActivityRows
       .filter((row) => traderFeedFilter === 'all' || row.kind === traderFeedFilter)
-      .slice(0, 240)
   }, [selectedTraderActivityRows, traderFeedFilter])
+
+  useEffect(() => {
+    setTerminalScrollTop(0)
+    if (terminalViewportRef.current) {
+      terminalViewportRef.current.scrollTop = 0
+    }
+  }, [selectedTraderId, traderFeedFilter, terminalDensity])
+
+  useEffect(() => {
+    const viewport = terminalViewportRef.current
+    if (!viewport) return
+    const sync = () => setTerminalViewportHeight(viewport.clientHeight)
+    sync()
+    const observer = new ResizeObserver(sync)
+    observer.observe(viewport)
+    return () => observer.disconnect()
+  }, [terminalDensity, workTab])
+
+  const compactTerminalWindow = useMemo(() => {
+    const total = filteredTraderActivityRows.length
+    if (terminalDensity !== 'compact') {
+      return {
+        rows: filteredTraderActivityRows,
+        topPad: 0,
+        bottomPad: 0,
+        total,
+      }
+    }
+    const visibleRows = Math.max(
+      1,
+      Math.ceil((terminalViewportHeight || TERMINAL_COMPACT_ROW_HEIGHT) / TERMINAL_COMPACT_ROW_HEIGHT)
+    )
+    const start = Math.max(0, Math.floor(terminalScrollTop / TERMINAL_COMPACT_ROW_HEIGHT) - TERMINAL_COMPACT_OVERSCAN)
+    const end = Math.min(total, start + visibleRows + TERMINAL_COMPACT_OVERSCAN * 2)
+    return {
+      rows: filteredTraderActivityRows.slice(start, end),
+      topPad: start * TERMINAL_COMPACT_ROW_HEIGHT,
+      bottomPad: Math.max(0, (total - end) * TERMINAL_COMPACT_ROW_HEIGHT),
+      total,
+    }
+  }, [filteredTraderActivityRows, terminalDensity, terminalScrollTop, terminalViewportHeight])
 
   const riskActivityRows = useMemo(
     () => activityRows.filter((row) => row.tone === 'negative' || row.tone === 'warning').slice(0, 240),
@@ -6614,7 +6720,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   )
 
   const allBotsActivityRows = useMemo(
-    () => activityRows.slice(0, 120),
+    () => activityRows.slice(0, TERMINAL_ALL_BOTS_MAX_ROWS),
     [activityRows]
   )
 
@@ -8398,18 +8504,74 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           {kind}
                         </Button>
                       ))}
+                      <div className="ml-1 inline-flex items-center gap-1">
+                        <Button size="sm" variant={terminalDensity === 'compact' ? 'default' : 'outline'} onClick={() => setTerminalDensity('compact')} className="h-5 px-2 text-[10px]">
+                          compact
+                        </Button>
+                        <Button size="sm" variant={terminalDensity === 'expanded' ? 'default' : 'outline'} onClick={() => setTerminalDensity('expanded')} className="h-5 px-2 text-[10px]">
+                          expanded
+                        </Button>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground ml-1">Auto-truncate: latest {TERMINAL_SELECTED_MAX_ROWS}</span>
+                      {terminalDensity === 'compact' && (
+                        <span className="text-[10px] text-muted-foreground">Rendering {compactTerminalWindow.rows.length}/{compactTerminalWindow.total}</span>
+                      )}
                     </div>
                     {selectedTraderNoNewRows && (
                       <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100 mx-1">
                         No new rows since last cycle ({formatTimestamp(selectedTrader?.last_run_at || worker?.last_run_at)}).
                       </div>
                     )}
-                    <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10 mx-1">
-                      <div className="space-y-0.5 p-1.5 font-mono text-[11px] leading-relaxed">
-                        {filteredTraderActivityRows.length === 0 ? (
-                          <div className="py-8 text-center text-muted-foreground text-xs">No events matching filters.</div>
-                        ) : (
-                          filteredTraderActivityRows.map((row) => (
+                    <div
+                      ref={terminalViewportRef}
+                      onScroll={(event) => {
+                        if (terminalDensity !== 'compact') return
+                        setTerminalScrollTop(event.currentTarget.scrollTop)
+                      }}
+                      className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10 mx-1 overflow-auto"
+                    >
+                      {filteredTraderActivityRows.length === 0 ? (
+                        <div className="py-8 text-center text-muted-foreground text-xs">No events matching filters.</div>
+                      ) : terminalDensity === 'compact' ? (
+                        <div className="p-1.5 font-mono text-[11px]">
+                          <div style={{ height: compactTerminalWindow.topPad }} />
+                          <div className="space-y-0.5">
+                            {compactTerminalWindow.rows.map((row) => (
+                              <div
+                                key={`${row.kind}:${row.id}`}
+                                style={{ minHeight: TERMINAL_COMPACT_ROW_HEIGHT }}
+                                className={cn(
+                                  'rounded border px-2 py-1 flex items-center gap-1.5 whitespace-nowrap',
+                                  row.tone === 'positive' && 'border-emerald-500/25 text-emerald-700 dark:text-emerald-100',
+                                  row.tone === 'negative' && 'border-red-500/30 text-red-700 dark:text-red-100',
+                                  row.tone === 'warning' && 'border-amber-500/30 text-amber-700 dark:text-amber-100',
+                                  row.tone === 'neutral' && row.action === 'BUY' && 'border-emerald-500/25 bg-emerald-500/5 text-emerald-700 dark:text-emerald-100',
+                                  row.tone === 'neutral' && row.action === 'SELL' && 'border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-100',
+                                  row.tone === 'neutral' && !row.action && 'border-border/50 text-foreground'
+                                )}
+                              >
+                                <span className="text-muted-foreground shrink-0">[{formatTimestamp(row.ts)}]</span>
+                                <span className="uppercase text-[10px] shrink-0">{row.kind}</span>
+                                {row.action && (
+                                  <span
+                                    className={cn(
+                                      'uppercase text-[10px] font-semibold shrink-0',
+                                      row.action === 'BUY' ? 'text-emerald-500' : 'text-red-500'
+                                    )}
+                                  >
+                                    {row.action}
+                                  </span>
+                                )}
+                                <span className="font-medium truncate">{row.title}</span>
+                                <span className="text-muted-foreground truncate">{row.detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ height: compactTerminalWindow.bottomPad }} />
+                        </div>
+                      ) : (
+                        <div className="space-y-0.5 p-1.5 font-mono text-[11px] leading-relaxed">
+                          {filteredTraderActivityRows.map((row) => (
                             <div
                               key={`${row.kind}:${row.id}`}
                               className={cn(
@@ -8438,10 +8600,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </div>
                               <div className="text-[10px] leading-relaxed text-muted-foreground mt-0.5 break-words">{row.detail}</div>
                             </div>
-                          ))
-                        )}
-                      </div>
-                    </ScrollArea>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

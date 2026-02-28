@@ -133,6 +133,83 @@ export function useRealtimeInvalidation(
       }
     }
 
+    const toTs = (value: unknown): number => {
+      const parsed = Date.parse(String(value || ''))
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+
+    const upsertTraderDecisionCache = (incomingDecision: any) => {
+      if (!incomingDecision || typeof incomingDecision !== 'object') return
+      const incomingId = String(incomingDecision.id || '').trim()
+      if (!incomingId) return
+      const normalizeRows = (old: any) => {
+        if (!Array.isArray(old)) return old
+        let found = false
+        const nextRows = old.map((row: any) => {
+          const rowId = String(row?.id || '').trim()
+          if (rowId !== incomingId) return row
+          found = true
+          return {
+            ...row,
+            ...incomingDecision,
+            failed_checks: Array.isArray(incomingDecision.failed_checks)
+              ? incomingDecision.failed_checks
+              : (Array.isArray(row?.failed_checks) ? row.failed_checks : []),
+            payload: incomingDecision.payload ?? row?.payload ?? {},
+          }
+        })
+        if (!found) {
+          nextRows.unshift({
+            ...incomingDecision,
+            failed_checks: Array.isArray(incomingDecision.failed_checks) ? incomingDecision.failed_checks : [],
+            payload: incomingDecision.payload ?? {},
+          })
+        }
+        return nextRows
+          .sort((a: any, b: any) => toTs(b?.created_at) - toTs(a?.created_at))
+          .slice(0, 1200)
+      }
+      queryClient.setQueriesData({ queryKey: ['trader-decisions-all'] }, normalizeRows)
+      const traderId = String(incomingDecision.trader_id || '').trim()
+      if (traderId) {
+        queryClient.setQueryData(['trader-decisions', traderId], normalizeRows)
+      }
+    }
+
+    const upsertTraderEventCache = (incomingEvent: any) => {
+      if (!incomingEvent || typeof incomingEvent !== 'object') return
+      const incomingId = String(incomingEvent.id || '').trim()
+      if (!incomingId) return
+      const normalizeRows = (old: any) => {
+        if (!Array.isArray(old)) return old
+        let found = false
+        const nextRows = old.map((row: any) => {
+          const rowId = String(row?.id || '').trim()
+          if (rowId !== incomingId) return row
+          found = true
+          return {
+            ...row,
+            ...incomingEvent,
+            payload: incomingEvent.payload ?? row?.payload ?? {},
+          }
+        })
+        if (!found) {
+          nextRows.unshift({
+            ...incomingEvent,
+            payload: incomingEvent.payload ?? {},
+          })
+        }
+        return nextRows
+          .sort((a: any, b: any) => toTs(b?.created_at) - toTs(a?.created_at))
+          .slice(0, 800)
+      }
+      queryClient.setQueriesData({ queryKey: ['trader-events-all'] }, normalizeRows)
+      const traderId = String(incomingEvent.trader_id || '').trim()
+      if (traderId) {
+        queryClient.setQueryData(['trader-events', traderId], normalizeRows)
+      }
+    }
+
     const activeTab = String(context.activeTab || '')
     const opportunitiesView = String(context.opportunitiesView || '')
     const dataView = String(context.dataView || '')
@@ -374,15 +451,9 @@ export function useRealtimeInvalidation(
       ])
     }
     if (messageType === 'trader_decision') {
+      upsertTraderDecisionCache(lastMessage.data)
       queueInvalidations([
         ['trader-orchestrator-overview'],
-        ...(viewingTrading
-          ? ([
-              ['traders-decisions'],
-              ['trader-decisions-all'],
-              ['trader-events-all'],
-            ] as QueryKey[])
-          : []),
       ])
     }
     if (messageType === 'trader_order') {
@@ -409,14 +480,12 @@ export function useRealtimeInvalidation(
       ])
     }
     if (messageType === 'trader_event') {
-      queueInvalidations(
-        viewingTrading
-          ? [
-              ['traders-events'],
-              ['trader-events-all'],
-            ]
-          : [],
-      )
+      upsertTraderEventCache(lastMessage.data)
+      if (viewingTrading) {
+        queueInvalidations([
+          ['trader-orchestrator-overview'],
+        ])
+      }
     }
   }, [context.activeTab, context.opportunitiesView, lastMessage, queryClient, queueInvalidations, setScannerActivity])
 }

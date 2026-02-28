@@ -94,6 +94,14 @@ class RetryableAsyncSession(AsyncSession):
                 delay = min(self._COMMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 0.4)
                 await asyncio.sleep(delay)
 
+    def __del__(self) -> None:
+        try:
+            sync_session = getattr(self, "sync_session", None)
+            if sync_session is not None:
+                sync_session.close()
+        except Exception:
+            pass
+
 
 class TradeStatus(enum.Enum):
     PENDING = "pending"

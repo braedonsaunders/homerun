@@ -175,16 +175,31 @@ async def _run_loop() -> None:
         pass
 
     while True:
-        async with AsyncSessionLocal() as session:
-            control = await shared_state.read_news_control(session)
-            wf_settings = await shared_state.get_news_settings(session)
-            try:
-                await refresh_strategy_runtime_if_needed(
-                    session,
-                    source_keys=["news"],
-                )
-            except Exception as exc:
-                logger.warning("News worker strategy refresh check failed: %s", exc)
+        try:
+            async with AsyncSessionLocal() as session:
+                control = await shared_state.read_news_control(session)
+                wf_settings = await shared_state.get_news_settings(session)
+                try:
+                    await refresh_strategy_runtime_if_needed(
+                        session,
+                        source_keys=["news"],
+                    )
+                except Exception as exc:
+                    logger.warning("News worker strategy refresh check failed: %s", exc)
+        except Exception as exc:
+            if _is_db_disconnect_error(exc):
+                logger.warning("News workflow DB connection dropped; retrying cycle: %s", exc)
+                now_monotonic = time.monotonic()
+                if now_monotonic - _last_pool_recovery_at_monotonic >= _DB_POOL_RECOVERY_COOLDOWN_SECONDS:
+                    try:
+                        await recover_pool()
+                        _last_pool_recovery_at_monotonic = time.monotonic()
+                        logger.warning("Recovered DB pool after news workflow disconnect")
+                    except Exception as pool_exc:
+                        logger.warning("News workflow DB pool recovery failed: %s", pool_exc)
+                await asyncio.sleep(_RUN_CYCLE_DB_RETRY_BASE_DELAY_SECONDS)
+                continue
+            raise
 
         interval = _interval_from_control_and_settings(control, wf_settings)
         paused = bool(control.get("is_paused", False))
@@ -445,6 +460,14 @@ async def _run_loop() -> None:
         except Exception as exc:
             if _is_db_disconnect_error(exc):
                 logger.warning("News workflow cycle hit transient DB disconnect (will retry): %s", exc)
+                now_monotonic = time.monotonic()
+                if now_monotonic - _last_pool_recovery_at_monotonic >= _DB_POOL_RECOVERY_COOLDOWN_SECONDS:
+                    try:
+                        await recover_pool()
+                        _last_pool_recovery_at_monotonic = time.monotonic()
+                        logger.warning("Recovered DB pool after news workflow disconnect")
+                    except Exception as pool_exc:
+                        logger.warning("News workflow DB pool recovery failed: %s", pool_exc)
             else:
                 logger.exception("News workflow cycle failed: %s", exc)
             next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)

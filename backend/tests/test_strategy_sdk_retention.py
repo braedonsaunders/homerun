@@ -382,3 +382,21 @@ def test_crypto_highfreq_resolution_risk_flatten_policy():
     )
     assert should_skip_armed is False
     assert detail_armed == "take_profit_armed"
+
+
+def test_crypto_highfreq_resolution_risk_flatten_keeps_loss_pressure_near_close():
+    should_flatten, detail = crypto_highfreq_should_flatten_resolution_risk(
+        {
+            "resolution_risk_flatten_enabled": True,
+            "resolution_risk_seconds_left_15m": 240,
+            "resolution_risk_min_loss_pct": 2,
+        },
+        timeframe="15m",
+        seconds_left=180.0,
+        pnl_percent=-7.5,
+        exit_headroom_ratio=1.3,
+        take_profit_armed=False,
+    )
+
+    assert should_flatten is True
+    assert "loss_pressure=True" in detail
