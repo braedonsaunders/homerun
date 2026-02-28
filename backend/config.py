@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # Scanner Settings
     SCAN_WATCHDOG_SECONDS: int = 600  # Max seconds before a scan cycle is killed
     SCANNER_HEARTBEAT_INTERVAL_SECONDS: float = 5.0  # Worker heartbeat persistence cadence
+    SCANNER_BATCH_QUEUE_LEASE_SECONDS: int = 45  # Aggregator batch lease duration
+    SCANNER_BATCH_QUEUE_RETRY_MAX_ATTEMPTS: int = 5  # Drop batch after repeated aggregator failures
+    SCANNER_BATCH_QUEUE_RETAIN_HOURS: int = 24  # Retention horizon for processed scanner batches
+    SCANNER_BATCH_QUEUE_CLEANUP_INTERVAL_SECONDS: int = 300  # Queue cleanup cadence
+    SCANNER_BATCH_QUEUE_MAX_PENDING: int = 200  # Backpressure cap before scanner drops oldest batch
+    OPPORTUNITY_AGGREGATOR_HEARTBEAT_INTERVAL_SECONDS: float = 3.0  # Aggregator heartbeat cadence
+    OPPORTUNITY_AGGREGATOR_IDLE_SLEEP_SECONDS: float = 0.25  # Idle sleep between queue polls
+    MARKET_UNIVERSE_HEARTBEAT_INTERVAL_SECONDS: float = 5.0  # Catalog worker heartbeat cadence
+    MARKET_UNIVERSE_REFRESH_INTERVAL_SECONDS: int = 120  # Full market catalog refresh cadence
+    MARKET_UNIVERSE_REFRESH_TIMEOUT_SECONDS: int = 300  # Hard timeout for one market catalog refresh
     SCAN_INTERVAL_SECONDS: int = 60
     SCANNER_STALE_OPPORTUNITY_MINUTES: int = 45
     # Prevent one strategy from flooding the opportunities surface.

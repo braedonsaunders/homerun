@@ -527,19 +527,29 @@ class ArbitrageScanner:
                     continue
                 bba = feed_mgr.cache.get_best_bid_ask(token_id)
                 if bba is None:
+                    now_ts = float(time.time())
                     prices[token_id] = {
                         "mid": float(mid),
                         "bid": float(mid),
                         "ask": float(mid),
-                        "ts": float(time.time()),
+                        "ts": now_ts,
+                        "ingest_ts": now_ts,
+                        "exchange_ts": now_ts,
+                        "sequence": 0,
+                        "is_fresh": True,
                     }
                 else:
                     bid, ask = bba
+                    now_ts = float(time.time())
                     prices[token_id] = {
                         "mid": float(mid),
                         "bid": float(bid),
                         "ask": float(ask),
-                        "ts": float(time.time()),
+                        "ts": now_ts,
+                        "ingest_ts": now_ts,
+                        "exchange_ts": now_ts,
+                        "sequence": 0,
+                        "is_fresh": True,
                     }
         except Exception:
             pass
@@ -774,7 +784,7 @@ class ArbitrageScanner:
     def _price_timestamp(raw: Optional[dict]) -> Optional[float]:
         if not isinstance(raw, dict):
             return None
-        for key in ("ts", "timestamp", "updated_at", "updatedAt"):
+        for key in ("ingest_ts", "exchange_ts", "ts", "timestamp", "updated_at", "updatedAt"):
             value = raw.get(key)
             if isinstance(value, (int, float)):
                 ts = float(value)
@@ -2273,7 +2283,7 @@ class ArbitrageScanner:
             await self._set_activity(f"Catalog refresh error: {e}")
             raise
 
-    async def _hydrate_catalog_from_db(self) -> int:
+    async def _hydrate_catalog_from_db(self, *, only_if_newer: bool = False) -> int:
         """Restore market catalog from DB on startup.
 
         Populates _cached_events, _cached_markets, and derived caches so
@@ -2293,6 +2303,13 @@ class ArbitrageScanner:
         if not markets:
             return 0
 
+        catalog_age = metadata.get("updated_at")
+        if only_if_newer and self._cached_markets:
+            if catalog_age is None:
+                return 0
+            if self._last_catalog_refresh is not None and catalog_age <= self._last_catalog_refresh:
+                return 0
+
         now = datetime.now(timezone.utc)
         events, markets = self._prune_active_catalog(events, markets, now)
         events, markets = self._enforce_catalog_caps(events, markets)
@@ -2303,7 +2320,6 @@ class ArbitrageScanner:
         self._rebuild_realtime_graph(events, markets)
         self._trim_runtime_market_caches({str(getattr(m, "id", "") or "") for m in markets})
 
-        catalog_age = metadata.get("updated_at")
         if catalog_age:
             self._last_catalog_refresh = catalog_age
             # Also set _last_full_scan so scan_fast doesn't think it
@@ -2311,7 +2327,10 @@ class ArbitrageScanner:
             if self._last_full_scan is None:
                 self._last_full_scan = catalog_age
 
-        print(f"  Hydrated catalog from DB: {len(events)} events, {len(markets)} markets")
+        print(
+            f"  Hydrated catalog from DB: {len(events)} events, {len(markets)} markets"
+            + (" (updated snapshot)" if only_if_newer else "")
+        )
         return len(markets)
 
     async def scan_fast(
@@ -3538,6 +3557,38 @@ class ArbitrageScanner:
         """Get current scanner status"""
         strategy_rows = self._strategy_runtime_status_rows()
         now = datetime.now(timezone.utc)
+
+        def _age_seconds(dt: Optional[datetime]) -> Optional[float]:
+            aware = _make_aware(dt)
+            if aware is None:
+                return None
+            return max(0.0, (now - aware).total_seconds())
+
+        def _p95(values: list[float]) -> Optional[float]:
+            if not values:
+                return None
+            ordered = sorted(values)
+            index = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.95))))
+            return round(float(ordered[index]), 3)
+
+        last_fast_scan_age_seconds = _age_seconds(self._last_fast_scan)
+        opportunity_price_ages = [
+            age
+            for age in (
+                _age_seconds(_make_aware(getattr(opp, "last_priced_at", None) or opp.detected_at))
+                for opp in self._opportunities
+            )
+            if age is not None
+        ]
+        opportunity_detected_ages = [
+            age
+            for age in (
+                _age_seconds(_make_aware(getattr(opp, "last_detected_at", None) or opp.detected_at))
+                for opp in self._opportunities
+            )
+            if age is not None
+        ]
+
         fast_watchdog_seconds = max(
             30,
             int(getattr(settings, "SCAN_WATCHDOG_SECONDS", 600) or 600),
@@ -3569,6 +3620,11 @@ class ArbitrageScanner:
             "last_scan": to_iso(self._last_scan),
             "last_fast_scan": to_iso(self._last_fast_scan),
             "last_heavy_scan": to_iso(self._last_full_snapshot_strategy_scan),
+            "last_fast_scan_age_seconds": (
+                round(float(last_fast_scan_age_seconds), 3) if last_fast_scan_age_seconds is not None else None
+            ),
+            "opportunity_price_age_p95": _p95(opportunity_price_ages),
+            "opportunity_last_detected_age_p95": _p95(opportunity_detected_ages),
             "opportunities_count": len(self._opportunities),
             "current_activity": self._current_activity,
             "lane_watchdogs": lane_watchdogs,

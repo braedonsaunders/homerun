@@ -160,6 +160,9 @@ class CachedEntry:
     best_ask: float = 0.0
     order_book: Optional[OrderBook] = None
     updated_at: float = 0.0  # monotonic timestamp
+    updated_at_epoch: float = 0.0  # wall-clock ingest timestamp (seconds)
+    exchange_ts: float = 0.0  # exchange-reported timestamp (seconds)
+    sequence: int = 0  # local monotonic cache sequence
 
 
 @dataclass
@@ -193,8 +196,9 @@ class PriceCache:
         self._lock = Lock()
         self._entries: Dict[str, CachedEntry] = {}
         self._history: Dict[str, deque[tuple[float, float, float, float]]] = {}
+        self._sequence: int = 0
         self._on_change_callbacks: List[Callable[[str, float, float], None]] = []
-        self._on_update_callbacks: List[Callable[[str, float, float, float], None]] = []
+        self._on_update_callbacks: List[Callable[[str, float, float, float, float, float, int], None]] = []
         self._trades: Dict[str, deque] = {}
         self._trades_max = 500
         self._on_trade_callbacks: List[Callable] = []
@@ -207,10 +211,11 @@ class PriceCache:
         """
         self._on_change_callbacks.append(callback)
 
-    def add_on_update_callback(self, callback: Callable[[str, float, float, float], None]) -> None:
+    def add_on_update_callback(self, callback: Callable[[str, float, float, float, float, float, int], None]) -> None:
         """Register a callback invoked on every cache replacement.
 
-        The callback receives ``(token_id, mid, bid, ask)`` and is called
+        The callback receives
+        ``(token_id, mid, bid, ask, exchange_ts, ingest_ts, sequence)`` and is called
         outside the lock so it must be thread-safe itself.
         """
         self._on_update_callbacks.append(callback)
@@ -222,6 +227,8 @@ class PriceCache:
         token_id: str,
         bids: List[OrderBookLevel],
         asks: List[OrderBookLevel],
+        *,
+        exchange_ts: float | None = None,
     ) -> None:
         """Atomically replace the order book for *token_id*."""
         bids_sorted = sorted(bids, key=lambda lvl: lvl.price, reverse=True)
@@ -235,13 +242,6 @@ class PriceCache:
 
         now_mono = time.monotonic()
         now_epoch = time.time()
-        entry = CachedEntry(
-            best_bid=best_bid,
-            best_ask=best_ask,
-            order_book=book,
-            updated_at=now_mono,
-        )
-
         old_mid = 0.0
         with self._lock:
             prev = self._entries.get(token_id)
@@ -251,6 +251,18 @@ class PriceCache:
                     if prev.best_bid > 0 and prev.best_ask > 0
                     else prev.best_bid or prev.best_ask
                 )
+            self._sequence += 1
+            sequence = self._sequence
+            parsed_exchange_ts = float(exchange_ts) if exchange_ts is not None and exchange_ts > 0 else now_epoch
+            entry = CachedEntry(
+                best_bid=best_bid,
+                best_ask=best_ask,
+                order_book=book,
+                updated_at=now_mono,
+                updated_at_epoch=now_epoch,
+                exchange_ts=parsed_exchange_ts,
+                sequence=sequence,
+            )
             self._entries[token_id] = entry
             if new_mid > 0:
                 history = self._history.get(token_id)
@@ -275,7 +287,15 @@ class PriceCache:
         if self._on_update_callbacks:
             for cb in self._on_update_callbacks:
                 try:
-                    cb(token_id, new_mid, best_bid, best_ask)
+                    cb(
+                        token_id,
+                        new_mid,
+                        best_bid,
+                        best_ask,
+                        entry.exchange_ts,
+                        entry.updated_at_epoch,
+                        entry.sequence,
+                    )
                 except Exception:
                     pass
 
@@ -826,19 +846,24 @@ class PolymarketWSFeed:
         bids = self._parse_levels(raw_bids)
         asks = self._parse_levels(raw_asks)
 
-        if bids or asks:
-            self._cache.update(asset_id, bids, asks)
-
-        # Compute server-to-cache latency if a timestamp is present
+        exchange_ts: float | None = None
         ts = data.get("timestamp")
         if ts is not None:
             try:
-                server_time = float(ts)
-                # Polymarket timestamps are in milliseconds
-                if server_time > 1e12:
-                    server_time /= 1000.0
-                self.stats.last_latency_ms = (recv_time - server_time) * 1000
+                exchange_ts = float(ts)
+                if exchange_ts > 1e12:
+                    exchange_ts /= 1000.0
             except (TypeError, ValueError):
+                exchange_ts = None
+
+        if bids or asks:
+            self._cache.update(asset_id, bids, asks, exchange_ts=exchange_ts)
+
+        # Compute server-to-cache latency if a timestamp is present
+        if exchange_ts is not None:
+            try:
+                self.stats.last_latency_ms = (recv_time - exchange_ts) * 1000
+            except Exception:
                 pass
 
     def _apply_trade(self, data: dict, recv_time: float) -> None:
@@ -1254,7 +1279,10 @@ class FeedManager:
         self._reactive_scan_callback: Optional[Callable[[Set[str]], Coroutine[Any, Any, None]]] = None
         self._debounce_task: Optional[asyncio.Task] = None
         self._debounce_seconds: float = 2.0  # coalesce changes over 2s window
-        self._redis_price_updates: Dict[str, tuple[float | None, float | None, float | None]] = {}
+        self._redis_price_updates: Dict[
+            str,
+            tuple[float | None, float | None, float | None, float | None, float | None, int | None],
+        ] = {}
         self._redis_update_lock = asyncio.Lock()
         self._redis_flush_task: Optional[asyncio.Task] = None
         self._redis_flush_interval_seconds: float = max(0.01, float(settings.WS_REDIS_FLUSH_INTERVAL_SECONDS))
@@ -1398,11 +1426,30 @@ class FeedManager:
         except RuntimeError:
             pass  # No running event loop
 
-    def _on_price_update(self, token_id: str, mid: float, bid: float, ask: float) -> None:
+    def _on_price_update(
+        self,
+        token_id: str,
+        mid: float,
+        bid: float,
+        ask: float,
+        exchange_ts: float | None = None,
+        ingest_ts: float | None = None,
+        sequence: int | None = None,
+    ) -> None:
         """Buffer all price updates for periodic Redis persistence."""
         if mid <= 0 or bid < 0 or ask < 0:
             return
-        self._redis_price_updates[token_id] = (float(mid), float(bid), float(ask))
+        ingest = float(ingest_ts) if ingest_ts is not None and ingest_ts > 0 else float(time.time())
+        exchange = float(exchange_ts) if exchange_ts is not None and exchange_ts > 0 else ingest
+        seq = int(sequence) if sequence is not None and int(sequence) > 0 else 0
+        self._redis_price_updates[token_id] = (
+            float(mid),
+            float(bid),
+            float(ask),
+            exchange,
+            ingest,
+            seq,
+        )
         if self._redis_flush_task is None or self._redis_flush_task.done():
             try:
                 loop = asyncio.get_running_loop()
@@ -1415,7 +1462,10 @@ class FeedManager:
         try:
             while True:
                 await asyncio.sleep(self._redis_flush_interval_seconds)
-                updates: dict[str, tuple[float | None, float | None, float | None]] = {}
+                updates: dict[
+                    str,
+                    tuple[float | None, float | None, float | None, float | None, float | None, int | None],
+                ] = {}
                 async with self._redis_update_lock:
                     if not self._redis_price_updates:
                         self._redis_flush_task = None

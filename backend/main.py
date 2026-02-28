@@ -636,7 +636,9 @@ async def lifespan(app: FastAPI):
         # Start worker loops in separate subprocesses so heavy scanners
         # cannot starve API request handling on the main event loop.
         _WORKER_MODULES = (
+            "workers.market_universe_worker",
             "workers.scanner_worker",
+            "workers.opportunity_aggregator_worker",
             "workers.crypto_worker",
             "workers.news_worker",
             "workers.weather_worker",

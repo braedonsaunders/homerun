@@ -2065,6 +2065,30 @@ class ScannerRun(Base):
     )
 
 
+class ScannerBatchQueue(Base):
+    """Durable queue of scanner detection batches awaiting aggregation."""
+
+    __tablename__ = "scanner_batch_queue"
+
+    id = Column(String, primary_key=True)
+    source = Column(String, nullable=False, default="scanner")
+    batch_kind = Column(String, nullable=False, default="scan_cycle")
+    opportunities_json = Column(JSON, nullable=False, default=list)
+    status_json = Column(JSON, nullable=False, default=dict)
+    emitted_at = Column(DateTime, default=_utcnow, nullable=False)
+    lease_owner = Column(String, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    processed_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_scanner_batch_queue_pending", "processed_at", "emitted_at"),
+        Index("idx_scanner_batch_queue_emitted", "emitted_at"),
+        Index("idx_scanner_batch_queue_lease", "lease_expires_at"),
+    )
+
+
 class OpportunityState(Base):
     """Current state for each opportunity stable_id (latest known value)."""
 

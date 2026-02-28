@@ -8,10 +8,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from models.database import (
     ScannerRun,
     OpportunityState,
     OpportunityEvent,
+    ScannerBatchQueue,
 )
 from models.opportunity import Opportunity, OpportunityFilter
 from services.event_bus import event_bus
@@ -48,6 +49,8 @@ CONTROL_ID = "default"
 DB_RETRY_ATTEMPTS = 3
 DB_RETRY_BASE_DELAY_SECONDS = 0.05
 DB_RETRY_MAX_DELAY_SECONDS = 0.3
+SCANNER_BATCH_LEASE_MIN_SECONDS = 5
+SCANNER_BATCH_LEASE_MAX_SECONDS = 300
 
 # In-memory targeted condition IDs for the next scan request.
 # Set by the evaluate endpoint, consumed and cleared by the scanner worker.
@@ -126,6 +129,21 @@ def _normalize_weather_edge_title(title: str) -> str:
     return title[len(prefix) :].lstrip() if title.lower().startswith(prefix) else title
 
 
+def _serialize_opportunity_payload(opportunities: list[Opportunity]) -> tuple[list[dict[str, Any]], int]:
+    payload: list[dict[str, Any]] = []
+    skipped = 0
+    for opportunity in opportunities:
+        try:
+            if hasattr(opportunity, "model_dump"):
+                payload.append(opportunity.model_dump(mode="json"))
+            else:
+                payload.append(Opportunity.model_validate(opportunity).model_dump(mode="json"))
+        except Exception as exc:
+            skipped += 1
+            logger.debug("Skip unserializable opportunity payload row: %s", exc)
+    return payload, skipped
+
+
 async def write_scanner_snapshot(
     session: AsyncSession,
     opportunities: list[Opportunity],
@@ -143,17 +161,7 @@ async def write_scanner_snapshot(
     elif last_scan is None:
         last_scan = utcnow()
 
-    payload: list[dict[str, Any]] = []
-    skipped = 0
-    for o in opportunities:
-        try:
-            if hasattr(o, "model_dump"):
-                payload.append(o.model_dump(mode="json"))
-            else:
-                payload.append(Opportunity.model_validate(o).model_dump(mode="json"))
-        except Exception as e:
-            skipped += 1
-            logger.debug("Skip unserializable opportunity in snapshot write: %s", e)
+    payload, skipped = _serialize_opportunity_payload(opportunities)
     if skipped:
         logger.warning(
             "Skipped %d/%d opportunities while writing scanner snapshot",
@@ -197,6 +205,10 @@ async def write_scanner_snapshot(
             "ws_feeds": status.get("ws_feeds"),
         }
         await event_bus.publish("scanner_status", scanner_status)
+        await event_bus.publish(
+            "scanner_activity",
+            {"activity": status.get("current_activity") or "Idle"},
+        )
         await event_bus.publish(
             "opportunities_update",
             {
@@ -358,6 +370,181 @@ async def write_traders_snapshot(
         )
     except Exception:
         pass
+
+
+async def enqueue_scanner_batch(
+    session: AsyncSession,
+    opportunities: list[Opportunity],
+    status: dict[str, Any],
+    *,
+    source: str = "scanner",
+    batch_kind: str = "scan_cycle",
+) -> str | None:
+    """Enqueue a scanner detection batch for aggregation worker processing."""
+    payload, skipped = _serialize_opportunity_payload(opportunities)
+    if skipped:
+        logger.warning(
+            "Skipped %d/%d opportunities while enqueueing scanner batch",
+            skipped,
+            len(opportunities),
+        )
+    if not payload and opportunities:
+        return None
+
+    batch_id = uuid.uuid4().hex[:16]
+    row = ScannerBatchQueue(
+        id=batch_id,
+        source=str(source or "scanner"),
+        batch_kind=str(batch_kind or "scan_cycle"),
+        opportunities_json=payload,
+        status_json=dict(status or {}),
+        emitted_at=utcnow(),
+        lease_owner=None,
+        lease_expires_at=None,
+        attempt_count=0,
+        processed_at=None,
+        error=None,
+    )
+    session.add(row)
+    await _commit_with_retry(session)
+    return batch_id
+
+
+async def claim_next_scanner_batch(
+    session: AsyncSession,
+    *,
+    owner: str,
+    lease_seconds: int,
+) -> dict[str, Any] | None:
+    """Claim the next unprocessed scanner batch and acquire a short lease."""
+    now = utcnow()
+    lease_ttl = max(
+        SCANNER_BATCH_LEASE_MIN_SECONDS,
+        min(SCANNER_BATCH_LEASE_MAX_SECONDS, int(lease_seconds or SCANNER_BATCH_LEASE_MIN_SECONDS)),
+    )
+    lease_until = now + timedelta(seconds=lease_ttl)
+
+    stmt = (
+        select(ScannerBatchQueue)
+        .where(ScannerBatchQueue.processed_at.is_(None))
+        .where(
+            (ScannerBatchQueue.lease_expires_at.is_(None))
+            | (ScannerBatchQueue.lease_expires_at < now)
+        )
+        .order_by(ScannerBatchQueue.emitted_at.asc(), ScannerBatchQueue.id.asc())
+        .limit(1)
+    )
+    bind = session.get_bind()
+    if bind is not None and str(getattr(bind.dialect, "name", "") or "").lower() == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    result = await session.execute(stmt)
+    row = result.scalars().first()
+    if row is None:
+        return None
+
+    row.lease_owner = str(owner or "")
+    row.lease_expires_at = lease_until
+    row.attempt_count = int(row.attempt_count or 0) + 1
+    row.error = None
+    await _commit_with_retry(session)
+    return {
+        "id": row.id,
+        "source": row.source,
+        "batch_kind": row.batch_kind,
+        "opportunities_json": list(row.opportunities_json or []),
+        "status_json": dict(row.status_json or {}),
+        "emitted_at": row.emitted_at,
+        "attempt_count": int(row.attempt_count or 0),
+    }
+
+
+async def mark_scanner_batch_processed(
+    session: AsyncSession,
+    batch_id: str,
+) -> None:
+    """Mark a claimed scanner batch as fully processed."""
+    row = await session.get(ScannerBatchQueue, str(batch_id or "").strip())
+    if row is None:
+        return
+    row.processed_at = utcnow()
+    row.lease_owner = None
+    row.lease_expires_at = None
+    row.error = None
+    await _commit_with_retry(session)
+
+
+async def mark_scanner_batch_failed(
+    session: AsyncSession,
+    batch_id: str,
+    *,
+    error: str,
+    requeue: bool,
+) -> None:
+    """Record scanner batch failure and optionally requeue for retry."""
+    row = await session.get(ScannerBatchQueue, str(batch_id or "").strip())
+    if row is None:
+        return
+    row.error = str(error or "")[:2000]
+    if requeue:
+        row.lease_owner = None
+        row.lease_expires_at = None
+        row.processed_at = None
+    else:
+        row.lease_owner = None
+        row.lease_expires_at = None
+        row.processed_at = utcnow()
+    await _commit_with_retry(session)
+
+
+async def count_pending_scanner_batches(session: AsyncSession) -> int:
+    value = await session.execute(
+        select(func.count())
+        .select_from(ScannerBatchQueue)
+        .where(ScannerBatchQueue.processed_at.is_(None))
+    )
+    return int(value.scalar_one() or 0)
+
+
+async def cleanup_processed_scanner_batches(
+    session: AsyncSession,
+    *,
+    retain_hours: int = 24,
+) -> int:
+    """Delete old processed scanner batches to keep queue table bounded."""
+    cutoff = utcnow() - timedelta(hours=max(1, int(retain_hours or 24)))
+    result = await session.execute(
+        delete(ScannerBatchQueue).where(
+            ScannerBatchQueue.processed_at.is_not(None),
+            ScannerBatchQueue.processed_at < cutoff,
+        )
+    )
+    await _commit_with_retry(session)
+    return int(result.rowcount or 0)
+
+
+async def drop_oldest_pending_scanner_batch(session: AsyncSession) -> str | None:
+    """Drop the oldest unprocessed scanner batch (backpressure safety valve)."""
+    now = utcnow()
+    stmt = (
+        select(ScannerBatchQueue)
+        .where(ScannerBatchQueue.processed_at.is_(None))
+        .where(
+            (ScannerBatchQueue.lease_expires_at.is_(None))
+            | (ScannerBatchQueue.lease_expires_at < now)
+        )
+        .order_by(ScannerBatchQueue.emitted_at.asc(), ScannerBatchQueue.id.asc())
+        .limit(1)
+    )
+    bind = session.get_bind()
+    if bind is not None and str(getattr(bind.dialect, "name", "") or "").lower() == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    row = (await session.execute(stmt)).scalars().first()
+    if row is None:
+        return None
+    dropped_id = str(row.id)
+    await session.delete(row)
+    await _commit_with_retry(session)
+    return dropped_id
 
 
 async def _persist_incremental_state(

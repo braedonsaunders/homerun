@@ -1035,6 +1035,34 @@ class TestScannerStatus:
         status = scanner.get_status()
         assert status["opportunities_count"] == 1
 
+    def test_status_includes_freshness_slo_fields(self, sample_opportunity):
+        scanner = _build_scanner()
+        now = utcnow()
+        scanner._last_fast_scan = now - timedelta(seconds=12)
+
+        newest = sample_opportunity.model_copy(deep=True)
+        middle = sample_opportunity.model_copy(deep=True)
+        oldest = sample_opportunity.model_copy(deep=True)
+
+        newest.last_priced_at = now - timedelta(seconds=5)
+        newest.last_detected_at = now - timedelta(seconds=7)
+
+        middle.last_priced_at = now - timedelta(seconds=30)
+        middle.last_detected_at = now - timedelta(seconds=40)
+
+        oldest.last_priced_at = now - timedelta(seconds=120)
+        oldest.last_detected_at = now - timedelta(seconds=90)
+
+        scanner._opportunities = [newest, middle, oldest]
+        status = scanner.get_status()
+
+        assert isinstance(status.get("last_fast_scan_age_seconds"), float)
+        assert 0.0 <= float(status["last_fast_scan_age_seconds"]) <= 30.0
+        assert isinstance(status.get("opportunity_price_age_p95"), float)
+        assert float(status["opportunity_price_age_p95"]) >= 80.0
+        assert isinstance(status.get("opportunity_last_detected_age_p95"), float)
+        assert float(status["opportunity_last_detected_age_p95"]) >= 60.0
+
 
 # ---------------------------------------------------------------------------
 # set_interval bounds

@@ -146,7 +146,9 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
 type WorkerHealthTone = 'green' | 'amber' | 'red'
 
 const WORKER_HEALTH_ORDER = [
+  'market_universe',
   'scanner',
+  'opportunity_aggregator',
   'discovery',
   'weather',
   'news',
@@ -158,7 +160,9 @@ const WORKER_HEALTH_ORDER = [
 ] as const
 
 const WORKER_HEALTH_LABELS: Record<string, string> = {
+  market_universe: 'Market Universe',
   scanner: 'Scanner',
+  opportunity_aggregator: 'Opportunity Aggregator',
   discovery: 'Discovery',
   weather: 'Weather',
   news: 'News',

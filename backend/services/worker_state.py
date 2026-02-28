@@ -26,6 +26,8 @@ from utils.converters import to_iso
 
 DEFAULT_WORKER_INTERVALS: dict[str, int] = {
     "scanner": 60,
+    "opportunity_aggregator": 1,
+    "market_universe": 120,
     "news": 120,
     "weather": 14400,
     "crypto": 2,
