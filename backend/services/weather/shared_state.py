@@ -602,9 +602,6 @@ async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
         "max_markets_per_scan": _i(
             "weather_workflow_max_markets_per_scan", app_settings.WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN
         ),
-        "orchestrator_enabled": bool(getattr(db, "weather_workflow_orchestrator_enabled", True) or True),
-        "orchestrator_min_edge": _f("weather_workflow_orchestrator_min_edge", 10.0),
-        "orchestrator_max_age_minutes": _i("weather_workflow_orchestrator_max_age_minutes", 240),
         "default_size_usd": _f("weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD),
         "max_size_usd": _f("weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD),
         "model": getattr(db, "weather_workflow_model", None),
@@ -630,9 +627,6 @@ async def update_weather_settings(
         "min_model_agreement": "weather_workflow_min_model_agreement",
         "min_liquidity": "weather_workflow_min_liquidity",
         "max_markets_per_scan": "weather_workflow_max_markets_per_scan",
-        "orchestrator_enabled": "weather_workflow_orchestrator_enabled",
-        "orchestrator_min_edge": "weather_workflow_orchestrator_min_edge",
-        "orchestrator_max_age_minutes": "weather_workflow_orchestrator_max_age_minutes",
         "default_size_usd": "weather_workflow_default_size_usd",
         "max_size_usd": "weather_workflow_max_size_usd",
         "model": "weather_workflow_model",

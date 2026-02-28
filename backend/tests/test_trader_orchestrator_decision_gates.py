@@ -564,3 +564,79 @@ def test_max_risk_score_guard_skips_when_signal_risk_unavailable():
     risk_check = next(check for check in result["checks_payload"] if check["check_key"] == "max_risk_score_guard")
     assert risk_check["passed"] is True
     assert risk_check["payload"]["signal_risk_score"] is None
+
+
+def test_generic_skipped_reason_includes_failed_check_detail():
+    decision_obj = SimpleNamespace(
+        decision="skipped",
+        reason="Crypto worker filters not met",
+        score=0.2,
+        size_usd=10.0,
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=decision_obj,
+        runtime_signal=_runtime_signal(),
+        strategy=None,
+        checks_payload=[
+            {
+                "check_key": "confidence",
+                "check_label": "Confidence",
+                "passed": False,
+                "score": 0.41,
+                "detail": "min=0.43",
+                "payload": {},
+            }
+        ],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        portfolio_allocator=None,
+        risk_evaluator=None,
+        invoke_hooks=False,
+    )
+
+    assert result["final_decision"] == "skipped"
+    assert result["final_reason"].startswith("Crypto worker filters not met")
+    assert "Confidence: min=0.43" in result["final_reason"]
+
+
+def test_generic_risk_block_reason_includes_failed_risk_detail():
+    def _blocked_risk_evaluator(_: float):
+        return (
+            SimpleNamespace(
+                allowed=False,
+                reason="Risk blocked: trader_open_positions",
+                checks=[
+                    SimpleNamespace(
+                        key="trader_open_positions",
+                        passed=False,
+                        score=2.0,
+                        detail="next=2 max=1",
+                    )
+                ],
+            ),
+            {},
+        )
+
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(20.0),
+        runtime_signal=_runtime_signal(),
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        portfolio_allocator=None,
+        risk_evaluator=_blocked_risk_evaluator,
+        invoke_hooks=False,
+    )
+
+    assert result["final_decision"] == "blocked"
+    assert result["final_reason"].startswith("Risk blocked: trader_open_positions")
+    assert "next=2 max=1" in result["final_reason"]

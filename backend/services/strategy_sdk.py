@@ -363,55 +363,13 @@ class StrategySDK:
             },
         ]
     }
-    COPY_TRADING_DEFAULTS: dict[str, Any] = {
-        "copy_mode_type": "disabled",
-        "individual_wallet": "",
-        "copy_trade_mode": "all_trades",
-        "max_position_size": 1000.0,
-        "proportional_sizing": False,
-        "proportional_multiplier": 1.0,
-        "copy_buys": True,
-        "copy_sells": True,
-        "copy_delay_seconds": 5,
-        "slippage_tolerance": 1.0,
-        "min_roi_threshold": 2.5,
-    }
-    COPY_TRADING_CONFIG_SCHEMA: dict[str, Any] = {
-        "param_fields": [
-            {
-                "key": "copy_mode_type",
-                "label": "Mode",
-                "type": "enum",
-                "options": ["disabled", "pool", "tracked_group", "individual"],
-            },
-            {"key": "individual_wallet", "label": "Wallet Address", "type": "string"},
-            {
-                "key": "copy_trade_mode",
-                "label": "Copy Mode",
-                "type": "enum",
-                "options": ["all_trades", "arb_only"],
-            },
-            {"key": "max_position_size", "label": "Max Position (USD)", "type": "number", "min": 10, "max": 1000000},
-            {"key": "copy_delay_seconds", "label": "Copy Delay (sec)", "type": "integer", "min": 0, "max": 300},
-            {"key": "slippage_tolerance", "label": "Slippage (%)", "type": "number", "min": 0, "max": 10},
-            {"key": "min_roi_threshold", "label": "Min ROI (%)", "type": "number", "min": 0, "max": 100},
-            {"key": "copy_buys", "label": "Copy Buys", "type": "boolean"},
-            {"key": "copy_sells", "label": "Copy Sells", "type": "boolean"},
-            {"key": "proportional_sizing", "label": "Proportional Sizing", "type": "boolean"},
-            {
-                "key": "proportional_multiplier",
-                "label": "Proportional Multiplier",
-                "type": "number",
-                "min": 0.01,
-                "max": 100,
-            },
-        ]
-    }
     TRADERS_COPY_TRADE_DEFAULTS: dict[str, Any] = {
         "min_confidence": 0.45,
         "min_source_notional_usd": 10.0,
         "max_entry_price": 0.98,
         "max_signal_age_seconds": 900,
+        "min_live_liquidity_usd": 150.0,
+        "max_adverse_entry_drift_pct": 2.0,
         "copy_delay_seconds": 0,
         "copy_buys": True,
         "copy_sells": True,
@@ -454,6 +412,19 @@ class StrategySDK:
                 "type": "integer",
                 "min": 1,
                 "max": 3600,
+            },
+            {
+                "key": "min_live_liquidity_usd",
+                "label": "Min Live Liquidity (USD)",
+                "type": "number",
+                "min": 0,
+            },
+            {
+                "key": "max_adverse_entry_drift_pct",
+                "label": "Max Adverse Entry Drift (%)",
+                "type": "number",
+                "min": 0,
+                "max": 100,
             },
             {
                 "key": "copy_delay_seconds",
@@ -2161,14 +2132,6 @@ class StrategySDK:
         return dict(StrategySDK.TRADER_OPPORTUNITY_FILTER_CONFIG_SCHEMA)
 
     @staticmethod
-    def copy_trading_defaults() -> dict[str, Any]:
-        return dict(StrategySDK.COPY_TRADING_DEFAULTS)
-
-    @staticmethod
-    def copy_trading_config_schema() -> dict[str, Any]:
-        return dict(StrategySDK.COPY_TRADING_CONFIG_SCHEMA)
-
-    @staticmethod
     def traders_copy_trade_defaults() -> dict[str, Any]:
         return dict(StrategySDK.TRADERS_COPY_TRADE_DEFAULTS)
 
@@ -2661,35 +2624,36 @@ class StrategySDK:
         return cfg
 
     @staticmethod
-    def validate_copy_trading_config(config: Any) -> dict[str, Any]:
-        cfg = dict(StrategySDK.COPY_TRADING_DEFAULTS)
-        raw = config if isinstance(config, dict) else {}
-        cfg.update({str(k): v for k, v in raw.items() if str(k) != "_schema"})
-
-        mode = str(cfg.get("copy_mode_type") or "disabled").strip().lower()
-        if mode not in {"disabled", "pool", "tracked_group", "individual"}:
-            mode = "disabled"
-        cfg["copy_mode_type"] = mode
-        cfg["individual_wallet"] = StrategySDK._coerce_str(cfg.get("individual_wallet"), "")
-        copy_mode = str(cfg.get("copy_trade_mode") or "all_trades").strip().lower()
-        if copy_mode not in {"all_trades", "arb_only"}:
-            copy_mode = "all_trades"
-        cfg["copy_trade_mode"] = copy_mode
-        cfg["max_position_size"] = StrategySDK._coerce_float(cfg.get("max_position_size"), 1000.0, 10.0, 1_000_000.0)
-        cfg["copy_delay_seconds"] = StrategySDK._coerce_int(cfg.get("copy_delay_seconds"), 5, 0, 300)
-        cfg["slippage_tolerance"] = StrategySDK._coerce_float(cfg.get("slippage_tolerance"), 1.0, 0.0, 10.0)
-        cfg["min_roi_threshold"] = StrategySDK._coerce_float(cfg.get("min_roi_threshold"), 2.5, 0.0, 100.0)
-        cfg["copy_buys"] = StrategySDK._coerce_bool(cfg.get("copy_buys"), True)
-        cfg["copy_sells"] = StrategySDK._coerce_bool(cfg.get("copy_sells"), True)
-        cfg["proportional_sizing"] = StrategySDK._coerce_bool(cfg.get("proportional_sizing"), False)
-        cfg["proportional_multiplier"] = StrategySDK._coerce_float(cfg.get("proportional_multiplier"), 1.0, 0.01, 100.0)
-        return cfg
-
-    @staticmethod
     def validate_traders_copy_trade_config(config: Any) -> dict[str, Any]:
         cfg = dict(StrategySDK.TRADERS_COPY_TRADE_DEFAULTS)
         raw = config if isinstance(config, dict) else {}
-        cfg.update({str(k): v for k, v in raw.items() if str(k) != "_schema"})
+        for key in (
+            "min_confidence",
+            "min_source_notional_usd",
+            "max_entry_price",
+            "max_signal_age_seconds",
+            "min_live_liquidity_usd",
+            "max_adverse_entry_drift_pct",
+            "copy_delay_seconds",
+            "copy_buys",
+            "copy_sells",
+            "max_position_size",
+            "proportional_sizing",
+            "proportional_multiplier",
+            "base_size_usd",
+            "max_size_usd",
+            "traders_scope",
+            "max_opportunities",
+            "retention_max_opportunities",
+            "retention_max_age_minutes",
+            "retention_window",
+            "retention_period",
+            "retention_duration",
+            "opportunity_ttl_minutes",
+            "opportunity_ttl",
+        ):
+            if key in raw:
+                cfg[key] = raw[key]
 
         cfg["min_confidence"] = StrategySDK._coerce_float(cfg.get("min_confidence"), 0.45, 0.0, 1.0)
         cfg["min_source_notional_usd"] = StrategySDK._coerce_float(
@@ -2704,6 +2668,18 @@ class StrategySDK:
             900,
             1,
             3600,
+        )
+        cfg["min_live_liquidity_usd"] = StrategySDK._coerce_float(
+            cfg.get("min_live_liquidity_usd"),
+            150.0,
+            0.0,
+            1_000_000_000.0,
+        )
+        cfg["max_adverse_entry_drift_pct"] = StrategySDK._coerce_float(
+            cfg.get("max_adverse_entry_drift_pct"),
+            2.0,
+            0.0,
+            100.0,
         )
         cfg["copy_delay_seconds"] = StrategySDK._coerce_int(cfg.get("copy_delay_seconds"), 0, 0, 300)
         cfg["copy_buys"] = StrategySDK._coerce_bool(cfg.get("copy_buys"), True)

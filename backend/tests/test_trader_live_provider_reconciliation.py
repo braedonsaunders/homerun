@@ -32,10 +32,7 @@ async def _seed_trader(session, trader_id: str) -> None:
         Trader(
             id=trader_id,
             name="Live Trader",
-            strategy_key="crypto_15m",
-            strategy_version="v1",
-            sources_json=["crypto"],
-            params_json={},
+            source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
             risk_limits_json={},
             metadata_json={},
             is_enabled=True,

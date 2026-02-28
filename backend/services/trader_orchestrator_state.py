@@ -1155,38 +1155,6 @@ async def _validate_source_configs(
             _validate_traders_scope(StrategySDK.validate_trader_scope_config(strategy_params.get("traders_scope")))
 
 
-def _normalize_or_backfill_source_configs(
-    source_configs_value: Any,
-    *,
-    fallback_strategy_key: Any = None,
-    fallback_sources: Any = None,
-    fallback_params: Any = None,
-) -> list[dict[str, Any]]:
-    return _normalize_source_configs(source_configs_value)
-
-
-def _derive_fields_from_source_configs(
-    source_configs: list[dict[str, Any]],
-) -> tuple[str, list[str], dict[str, Any]]:
-    if not source_configs:
-        return "btc_eth_highfreq", [], {}
-    first = source_configs[0]
-    strategy_key = str(first.get("strategy_key") or "btc_eth_highfreq")
-    sources = [str(item.get("source_key") or "").strip().lower() for item in source_configs if item.get("source_key")]
-    params = dict(first.get("strategy_params") or {})
-    return strategy_key, sources, params
-
-
-def _legacy_strategy_version_from_source_configs(source_configs: list[dict[str, Any]]) -> str:
-    if not source_configs:
-        return "latest"
-    first = source_configs[0]
-    version = normalize_strategy_version(first.get("strategy_version"))
-    if version is None:
-        return "latest"
-    return f"v{int(version)}"
-
-
 def _default_control_settings() -> dict[str, Any]:
     return _normalize_control_settings({})
 
@@ -1246,21 +1214,12 @@ def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
 def _serialize_trader(row: Trader) -> dict[str, Any]:
     metadata = dict(row.metadata_json or {})
     metadata["resume_policy"] = _normalize_resume_policy(metadata.get("resume_policy"))
-    source_configs = _normalize_or_backfill_source_configs(
-        row.source_configs_json,
-        fallback_strategy_key=row.strategy_key,
-        fallback_sources=row.sources_json,
-        fallback_params=row.params_json,
-    )
-    legacy_strategy_version = str(row.strategy_version or "").strip() or _legacy_strategy_version_from_source_configs(
-        source_configs
-    )
+    source_configs = _normalize_source_configs(row.source_configs_json)
     return {
         "id": row.id,
         "name": row.name,
         "description": row.description,
         "mode": _normalize_trader_mode(row.mode),
-        "strategy_version": legacy_strategy_version,
         "source_configs": source_configs,
         "risk_limits": row.risk_limits_json or {},
         "metadata": metadata,
@@ -1879,12 +1838,7 @@ async def _normalize_trader_payload(
     session: AsyncSession,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    source_configs = _normalize_or_backfill_source_configs(
-        payload.get("source_configs"),
-        fallback_strategy_key=payload.get("strategy_key"),
-        fallback_sources=payload.get("sources"),
-        fallback_params=payload.get("params"),
-    )
+    source_configs = _normalize_source_configs(payload.get("source_configs"))
     await _validate_source_configs(session, source_configs)
 
     risk_limits = StrategySDK.validate_trader_risk_config(payload.get("risk_limits"))
@@ -1923,22 +1877,12 @@ async def seed_default_traders(session: AsyncSession) -> None:
         return
 
     for template in TRADER_TEMPLATES:
-        source_configs = _normalize_or_backfill_source_configs(
-            template.get("source_configs"),
-            fallback_strategy_key=template.get("strategy_key"),
-            fallback_sources=template.get("sources"),
-            fallback_params=template.get("params"),
-        )
-        strategy_key, sources, params = _derive_fields_from_source_configs(source_configs)
+        source_configs = _normalize_source_configs(template.get("source_configs") or [])
         session.add(
             Trader(
                 id=_new_id(),
                 name=template["name"],
                 description=template.get("description"),
-                strategy_key=strategy_key,
-                strategy_version=_legacy_strategy_version_from_source_configs(source_configs),
-                sources_json=sources,
-                params_json=params,
                 source_configs_json=source_configs,
                 risk_limits_json=template.get("risk_limits") or {},
                 metadata_json={"template_id": template["id"]},
@@ -1986,15 +1930,10 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
     if existing is not None:
         raise ValueError("Trader name already exists")
 
-    strategy_key, sources, params = _derive_fields_from_source_configs(normalized["source_configs"])
     row = Trader(
         id=_new_id(),
         name=normalized["name"],
         description=normalized["description"],
-        strategy_key=strategy_key,
-        strategy_version=_legacy_strategy_version_from_source_configs(normalized["source_configs"]),
-        sources_json=sources,
-        params_json=params,
         source_configs_json=normalized["source_configs"],
         risk_limits_json=normalized["risk_limits"],
         metadata_json=normalized["metadata"],
@@ -2045,17 +1984,12 @@ async def update_trader(
         return None
 
     normalized = await _normalize_trader_payload(session, {**_serialize_trader(row), **payload})
-    strategy_key, sources, params = _derive_fields_from_source_configs(normalized["source_configs"])
     if "name" in payload:
         row.name = normalized["name"]
     if "description" in payload:
         row.description = normalized["description"]
     if "source_configs" in payload:
         row.source_configs_json = normalized["source_configs"]
-        row.strategy_key = strategy_key
-        row.strategy_version = _legacy_strategy_version_from_source_configs(normalized["source_configs"])
-        row.sources_json = sources
-        row.params_json = params
     if "risk_limits" in payload:
         row.risk_limits_json = normalized["risk_limits"]
     if "metadata" in payload:

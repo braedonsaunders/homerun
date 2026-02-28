@@ -496,7 +496,10 @@ class ValidationService:
                 context["trader_id"] = str(trader_row.id or "")
                 context["trader_name"] = str(trader_row.name or "")
                 if not context["strategy_key"]:
-                    context["strategy_key"] = str(trader_row.strategy_key or "").strip().lower()
+                    source_configs = trader_row.source_configs_json if isinstance(trader_row.source_configs_json, list) else []
+                    if source_configs:
+                        first = source_configs[0] if isinstance(source_configs[0], dict) else {}
+                        context["strategy_key"] = str(first.get("strategy_key") or "").strip().lower()
 
             if include_strategy_source and context["strategy_key"]:
                 strategy_row = (

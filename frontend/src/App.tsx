@@ -112,6 +112,7 @@ import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 import CryptoSettingsFlyout from './components/CryptoSettingsFlyout'
+import NewsWorkflowSettingsFlyout from './components/NewsWorkflowSettingsFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
@@ -388,6 +389,7 @@ function App() {
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
   const [cryptoSettingsOpen, setCryptoSettingsOpen] = useState(false)
+  const [newsSettingsOpen, setNewsSettingsOpen] = useState(false)
   const [scannerActivity, setScannerActivity] = useState<string>('Idle')
   const [headerSearchQuery, setHeaderSearchQuery] = useState('')
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false)
@@ -1382,6 +1384,7 @@ function App() {
   const showTopSettingsControl =
     opportunitiesView === 'scanner'
     || opportunitiesView === 'crypto'
+    || opportunitiesView === 'news'
     || opportunitiesView === 'weather'
     || opportunitiesView === 'traders'
 
@@ -1392,6 +1395,10 @@ function App() {
     }
     if (opportunitiesView === 'crypto') {
       setCryptoSettingsOpen(true)
+      return
+    }
+    if (opportunitiesView === 'news') {
+      setNewsSettingsOpen(true)
       return
     }
     if (opportunitiesView === 'weather') {
@@ -1505,6 +1512,7 @@ function App() {
       setExecutingOpportunity(null)
       setAccountSettingsOpen(false)
       setSearchFiltersOpen(false)
+      setNewsSettingsOpen(false)
     }},
   ], [globallyPaused, scanMutation, setShortcutsHelpOpen])
 
@@ -2862,6 +2870,11 @@ function App() {
         <CryptoSettingsFlyout
           isOpen={cryptoSettingsOpen}
           onClose={() => setCryptoSettingsOpen(false)}
+        />
+
+        <NewsWorkflowSettingsFlyout
+          isOpen={newsSettingsOpen}
+          onClose={() => setNewsSettingsOpen(false)}
         />
 
         <UILockScreen

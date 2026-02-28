@@ -125,7 +125,10 @@ def _resolved_default_params(row: Any) -> dict[str, Any]:
     overrides = _row_value(row, "config")
     merged = {**defaults, **(dict(overrides) if isinstance(overrides, dict) else {})}
     if source_key == "traders":
-        merged = StrategySDK.validate_trader_filter_config(merged)
+        if slug == "traders_copy_trade":
+            merged = StrategySDK.validate_traders_copy_trade_config(merged)
+        else:
+            merged = StrategySDK.validate_trader_filter_config(merged)
     elif source_key == "news":
         merged = StrategySDK.validate_news_filter_config(merged)
     merged = StrategySDK.normalize_strategy_retention_config(merged)
@@ -353,8 +356,4 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
         "shared_exit_fields": [],
         "runtime_fields": StrategySDK.trader_runtime_fields_schema(),
         "default_runtime_metadata": StrategySDK.trader_runtime_defaults(),
-        "trader_opportunity_filters_schema": StrategySDK.trader_opportunity_filter_config_schema(),
-        "trader_opportunity_filters_defaults": StrategySDK.trader_opportunity_filter_defaults(),
-        "copy_trading_schema": StrategySDK.copy_trading_config_schema(),
-        "copy_trading_defaults": StrategySDK.copy_trading_defaults(),
     }

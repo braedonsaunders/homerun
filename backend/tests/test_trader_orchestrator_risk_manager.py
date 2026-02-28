@@ -34,7 +34,8 @@ def test_risk_blocks_on_open_position_limit_with_new_key():
     )
 
     assert result.allowed is False
-    assert result.reason == "Risk blocked: trader_open_positions"
+    assert result.reason.startswith("Risk blocked: trader_open_positions")
+    assert "next=3 max=2" in result.reason
     assert any(check.key == "trader_open_positions" and not check.passed for check in result.checks)
 
 
@@ -65,5 +66,6 @@ def test_risk_blocks_on_open_order_limit():
     )
 
     assert result.allowed is False
-    assert result.reason == "Risk blocked: trader_open_orders"
+    assert result.reason.startswith("Risk blocked: trader_open_orders")
+    assert "next=3 max=2" in result.reason
     assert any(check.key == "trader_open_orders" and not check.passed for check in result.checks)

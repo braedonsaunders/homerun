@@ -174,18 +174,18 @@ async def execute_live_order(
                 if quote_candidates:
                     if post_only:
                         if normalized_side == OrderSide.BUY:
-                            if quote_sell is not None and quote_sell > 0:
-                                live_quote = quote_sell
-                                price_resolution = "live_quote_post_only_bid"
-                            elif quote_buy is not None and quote_buy > 0:
-                                live_quote = _clamp_binary_price(float(quote_buy) - _POST_ONLY_REPRICE_TICK)
-                                price_resolution = "live_quote_post_only_from_ask"
-                        else:
                             if quote_buy is not None and quote_buy > 0:
                                 live_quote = quote_buy
-                                price_resolution = "live_quote_post_only_ask"
+                                price_resolution = "live_quote_post_only_bid"
                             elif quote_sell is not None and quote_sell > 0:
-                                live_quote = _clamp_binary_price(float(quote_sell) + _POST_ONLY_REPRICE_TICK)
+                                live_quote = _clamp_binary_price(float(quote_sell) - _POST_ONLY_REPRICE_TICK)
+                                price_resolution = "live_quote_post_only_from_ask"
+                        else:
+                            if quote_sell is not None and quote_sell > 0:
+                                live_quote = quote_sell
+                                price_resolution = "live_quote_post_only_ask"
+                            elif quote_buy is not None and quote_buy > 0:
+                                live_quote = _clamp_binary_price(float(quote_buy) + _POST_ONLY_REPRICE_TICK)
                                 price_resolution = "live_quote_post_only_from_bid"
                     if live_quote is None:
                         live_quote = max(quote_candidates) if normalized_side == OrderSide.BUY else min(quote_candidates)
@@ -193,6 +193,14 @@ async def execute_live_order(
 
             # Apply the resolved price with min notional guard
             if live_quote is not None and live_quote > 0:
+                if post_only and fallback is not None and fallback > 0:
+                    if normalized_side == OrderSide.BUY:
+                        bounded_quote = min(float(live_quote), float(fallback))
+                    else:
+                        bounded_quote = max(float(live_quote), float(fallback))
+                    if abs(bounded_quote - float(live_quote)) >= 1e-9:
+                        price_resolution = f"{price_resolution}|bounded_by_fallback"
+                    live_quote = _clamp_binary_price(bounded_quote)
                 live_notional = float(live_quote) * requested_size
                 fallback_notional = (float(fallback) * requested_size) if fallback is not None and fallback > 0 else 0.0
                 if (

@@ -214,21 +214,6 @@ async def broadcast_crypto_markets(markets_data: list[dict]):
     await manager.broadcast({"type": "crypto_markets_update", "data": {"markets": markets_data}})
 
 
-async def broadcast_copy_trade_event(message: dict):
-    """Broadcast real-time trading intelligence events to all clients.
-
-    Message types:
-    - copy_trade_detected: A tracked wallet trade was detected on-chain
-    - copy_trade_executed: A copy trade was executed (or failed)
-    - tracked_trader_signal: Confluence HIGH/EXTREME signal
-    - tracked_trader_pool_update: Smart wallet pool state update
-
-    These events carry near-real-time metadata so the frontend can display
-    tracked-trader intelligence and copy-trading activity.
-    """
-    await manager.broadcast(message)
-
-
 async def broadcast_weather_update(opportunities: list[dict], status: dict):
     """Broadcast weather workflow opportunity updates to all clients."""
     await manager.broadcast(
@@ -270,8 +255,3 @@ async def broadcast_events_status(status: dict):
 # Register callbacks (scanner runs in worker process; no scanner callbacks here)
 # Frontend gets opportunities/status via polling or init; or add API polling→broadcast later
 wallet_tracker.add_callback(broadcast_wallet_trade)
-
-# Wire copy trading WebSocket broadcast into the copy trader service
-from services.copy_trader import copy_trader as _copy_trader_instance
-
-_copy_trader_instance.set_ws_broadcast(broadcast_copy_trade_event)

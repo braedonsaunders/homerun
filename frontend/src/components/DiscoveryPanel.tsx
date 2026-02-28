@@ -755,7 +755,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         label:
           params.username ||
           `Discovered ${params.address.slice(0, 6)}...${params.address.slice(-4)}`,
-        auto_copy: false,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wallets'] })

@@ -332,6 +332,154 @@ async def test_upsert_reactivates_skipped_signal_on_material_change(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_upsert_skipped_signal_ignores_micro_jitter(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    signal_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            now = utcnow().replace(microsecond=0)
+            session.add(
+                TradeSignal(
+                    id=signal_id,
+                    source="custom_source",
+                    source_item_id="custom_old",
+                    signal_type="custom_opportunity",
+                    strategy_type="custom_strategy",
+                    market_id="market_4b",
+                    market_question="Skipped jitter signal",
+                    direction="buy_yes",
+                    entry_price=0.44,
+                    edge_percent=6.0,
+                    confidence=0.72,
+                    liquidity=5000.0,
+                    expires_at=now + timedelta(hours=1),
+                    status="skipped",
+                    dedupe_key="dedupe_traders_4b",
+                    payload_json={"oracle_status": {"availability_state": "available"}},
+                    strategy_context_json={"timeframe": "1h", "bridge_run_at": "2026-02-24T00:00:00Z"},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="custom_old",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_4b",
+                market_question="Skipped jitter signal",
+                direction="buy_yes",
+                entry_price=0.443,
+                edge_percent=6.1,
+                confidence=0.725,
+                liquidity=5200.0,
+                expires_at=now + timedelta(hours=1, seconds=10),
+                payload_json={"oracle_status": {"availability_state": "available"}},
+                strategy_context_json={"timeframe": "1h", "bridge_run_at": "2026-02-24T00:00:05Z"},
+                dedupe_key="dedupe_traders_4b",
+                commit=True,
+            )
+
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed is not None
+            assert refreshed.status == "skipped"
+            assert refreshed.updated_at == now
+
+            emissions = (
+                (
+                    await session.execute(
+                        select(TradeSignalEmission)
+                        .where(TradeSignalEmission.signal_id == signal_id)
+                        .order_by(TradeSignalEmission.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert not emissions
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upsert_reactivates_skipped_signal_on_liquidity_band_change(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    signal_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            now = utcnow().replace(microsecond=0)
+            session.add(
+                TradeSignal(
+                    id=signal_id,
+                    source="custom_source",
+                    source_item_id="custom_old",
+                    signal_type="custom_opportunity",
+                    strategy_type="custom_strategy",
+                    market_id="market_4c",
+                    market_question="Skipped liquidity signal",
+                    direction="buy_yes",
+                    entry_price=0.44,
+                    edge_percent=6.0,
+                    confidence=0.72,
+                    liquidity=3900.0,
+                    expires_at=now + timedelta(hours=1),
+                    status="skipped",
+                    dedupe_key="dedupe_traders_4c",
+                    payload_json={"id": "stable"},
+                    strategy_context_json={"timeframe": "1h"},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="custom_old",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_4c",
+                market_question="Skipped liquidity signal",
+                direction="buy_yes",
+                entry_price=0.44,
+                edge_percent=6.0,
+                confidence=0.72,
+                liquidity=4100.0,
+                expires_at=now + timedelta(hours=1),
+                payload_json={"id": "stable"},
+                strategy_context_json={"timeframe": "1h"},
+                dedupe_key="dedupe_traders_4c",
+                commit=True,
+            )
+
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed is not None
+            assert refreshed.status == "pending"
+            assert refreshed.liquidity == pytest.approx(4100.0)
+
+            emissions = (
+                (
+                    await session.execute(
+                        select(TradeSignalEmission)
+                        .where(TradeSignalEmission.signal_id == signal_id)
+                        .order_by(TradeSignalEmission.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert emissions
+            assert emissions[-1].event_type == "upsert_reactivated"
+            assert emissions[-1].reason == "reactivated_from:skipped"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_upsert_pending_signal_unchanged_suppresses_update_emission(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     signal_id = uuid.uuid4().hex

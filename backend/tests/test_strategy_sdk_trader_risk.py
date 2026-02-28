@@ -75,6 +75,8 @@ def test_validate_traders_copy_trade_config_normalizes_and_clamps_fields():
             "min_confidence": "0.6",
             "min_source_notional_usd": "12.5",
             "max_signal_age_seconds": "120",
+            "min_live_liquidity_usd": "275.5",
+            "max_adverse_entry_drift_pct": "4.5",
             "copy_delay_seconds": "7",
             "copy_buys": "true",
             "copy_sells": "false",
@@ -84,12 +86,15 @@ def test_validate_traders_copy_trade_config_normalizes_and_clamps_fields():
             "base_size_usd": "15",
             "max_size_usd": "10",
             "traders_scope": {"modes": ["individual"], "individual_wallets": ["0xabc"], "group_ids": []},
+            "firehose_require_active_signal": False,
         }
     )
 
     assert cfg["min_confidence"] == 0.6
     assert cfg["min_source_notional_usd"] == 12.5
     assert cfg["max_signal_age_seconds"] == 120
+    assert cfg["min_live_liquidity_usd"] == 275.5
+    assert cfg["max_adverse_entry_drift_pct"] == 4.5
     assert cfg["copy_delay_seconds"] == 7
     assert cfg["copy_buys"] is True
     assert cfg["copy_sells"] is False
@@ -99,3 +104,4 @@ def test_validate_traders_copy_trade_config_normalizes_and_clamps_fields():
     assert cfg["base_size_usd"] == 15.0
     assert cfg["max_size_usd"] == 15.0
     assert cfg["traders_scope"]["modes"] == ["individual"]
+    assert "firehose_require_active_signal" not in cfg

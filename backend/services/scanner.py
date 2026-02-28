@@ -3346,7 +3346,7 @@ class ArbitrageScanner:
             asyncio.create_task(self.scan_fast())
 
     async def pause(self):
-        """Pause all background services (scanner, trader orchestrator, copy trader, wallet tracker, discovery, etc.)."""
+        """Pause all background services (scanner, trader orchestrator, wallet tracker, discovery, etc.)."""
         self._enabled = False
         global_pause_state.pause()
         # Cancel any in-flight AI scoring task to stop incurring API costs

@@ -3020,6 +3020,9 @@ async def _run_trader_once(
                             "mode": control.get("mode", "paper"),
                             "live_market": live_context,
                             "source_config": source_config,
+                            "traders_scope_context": (
+                                traders_scope_context if signal_source == "traders" else None
+                            ),
                         },
                     )
                     checks_payload = _checks_to_payload(decision_obj.checks)
@@ -3398,6 +3401,9 @@ async def _run_trader_once(
                             "signal_id": signal.id,
                             "decision": final_decision,
                             "order_status": order_status,
+                            "market_id": getattr(runtime_signal, "market_id", None),
+                            "market_question": getattr(runtime_signal, "market_question", None),
+                            "direction": getattr(runtime_signal, "direction", None),
                         },
                         commit=False,
                     )

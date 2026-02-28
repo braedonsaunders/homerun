@@ -1,6 +1,6 @@
 """Global pause state shared across all services.
 
-When paused, all background services (scanner, trader orchestrator, copy trader,
+When paused, all background services (scanner, trader orchestrator,
 wallet tracker, wallet discovery, wallet intelligence) skip their work cycles.
 
 This module exists as a standalone singleton to avoid circular imports between

@@ -1334,15 +1334,12 @@ async def analyze_wallet_pnl(
 async def analyze_and_track_wallet(
     address: str,
     label: Optional[str] = None,
-    auto_copy: bool = False,
-    simulation_account_id: Optional[str] = None,
 ):
     """
-    Analyze a wallet and optionally add it for tracking/copy trading.
+    Analyze a wallet and add it for tracking.
 
     - Fetches wallet's PnL and trade history
     - Adds to tracked wallets
-    - Optionally sets up copy trading in paper mode
     """
     try:
         analysis_upserted = False
@@ -1396,26 +1393,8 @@ async def analyze_and_track_wallet(
             "label": wallet_label,
             "analysis": analysis_payload,
             "tracking": True,
-            "copy_trading": False,
             "deprecated": True,
         }
-
-        # Optionally set up copy trading
-        if auto_copy and simulation_account_id:
-            from services.copy_trader import copy_trader
-            from services.simulation import simulation_service
-
-            # Verify account exists
-            account = await simulation_service.get_account(simulation_account_id)
-            if account:
-                await copy_trader.add_copy_config(
-                    source_wallet=address,
-                    account_id=simulation_account_id,
-                    min_roi_threshold=2.0,
-                    max_position_size=100.0,
-                )
-                result["copy_trading"] = True
-                result["copy_account_id"] = simulation_account_id
 
         return result
     except Exception as e:

@@ -31,7 +31,6 @@ os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 from config import settings, RUNTIME_SETTINGS_PRECEDENCE
 from api import router, handle_websocket
 from api.routes_simulation import simulation_router
-from api.routes_copy_trading import copy_trading_router
 from api.routes_anomaly import anomaly_router
 from api.routes_orchestrator_live import router as orchestrator_live_router
 from api.routes_maintenance import router as maintenance_router
@@ -55,7 +54,6 @@ from api.routes_ml import router as ml_router
 from api.routes_data_sources import router as data_sources_router
 from api.routes_traders import router as traders_router
 from services.wallet_tracker import wallet_tracker
-from services.copy_trader import copy_trader
 from services.traders_copy_trade_signal_service import traders_copy_trade_signal_service
 from services.live_execution_service import live_execution_service
 from services.wallet_discovery import wallet_discovery
@@ -423,7 +421,7 @@ async def lifespan(app: FastAPI):
             )
 
         # Restore global pause state from persisted worker controls.
-        # This keeps API-owned loops (copy trader, wallet tracker, LLM/trading gates)
+        # This keeps API-owned loops (wallet tracker, LLM/trading gates)
         # aligned with worker controls across restarts.
         try:
             async with AsyncSessionLocal() as session:
@@ -522,8 +520,6 @@ async def lifespan(app: FastAPI):
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
-        # Start copy trading service
-        await copy_trader.start()
         await traders_copy_trade_signal_service.start()
 
         # Start position monitor (spread trading exit strategies)
@@ -674,7 +670,6 @@ async def lifespan(app: FastAPI):
 
         await snapshot_broadcaster.stop()
         wallet_tracker.stop()
-        copy_trader.stop()
         traders_copy_trade_signal_service.stop()
         wallet_discovery.stop()
         position_monitor.stop()
@@ -836,7 +831,6 @@ async def inbound_api_rate_limit(request: Request, call_next):
 # API routes
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
-app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(orchestrator_live_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
@@ -1101,10 +1095,6 @@ async def detailed_health_check():
                 "opportunities_count": scanner_status.get("opportunities_count", 0),
             },
             "wallet_tracker": {"tracked_wallets": len(await wallet_tracker.get_all_wallets())},
-            "copy_trader": {
-                "running": copy_trader._running,
-                "active_configs": len(copy_trader._active_configs),
-            },
             "trading": {
                 "initialized": live_execution_service.is_ready(),
                 "stats": live_execution_service.get_stats().__dict__ if live_execution_service.is_ready() else None,
@@ -1210,10 +1200,6 @@ polymarket_scanner_running {scanner_running}
 # HELP polymarket_tracked_wallets Number of tracked wallets
 # TYPE polymarket_tracked_wallets gauge
 polymarket_tracked_wallets {len(await wallet_tracker.get_all_wallets())}
-
-# HELP polymarket_copy_configs Active copy trading configurations
-# TYPE polymarket_copy_configs gauge
-polymarket_copy_configs {len(copy_trader._active_configs)}
 
 # HELP polymarket_trader_orchestrator_running Trader orchestrator running status
 # TYPE polymarket_trader_orchestrator_running gauge

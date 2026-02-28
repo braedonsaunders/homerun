@@ -1154,6 +1154,47 @@ class GoogleProvider(BaseLLMProvider):
 
         return system_instruction, contents
 
+    @staticmethod
+    def _normalize_schema_type(value: Any) -> tuple[Optional[str], bool]:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized == "null":
+                return "string", True
+            if normalized:
+                return normalized, False
+            return None, False
+        if isinstance(value, list):
+            normalized_types = [str(item).strip().lower() for item in value if isinstance(item, str)]
+            nullable = "null" in normalized_types
+            non_null_types = [item for item in normalized_types if item and item != "null"]
+            if not non_null_types:
+                return "string", nullable
+            for preferred in ("object", "array", "string", "number", "integer", "boolean"):
+                if preferred in non_null_types:
+                    return preferred, nullable
+            return non_null_types[0], nullable
+        return None, False
+
+    @classmethod
+    def _sanitize_tool_schema(cls, schema: Any) -> Any:
+        if isinstance(schema, dict):
+            sanitized: dict[str, Any] = {}
+            for key, value in schema.items():
+                if key == "additionalProperties":
+                    continue
+                if key == "type":
+                    normalized_type, nullable = cls._normalize_schema_type(value)
+                    if normalized_type:
+                        sanitized["type"] = normalized_type
+                    if nullable:
+                        sanitized["nullable"] = True
+                    continue
+                sanitized[key] = cls._sanitize_tool_schema(value)
+            return sanitized
+        if isinstance(schema, list):
+            return [cls._sanitize_tool_schema(item) for item in schema]
+        return schema
+
     def _format_tools(self, tools: list[ToolDefinition]) -> list[dict]:
         """Convert ToolDefinition objects to Gemini tools format.
 
@@ -1169,7 +1210,7 @@ class GoogleProvider(BaseLLMProvider):
                 {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.parameters,
+                    "parameters": self._sanitize_tool_schema(tool.parameters),
                 }
             )
         return [{"function_declarations": function_declarations}]

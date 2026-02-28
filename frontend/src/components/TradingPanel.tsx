@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -36,52 +36,32 @@ import {
   getTraderDecisionDetail,
   getTraderDecisions,
   getTraderEvents,
-  getValidationJob,
-  getLiveTruthMonitorRaw,
   getTraderConfigSchema,
   getTraderOrchestratorOverview,
   getTraderSources,
   getSimulationAccounts,
+  getWallets,
   getTraders,
-  createCopyConfig,
-  disableCopyConfig,
   runTraderOnce,
   runTraderOrchestratorLivePreflight,
   setTraderOrchestratorLiveKillSwitch,
-  setStrategyExperimentStatus,
   startTraderOrchestrator,
   startTraderOrchestratorLive,
   stopTraderOrchestrator,
   stopTraderOrchestratorLive,
-  enqueueLiveTruthMonitorJob,
-  exportLiveTruthMonitorArtifact,
-  createStrategyExperiment,
-  listStrategyExperiments,
-  listStrategyExperimentAssignments,
-  promoteStrategyExperiment,
-  runTraderMonitorIteration,
+  runTraderTuneIteration,
   type Trader,
   type TraderConfigSchema,
   type TraderEvent,
   type TraderOrder,
   type TraderSourceConfig,
   type TraderSource,
-  type StrategyExperimentAssignment,
-  type TraderMonitorAgentResponse,
-  type ValidationJob,
-  type LiveTruthMonitorArtifact,
-  type LiveTruthMonitorRawResponse,
-  updateCopyConfig,
-  updateDiscoverySettings,
+  type TraderTuneAgentResponse,
   updateTrader,
-  getActiveCopyMode,
-  getDiscoverySettings,
-  type ActiveCopyMode,
-  type CopySourceType,
-  type DiscoverySettings,
   type TraderOrchestratorConfig,
   updateTraderOrchestratorSettings,
 } from '../services/api'
+import { discoveryApi } from '../services/discoveryApi'
 import { cn } from '../lib/utils'
 import { getOpportunityPlatformLinks, getTraderOrderPlatformLinks } from '../lib/marketUrls'
 import { selectedAccountIdAtom, themeAtom } from '../store/atoms'
@@ -238,8 +218,6 @@ type StrategyParamGroup = {
   fields: Array<Record<string, unknown>>
 }
 
-type DynamicStrategyParamSectionKind = 'strategy' | 'signal_filters' | 'copy_trading'
-
 type DynamicStrategyParamSection = {
   sectionKey: string
   sourceLabel: string
@@ -247,7 +225,12 @@ type DynamicStrategyParamSection = {
   groups: StrategyParamGroup[]
   fieldKeys: string[]
   values: Record<string, unknown>
-  kind: DynamicStrategyParamSectionKind
+}
+
+type TuneRevertSnapshot = {
+  traderId: string
+  sourceConfigs: TraderSourceConfig[]
+  capturedAt: string
 }
 
 const TERMINAL_ACTIVITY_MAX_ROWS = 320
@@ -301,33 +284,6 @@ type TradingScheduleDraft = {
   endAtUtc: string
 }
 
-type CopyTradingMode = 'disabled' | CopySourceType
-
-type CopyTradingFormState = {
-  copy_mode_type: CopyTradingMode
-  individual_wallet: string
-  account_id: string
-  copy_trade_mode: 'all_trades' | 'arb_only'
-  max_position_size: number
-  proportional_sizing: boolean
-  proportional_multiplier: number
-  copy_buys: boolean
-  copy_sells: boolean
-  copy_delay_seconds: number
-  slippage_tolerance: number
-  min_roi_threshold: number
-}
-
-type TraderSignalFilters = {
-  source_filter: 'all' | 'tracked' | 'pool'
-  min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
-  side_filter: 'all' | 'buy' | 'sell'
-  confluence_limit: number
-  individual_trade_limit: number
-  individual_trade_min_confidence: number
-  individual_trade_max_age_minutes: number
-}
-
 type GlobalSettingsDraft = {
   runIntervalSeconds: string
   maxGrossExposureUsd: string
@@ -355,30 +311,6 @@ type GlobalSettingsDraft = {
   traderCycleTimeoutSeconds: string
 }
 
-const DEFAULT_COPY_TRADING: CopyTradingFormState = {
-  copy_mode_type: 'disabled',
-  individual_wallet: '',
-  account_id: '',
-  copy_trade_mode: 'all_trades',
-  max_position_size: 1000,
-  proportional_sizing: false,
-  proportional_multiplier: 1.0,
-  copy_buys: true,
-  copy_sells: true,
-  copy_delay_seconds: 5,
-  slippage_tolerance: 1.0,
-  min_roi_threshold: 2.5,
-}
-
-const DEFAULT_SIGNAL_FILTERS: TraderSignalFilters = {
-  source_filter: 'all',
-  min_tier: 'WATCH',
-  side_filter: 'all',
-  confluence_limit: 50,
-  individual_trade_limit: 40,
-  individual_trade_min_confidence: 0.62,
-  individual_trade_max_age_minutes: 180,
-}
 const DEFAULT_ORCHESTRATOR_GLOBAL_RISK = {
   max_gross_exposure_usd: 5000,
   max_daily_loss_usd: 500,
@@ -438,8 +370,6 @@ const RESOLVED_ORDER_STATUSES = new Set([
   'loss',
 ])
 const FAILED_ORDER_STATUSES = new Set(['failed', 'rejected', 'error', 'cancelled'])
-const WIN_ORDER_STATUSES = new Set(['resolved_win', 'closed_win', 'win'])
-const LOSS_ORDER_STATUSES = new Set(['resolved_loss', 'closed_loss', 'loss'])
 
 const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   {
@@ -1305,84 +1235,6 @@ function resolveTraderStatusPresentation(
   }
 }
 
-function resolveOrderStatusBadgePresentation(
-  status: string,
-  pnl: number
-): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className: string } {
-  if (status === 'cancelled') {
-    return {
-      variant: 'outline',
-      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/20 dark:text-zinc-100',
-    }
-  }
-
-  if (status === 'open') {
-    return {
-      variant: 'outline',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/20 dark:text-sky-100',
-    }
-  }
-
-  if (status === 'executed') {
-    return {
-      variant: 'outline',
-      className: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/45 dark:bg-indigo-500/20 dark:text-indigo-100',
-    }
-  }
-
-  if (status === 'submitted' || status === 'pending' || status === 'queued') {
-    return {
-      variant: 'outline',
-      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/20 dark:text-amber-100',
-    }
-  }
-
-  if (WIN_ORDER_STATUSES.has(status)) {
-    return {
-      variant: 'outline',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
-    }
-  }
-
-  if (LOSS_ORDER_STATUSES.has(status) || FAILED_ORDER_STATUSES.has(status)) {
-    return {
-      variant: 'outline',
-      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
-    }
-  }
-
-  if (status === 'resolved') {
-    return {
-      variant: 'outline',
-      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
-    }
-  }
-
-  if (RESOLVED_ORDER_STATUSES.has(status)) {
-    if (pnl > 0) {
-      return {
-        variant: 'outline',
-        className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
-      }
-    }
-    if (pnl < 0) {
-      return {
-        variant: 'outline',
-        className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
-      }
-    }
-    return {
-      variant: 'outline',
-      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
-    }
-  }
-
-  return {
-    variant: 'outline',
-    className: 'border-border bg-muted/50 text-foreground',
-  }
-}
-
 function titleCaseStatusLabel(value: string): string {
   const normalized = String(value || '').trim().toLowerCase()
   if (!normalized) return 'Unknown'
@@ -1462,19 +1314,6 @@ function resolveVenueStatusPresentation(providerSnapshotStatus: string): {
     detail: 'No venue status snapshot available.',
     className: 'border-border bg-muted/50 text-muted-foreground',
   }
-}
-
-function resolveOrderOutcomeBadgeClassName(status: string): string {
-  if (status === 'cancelled') {
-    return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200'
-  }
-  if (FAILED_ORDER_STATUSES.has(status)) {
-    return 'border-red-300/90 bg-red-100/80 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
-  }
-  if (RESOLVED_ORDER_STATUSES.has(status)) {
-    return 'border-emerald-300/90 bg-emerald-100/80 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200'
-  }
-  return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-800 dark:border-zinc-500/45 dark:bg-zinc-500/12 dark:text-zinc-200'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1869,6 +1708,12 @@ function areReasonsEquivalent(left: string, right: string): boolean {
   return a === b || a.includes(b) || b.includes(a)
 }
 
+function isGenericDecisionReason(reason: string | null): boolean {
+  const normalized = normalizeActivityText(reason)
+  if (!normalized) return false
+  return normalized.includes('crypto worker filters not met') || normalized.includes('filters not met')
+}
+
 function decisionReasonDetail(decision: {
   reason: string | null
   payload: Record<string, unknown>
@@ -1892,13 +1737,13 @@ function decisionReasonDetail(decision: {
     failedCheckReason = cleanText(rawCheck.detail)
     if (failedCheckReason) break
   }
-  return (
-    cleanText(decision.reason)
-    || (strategyDecision ? cleanText(strategyDecision.reason) : null)
-    || failedCheckReason
-    || failedGateReason
-    || 'No reason provided'
-  )
+  const reason = cleanText(decision.reason)
+  const strategyReason = strategyDecision ? cleanText(strategyDecision.reason) : null
+  const bestFallback = failedCheckReason || failedGateReason || strategyReason
+  if (reason && isGenericDecisionReason(reason) && bestFallback) {
+    return `${reason} | ${bestFallback}`
+  }
+  return reason || strategyReason || failedCheckReason || failedGateReason || 'No reason provided'
 }
 
 function decisionFailedChecksDetail(decision: {
@@ -2002,12 +1847,26 @@ function isGasErrorText(raw: string): boolean {
 }
 
 function orderFailureHeadline(order: TraderOrder): string {
+  const status = normalizeStatus(order.status)
   const reason = orderReasonDetail(order)
   const normalizedReason = reason.toLowerCase()
   const payload = isRecord(order.payload) ? order.payload : null
   const submission = payload ? cleanText(payload.submission)?.toLowerCase() || '' : ''
   const priceResolution = payload ? cleanText(payload.price_resolution)?.toLowerCase() || '' : ''
   const resolvedPrice = payload ? toFiniteNumber(payload.resolved_price) : null
+
+  if (status === 'cancelled') {
+    if (normalizedReason.includes('cleanup:max_open_order_timeout')) {
+      return 'Unfilled timeout cancel'
+    }
+    if (normalizedReason.includes('session:expired') || normalizedReason.includes('session timed out')) {
+      return 'Session expired'
+    }
+    if (normalizedReason.includes('cleanup:')) {
+      return 'Cleanup cancel'
+    }
+    return 'Canceled'
+  }
 
   if (
     normalizedReason.includes('could not resolve a valid live price')
@@ -2073,6 +1932,181 @@ function orderOutcomeSummary(order: TraderOrder): { headline: string; detail: st
     headline: status.toUpperCase(),
     detail: reason,
   }
+}
+
+type TradeLifecycleStageTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
+type TradeLifecycleStageState = 'done' | 'current' | 'future'
+
+type TradeLifecycleStage = {
+  key: string
+  label: string
+  tone: TradeLifecycleStageTone
+  state: TradeLifecycleStageState
+}
+
+function buildTradeLifecycleStages(args: {
+  status: string
+  outcomeHeadline: string
+  reasonDetail: string
+  closeTrigger: string | null
+}): TradeLifecycleStage[] {
+  const status = normalizeStatus(args.status)
+  const reason = String(args.reasonDetail || '').toLowerCase()
+  const closeTriggerLabel = args.closeTrigger ? `Exit (${compactText(args.closeTrigger, 20)})` : 'Exit'
+  const finalLabel = compactText(args.outcomeHeadline || resolveOrderLifecycleLabel(status), 28)
+  const stages: TradeLifecycleStage[] = [
+    { key: 'signal', label: 'Signal', tone: 'neutral', state: 'done' },
+    { key: 'submitted', label: 'Submitted', tone: 'info', state: 'future' },
+    { key: 'working', label: 'Working', tone: 'info', state: 'future' },
+    { key: 'exit', label: closeTriggerLabel, tone: 'warning', state: 'future' },
+    { key: 'outcome', label: finalLabel, tone: 'neutral', state: 'future' },
+  ]
+
+  if (status === 'submitted' || status === 'pending' || status === 'queued') {
+    stages[1].state = 'current'
+    return stages
+  }
+  if (status === 'open') {
+    stages[1].state = 'done'
+    stages[2].state = 'current'
+    return stages
+  }
+  if (status === 'executed') {
+    stages[1].state = 'done'
+    stages[2].state = 'current'
+    stages[2].label = 'Filled'
+    stages[2].tone = 'success'
+    return stages
+  }
+  if (RESOLVED_ORDER_STATUSES.has(status)) {
+    stages[1].state = 'done'
+    stages[2].state = 'done'
+    stages[2].label = 'Filled'
+    stages[2].tone = 'success'
+    stages[3].state = 'done'
+    stages[4].state = 'current'
+    if (status.includes('loss') || status === 'loss') {
+      stages[4].tone = 'danger'
+    } else if (status.includes('win') || status === 'win') {
+      stages[4].tone = 'success'
+    } else {
+      stages[4].tone = 'info'
+    }
+    return stages
+  }
+  if (status === 'cancelled') {
+    stages[1].state = 'done'
+    stages[2].state = 'done'
+    stages[3].state = 'done'
+    stages[4].state = 'current'
+    stages[4].tone = reason.includes('session:expired') ? 'warning' : 'neutral'
+    if (reason.includes('cleanup:max_open_order_timeout')) {
+      stages[4].label = 'Timeout cancel'
+      stages[4].tone = 'warning'
+    } else if (reason.includes('session:expired') || reason.includes('session timed out')) {
+      stages[4].label = 'Session expired'
+      stages[4].tone = 'warning'
+    } else {
+      stages[4].label = 'Canceled'
+    }
+    return stages
+  }
+  if (status === 'failed' || status === 'rejected' || status === 'error') {
+    stages[1].state = 'done'
+    stages[4].state = 'current'
+    stages[4].tone = 'danger'
+    return stages
+  }
+
+  stages[4].state = 'current'
+  return stages
+}
+
+function tradeLifecycleStageClassName(stage: TradeLifecycleStage): string {
+  const base = 'inline-flex h-4 items-center rounded-full border px-1.5 text-[8px] font-semibold whitespace-nowrap'
+  if (stage.state === 'future') {
+    return `${base} border-border/60 bg-background/50 text-muted-foreground/65`
+  }
+  if (stage.state === 'current') {
+    if (stage.tone === 'success') {
+      return `${base} border-emerald-300 bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/60 animate-pulse dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200`
+    }
+    if (stage.tone === 'warning') {
+      return `${base} border-amber-300 bg-amber-100 text-amber-900 ring-1 ring-amber-300/60 animate-pulse dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200`
+    }
+    if (stage.tone === 'danger') {
+      return `${base} border-red-300 bg-red-100 text-red-900 ring-1 ring-red-300/60 animate-pulse dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200`
+    }
+    if (stage.tone === 'info') {
+      return `${base} border-sky-300 bg-sky-100 text-sky-900 ring-1 ring-sky-300/60 animate-pulse dark:border-sky-400/45 dark:bg-sky-500/15 dark:text-sky-200`
+    }
+    return `${base} border-border bg-muted/70 text-foreground ring-1 ring-border/70 animate-pulse`
+  }
+  if (stage.tone === 'success') {
+    return `${base} border-emerald-300/80 bg-emerald-100/70 text-emerald-900 dark:border-emerald-400/40 dark:bg-emerald-500/12 dark:text-emerald-200`
+  }
+  if (stage.tone === 'warning') {
+    return `${base} border-amber-300/80 bg-amber-100/70 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/12 dark:text-amber-200`
+  }
+  if (stage.tone === 'danger') {
+    return `${base} border-red-300/80 bg-red-100/70 text-red-900 dark:border-red-400/40 dark:bg-red-500/12 dark:text-red-200`
+  }
+  if (stage.tone === 'info') {
+    return `${base} border-sky-300/80 bg-sky-100/70 text-sky-900 dark:border-sky-400/40 dark:bg-sky-500/12 dark:text-sky-200`
+  }
+  return `${base} border-border/70 bg-muted/60 text-foreground/80`
+}
+
+function renderTradeLifecycleFlow(args: {
+  status: string
+  outcomeHeadline: string
+  outcomeDetail: string
+  executionSummary: string
+  venueLabel: string
+  closeTrigger: string | null
+  pendingExitLabel?: string | null
+  pendingExitTone?: 'neutral' | 'warning'
+}): ReactNode {
+  const stages = buildTradeLifecycleStages({
+    status: args.status,
+    outcomeHeadline: args.outcomeHeadline,
+    reasonDetail: args.outcomeDetail,
+    closeTrigger: args.closeTrigger,
+  })
+  const compactReason = compactText(args.outcomeDetail || 'No reason provided', 180)
+  const metaParts: string[] = []
+  if (args.executionSummary && args.executionSummary !== '—') metaParts.push(args.executionSummary)
+  if (args.venueLabel && args.venueLabel !== '—') metaParts.push(`Venue ${args.venueLabel}`)
+  if (args.pendingExitLabel) metaParts.push(args.pendingExitLabel)
+
+  return (
+    <div className="w-full px-2 py-0.5">
+      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+        {stages.map((stage, index) => (
+          <div key={stage.key} className="flex items-center gap-1">
+            <span className={tradeLifecycleStageClassName(stage)}>{stage.label}</span>
+            {index < stages.length - 1 && <ChevronRight className="h-3 w-3 text-muted-foreground/65" />}
+          </div>
+        ))}
+        <span className="h-3 w-px shrink-0 bg-border/50" />
+        <span className="min-w-0 flex-1 truncate text-[9px] text-foreground/90" title={args.outcomeDetail || 'No reason provided'}>
+          <span className="mr-1 text-muted-foreground">Reason:</span>
+          {compactReason}
+        </span>
+        {metaParts.length > 0 && (
+          <span
+            className={cn(
+              'shrink-0 truncate text-[8px] text-muted-foreground',
+              args.pendingExitTone === 'warning' && 'text-amber-700 dark:text-amber-300'
+            )}
+            title={metaParts.join(' • ')}
+          >
+            {metaParts.join(' • ')}
+          </span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function normalizeExecutionToken(value: unknown): string | null {
@@ -2194,7 +2228,6 @@ function parseTraderDeleteLiveExposure(error: unknown): { message: string; summa
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error) return error.message || fallback
   if (typeof error === 'object' && error !== null && 'response' in error) {
     const maybeResponse = (error as { response?: { data?: unknown } }).response
     const data = maybeResponse?.data
@@ -2202,24 +2235,25 @@ function errorMessage(error: unknown, fallback: string): string {
     if (typeof data === 'object' && data !== null) {
       const detail = (data as { detail?: unknown }).detail
       if (typeof detail === 'string') return detail
+      if (Array.isArray(detail)) {
+        const messages = detail
+          .map((item) => {
+            if (typeof item === 'string') return item
+            if (typeof item !== 'object' || item === null) return ''
+            const msg = (item as { msg?: unknown }).msg
+            return typeof msg === 'string' ? msg : ''
+          })
+          .filter((item) => item.length > 0)
+        if (messages.length > 0) return messages.join('; ')
+      }
       if (typeof detail === 'object' && detail !== null && 'message' in detail) {
         const message = (detail as { message?: unknown }).message
         if (typeof message === 'string') return message
       }
     }
   }
+  if (error instanceof Error) return error.message || fallback
   return fallback
-}
-
-function downloadBlobFile(filename: string, blob: Blob): void {
-  const link = document.createElement('a')
-  const objectUrl = window.URL.createObjectURL(blob)
-  link.href = objectUrl
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  window.URL.revokeObjectURL(objectUrl)
 }
 
 function toBoolean(value: unknown, fallback = false): boolean {
@@ -2238,6 +2272,26 @@ function csvToList(value: string): string[] {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function normalizeTuneList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0)
+  }
+  if (typeof value !== 'string') return []
+
+  const compact = value.trim()
+  if (!compact) return []
+
+  const parts = compact
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/^\d+[\).]\s*/, '').replace(/^[-*]\s*/, '').trim())
+    .filter((line) => line.length > 0)
+  return parts.length > 0 ? parts : [compact]
 }
 
 function normalizeSourceKey(value: string): string {
@@ -2363,93 +2417,6 @@ function strategyLabelForKey(key: string, sourceCatalog: TraderSource[] = []): s
     }
   }
   return STRATEGY_LABELS[normalized] || normalized || key
-}
-
-function asSignalSideFilter(value: unknown): TraderSignalFilters['side_filter'] {
-  const side = String(value || '').trim().toLowerCase()
-  if (side === 'buy') return 'buy'
-  if (side === 'sell') return 'sell'
-  return 'all'
-}
-
-function asSignalSourceFilter(value: unknown): TraderSignalFilters['source_filter'] {
-  const source = String(value || '').trim().toLowerCase()
-  if (source === 'tracked') return 'tracked'
-  if (source === 'pool') return 'pool'
-  return 'all'
-}
-
-function signalFiltersFromDiscoverySettings(
-  discovery: DiscoverySettings | undefined
-): TraderSignalFilters {
-  if (!discovery) return { ...DEFAULT_SIGNAL_FILTERS }
-  return {
-    source_filter: asSignalSourceFilter(discovery.trader_opps_source_filter),
-    min_tier: discovery.trader_opps_min_tier || DEFAULT_SIGNAL_FILTERS.min_tier,
-    side_filter: asSignalSideFilter(discovery.trader_opps_side_filter),
-    confluence_limit: Math.round(clamp(Number(discovery.trader_opps_confluence_limit || 50), 1, 200)),
-    individual_trade_limit: Math.round(clamp(Number(discovery.trader_opps_insider_limit || 40), 1, 500)),
-    individual_trade_min_confidence: clamp(Number(discovery.trader_opps_insider_min_confidence || 0.62), 0, 1),
-    individual_trade_max_age_minutes: Math.round(clamp(Number(discovery.trader_opps_insider_max_age_minutes || 180), 1, 1440)),
-  }
-}
-
-function normalizeSignalFiltersConfig(value: Record<string, unknown> | null | undefined): TraderSignalFilters {
-  const raw = value || {}
-  return {
-    source_filter: asSignalSourceFilter(raw.source_filter),
-    min_tier:
-      String(raw.min_tier || '').trim().toUpperCase() === 'HIGH'
-        ? 'HIGH'
-        : String(raw.min_tier || '').trim().toUpperCase() === 'EXTREME'
-          ? 'EXTREME'
-          : 'WATCH',
-    side_filter: asSignalSideFilter(raw.side_filter),
-    confluence_limit: Math.round(clamp(Number(raw.confluence_limit ?? DEFAULT_SIGNAL_FILTERS.confluence_limit), 1, 200)),
-    individual_trade_limit: Math.round(
-      clamp(Number(raw.individual_trade_limit ?? DEFAULT_SIGNAL_FILTERS.individual_trade_limit), 1, 500)
-    ),
-    individual_trade_min_confidence: clamp(
-      Number(raw.individual_trade_min_confidence ?? DEFAULT_SIGNAL_FILTERS.individual_trade_min_confidence),
-      0,
-      1
-    ),
-    individual_trade_max_age_minutes: Math.round(
-      clamp(
-        Number(raw.individual_trade_max_age_minutes ?? DEFAULT_SIGNAL_FILTERS.individual_trade_max_age_minutes),
-        1,
-        1440
-      )
-    ),
-  }
-}
-
-function normalizeCopyTradingConfig(value: Record<string, unknown> | null | undefined): CopyTradingFormState {
-  const raw = value || {}
-  const modeRaw = String(raw.copy_mode_type || '').trim().toLowerCase()
-  const copyModeType: CopyTradingMode =
-    modeRaw === 'individual' || modeRaw === 'pool' || modeRaw === 'tracked_group'
-      ? (modeRaw as CopyTradingMode)
-      : 'disabled'
-  const tradeModeRaw = String(raw.copy_trade_mode || '').trim().toLowerCase()
-  return {
-    copy_mode_type: copyModeType,
-    individual_wallet: String(raw.individual_wallet || ''),
-    account_id: String(raw.account_id || ''),
-    copy_trade_mode: tradeModeRaw === 'arb_only' ? 'arb_only' : 'all_trades',
-    max_position_size: clamp(Number(raw.max_position_size ?? DEFAULT_COPY_TRADING.max_position_size), 10, 1_000_000),
-    proportional_sizing: toBoolean(raw.proportional_sizing, DEFAULT_COPY_TRADING.proportional_sizing),
-    proportional_multiplier: clamp(
-      Number(raw.proportional_multiplier ?? DEFAULT_COPY_TRADING.proportional_multiplier),
-      0.01,
-      100
-    ),
-    copy_buys: toBoolean(raw.copy_buys, DEFAULT_COPY_TRADING.copy_buys),
-    copy_sells: toBoolean(raw.copy_sells, DEFAULT_COPY_TRADING.copy_sells),
-    copy_delay_seconds: Math.round(clamp(Number(raw.copy_delay_seconds ?? DEFAULT_COPY_TRADING.copy_delay_seconds), 0, 300)),
-    slippage_tolerance: clamp(Number(raw.slippage_tolerance ?? DEFAULT_COPY_TRADING.slippage_tolerance), 0, 10),
-    min_roi_threshold: clamp(Number(raw.min_roi_threshold ?? DEFAULT_COPY_TRADING.min_roi_threshold), 0, 100),
-  }
 }
 
 function isCryptoSourceKey(key: string): boolean {
@@ -2583,25 +2550,7 @@ function traderSourceKeys(trader: Trader): string[] {
     }
     return out
   }
-  return uniqueSourceList((trader.sources || []).map((source) => normalizeSourceKey(source)))
-}
-
-function copyTradingFromActiveMode(active: ActiveCopyMode): CopyTradingFormState {
-  if (active.mode === 'disabled' || !active.config_id) return { ...DEFAULT_COPY_TRADING }
-  return normalizeCopyTradingConfig({
-    copy_mode_type: active.mode,
-    individual_wallet: active.source_wallet || '',
-    account_id: active.account_id || '',
-    copy_trade_mode: active.copy_mode || 'all_trades',
-    max_position_size: active.settings?.max_position_size ?? DEFAULT_COPY_TRADING.max_position_size,
-    proportional_sizing: active.settings?.proportional_sizing ?? DEFAULT_COPY_TRADING.proportional_sizing,
-    proportional_multiplier: active.settings?.proportional_multiplier ?? DEFAULT_COPY_TRADING.proportional_multiplier,
-    copy_buys: active.settings?.copy_buys ?? DEFAULT_COPY_TRADING.copy_buys,
-    copy_sells: active.settings?.copy_sells ?? DEFAULT_COPY_TRADING.copy_sells,
-    copy_delay_seconds: active.settings?.copy_delay_seconds ?? DEFAULT_COPY_TRADING.copy_delay_seconds,
-    slippage_tolerance: active.settings?.slippage_tolerance ?? DEFAULT_COPY_TRADING.slippage_tolerance,
-    min_roi_threshold: active.settings?.min_roi_threshold ?? DEFAULT_COPY_TRADING.min_roi_threshold,
-  })
+  return []
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -3675,6 +3624,7 @@ function classifyStrategyParamGroup(fieldKey: string): StrategyParamGroupKey {
   if (
     key.startsWith('strategy_mode')
     || key === 'mode'
+    || key === 'traders_scope'
     || key.startsWith('include_')
     || key.startsWith('exclude_')
     || key === 'enabled_sub_strategies'
@@ -3853,7 +3803,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [globalSettingsFlyoutOpen, setGlobalSettingsFlyoutOpen] = useState(false)
   const [globalSettingsSaveError, setGlobalSettingsSaveError] = useState<string | null>(null)
   const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null))
-  const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'monitor' | 'decisions' | 'performance'>('trades')
+  const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'tune' | 'decisions' | 'performance'>('trades')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
   const [allBotsTradeStatusFilter, setAllBotsTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [allBotsTradeSearch, setAllBotsTradeSearch] = useState('')
@@ -3881,33 +3831,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [saveError, setSaveError] = useState<string | null>(null)
   const [deleteAction, setDeleteAction] = useState<'block' | 'disable' | 'force_delete'>('disable')
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
-  const [draftCopyTrading, setDraftCopyTrading] = useState<CopyTradingFormState>(DEFAULT_COPY_TRADING)
-  const [draftSignalFilters, setDraftSignalFilters] = useState<TraderSignalFilters>(DEFAULT_SIGNAL_FILTERS)
-  const [liveTruthDurationSeconds, setLiveTruthDurationSeconds] = useState('300')
-  const [liveTruthPollSeconds, setLiveTruthPollSeconds] = useState('1.0')
-  const [liveTruthRunLlm, setLiveTruthRunLlm] = useState(false)
-  const [liveTruthEnableProviderChecks, setLiveTruthEnableProviderChecks] = useState(false)
-  const [liveTruthIncludeStrategySource, setLiveTruthIncludeStrategySource] = useState(true)
-  const [liveTruthModel, setLiveTruthModel] = useState('')
-  const [liveTruthMaxAlertsForLlm, setLiveTruthMaxAlertsForLlm] = useState('80')
-  const [liveTruthJobId, setLiveTruthJobId] = useState<string | null>(null)
-  const [liveTruthError, setLiveTruthError] = useState<string | null>(null)
-  const [monitorIteratePrompt, setMonitorIteratePrompt] = useState('')
-  const [monitorIterateModel, setMonitorIterateModel] = useState('')
-  const [monitorIterateMaxIterations, setMonitorIterateMaxIterations] = useState('12')
-  const [monitorIterateMonitorJobId, setMonitorIterateMonitorJobId] = useState('')
-  const [monitorIterateError, setMonitorIterateError] = useState<string | null>(null)
-  const [monitorIterateResponse, setMonitorIterateResponse] = useState<TraderMonitorAgentResponse | null>(null)
-  const [experimentFilterStatus, setExperimentFilterStatus] = useState('all')
-  const [experimentDraftSourceKey, setExperimentDraftSourceKey] = useState('')
-  const [experimentDraftStrategyKey, setExperimentDraftStrategyKey] = useState('')
-  const [experimentDraftControlVersion, setExperimentDraftControlVersion] = useState('')
-  const [experimentDraftCandidateVersion, setExperimentDraftCandidateVersion] = useState('')
-  const [experimentDraftAllocationPct, setExperimentDraftAllocationPct] = useState('50')
-  const [experimentDraftName, setExperimentDraftName] = useState('')
-  const [experimentDraftNotes, setExperimentDraftNotes] = useState('')
-  const [selectedExperimentId, setSelectedExperimentId] = useState('')
-  const [experimentActionError, setExperimentActionError] = useState<string | null>(null)
+  const [tuneDraftTraderId, setTuneDraftTraderId] = useState<string | null>(null)
+  const [tuneDraftDirty, setTuneDraftDirty] = useState(false)
+  const [tuneSaveError, setTuneSaveError] = useState<string | null>(null)
+  const [tuneIteratePrompt, setTuneIteratePrompt] = useState(
+    'Analyze recent trader performance and tune source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
+  )
+  const [tuneIterateModel, setTuneIterateModel] = useState('')
+  const [tuneIterateMaxIterations, setTuneIterateMaxIterations] = useState('12')
+  const [tuneIterateError, setTuneIterateError] = useState<string | null>(null)
+  const [tuneIterateResponse, setTuneIterateResponse] = useState<TraderTuneAgentResponse | null>(null)
+  const [tuneAutoEnabled, setTuneAutoEnabled] = useState(false)
+  const [tuneAutoIntervalMinutes, setTuneAutoIntervalMinutes] = useState('15')
+  const [tuneAutoLastRunAt, setTuneAutoLastRunAt] = useState<number | null>(null)
+  const [tuneRevertSnapshot, setTuneRevertSnapshot] = useState<TuneRevertSnapshot | null>(null)
+  const [tuneRevertError, setTuneRevertError] = useState<string | null>(null)
 
   const overviewQuery = useQuery({
     queryKey: ['trader-orchestrator-overview'],
@@ -3944,16 +3882,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryFn: getSimulationAccounts,
     staleTime: 30000,
   })
-
-  const activeCopyModeQuery = useQuery({
-    queryKey: ['copy-trading-active-mode'],
-    queryFn: getActiveCopyMode,
+  const trackedWalletsQuery = useQuery({
+    queryKey: ['wallets'],
+    queryFn: getWallets,
     staleTime: 15000,
   })
-
-  const discoverySettingsQuery = useQuery({
-    queryKey: ['settings-discovery'],
-    queryFn: getDiscoverySettings,
+  const tradersScopePoolMembersQuery = useQuery({
+    queryKey: ['traders-scope-pool-members'],
+    queryFn: () => discoveryApi.getPoolMembers({
+      limit: 500,
+      offset: 0,
+      pool_only: true,
+      include_blacklisted: false,
+      sort_by: 'selection_score',
+      sort_dir: 'desc',
+    }),
+    staleTime: 15000,
+  })
+  const tradersScopeGroupsQuery = useQuery({
+    queryKey: ['traders-scope-groups'],
+    queryFn: () => discoveryApi.getTraderGroups(false, 200),
     staleTime: 15000,
   })
 
@@ -4008,10 +3956,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   }, [marketModalState])
 
   const traderConfigSchema: TraderConfigSchema | null = traderConfigSchemaQuery.data ?? null
-  const activeCopyMode = activeCopyModeQuery.data ?? null
   const traders = tradersQuery.data || []
   const allTraders = allTradersQuery.data || []
   const simulationAccounts = simulationAccountsQuery.data || []
+  const trackedWallets = trackedWalletsQuery.data || []
+  const tradersScopePoolMembers = tradersScopePoolMembersQuery.data?.members || []
+  const tradersScopeGroups = tradersScopeGroupsQuery.data || []
   const selectedSandboxAccount = simulationAccounts.find((account) => account.id === selectedAccountId)
   const selectedAccountValid = selectedAccountIsLive || Boolean(selectedSandboxAccount)
   const sourceCatalog = traderConfigSchema?.sources?.length
@@ -4185,10 +4135,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => new Set(csvToList(draftSources).map((sourceKey) => normalizeSourceKey(sourceKey))),
     [draftSources]
   )
-  const tradersSourceEnabled = useMemo(
-    () => selectedSourceKeySet.has('traders'),
-    [selectedSourceKeySet]
-  )
 
   const selectedSourceCount = useMemo(
     () => sourceCards.filter((source) => selectedSourceKeySet.has(normalizeSourceKey(source.key))).length,
@@ -4285,92 +4231,74 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }),
     [traderConfigSchema]
   )
-  const traderOpportunityFilterSchema = useMemo(
-    () => ({
-      param_fields: Array.isArray(traderConfigSchema?.trader_opportunity_filters_schema?.param_fields)
-        ? traderConfigSchema.trader_opportunity_filters_schema.param_fields
-        : [],
-    }),
-    [traderConfigSchema]
-  )
-  const copyTradingSchema = useMemo(() => {
-    const baseFields = Array.isArray(traderConfigSchema?.copy_trading_schema?.param_fields)
-      ? traderConfigSchema.copy_trading_schema.param_fields
-      : []
-    const accountOptions = simulationAccounts
-      .map((account) => {
-        const value = String(account.id || '').trim()
-        if (!value) return null
-        const label = String(account.name || account.id || '').trim() || value
-        return { value, label }
-      })
-      .filter((option): option is { value: string; label: string } => Boolean(option))
-    const existingAccountId = String(draftCopyTrading.account_id || '').trim()
-    if (existingAccountId && !accountOptions.some((option) => option.value === existingAccountId)) {
-      accountOptions.unshift({ value: existingAccountId, label: existingAccountId })
-    }
-    const mode = draftCopyTrading.copy_mode_type
-    const tradeMode = draftCopyTrading.copy_trade_mode
-    const proportionalSizing = draftCopyTrading.proportional_sizing
-    const filteredFields = baseFields.filter((field: Record<string, unknown>) => {
-      const key = String(field.key || '').trim()
-      if (!key) return false
-      if (mode === 'disabled') {
-        return key === 'copy_mode_type'
+  const tradersScopeWalletOptions = useMemo(() => {
+    const byAddress = new Map<string, { label: string; tags: Set<string> }>()
+
+    const upsert = (rawAddress: unknown, rawLabel: unknown, tag: 'tracked' | 'pool') => {
+      const address = String(rawAddress || '').trim().toLowerCase()
+      if (!address) return
+      const fallback = shortId(address)
+      const preferredLabel = String(rawLabel || '').trim() || fallback
+      const existing = byAddress.get(address)
+      if (!existing) {
+        byAddress.set(address, {
+          label: preferredLabel,
+          tags: new Set([tag]),
+        })
+        return
       }
-      if (mode !== 'individual' && key === 'individual_wallet') return false
-      if (tradeMode !== 'arb_only' && key === 'min_roi_threshold') return false
-      if (!proportionalSizing && key === 'proportional_multiplier') return false
-      return true
-    })
-    const accountField = accountOptions.length > 0
-      ? [{ key: 'account_id', label: 'Simulation Account', type: 'enum', options: accountOptions }]
-      : []
-    return {
-      param_fields: [...accountField, ...filteredFields],
+      existing.tags.add(tag)
+      if (!existing.label || existing.label === fallback) {
+        existing.label = preferredLabel
+      }
     }
-  }, [
-    draftCopyTrading.account_id,
-    draftCopyTrading.copy_mode_type,
-    draftCopyTrading.copy_trade_mode,
-    draftCopyTrading.proportional_sizing,
-    simulationAccounts,
-    traderConfigSchema,
-  ])
+
+    for (const wallet of trackedWallets) {
+      upsert(
+        wallet.address,
+        String(wallet.username || '').trim() || String(wallet.label || '').trim() || wallet.address,
+        'tracked'
+      )
+    }
+    for (const wallet of tradersScopePoolMembers) {
+      upsert(
+        wallet.address,
+        String(wallet.display_name || '').trim() || String(wallet.username || '').trim() || wallet.address,
+        'pool'
+      )
+    }
+
+    return Array.from(byAddress.entries())
+      .map(([address, row]) => {
+        const tags = Array.from(row.tags.values()).sort()
+        const suffix = tags.length > 0 ? ` · ${tags.join('/')}` : ''
+        return {
+          value: address,
+          label: `${row.label} (${shortId(address)})${suffix}`,
+        }
+      })
+      .sort((left, right) => left.label.localeCompare(right.label))
+  }, [trackedWallets, tradersScopePoolMembers])
+  const tradersScopeGroupOptions = useMemo(
+    () =>
+      tradersScopeGroups
+        .map((group) => {
+          const value = String(group.id || '').trim()
+          if (!value) return null
+          const label = String(group.name || value).trim() || value
+          const memberCount = Math.max(0, Math.trunc(Number(group.member_count || 0)))
+          return {
+            value,
+            label: `${label} (${memberCount})`,
+          }
+        })
+        .filter((option): option is { value: string; label: string } => Boolean(option))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [tradersScopeGroups]
+  )
   const parsedDraftParams = useMemo(() => parseJsonObject(draftParams || '{}'), [draftParams])
   const parsedDraftRisk = useMemo(() => parseJsonObject(draftRisk || '{}'), [draftRisk])
   const parsedDraftMetadata = useMemo(() => parseJsonObject(draftMetadata || '{}'), [draftMetadata])
-  const defaultSignalFilters = useMemo(
-    () =>
-      normalizeSignalFiltersConfig(
-        isRecord(traderConfigSchema?.trader_opportunity_filters_defaults)
-          ? (traderConfigSchema.trader_opportunity_filters_defaults as Record<string, unknown>)
-          : DEFAULT_SIGNAL_FILTERS
-      ),
-    [traderConfigSchema]
-  )
-  const copyTradingDefaults = useMemo(
-    () =>
-      normalizeCopyTradingConfig(
-        isRecord(traderConfigSchema?.copy_trading_defaults)
-          ? (traderConfigSchema.copy_trading_defaults as Record<string, unknown>)
-          : DEFAULT_COPY_TRADING
-      ),
-    [traderConfigSchema]
-  )
-  const defaultCopyTradingAccountId = useMemo(() => {
-    if (activeCopyMode?.account_id) return String(activeCopyMode.account_id)
-    if (selectedSandboxAccount?.id) return String(selectedSandboxAccount.id)
-    return simulationAccounts[0]?.id || ''
-  }, [activeCopyMode, selectedSandboxAccount, simulationAccounts])
-  const copyTradingFormValues = useMemo(
-    () => ({
-      ...copyTradingDefaults,
-      ...draftCopyTrading,
-      account_id: draftCopyTrading.account_id || defaultCopyTradingAccountId,
-    }),
-    [copyTradingDefaults, defaultCopyTradingAccountId, draftCopyTrading]
-  )
   const dynamicStrategyParamSections = useMemo(() => {
     const sharedParams = isRecord(parsedDraftParams.value) ? parsedDraftParams.value : {}
     const sections: DynamicStrategyParamSection[] = []
@@ -4385,7 +4313,36 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const strategyDetail = sourceStrategyDetailsLookup[sourceKey]?.[strategyKey] || null
       if (!strategyDetail || !Array.isArray(strategyDetail.paramFields)) continue
 
-      const filteredFields = strategyDetail.paramFields.filter((field): field is Record<string, unknown> => {
+      const decoratedParamFields = strategyDetail.paramFields.map((field) => {
+        if (!isRecord(field)) return field
+        if (sourceKey !== 'traders' || strategyKey !== 'traders_copy_trade') return field
+        const fieldKey = String(field.key || '').trim()
+        if (fieldKey !== 'traders_scope') return field
+        const properties = Array.isArray(field.properties) ? field.properties : []
+        const nextProperties = properties.map((property) => {
+          if (!isRecord(property)) return property
+          const propertyKey = String(property.key || '').trim()
+          if (propertyKey === 'individual_wallets' && tradersScopeWalletOptions.length > 0) {
+            return {
+              ...property,
+              options: tradersScopeWalletOptions,
+            }
+          }
+          if (propertyKey === 'group_ids' && tradersScopeGroupOptions.length > 0) {
+            return {
+              ...property,
+              options: tradersScopeGroupOptions,
+            }
+          }
+          return property
+        })
+        return {
+          ...field,
+          properties: nextProperties,
+        }
+      })
+
+      const filteredFields = decoratedParamFields.filter((field): field is Record<string, unknown> => {
         if (!isRecord(field)) return false
         const key = String(field.key || '').trim()
         return Boolean(key)
@@ -4414,68 +4371,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         groups: groupStrategyParamFields(filteredFields),
         fieldKeys,
         values,
-        kind: 'strategy',
       })
-    }
-
-    if (tradersSourceEnabled) {
-      const signalFields = traderOpportunityFilterSchema.param_fields.filter((field): field is Record<string, unknown> => {
-        if (!isRecord(field)) return false
-        const key = String(field.key || '').trim()
-        return Boolean(key)
-      })
-      if (signalFields.length > 0) {
-        const fieldKeys = signalFields
-          .map((field) => String(field.key || '').trim())
-          .filter(Boolean)
-        if (fieldKeys.length > 0) {
-          sections.push({
-            sectionKey: 'traders:signal_filters',
-            sourceLabel: 'Wallet Signals',
-            strategyLabel: 'Wallet Signal Filters (Global)',
-            groups: groupStrategyParamFields(signalFields),
-            fieldKeys,
-            values: draftSignalFilters as Record<string, unknown>,
-            kind: 'signal_filters',
-          })
-        }
-      }
-
-      const copyFields = copyTradingSchema.param_fields.filter((field): field is Record<string, unknown> => {
-        if (!isRecord(field)) return false
-        const key = String(field.key || '').trim()
-        return Boolean(key)
-      })
-      if (copyFields.length > 0) {
-        const fieldKeys = copyFields
-          .map((field) => String(field.key || '').trim())
-          .filter(Boolean)
-        if (fieldKeys.length > 0) {
-          sections.push({
-            sectionKey: 'traders:copy_trading',
-            sourceLabel: 'Wallet Signals',
-            strategyLabel: 'Copy Trading',
-            groups: groupStrategyParamFields(copyFields),
-            fieldKeys,
-            values: copyTradingFormValues,
-            kind: 'copy_trading',
-          })
-        }
-      }
     }
 
     return sections
   }, [
-    copyTradingFormValues,
-    copyTradingSchema,
-    draftSignalFilters,
     effectiveDraftSources,
     effectiveSourceStrategies,
     parsedDraftParams.value,
     sourceCards,
     sourceStrategyDetailsLookup,
-    traderOpportunityFilterSchema,
-    tradersSourceEnabled,
+    tradersScopeGroupOptions,
+    tradersScopeWalletOptions,
   ])
   const tradingScheduleDraft = useMemo(
     () => normalizeTradingScheduleDraft(parsedDraftMetadata.value?.trading_schedule_utc),
@@ -4580,255 +4487,36 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     refetchInterval: 7000,
   })
 
-  const liveTruthJobQuery = useQuery({
-    queryKey: ['validation-job-live-truth', liveTruthJobId],
-    queryFn: () => getValidationJob(String(liveTruthJobId)),
-    enabled: Boolean(liveTruthJobId),
-    refetchInterval: (query) => {
-      const status = normalizeStatus((query.state.data as ValidationJob | undefined)?.status)
-      return status === 'queued' || status === 'running' ? 1500 : false
-    },
-  })
-
-  const liveTruthJobStatus = normalizeStatus(liveTruthJobQuery.data?.status)
-  const liveTruthJobRunning = liveTruthJobStatus === 'queued' || liveTruthJobStatus === 'running'
-  const liveTruthJobCompleted = liveTruthJobStatus === 'completed'
-  const liveTruthJobFailed = liveTruthJobStatus === 'failed'
-  const liveTruthJobProgressPct = Math.round(Math.max(0, Math.min(1, toNumber(liveTruthJobQuery.data?.progress))) * 100)
-
-  const liveTruthRawQuery = useQuery({
-    queryKey: ['validation-live-truth-raw', liveTruthJobId],
-    queryFn: () => getLiveTruthMonitorRaw(String(liveTruthJobId), { max_alerts: 250 }),
-    enabled: Boolean(liveTruthJobId) && liveTruthJobCompleted,
-    staleTime: 0,
-    refetchOnMount: 'always',
-  })
-
-  const liveTruthRaw = liveTruthRawQuery.data as LiveTruthMonitorRawResponse | undefined
-  const liveTruthReport = liveTruthRaw?.monitor?.report
-  const liveTruthSummary = liveTruthRaw?.monitor?.summary || {}
-  const liveTruthAlertsByRule = liveTruthReport?.alerts_by_rule || {}
-  const liveTruthAlertRuleRows = useMemo(
-    () => Object.entries(liveTruthAlertsByRule).sort((a, b) => Number(b[1]) - Number(a[1])),
-    [liveTruthAlertsByRule]
+  const tuneIterateParsed = useMemo(
+    () => (isRecord(tuneIterateResponse?.parsed) ? tuneIterateResponse?.parsed : null),
+    [tuneIterateResponse]
   )
-  const liveTruthLlm = liveTruthRaw?.llm_analysis || {}
-  const liveTruthHasLlm = isRecord(liveTruthLlm) && Object.keys(liveTruthLlm).length > 0
-  const liveTruthLlmAnalysis = isRecord(liveTruthLlm.analysis) ? liveTruthLlm.analysis : null
-  const liveTruthLlmStrategyChanges = Array.isArray(liveTruthLlmAnalysis?.strategy_changes)
-    ? liveTruthLlmAnalysis.strategy_changes.filter((item): item is Record<string, unknown> => isRecord(item))
-    : []
-  const strategyExperimentsQuery = useQuery({
-    queryKey: ['strategy-experiments', selectedTraderId],
-    enabled: Boolean(selectedTraderId),
-    refetchInterval: selectedTraderId ? 5000 : false,
-    queryFn: () => listStrategyExperiments({ limit: 250 }),
-  })
-  const selectedTraderSourceKeySet = useMemo(() => {
-    const out = new Set<string>()
-    for (const config of selectedTraderSourceConfigs) {
-      const sourceKey = normalizeSourceKey(String(config.source_key || ''))
-      if (!sourceKey) continue
-      out.add(sourceKey)
+  const tuneIterateActions = useMemo(() => {
+    if (!tuneIterateParsed) return [] as string[]
+    return normalizeTuneList(tuneIterateParsed.actions_taken)
+  }, [tuneIterateParsed])
+  const tuneIterateNextSteps = useMemo(() => {
+    if (!tuneIterateParsed) return [] as string[]
+    return normalizeTuneList(tuneIterateParsed.suggested_next_steps)
+  }, [tuneIterateParsed])
+  const tuneIterateIssues = useMemo(() => {
+    if (!tuneIterateParsed) return [] as string[]
+    const issueCandidates = [
+      tuneIterateParsed.issues_identified,
+      tuneIterateParsed.issues,
+      tuneIterateParsed.problem_analysis,
+      tuneIterateParsed.risk_findings,
+    ]
+    for (const candidate of issueCandidates) {
+      const issues = normalizeTuneList(candidate)
+      if (issues.length > 0) return issues
     }
-    return out
-  }, [selectedTraderSourceConfigs])
-  const filteredStrategyExperiments = useMemo(() => {
-    const rows = Array.isArray(strategyExperimentsQuery.data) ? strategyExperimentsQuery.data : []
-    let out = rows
-    if (selectedTraderSourceKeySet.size > 0) {
-      out = out.filter((row) => selectedTraderSourceKeySet.has(normalizeSourceKey(row.source_key)))
-    }
-    if (experimentFilterStatus !== 'all') {
-      out = out.filter((row) => String(row.status || '').trim().toLowerCase() === experimentFilterStatus)
-    }
-    return out
-  }, [strategyExperimentsQuery.data, selectedTraderSourceKeySet, experimentFilterStatus])
-  const selectedStrategyExperiment = useMemo(
-    () => filteredStrategyExperiments.find((row) => row.id === selectedExperimentId) || null,
-    [filteredStrategyExperiments, selectedExperimentId]
+    return [] as string[]
+  }, [tuneIterateParsed])
+  const tuneIterateAppliedUpdates = useMemo(
+    () => (Array.isArray(tuneIterateResponse?.applied_param_updates) ? tuneIterateResponse.applied_param_updates : []),
+    [tuneIterateResponse]
   )
-  const experimentAssignmentsQuery = useQuery({
-    queryKey: ['strategy-experiment-assignments', selectedExperimentId],
-    enabled: Boolean(selectedExperimentId),
-    refetchInterval: selectedExperimentId ? 5000 : false,
-    queryFn: () => listStrategyExperimentAssignments(String(selectedExperimentId), { limit: 200 }),
-  })
-  const selectedExperimentAssignments = useMemo<StrategyExperimentAssignment[]>(
-    () => (Array.isArray(experimentAssignmentsQuery.data) ? experimentAssignmentsQuery.data : []),
-    [experimentAssignmentsQuery.data]
-  )
-  const experimentSourceChoices = useMemo(() => {
-    const out: string[] = []
-    const seen = new Set<string>()
-    for (const config of selectedTraderSourceConfigs) {
-      const sourceKey = normalizeSourceKey(String(config.source_key || ''))
-      if (!sourceKey || seen.has(sourceKey)) continue
-      seen.add(sourceKey)
-      out.push(sourceKey)
-    }
-    return out
-  }, [selectedTraderSourceConfigs])
-  const experimentStrategyChoices = useMemo(() => {
-    const sourceKey = normalizeSourceKey(experimentDraftSourceKey)
-    if (!sourceKey) return [] as StrategyOption[]
-    const fromCatalog = sourceStrategyOptionsByKey[sourceKey] || []
-    if (fromCatalog.length > 0) return fromCatalog
-    const seen = new Set<string>()
-    const out: StrategyOption[] = []
-    for (const config of selectedTraderSourceConfigs) {
-      if (normalizeSourceKey(String(config.source_key || '')) !== sourceKey) continue
-      const strategyKey = normalizeStrategyKeyForSource(sourceKey, config.strategy_key)
-      if (!strategyKey || seen.has(strategyKey)) continue
-      seen.add(strategyKey)
-      out.push({ key: strategyKey, label: strategyLabelForKey(strategyKey, sourceCards) })
-    }
-    return out
-  }, [experimentDraftSourceKey, selectedTraderSourceConfigs, sourceCards, sourceStrategyOptionsByKey])
-  const experimentStrategyDetail = useMemo(() => {
-    const sourceKey = normalizeSourceKey(experimentDraftSourceKey)
-    const strategyKey = String(experimentDraftStrategyKey || '').trim().toLowerCase()
-    if (!sourceKey || !strategyKey) return null
-    return sourceStrategyDetailsLookup[sourceKey]?.[strategyKey] || null
-  }, [experimentDraftSourceKey, experimentDraftStrategyKey, sourceStrategyDetailsLookup])
-  const experimentVersionChoices = useMemo(() => {
-    const rows = normalizeVersionList(experimentStrategyDetail?.versions || [])
-    const latestVersion = normalizeStrategyVersion(experimentStrategyDetail?.latestVersion)
-    if (latestVersion != null && !rows.includes(latestVersion)) {
-      rows.unshift(latestVersion)
-    }
-    const configuredVersions = selectedTraderSourceConfigs
-      .filter((item) => {
-        const sourceMatches = normalizeSourceKey(String(item.source_key || '')) === normalizeSourceKey(experimentDraftSourceKey)
-        const selectedStrategyKey = String(experimentDraftStrategyKey || '').trim().toLowerCase()
-        const strategyMatches =
-          selectedStrategyKey
-          && normalizeStrategyKeyForSource(String(item.source_key || ''), item.strategy_key) === selectedStrategyKey
-        return sourceMatches && strategyMatches
-      })
-      .map((item) => normalizeStrategyVersion(item.strategy_version))
-      .filter((value): value is number => value != null)
-    for (const configured of configuredVersions) {
-      if (!rows.includes(configured)) rows.unshift(configured)
-    }
-    const controlVersion = normalizeStrategyVersion(experimentDraftControlVersion)
-    if (controlVersion != null && !rows.includes(controlVersion)) rows.unshift(controlVersion)
-    const candidateVersion = normalizeStrategyVersion(experimentDraftCandidateVersion)
-    if (candidateVersion != null && !rows.includes(candidateVersion)) rows.unshift(candidateVersion)
-    rows.sort((left, right) => right - left)
-    return rows
-  }, [
-    experimentDraftCandidateVersion,
-    experimentDraftControlVersion,
-    experimentDraftSourceKey,
-    experimentDraftStrategyKey,
-    experimentStrategyDetail,
-    selectedTraderSourceConfigs,
-  ])
-  const monitorIterateParsed = useMemo(
-    () => (isRecord(monitorIterateResponse?.parsed) ? monitorIterateResponse?.parsed : null),
-    [monitorIterateResponse]
-  )
-  const monitorIterateActions = useMemo(() => {
-    if (!monitorIterateParsed) return [] as string[]
-    const raw = monitorIterateParsed.actions_taken
-    if (!Array.isArray(raw)) return [] as string[]
-    return raw.map((item) => String(item || '').trim()).filter(Boolean)
-  }, [monitorIterateParsed])
-  const monitorIterateNextSteps = useMemo(() => {
-    if (!monitorIterateParsed) return [] as string[]
-    const raw = monitorIterateParsed.suggested_next_steps
-    if (!Array.isArray(raw)) return [] as string[]
-    return raw.map((item) => String(item || '').trim()).filter(Boolean)
-  }, [monitorIterateParsed])
-  const selectedExperimentAssignmentSummary = useMemo(() => {
-    let control = 0
-    let candidate = 0
-    let other = 0
-    for (const row of selectedExperimentAssignments) {
-      const group = String(row.assignment_group || '').trim().toLowerCase()
-      if (group === 'control') {
-        control += 1
-      } else if (group === 'candidate') {
-        candidate += 1
-      } else {
-        other += 1
-      }
-    }
-    return { control, candidate, other, total: selectedExperimentAssignments.length }
-  }, [selectedExperimentAssignments])
-
-  useEffect(() => {
-    if (!liveTruthJobId) return
-    if (monitorIterateMonitorJobId.trim()) return
-    setMonitorIterateMonitorJobId(String(liveTruthJobId))
-  }, [liveTruthJobId, monitorIterateMonitorJobId])
-
-  useEffect(() => {
-    if (!selectedTrader) {
-      setExperimentDraftSourceKey('')
-      return
-    }
-    if (experimentSourceChoices.length === 0) {
-      setExperimentDraftSourceKey('')
-      return
-    }
-    const normalizedCurrent = normalizeSourceKey(experimentDraftSourceKey)
-    if (!normalizedCurrent || !experimentSourceChoices.includes(normalizedCurrent)) {
-      setExperimentDraftSourceKey(experimentSourceChoices[0])
-    }
-  }, [selectedTrader, experimentDraftSourceKey, experimentSourceChoices])
-
-  useEffect(() => {
-    if (!experimentDraftSourceKey) {
-      setExperimentDraftStrategyKey('')
-      return
-    }
-    if (experimentStrategyChoices.length === 0) {
-      setExperimentDraftStrategyKey('')
-      return
-    }
-    const normalizedCurrent = String(experimentDraftStrategyKey || '').trim().toLowerCase()
-    if (!normalizedCurrent || !experimentStrategyChoices.some((option) => option.key === normalizedCurrent)) {
-      setExperimentDraftStrategyKey(experimentStrategyChoices[0].key)
-    }
-  }, [experimentDraftSourceKey, experimentDraftStrategyKey, experimentStrategyChoices])
-
-  useEffect(() => {
-    if (experimentVersionChoices.length === 0) {
-      if (experimentDraftControlVersion) setExperimentDraftControlVersion('')
-      if (experimentDraftCandidateVersion) setExperimentDraftCandidateVersion('')
-      return
-    }
-    const controlVersion = normalizeStrategyVersion(experimentDraftControlVersion)
-    if (controlVersion == null || !experimentVersionChoices.includes(controlVersion)) {
-      setExperimentDraftControlVersion(String(experimentVersionChoices[0]))
-    }
-    const candidateVersion = normalizeStrategyVersion(experimentDraftCandidateVersion)
-    if (candidateVersion != null && experimentVersionChoices.includes(candidateVersion)) {
-      return
-    }
-    const fallbackCandidate = experimentVersionChoices.find((version) => version !== (controlVersion ?? experimentVersionChoices[0]))
-      || experimentVersionChoices[0]
-    setExperimentDraftCandidateVersion(String(fallbackCandidate))
-  }, [
-    experimentDraftCandidateVersion,
-    experimentDraftControlVersion,
-    experimentVersionChoices,
-  ])
-
-  useEffect(() => {
-    if (filteredStrategyExperiments.length === 0) {
-      if (selectedExperimentId) {
-        setSelectedExperimentId('')
-      }
-      return
-    }
-    if (filteredStrategyExperiments.some((row) => row.id === selectedExperimentId)) {
-      return
-    }
-    setSelectedExperimentId(filteredStrategyExperiments[0].id)
-  }, [filteredStrategyExperiments, selectedExperimentId])
 
   const refreshAll = () => {
     queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
@@ -4838,10 +4526,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryClient.invalidateQueries({ queryKey: ['trader-decisions-all'] })
     queryClient.invalidateQueries({ queryKey: ['trader-events-all'] })
     queryClient.invalidateQueries({ queryKey: ['trader-decision-detail'] })
-    queryClient.invalidateQueries({ queryKey: ['copy-trading-active-mode'] })
-    queryClient.invalidateQueries({ queryKey: ['settings-discovery'] })
-    queryClient.invalidateQueries({ queryKey: ['strategy-experiments'] })
-    queryClient.invalidateQueries({ queryKey: ['strategy-experiment-assignments'] })
+    queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    queryClient.invalidateQueries({ queryKey: ['traders-scope-pool-members'] })
+    queryClient.invalidateQueries({ queryKey: ['traders-scope-groups'] })
     queryClient.invalidateQueries({ queryKey: ['trader-config-schema'] })
     queryClient.invalidateQueries({ queryKey: ['trader-sources'] })
     queryClient.invalidateQueries({ queryKey: ['unified-strategies'] })
@@ -4897,6 +4584,27 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }
   }
 
+  useEffect(() => {
+    if (traderFlyoutOpen) return
+    if (!selectedTrader) {
+      if (tuneDraftTraderId !== null) setTuneDraftTraderId(null)
+      if (tuneDraftDirty) setTuneDraftDirty(false)
+      return
+    }
+    if (tuneDraftTraderId === selectedTrader.id) return
+
+    applyTraderDraftSettings(selectedTrader)
+    setTuneDraftTraderId(selectedTrader.id)
+    setTuneDraftDirty(false)
+    setTuneSaveError(null)
+    setTuneRevertError(null)
+  }, [
+    selectedTrader,
+    traderFlyoutOpen,
+    tuneDraftDirty,
+    tuneDraftTraderId,
+  ])
+
   const applyCreateCopyFromSelection = (value: string) => {
     const sourceTraderId = value === '__none__' ? '' : String(value || '').trim()
     setDraftCopyFromTraderId(sourceTraderId)
@@ -4940,46 +4648,20 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
-    setLiveTruthError(null)
-    setLiveTruthJobId(null)
-    setLiveTruthDurationSeconds('300')
-    setLiveTruthPollSeconds('1.0')
-    setLiveTruthRunLlm(false)
-    setLiveTruthEnableProviderChecks(false)
-    setLiveTruthIncludeStrategySource(true)
-    setLiveTruthModel('')
-    setLiveTruthMaxAlertsForLlm('80')
-    setMonitorIteratePrompt(
-      'Review recent trades and decisions, tune parameters for risk-adjusted PnL improvement, and propose an A/B test between current and candidate strategy versions.'
+    setTuneDraftTraderId(null)
+    setTuneDraftDirty(false)
+    setTuneSaveError(null)
+    setTuneIteratePrompt(
+      'Analyze recent trader performance and tune source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
     )
-    setMonitorIterateModel('')
-    setMonitorIterateMaxIterations('12')
-    setMonitorIterateMonitorJobId('')
-    setMonitorIterateError(null)
-    setMonitorIterateResponse(null)
-    setExperimentFilterStatus('all')
-    setExperimentDraftSourceKey(defaultSources[0] || '')
-    setExperimentDraftStrategyKey(defaultStrategies[defaultSources[0] || ''] || '')
-    setExperimentDraftControlVersion('')
-    setExperimentDraftCandidateVersion('')
-    setExperimentDraftAllocationPct('50')
-    setExperimentDraftName('')
-    setExperimentDraftNotes('')
-    setSelectedExperimentId('')
-    setExperimentActionError(null)
-    const resolvedCopy = activeCopyMode && activeCopyMode.mode !== 'disabled'
-      ? copyTradingFromActiveMode(activeCopyMode)
-      : copyTradingDefaults
-    setDraftCopyTrading({
-      ...resolvedCopy,
-      account_id: resolvedCopy.account_id || defaultCopyTradingAccountId,
-    })
-    setDraftSignalFilters(
-      normalizeSignalFiltersConfig({
-        ...defaultSignalFilters,
-        ...signalFiltersFromDiscoverySettings(discoverySettingsQuery.data),
-      })
-    )
+    setTuneIterateModel('')
+    setTuneIterateMaxIterations('12')
+    setTuneIterateError(null)
+    setTuneIterateResponse(null)
+    setTuneAutoEnabled(false)
+    setTuneAutoLastRunAt(null)
+    setTuneRevertSnapshot(null)
+    setTuneRevertError(null)
     setTraderFlyoutOpen(true)
   }
 
@@ -4991,46 +4673,20 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
-    setLiveTruthError(null)
-    setLiveTruthJobId(null)
-    setLiveTruthDurationSeconds('300')
-    setLiveTruthPollSeconds('1.0')
-    setLiveTruthRunLlm(false)
-    setLiveTruthEnableProviderChecks(false)
-    setLiveTruthIncludeStrategySource(true)
-    setLiveTruthModel('')
-    setLiveTruthMaxAlertsForLlm('80')
-    setMonitorIteratePrompt(
-      'Analyze this trader performance, tune strategy parameters or source code where justified, and create an A/B experiment for measurable improvement.'
+    setTuneDraftTraderId(trader.id)
+    setTuneDraftDirty(false)
+    setTuneSaveError(null)
+    setTuneIteratePrompt(
+      'Analyze this trader performance and tune source strategy parameters for measurable, risk-adjusted PnL improvement.'
     )
-    setMonitorIterateModel('')
-    setMonitorIterateMaxIterations('12')
-    setMonitorIterateMonitorJobId('')
-    setMonitorIterateError(null)
-    setMonitorIterateResponse(null)
-    setExperimentFilterStatus('all')
-    setExperimentDraftSourceKey('')
-    setExperimentDraftStrategyKey('')
-    setExperimentDraftControlVersion('')
-    setExperimentDraftCandidateVersion('')
-    setExperimentDraftAllocationPct('50')
-    setExperimentDraftName('')
-    setExperimentDraftNotes('')
-    setSelectedExperimentId('')
-    setExperimentActionError(null)
-    const resolvedCopy = activeCopyMode && activeCopyMode.mode !== 'disabled'
-      ? copyTradingFromActiveMode(activeCopyMode)
-      : copyTradingDefaults
-    setDraftCopyTrading({
-      ...resolvedCopy,
-      account_id: resolvedCopy.account_id || defaultCopyTradingAccountId,
-    })
-    setDraftSignalFilters(
-      normalizeSignalFiltersConfig({
-        ...defaultSignalFilters,
-        ...signalFiltersFromDiscoverySettings(discoverySettingsQuery.data),
-      })
-    )
+    setTuneIterateModel('')
+    setTuneIterateMaxIterations('12')
+    setTuneIterateError(null)
+    setTuneIterateResponse(null)
+    setTuneAutoEnabled(false)
+    setTuneAutoLastRunAt(null)
+    setTuneRevertSnapshot(null)
+    setTuneRevertError(null)
     setTraderFlyoutOpen(true)
   }
 
@@ -5038,6 +4694,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     fieldKeys: string[],
     values: Record<string, unknown>,
   ) => {
+    setTuneDraftDirty(true)
+    setTuneSaveError(null)
+    setTuneRevertError(null)
     setDraftParams((current) => {
       const parsed = parseJsonObject(current || '{}')
       const nextValues = isRecord(parsed.value) ? { ...parsed.value } : {}
@@ -5096,25 +4755,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     })
   }
 
-  const applySignalFilterFormValues = (values: Record<string, unknown>) => {
-    setDraftSignalFilters(normalizeSignalFiltersConfig(values))
-  }
-
-  const applyCopyTradingFormValues = (values: Record<string, unknown>) => {
-    setDraftCopyTrading((previous) => {
-      const hasAccountId = Object.prototype.hasOwnProperty.call(values, 'account_id')
-      const nextAccountIdRaw = hasAccountId
-        ? String(values.account_id || '').trim()
-        : String(previous.account_id || '').trim()
-      const nextAccountId = nextAccountIdRaw === '__none__' ? '' : nextAccountIdRaw
-      return normalizeCopyTradingConfig({
-        ...previous,
-        ...values,
-        account_id: nextAccountId || defaultCopyTradingAccountId,
-      })
-    })
-  }
-
   const buildDraftSourceConfigs = (rawStrategyParams: Record<string, unknown>): TraderSourceConfig[] => {
     const configs: TraderSourceConfig[] = []
     for (const sourceKey of effectiveDraftSources) {
@@ -5137,79 +4777,30 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     return configs
   }
 
-  const persistGlobalWalletSettings = async () => {
-    const discoveryBase =
-      discoverySettingsQuery.data ||
-      (await getDiscoverySettings())
-    await updateDiscoverySettings({
-      ...discoveryBase,
-      trader_opps_source_filter: draftSignalFilters.source_filter,
-      trader_opps_min_tier: draftSignalFilters.min_tier,
-      trader_opps_side_filter: draftSignalFilters.side_filter,
-      trader_opps_confluence_limit: draftSignalFilters.confluence_limit,
-      trader_opps_insider_limit: draftSignalFilters.individual_trade_limit,
-      trader_opps_insider_min_confidence: draftSignalFilters.individual_trade_min_confidence,
-      trader_opps_insider_max_age_minutes: draftSignalFilters.individual_trade_max_age_minutes,
-    })
-
-    const targetCopy = normalizeCopyTradingConfig(copyTradingFormValues)
-    if (targetCopy.copy_mode_type === 'disabled') {
-      if (activeCopyMode?.config_id) {
-        await disableCopyConfig(activeCopyMode.config_id)
+  const cloneSourceConfigsForTuneSnapshot = (configs: TraderSourceConfig[]): TraderSourceConfig[] => {
+    return configs.map((config) => {
+      let strategyParams: Record<string, unknown> = {}
+      try {
+        strategyParams = JSON.parse(JSON.stringify(config.strategy_params || {})) as Record<string, unknown>
+      } catch {
+        strategyParams = {}
       }
-      return
-    }
-
-    const targetAccountId = String(targetCopy.account_id || defaultCopyTradingAccountId || '').trim()
-    if (!targetAccountId) {
-      throw new Error('Copy trading requires a simulation account.')
-    }
-    const targetWallet = String(targetCopy.individual_wallet || '').trim().toLowerCase()
-    if (targetCopy.copy_mode_type === 'individual' && !targetWallet) {
-      throw new Error('Copy trading individual mode requires a wallet address.')
-    }
-
-    const copyPayload = {
-      copy_mode: targetCopy.copy_trade_mode,
-      min_roi_threshold: targetCopy.min_roi_threshold,
-      max_position_size: targetCopy.max_position_size,
-      copy_delay_seconds: targetCopy.copy_delay_seconds,
-      slippage_tolerance: targetCopy.slippage_tolerance,
-      proportional_sizing: targetCopy.proportional_sizing,
-      proportional_multiplier: targetCopy.proportional_multiplier,
-      copy_buys: targetCopy.copy_buys,
-      copy_sells: targetCopy.copy_sells,
-    }
-
-    const activeMode = activeCopyMode?.mode || 'disabled'
-    const activeWallet = String(activeCopyMode?.source_wallet || '').trim().toLowerCase()
-    const activeAccountId = String(activeCopyMode?.account_id || '').trim()
-    const needsNewConfig =
-      !activeCopyMode?.config_id ||
-      activeMode !== targetCopy.copy_mode_type ||
-      activeAccountId !== targetAccountId ||
-      (targetCopy.copy_mode_type === 'individual' && activeWallet !== targetWallet)
-
-    if (needsNewConfig) {
-      if (activeCopyMode?.config_id) {
-        await disableCopyConfig(activeCopyMode.config_id)
+      return {
+        source_key: String(config.source_key || ''),
+        strategy_key: String(config.strategy_key || ''),
+        strategy_version: normalizeStrategyVersion(config.strategy_version),
+        strategy_params: strategyParams,
       }
-      await createCopyConfig({
-        source_wallet: targetCopy.copy_mode_type === 'individual' ? targetWallet : null,
-        account_id: targetAccountId,
-        source_type: targetCopy.copy_mode_type as CopySourceType,
-        ...copyPayload,
-      })
-      return
-    }
-
-    if (!activeCopyMode?.config_id) {
-      throw new Error('Active copy trading configuration was not found.')
-    }
-    await updateCopyConfig(activeCopyMode.config_id, {
-      enabled: true,
-      ...copyPayload,
     })
+  }
+
+  const captureTuneRevertSnapshot = (): TuneRevertSnapshot | null => {
+    if (!selectedTrader) return null
+    return {
+      traderId: selectedTrader.id,
+      sourceConfigs: cloneSourceConfigsForTuneSnapshot(selectedTraderSourceConfigs),
+      capturedAt: new Date().toISOString(),
+    }
   }
 
   const startBySelectedAccountMutation = useMutation({
@@ -5448,172 +5039,122 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     onSuccess: refreshAll,
   })
 
-  const runLiveTruthMonitorMutation = useMutation({
+  const saveTuneParametersMutation = useMutation({
     mutationFn: async () => {
       if (!selectedTrader) {
-        throw new Error('Select a bot before running monitor diagnostics.')
+        throw new Error('Select a bot before saving tune parameters.')
       }
-      const durationSeconds = Math.max(10, Math.min(7200, Math.trunc(toNumber(liveTruthDurationSeconds || 300))))
-      const pollSeconds = Math.max(0.2, Math.min(10, toNumber(liveTruthPollSeconds || 1.0)))
-      const maxAlertsForLlm = Math.max(1, Math.min(400, Math.trunc(toNumber(liveTruthMaxAlertsForLlm || 80))))
-      const request = {
-        trader_id: selectedTrader.id,
-        duration_seconds: durationSeconds,
-        poll_seconds: pollSeconds,
-        run_llm_analysis: liveTruthRunLlm,
-        enable_provider_checks: liveTruthEnableProviderChecks,
-        include_strategy_source: liveTruthIncludeStrategySource,
-        max_alerts_for_llm: maxAlertsForLlm,
-        ...(liveTruthModel.trim() ? { llm_model: liveTruthModel.trim() } : {}),
+      const parsedParams = parseJsonObject(draftParams || '{}')
+      if (!parsedParams.value) {
+        throw new Error(`Strategy params JSON error: ${parsedParams.error || 'invalid object'}`)
       }
-      return enqueueLiveTruthMonitorJob(request)
+      if (effectiveDraftSources.length === 0) {
+        throw new Error('Enable at least one source.')
+      }
+      const tradersEnabled = effectiveDraftSources.includes('traders')
+      const tradersScope = normalizeTradersScopeConfig(parsedParams.value.traders_scope)
+      if (tradersEnabled && tradersScope.modes.includes('individual') && tradersScope.individual_wallets.length === 0) {
+        throw new Error('Select at least one individual wallet for wallet scope.')
+      }
+      if (tradersEnabled && tradersScope.modes.includes('group') && tradersScope.group_ids.length === 0) {
+        throw new Error('Select at least one group for wallet scope.')
+      }
+      return updateTrader(selectedTrader.id, {
+        source_configs: buildDraftSourceConfigs(parsedParams.value),
+      })
     },
     onMutate: () => {
-      setLiveTruthError(null)
-      setLiveTruthJobId(null)
+      const snapshot = captureTuneRevertSnapshot()
+      if (snapshot) setTuneRevertSnapshot(snapshot)
+      setTuneSaveError(null)
+      setTuneRevertError(null)
     },
-    onSuccess: (result) => {
-      setLiveTruthError(null)
-      setLiveTruthJobId(result.job_id)
+    onSuccess: (trader) => {
+      setTuneSaveError(null)
+      setTuneRevertError(null)
+      setTuneDraftDirty(false)
+      setTuneDraftTraderId(trader.id)
+      applyTraderDraftSettings(trader)
+      refreshAll()
     },
     onError: (error: unknown) => {
-      setLiveTruthError(errorMessage(error, 'Failed to enqueue live truth monitor job'))
+      setTuneSaveError(errorMessage(error, 'Failed to save tune parameters'))
     },
   })
 
-  const exportLiveTruthArtifactMutation = useMutation({
-    mutationFn: async (artifact: LiveTruthMonitorArtifact) => {
-      if (!liveTruthJobId) {
-        throw new Error('Run monitor diagnostics first.')
-      }
-      return exportLiveTruthMonitorArtifact(liveTruthJobId, artifact)
-    },
-    onSuccess: ({ filename, blob }) => {
-      setLiveTruthError(null)
-      downloadBlobFile(filename, blob)
-    },
-    onError: (error: unknown) => {
-      setLiveTruthError(errorMessage(error, 'Failed to export monitor artifact'))
-    },
-  })
-
-  const runMonitorIterateMutation = useMutation({
+  const revertTuneParametersMutation = useMutation({
     mutationFn: async () => {
       if (!selectedTrader) {
-        throw new Error('Select a bot before running monitor iterate.')
+        throw new Error('Select a bot before reverting tune parameters.')
       }
-      const prompt = monitorIteratePrompt.trim()
+      if (!tuneRevertSnapshot || tuneRevertSnapshot.traderId !== selectedTrader.id) {
+        throw new Error('No tune snapshot is available to revert.')
+      }
+      const snapshot = tuneRevertSnapshot
+      const trader = await updateTrader(selectedTrader.id, {
+        source_configs: cloneSourceConfigsForTuneSnapshot(snapshot.sourceConfigs),
+      })
+      return { trader, snapshot }
+    },
+    onMutate: () => {
+      setTuneRevertError(null)
+      setTuneSaveError(null)
+    },
+    onSuccess: ({ trader }) => {
+      setTuneRevertError(null)
+      setTuneSaveError(null)
+      setTuneDraftDirty(false)
+      setTuneDraftTraderId(trader.id)
+      setTuneRevertSnapshot(null)
+      applyTraderDraftSettings(trader)
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setTuneRevertError(errorMessage(error, 'Failed to revert tune parameters'))
+    },
+  })
+
+  const runTuneIterateMutation = useMutation({
+    mutationFn: async ({ trigger }: { trigger: 'manual' | 'auto' }) => {
+      if (!selectedTrader) {
+        throw new Error('Select a bot before running tune.')
+      }
+      if (trigger !== 'manual' && trigger !== 'auto') {
+        throw new Error('Invalid tune trigger.')
+      }
+      const prompt = tuneIteratePrompt.trim()
       if (!prompt) {
-        throw new Error('Enter an iterate prompt.')
+        throw new Error('Enter a tune prompt.')
       }
-      const maxIterations = Math.max(1, Math.min(24, Math.trunc(toNumber(monitorIterateMaxIterations || 12))))
-      const monitorJobId = monitorIterateMonitorJobId.trim() || (liveTruthJobCompleted ? String(liveTruthJobId || '') : '')
-      return runTraderMonitorIteration(selectedTrader.id, {
+      const maxIterations = Math.max(1, Math.min(24, Math.trunc(toNumber(tuneIterateMaxIterations || 12))))
+      return runTraderTuneIteration(selectedTrader.id, {
         prompt,
         max_iterations: maxIterations,
-        ...(monitorIterateModel.trim() ? { model: monitorIterateModel.trim() } : {}),
-        ...(monitorJobId ? { monitor_job_id: monitorJobId } : {}),
+        ...(tuneIterateModel.trim() ? { model: tuneIterateModel.trim() } : {}),
       })
     },
     onMutate: () => {
-      setMonitorIterateError(null)
-      setExperimentActionError(null)
+      const snapshot = captureTuneRevertSnapshot()
+      if (snapshot) setTuneRevertSnapshot(snapshot)
+      setTuneAutoLastRunAt(Date.now())
+      setTuneIterateError(null)
+      setTuneSaveError(null)
+      setTuneRevertError(null)
     },
     onSuccess: (result) => {
-      setMonitorIterateError(null)
-      setMonitorIterateResponse(result)
-      refreshAll()
-    },
-    onError: (error: unknown) => {
-      setMonitorIterateError(errorMessage(error, 'Failed to run monitor iterate'))
-    },
-  })
-
-  const createStrategyExperimentMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedTrader) {
-        throw new Error('Select a bot before creating an experiment.')
+      setTuneIterateError(null)
+      setTuneIterateResponse(result)
+      if (result.updated_trader) {
+        applyTraderDraftSettings(result.updated_trader)
+        setTuneDraftDirty(false)
+        setTuneDraftTraderId(result.updated_trader.id)
       }
-      const sourceKey = normalizeSourceKey(experimentDraftSourceKey)
-      const strategyKey = String(experimentDraftStrategyKey || '').trim().toLowerCase()
-      const controlVersion = normalizeStrategyVersion(experimentDraftControlVersion)
-      const candidateVersion = normalizeStrategyVersion(experimentDraftCandidateVersion)
-      if (!sourceKey) throw new Error('Select a source for the experiment.')
-      if (!strategyKey) throw new Error('Select a strategy for the experiment.')
-      if (controlVersion == null || candidateVersion == null) {
-        throw new Error('Select both control and candidate versions.')
+      refreshAll()
+    },
+    onError: (error: unknown, variables) => {
+      if (variables.trigger === 'manual') {
+        setTuneIterateError(errorMessage(error, 'Failed to run tune'))
       }
-      if (controlVersion === candidateVersion) {
-        throw new Error('Control and candidate versions must be different.')
-      }
-      const allocationPct = Math.max(0.1, Math.min(99.9, toNumber(experimentDraftAllocationPct || 50)))
-      const autoName = `${strategyLabelForKey(strategyKey, sourceCards)} v${controlVersion} vs v${candidateVersion}`
-      return createStrategyExperiment({
-        name: experimentDraftName.trim() || autoName,
-        source_key: sourceKey,
-        strategy_key: strategyKey,
-        control_version: controlVersion,
-        candidate_version: candidateVersion,
-        candidate_allocation_pct: allocationPct,
-        scope: {
-          trader_id: selectedTrader.id,
-          trader_mode: selectedTrader.mode,
-        },
-        notes: experimentDraftNotes.trim() || undefined,
-        created_by: 'trading_panel',
-      })
-    },
-    onMutate: () => {
-      setExperimentActionError(null)
-    },
-    onSuccess: (result) => {
-      setExperimentActionError(null)
-      setSelectedExperimentId(result.id)
-      setExperimentDraftName('')
-      queryClient.invalidateQueries({ queryKey: ['strategy-experiments'] })
-      refreshAll()
-    },
-    onError: (error: unknown) => {
-      setExperimentActionError(errorMessage(error, 'Failed to create A/B experiment'))
-    },
-  })
-
-  const setExperimentStatusMutation = useMutation({
-    mutationFn: async ({ experimentId, status }: { experimentId: string; status: string }) => {
-      return setStrategyExperimentStatus(experimentId, status)
-    },
-    onMutate: () => {
-      setExperimentActionError(null)
-    },
-    onSuccess: (result) => {
-      setExperimentActionError(null)
-      setSelectedExperimentId(result.id)
-      queryClient.invalidateQueries({ queryKey: ['strategy-experiments'] })
-      refreshAll()
-    },
-    onError: (error: unknown) => {
-      setExperimentActionError(errorMessage(error, 'Failed to update experiment status'))
-    },
-  })
-
-  const promoteStrategyExperimentMutation = useMutation({
-    mutationFn: async ({ experimentId, promotedVersion }: { experimentId: string; promotedVersion?: number }) => {
-      return promoteStrategyExperiment(
-        experimentId,
-        promotedVersion != null ? { promoted_version: promotedVersion } : undefined
-      )
-    },
-    onMutate: () => {
-      setExperimentActionError(null)
-    },
-    onSuccess: (result) => {
-      setExperimentActionError(null)
-      setSelectedExperimentId(result.id)
-      queryClient.invalidateQueries({ queryKey: ['strategy-experiments'] })
-      refreshAll()
-    },
-    onError: (error: unknown) => {
-      setExperimentActionError(errorMessage(error, 'Failed to promote experiment'))
     },
   })
 
@@ -5646,8 +5187,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       if (tradersEnabled && tradersScope.modes.includes('group') && tradersScope.group_ids.length === 0) {
         throw new Error('Select at least one group for wallet scope.')
       }
-
-      await persistGlobalWalletSettings()
 
       const payload: Record<string, unknown> = {
         name: draftName.trim(),
@@ -5706,8 +5245,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       if (tradersEnabled && tradersScope.modes.includes('group') && tradersScope.group_ids.length === 0) {
         throw new Error('Select at least one group for wallet scope.')
       }
-
-      await persistGlobalWalletSettings()
 
       return updateTrader(traderId, {
         name: draftName.trim(),
@@ -6412,7 +5949,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         executionSummary,
         outcomeHeadline: outcome.headline,
         outcomeDetail: outcome.detail,
-        outcomeDetailCompact: compactText(outcome.detail, 160),
         venuePresentation,
       }
     })
@@ -6615,17 +6151,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const reason = eventReasonDetail(event)
       const severity = String(event.severity || '').trim().toLowerCase()
       const eventType = String(event.event_type || '').trim().toLowerCase()
+      const linkedDecisionReason = linkedDecision ? decisionReasonDetail(linkedDecision) : ''
+      const resolvedReason =
+        eventType === 'decision' && isGenericDecisionReason(reason) && linkedDecisionReason
+          ? linkedDecisionReason
+          : reason
       const decisionFingerprint = activityDuplicateFingerprint(
         cleanText(event.trader_id),
         event.created_at,
-        reason,
+        resolvedReason,
         fallbackMarket || marketLabel,
       )
-      const linkedDecisionReason = linkedDecisionId ? decisionReasonById.get(linkedDecisionId) || '' : ''
+      const linkedDecisionRowReason = linkedDecisionId ? decisionReasonById.get(linkedDecisionId) || '' : ''
       if (
         eventType === 'decision'
         && (
-          (linkedDecision && areReasonsEquivalent(reason, linkedDecisionReason))
+          (linkedDecision && areReasonsEquivalent(resolvedReason, linkedDecisionRowReason))
           || decisionEchoFingerprints.has(decisionFingerprint)
         )
       ) {
@@ -6642,7 +6183,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         ts: event.created_at,
         traderId: event.trader_id,
         title: `${String(event.event_type || 'event').toUpperCase()} • ${String(event.severity || 'info').toUpperCase()} • ${marketLabel}`,
-        detail: `Markets: ${renderMarketsDetail(linkedLegs, fallbackMarket)} :: Reason: ${reason}`,
+        detail: `Markets: ${renderMarketsDetail(linkedLegs, fallbackMarket)} :: Reason: ${resolvedReason}`,
         action,
         tone,
       })
@@ -7194,6 +6735,33 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const selectedTraderCanEnable = Boolean(selectedTrader && !selectedTraderExecutionEnabled)
   const selectedTraderCanDisable = Boolean(selectedTrader && selectedTraderExecutionEnabled)
   const selectedTraderControlPending = traderEnableMutation.isPending || traderDisableMutation.isPending
+
+  useEffect(() => {
+    if (!tuneAutoEnabled) return
+    if (!selectedTrader || !selectedTraderExecutionEnabled) return
+    if (runTuneIterateMutation.isPending) return
+
+    const intervalMinutes = Math.max(1, Math.min(360, Math.trunc(toNumber(tuneAutoIntervalMinutes || 15) || 15)))
+    const intervalMs = Math.max(
+      60_000,
+      Math.min(360 * 60_000, intervalMinutes * 60_000)
+    )
+    const baseRunAt = tuneAutoLastRunAt ?? Date.now()
+    const dueInMs = Math.max(0, (baseRunAt + intervalMs) - Date.now())
+    const timeoutId = window.setTimeout(() => {
+      if (runTuneIterateMutation.isPending) return
+      runTuneIterateMutation.mutate({ trigger: 'auto' })
+    }, dueInMs)
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    runTuneIterateMutation,
+    selectedTrader,
+    selectedTraderExecutionEnabled,
+    tuneAutoEnabled,
+    tuneAutoIntervalMinutes,
+    tuneAutoLastRunAt,
+  ])
+
   const showingAllBotsDashboard = !selectedTraderId
   const overviewStartLabel = allBotsOverviewBuckets[0]?.label || 'n/a'
   const overviewEndLabel = allBotsOverviewBuckets[allBotsOverviewBuckets.length - 1]?.label || 'n/a'
@@ -7957,9 +7525,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <Table className="w-full table-fixed">
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="w-[26%] text-[10px]">Market</TableHead>
+                                  <TableHead className="w-[32%] text-[10px]">Market</TableHead>
                                   <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                  <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
                                   <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
                                   <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
                                   <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
@@ -7977,8 +7544,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   const status = normalizeStatus(order.status)
                                   const lifecycleLabel = resolveOrderLifecycleLabel(status)
                                   const pnl = toNumber(order.actual_profit)
-                                  const statusBadge = resolveOrderStatusBadgePresentation(status, pnl)
-                                  const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(status)
                                   const orderPayload = order.payload && typeof order.payload === 'object' ? order.payload : {}
                                   const providerReconciliation = orderPayload.provider_reconciliation && typeof orderPayload.provider_reconciliation === 'object'
                                     ? orderPayload.provider_reconciliation
@@ -8060,154 +7625,184 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     order.executed_at,
                                     order.created_at
                                   )
+                                  const positionClose = orderPayload.position_close && typeof orderPayload.position_close === 'object'
+                                    ? orderPayload.position_close
+                                    : {}
+                                  const closeTrigger = cleanText(
+                                    order.close_trigger
+                                    || (positionClose as Record<string, unknown>).close_trigger
+                                    || (pendingExit as Record<string, unknown>).close_trigger
+                                  )
+                                  const pendingExitStatus = normalizeStatus(String((pendingExit as Record<string, unknown>).status || ''))
+                                  const pendingExitLabel = pendingExitStatus && pendingExitStatus !== 'unknown'
+                                    ? `Exit:${pendingExitStatus.slice(0, 4).toUpperCase()}`
+                                    : null
+                                  const pendingExitTone: 'neutral' | 'warning' =
+                                    pendingExitStatus === 'failed' && OPEN_ORDER_STATUSES.has(status)
+                                      ? 'warning'
+                                      : 'neutral'
                                   const outcome = orderOutcomeSummary(order)
-                                  const outcomeDetailCompact = compactText(outcome.detail, 120)
                                   const executionSummary = orderExecutionTypeSummary(order)
                                   const venuePresentation = resolveVenueStatusPresentation(providerSnapshotStatus)
                                   const directionPresentation = resolveOrderDirectionPresentation(order)
                                   const traderLabel = traderNameById[String(order.trader_id || '')] || shortId(order.trader_id)
                                   const marketForModal = resolveCryptoMarketFromAliases(collectOrderMarketAliasIds(order))
+                                  const openModal = () => {
+                                    openTradeMarketModal({
+                                      market: marketForModal,
+                                      order,
+                                      directionSide: directionPresentation.side,
+                                      directionLabel: directionPresentation.label,
+                                      yesLabel: directionPresentation.yesLabel,
+                                      noLabel: directionPresentation.noLabel,
+                                      statusSummary: lifecycleLabel,
+                                      executionSummary,
+                                      outcomeSummary: outcome.detail,
+                                      links,
+                                    })
+                                  }
                                   return (
-                                  <TableRow
-                                    key={order.id}
-                                    className="text-[11px] leading-tight cursor-pointer hover:bg-muted/30"
-                                    onClick={() => {
-                                      openTradeMarketModal({
-                                        market: marketForModal,
-                                        order,
-                                        directionSide: directionPresentation.side,
-                                        directionLabel: directionPresentation.label,
-                                        yesLabel: directionPresentation.yesLabel,
-                                        noLabel: directionPresentation.noLabel,
-                                        statusSummary: lifecycleLabel,
-                                        executionSummary,
-                                        outcomeSummary: outcome.detail,
-                                        links,
-                                      })
-                                    }}
-                                  >
-                                      <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
-                                        <div className="flex min-w-0 items-center gap-1">
-                                          <div className="flex shrink-0 items-center gap-0.5">
-                                            {links.polymarket && (
+                                    <Fragment key={order.id}>
+                                      <TableRow
+                                        className="border-b-0 bg-muted/[0.08] text-[11px] leading-tight cursor-pointer hover:bg-muted/[0.16] [&>td]:border-t [&>td]:border-border/70 [&>td:first-child]:border-l [&>td:last-child]:border-r"
+                                        onClick={openModal}
+                                      >
+                                        <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
+                                          <div className="flex min-w-0 items-center gap-1">
+                                            <div className="flex shrink-0 items-center gap-0.5">
+                                              {links.polymarket && (
+                                                <a
+                                                  href={links.polymarket}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  onClick={(event) => event.stopPropagation()}
+                                                  className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                  title="Open Polymarket market"
+                                                >
+                                                  <ExternalLink className="h-3 w-3" />
+                                                </a>
+                                              )}
+                                              {links.kalshi && (
+                                                <a
+                                                  href={links.kalshi}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  onClick={(event) => event.stopPropagation()}
+                                                  className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                  title="Open Kalshi market"
+                                                >
+                                                  <ExternalLink className="h-3 w-3" />
+                                                </a>
+                                              )}
+                                            </div>
+                                            {primaryMarketLink ? (
                                               <a
-                                                href={links.polymarket}
+                                                href={primaryMarketLink}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                                 onClick={(event) => event.stopPropagation()}
-                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                                title="Open Polymarket market"
+                                                className="truncate hover:underline underline-offset-2"
+                                                title="Open market"
                                               >
-                                                <ExternalLink className="h-3 w-3" />
+                                                {order.market_question || shortId(order.market_id)}
                                               </a>
-                                            )}
-                                            {links.kalshi && (
-                                              <a
-                                                href={links.kalshi}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                onClick={(event) => event.stopPropagation()}
-                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                                title="Open Kalshi market"
-                                              >
-                                                <ExternalLink className="h-3 w-3" />
-                                              </a>
+                                            ) : (
+                                              <span className="truncate">
+                                                {order.market_question || shortId(order.market_id)}
+                                              </span>
                                             )}
                                           </div>
-                                          {primaryMarketLink ? (
-                                            <a
-                                              href={primaryMarketLink}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              onClick={(event) => event.stopPropagation()}
-                                              className="truncate hover:underline underline-offset-2"
-                                              title="Open market"
-                                            >
-                                              {order.market_question || shortId(order.market_id)}
-                                            </a>
-                                          ) : (
-                                            <span className="truncate">
-                                              {order.market_question || shortId(order.market_id)}
-                                            </span>
-                                          )}
-                                        </div>
-                                        <p className="truncate text-[9px] leading-none text-muted-foreground" title={traderLabel}>
-                                          {traderLabel}
-                                        </p>
-                                      </TableCell>
-                                      <TableCell className="py-0.5">
-                                        <Badge
-                                          variant="outline"
-                                          className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
-                                          title={directionPresentation.label}
-                                        >
-                                          {directionPresentation.label}
-                                        </Badge>
-                                      </TableCell>
-                                      <TableCell className="py-0.5 min-w-[260px]">
-                                        <div className="min-w-0 space-y-0">
-                                          <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-                                            <Badge
-                                              variant={statusBadge.variant}
-                                              title={`Raw status: ${status}`}
-                                              className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
-                                            >
-                                              {lifecycleLabel}
-                                            </Badge>
-                                            <Badge
-                                              variant="outline"
-                                              title={outcome.detail}
+                                          <p className="truncate text-[9px] leading-none text-muted-foreground" title={traderLabel}>
+                                            {traderLabel}
+                                          </p>
+                                        </TableCell>
+                                        <TableCell className="py-0.5">
+                                          <Badge
+                                            variant="outline"
+                                            className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
+                                            title={directionPresentation.label}
+                                          >
+                                            {directionPresentation.label}
+                                          </Badge>
+                                        </TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
+                                        <TableCell className="py-0.5 text-right">
+                                          {OPEN_ORDER_STATUSES.has(status) ? (
+                                            <span
                                               className={cn(
-                                                'h-4 max-w-[180px] truncate px-1 text-[9px] font-medium',
-                                                outcomeBadgeClassName
+                                                'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
+                                                unrealized > 0
+                                                  ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                                  : unrealized < 0
+                                                    ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
+                                                    : 'border-border/70 bg-background/80 text-foreground/85'
                                               )}
                                             >
-                                              {outcome.headline}
-                                            </Badge>
-                                            {executionSummary !== '—' && (
-                                              <Badge
-                                                variant="outline"
-                                                title={`Execution: ${executionSummary}`}
-                                                className="h-4 max-w-[150px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85"
-                                              >
-                                                {executionSummary}
-                                              </Badge>
-                                            )}
-                                          </div>
-                                          <p className="truncate text-[9px] leading-none text-foreground/85" title={outcome.detail}>
-                                            <span className="font-medium text-muted-foreground">Reason:</span> {outcomeDetailCompact}
-                                          </p>
-                                        </div>
-                                      </TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
-                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
-                                        {OPEN_ORDER_STATUSES.has(status) ? formatCurrency(unrealized) : '\u2014'}
-                                      </TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
-                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
-                                        {RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl) : '\u2014'}
-                                      </TableCell>
-                                      <TableCell className="py-0.5">
-                                        <Badge
-                                          variant="outline"
-                                          title={`Venue: ${venuePresentation.detail}${providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : ''}`}
-                                          className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
-                                        >
-                                          {venuePresentation.label}
-                                        </Badge>
-                                      </TableCell>
-                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">
-                                        {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
-                                      </TableCell>
-                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                                        <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
-                                          {formatRelativeAge(updatedAt)}
-                                        </span>
-                                      </TableCell>
-                                    </TableRow>
+                                              {formatCurrency(unrealized)}
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
+                                              \u2014
+                                            </span>
+                                          )}
+                                        </TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
+                                        <TableCell className="py-0.5 text-right">
+                                          {RESOLVED_ORDER_STATUSES.has(status) ? (
+                                            <span
+                                              className={cn(
+                                                'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
+                                                pnl > 0
+                                                  ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                                  : pnl < 0
+                                                    ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
+                                                    : 'border-border/70 bg-background/80 text-foreground/85'
+                                              )}
+                                            >
+                                              {formatCurrency(pnl)}
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
+                                              \u2014
+                                            </span>
+                                          )}
+                                        </TableCell>
+                                        <TableCell className="py-0.5">
+                                          <Badge
+                                            variant="outline"
+                                            title={`Venue: ${venuePresentation.detail}${providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : ''}`}
+                                            className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
+                                          >
+                                            {venuePresentation.label}
+                                          </Badge>
+                                        </TableCell>
+                                        <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                                          {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
+                                        </TableCell>
+                                        <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                          <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
+                                            {formatRelativeAge(updatedAt)}
+                                          </span>
+                                        </TableCell>
+                                      </TableRow>
+                                      <TableRow className="cursor-pointer bg-muted/[0.08] hover:bg-muted/[0.16]" onClick={openModal}>
+                                        <TableCell colSpan={12} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
+                                          {renderTradeLifecycleFlow({
+                                            status,
+                                            outcomeHeadline: outcome.headline,
+                                            outcomeDetail: outcome.detail,
+                                            executionSummary,
+                                            venueLabel: venuePresentation.label,
+                                            closeTrigger,
+                                            pendingExitLabel,
+                                            pendingExitTone,
+                                          })}
+                                        </TableCell>
+                                      </TableRow>
+                                    </Fragment>
                                   )
                                 })}
                               </TableBody>
@@ -8475,7 +8070,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 {([
                   { key: 'trades' as const, label: 'Trades' },
                   { key: 'terminal' as const, label: 'Terminal' },
-                  { key: 'monitor' as const, label: 'Monitor' },
+                  { key: 'tune' as const, label: 'Tune' },
                   { key: 'decisions' as const, label: 'Decisions' },
                   { key: 'performance' as const, label: 'Performance' },
                 ]).map((tab) => (
@@ -8662,9 +8257,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <Table className="w-full table-fixed">
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="w-[26%] text-[10px]">Market</TableHead>
+                                <TableHead className="w-[32%] text-[10px]">Market</TableHead>
                                 <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
                                 <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
                                 <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
                                 <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
@@ -8694,7 +8288,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   providerSnapshotStatus,
                                   pendingExitStatus,
                                   closeTrigger,
-                                  pendingExit,
                                   markFresh,
                                   links,
                                   directionSide,
@@ -8704,192 +8297,181 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   executionSummary,
                                   outcomeHeadline,
                                   outcomeDetail,
-                                  outcomeDetailCompact,
                                   venuePresentation,
                                 } = row
-                                const pendingExitError = pendingExit && typeof pendingExit === 'object'
-                                  ? String((pendingExit as Record<string, unknown>).last_error || (pendingExit as Record<string, unknown>).error || '').trim()
-                                  : ''
-                                const pendingExitNextRetry = pendingExit && typeof pendingExit === 'object'
-                                  ? String((pendingExit as Record<string, unknown>).next_retry_at || '').trim()
-                                  : ''
-                                const pendingExitLabel = pendingExitStatus === 'failed' && OPEN_ORDER_STATUSES.has(status)
-                                  ? 'E:RETRY'
-                                  : `E:${pendingExitStatus.slice(0, 4).toUpperCase()}`
-                                const statusBadge = resolveOrderStatusBadgePresentation(status, pnl)
-                                const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(status)
+                                const pendingExitLabel = pendingExitStatus && pendingExitStatus !== 'unknown'
+                                  ? (pendingExitStatus === 'failed' && OPEN_ORDER_STATUSES.has(status)
+                                    ? 'Exit:RETRY'
+                                    : `Exit:${pendingExitStatus.slice(0, 4).toUpperCase()}`)
+                                  : null
+                                const pendingExitTone: 'neutral' | 'warning' =
+                                  pendingExitStatus === 'failed' && OPEN_ORDER_STATUSES.has(status)
+                                    ? 'warning'
+                                    : 'neutral'
                                 const marketForModal = resolveCryptoMarketFromAliases(collectOrderMarketAliasIds(order))
+                                const openModal = () => {
+                                  openTradeMarketModal({
+                                    market: marketForModal,
+                                    order,
+                                    directionSide,
+                                    directionLabel,
+                                    yesLabel,
+                                    noLabel,
+                                    statusSummary: lifecycleLabel,
+                                    executionSummary,
+                                    outcomeSummary: outcomeDetail,
+                                    links,
+                                  })
+                                }
                                 return (
-                                  <TableRow
-                                    key={order.id}
-                                    className="text-[11px] leading-tight cursor-pointer hover:bg-muted/30"
-                                    onClick={() => {
-                                      openTradeMarketModal({
-                                        market: marketForModal,
-                                        order,
-                                        directionSide,
-                                        directionLabel,
-                                        yesLabel,
-                                        noLabel,
-                                        statusSummary: lifecycleLabel,
-                                        executionSummary,
-                                        outcomeSummary: outcomeDetail,
-                                        links,
-                                      })
-                                    }}
-                                  >
-                                    <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
-                                      <div className="flex min-w-0 items-center gap-1">
-                                        <div className="flex shrink-0 items-center gap-0.5">
-                                          {links.polymarket && (
-                                            <a
-                                              href={links.polymarket}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              onClick={(event) => event.stopPropagation()}
-                                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                              title="Open Polymarket market"
-                                            >
-                                              <ExternalLink className="h-3 w-3" />
-                                            </a>
-                                          )}
-                                          {links.kalshi && (
-                                            <a
-                                              href={links.kalshi}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              onClick={(event) => event.stopPropagation()}
-                                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                              title="Open Kalshi market"
-                                            >
-                                              <ExternalLink className="h-3 w-3" />
-                                            </a>
-                                          )}
+                                  <Fragment key={order.id}>
+                                    <TableRow
+                                      className="border-b-0 bg-muted/[0.08] text-[11px] leading-tight cursor-pointer hover:bg-muted/[0.16] [&>td]:border-t [&>td]:border-border/70 [&>td:first-child]:border-l [&>td:last-child]:border-r"
+                                      onClick={openModal}
+                                    >
+                                      <TableCell className="max-w-[260px] py-0.5" title={order.market_question || order.market_id}>
+                                        <div className="flex min-w-0 items-center gap-1">
+                                          <div className="flex shrink-0 items-center gap-0.5">
+                                            {links.polymarket && (
+                                              <a
+                                                href={links.polymarket}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                onClick={(event) => event.stopPropagation()}
+                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                title="Open Polymarket market"
+                                              >
+                                                <ExternalLink className="h-3 w-3" />
+                                              </a>
+                                            )}
+                                            {links.kalshi && (
+                                              <a
+                                                href={links.kalshi}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                onClick={(event) => event.stopPropagation()}
+                                                className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
+                                                title="Open Kalshi market"
+                                              >
+                                                <ExternalLink className="h-3 w-3" />
+                                              </a>
+                                            )}
+                                          </div>
+                                          <span className="truncate">{order.market_question || shortId(order.market_id)}</span>
                                         </div>
-                                        <span className="truncate">{order.market_question || shortId(order.market_id)}</span>
-                                      </div>
-                                    </TableCell>
-                                    <TableCell className="py-0.5">
-                                      <Badge
-                                        variant="outline"
-                                        className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
-                                        title={directionLabel}
-                                      >
-                                        {directionLabel}
-                                      </Badge>
-                                    </TableCell>
-                                    <TableCell className="py-0.5 min-w-[260px]">
-                                        <div className="min-w-0 space-y-0">
-                                          <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-                                          <Badge
-                                            variant={statusBadge.variant}
-                                            title={`Raw status: ${status}`}
-                                            className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
-                                          >
-                                            {lifecycleLabel}
-                                          </Badge>
-                                          <Badge
-                                            variant="outline"
-                                            title={outcomeDetail}
+                                      </TableCell>
+                                      <TableCell className="py-0.5">
+                                        <Badge
+                                          variant="outline"
+                                          className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
+                                          title={directionLabel}
+                                        >
+                                          {directionLabel}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
+                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', markFresh && 'text-sky-300')}>
+                                        {markPx > 0 ? (
+                                          <FlashNumber
+                                            value={markPx}
+                                            decimals={3}
+                                            className={cn('font-mono text-[10px]', markFresh ? 'data-glow-blue' : '')}
+                                            positiveClass="data-glow-green"
+                                            negativeClass="data-glow-red"
+                                          />
+                                        ) : '\u2014'}
+                                      </TableCell>
+                                      <TableCell className="py-0.5 text-right">
+                                        {OPEN_ORDER_STATUSES.has(status) ? (
+                                          <span
                                             className={cn(
-                                              'h-4 max-w-[180px] truncate px-1 text-[9px] font-medium',
-                                              outcomeBadgeClassName
+                                              'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
+                                              unrealized > 0
+                                                ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                                : unrealized < 0
+                                                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
+                                                  : 'border-border/70 bg-background/80 text-foreground/85'
                                             )}
                                           >
-                                            {outcomeHeadline}
-                                          </Badge>
-                                          {executionSummary !== '—' && (
-                                            <Badge variant="outline" title={`Execution: ${executionSummary}`} className="h-4 max-w-[150px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85">
-                                              {executionSummary}
-                                            </Badge>
-                                          )}
-                                          {closeTrigger && (
-                                            <Badge
-                                              variant="outline"
-                                              title={`Close trigger: ${closeTrigger}`}
-                                              className="h-4 max-w-[150px] truncate border-sky-300 bg-sky-100 px-1 text-[9px] font-medium text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200"
-                                            >
-                                              {`T:${closeTrigger}`}
-                                            </Badge>
-                                          )}
-                                          {pendingExitStatus && pendingExitStatus !== 'unknown' && (
-                                            <Badge
-                                              variant="outline"
-                                              title={
-                                                `exit:${pendingExitStatus}`
-                                                + (pendingExitError ? ` • ${pendingExitError}` : '')
-                                                + (pendingExitNextRetry ? ` • next_retry:${formatTimestamp(pendingExitNextRetry)}` : '')
-                                              }
-                                              className={cn(
-                                                'h-4 px-1 text-[9px] font-semibold',
-                                                pendingExitStatus === 'failed'
-                                                  ? 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200'
-                                                  : 'border-border/80 bg-background/80 text-foreground/80'
-                                              )}
-                                            >
-                                              {pendingExitLabel}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                        <p className="truncate text-[9px] leading-none text-foreground/85" title={outcomeDetail}>
-                                          <span className="font-medium text-muted-foreground">Reason:</span> {outcomeDetailCompact}
-                                        </p>
-                                      </div>
-                                    </TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(toNumber(order.notional_usd), true)}</TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
-                                    <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', markFresh && 'text-sky-300')}>
-                                      {markPx > 0 ? (
-                                        <FlashNumber
-                                          value={markPx}
-                                          decimals={3}
-                                          className={cn('font-mono text-[10px]', markFresh ? 'data-glow-blue' : '')}
-                                          positiveClass="data-glow-green"
-                                          negativeClass="data-glow-red"
-                                        />
-                                      ) : '\u2014'}
-                                    </TableCell>
-                                    <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
-                                      {OPEN_ORDER_STATUSES.has(status) ? (
-                                        <FlashNumber
-                                          value={unrealized}
-                                          decimals={2}
-                                          prefix="$"
-                                          className={cn('font-mono text-[10px]', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}
-                                          positiveClass="data-glow-green"
-                                          negativeClass="data-glow-red"
-                                        />
-                                      ) : '\u2014'}
-                                    </TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
-                                    <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>{RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl, true) : '\u2014'}</TableCell>
-                                    <TableCell className="py-0.5">
-                                      <Badge
-                                        variant="outline"
-                                        title={
-                                          `${venuePresentation.detail}`
-                                          + (providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : '')
-                                          + (
-                                            order.provider_clob_order_id || order.provider_order_id
-                                              ? ` • order_ref:${order.provider_clob_order_id || order.provider_order_id}`
-                                              : ''
-                                          )
-                                        }
-                                        className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
-                                      >
-                                        {venuePresentation.label}
-                                      </Badge>
-                                    </TableCell>
-                                    <TableCell className="text-right font-mono py-0.5 text-[10px]">
-                                      {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
-                                    </TableCell>
-                                    <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                                      <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
-                                        {formatRelativeAge(updatedAt)}
-                                      </span>
-                                    </TableCell>
-                                  </TableRow>
+                                            <FlashNumber
+                                              value={unrealized}
+                                              decimals={2}
+                                              prefix="$"
+                                              className="font-mono text-[10px] font-semibold"
+                                              positiveClass="data-glow-green"
+                                              negativeClass="data-glow-red"
+                                            />
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
+                                            \u2014
+                                          </span>
+                                        )}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
+                                      <TableCell className="py-0.5 text-right">
+                                        {RESOLVED_ORDER_STATUSES.has(status) ? (
+                                          <span
+                                            className={cn(
+                                              'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
+                                              pnl > 0
+                                                ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                                : pnl < 0
+                                                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
+                                                  : 'border-border/70 bg-background/80 text-foreground/85'
+                                            )}
+                                          >
+                                            {formatCurrency(pnl, true)}
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
+                                            \u2014
+                                          </span>
+                                        )}
+                                      </TableCell>
+                                      <TableCell className="py-0.5">
+                                        <Badge
+                                          variant="outline"
+                                          title={
+                                            `${venuePresentation.detail}`
+                                            + (providerSnapshotStatus ? ` • provider:${providerSnapshotStatus}` : '')
+                                            + (
+                                              order.provider_clob_order_id || order.provider_order_id
+                                                ? ` • order_ref:${order.provider_clob_order_id || order.provider_order_id}`
+                                                : ''
+                                            )
+                                          }
+                                          className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', venuePresentation.className)}
+                                        >
+                                          {venuePresentation.label}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono py-0.5 text-[10px]">
+                                        {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
+                                      </TableCell>
+                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                        <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
+                                          {formatRelativeAge(updatedAt)}
+                                        </span>
+                                      </TableCell>
+                                    </TableRow>
+                                    <TableRow className="cursor-pointer bg-muted/[0.08] hover:bg-muted/[0.16]" onClick={openModal}>
+                                      <TableCell colSpan={12} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
+                                        {renderTradeLifecycleFlow({
+                                          status,
+                                          outcomeHeadline,
+                                          outcomeDetail,
+                                          executionSummary,
+                                          venueLabel: venuePresentation.label,
+                                          closeTrigger,
+                                          pendingExitLabel,
+                                          pendingExitTone,
+                                        })}
+                                      </TableCell>
+                                    </TableRow>
+                                  </Fragment>
                                 )
                               })}
                             </TableBody>
@@ -8901,653 +8483,315 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </div>
                 )}
 
-                {workTab === 'monitor' && (
+                {workTab === 'tune' && (
                   <div className="h-full min-h-0 overflow-hidden px-1">
                     <ScrollArea className="h-full min-h-0 rounded-md border border-border/50 bg-muted/10">
                       <div className="space-y-2 p-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <p className="text-[11px] font-medium">Live Truth Monitor</p>
-                          <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
-                            {liveTruthJobId ? shortId(liveTruthJobId) : 'idle'}
-                          </Badge>
-                          {liveTruthJobId ? (
-                            <>
-                              <span
-                                className={cn(
-                                  'rounded px-1.5 py-0.5 text-[9px] font-semibold',
-                                  liveTruthJobFailed
-                                    ? 'bg-red-500/15 text-red-500'
-                                    : liveTruthJobCompleted
-                                      ? 'bg-emerald-500/15 text-emerald-500'
-                                      : 'bg-amber-500/15 text-amber-500'
-                                )}
-                              >
-                                {liveTruthJobStatus.toUpperCase()}
-                              </span>
-                              <span className="text-[9px] text-muted-foreground">{liveTruthJobProgressPct}%</span>
-                            </>
-                          ) : null}
-                        </div>
-
-                        <p className="text-[10px] text-muted-foreground/80">
-                          Run live-trading lifecycle diagnostics with optional provider checks and optional LLM analysis.
-                        </p>
-
                         {!selectedTrader ? (
                           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-100">
-                            Select a bot to run monitor diagnostics.
+                            Select a bot to tune parameters.
                           </div>
-                        ) : null}
-
-                        <div className="grid gap-2 md:grid-cols-3">
-                          <div>
-                            <Label className="text-[11px] text-muted-foreground">Duration (seconds)</Label>
-                            <Input
-                              type="number"
-                              min={10}
-                              max={7200}
-                              value={liveTruthDurationSeconds}
-                              onChange={(event) => setLiveTruthDurationSeconds(event.target.value)}
-                              className="mt-1 h-8 text-xs font-mono"
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-[11px] text-muted-foreground">Poll (seconds)</Label>
-                            <Input
-                              type="number"
-                              min={0.2}
-                              max={10}
-                              step={0.1}
-                              value={liveTruthPollSeconds}
-                              onChange={(event) => setLiveTruthPollSeconds(event.target.value)}
-                              className="mt-1 h-8 text-xs font-mono"
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-[11px] text-muted-foreground">Max Alerts To LLM</Label>
-                            <Input
-                              type="number"
-                              min={1}
-                              max={400}
-                              value={liveTruthMaxAlertsForLlm}
-                              onChange={(event) => setLiveTruthMaxAlertsForLlm(event.target.value)}
-                              className="mt-1 h-8 text-xs font-mono"
-                              disabled={!liveTruthRunLlm}
-                            />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-3">
-                          <div className="rounded-md border border-border/60 p-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs font-medium">Provider Deep Checks</p>
-                              <Switch checked={liveTruthEnableProviderChecks} onCheckedChange={setLiveTruthEnableProviderChecks} />
-                            </div>
-                            <p className="mt-1 text-[10px] text-muted-foreground/80">
-                              Enables wallet/provider API reconciliation checks. Leave off to avoid impacting active trading.
-                            </p>
-                          </div>
-                          <div className="rounded-md border border-border/60 p-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs font-medium">Analyze with LLM</p>
-                              <Switch checked={liveTruthRunLlm} onCheckedChange={setLiveTruthRunLlm} />
-                            </div>
-                            <p className="mt-1 text-[10px] text-muted-foreground/80">
-                              Sends monitor summary + alert samples to configured LLM provider.
-                            </p>
-                          </div>
-                          <div className="rounded-md border border-border/60 p-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs font-medium">Include Strategy Source</p>
-                              <Switch
-                                checked={liveTruthIncludeStrategySource}
-                                onCheckedChange={setLiveTruthIncludeStrategySource}
-                                disabled={!liveTruthRunLlm}
-                              />
-                            </div>
-                            <p className="mt-1 text-[10px] text-muted-foreground/80">
-                              Adds active strategy code to LLM context for file-level change suggestions.
-                            </p>
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label className="text-[11px] text-muted-foreground">LLM Model (optional override)</Label>
-                          <Input
-                            value={liveTruthModel}
-                            onChange={(event) => setLiveTruthModel(event.target.value)}
-                            placeholder="Use app default model"
-                            className="mt-1 h-8 text-xs font-mono"
-                            disabled={!liveTruthRunLlm}
-                          />
-                        </div>
-
-                        <Button
-                          size="sm"
-                          className="h-8 text-xs"
-                          onClick={() => runLiveTruthMonitorMutation.mutate()}
-                          disabled={runLiveTruthMonitorMutation.isPending || liveTruthJobRunning || !selectedTrader}
-                        >
-                          {runLiveTruthMonitorMutation.isPending || liveTruthJobRunning ? (
-                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                          ) : (
-                            <Play className="w-3.5 h-3.5 mr-1.5" />
-                          )}
-                          {liveTruthJobRunning ? 'Monitoring...' : 'Run Monitor'}
-                        </Button>
-
-                        {liveTruthJobId ? (
-                          <div className="rounded-md border border-border/60 bg-muted/20 p-2">
-                            <p className="text-[10px] text-muted-foreground/80">
-                              {String(liveTruthJobQuery.data?.message || 'No job status message')}
-                            </p>
-                            {liveTruthJobQuery.data?.error ? (
-                              <p className="mt-1 text-[10px] text-red-500">{String(liveTruthJobQuery.data.error)}</p>
-                            ) : null}
-                          </div>
-                        ) : null}
-
-                        {liveTruthError ? (
-                          <p className="text-[10px] text-red-500">{liveTruthError}</p>
-                        ) : null}
-
-                        {liveTruthRawQuery.isPending ? (
-                          <p className="text-[10px] text-muted-foreground/80">Loading monitor artifacts...</p>
-                        ) : null}
-                        {liveTruthRawQuery.error ? (
-                          <p className="text-[10px] text-red-500">
-                            {errorMessage(liveTruthRawQuery.error, 'Failed to load monitor artifacts')}
-                          </p>
-                        ) : null}
-
-                        {liveTruthReport ? (
-                          <div className="rounded-md border border-emerald-500/25 bg-emerald-500/5 p-2 space-y-2">
-                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
-                              <span>Alerts: {Math.trunc(toNumber(liveTruthReport.alert_count))}</span>
-                              <span>Heartbeats: {Math.trunc(toNumber(liveTruthReport.heartbeat_count))}</span>
-                              <span>Transitions: {Math.trunc(toNumber(liveTruthReport.transition_count))}</span>
-                              <span>Lines: {Math.trunc(toNumber(liveTruthReport.line_count))}</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {liveTruthAlertRuleRows.slice(0, 8).map(([rule, count]) => (
-                                <span key={rule} className="rounded-full bg-background/70 border border-border/70 px-1.5 py-0.5 text-[10px]">
-                                  {rule}: {Math.trunc(toNumber(count))}
-                                </span>
-                              ))}
-                              {liveTruthAlertRuleRows.length === 0 ? (
-                                <span className="text-[10px] text-muted-foreground/80">No alert rules triggered.</span>
-                              ) : null}
-                            </div>
-                            <p className="text-[10px] text-muted-foreground/80 font-mono break-all">
-                              {String(liveTruthRaw?.monitor?.summary_path || liveTruthRaw?.monitor?.report_path || '')}
-                            </p>
-                            <p className="text-[10px] text-muted-foreground/80">
-                              Trader: {String(liveTruthSummary.target_trader_name || selectedTrader?.name || 'n/a')} ({String(liveTruthSummary.target_trader_id || selectedTrader?.id || 'n/a')})
-                            </p>
-                          </div>
-                        ) : null}
-
-                        {liveTruthHasLlm ? (
-                          <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-2 space-y-1.5">
-                            <p className="text-[11px] font-medium">
-                              LLM: {String(liveTruthLlm.status || 'unknown')}
-                              {liveTruthLlm.requested_model ? ` (${String(liveTruthLlm.requested_model)})` : ''}
-                            </p>
-                            {liveTruthLlm.error ? (
-                              <p className="text-[10px] text-red-500">{String(liveTruthLlm.error)}</p>
-                            ) : null}
-                            {liveTruthLlmAnalysis && typeof liveTruthLlmAnalysis.assessment === 'string' ? (
-                              <p className="text-[10px] text-muted-foreground/85">{liveTruthLlmAnalysis.assessment}</p>
-                            ) : null}
-                            {liveTruthLlmStrategyChanges.length > 0 ? (
-                              <div className="space-y-1">
-                                {liveTruthLlmStrategyChanges.slice(0, 3).map((change, index) => (
-                                  <div key={`${index}-${String(change.title || '')}`} className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                                    <p className="text-[10px] font-medium">{String(change.title || 'Strategy change')}</p>
-                                    <p className="text-[10px] text-muted-foreground/80">{String(change.target || '')}</p>
-                                  </div>
-                                ))}
+                        ) : (
+                          <>
+                            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2.5 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5">
+                                  <p className="text-[11px] font-medium">Tune Agent</p>
+                                  <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
+                                    {tuneIterateResponse?.session_id ? shortId(tuneIterateResponse.session_id) : 'idle'}
+                                  </Badge>
+                                  {runTuneIterateMutation.isPending ? (
+                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-500/15 text-amber-500">
+                                      RUNNING
+                                    </span>
+                                  ) : null}
+                                  {tuneAutoEnabled ? (
+                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-emerald-500/15 text-emerald-500">
+                                      AUTO
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                  Bot: <span className="font-mono text-foreground/85">{selectedTrader.name}</span>
+                                </p>
                               </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-
-                        {liveTruthJobCompleted && liveTruthJobId ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px]"
-                              onClick={() => exportLiveTruthArtifactMutation.mutate('summary_json')}
-                              disabled={exportLiveTruthArtifactMutation.isPending}
-                            >
-                              Export Summary
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px]"
-                              onClick={() => exportLiveTruthArtifactMutation.mutate('report_jsonl')}
-                              disabled={exportLiveTruthArtifactMutation.isPending}
-                            >
-                              Export Report
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px]"
-                              onClick={() => exportLiveTruthArtifactMutation.mutate('llm_analysis_json')}
-                              disabled={exportLiveTruthArtifactMutation.isPending}
-                            >
-                              Export LLM
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px]"
-                              onClick={() => exportLiveTruthArtifactMutation.mutate('bundle_json')}
-                              disabled={exportLiveTruthArtifactMutation.isPending}
-                            >
-                              Export Bundle
-                            </Button>
-                          </div>
-                        ) : null}
-
-                        <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2.5 space-y-2">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <p className="text-[11px] font-medium">Iterate Agent</p>
-                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
-                              {monitorIterateResponse?.session_id ? shortId(monitorIterateResponse.session_id) : 'idle'}
-                            </Badge>
-                            {runMonitorIterateMutation.isPending ? (
-                              <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-500/15 text-amber-500">
-                                RUNNING
-                              </span>
-                            ) : null}
-                          </div>
-                          <p className="text-[10px] text-muted-foreground/80">
-                            Tool-based LLM loop with direct access to trader decisions, strategy versions, parameter tuning, source edits, and A/B experiment creation.
-                          </p>
-                          <textarea
-                            value={monitorIteratePrompt}
-                            onChange={(event) => setMonitorIteratePrompt(event.target.value)}
-                            className="w-full min-h-[96px] rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs leading-relaxed"
-                            placeholder="Describe what should be improved, what to optimize, and any constraints..."
-                          />
-                          <div className="grid gap-2 md:grid-cols-3">
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Model Override</Label>
-                              <Input
-                                value={monitorIterateModel}
-                                onChange={(event) => setMonitorIterateModel(event.target.value)}
-                                placeholder="app default"
-                                className="mt-1 h-8 text-xs font-mono"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Max Iterations</Label>
-                              <Input
-                                type="number"
-                                min={1}
-                                max={24}
-                                value={monitorIterateMaxIterations}
-                                onChange={(event) => setMonitorIterateMaxIterations(event.target.value)}
-                                className="mt-1 h-8 text-xs font-mono"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Monitor Job Context</Label>
-                              <Input
-                                value={monitorIterateMonitorJobId}
-                                onChange={(event) => setMonitorIterateMonitorJobId(event.target.value)}
-                                placeholder={liveTruthJobId || 'optional job id'}
-                                className="mt-1 h-8 text-xs font-mono"
-                              />
-                            </div>
-                          </div>
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs"
-                            onClick={() => runMonitorIterateMutation.mutate()}
-                            disabled={runMonitorIterateMutation.isPending || !selectedTrader}
-                          >
-                            {runMonitorIterateMutation.isPending ? (
-                              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                            ) : (
-                              <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                            )}
-                            {runMonitorIterateMutation.isPending ? 'Iterating...' : 'Run Iterate'}
-                          </Button>
-                          {monitorIterateError ? (
-                            <p className="text-[10px] text-red-500">{monitorIterateError}</p>
-                          ) : null}
-                          {monitorIterateResponse ? (
-                            <div className="rounded-md border border-border/60 bg-background/70 p-2 space-y-1.5">
-                              {monitorIterateParsed && typeof monitorIterateParsed.summary === 'string' ? (
-                                <p className="text-[10px] text-muted-foreground/90">
-                                  {String(monitorIterateParsed.summary)}
-                                </p>
-                              ) : null}
-                              {monitorIterateActions.length > 0 ? (
-                                <div className="space-y-0.5">
-                                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Actions Taken</p>
-                                  {monitorIterateActions.slice(0, 8).map((action, index) => (
-                                    <p key={`${index}-${action}`} className="text-[10px] text-foreground/90">
-                                      {index + 1}. {action}
-                                    </p>
-                                  ))}
-                                </div>
-                              ) : null}
-                              {monitorIterateNextSteps.length > 0 ? (
-                                <div className="space-y-0.5">
-                                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Suggested Next</p>
-                                  {monitorIterateNextSteps.slice(0, 8).map((step, index) => (
-                                    <p key={`${index}-${step}`} className="text-[10px] text-muted-foreground/90">
-                                      {index + 1}. {step}
-                                    </p>
-                                  ))}
-                                </div>
-                              ) : null}
-                              <details className="rounded border border-border/50 bg-background/50 px-2 py-1">
-                                <summary className="cursor-pointer text-[10px] text-muted-foreground">Raw agent response</summary>
-                                <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] font-mono text-muted-foreground/90">
-                                  {monitorIterateResponse.answer || JSON.stringify(monitorIterateResponse.raw, null, 2)}
-                                </pre>
-                              </details>
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2.5 space-y-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <p className="text-[11px] font-medium">A/B Version Lab</p>
-                              <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
-                                {filteredStrategyExperiments.length} experiments
-                              </Badge>
-                            </div>
-                            <Select value={experimentFilterStatus} onValueChange={setExperimentFilterStatus}>
-                              <SelectTrigger className="h-7 w-[130px] text-[10px]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="all">All Statuses</SelectItem>
-                                <SelectItem value="active">Active</SelectItem>
-                                <SelectItem value="paused">Paused</SelectItem>
-                                <SelectItem value="completed">Completed</SelectItem>
-                                <SelectItem value="archived">Archived</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div className="grid gap-2 md:grid-cols-2">
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Source</Label>
-                              <Select value={experimentDraftSourceKey || '__none__'} onValueChange={(value) => setExperimentDraftSourceKey(value === '__none__' ? '' : value)}>
-                                <SelectTrigger className="mt-1 h-8 text-xs">
-                                  <SelectValue placeholder="Select source" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">Select source</SelectItem>
-                                  {experimentSourceChoices.map((sourceKey) => (
-                                    <SelectItem key={`exp-source-${sourceKey}`} value={sourceKey}>
-                                      {sourceCards.find((source) => normalizeSourceKey(source.key) === sourceKey)?.label || sourceKey}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Strategy</Label>
-                              <Select value={experimentDraftStrategyKey || '__none__'} onValueChange={(value) => setExperimentDraftStrategyKey(value === '__none__' ? '' : value)}>
-                                <SelectTrigger className="mt-1 h-8 text-xs">
-                                  <SelectValue placeholder="Select strategy" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">Select strategy</SelectItem>
-                                  {experimentStrategyChoices.map((option) => (
-                                    <SelectItem key={`exp-strategy-${option.key}`} value={option.key}>
-                                      {option.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
-
-                          <div className="grid gap-2 md:grid-cols-3">
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Control Version</Label>
-                              <Select value={experimentDraftControlVersion || '__none__'} onValueChange={(value) => setExperimentDraftControlVersion(value === '__none__' ? '' : value)}>
-                                <SelectTrigger className="mt-1 h-8 text-xs font-mono">
-                                  <SelectValue placeholder="v?" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">Select</SelectItem>
-                                  {experimentVersionChoices.map((version) => (
-                                    <SelectItem key={`exp-control-v${version}`} value={String(version)}>
-                                      {`v${version}`}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Candidate Version</Label>
-                              <Select value={experimentDraftCandidateVersion || '__none__'} onValueChange={(value) => setExperimentDraftCandidateVersion(value === '__none__' ? '' : value)}>
-                                <SelectTrigger className="mt-1 h-8 text-xs font-mono">
-                                  <SelectValue placeholder="v?" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">Select</SelectItem>
-                                  {experimentVersionChoices.map((version) => (
-                                    <SelectItem key={`exp-candidate-v${version}`} value={String(version)}>
-                                      {`v${version}`}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Candidate %</Label>
-                              <Input
-                                type="number"
-                                min={0.1}
-                                max={99.9}
-                                step={0.1}
-                                value={experimentDraftAllocationPct}
-                                onChange={(event) => setExperimentDraftAllocationPct(event.target.value)}
-                                className="mt-1 h-8 text-xs font-mono"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid gap-2 md:grid-cols-2">
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Experiment Name</Label>
-                              <Input
-                                value={experimentDraftName}
-                                onChange={(event) => setExperimentDraftName(event.target.value)}
-                                placeholder="auto-generated if blank"
-                                className="mt-1 h-8 text-xs"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-[11px] text-muted-foreground">Notes</Label>
-                              <Input
-                                value={experimentDraftNotes}
-                                onChange={(event) => setExperimentDraftNotes(event.target.value)}
-                                placeholder="optional"
-                                className="mt-1 h-8 text-xs"
-                              />
-                            </div>
-                          </div>
-
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 text-xs"
-                            onClick={() => createStrategyExperimentMutation.mutate()}
-                            disabled={!selectedTrader || createStrategyExperimentMutation.isPending}
-                          >
-                            {createStrategyExperimentMutation.isPending ? (
-                              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                            ) : (
-                              <Plus className="w-3.5 h-3.5 mr-1.5" />
-                            )}
-                            Create Experiment
-                          </Button>
-
-                          {experimentActionError ? (
-                            <p className="text-[10px] text-red-500">{experimentActionError}</p>
-                          ) : null}
-
-                          {strategyExperimentsQuery.isPending ? (
-                            <p className="text-[10px] text-muted-foreground/80">Loading experiments...</p>
-                          ) : null}
-                          {strategyExperimentsQuery.error ? (
-                            <p className="text-[10px] text-red-500">
-                              {errorMessage(strategyExperimentsQuery.error, 'Failed to load experiments')}
-                            </p>
-                          ) : null}
-
-                          <div className="space-y-1">
-                            {filteredStrategyExperiments.length === 0 ? (
-                              <p className="text-[10px] text-muted-foreground/80">No experiments for this bot sources yet.</p>
-                            ) : (
-                              filteredStrategyExperiments.slice(0, 12).map((row) => {
-                                const status = String(row.status || '').trim().toLowerCase()
-                                const isSelected = row.id === selectedExperimentId
-                                return (
-                                  <div
-                                    key={row.id}
-                                    className={cn(
-                                      'rounded border px-2 py-1.5',
-                                      isSelected ? 'border-cyan-500/45 bg-cyan-500/10' : 'border-border/60 bg-background/60'
-                                    )}
-                                  >
-                                    <div className="flex flex-wrap items-center justify-between gap-1">
-                                      <div className="min-w-0">
-                                        <p className="truncate text-[10px] font-medium">
-                                          {row.name}
-                                        </p>
-                                        <p className="text-[10px] text-muted-foreground/85 font-mono">
-                                          {`${row.source_key}:${row.strategy_key} • v${row.control_version} vs v${row.candidate_version} • ${row.candidate_allocation_pct.toFixed(1)}%`}
-                                        </p>
-                                      </div>
-                                      <Badge
-                                        variant="outline"
-                                        className={cn(
-                                          'h-4 px-1.5 text-[9px]',
-                                          status === 'active'
-                                            ? 'border-emerald-500/35 text-emerald-300 bg-emerald-500/10'
-                                            : status === 'paused'
-                                              ? 'border-amber-500/35 text-amber-300 bg-amber-500/10'
-                                              : 'border-border/60 text-muted-foreground bg-background/70'
-                                        )}
-                                      >
-                                        {status || 'unknown'}
-                                      </Badge>
+                              <p className="text-[10px] text-muted-foreground/80">
+                                Run targeted parameter tuning from the latest trader context. High-confidence updates are applied immediately.
+                              </p>
+                              <div className="grid gap-2 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                                <div className="space-y-2">
+                                  <textarea
+                                    value={tuneIteratePrompt}
+                                    onChange={(event) => setTuneIteratePrompt(event.target.value)}
+                                    className="w-full min-h-[120px] rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs leading-relaxed"
+                                    placeholder="Describe optimization goal, constraints, and risk preferences..."
+                                  />
+                                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                    <div>
+                                      <Label className="text-[11px] text-muted-foreground">Model Override</Label>
+                                      <Input
+                                        value={tuneIterateModel}
+                                        onChange={(event) => setTuneIterateModel(event.target.value)}
+                                        placeholder="app default"
+                                        className="mt-1 h-8 text-xs font-mono"
+                                      />
                                     </div>
-                                    <div className="mt-1 flex flex-wrap gap-1">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-5 px-1.5 text-[9px]"
-                                        onClick={() => setSelectedExperimentId(row.id)}
-                                      >
-                                        Inspect
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-5 px-1.5 text-[9px]"
-                                        disabled={setExperimentStatusMutation.isPending}
-                                        onClick={() =>
-                                          setExperimentStatusMutation.mutate({
-                                            experimentId: row.id,
-                                            status: status === 'active' ? 'paused' : 'active',
-                                          })
-                                        }
-                                      >
-                                        {status === 'active' ? 'Pause' : 'Activate'}
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-5 px-1.5 text-[9px]"
-                                        disabled={setExperimentStatusMutation.isPending || status === 'completed' || status === 'archived'}
-                                        onClick={() =>
-                                          setExperimentStatusMutation.mutate({
-                                            experimentId: row.id,
-                                            status: 'completed',
-                                          })
-                                        }
-                                      >
-                                        Complete
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-5 px-1.5 text-[9px]"
-                                        disabled={promoteStrategyExperimentMutation.isPending}
-                                        onClick={() =>
-                                          promoteStrategyExperimentMutation.mutate({
-                                            experimentId: row.id,
-                                          })
-                                        }
-                                      >
-                                        Promote Candidate
-                                      </Button>
+                                    <div>
+                                      <Label className="text-[11px] text-muted-foreground">Max Iterations</Label>
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        max={24}
+                                        value={tuneIterateMaxIterations}
+                                        onChange={(event) => setTuneIterateMaxIterations(event.target.value)}
+                                        className="mt-1 h-8 text-xs font-mono"
+                                      />
+                                    </div>
+                                    <div>
+                                      <Label className="text-[11px] text-muted-foreground">Auto Tune</Label>
+                                      <div className="mt-1 h-8 px-2 rounded-md border border-border/60 bg-background flex items-center justify-between">
+                                        <span className="text-[10px] text-muted-foreground">
+                                          {selectedTraderExecutionEnabled ? 'while trading' : 'bot disabled'}
+                                        </span>
+                                        <Switch
+                                          checked={tuneAutoEnabled}
+                                          onCheckedChange={(checked) => {
+                                            setTuneAutoEnabled(checked)
+                                            setTuneAutoLastRunAt(checked ? Date.now() : null)
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <Label className="text-[11px] text-muted-foreground">Auto Interval (min)</Label>
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        max={360}
+                                        value={tuneAutoIntervalMinutes}
+                                        onChange={(event) => setTuneAutoIntervalMinutes(event.target.value)}
+                                        className="mt-1 h-8 text-xs font-mono"
+                                        disabled={!tuneAutoEnabled}
+                                      />
                                     </div>
                                   </div>
-                                )
-                              })
-                            )}
-                          </div>
+                                  {tuneAutoEnabled ? (
+                                    <p className="text-[10px] text-muted-foreground/80">
+                                      Auto tune runs every {Math.max(1, Math.min(360, Math.trunc(toNumber(tuneAutoIntervalMinutes || 15) || 15)))} minute(s) while this bot is enabled.
+                                      {tuneAutoLastRunAt ? ` Last run: ${formatTimestamp(new Date(tuneAutoLastRunAt).toISOString())}.` : ''}
+                                    </p>
+                                  ) : null}
+                                  {tuneIterateError ? (
+                                    <p className="text-[10px] text-red-500">{tuneIterateError}</p>
+                                  ) : null}
+                                  <Button
+                                    size="sm"
+                                    className="h-8 text-xs"
+                                    onClick={() => runTuneIterateMutation.mutate({ trigger: 'manual' })}
+                                    disabled={runTuneIterateMutation.isPending || !selectedTrader}
+                                  >
+                                    {runTuneIterateMutation.isPending ? (
+                                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                    ) : (
+                                      <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+                                    )}
+                                    {runTuneIterateMutation.isPending ? 'Tuning...' : 'Run Tune'}
+                                  </Button>
+                                </div>
 
-                          {selectedStrategyExperiment ? (
-                            <div className="rounded border border-border/60 bg-background/70 p-2 space-y-1">
-                              <p className="text-[10px] font-medium">
-                                Assignments: {selectedStrategyExperiment.name}
+                                <div className="rounded-md border border-border/60 bg-background/70 p-2 space-y-1.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Latest Tune Result</p>
+                                    <Badge variant="outline" className="h-4 px-1 text-[9px] font-mono">
+                                      {tuneIterateAppliedUpdates.length} updates
+                                    </Badge>
+                                  </div>
+                                  {tuneIterateResponse ? (
+                                    <>
+                                      <div className="rounded border border-border/50 bg-background/60 px-2 py-1.5 space-y-1">
+                                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Summary</p>
+                                        {tuneIterateParsed && typeof tuneIterateParsed.summary === 'string' ? (
+                                          <p className="text-[10px] text-foreground/90">
+                                            {String(tuneIterateParsed.summary)}
+                                          </p>
+                                        ) : (
+                                          <p className="text-[10px] text-muted-foreground/80">No summary returned by model.</p>
+                                        )}
+                                      </div>
+
+                                      <div className="rounded border border-border/50 bg-background/60 px-2 py-1.5 space-y-1">
+                                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Parameters Changed</p>
+                                        {tuneIterateAppliedUpdates.length > 0 ? (
+                                          <div className="space-y-0.5">
+                                            {tuneIterateAppliedUpdates.slice(0, 12).map((update, index) => (
+                                              <p key={`${index}-${update.source_key}-${update.strategy_key}`} className="text-[10px] text-foreground/90">
+                                                {index + 1}. {update.source_key}:{update.strategy_key}{' -> '}{update.changed_keys.join(', ')}
+                                              </p>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <p className="text-[10px] text-muted-foreground/80">No parameter changes were applied.</p>
+                                        )}
+                                      </div>
+
+                                      {tuneIterateIssues.length > 0 ? (
+                                        <div className="space-y-0.5">
+                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Issues Identified</p>
+                                          {tuneIterateIssues.slice(0, 10).map((issue, index) => (
+                                            <p key={`${index}-${issue}`} className="text-[10px] text-foreground/90">
+                                              {index + 1}. {issue}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                      {tuneIterateActions.length > 0 ? (
+                                        <div className="space-y-0.5">
+                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Actions Taken</p>
+                                          {tuneIterateActions.slice(0, 8).map((action, index) => (
+                                            <p key={`${index}-${action}`} className="text-[10px] text-foreground/90">
+                                              {index + 1}. {action}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                      {tuneIterateNextSteps.length > 0 ? (
+                                        <div className="space-y-0.5">
+                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Suggested Next</p>
+                                          {tuneIterateNextSteps.slice(0, 8).map((step, index) => (
+                                            <p key={`${index}-${step}`} className="text-[10px] text-muted-foreground/90">
+                                              {index + 1}. {step}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                      <details className="rounded border border-border/50 bg-background/50 px-2 py-1">
+                                        <summary className="cursor-pointer text-[10px] text-muted-foreground">Raw agent response</summary>
+                                        <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] font-mono text-muted-foreground/90">
+                                          {tuneIterateResponse.answer || JSON.stringify(tuneIterateResponse.raw, null, 2)}
+                                        </pre>
+                                      </details>
+                                    </>
+                                  ) : (
+                                    <p className="text-[10px] text-muted-foreground/80">
+                                      No tune run yet for this session.
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-md border border-border/60 bg-background/70 p-2.5 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5">
+                                  <p className="text-[11px] font-medium">Parameter Workspace</p>
+                                  <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
+                                    {dynamicStrategyParamSections.reduce((sum, section) => sum + section.fieldKeys.length, 0)} fields
+                                  </Badge>
+                                  {tuneDraftDirty ? (
+                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-500/15 text-amber-500">
+                                      UNSAVED
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => {
+                                      if (!selectedTrader) return
+                                      applyTraderDraftSettings(selectedTrader)
+                                      setTuneDraftDirty(false)
+                                      setTuneSaveError(null)
+                                      setTuneRevertError(null)
+                                    }}
+                                  >
+                                    Discard Edits
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => revertTuneParametersMutation.mutate()}
+                                    disabled={
+                                      revertTuneParametersMutation.isPending
+                                      || !tuneRevertSnapshot
+                                      || tuneRevertSnapshot.traderId !== selectedTrader.id
+                                    }
+                                  >
+                                    {revertTuneParametersMutation.isPending ? (
+                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                    ) : null}
+                                    Revert Last Applied
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => saveTuneParametersMutation.mutate()}
+                                    disabled={saveTuneParametersMutation.isPending || !tuneDraftDirty}
+                                  >
+                                    {saveTuneParametersMutation.isPending ? (
+                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                    ) : null}
+                                    Save Parameters
+                                  </Button>
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-muted-foreground/80">
+                                Review and edit grouped strategy controls before committing.
                               </p>
-                              <p className="text-[10px] text-muted-foreground/85 font-mono">
-                                control:{selectedExperimentAssignmentSummary.control}
-                                {' • '}
-                                candidate:{selectedExperimentAssignmentSummary.candidate}
-                                {selectedExperimentAssignmentSummary.other > 0
-                                  ? ` • other:${selectedExperimentAssignmentSummary.other}`
-                                  : ''}
-                                {' • '}
-                                total:{selectedExperimentAssignmentSummary.total}
-                              </p>
-                              {experimentAssignmentsQuery.isPending ? (
-                                <p className="text-[10px] text-muted-foreground/80">Loading assignments...</p>
-                              ) : null}
-                              {experimentAssignmentsQuery.error ? (
-                                <p className="text-[10px] text-red-500">
-                                  {errorMessage(experimentAssignmentsQuery.error, 'Failed to load assignments')}
+                              {tuneRevertSnapshot && tuneRevertSnapshot.traderId === selectedTrader.id ? (
+                                <p className="text-[10px] text-muted-foreground/80">
+                                  Revert snapshot captured at {formatTimestamp(tuneRevertSnapshot.capturedAt)}.
                                 </p>
                               ) : null}
-                              {selectedExperimentAssignments.slice(0, 10).map((assignment) => (
-                                <div key={assignment.id} className="rounded border border-border/50 bg-background/80 px-1.5 py-1 text-[10px] font-mono">
-                                  {`${assignment.assignment_group} • v${assignment.strategy_version} • trader:${shortId(assignment.trader_id)} • signal:${shortId(assignment.signal_id)}`}
-                                </div>
-                              ))}
-                              {selectedExperimentAssignments.length === 0 && !experimentAssignmentsQuery.isPending ? (
-                                <p className="text-[10px] text-muted-foreground/80">No assignments yet.</p>
+                              {tuneSaveError ? (
+                                <p className="text-[10px] text-red-500">{tuneSaveError}</p>
                               ) : null}
+                              {tuneRevertError ? (
+                                <p className="text-[10px] text-red-500">{tuneRevertError}</p>
+                              ) : null}
+                              {dynamicStrategyParamSections.length === 0 ? (
+                                <p className="text-[10px] text-muted-foreground/80">No dynamic parameter fields available for this bot.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {dynamicStrategyParamSections.map((section, sectionIndex) => (
+                                    <details
+                                      key={section.sectionKey}
+                                      className="rounded-md border border-border/60 bg-background/50 p-2"
+                                      open={sectionIndex === 0}
+                                    >
+                                      <summary className="cursor-pointer text-[11px] font-medium flex items-center justify-between">
+                                        <span>{section.sourceLabel} · {section.strategyLabel}</span>
+                                        <span className="text-[9px] text-muted-foreground">{section.fieldKeys.length} fields</span>
+                                      </summary>
+                                      <div className="mt-2 space-y-2">
+                                        {section.groups.map((group) => (
+                                          <details key={`${section.sectionKey}:${group.key}`} className="rounded-md border border-border/50 bg-background/70 p-2" open={group.key === 'scope'}>
+                                            <summary className="cursor-pointer text-[10px] font-medium flex items-center justify-between">
+                                              <span>{group.label}</span>
+                                              <span className="text-[9px] text-muted-foreground">{group.fields.length}</span>
+                                            </summary>
+                                            <div className="mt-2">
+                                              <StrategyConfigForm
+                                                schema={{ param_fields: group.fields as any[] }}
+                                                values={section.values}
+                                                onChange={(nextValues) => applyDynamicStrategyFormValues(section.fieldKeys, nextValues)}
+                                              />
+                                            </div>
+                                          </details>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                          ) : null}
-                        </div>
+                          </>
+                        )}
                       </div>
                     </ScrollArea>
                   </div>
@@ -10323,7 +9567,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           if (!open) {
             setSaveError(null)
             setDeleteConfirmName('')
-            setLiveTruthError(null)
+            setTuneSaveError(null)
+            setTuneIterateError(null)
+            setTuneRevertError(null)
           }
         }}
       >
@@ -10538,79 +9784,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       )
                     })}
                   </div>
-
-                  {dynamicStrategyParamSections.length > 0 && (
-                    <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-2.5 space-y-2 mt-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-400">Dynamic Parameters</p>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300">
-                          {dynamicStrategyParamSections.reduce((sum, section) => sum + section.fieldKeys.length, 0)} fields
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-muted-foreground/75">
-                        Strategy and wallet-signal controls are grouped automatically based on active source selections.
-                      </p>
-                      <div className="space-y-2">
-                        {dynamicStrategyParamSections.map((section) => (
-                          <details key={section.sectionKey} className="rounded-md border border-border/60 bg-background/50 p-2">
-                            <summary className="cursor-pointer text-[11px] font-medium flex items-center justify-between">
-                              <span>{section.sourceLabel} · {section.strategyLabel}</span>
-                              <span className="text-[9px] text-muted-foreground">{section.fieldKeys.length} fields</span>
-                            </summary>
-                            <div className="mt-2 space-y-2">
-                              {section.groups.map((group) => (
-                                <details key={`${section.sectionKey}:${group.key}`} className="rounded-md border border-border/50 bg-background/70 p-2" open={group.key === 'scope'}>
-                                  <summary className="cursor-pointer text-[10px] font-medium flex items-center justify-between">
-                                    <span>{group.label}</span>
-                                    <span className="text-[9px] text-muted-foreground">{group.fields.length}</span>
-                                  </summary>
-                                  <div className="mt-2">
-                                    <StrategyConfigForm
-                                      schema={{ param_fields: group.fields as any[] }}
-                                      values={section.values}
-                                      onChange={(nextValues) => {
-                                        if (section.kind === 'strategy') {
-                                          applyDynamicStrategyFormValues(section.fieldKeys, nextValues)
-                                          return
-                                        }
-                                        if (section.kind === 'signal_filters') {
-                                          applySignalFilterFormValues(nextValues)
-                                          return
-                                        }
-                                        applyCopyTradingFormValues(nextValues)
-                                      }}
-                                    />
-                                  </div>
-                                </details>
-                              ))}
-                              {section.kind === 'copy_trading' && activeCopyMode && activeCopyMode.stats && activeCopyMode.mode !== 'disabled' && (
-                                <div className="grid grid-cols-4 gap-2 pt-1">
-                                  <div className="text-center">
-                                    <p className="text-[10px] text-muted-foreground">Copied</p>
-                                    <p className="text-xs font-medium">{activeCopyMode.stats.total_copied}</p>
-                                  </div>
-                                  <div className="text-center">
-                                    <p className="text-[10px] text-muted-foreground">Success</p>
-                                    <p className="text-xs font-medium text-green-400">{activeCopyMode.stats.successful_copies}</p>
-                                  </div>
-                                  <div className="text-center">
-                                    <p className="text-[10px] text-muted-foreground">Failed</p>
-                                    <p className="text-xs font-medium text-red-400">{activeCopyMode.stats.failed_copies}</p>
-                                  </div>
-                                  <div className="text-center">
-                                    <p className="text-[10px] text-muted-foreground">PnL</p>
-                                    <p className={cn('text-xs font-medium', activeCopyMode.stats.total_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
-                                      ${activeCopyMode.stats.total_pnl.toFixed(2)}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                 </FlyoutSection>
 

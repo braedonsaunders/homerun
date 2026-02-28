@@ -447,7 +447,6 @@ async def _is_autotrader_active(session) -> bool:
                 await session.execute(
                     select(
                         Trader.source_configs_json,
-                        Trader.sources_json,
                     ).where(
                         Trader.is_enabled.is_(True),
                         Trader.is_paused.is_(False),
@@ -458,16 +457,12 @@ async def _is_autotrader_active(session) -> bool:
     except Exception:
         return False
 
-    for source_configs, sources in rows:
+    for (source_configs,) in rows:
         if isinstance(source_configs, list):
             for item in source_configs:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("source_key") or "").strip().lower() == "crypto":
-                    return True
-        if isinstance(sources, list):
-            for source in sources:
-                if str(source or "").strip().lower() == "crypto":
                     return True
     return False
 

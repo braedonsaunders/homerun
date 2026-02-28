@@ -74,7 +74,7 @@ async def test_unconsumed_signals_default_to_pending_and_use_cursor(tmp_path):
             trader = Trader(
                 id=trader_id,
                 name="Cursor Trader",
-                strategy_key="crypto_15m",
+                source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
             )
             session.add_all([trader, s1, s2, s3])
             await session.commit()
@@ -226,7 +226,10 @@ async def test_unconsumed_signals_can_filter_by_source_strategy_type(tmp_path):
             trader = Trader(
                 id=trader_id,
                 name="Source Strategy Filter Trader",
-                strategy_key="tail_end_carry",
+                source_configs_json=[
+                    {"source_key": "scanner", "strategy_key": "tail_end_carry", "strategy_params": {}},
+                    {"source_key": "weather", "strategy_key": "weather_distribution", "strategy_params": {}},
+                ],
             )
             session.add_all([trader, scanner_tail, scanner_other, weather_distribution, weather_other])
             await session.commit()
@@ -283,7 +286,7 @@ async def test_worker_signal_fetch_excludes_submitted_restart_window(tmp_path):
             trader = Trader(
                 id=trader_id,
                 name="Restart Window Trader",
-                strategy_key="crypto_15m",
+                source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
             )
             session.add_all([trader, submitted_signal, selected_signal])
             await session.commit()
@@ -332,7 +335,7 @@ async def test_consumed_selected_signal_requires_new_update_for_reentry(tmp_path
             trader = Trader(
                 id=trader_id,
                 name="Consumption Trader",
-                strategy_key="crypto_15m",
+                source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
             )
             session.add_all([trader, selected_signal])
             await session.commit()

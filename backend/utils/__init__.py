@@ -15,7 +15,6 @@ from .validation import (
     PaginationParams,
     OpportunityFilterParams,
     SimulationParams,
-    CopyTradingParams,
 )
 from .converters import (
     safe_float,
@@ -49,7 +48,6 @@ __all__ = [
     "PaginationParams",
     "OpportunityFilterParams",
     "SimulationParams",
-    "CopyTradingParams",
     # Converters
     "safe_float",
     "safe_int",

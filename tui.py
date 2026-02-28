@@ -98,6 +98,192 @@ def _assign_to_job(proc: subprocess.Popen) -> None:
         pass
 
 
+def _run_osascript(script: str) -> bool:
+    if shutil.which("osascript") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _resize_macos_terminal_window_to_quarter_screen() -> bool:
+    if sys.platform != "darwin":
+        return False
+
+    terminal_script = """
+tell application "Terminal"
+    if (count of windows) = 0 then return
+    set screenBounds to bounds of window of desktop of application "Finder"
+    set screenLeft to item 1 of screenBounds
+    set screenTop to item 2 of screenBounds
+    set screenRight to item 3 of screenBounds
+    set screenBottom to item 4 of screenBounds
+    set targetLeft to screenLeft + 40
+    set targetTop to screenTop + 40
+    set targetRight to targetLeft + ((screenRight - screenLeft) div 2)
+    set targetBottom to targetTop + ((screenBottom - screenTop) div 2)
+    set bounds of front window to {targetLeft, targetTop, targetRight, targetBottom}
+end tell
+""".strip()
+
+    iterm_script = """
+tell application "iTerm2"
+    if (count of windows) = 0 then return
+    set screenBounds to bounds of window of desktop of application "Finder"
+    set screenLeft to item 1 of screenBounds
+    set screenTop to item 2 of screenBounds
+    set screenRight to item 3 of screenBounds
+    set screenBottom to item 4 of screenBounds
+    set targetLeft to screenLeft + 40
+    set targetTop to screenTop + 40
+    set targetRight to targetLeft + ((screenRight - screenLeft) div 2)
+    set targetBottom to targetTop + ((screenBottom - screenTop) div 2)
+    tell current window
+        set bounds to {targetLeft, targetTop, targetRight, targetBottom}
+    end tell
+end tell
+""".strip()
+
+    term_program = os.environ.get("TERM_PROGRAM", "")
+    scripts: list[str] = []
+    if term_program == "Apple_Terminal":
+        scripts = [terminal_script, iterm_script]
+    elif term_program == "iTerm.app":
+        scripts = [iterm_script, terminal_script]
+    else:
+        scripts = [terminal_script, iterm_script]
+
+    for script in scripts:
+        if _run_osascript(script):
+            return True
+    return False
+
+
+def _resize_windows_terminal_window_to_quarter_screen() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.wintypes.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", ctypes.wintypes.DWORD),
+            ]
+
+        MONITOR_DEFAULTTONEAREST = 2
+
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return False
+
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if not monitor:
+            return False
+
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+
+        work = info.rcWork
+        work_width = max(1, work.right - work.left)
+        work_height = max(1, work.bottom - work.top)
+        target_width = max(1, work_width // 2)
+        target_height = max(1, work_height // 2)
+        target_left = work.left + 40
+        target_top = work.top + 40
+
+        max_left = work.right - target_width
+        max_top = work.bottom - target_height
+        if target_left > max_left:
+            target_left = max_left
+        if target_top > max_top:
+            target_top = max_top
+        if target_left < work.left:
+            target_left = work.left
+        if target_top < work.top:
+            target_top = work.top
+
+        return bool(user32.MoveWindow(hwnd, target_left, target_top, target_width, target_height, True))
+    except Exception:
+        return False
+
+
+def _target_terminal_size() -> tuple[int, int]:
+    try:
+        current = shutil.get_terminal_size(fallback=(80, 24))
+    except Exception:
+        current = os.terminal_size((80, 24))
+    target_cols = max(current.columns, MIN_TERMINAL_COLUMNS)
+    target_lines = max(current.lines, MIN_TERMINAL_LINES)
+    return target_cols, target_lines
+
+
+def _resize_windows_console(cols: int, lines: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        result = subprocess.run(
+            ["cmd", "/c", f"mode con: cols={cols} lines={lines}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _resize_posix_terminal(cols: int, lines: int) -> bool:
+    if sys.platform == "win32":
+        return False
+    if not sys.stdout.isatty():
+        return False
+    try:
+        sys.stdout.write(f"\x1b[8;{lines};{cols}t")
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_startup_terminal_size() -> None:
+    if not sys.stdout.isatty():
+        return
+    if sys.platform == "darwin" and _resize_macos_terminal_window_to_quarter_screen():
+        return
+    if sys.platform == "win32" and _resize_windows_terminal_window_to_quarter_screen():
+        return
+    cols, lines = _target_terminal_size()
+    if sys.platform == "win32":
+        _resize_windows_console(cols, lines)
+        return
+    _resize_posix_terminal(cols, lines)
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -204,6 +390,8 @@ WORKER_FILTER_LABELS: dict[str, str] = {
 
 WORKER_MINI_LOG_LINES = 2
 WORKER_MINI_LOG_WIDTH = 84
+MIN_TERMINAL_COLUMNS = 180
+MIN_TERMINAL_LINES = 52
 
 LOGO = r"""
  _   _  ___  __  __ _____ ____  _   _ _   _
@@ -2255,6 +2443,8 @@ def main() -> None:
         def _sigbreak_handler(signum, frame):
             os._exit(0)
         signal.signal(signal.SIGBREAK, _sigbreak_handler)
+
+    _ensure_startup_terminal_size()
 
     app = HomerunApp()
     app.run()

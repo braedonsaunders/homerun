@@ -257,6 +257,98 @@ function JsonArrayField({
   )
 }
 
+function ArrayStringOptionsInput({
+  field,
+  value,
+  options,
+  onChange,
+}: {
+  field: ParamField
+  value: unknown
+  options: Array<{ value: string; label: string }>
+  onChange: (value: unknown) => void
+}) {
+  const selectedValues = useMemo(() => {
+    if (!Array.isArray(value)) return new Set<string>()
+    return new Set(
+      value
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )
+  }, [value])
+  const [filterText, setFilterText] = useState('')
+  const filteredOptions = useMemo(() => {
+    const query = filterText.trim().toLowerCase()
+    if (!query) return options
+    return options.filter((option) => {
+      const label = option.label.toLowerCase()
+      const candidate = option.value.toLowerCase()
+      return label.includes(query) || candidate.includes(query)
+    })
+  }, [filterText, options])
+
+  const toggleValue = (nextValue: string) => {
+    const next = new Set(selectedValues)
+    if (next.has(nextValue)) {
+      next.delete(nextValue)
+    } else {
+      next.add(nextValue)
+    }
+    onChange(Array.from(next))
+  }
+
+  const clearSelected = () => onChange([])
+
+  return (
+    <div className="col-span-2 xl:col-span-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">{selectedValues.size} selected</span>
+          {selectedValues.size > 0 ? (
+            <button
+              type="button"
+              onClick={clearSelected}
+              className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <Input
+        value={filterText}
+        onChange={(event) => setFilterText(event.target.value)}
+        placeholder="Filter options..."
+        className="h-8 text-xs"
+      />
+      <div className="max-h-36 overflow-y-auto rounded-md border border-border/70 bg-background/70 p-2 space-y-1">
+        {filteredOptions.length > 0 ? (
+          filteredOptions.map((option) => {
+            const checked = selectedValues.has(option.value)
+            return (
+              <label
+                key={option.value}
+                className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-muted/50"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleValue(option.value)}
+                  className="h-3.5 w-3.5 rounded border-border bg-background"
+                />
+                <span className="truncate" title={option.label}>{option.label}</span>
+              </label>
+            )
+          })
+        ) : (
+          <p className="text-[11px] text-muted-foreground">No options match this filter.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ConfigField({
   field,
   value,
@@ -333,38 +425,13 @@ function ConfigField({
 
     case 'array[string]':
       if (enumOptions.length > 0) {
-        const selected = new Set(
-          Array.isArray(value)
-            ? value.map((item) => String(item || '').trim()).filter(Boolean)
-            : []
-        )
         return (
-          <div className="col-span-2 xl:col-span-3">
-            <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {enumOptions.map((opt) => {
-                const isSelected = selected.has(opt.value)
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    className={`h-6 px-2 text-[11px] rounded-md border ${isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background border-border text-foreground'}`}
-                    onClick={() => {
-                      const next = new Set(selected)
-                      if (isSelected) {
-                        next.delete(opt.value)
-                      } else {
-                        next.add(opt.value)
-                      }
-                      onChange(Array.from(next))
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+          <ArrayStringOptionsInput
+            field={field}
+            value={value}
+            options={enumOptions}
+            onChange={onChange}
+          />
         )
       }
       return <CommaSeparatedListInput field={field} value={value} onChange={onChange} />

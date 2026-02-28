@@ -43,6 +43,24 @@ _SKIPPED_REACTIVATION_VOLATILE_KEYS = {
     "market_data_age_ms",
     "signal_emitted_at",
 }
+_SKIPPED_REACTIVATION_FLAG_KEYS = {
+    "asset",
+    "timeframe",
+    "regime",
+    "selected_direction",
+    "selected_outcome",
+    "oracle_available",
+    "oracle_source",
+    "is_live",
+    "is_current",
+}
+_SKIPPED_REACTIVATION_PRICE_DELTA = 0.005
+_SKIPPED_REACTIVATION_EDGE_DELTA = 0.25
+_SKIPPED_REACTIVATION_CONFIDENCE_DELTA = 0.01
+_SKIPPED_REACTIVATION_LIQUIDITY_DELTA_ABS = 250.0
+_SKIPPED_REACTIVATION_LIQUIDITY_DELTA_REL = 0.10
+_SKIPPED_REACTIVATION_EXPIRY_DELTA_SECONDS = 15.0
+_SKIPPED_REACTIVATION_LIQUIDITY_BANDS = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0, 32000.0)
 
 
 def _utc_now() -> datetime:
@@ -103,7 +121,7 @@ def _normalize_reason_list(values: Any) -> list[str]:
     return cleaned
 
 
-def _has_skipped_signal_material_change(
+def _has_signal_material_change(
     row: TradeSignal,
     *,
     source_item_id: Optional[str],
@@ -149,6 +167,137 @@ def _has_skipped_signal_material_change(
     incoming_context = _normalize_reactivation_value(_safe_json(strategy_context_json))
     if existing_context != incoming_context:
         return True
+    if quality_passed is not None:
+        incoming_quality_passed = bool(quality_passed)
+        if bool(row.quality_passed) != incoming_quality_passed:
+            return True
+        existing_reasons = _normalize_reason_list(row.quality_rejection_reasons)
+        incoming_reasons = _normalize_reason_list(quality_rejection_reasons)
+        if existing_reasons != incoming_reasons:
+            return True
+    return False
+
+
+def _delta_crosses_threshold(
+    existing: Any,
+    incoming: Any,
+    *,
+    abs_threshold: float,
+    rel_threshold: float = 0.0,
+) -> bool:
+    existing_value = _normalize_number(existing)
+    incoming_value = _normalize_number(incoming)
+    if existing_value is None or incoming_value is None:
+        return existing_value != incoming_value
+    delta = abs(incoming_value - existing_value)
+    if delta >= abs_threshold:
+        return True
+    if rel_threshold <= 0.0:
+        return False
+    baseline = max(abs(existing_value), abs(incoming_value), 1.0)
+    return (delta / baseline) >= rel_threshold
+
+
+def _liquidity_band(value: Any) -> int:
+    parsed = _normalize_number(value)
+    if parsed is None:
+        return -1
+    band = 0
+    for threshold in _SKIPPED_REACTIVATION_LIQUIDITY_BANDS:
+        if parsed >= threshold:
+            band += 1
+    return band
+
+
+def _extract_reactivation_flags(payload: Any, context: Any) -> dict[str, Any]:
+    flags: dict[str, Any] = {}
+    for raw_scope, source in (("payload", payload), ("context", context)):
+        if not isinstance(source, dict):
+            continue
+        for key in _SKIPPED_REACTIVATION_FLAG_KEYS:
+            if key in source:
+                value = source.get(key)
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    flags[f"{raw_scope}.{key}"] = _normalize_reactivation_value(value)
+    oracle_status = payload.get("oracle_status") if isinstance(payload, dict) else None
+    if isinstance(oracle_status, dict):
+        for key in ("availability_state", "freshness_state", "directional_state", "source", "available"):
+            if key in oracle_status:
+                flags[f"payload.oracle_status.{key}"] = _normalize_reactivation_value(oracle_status.get(key))
+    return flags
+
+
+def _has_skipped_signal_material_change(
+    row: TradeSignal,
+    *,
+    source_item_id: Optional[str],
+    signal_type: str,
+    strategy_type: Optional[str],
+    market_id: str,
+    market_question: Optional[str],
+    direction: Optional[str],
+    entry_price: Optional[float],
+    edge_percent: Optional[float],
+    confidence: Optional[float],
+    liquidity: Optional[float],
+    payload_json: Optional[dict[str, Any]],
+    strategy_context_json: Optional[dict[str, Any]],
+    expires_at: Optional[datetime],
+    quality_passed: Optional[bool],
+    quality_rejection_reasons: Optional[list],
+) -> bool:
+    if str(row.source_item_id or "") != str(source_item_id or ""):
+        return True
+    if str(row.signal_type or "") != str(signal_type or ""):
+        return True
+    if str(row.strategy_type or "") != str(strategy_type or ""):
+        return True
+    if str(row.market_id or "") != str(market_id or ""):
+        return True
+    if str(row.market_question or "") != str(market_question or ""):
+        return True
+    if str(row.direction or "") != str(direction or ""):
+        return True
+
+    if _delta_crosses_threshold(row.entry_price, entry_price, abs_threshold=_SKIPPED_REACTIVATION_PRICE_DELTA):
+        return True
+    if _delta_crosses_threshold(row.edge_percent, edge_percent, abs_threshold=_SKIPPED_REACTIVATION_EDGE_DELTA):
+        return True
+    if _delta_crosses_threshold(
+        row.confidence,
+        confidence,
+        abs_threshold=_SKIPPED_REACTIVATION_CONFIDENCE_DELTA,
+    ):
+        return True
+    if _delta_crosses_threshold(
+        row.liquidity,
+        liquidity,
+        abs_threshold=_SKIPPED_REACTIVATION_LIQUIDITY_DELTA_ABS,
+        rel_threshold=_SKIPPED_REACTIVATION_LIQUIDITY_DELTA_REL,
+    ):
+        return True
+    if _liquidity_band(row.liquidity) != _liquidity_band(liquidity):
+        return True
+
+    existing_payload = _normalize_reactivation_value(_safe_json(row.payload_json))
+    existing_context = _normalize_reactivation_value(_safe_json(row.strategy_context_json))
+    incoming_payload = _normalize_reactivation_value(_safe_json(payload_json))
+    incoming_context = _normalize_reactivation_value(_safe_json(strategy_context_json))
+    if _extract_reactivation_flags(existing_payload, existing_context) != _extract_reactivation_flags(
+        incoming_payload,
+        incoming_context,
+    ):
+        return True
+
+    existing_expires_at = _to_utc_naive(row.expires_at)
+    incoming_expires_at = _to_utc_naive(expires_at)
+    if existing_expires_at != incoming_expires_at:
+        if existing_expires_at is None or incoming_expires_at is None:
+            return True
+        expiry_delta = abs((incoming_expires_at - existing_expires_at).total_seconds())
+        if expiry_delta >= _SKIPPED_REACTIVATION_EXPIRY_DELTA_SECONDS:
+            return True
+
     if quality_passed is not None:
         incoming_quality_passed = bool(quality_passed)
         if bool(row.quality_passed) != incoming_quality_passed:
@@ -606,8 +755,8 @@ async def upsert_trade_signal(
         can_update_row = previous_status in SIGNAL_ACTIVE_STATUSES or previous_status in SIGNAL_REACTIVATABLE_STATUSES
         if can_update_row:
             has_material_change = True
-            if previous_status in SIGNAL_ACTIVE_STATUSES or previous_status == "skipped":
-                has_material_change = _has_skipped_signal_material_change(
+            if previous_status in SIGNAL_ACTIVE_STATUSES:
+                has_material_change = _has_signal_material_change(
                     row,
                     source_item_id=source_item_id,
                     signal_type=signal_type,
@@ -629,6 +778,25 @@ async def upsert_trade_signal(
                     incoming_expires_at = _to_utc_naive(expires_at)
                     if existing_expires_at != incoming_expires_at:
                         has_material_change = True
+            elif previous_status == "skipped":
+                has_material_change = _has_skipped_signal_material_change(
+                    row,
+                    source_item_id=source_item_id,
+                    signal_type=signal_type,
+                    strategy_type=strategy_type,
+                    market_id=market_id,
+                    market_question=market_question,
+                    direction=direction,
+                    entry_price=entry_price,
+                    edge_percent=edge_percent,
+                    confidence=confidence,
+                    liquidity=liquidity,
+                    payload_json=payload_json,
+                    strategy_context_json=strategy_context_json,
+                    expires_at=expires_at,
+                    quality_passed=quality_passed,
+                    quality_rejection_reasons=quality_rejection_reasons,
+                )
             if previous_status in SIGNAL_ACTIVE_STATUSES and not has_material_change:
                 emission_event_type = "upsert_active_unchanged"
                 emission_reason = "suppressed:active_unchanged"
@@ -706,7 +874,15 @@ async def set_trade_signal_status(
     row = result.scalar_one_or_none()
     if row is None:
         return False
-    row.status = status
+    normalized_status = str(status or "").strip().lower()
+    previous_status = str(row.status or "").strip().lower()
+    existing_effective_price = _normalize_number(row.effective_price)
+    incoming_effective_price = _normalize_number(effective_price) if effective_price is not None else None
+    if previous_status == normalized_status and (
+        effective_price is None or existing_effective_price == incoming_effective_price
+    ):
+        return True
+    row.status = normalized_status
     row.updated_at = _utc_now()
     if effective_price is not None:
         row.effective_price = effective_price
@@ -714,7 +890,7 @@ async def set_trade_signal_status(
         session,
         row,
         event_type="status_update",
-        reason=f"status:{status}",
+        reason=f"status:{normalized_status}",
     )
     if commit:
         await session.commit()
@@ -722,7 +898,7 @@ async def set_trade_signal_status(
         await _publish_trade_signal_emission(
             row=row,
             event_type="status_update",
-            reason=f"status:{status}",
+            reason=f"status:{normalized_status}",
         )
     return True
 

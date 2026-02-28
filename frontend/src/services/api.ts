@@ -349,101 +349,6 @@ export interface SimulationTrade {
   copied_from?: string
 }
 
-export type CopySourceType = 'individual' | 'tracked_group' | 'pool'
-
-export interface CopyConfig {
-  id: string
-  source_type: CopySourceType
-  source_wallet: string | null
-  account_id: string
-  enabled: boolean
-  copy_mode: string
-  settings: {
-    min_roi_threshold: number
-    max_position_size: number
-    copy_delay_seconds: number
-    slippage_tolerance: number
-    proportional_sizing: boolean
-    proportional_multiplier: number
-    copy_buys: boolean
-    copy_sells: boolean
-    market_categories: string[]
-  }
-  stats: {
-    total_copied: number
-    successful_copies: number
-    failed_copies: number
-    total_pnl: number
-    total_buys_copied: number
-    total_sells_copied: number
-  }
-}
-
-export interface CopiedTrade {
-  id: string
-  config_id: string
-  source_trade_id: string
-  source_wallet: string
-  market_id: string
-  market_question: string | null
-  token_id: string | null
-  side: string
-  outcome: string | null
-  source_price: number
-  source_size: number
-  executed_price: number | null
-  executed_size: number | null
-  status: string
-  execution_mode: string
-  error_message: string | null
-  source_timestamp: string | null
-  copied_at: string
-  executed_at: string | null
-  realized_pnl: number | null
-}
-
-export interface CopyTradingStatus {
-  service_running: boolean
-  poll_interval_seconds: number
-  total_configs: number
-  enabled_configs: number
-  tracked_wallets: string[]
-  configs_summary: Array<{
-    id: string
-    source_type: CopySourceType
-    source_wallet: string | null
-    copy_mode: string
-    enabled: boolean
-    total_copied: number
-    successful_copies: number
-  }>
-}
-
-export interface ActiveCopyMode {
-  mode: CopySourceType | 'disabled'
-  config_id: string | null
-  source_wallet: string | null
-  account_id?: string
-  copy_mode?: string
-  settings?: {
-    min_roi_threshold: number
-    max_position_size: number
-    copy_delay_seconds: number
-    slippage_tolerance: number
-    proportional_sizing: boolean
-    proportional_multiplier: number
-    copy_buys: boolean
-    copy_sells: boolean
-    market_categories: string[]
-  }
-  stats?: {
-    total_copied: number
-    successful_copies: number
-    failed_copies: number
-    total_pnl: number
-  }
-}
-
 export interface WalletAnalysis {
   wallet: string
   stats: {
@@ -1049,87 +954,6 @@ export const getAccountEquityHistory = async (accountId: string): Promise<Equity
   return unwrapApiData(data)
 }
 
-// ==================== COPY TRADING ====================
-
-export const getCopyConfigs = async (accountId?: string): Promise<CopyConfig[]> => {
-  const { data } = await api.get('/copy-trading/configs', { params: { account_id: accountId } })
-  return unwrapApiData(data)
-}
-
-export const createCopyConfig = async (params: {
-  source_wallet?: string | null
-  account_id: string
-  source_type?: CopySourceType
-  copy_mode?: string
-  min_roi_threshold?: number
-  max_position_size?: number
-  copy_delay_seconds?: number
-  slippage_tolerance?: number
-  proportional_sizing?: boolean
-  proportional_multiplier?: number
-  copy_buys?: boolean
-  copy_sells?: boolean
-}): Promise<{ config_id: string; source_type: CopySourceType; source_wallet: string | null; account_id: string; enabled: boolean; copy_mode: string; message: string }> => {
-  const { data } = await api.post('/copy-trading/configs', params)
-  return unwrapApiData(data)
-}
-
-export const getActiveCopyMode = async (): Promise<ActiveCopyMode> => {
-  const { data } = await api.get('/copy-trading/configs/active-mode')
-  return unwrapApiData(data)
-}
-
-export const updateCopyConfig = async (configId: string, params: {
-  enabled?: boolean
-  copy_mode?: string
-  min_roi_threshold?: number
-  max_position_size?: number
-  copy_delay_seconds?: number
-  slippage_tolerance?: number
-  proportional_sizing?: boolean
-  proportional_multiplier?: number
-  copy_buys?: boolean
-  copy_sells?: boolean
-}): Promise<{ message: string; config_id: string }> => {
-  const { data } = await api.patch(`/copy-trading/configs/${configId}`, params)
-  return unwrapApiData(data)
-}
-
-export const deleteCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
-  const { data } = await api.delete(`/copy-trading/configs/${configId}`)
-  return unwrapApiData(data)
-}
-
-export const enableCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
-  const { data } = await api.post(`/copy-trading/configs/${configId}/enable`)
-  return unwrapApiData(data)
-}
-
-export const disableCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
-  const { data } = await api.post(`/copy-trading/configs/${configId}/disable`)
-  return unwrapApiData(data)
-}
-
-export const forceSyncCopyConfig = async (configId: string): Promise<Record<string, any>> => {
-  const { data } = await api.post(`/copy-trading/configs/${configId}/sync`)
-  return unwrapApiData(data)
-}
-
-export const getCopyTrades = async (params?: {
-  config_id?: string
-  status?: string
-  limit?: number
-  offset?: number
-}): Promise<CopiedTrade[]> => {
-  const { data } = await api.get('/copy-trading/trades', { params })
-  return unwrapApiData(data)
-}
-
-export const getCopyTradingStatus = async (): Promise<CopyTradingStatus> => {
-  const { data } = await api.get('/copy-trading/status')
-  return unwrapApiData(data)
-}
-
 // ==================== ANOMALY DETECTION ====================
 
 export const analyzeWallet = async (address: string): Promise<WalletAnalysis> => {
@@ -1310,8 +1134,6 @@ export const analyzeWalletPnLWithFilter = async (address: string, timePeriod?: T
 export const analyzeAndTrackWallet = async (params: {
   address: string
   label?: string
-  auto_copy?: boolean
-  simulation_account_id?: string
 }) => {
   const { data } = await api.post('/discover/analyze-and-track', null, { params })
   return unwrapApiData(data)
@@ -1862,11 +1684,7 @@ export interface Trader {
   name: string
   description?: string | null
   mode: 'paper' | 'live'
-  strategy_version: string
   source_configs: TraderSourceConfig[]
-  strategy_key?: string
-  sources?: string[]
-  params?: Record<string, any>
   risk_limits: Record<string, any>
   metadata: Record<string, any>
   is_enabled: boolean
@@ -1884,9 +1702,6 @@ export interface TraderTemplate {
   name: string
   description?: string | null
   source_configs: TraderSourceConfig[]
-  strategy_key?: string
-  sources?: string[]
-  params?: Record<string, any>
   interval_seconds: number
   risk_limits: Record<string, any>
 }
@@ -2030,10 +1845,6 @@ export interface TraderConfigSchema {
   shared_exit_fields?: Array<Record<string, any>>
   runtime_fields: Array<Record<string, any>>
   default_runtime_metadata?: Record<string, any>
-  trader_opportunity_filters_schema?: Record<string, any>
-  trader_opportunity_filters_defaults?: Record<string, any>
-  copy_trading_schema?: Record<string, any>
-  copy_trading_defaults?: Record<string, any>
 }
 
 export interface TraderStrategyDefinition {
@@ -2124,21 +1935,10 @@ function normalizeTraderFields(raw: any): Trader {
       }
     })
 
-  const first = normalizedSourceConfigs[0]
-  const firstSourceKey = normalizeTraderSourceKey(first?.source_key || 'crypto')
-  const normalizedStrategy = normalizeTraderStrategyKeyForSource(firstSourceKey, raw?.strategy_key || first?.strategy_key)
-  const normalizedSources = Array.from(
-    new Set(normalizedSourceConfigs.map((config: any) => String(config.source_key || '').trim()).filter(Boolean))
-  )
-  const normalizedParams = first?.strategy_params && typeof first.strategy_params === 'object' ? first.strategy_params : {}
-
   return {
     ...raw,
     mode: normalizeTraderMode(raw?.mode),
     source_configs: normalizedSourceConfigs,
-    strategy_key: normalizedStrategy,
-    sources: normalizedSources,
-    params: normalizedParams,
   }
 }
 
@@ -3453,6 +3253,38 @@ export interface NewsWorkflowStatus {
   stats: Record<string, unknown>
 }
 
+export interface NewsWorkflowSettings {
+  enabled: boolean
+  auto_run: boolean
+  scan_interval_seconds: number
+  top_k: number
+  rerank_top_n: number
+  similarity_threshold: number
+  keyword_weight: number
+  semantic_weight: number
+  event_weight: number
+  require_verifier: boolean
+  market_min_liquidity: number
+  market_max_days_to_resolution: number
+  min_keyword_signal: number
+  min_semantic_signal: number
+  min_edge_percent: number
+  min_confidence: number
+  require_second_source: boolean
+  orchestrator_enabled: boolean
+  orchestrator_min_edge: number
+  orchestrator_max_age_minutes: number
+  model: string | null
+  article_max_age_hours: number
+  cycle_spend_cap_usd: number
+  hourly_spend_cap_usd: number
+  cycle_llm_call_cap: number
+  cache_ttl_minutes: number
+  max_edge_evals_per_article: number
+}
+
+type NewsWorkflowSettingsUpdate = Omit<NewsWorkflowSettings, 'article_max_age_hours'>
+
 export const getNewsWorkflowStatus = async (): Promise<NewsWorkflowStatus> => {
   const { data } = await api.get('/news-workflow/status')
   return unwrapApiData(data)
@@ -3477,6 +3309,18 @@ export const setNewsWorkflowInterval = async (intervalSeconds: number): Promise<
   const { data } = await api.post('/news-workflow/interval', null, {
     params: { interval_seconds: intervalSeconds },
   })
+  return unwrapApiData(data)
+}
+
+export const getNewsWorkflowSettings = async (): Promise<NewsWorkflowSettings> => {
+  const { data } = await api.get('/news-workflow/settings')
+  return unwrapApiData(data)
+}
+
+export const updateNewsWorkflowSettings = async (
+  settings: Partial<NewsWorkflowSettingsUpdate>
+): Promise<{ status: string; settings: NewsWorkflowSettings }> => {
+  const { data } = await api.put('/news-workflow/settings', settings)
   return unwrapApiData(data)
 }
 
@@ -3949,25 +3793,34 @@ export const listStrategyExperimentAssignments = async (
   return []
 }
 
-export interface TraderMonitorAgentRequest {
+export interface TraderTuneAgentRequest {
   prompt: string
   model?: string
   max_iterations?: number
   monitor_job_id?: string
 }
 
-export interface TraderMonitorAgentResponse {
+export interface TraderTuneAgentResponse {
   session_id: string
   answer: string
   parsed: Record<string, unknown> | null
+  applied_param_updates: Array<{
+    source_key: string
+    strategy_key: string
+    changed_keys: string[]
+    params_patch: Record<string, unknown>
+    reason: string
+  }>
+  applied_param_update_count: number
+  updated_trader: Trader | null
   raw: Record<string, unknown>
 }
 
-export const runTraderMonitorIteration = async (
+export const runTraderTuneIteration = async (
   traderId: string,
-  payload: TraderMonitorAgentRequest
-): Promise<TraderMonitorAgentResponse> => {
-  const { data } = await api.post(`/traders/${traderId}/monitor/iterate`, payload, { timeout: 240_000 })
+  payload: TraderTuneAgentRequest
+): Promise<TraderTuneAgentResponse> => {
+  const { data } = await api.post(`/traders/${traderId}/tune/iterate`, payload, { timeout: 240_000 })
   return unwrapApiData(data)
 }
 

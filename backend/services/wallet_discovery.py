@@ -4,7 +4,7 @@ Wallet Discovery Engine
 
 Automated discovery and profiling of ALL active Polymarket wallets.
 This is the core engine that powers the trader leaderboard and
-copy-trading candidate selection.
+tracked-trader candidate selection.
 
 Pipeline:
     1. Fetch active markets from Polymarket Gamma API

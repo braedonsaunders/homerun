@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import MarketCatalog, ScannerSnapshot, TradeSignalEmission, get_db_session
 from services.live_price_snapshot import normalize_binary_price_history
 from services.pause_state import global_pause_state
-from services.strategy_monitor_agent import run_strategy_monitor_agent
+from services.strategy_tune_agent import run_strategy_tune_agent
 from services.trader_orchestrator.position_lifecycle import reconcile_live_positions, reconcile_paper_positions
 from services.trader_orchestrator.session_engine import ExecutionSessionEngine
 from services.trader_orchestrator_state import (
@@ -122,7 +122,7 @@ class TraderExecutionSessionControlRequest(BaseModel):
     reason: Optional[str] = None
 
 
-class TraderMonitorAgentRequest(BaseModel):
+class TraderTuneAgentRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=12000)
     model: Optional[str] = Field(default=None, max_length=200)
     max_iterations: int = Field(default=12, ge=1, le=24)
@@ -1120,10 +1120,10 @@ async def get_decision_detail(
     return detail
 
 
-@router.post("/{trader_id}/monitor/iterate")
-async def run_trader_monitor_iteration(
+@router.post("/{trader_id}/tune/iterate")
+async def run_trader_tune_iteration(
     trader_id: str,
-    request: TraderMonitorAgentRequest,
+    request: TraderTuneAgentRequest,
     session: AsyncSession = Depends(get_db_session),
 ):
     trader = await get_trader(session, trader_id)
@@ -1131,7 +1131,7 @@ async def run_trader_monitor_iteration(
         raise HTTPException(status_code=404, detail="Trader not found")
 
     try:
-        result = await run_strategy_monitor_agent(
+        result = await run_strategy_tune_agent(
             trader_id=trader_id,
             prompt=request.prompt,
             model=request.model,

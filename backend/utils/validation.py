@@ -80,22 +80,6 @@ class SimulationParams(BaseModel):
     slippage_tolerance: float = Field(default=0.5, ge=0.0, le=10.0)
 
 
-class CopyTradingParams(BaseModel):
-    """Validated copy trading parameters"""
-
-    source_wallet: str
-    enabled: bool = True
-    copy_threshold_roi: float = Field(default=2.5, ge=0.0, le=100.0)
-    max_position_size: float = Field(default=1000.0, ge=10.0, le=1000000.0)
-    copy_delay_seconds: int = Field(default=5, ge=0, le=300)
-    slippage_tolerance: float = Field(default=1.0, ge=0.0, le=10.0)
-
-    @field_validator("source_wallet")
-    @classmethod
-    def validate_wallet(cls, v: str) -> str:
-        return validate_eth_address(v)
-
-
 def validate_request(model: BaseModel, data: dict) -> BaseModel:
     """Validate request data against a Pydantic model"""
     try:

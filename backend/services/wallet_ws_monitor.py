@@ -283,7 +283,7 @@ class WalletWebSocketMonitor:
     def __init__(self):
         self._running: bool = False
         # address -> set of logical sources that requested tracking
-        # (e.g. copy_trader, discovery_pool)
+        # (e.g. discovery_pool, traders_scope)
         self._tracked_sources: dict[str, set[str]] = {}
         self._callbacks: list[Callable] = []
         self._ws_url: str = DEFAULT_WS_URL

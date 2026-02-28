@@ -119,11 +119,6 @@ class PositionSide(enum.Enum):
     NO = "no"
 
 
-class CopyTradingMode(enum.Enum):
-    ALL_TRADES = "all_trades"  # Mirror every trade from source wallet
-    ARB_ONLY = "arb_only"  # Only copy trades matching detected arbitrage opportunities
-
-
 # ==================== SIMULATION ACCOUNT ====================
 
 
@@ -229,105 +224,6 @@ class SimulationTrade(Base):
         Index("idx_trade_account", "account_id"),
         Index("idx_trade_status", "status"),
         Index("idx_trade_copied", "copied_from_wallet"),
-    )
-
-
-# ==================== COPY TRADING ====================
-
-
-class CopyTradingConfig(Base):
-    """Configuration for copy trading a wallet"""
-
-    __tablename__ = "copy_trading_configs"
-
-    id = Column(String, primary_key=True)
-    source_wallet = Column(String, nullable=True, index=True)  # nullable for pool/tracked_group modes
-    account_id = Column(String, ForeignKey("simulation_accounts.id"), nullable=False)
-    source_type = Column(String, default="individual")  # individual | tracked_group | pool
-
-    enabled = Column(Boolean, default=True)
-    copy_mode = Column(SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES)
-    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X% (arb_only mode)
-    max_position_size = Column(Float, default=1000.0)
-    copy_delay_seconds = Column(Integer, default=5)
-    slippage_tolerance = Column(Float, default=1.0)
-
-    # Proportional sizing: scale positions relative to source wallet
-    proportional_sizing = Column(Boolean, default=False)
-    proportional_multiplier = Column(Float, default=1.0)  # 0.1 = 10% of source size
-
-    # Trade direction control
-    copy_buys = Column(Boolean, default=True)
-    copy_sells = Column(Boolean, default=True)  # Mirror sell/close positions
-
-    # Deduplication: track last processed trade timestamp
-    last_processed_trade_id = Column(String, nullable=True)
-    last_processed_timestamp = Column(DateTime, nullable=True)
-
-    # Market filtering (JSON list of categories to include, empty = all)
-    market_categories = Column(JSON, default=list)
-
-    # Stats
-    total_copied = Column(Integer, default=0)
-    successful_copies = Column(Integer, default=0)
-    failed_copies = Column(Integer, default=0)
-    total_pnl = Column(Float, default=0.0)
-    total_buys_copied = Column(Integer, default=0)
-    total_sells_copied = Column(Integer, default=0)
-
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-    __table_args__ = (Index("idx_copy_wallet", "source_wallet"),)
-
-
-class CopiedTrade(Base):
-    """Record of a trade that was copied from a source wallet.
-    Used for deduplication and tracking copy performance."""
-
-    __tablename__ = "copied_trades"
-
-    id = Column(String, primary_key=True)  # Our internal ID
-    config_id = Column(String, ForeignKey("copy_trading_configs.id"), nullable=False)
-    source_trade_id = Column(String, nullable=False)  # Trade ID from source wallet
-    source_wallet = Column(String, nullable=False)
-
-    # What was copied
-    market_id = Column(String, nullable=False)
-    market_question = Column(Text, nullable=True)
-    token_id = Column(String, nullable=True)
-    side = Column(String, nullable=False)  # BUY or SELL
-    outcome = Column(String, nullable=True)  # YES or NO
-    source_price = Column(Float, nullable=False)
-    source_size = Column(Float, nullable=False)
-    executed_price = Column(Float, nullable=True)  # Our actual execution price
-    executed_size = Column(Float, nullable=True)  # Our actual size
-
-    # Execution
-    status = Column(String, default="pending")  # pending, executed, failed, skipped
-    execution_mode = Column(String, default="simulation")  # simulation or live
-    simulation_trade_id = Column(String, nullable=True)  # Links to SimulationTrade
-    error_message = Column(Text, nullable=True)
-
-    # Timing
-    source_timestamp = Column(DateTime, nullable=True)
-    copied_at = Column(DateTime, default=_utcnow)
-    executed_at = Column(DateTime, nullable=True)
-
-    # PnL tracking
-    realized_pnl = Column(Float, nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "config_id",
-            "source_trade_id",
-            name="uq_copied_trades_config_source_trade",
-        ),
-        Index("idx_copied_config", "config_id"),
-        Index("idx_copied_source_trade", "source_trade_id"),
-        Index("idx_copied_source_wallet", "source_wallet"),
-        Index("idx_copied_market", "market_id"),
-        Index("idx_copied_status", "status"),
     )
 
 
@@ -1214,9 +1110,6 @@ class AppSettings(Base):
     weather_workflow_min_model_agreement = Column(Float, default=0.75)
     weather_workflow_min_liquidity = Column(Float, default=500.0)
     weather_workflow_max_markets_per_scan = Column(Integer, default=200)
-    weather_workflow_orchestrator_enabled = Column(Boolean, default=True)
-    weather_workflow_orchestrator_min_edge = Column(Float, default=10.0)
-    weather_workflow_orchestrator_max_age_minutes = Column(Integer, default=240)
     weather_workflow_default_size_usd = Column(Float, default=10.0)
     weather_workflow_max_size_usd = Column(Float, default=50.0)
     weather_workflow_model = Column(String, nullable=True)
@@ -2642,10 +2535,6 @@ class Trader(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
-    strategy_key = Column(String, nullable=False, index=True)
-    strategy_version = Column(String, nullable=False, default="v1")
-    sources_json = Column(JSON, default=list)
-    params_json = Column(JSON, default=dict)
     source_configs_json = Column(JSON, default=list)
     risk_limits_json = Column(JSON, default=dict)
     metadata_json = Column(JSON, default=dict)

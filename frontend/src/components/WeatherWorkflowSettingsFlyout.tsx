@@ -98,20 +98,7 @@ export default function WeatherWorkflowSettingsFlyout({
 
   useEffect(() => {
     if (settings) {
-      const {
-        orchestrator_enabled: legacyOrchestratorEnabled,
-        orchestrator_min_edge: legacyOrchestratorMinEdge,
-        orchestrator_max_age_minutes: legacyOrchestratorMaxAgeMinutes,
-        ...settingsWithoutHandoff
-      } = settings as WeatherWorkflowSettings & {
-        orchestrator_enabled?: boolean
-        orchestrator_min_edge?: number
-        orchestrator_max_age_minutes?: number
-      }
-      void legacyOrchestratorEnabled
-      void legacyOrchestratorMinEdge
-      void legacyOrchestratorMaxAgeMinutes
-      setForm({ ...DEFAULTS, ...settingsWithoutHandoff })
+      setForm({ ...DEFAULTS, ...settings })
     }
   }, [settings])
 

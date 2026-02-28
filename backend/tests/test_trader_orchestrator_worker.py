@@ -93,6 +93,7 @@ def test_merged_strategy_params_for_traders_copy_trade_uses_copy_validator(monke
                 "copy_buys": "false",
                 "copy_sells": "true",
                 "max_signal_age_seconds": "45",
+                "firehose_require_active_signal": False,
             },
         }
     )
@@ -101,6 +102,7 @@ def test_merged_strategy_params_for_traders_copy_trade_uses_copy_validator(monke
     assert merged["copy_buys"] is False
     assert merged["copy_sells"] is True
     assert merged["max_signal_age_seconds"] == 45
+    assert "firehose_require_active_signal" not in merged
 
 
 def test_resume_policy_normalizes_to_supported_values():

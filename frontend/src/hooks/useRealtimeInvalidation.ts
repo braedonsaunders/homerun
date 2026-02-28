@@ -259,22 +259,6 @@ export function useRealtimeInvalidation(
         { immediate: viewingScannerFamily },
       )
     }
-    if (messageType === 'wallet_trade') {
-      queueInvalidations([
-        ['copy-trades'],
-        ['copy-trading-status'],
-      ])
-    }
-    if (
-      messageType === 'copy_trade_detected'
-      || messageType === 'copy_trade_executed'
-    ) {
-      queueInvalidations([
-        ['copy-trades'],
-        ['copy-configs'],
-        ['copy-trading-status'],
-      ])
-    }
     if (messageType === 'tracked_trader_signal') {
       queueInvalidations([
         ['opportunities', 'traders'],

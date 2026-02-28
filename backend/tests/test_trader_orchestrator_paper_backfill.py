@@ -28,10 +28,7 @@ async def test_backfill_passes_paper_simulation_fee_and_slippage_to_ledger(tmp_p
                 Trader(
                     id="trader-1",
                     name="Backfill Trader",
-                    strategy_key="btc_eth_highfreq",
-                    strategy_version="v1",
-                    sources_json=["crypto"],
-                    params_json={},
+                    source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
                     risk_limits_json={},
                     metadata_json={},
                     is_enabled=True,

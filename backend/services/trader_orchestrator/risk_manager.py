@@ -246,9 +246,14 @@ def evaluate_risk(
 
     failed = [check for check in checks if not check.passed]
     if failed:
+        first_failed = failed[0]
+        reason = f"Risk blocked: {first_failed.key}"
+        detail = str(first_failed.detail or "").strip()
+        if detail:
+            reason = f"{reason} ({detail})"
         return RiskResult(
             allowed=False,
-            reason=f"Risk blocked: {failed[0].key}",
+            reason=reason,
             checks=checks,
         )
 

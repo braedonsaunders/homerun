@@ -391,6 +391,12 @@ _RISK_CHECK_KEY_TO_BLOCK_REASON: dict[str, str] = {
     "trader_open_positions": BlockReason.RISK_OPEN_POSITIONS,
     "trader_market_exposure": BlockReason.RISK_MARKET_EXPOSURE,
 }
+_GENERIC_FILTER_REASONS: tuple[str, ...] = (
+    "crypto worker filters not met",
+    "filters not met",
+    "strategy skipped",
+    "signal skipped",
+)
 
 
 def _risk_block_reason(risk_result: Any) -> str:
@@ -413,6 +419,55 @@ def _risk_checks_payload(risk_result: Any) -> list[dict[str, Any]]:
         }
         for check in getattr(risk_result, "checks", []) or []
     ]
+
+
+def _failed_check_fragments(checks_payload: list[dict[str, Any]], *, max_items: int = 3) -> list[str]:
+    fragments: list[str] = []
+    for raw_check in checks_payload:
+        if not isinstance(raw_check, dict):
+            continue
+        if bool(raw_check.get("passed", False)):
+            continue
+        label = str(raw_check.get("check_label") or raw_check.get("check_key") or "check").strip()
+        detail = str(raw_check.get("detail") or "").strip()
+        if detail:
+            compact_detail = " ".join(detail.split())
+            if len(compact_detail) > 120:
+                compact_detail = compact_detail[:117].rstrip() + "..."
+            fragments.append(f"{label}: {compact_detail}")
+        else:
+            fragments.append(label)
+        if len(fragments) >= max_items:
+            break
+    return fragments
+
+
+def _enrich_final_reason(
+    *,
+    final_decision: str,
+    final_reason: str,
+    checks_payload: list[dict[str, Any]],
+) -> str:
+    reason = str(final_reason or "").strip()
+    failed_fragments = _failed_check_fragments(checks_payload)
+    if not failed_fragments:
+        return reason
+
+    if not reason:
+        if final_decision == "skipped":
+            return f"Skipped by checks: {' | '.join(failed_fragments)}"
+        if final_decision == "blocked":
+            return f"Blocked by checks: {' | '.join(failed_fragments)}"
+        return " | ".join(failed_fragments)
+
+    normalized = reason.lower()
+    if any(token in normalized for token in _GENERIC_FILTER_REASONS):
+        return f"{reason} | failed checks: {' | '.join(failed_fragments)}"
+
+    if normalized.startswith("risk blocked:") and "(" not in reason:
+        return f"{reason} ({failed_fragments[0]})"
+
+    return reason
 
 
 def apply_platform_decision_gates(
@@ -1351,6 +1406,12 @@ def apply_platform_decision_gates(
                 ),
             }
         )
+
+    final_reason = _enrich_final_reason(
+        final_decision=final_decision,
+        final_reason=final_reason,
+        checks_payload=checks_payload,
+    )
 
     return {
         "strategy_decision": str(getattr(decision_obj, "decision", "failed") or "failed"),

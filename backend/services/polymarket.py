@@ -1292,7 +1292,7 @@ class PolymarketClient:
         return float(data.get("mid", 0))
 
     async def get_price(self, token_id: str, side: str = "BUY", use_trading_proxy: bool = False) -> float:
-        """Get best price for a token (BUY = best ask, SELL = best bid)"""
+        """Get best price for a token (BUY = best bid, SELL = best ask)."""
         client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
         response = await self._rate_limited_get(
             f"{self.clob_url}/price",

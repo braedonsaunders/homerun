@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Shield, Zap, ChevronDown, DollarSign, BarChart3, Check } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
-import { getSimulationAccounts } from '../services/api'
+import { getKalshiBalance, getKalshiStatus, getSimulationAccounts, getTradingBalance, getTradingStatus } from '../services/api'
 
 export default function AccountModeSelector() {
   const [, setMode] = useAtom(accountModeAtom)
@@ -15,6 +15,35 @@ export default function AccountModeSelector() {
   const { data: sandboxAccounts = [], isFetched: sandboxAccountsFetched } = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
+  })
+  const { data: polymarketStatus } = useQuery({
+    queryKey: ['trading-status'],
+    queryFn: getTradingStatus,
+    enabled: open,
+    refetchInterval: open ? 10000 : false,
+    retry: false,
+  })
+  const polymarketReady = Boolean(polymarketStatus?.authenticated || polymarketStatus?.initialized)
+  const { data: polymarketBalance } = useQuery({
+    queryKey: ['trading-balance'],
+    queryFn: getTradingBalance,
+    enabled: open && polymarketReady,
+    refetchInterval: open ? 15000 : false,
+    retry: false,
+  })
+  const { data: kalshiStatus } = useQuery({
+    queryKey: ['kalshi-status'],
+    queryFn: getKalshiStatus,
+    enabled: open,
+    refetchInterval: open ? 10000 : false,
+    retry: false,
+  })
+  const { data: kalshiBalance } = useQuery({
+    queryKey: ['kalshi-balance'],
+    queryFn: getKalshiBalance,
+    enabled: open && Boolean(kalshiStatus?.authenticated),
+    refetchInterval: open ? 15000 : false,
+    retry: false,
   })
 
   // Auto-select first sandbox account if none selected and accounts loaded
@@ -56,6 +85,11 @@ export default function AccountModeSelector() {
   const selectedSandbox = sandboxAccounts.find(a => a.id === selectedAccountId)
   const isLive = selectedAccountId?.startsWith('live:')
   const livePlatform = isLive ? selectedAccountId?.replace('live:', '') : null
+  const polymarketBalanceValue = polymarketBalance?.balance ?? 0
+  const kalshiBalanceValue = kalshiBalance?.balance ?? kalshiStatus?.balance?.balance ?? 0
+  const formatBalance = (value: number | null | undefined) => (
+    `$${(value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  )
 
   // Display label for the selected account
   const getLabel = () => {
@@ -151,7 +185,7 @@ export default function AccountModeSelector() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm text-foreground">Polymarket</div>
-              <div className="text-xs text-muted-foreground">Live USDC trading</div>
+              <div className="text-xs text-muted-foreground font-mono">{formatBalance(polymarketBalanceValue)}</div>
             </div>
             {selectedAccountId === 'live:polymarket' && (
               <Check className="w-3.5 h-3.5 text-green-400 shrink-0" />
@@ -169,7 +203,7 @@ export default function AccountModeSelector() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm text-foreground">Kalshi</div>
-              <div className="text-xs text-muted-foreground">Live USD trading</div>
+              <div className="text-xs text-muted-foreground font-mono">{formatBalance(kalshiBalanceValue)}</div>
             </div>
             {selectedAccountId === 'live:kalshi' && (
               <Check className="w-3.5 h-3.5 text-green-400 shrink-0" />
