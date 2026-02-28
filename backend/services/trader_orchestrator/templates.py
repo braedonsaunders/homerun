@@ -34,8 +34,8 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
                 "source_key": "crypto",
                 "strategy_key": "btc_eth_highfreq",
                 "strategy_params": {
-                    "min_edge_percent": 2.6,
-                    "min_confidence": 0.48,
+                    "min_edge_percent": 2.5,
+                    "min_confidence": 0.42,
                     "base_size_usd": 20.0,
                     "max_size_usd": 150.0,
                     "max_open_order_seconds": 8.0,
@@ -49,9 +49,16 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
                         "convergence",
                     ],
                     "directional_min_entry_price_floor": 0.25,
-                    "stop_loss_pct": 3.0,
+                    "directional_max_entry_price_ceiling": 0.65,
+                    "maker_max_entry_price_ceiling": 0.70,
+                    "stop_loss_pct": 15.0,
                     "stop_loss_policy": "always",
-                    "immediate_stop_loss_pct": 2.0,
+                    "immediate_stop_loss_pct": 10.0,
+                    "immediate_stop_loss_requires_time_pressure": False,
+                    "hard_stop_loss_enabled": True,
+                    "hard_stop_loss_pct": 20.0,
+                    "force_flatten_min_loss_pct": 0.0,
+                    "force_flatten_max_profit_pct": 100.0,
                     "preplace_take_profit_exit": False,
                 },
             }
@@ -155,7 +162,7 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
                 "strategy_params": {
                     "min_confidence": 0.45,
                     "min_source_notional_usd": 15.0,
-                    "max_signal_age_seconds": 600,
+                    "max_signal_age_seconds": 5,
                     "copy_delay_seconds": 0,
                     "copy_buys": True,
                     "copy_sells": True,
@@ -176,6 +183,23 @@ TRADER_TEMPLATES: list[dict[str, Any]] = [
         "risk_limits": {
             "max_open_orders": 30,
             "max_per_market_exposure_usd": 600.0,
+        },
+    },
+    {
+        "id": "manual_manage_hold",
+        "name": "Manual Manage Hold",
+        "description": "Manage adopted live wallet positions without opening new entries.",
+        "source_configs": [
+            {
+                "source_key": "manual",
+                "strategy_key": "manual_wallet_position",
+                "strategy_params": {},
+            }
+        ],
+        "interval_seconds": 30,
+        "risk_limits": {
+            "max_open_orders": 20,
+            "max_per_market_exposure_usd": 1000.0,
         },
     },
 ]

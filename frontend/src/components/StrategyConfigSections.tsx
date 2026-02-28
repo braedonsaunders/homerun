@@ -7,6 +7,7 @@ import {
   CheckCircle,
   AlertCircle,
   Save,
+  Loader2,
   ExternalLink,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
@@ -250,7 +251,11 @@ function StrategyConfigCard({
               disabled={!dirty || saveMutation.isPending}
               className="gap-1 text-[10px] h-6 px-3 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-40"
             >
-              <Save className="w-2.5 h-2.5" />
+              {saveMutation.isPending ? (
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              ) : (
+                <Save className="w-2.5 h-2.5" />
+              )}
               {saveMutation.isPending ? 'Saving...' : 'Save Config'}
             </Button>
           </div>

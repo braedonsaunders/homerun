@@ -33,6 +33,7 @@ from services.trader_orchestrator.session_engine import ExecutionSessionEngine
 from services.trader_orchestrator.position_lifecycle import (
     load_market_info_for_orders,
     reconcile_paper_positions,
+    reconcile_shadow_positions,
 )
 from services.polymarket import polymarket_client
 from services.simulation import simulation_service
@@ -92,6 +93,7 @@ from services.trader_orchestrator_state import (
     get_trader_signal_cursor,
     list_traders,
     list_unconsumed_trade_signals,
+    reconcile_live_provider_orders,
     read_orchestrator_control,
     record_signal_consumption,
     set_trader_paused,
@@ -131,12 +133,15 @@ _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
 _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
 _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
 _LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
+_CRYPTO_OPEN_ORDER_TIMEOUT_FLOOR_SECONDS = 20.0
+_LIVE_PROVIDER_RECONCILE_MIN_INTERVAL_SECONDS = 5.0
 _terminal_stale_order_last_checked_at: datetime | None = None
 _terminal_stale_order_alert_last_emitted: dict[str, datetime] = {}
 _open_order_timeout_cleanup_failure_cooldown_until: dict[str, datetime] = {}
 _live_provider_entry_blocked_until: dict[str, datetime] = {}
 _live_provider_block_event_cooldown_until: dict[str, datetime] = {}
 _live_risk_clamp_event_cooldown_until: dict[str, datetime] = {}
+_live_provider_reconcile_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 
 _LIVE_PROVIDER_INFRA_ERROR_MARKERS = (
     "connection refused",
@@ -471,6 +476,46 @@ def _supports_live_market_context(
     return False
 
 
+def _is_exit_only_strategy_instance(strategy_instance: Any) -> bool:
+    if strategy_instance is None:
+        return False
+    strategy_cls = strategy_instance.__class__
+    class_dict = getattr(strategy_cls, "__dict__", {})
+    has_custom_detect = any(name in class_dict for name in ("detect", "detect_async", "on_event"))
+    has_custom_evaluate = "evaluate" in class_dict
+    has_custom_should_exit = "should_exit" in class_dict
+    return bool(has_custom_should_exit and not has_custom_detect and not has_custom_evaluate)
+
+
+def _source_config_allows_new_entries(source_config: dict[str, Any] | None) -> bool:
+    if not isinstance(source_config, dict):
+        return True
+
+    strategy_params = _merged_strategy_params_for_source_config(source_config)
+    explicit_allow = _coerce_optional_bool(strategy_params.get("allow_new_entries"))
+    if explicit_allow is not None:
+        return bool(explicit_allow)
+    explicit_disable = _coerce_optional_bool(strategy_params.get("disable_new_entries"))
+    if explicit_disable is not None:
+        return not bool(explicit_disable)
+
+    strategy_instance = _strategy_instance_for_source_config(source_config)
+    if strategy_instance is None:
+        return True
+
+    declared_allow = _coerce_optional_bool(getattr(strategy_instance, "allow_new_entries", None))
+    if declared_allow is not None:
+        return bool(declared_allow)
+    declared_disable = _coerce_optional_bool(getattr(strategy_instance, "disable_new_entries", None))
+    if declared_disable is not None:
+        return not bool(declared_disable)
+
+    if _is_exit_only_strategy_instance(strategy_instance):
+        return False
+
+    return True
+
+
 def _normalize_resume_policy(value: Any) -> str:
     policy = str(value or "").strip().lower()
     if policy in _RESUME_POLICIES:
@@ -653,6 +698,7 @@ def _normalize_source_configs(trader: dict[str, Any]) -> dict[str, dict[str, Any
 
 
 def _source_open_order_timeout_seconds(source_config: dict[str, Any]) -> float | None:
+    source_key = normalize_source_key(source_config.get("source_key"))
     strategy_params = dict(source_config.get("strategy_params") or {})
     strategy_instance = _strategy_instance_for_source_config(source_config)
     default_seconds = None
@@ -667,10 +713,25 @@ def _source_open_order_timeout_seconds(source_config: dict[str, Any]) -> float |
                     strategy_defaults,
                     default_seconds=None,
                 )
-    return StrategySDK.resolve_open_order_timeout_seconds(
+    timeout_seconds = StrategySDK.resolve_open_order_timeout_seconds(
         strategy_params,
         default_seconds=default_seconds,
     )
+    if timeout_seconds is None:
+        return None
+    if source_key == "crypto":
+        configured_floor = safe_float(strategy_params.get("min_open_order_timeout_seconds"), None)
+        if configured_floor is None:
+            configured_floor = safe_float(
+                getattr(strategy_instance, "default_open_order_timeout_seconds", None),
+                _CRYPTO_OPEN_ORDER_TIMEOUT_FLOOR_SECONDS,
+            )
+        crypto_floor_seconds = max(
+            _CRYPTO_OPEN_ORDER_TIMEOUT_FLOOR_SECONDS,
+            max(1.0, float(configured_floor)),
+        )
+        timeout_seconds = max(float(timeout_seconds), crypto_floor_seconds)
+    return float(timeout_seconds)
 
 
 async def _enforce_source_open_order_timeouts(
@@ -683,13 +744,14 @@ async def _enforce_source_open_order_timeouts(
     if not source_configs:
         return {"configured": 0, "updated": 0, "suppressed": 0, "sources": [], "errors": []}
 
-    scope = run_mode if run_mode in {"paper", "live"} else "all"
+    scope = run_mode if run_mode in {"paper", "shadow", "live"} else "all"
     configured = 0
     updated = 0
     suppressed = 0
     source_rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     now_utc = utcnow()
+    provider_reconcile: dict[str, Any] = {}
 
     expired_keys = [
         key for key, until in _open_order_timeout_cleanup_failure_cooldown_until.items() if until <= now_utc
@@ -697,11 +759,60 @@ async def _enforce_source_open_order_timeouts(
     for key in expired_keys:
         _open_order_timeout_cleanup_failure_cooldown_until.pop(key, None)
 
+    if scope == "live":
+        cache_key = str(trader_id)
+        cache_row = _live_provider_reconcile_cache.get(cache_key)
+        cache_age_seconds: float | None = None
+        if cache_row is not None:
+            cache_ts, cached_payload = cache_row
+            cache_age_seconds = max(0.0, (now_utc - cache_ts).total_seconds())
+            if (
+                cache_age_seconds < _LIVE_PROVIDER_RECONCILE_MIN_INTERVAL_SECONDS
+                and isinstance(cached_payload, dict)
+            ):
+                provider_reconcile = dict(cached_payload)
+                provider_reconcile["cache_hit"] = True
+                provider_reconcile["cache_age_seconds"] = round(cache_age_seconds, 3)
+        if not provider_reconcile:
+            try:
+                provider_reconcile = await reconcile_live_provider_orders(
+                    session,
+                    trader_id=trader_id,
+                    commit=False,
+                    broadcast=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Live provider reconcile before timeout cleanup failed for trader=%s",
+                    trader_id,
+                    exc_info=exc,
+                )
+                provider_reconcile = {
+                    "provider_ready": False,
+                    "error": str(exc),
+                }
+            _live_provider_reconcile_cache[cache_key] = (now_utc, dict(provider_reconcile))
+
+    provider_ready_for_cleanup = bool(provider_reconcile.get("provider_ready", True))
+
     for source_key, source_config in source_configs.items():
         timeout_seconds = _source_open_order_timeout_seconds(source_config)
         if timeout_seconds is None:
             continue
         configured += 1
+        if scope == "live" and not provider_ready_for_cleanup:
+            suppressed += 1
+            source_rows.append(
+                {
+                    "source": source_key,
+                    "timeout_seconds": timeout_seconds,
+                    "matched": 0,
+                    "updated": 0,
+                    "suppressed": True,
+                    "suppressed_reason": "provider_unavailable",
+                }
+            )
+            continue
         cooldown_key = f"{trader_id}:{scope}:{source_key}"
         cooldown_until = _open_order_timeout_cleanup_failure_cooldown_until.get(cooldown_key)
         if cooldown_until is not None and now_utc < cooldown_until:
@@ -766,6 +877,7 @@ async def _enforce_source_open_order_timeouts(
         "configured": configured,
         "updated": updated,
         "suppressed": suppressed,
+        "provider_reconcile": provider_reconcile,
         "sources": source_rows,
         "errors": errors,
     }
@@ -1142,6 +1254,17 @@ def _live_risk_clamp_event_due(trader_id: str, now: datetime) -> bool:
         return False
     _live_risk_clamp_event_cooldown_until[trader_id] = now + timedelta(seconds=_LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS)
     return True
+
+
+def _provider_reconcile_has_material_changes(payload: dict[str, Any]) -> bool:
+    material_keys = (
+        "status_changes",
+        "session_status_changes",
+        "notional_updates",
+        "price_updates",
+        "terminal_session_cancels",
+    )
+    return any(int(payload.get(key, 0) or 0) > 0 for key in material_keys)
 
 
 async def _live_provider_failure_snapshot(
@@ -1800,6 +1923,9 @@ async def _run_trader_once(
     decisions_written = 0
     orders_written = 0
     processed_signals = 0
+    prefiltered_signals = 0
+    prefiltered_by_reason: dict[str, int] = {}
+    crypto_scope_prefiltered_dimensions: dict[str, int] = {}
 
     async with AsyncSessionLocal() as session:
         trader_id = str(trader["id"])
@@ -1808,11 +1934,16 @@ async def _run_trader_once(
         default_strategy_params: dict[str, Any] = {}
         sources: list[str] = []
         strategy_types_by_source: dict[str, list[str]] = {}
+        source_entry_modes: dict[str, bool] = {}
         if source_configs:
             default_source_config = next(iter(source_configs.values()))
             default_strategy_params = dict(default_source_config.get("strategy_params") or {})
             sources = _query_sources_for_configs(source_configs)
             strategy_types_by_source = _query_strategy_types_for_configs(source_configs)
+            source_entry_modes = {
+                source_key: _source_config_allows_new_entries(source_config)
+                for source_key, source_config in source_configs.items()
+            }
         elif effective_process_signals:
             await _emit_cycle_heartbeat_if_due(
                 session,
@@ -1950,6 +2081,33 @@ async def _run_trader_once(
                         "by_status": lifecycle_result.get("by_status"),
                     },
                 )
+        elif run_mode == "shadow":
+            force_flatten = resume_policy == "flatten_then_start"
+            lifecycle_result = await reconcile_shadow_positions(
+                session,
+                trader_id=trader_id,
+                trader_params=default_strategy_params,
+                dry_run=False,
+                force_mark_to_market=force_flatten,
+                reason="worker_flatten_then_start" if force_flatten else "worker_lifecycle",
+            )
+            closed_positions = int(lifecycle_result.get("closed", 0))
+            if closed_positions > 0:
+                await create_trader_event(
+                    session,
+                    trader_id=trader_id,
+                    event_type="shadow_positions_closed",
+                    source="worker",
+                    message=f"Closed {closed_positions} shadow position(s)",
+                    payload={
+                        "matched": lifecycle_result.get("matched"),
+                        "closed": closed_positions,
+                        "held": lifecycle_result.get("held"),
+                        "skipped": lifecycle_result.get("skipped"),
+                        "total_realized_pnl": lifecycle_result.get("total_realized_pnl"),
+                        "by_status": lifecycle_result.get("by_status"),
+                    },
+                )
         elif run_mode == "live":
             # Live order/position reconciliation is handled by
             # workers.trader_reconciliation_worker so this loop stays focused
@@ -1983,6 +2141,36 @@ async def _run_trader_once(
             run_mode=run_mode,
             source_configs=source_configs,
         )
+        provider_reconcile_payload = timeout_cleanup.get("provider_reconcile")
+        provider_reconcile_payload = (
+            dict(provider_reconcile_payload) if isinstance(provider_reconcile_payload, dict) else {}
+        )
+        if run_mode == "live" and provider_reconcile_payload:
+            provider_active_seen = int(provider_reconcile_payload.get("active_seen", 0) or 0)
+            provider_status_changes = int(provider_reconcile_payload.get("status_changes", 0) or 0)
+            provider_updates = int(provider_reconcile_payload.get("updated_orders", 0) or 0)
+            provider_ready = bool(provider_reconcile_payload.get("provider_ready", True))
+            provider_material_changes = _provider_reconcile_has_material_changes(provider_reconcile_payload)
+            if (not provider_ready) or provider_material_changes:
+                provider_severity = "warn" if not provider_ready else "info"
+                provider_message = (
+                    "Provider reconcile unavailable before timeout cleanup"
+                    if not provider_ready
+                    else (
+                        f"Provider reconcile active_seen={provider_active_seen} "
+                        f"status_changes={provider_status_changes} updated_orders={provider_updates}"
+                    )
+                )
+                await create_trader_event(
+                    session,
+                    trader_id=trader_id,
+                    event_type="provider_reconcile",
+                    severity=provider_severity,
+                    source="worker",
+                    message=provider_message,
+                    payload=provider_reconcile_payload,
+                    commit=False,
+                )
         if timeout_cleanup.get("updated", 0) > 0:
             await create_trader_event(
                 session,
@@ -1999,8 +2187,28 @@ async def _run_trader_once(
                 event_type="open_order_timeout_cleanup_failed",
                 severity="warn",
                 source="worker",
-                message="One or more source open-order timeout cleanups failed",
-                payload=timeout_cleanup,
+                    message="One or more source open-order timeout cleanups failed",
+                    payload=timeout_cleanup,
+                )
+        suppressed_sources = [
+            dict(row)
+            for row in (timeout_cleanup.get("sources") or [])
+            if isinstance(row, dict) and bool(row.get("suppressed"))
+        ]
+        if suppressed_sources:
+            await create_trader_event(
+                session,
+                trader_id=trader_id,
+                event_type="timeout_cleanup_suppressed",
+                severity="warn",
+                source="worker",
+                message=f"Suppressed timeout cleanup for {len(suppressed_sources)} source(s)",
+                payload={
+                    "suppressed": int(timeout_cleanup.get("suppressed", len(suppressed_sources)) or 0),
+                    "sources": suppressed_sources,
+                    "provider_reconcile": provider_reconcile_payload,
+                },
+                commit=False,
             )
         open_positions = await get_open_position_count_for_trader(
             session,
@@ -2069,7 +2277,7 @@ async def _run_trader_once(
             "open_positions": open_positions,
         }
         block_entries_event_type = "trader_resume_policy"
-        block_entries_event_severity = "warn" if run_mode == "live" else "info"
+        block_entries_event_severity = "warn" if run_mode in {"live", "shadow"} else "info"
         if resume_policy == "manage_only":
             block_entries_reason = "Resume policy manage_only blocks new entries"
         elif resume_policy == "flatten_then_start" and open_positions > 0:
@@ -2077,8 +2285,20 @@ async def _run_trader_once(
                 block_entries_reason = (
                     f"Resume policy flatten_then_start waiting to flatten {open_positions} open paper position(s)"
                 )
+            elif run_mode == "shadow":
+                block_entries_reason = (
+                    f"Resume policy flatten_then_start waiting to flatten {open_positions} open shadow position(s)"
+                )
             else:
                 block_entries_reason = f"Resume policy flatten_then_start blocked: {open_positions} open live position(s) require manual flattening"
+        elif source_configs and source_entry_modes and not any(source_entry_modes.values()):
+            block_entries_reason = "Configured strategies disable new entries (manage-existing-only mode)"
+            block_entries_event_type = "trader_strategy_entry_mode"
+            block_entries_event_severity = "info"
+            block_entries_payload["source_entry_modes"] = {
+                source_key: ("entries_enabled" if allows_entries else "manage_existing_only")
+                for source_key, allows_entries in source_entry_modes.items()
+            }
 
         if run_mode == "live":
             provider_health_window_seconds = int(
@@ -2292,7 +2512,7 @@ async def _run_trader_once(
             if fallback_daily_loss > 0:
                 effective_risk_limits["max_daily_loss_usd"] = fallback_daily_loss
         live_risk_clamp_changes: dict[str, dict[str, Any]] = {}
-        if run_mode == "live":
+        if run_mode in {"live", "shadow"}:
             live_risk_clamp_settings = dict(global_runtime_settings.get("live_risk_clamps") or DEFAULT_LIVE_RISK_CLAMPS)
             live_risk_clamp_changes = _apply_live_risk_clamps(
                 effective_risk_limits,
@@ -2405,6 +2625,33 @@ async def _run_trader_once(
                         exc,
                         exc_info=exc,
                     )
+            elif run_mode == "shadow":
+                try:
+                    safe_exit_result = await reconcile_shadow_positions(
+                        session,
+                        trader_id=trader_id,
+                        trader_params=default_strategy_params,
+                        dry_run=False,
+                        force_mark_to_market=True,
+                        reason="circuit_breaker_safe_exit",
+                    )
+                    safe_exit_closed = int(safe_exit_result.get("closed", 0))
+                    if safe_exit_closed > 0:
+                        await create_trader_event(
+                            session,
+                            trader_id=trader_id,
+                            event_type="circuit_breaker_safe_exit",
+                            source="worker",
+                            message=f"Circuit breaker safe exit: closed {safe_exit_closed} shadow position(s)",
+                            payload=safe_exit_result,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Circuit breaker safe exit failed for trader %s: %s",
+                        trader_id,
+                        exc,
+                        exc_info=exc,
+                    )
             elif run_mode == "paper":
                 try:
                     safe_exit_result = await reconcile_paper_positions(
@@ -2484,6 +2731,31 @@ async def _run_trader_once(
                 signal_id = str(signal.id)
                 signal_ts = _signal_cursor_timestamp(signal)
                 if source_config is not None:
+                    if not source_entry_modes.get(signal_source, True):
+                        await record_signal_consumption(
+                            session,
+                            trader_id=trader_id,
+                            signal_id=signal_id,
+                            outcome="skipped",
+                            reason="Signal excluded: strategy is manage-existing-only (new entries disabled)",
+                            commit=False,
+                        )
+                        await upsert_trader_signal_cursor(
+                            session,
+                            trader_id=trader_id,
+                            last_signal_created_at=signal_ts,
+                            last_signal_id=signal_id,
+                            commit=False,
+                        )
+                        cursor_created_at = signal_ts
+                        cursor_signal_id = signal_id
+                        processed_signals += 1
+                        prefiltered_signals += 1
+                        prefiltered_by_reason["strategy_entry_disabled"] = (
+                            prefiltered_by_reason.get("strategy_entry_disabled", 0) + 1
+                        )
+                        prefiltered += 1
+                        continue
                     expected_strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
                     signal_strategy_type = str(getattr(signal, "strategy_type", "") or "").strip().lower()
                     allowed_strategy_types = set(strategy_types_by_source.get(signal_source) or [])
@@ -2515,6 +2787,10 @@ async def _run_trader_once(
                         cursor_created_at = signal_ts
                         cursor_signal_id = signal_id
                         processed_signals += 1
+                        prefiltered_signals += 1
+                        prefiltered_by_reason["source_strategy_filter"] = (
+                            prefiltered_by_reason.get("source_strategy_filter", 0) + 1
+                        )
                         prefiltered += 1
                         continue
                 if signal_source != "crypto" or source_config is None or _crypto_signal_in_scope(signal, source_config):
@@ -2538,6 +2814,13 @@ async def _run_trader_once(
                 cursor_created_at = signal_ts
                 cursor_signal_id = signal_id
                 processed_signals += 1
+                prefiltered_signals += 1
+                prefiltered_by_reason["crypto_scope_filter"] = prefiltered_by_reason.get("crypto_scope_filter", 0) + 1
+                signal_asset, signal_timeframe = _crypto_signal_dimensions(signal)
+                dimension_key = f"{signal_asset or 'unknown'}:{signal_timeframe or 'unknown'}"
+                crypto_scope_prefiltered_dimensions[dimension_key] = (
+                    crypto_scope_prefiltered_dimensions.get(dimension_key, 0) + 1
+                )
                 prefiltered += 1
             if prefiltered > 0:
                 await _commit_with_retry(session)
@@ -3282,6 +3565,72 @@ async def _run_trader_once(
                         checks=checks_payload,
                         commit=False,
                     )
+                    freshness_gate = next(
+                        (
+                            gate
+                            for gate in gate_result["platform_gates"]
+                            if isinstance(gate, dict) and str(gate.get("gate") or "") == "market_data_freshness"
+                        ),
+                        None,
+                    )
+                    live_revalidation_gate = next(
+                        (
+                            gate
+                            for gate in gate_result["platform_gates"]
+                            if isinstance(gate, dict) and str(gate.get("gate") or "") == "live_market_revalidation"
+                        ),
+                        None,
+                    )
+                    freshness_payload = (
+                        dict(freshness_gate.get("payload") or {})
+                        if isinstance(freshness_gate, dict) and isinstance(freshness_gate.get("payload"), dict)
+                        else {}
+                    )
+                    freshness_status = str((freshness_gate or {}).get("status") or "").strip().lower()
+                    if freshness_status not in {"passed", "blocked"}:
+                        live_revalidation_status = str((live_revalidation_gate or {}).get("status") or "").strip().lower()
+                        if live_revalidation_status == "blocked":
+                            freshness_status = "blocked"
+                            if not freshness_payload:
+                                freshness_payload = (
+                                    dict(live_revalidation_gate.get("payload") or {})
+                                    if isinstance(live_revalidation_gate, dict)
+                                    and isinstance(live_revalidation_gate.get("payload"), dict)
+                                    else {}
+                                )
+                    freshness_source = str(freshness_payload.get("source") or signal_source or "").strip().lower()
+                    if freshness_status in {"passed", "blocked"} and freshness_source in {"scanner", "crypto"}:
+                        freshness_age_ms = safe_float(freshness_payload.get("age_ms"), None)
+                        freshness_max_age_ms = safe_float(freshness_payload.get("max_age_ms"), None)
+                        freshness_severity = "warn" if freshness_status == "blocked" else "info"
+                        freshness_message = (
+                            f"Market data freshness {freshness_status}: source={freshness_source or 'unknown'} "
+                            f"age_ms={freshness_age_ms if freshness_age_ms is not None else 'unknown'} "
+                            f"max={freshness_max_age_ms if freshness_max_age_ms is not None else 'unknown'}"
+                        )
+                        await create_trader_event(
+                            session,
+                            trader_id=trader_id,
+                            event_type="market_data_freshness_source",
+                            severity=freshness_severity,
+                            source=freshness_source or signal_source,
+                            message=freshness_message,
+                            payload={
+                                "decision_id": decision_row.id,
+                                "signal_id": signal_id,
+                                "status": freshness_status,
+                                "source": freshness_source or None,
+                                "timeframe": freshness_payload.get("timeframe"),
+                                "age_ms": freshness_age_ms,
+                                "max_age_ms": freshness_max_age_ms,
+                                "market_data_source": freshness_payload.get("market_data_source"),
+                                "required_sources": freshness_payload.get("required_sources"),
+                                "freshness_enforced": freshness_payload.get("freshness_enforced"),
+                                "final_decision": final_decision,
+                                "final_reason": final_reason,
+                            },
+                            commit=False,
+                        )
 
                     order_status = None
                     if final_decision == "selected":
@@ -3517,17 +3866,34 @@ async def _run_trader_once(
                     processed_signals += 1
 
         if process_signals:
-            if decisions_written == 0 and orders_written == 0 and processed_signals == 0:
-                await _emit_cycle_heartbeat_if_due(
-                    session,
-                    trader_id=trader_id,
-                    message="Idle cycle: no pending signals.",
-                    payload={
+            if decisions_written == 0 and orders_written == 0:
+                if prefiltered_signals > 0:
+                    payload = {
                         "processed_signals": processed_signals,
                         "decisions_written": decisions_written,
                         "orders_written": orders_written,
-                    },
-                )
+                        "prefiltered_signals": prefiltered_signals,
+                        "prefiltered_by_reason": prefiltered_by_reason,
+                    }
+                    if crypto_scope_prefiltered_dimensions:
+                        payload["crypto_scope_prefiltered_dimensions"] = crypto_scope_prefiltered_dimensions
+                    await _emit_cycle_heartbeat_if_due(
+                        session,
+                        trader_id=trader_id,
+                        message="Idle cycle: pending signals filtered before strategy evaluation.",
+                        payload=payload,
+                    )
+                elif processed_signals == 0:
+                    await _emit_cycle_heartbeat_if_due(
+                        session,
+                        trader_id=trader_id,
+                        message="Idle cycle: no pending signals.",
+                        payload={
+                            "processed_signals": processed_signals,
+                            "decisions_written": decisions_written,
+                            "orders_written": orders_written,
+                        },
+                    )
             await _persist_trader_cycle_heartbeat(session, trader_id)
 
     return decisions_written, orders_written, processed_signals
@@ -3558,6 +3924,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
             "traders_seen": 0,
             "rows_seen": 0,
             "paper_closed": 0,
+            "shadow_closed": 0,
             "non_paper_cancelled": 0,
         }
 
@@ -3572,6 +3939,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
         per_trader_mode[(trader_id, mode_key)] = int(row.count or 0)
 
     paper_closed = 0
+    shadow_closed = 0
     non_paper_cancelled = 0
     for trader_id, mode_key in per_trader_mode:
         if mode_key == "paper":
@@ -3585,6 +3953,18 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
             )
             paper_closed += int(result.get("closed", 0))
             await sync_trader_position_inventory(session, trader_id=trader_id, mode="paper")
+            continue
+        if mode_key == "shadow":
+            result = await reconcile_shadow_positions(
+                session,
+                trader_id=trader_id,
+                trader_params={},
+                dry_run=False,
+                force_mark_to_market=False,
+                reason="orphan_trader_lifecycle",
+            )
+            shadow_closed += int(result.get("closed", 0))
+            await sync_trader_position_inventory(session, trader_id=trader_id, mode="shadow")
             continue
 
         cleanup = await cleanup_trader_open_orders(
@@ -3605,12 +3985,13 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
         source="worker",
         message=(
             f"Reconciled orphan trader open orders "
-            f"(paper_closed={paper_closed}, non_paper_cancelled={non_paper_cancelled})"
+            f"(paper_closed={paper_closed}, shadow_closed={shadow_closed}, non_paper_cancelled={non_paper_cancelled})"
         ),
         payload={
             "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
             "rows_seen": len(per_trader_mode),
             "paper_closed": paper_closed,
+            "shadow_closed": shadow_closed,
             "non_paper_cancelled": non_paper_cancelled,
         },
         commit=True,
@@ -3620,6 +4001,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
         "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
         "rows_seen": len(per_trader_mode),
         "paper_closed": paper_closed,
+        "shadow_closed": shadow_closed,
         "non_paper_cancelled": non_paper_cancelled,
     }
 
@@ -3804,7 +4186,7 @@ async def run_worker_loop() -> None:
                     if not control.get("is_enabled"):
                         traders = await list_traders(
                             session,
-                            mode=mode if mode in {"paper", "live"} else None,
+                            mode=mode if mode in {"paper", "shadow", "live"} else None,
                         )
                         has_active_traders = any(
                             bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
@@ -3888,7 +4270,7 @@ async def run_worker_loop() -> None:
                     if not skip_cycle and not traders:
                         traders = await list_traders(
                             session,
-                            mode=mode if mode in {"paper", "live"} else None,
+                            mode=mode if mode in {"paper", "shadow", "live"} else None,
                         )
 
                 if skip_cycle:
@@ -3933,7 +4315,7 @@ async def run_worker_loop() -> None:
                     if not trader.get("is_enabled", True):
                         continue
                     trader_mode = str(trader.get("mode") or "paper").strip().lower()
-                    if trader_mode not in {"paper", "live"}:
+                    if trader_mode not in {"paper", "shadow", "live"}:
                         trader_mode = "paper"
                     if trader_mode != mode:
                         continue
@@ -3961,7 +4343,7 @@ async def run_worker_loop() -> None:
                     ):
                         process_signals_for_trader = False
 
-                    if mode not in ("paper", "live"):
+                    if mode not in ("paper", "shadow", "live"):
                         continue
                     decisions, orders, processed_signals = await _run_trader_once_with_timeout(
                         trader,

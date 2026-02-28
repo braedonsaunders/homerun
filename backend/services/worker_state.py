@@ -16,7 +16,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import WorkerControl, WorkerSnapshot
@@ -160,7 +160,7 @@ async def _commit_with_retry(
         try:
             await session.commit()
             return
-        except (OperationalError, InterfaceError) as exc:
+        except DBAPIError as exc:
             if hasattr(session, "rollback"):
                 await session.rollback()
             is_locked = _is_retryable_db_error(exc)

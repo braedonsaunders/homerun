@@ -19,9 +19,16 @@ interface DataPanelProps {
   isConnected: boolean
   view: DataView
   onViewChange: (view: DataView) => void
+  onOpenCopilot?: (options?: {
+    contextType?: string
+    contextId?: string
+    label?: string
+    prompt?: string
+    autoSend?: boolean
+  }) => void
 }
 
-export default function DataPanel({ isConnected, view, onViewChange }: DataPanelProps) {
+export default function DataPanel({ isConnected, view, onViewChange, onOpenCopilot }: DataPanelProps) {
   const { data: worldSummary } = useQuery({
     queryKey: ['events-summary'],
     queryFn: getEventsSummary,
@@ -150,7 +157,7 @@ export default function DataPanel({ isConnected, view, onViewChange }: DataPanel
       {view === 'sources' && (
         <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
           <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Sources view crashed.</div>}>
-            <DataSourcesManager />
+            <DataSourcesManager onOpenCopilot={onOpenCopilot} />
           </ErrorBoundary>
         </div>
       )}

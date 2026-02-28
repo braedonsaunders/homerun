@@ -31,7 +31,7 @@ router = APIRouter(prefix="/trader-orchestrator", tags=["Trader Orchestrator"])
 
 
 class StartRequest(BaseModel):
-    mode: Optional[str] = Field(default=None, description="paper | live")
+    mode: Optional[str] = Field(default=None, description="paper | shadow | live")
     paper_account_id: Optional[str] = None
     requested_by: Optional[str] = None
 
@@ -224,8 +224,11 @@ async def start_orchestrator(
                 "Use the /live/preflight -> /live/arm -> /live/start ceremony instead."
             ),
         )
-    if mode != "paper":
-        raise HTTPException(status_code=422, detail="mode must be 'paper'. Use /live/start for live mode.")
+    if mode not in {"paper", "shadow"}:
+        raise HTTPException(
+            status_code=422,
+            detail="mode must be 'paper' or 'shadow'. Use /live/start for live mode.",
+        )
 
     control_before = await read_orchestrator_control(session)
     settings_updates = {}

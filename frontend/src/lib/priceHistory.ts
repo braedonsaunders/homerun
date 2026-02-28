@@ -151,15 +151,24 @@ function normalizeHistoryKey(rawKey: string): string {
   return HISTORY_KEY_ALIASES[key] || key
 }
 
-function remapBinaryKeyToIndexed(
+function remapBinaryOutcomeKey(
   key: string,
   fallbackKeys: Set<string>,
 ): string {
-  if (key === 'yes' && fallbackKeys.has('idx_0') && !fallbackKeys.has('yes')) {
+  const fallbackUsesBinaryKeys = fallbackKeys.has('yes') || fallbackKeys.has('no')
+  const fallbackUsesIndexedKeys = fallbackKeys.has('idx_0') || fallbackKeys.has('idx_1')
+
+  if (key === 'yes' && fallbackUsesIndexedKeys && !fallbackUsesBinaryKeys) {
     return 'idx_0'
   }
-  if (key === 'no' && fallbackKeys.has('idx_1') && !fallbackKeys.has('no')) {
+  if (key === 'no' && fallbackUsesIndexedKeys && !fallbackUsesBinaryKeys) {
     return 'idx_1'
+  }
+  if (key === 'idx_0' && fallbackUsesBinaryKeys && !fallbackUsesIndexedKeys) {
+    return 'yes'
+  }
+  if (key === 'idx_1' && fallbackUsesBinaryKeys && !fallbackUsesIndexedKeys) {
+    return 'no'
   }
   return key
 }
@@ -204,7 +213,7 @@ function parsePointValues(
     if (!normalizedKey) return
     const parsed = normalizeProbability(toFiniteNumber(rawValue))
     if (parsed === null) return
-    values.set(remapBinaryKeyToIndexed(normalizedKey, fallbackKeys), parsed)
+    values.set(remapBinaryOutcomeKey(normalizedKey, fallbackKeys), parsed)
   }
 
   if (Array.isArray(raw)) {

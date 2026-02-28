@@ -729,6 +729,49 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             ]
         },
     ),
+    # ── Manual management strategies ───────────────────────────
+    SystemOpportunityStrategySeed(
+        slug="manual_wallet_position",
+        source_key="manual",
+        import_module="services.strategies.manual_manage_hold",
+        sort_order=205,
+        config_schema={
+            "param_fields": [
+                {"key": "min_hold_minutes", "label": "Min Hold (min)", "type": "number", "min": 0},
+                {"key": "hard_stop_loss_pct", "label": "Hard Stop Loss (%)", "type": "number", "min": 0},
+                {
+                    "key": "backside_activation_profit_pct",
+                    "label": "Backside Activation Profit (%)",
+                    "type": "number",
+                    "min": 0,
+                },
+                {"key": "backside_drawdown_pct", "label": "Backside Drawdown (%)", "type": "number", "min": 0},
+                {"key": "backside_confirm_cycles", "label": "Backside Confirm Cycles", "type": "integer", "min": 1},
+                {"key": "breakeven_arm_profit_pct", "label": "Breakeven Arm Profit (%)", "type": "number", "min": 0},
+                {"key": "breakeven_buffer_pct", "label": "Breakeven Buffer (%)", "type": "number"},
+                {
+                    "key": "near_resolution_window_seconds",
+                    "label": "Near Resolution Window (sec)",
+                    "type": "number",
+                    "min": 0,
+                },
+                {
+                    "key": "near_resolution_hold_profit_pct",
+                    "label": "Near Resolution Hold Profit (%)",
+                    "type": "number",
+                },
+                {
+                    "key": "near_resolution_stop_loss_pct",
+                    "label": "Near Resolution Stop Loss (%)",
+                    "type": "number",
+                    "min": 0,
+                },
+                {"key": "neutral_exit_min_age_minutes", "label": "Neutral Exit Min Age (min)", "type": "number", "min": 0},
+                {"key": "neutral_exit_band_pct", "label": "Neutral Exit Band (%)", "type": "number", "min": 0},
+                {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 0},
+            ]
+        },
+    ),
     # ── Traders strategies ───────────────────────────────────
     SystemOpportunityStrategySeed(
         slug="traders_confluence",

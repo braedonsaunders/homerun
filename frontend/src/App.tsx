@@ -1505,8 +1505,15 @@ function App() {
     [strategies, selectedStrategy, showZeroCountStrategies, strategyCounts]
   )
 
-  const SOURCE_GROUP_ORDER = ['scanner', 'weather', 'news', 'crypto', 'traders'] as const
-  const SOURCE_GROUP_LABELS: Record<string, string> = { scanner: 'Scanner', weather: 'Weather', news: 'News', crypto: 'Crypto', traders: 'Traders' }
+  const SOURCE_GROUP_ORDER = ['scanner', 'weather', 'news', 'crypto', 'traders', 'manual'] as const
+  const SOURCE_GROUP_LABELS: Record<string, string> = {
+    scanner: 'Scanner',
+    weather: 'Weather',
+    news: 'News',
+    crypto: 'Crypto',
+    traders: 'Traders',
+    manual: 'Manual',
+  }
   const groupedStrategies = useMemo(() => {
     const groups: Record<string, typeof visibleStrategies> = {}
     for (const s of visibleStrategies) {
@@ -2674,6 +2681,7 @@ function App() {
                 isConnected={isConnected}
                 view={dataView}
                 onViewChange={setDataView}
+                onOpenCopilot={handleOpenCopilotRequest}
               />
             )}
 
@@ -2693,6 +2701,7 @@ function App() {
                   <StrategiesPanel
                     initialSourceFilter={pendingStrategiesSourceFilter}
                     onSourceFilterApplied={() => setPendingStrategiesSourceFilter(null)}
+                    onOpenCopilot={handleOpenCopilotRequest}
                   />
                 </div>
               </div>

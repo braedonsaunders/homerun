@@ -328,10 +328,10 @@ class Settings(BaseSettings):
     REALTIME_SCAN_MAX_BATCH_MARKETS: int = 800  # Max affected markets evaluated per fast scan
     REALTIME_SCAN_HTTP_PRICE_FALLBACK_CAP: int = 200  # Max HTTP token lookups in reactive scans
     # Opportunity card sparkline history (longer-term trend, not tick-level noise)
-    SCANNER_SPARKLINE_WINDOW_HOURS: int = 6
+    SCANNER_SPARKLINE_WINDOW_HOURS: int = 24
     SCANNER_SPARKLINE_SAMPLE_SECONDS: int = 120
-    SCANNER_SPARKLINE_MAX_POINTS: int = 240
-    SCANNER_SPARKLINE_EXPORT_POINTS: int = 180
+    SCANNER_SPARKLINE_MAX_POINTS: int = 960
+    SCANNER_SPARKLINE_EXPORT_POINTS: int = 960
     HOT_TIER_MAX_AGE_SECONDS: int = 300  # Markets younger than this = HOT
     WARM_TIER_MAX_AGE_SECONDS: int = 1800  # Markets younger than this = WARM
     COLD_TIER_UNCHANGED_CYCLES: int = 5  # Consecutive unchanged cycles before COLD

@@ -227,27 +227,38 @@ def _runtime_signal_market_data_context(runtime_signal: Any) -> dict[str, Any]:
         .lower()
     )
 
-    age_ms = safe_float(
-        payload.get("market_data_age_ms")
-        or strategy_context.get("market_data_age_ms")
-        or live_market.get("market_data_age_ms"),
-        None,
-    )
-    if age_ms is not None and age_ms < 0:
-        age_ms = None
+    age_candidates: list[float] = []
+    for candidate in (
+        live_market.get("market_data_age_ms"),
+        live_market.get("age_ms"),
+        payload.get("market_data_age_ms"),
+        strategy_context.get("market_data_age_ms"),
+    ):
+        parsed_age = safe_float(candidate, None)
+        if parsed_age is None or parsed_age < 0.0:
+            continue
+        age_candidates.append(float(parsed_age))
+    age_ms = min(age_candidates) if age_candidates else None
 
-    observed_at = _parse_datetime_utc(
-        payload.get("source_observed_at")
-        or strategy_context.get("source_observed_at")
-        or live_market.get("source_observed_at")
-        or payload.get("live_market_fetched_at")
-        or strategy_context.get("live_market_fetched_at")
-        or live_market.get("fetched_at")
-        or payload.get("signal_updated_at")
-        or live_market.get("signal_updated_at")
-        or getattr(runtime_signal, "updated_at", None)
-        or getattr(runtime_signal, "created_at", None)
-    )
+    observed_candidates: list[datetime] = []
+    for candidate in (
+        live_market.get("source_observed_at"),
+        live_market.get("fetched_at"),
+        live_market.get("live_market_fetched_at"),
+        live_market.get("signal_updated_at"),
+        payload.get("source_observed_at"),
+        payload.get("live_market_fetched_at"),
+        payload.get("signal_updated_at"),
+        strategy_context.get("source_observed_at"),
+        strategy_context.get("live_market_fetched_at"),
+        getattr(runtime_signal, "updated_at", None),
+        getattr(runtime_signal, "created_at", None),
+    ):
+        parsed_observed_at = _parse_datetime_utc(candidate)
+        if parsed_observed_at is None:
+            continue
+        observed_candidates.append(parsed_observed_at)
+    observed_at = max(observed_candidates) if observed_candidates else None
 
     if age_ms is None and observed_at is not None:
         age_ms = max(
@@ -503,6 +514,7 @@ def apply_platform_decision_gates(
     risk_snapshot: dict[str, Any] = {}
     platform_gates: list[dict[str, Any]] = []
     market_data_context = _runtime_signal_market_data_context(runtime_signal)
+    live_revalidation_gate_recorded = False
 
     if final_decision == "selected":
         if trading_schedule_ok:
@@ -584,6 +596,165 @@ def apply_platform_decision_gates(
         )
 
     if final_decision == "selected":
+        runtime_payload = getattr(runtime_signal, "payload_json", None)
+        runtime_payload = runtime_payload if isinstance(runtime_payload, dict) else {}
+        live_market_payload = runtime_payload.get("live_market")
+        live_market_payload = live_market_payload if isinstance(live_market_payload, dict) else {}
+
+        source = str(market_data_context.get("source") or "")
+        timeframe = str(market_data_context.get("timeframe") or "")
+        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe)
+        market_data_source = str(
+            live_market_payload.get("market_data_source")
+            or live_market_payload.get("live_selected_price_source")
+            or "unknown"
+        ).strip().lower()
+        if not market_data_source:
+            market_data_source = "unknown"
+
+        live_revalidation_enforced = _coerce_bool(params.get("require_live_market_revalidation"), True)
+        live_revalidation_sources = _normalize_text_list(
+            params.get("require_live_revalidation_for_sources", ["scanner"])
+        )
+        live_revalidation_required = bool(
+            live_revalidation_enforced and source and source in set(live_revalidation_sources)
+        )
+
+        live_selected_price = safe_float(live_market_payload.get("live_selected_price"), None)
+        live_fetched_at = _parse_datetime_utc(
+            live_market_payload.get("live_market_fetched_at") or live_market_payload.get("fetched_at")
+        )
+        live_observed_at = _parse_datetime_utc(
+            live_market_payload.get("source_observed_at") or live_market_payload.get("signal_updated_at")
+        )
+        live_age_ms = safe_float(
+            live_market_payload.get("market_data_age_ms") or live_market_payload.get("age_ms"),
+            None,
+        )
+        if live_age_ms is not None and live_age_ms < 0.0:
+            live_age_ms = None
+        if live_age_ms is None and live_observed_at is not None:
+            live_age_ms = max(
+                0.0,
+                (datetime.now(timezone.utc) - live_observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+            )
+        if live_age_ms is None and live_fetched_at is not None:
+            live_age_ms = max(
+                0.0,
+                (datetime.now(timezone.utc) - live_fetched_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+            )
+
+        live_revalidation_passed = (
+            not live_revalidation_required
+            or (
+                live_selected_price is not None
+                and live_selected_price > 0.0
+                and live_fetched_at is not None
+                and live_age_ms is not None
+                and live_age_ms <= max_age_ms
+            )
+        )
+        checks_payload.append(
+            {
+                "check_key": "live_market_revalidation",
+                "check_label": "Execution-time live market revalidation",
+                "passed": live_revalidation_passed,
+                "score": live_age_ms,
+                "detail": (
+                    f"live_age_ms={live_age_ms:.0f} max={max_age_ms} source={source or 'unknown'}"
+                    if live_revalidation_required and live_age_ms is not None
+                    else (
+                        "Live revalidation required but live market context unavailable"
+                        if live_revalidation_required
+                        else "Live revalidation optional for source"
+                    )
+                ),
+                "payload": {
+                    "source": source or None,
+                    "timeframe": timeframe or None,
+                    "required_sources": live_revalidation_sources,
+                    "revalidation_required": live_revalidation_required,
+                    "live_selected_price": live_selected_price,
+                    "live_market_fetched_at": (
+                        live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                    ),
+                    "live_observed_at": (
+                        live_observed_at.isoformat().replace("+00:00", "Z") if live_observed_at is not None else None
+                    ),
+                    "live_age_ms": live_age_ms,
+                    "max_age_ms": max_age_ms,
+                    "market_data_source": market_data_source,
+                },
+            }
+        )
+        if live_revalidation_passed:
+            platform_gates.append(
+                {
+                    "gate": "live_market_revalidation",
+                    "status": "passed" if live_revalidation_required else "skipped",
+                    "detail": (
+                        f"live_age_ms={live_age_ms:.0f} max={max_age_ms}"
+                        if live_revalidation_required and live_age_ms is not None
+                        else "Live revalidation optional for this source"
+                    ),
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "required_sources": live_revalidation_sources,
+                        "live_selected_price": live_selected_price,
+                        "live_market_fetched_at": (
+                            live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                        ),
+                        "live_age_ms": live_age_ms,
+                        "max_age_ms": max_age_ms,
+                        "market_data_source": market_data_source,
+                    },
+                }
+            )
+            live_revalidation_gate_recorded = True
+        else:
+            final_decision = "blocked"
+            final_reason = (
+                "Live market revalidation required before execution: "
+                f"source={source or 'unknown'} age_ms={live_age_ms if live_age_ms is not None else 'unknown'} "
+                f"max={max_age_ms}"
+            )
+            platform_gates.append(
+                {
+                    "gate": "live_market_revalidation",
+                    "status": "blocked",
+                    "detail": final_reason,
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "required_sources": live_revalidation_sources,
+                        "live_selected_price": live_selected_price,
+                        "live_market_fetched_at": (
+                            live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                        ),
+                        "live_age_ms": live_age_ms,
+                        "max_age_ms": max_age_ms,
+                        "market_data_source": market_data_source,
+                    },
+                }
+            )
+            live_revalidation_gate_recorded = True
+            if invoke_hooks and strategy is not None:
+                if hasattr(strategy, "on_blocked"):
+                    strategy.on_blocked(
+                        runtime_signal,
+                        BlockReason.SIGNAL_EXPIRED,
+                        {
+                            "source": source or None,
+                            "timeframe": timeframe or None,
+                            "required_sources": live_revalidation_sources,
+                            "live_age_ms": live_age_ms,
+                            "max_age_ms": max_age_ms,
+                            "market_data_source": market_data_source,
+                        },
+                    )
+
+    if final_decision == "selected":
         freshness_enforced = _coerce_bool(params.get("enforce_market_data_freshness"), True)
         required_sources = _normalize_text_list(params.get("require_market_data_age_for_sources", ["crypto", "scanner"]))
         source = str(market_data_context.get("source") or "")
@@ -622,6 +793,7 @@ def apply_platform_decision_gates(
                     "age_required": age_required,
                     "required_sources": required_sources,
                     "freshness_enforced": freshness_enforced,
+                    "market_data_source": market_data_source,
                 },
             }
         )
@@ -645,6 +817,17 @@ def apply_platform_decision_gates(
                             else "Age unavailable but optional for this source"
                         )
                     ),
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "age_ms": age_ms,
+                        "max_age_ms": max_age_ms,
+                        "observed_at": observed_at,
+                        "age_required": age_required,
+                        "required_sources": required_sources,
+                        "freshness_enforced": freshness_enforced,
+                        "market_data_source": market_data_source,
+                    },
                 }
             )
         else:
@@ -658,6 +841,17 @@ def apply_platform_decision_gates(
                     "gate": "market_data_freshness",
                     "status": "blocked",
                     "detail": final_reason,
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "age_ms": age_ms,
+                        "max_age_ms": max_age_ms,
+                        "observed_at": observed_at,
+                        "age_required": age_required,
+                        "required_sources": required_sources,
+                        "freshness_enforced": freshness_enforced,
+                        "market_data_source": market_data_source,
+                    },
                 }
             )
             if invoke_hooks and strategy is not None:
@@ -669,9 +863,18 @@ def apply_platform_decision_gates(
                             "market_data_context": market_data_context,
                             "max_age_ms": max_age_ms,
                             "required_sources": required_sources,
+                            "market_data_source": market_data_source,
                         },
                     )
     else:
+        if not live_revalidation_gate_recorded:
+            platform_gates.append(
+                {
+                    "gate": "live_market_revalidation",
+                    "status": "skipped",
+                    "detail": f"Skipped because decision is '{final_decision}'",
+                }
+            )
         platform_gates.append(
             {
                 "gate": "market_data_freshness",

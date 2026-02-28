@@ -270,6 +270,52 @@ class TestScanPipeline:
         assert abs((refreshed_opp.last_priced_at - ts).total_seconds()) < 1.0
 
     @pytest.mark.asyncio
+    async def test_refresh_opportunity_prices_preserves_multi_outcome_prices(self, mock_polymarket_client):
+        scanner = _build_scanner(mock_client=mock_polymarket_client)
+        opp = Opportunity(
+            strategy="basic",
+            title="Multi outcome refresh",
+            description="D",
+            total_cost=0.95,
+            gross_profit=0.05,
+            fee=0.02,
+            net_profit=0.03,
+            roi_percent=3.16,
+            markets=[
+                {
+                    "id": "m_multi_refresh",
+                    "question": "Test?",
+                    "clob_token_ids": ["tok_a", "tok_b", "tok_c", "tok_d"],
+                    "outcome_prices": [0.22, 0.28, 0.31, 0.19],
+                    "yes_price": 0.22,
+                    "no_price": 0.28,
+                }
+            ],
+            positions_to_take=[],
+        )
+
+        ts = utcnow()
+        ts_seconds = ts.timestamp()
+        with patch.object(
+            scanner,
+            "_snapshot_ws_prices",
+            new_callable=AsyncMock,
+            return_value={
+                "tok_a": {"mid": 0.25, "ts": ts_seconds},
+                "tok_b": {"mid": 0.30, "ts": ts_seconds},
+                "tok_c": {"mid": 0.27, "ts": ts_seconds},
+                "tok_d": {"mid": 0.18, "ts": ts_seconds},
+            },
+        ):
+            refreshed = await scanner.refresh_opportunity_prices([opp], now=ts)
+
+        assert len(refreshed) == 1
+        market = refreshed[0].markets[0]
+        assert market["yes_price"] == pytest.approx(0.25)
+        assert market["no_price"] == pytest.approx(0.30)
+        assert market["outcome_prices"] == pytest.approx([0.25, 0.30, 0.27, 0.18])
+
+    @pytest.mark.asyncio
     async def test_full_snapshot_scan_keeps_existing_pool_when_no_new_full_results(
         self,
         mock_polymarket_client,
@@ -554,6 +600,7 @@ class TestSharedPriceHistoryAttach:
         scanner = _build_scanner(strategies=[])
         yes_token = "123456789012345678901"
         no_token = "123456789012345678902"
+        third_token = "123456789012345678903"
         opp = Opportunity(
             strategy="weather_edge",
             title="Weather",
@@ -568,7 +615,7 @@ class TestSharedPriceHistoryAttach:
                 {
                     "id": "m_weather_1",
                     "platform": "polymarket",
-                    "clob_token_ids": f'["{yes_token}", "{no_token}"]',
+                    "clob_token_ids": f'["{yes_token}", "{no_token}", "{third_token}"]',
                     "yes_price": 0.2,
                     "no_price": 0.8,
                 }
@@ -581,6 +628,7 @@ class TestSharedPriceHistoryAttach:
         scanner._remember_market_tokens_from_opportunities([opp])
 
         assert scanner._market_token_ids.get("m_weather_1") == (yes_token, no_token)
+        assert scanner._market_outcome_token_ids.get("m_weather_1") == (yes_token, no_token, third_token)
 
     @pytest.mark.asyncio
     async def test_attach_price_history_to_opportunities_uses_shared_backfill(self):
@@ -671,6 +719,32 @@ class TestSharedPriceHistoryAttach:
         assert attached == 1
         assert len(opp.markets[0].get("price_history") or []) == 2
         assert scanner._hydrate_history_from_db.await_count == 0
+
+    def test_merge_market_history_points_keeps_multi_outcome_vectors(self):
+        scanner = _build_scanner(strategies=[])
+        now_ms = int(utcnow().timestamp() * 1000)
+        incoming = [
+            {
+                "t": float(now_ms - 120_000),
+                "idx_0": 0.22,
+                "idx_1": 0.31,
+                "idx_2": 0.47,
+            },
+            {
+                "t": float(now_ms - 60_000),
+                "outcome_prices": [0.24, 0.30, 0.46],
+            },
+        ]
+
+        merged = scanner._merge_market_history_points("m_multi_hist", incoming, now_ms)
+
+        assert merged == 2
+        history = scanner._market_price_history.get("m_multi_hist") or []
+        assert len(history) == 2
+        assert history[-1].get("yes") == pytest.approx(0.24)
+        assert history[-1].get("no") == pytest.approx(0.30)
+        assert history[-1].get("idx_2") == pytest.approx(0.46)
+        assert history[-1].get("outcome_prices") == pytest.approx([0.24, 0.30, 0.46])
 
 
 class TestOpportunityMerge:

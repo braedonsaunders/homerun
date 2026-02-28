@@ -320,14 +320,13 @@ async def test_event_dispatcher_unowned_remote_opportunities_fail_fast_in_produc
 
 
 @pytest.mark.asyncio
-async def test_event_dispatcher_timeout_does_not_cancel_handler(monkeypatch):
+async def test_event_dispatcher_timeout_cancels_handler(monkeypatch):
     fake_streams = _InMemoryRedisStreams()
     monkeypatch.setattr(event_dispatcher_module, "redis_streams", fake_streams)
 
     dispatcher = event_dispatcher_module.EventDispatcher()
     handler_started = asyncio.Event()
     handler_release = asyncio.Event()
-    handler_finished = asyncio.Event()
     handler_cancelled = False
 
     async def _slow_handler(event: DataEvent) -> list:
@@ -338,7 +337,6 @@ async def test_event_dispatcher_timeout_does_not_cancel_handler(monkeypatch):
         except asyncio.CancelledError:
             handler_cancelled = True
             raise
-        handler_finished.set()
         return []
 
     dispatcher.subscribe("strategy.timeout", EventType.PRICE_CHANGE, _slow_handler)
@@ -354,13 +352,64 @@ async def test_event_dispatcher_timeout_does_not_cancel_handler(monkeypatch):
         opportunities = await dispatcher.dispatch(outbound, handler_timeout_seconds=1.0)
         assert opportunities == []
         await asyncio.wait_for(handler_started.wait(), timeout=1.0)
-        assert len(dispatcher._timed_out_handler_tasks) == 1
-
-        handler_release.set()
-        await asyncio.wait_for(handler_finished.wait(), timeout=1.0)
         await asyncio.sleep(0)
-
-        assert not handler_cancelled
+        assert handler_cancelled
         assert len(dispatcher._timed_out_handler_tasks) == 0
     finally:
+        handler_release.set()
         await dispatcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_stop_keeps_pending_timed_out_handlers_tracked(monkeypatch):
+    fake_streams = _InMemoryRedisStreams()
+    monkeypatch.setattr(event_dispatcher_module, "redis_streams", fake_streams)
+
+    dispatcher = event_dispatcher_module.EventDispatcher()
+    dispatcher._handler_cancel_grace_seconds = 0.05
+    handler_started = asyncio.Event()
+    handler_release = asyncio.Event()
+    cancel_count = 0
+
+    async def _stubborn_handler(event: DataEvent) -> list:
+        nonlocal cancel_count
+        handler_started.set()
+        while True:
+            try:
+                await handler_release.wait()
+                return []
+            except asyncio.CancelledError:
+                cancel_count += 1
+                continue
+
+    dispatcher.subscribe("strategy.stubborn-timeout", EventType.PRICE_CHANGE, _stubborn_handler)
+    outbound = DataEvent(
+        event_type=EventType.PRICE_CHANGE,
+        source="scanner_worker",
+        timestamp=utcnow().astimezone(timezone.utc),
+        token_id="tok-stubborn-timeout",
+        old_price=0.5,
+        new_price=0.55,
+    )
+    try:
+        opportunities = await dispatcher.dispatch(outbound, handler_timeout_seconds=1.0)
+        assert opportunities == []
+        await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+        for _ in range(40):
+            if len(dispatcher._timed_out_handler_tasks) > 0:
+                break
+            await asyncio.sleep(0.01)
+        assert len(dispatcher._timed_out_handler_tasks) > 0
+
+        await dispatcher.stop()
+        assert len(dispatcher._timed_out_handler_tasks) > 0
+    finally:
+        handler_release.set()
+        for _ in range(50):
+            if len(dispatcher._timed_out_handler_tasks) == 0:
+                break
+            await asyncio.sleep(0.01)
+        await dispatcher.stop()
+
+    assert cancel_count >= 1
+    assert len(dispatcher._timed_out_handler_tasks) == 0

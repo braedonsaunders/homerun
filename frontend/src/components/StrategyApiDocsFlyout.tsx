@@ -705,6 +705,7 @@ class MyStrategy(BaseStrategy):
                 ['weather', 'cyan', 'Weather tab — strategies driven by weather data'],
                 ['crypto', 'orange', 'Crypto tab — crypto market strategies'],
                 ['traders', 'orange', 'Traders tab — wallet-signal / tracked-trader strategies'],
+                ['manual', 'violet', 'Manual tab — manage adopted live positions without new entries'],
                 ['events', 'blue', 'Events tab — macro / geopolitical event intelligence'],
               ] as const).map(([key, color, desc]) => (
                 <div key={key} className="flex gap-2 text-[11px] py-0.5">

@@ -323,6 +323,7 @@ async def _run_scan_loop() -> None:
     heavy_scan_task: asyncio.Task | None = None
     pending_heavy_targeted_ids: list[str] | None = None
     stale_scan_streak = 0
+    last_forced_degrade_log: tuple[str, str] | None = None
 
     # Publish startup status through the aggregation plane.
     try:
@@ -470,19 +471,26 @@ async def _run_scan_loop() -> None:
                         pass
                     heavy_scan_task = None
                 run_heavy_now = force_heavy_scan or scanner._full_snapshot_strategy_due(datetime.now(timezone.utc))
-                if run_heavy_now and bool(control.get("heavy_lane_forced_degraded", False)):
+                forced_degrade_enabled = bool(control.get("heavy_lane_forced_degraded", False))
+                if run_heavy_now and forced_degrade_enabled:
                     run_heavy_now = False
                     heartbeat_state["phase"] = "degraded"
                     heartbeat_state["progress"] = 0.6
                     reason = str(control.get("heavy_lane_degraded_reason") or "control_forced_degrade")
                     degraded_until = control.get("heavy_lane_degraded_until")
+                    until_text = degraded_until.isoformat() if isinstance(degraded_until, datetime) else ""
                     until_suffix = (
-                        f" until {degraded_until.isoformat()}"
-                        if isinstance(degraded_until, datetime)
+                        f" until {until_text}"
+                        if until_text
                         else ""
                     )
-                    logger.warning("Skipping heavy scan due forced degrade: %s%s", reason, until_suffix)
+                    current_degrade_key = (reason, until_text)
+                    if last_forced_degrade_log != current_degrade_key:
+                        logger.warning("Skipping heavy scan due forced degrade: %s%s", reason, until_suffix)
+                        last_forced_degrade_log = current_degrade_key
                     scanner._current_activity = f"Heavy lane degraded: {reason}{until_suffix}"
+                if not forced_degrade_enabled:
+                    last_forced_degrade_log = None
                 if run_heavy_now and bool(getattr(settings, "SCANNER_DEGRADE_HEAVY_ON_BACKLOG", True)):
                     heavy_backlog_threshold = max(
                         1,

@@ -4,6 +4,7 @@ import {
   Trophy,
   RefreshCw,
   Users,
+  Bot,
   Target,
   ChevronDown,
   ChevronUp,
@@ -54,6 +55,8 @@ import {
   type DiscoverySettings,
 } from '../services/api'
 import PoolSettingsFlyout, { type PoolSettingsForm } from './PoolSettingsFlyout'
+import AddWalletToBotDialog from './AddWalletToBotDialog'
+import type { AddWalletToTraderBotResult } from '../lib/traderBotActions'
 
 type SortField =
   | 'rank_score'
@@ -612,6 +615,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     type: 'success' | 'error'
     text: string
   } | null>(null)
+  const [addToBotWallet, setAddToBotWallet] = useState<{ address: string; label?: string | null } | null>(null)
+  const [addToBotMessage, setAddToBotMessage] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
 
@@ -887,6 +892,16 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     })
   }, [])
 
+  const openAddToBotDialog = useCallback((address: string, label?: string | null) => {
+    setAddToBotWallet({ address, label })
+  }, [])
+
+  const handleAddToBotSuccess = useCallback((result: AddWalletToTraderBotResult) => {
+    const action = result.created ? 'Created bot and added wallet' : 'Added wallet to existing bot'
+    setAddToBotMessage(`${action}: ${result.trader.name}`)
+    setTimeout(() => setAddToBotMessage(null), 4500)
+  }, [])
+
   const toggleTagFilter = useCallback((tagName: string) => {
     setSelectedTags(prev =>
       prev.includes(tagName)
@@ -937,17 +952,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     }
   }, [poolCurrentPage, poolTotalPages])
 
-  const poolActionBusy =
-    trackWalletMutation.isPending ||
-    manualIncludeMutation.isPending ||
-    clearManualIncludeMutation.isPending ||
-    manualExcludeMutation.isPending ||
-    clearManualExcludeMutation.isPending ||
-    blacklistMutation.isPending ||
-    unblacklistMutation.isPending ||
-    deletePoolWalletMutation.isPending ||
-    promoteTrackedMutation.isPending
-
   const statusBadge = stats?.is_running
     ? (
       <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/20">
@@ -989,6 +993,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           </Button>
         )}
       </div>
+      {addToBotMessage && (
+        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          {addToBotMessage}
+        </div>
+      )}
 
       {isPoolView ? (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
@@ -1115,7 +1124,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               <Button
                 variant="outline"
                 size="sm"
-                disabled={poolActionBusy || !manualPoolAddress.trim()}
+                disabled={manualIncludeMutation.isPending || !manualPoolAddress.trim()}
                 className="h-8 text-xs gap-1.5 mb-0.5"
                 onClick={() => {
                   manualIncludeMutation.mutate(manualPoolAddress.trim().toLowerCase())
@@ -1129,7 +1138,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 variant="outline"
                 size="sm"
                 onClick={() => promoteTrackedMutation.mutate()}
-                disabled={poolActionBusy}
+                disabled={promoteTrackedMutation.isPending}
                 className="h-8 text-xs gap-1.5 mb-0.5"
               >
                 {promoteTrackedMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
@@ -1275,6 +1284,30 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
                     ]
                     const hasSparkline = selectionSparkline.some((point) => point.value > 0)
+                    const primaryMarketCategory = String(member.primary_market_category || '').trim().toLowerCase()
+                    const primaryMarketCategoryLabel = primaryMarketCategory ? `mkt:${primaryMarketCategory}` : null
+                    const primaryMarketCategoryShare =
+                      member.primary_market_category_share == null
+                        ? null
+                        : clamp01(Number(member.primary_market_category_share))
+                    const addressLower = String(member.address || '').toLowerCase()
+                    const isPendingAddress = (value: unknown) => String(value || '').toLowerCase() === addressLower
+                    const trackPendingForMember =
+                      trackWalletMutation.isPending && isPendingAddress(trackWalletMutation.variables?.address)
+                    const manualIncludePendingForMember =
+                      manualIncludeMutation.isPending && isPendingAddress(manualIncludeMutation.variables)
+                    const clearManualIncludePendingForMember =
+                      clearManualIncludeMutation.isPending && isPendingAddress(clearManualIncludeMutation.variables)
+                    const manualExcludePendingForMember =
+                      manualExcludeMutation.isPending && isPendingAddress(manualExcludeMutation.variables)
+                    const clearManualExcludePendingForMember =
+                      clearManualExcludeMutation.isPending && isPendingAddress(clearManualExcludeMutation.variables)
+                    const blacklistPendingForMember =
+                      blacklistMutation.isPending && isPendingAddress(blacklistMutation.variables)
+                    const unblacklistPendingForMember =
+                      unblacklistMutation.isPending && isPendingAddress(unblacklistMutation.variables)
+                    const deletePendingForMember =
+                      deletePoolWalletMutation.isPending && isPendingAddress(deletePoolWalletMutation.variables)
 
                     return (
                       <TableRow key={member.address} className={cn('border-border/70 transition-colors hover:bg-muted/40', rowHighlight)}>
@@ -1289,6 +1322,23 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                               )}
                               <span className="font-mono">{truncateAddress(member.address)}</span>
                             </div>
+                            {primaryMarketCategoryLabel && (
+                              <div className="flex items-center gap-1 pt-0.5">
+                                <span
+                                  className={cn(
+                                    'inline-flex max-w-[120px] items-center truncate rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none',
+                                    METRIC_TONE_CLASSES.info
+                                  )}
+                                >
+                                  {primaryMarketCategoryLabel}
+                                </span>
+                                {primaryMarketCategoryShare != null && (
+                                  <span className="text-[9px] text-muted-foreground">
+                                    {(primaryMarketCategoryShare * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             {member.name_source === 'tracked_label' && member.tracked_label && (
                               <div className="truncate text-[10px] text-muted-foreground" title={member.tracked_label}>
                                 Label: {member.tracked_label}
@@ -1387,13 +1437,24 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                               <TooltipTrigger asChild>
                                 <button
                                   onClick={() => onAnalyzeWallet?.(member.address, member.username || member.display_name || undefined)}
-                                  disabled={!canAnalyze || poolActionBusy}
+                                  disabled={!canAnalyze}
                                   className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
                                 >
                                   <Activity className="w-3.5 h-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent>Analyze wallet</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={() => openAddToBotDialog(member.address, member.username || member.display_name || null)}
+                                  className="p-1 rounded bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition-colors disabled:opacity-50"
+                                >
+                                  <Bot className="w-3.5 h-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>Add wallet to bot</TooltipContent>
                             </Tooltip>
                             {!member.tracked_wallet ? (
                               <Tooltip>
@@ -1405,7 +1466,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                         username: member.username || member.display_name || undefined,
                                       })
                                     }
-                                    disabled={poolActionBusy}
+                                    disabled={trackPendingForMember}
                                     className="p-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserPlus className="w-3.5 h-3.5" />
@@ -1431,7 +1492,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => manualIncludeMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={manualIncludePendingForMember}
                                     className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserCheck className="w-3.5 h-3.5" />
@@ -1444,7 +1505,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => clearManualIncludeMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={clearManualIncludePendingForMember}
                                     className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserCheck className="w-3.5 h-3.5" />
@@ -1458,7 +1519,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => manualExcludeMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={manualExcludePendingForMember}
                                     className="p-1 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserX className="w-3.5 h-3.5" />
@@ -1471,7 +1532,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => clearManualExcludeMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={clearManualExcludePendingForMember}
                                     className="p-1 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserX className="w-3.5 h-3.5" />
@@ -1485,7 +1546,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => blacklistMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={blacklistPendingForMember}
                                     className="p-1 rounded bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <Ban className="w-3.5 h-3.5" />
@@ -1498,7 +1559,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => unblacklistMutation.mutate(member.address)}
-                                    disabled={poolActionBusy}
+                                    disabled={unblacklistPendingForMember}
                                     className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <Ban className="w-3.5 h-3.5" />
@@ -1515,7 +1576,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                       deletePoolWalletMutation.mutate(member.address)
                                     }
                                   }}
-                                  disabled={poolActionBusy}
+                                  disabled={deletePendingForMember}
                                   className="p-1 rounded bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -1930,6 +1991,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       onTrack={(address, username) =>
                         trackWalletMutation.mutate({ address, username })
                       }
+                      onAddToBot={(address, username) => openAddToBotDialog(address, username)}
                       isTracking={trackWalletMutation.isPending}
                       useWindowMetrics={isWindowActive}
                     />
@@ -1971,6 +2033,15 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         )}
       </div>
       )}
+      <AddWalletToBotDialog
+        open={Boolean(addToBotWallet)}
+        walletAddress={addToBotWallet?.address || null}
+        walletLabel={addToBotWallet?.label || null}
+        onOpenChange={(open) => {
+          if (!open) setAddToBotWallet(null)
+        }}
+        onAdded={handleAddToBotSuccess}
+      />
     </div>
   )
 }
@@ -2087,6 +2158,7 @@ function LeaderboardRow({
   onCopyAddress,
   onAnalyze,
   onTrack,
+  onAddToBot,
   isTracking,
   useWindowMetrics,
 }: {
@@ -2097,6 +2169,7 @@ function LeaderboardRow({
   onCopyAddress: (address: string) => void
   onAnalyze?: (address: string, username?: string) => void
   onTrack?: (address: string, username?: string | null) => void
+  onAddToBot?: (address: string, username?: string | null) => void
   isTracking?: boolean
   useWindowMetrics?: boolean
 }) {
@@ -2346,6 +2419,19 @@ function LeaderboardRow({
                 </button>
               </TooltipTrigger>
               <TooltipContent>Track wallet</TooltipContent>
+            </Tooltip>
+          )}
+          {onAddToBot && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onAddToBot(wallet.address, wallet.username)}
+                  className="p-1 rounded bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition-colors"
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Add wallet to bot</TooltipContent>
             </Tooltip>
           )}
           <Tooltip>

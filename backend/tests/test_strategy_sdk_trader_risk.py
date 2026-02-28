@@ -92,7 +92,7 @@ def test_validate_traders_copy_trade_config_normalizes_and_clamps_fields():
 
     assert cfg["min_confidence"] == 0.6
     assert cfg["min_source_notional_usd"] == 12.5
-    assert cfg["max_signal_age_seconds"] == 120
+    assert cfg["max_signal_age_seconds"] == 5
     assert cfg["min_live_liquidity_usd"] == 275.5
     assert cfg["max_adverse_entry_drift_pct"] == 4.5
     assert cfg["copy_delay_seconds"] == 7

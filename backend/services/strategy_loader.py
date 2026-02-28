@@ -59,6 +59,7 @@ class MyCustomStrategy(BaseStrategy):
     Required: detect() or detect_async() — find opportunities
     Optional: evaluate() — custom execution gating (default: passthrough)
     Optional: should_exit() — custom exit logic (default: TP/SL/trailing)
+    Optional: allow_new_entries = False — manage existing positions only
     """
 
     name = "My Custom Strategy"
@@ -74,6 +75,7 @@ class MyCustomStrategy(BaseStrategy):
     binary_only = True
     accepted_signal_strategy_types = []  # Optional additional strategy_type inputs for evaluate()
     requires_live_market_context = False  # Optional live-market enrichment hint for orchestrator
+    allow_new_entries = True  # Set False for exit-only/manual-management strategies
 
     default_config = {
         # Detection params
@@ -448,24 +450,27 @@ def validate_strategy_source(
     capabilities = _extract_class_capabilities(tree, found_class)
     result["capabilities"] = capabilities
 
-    # 6. Require at least one of detect, detect_async, on_event, or evaluate.
+    # 6. Require at least one of detect, detect_async, on_event, evaluate, or should_exit.
     # - detect() / detect_async(): scanner strategies (base on_event routes to them)
     # - on_event(): event-driven strategies reacting to non-scanner data
     # - evaluate(): execution-only strategies (signals generated externally)
+    # - should_exit(): position-management-only strategies for adopted/manual holdings
     has_any = (
         capabilities["has_detect"]
         or capabilities["has_detect_async"]
         or capabilities["has_on_event"]
         or capabilities["has_evaluate"]
+        or capabilities["has_should_exit"]
     )
     if not has_any:
         result["errors"].append(
             f"Class '{found_class}' must implement at least one of: detect(), "
-            f"detect_async(), on_event(), or evaluate(). "
+            f"detect_async(), on_event(), evaluate(), or should_exit(). "
             f"Use detect() for synchronous scanner strategies, detect_async() for "
             f"async I/O-bound strategies, on_event() for event-driven strategies "
-            f"reacting to crypto/weather/news data, or evaluate() for "
-            f"execution-gating of externally generated signals."
+            f"reacting to crypto/weather/news data, evaluate() for "
+            f"execution-gating of externally generated signals, or should_exit() "
+            f"for exit-management-only strategies."
         )
         return result
 
@@ -691,6 +696,31 @@ class StrategyLoader:
             if loaded.module_name and loaded.module_name in sys.modules:
                 del sys.modules[loaded.module_name]
             logger.info("Strategy unloaded: %s", slug)
+
+    def reconfigure_loaded(
+        self,
+        slug: str,
+        source_code: str,
+        config: Optional[dict] = None,
+    ) -> bool:
+        """Apply config updates to an already loaded strategy instance.
+
+        Returns ``False`` when the strategy is not currently loaded.
+        """
+        loaded = self._loaded.get(slug)
+        if loaded is None:
+            return False
+
+        try:
+            merged_config = {**(loaded.instance.default_config or {}), **(config or {})}
+            loaded.instance.configure(merged_config)
+            loaded.source_hash = _strategy_runtime_hash(source_code, merged_config)
+            return True
+        except Exception as exc:
+            tb = traceback.format_exc()
+            raise StrategyValidationError(
+                f"Failed to reconfigure strategy '{slug}': {exc}\n\n{tb}"
+            ) from exc
 
     # ── DB reload ────────────────────────────────────────────
 

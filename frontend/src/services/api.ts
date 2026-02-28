@@ -1291,6 +1291,93 @@ export const getTradingBalance = async (): Promise<{ balance: number; available:
   return unwrapApiData(data)
 }
 
+export interface LiveWalletFill {
+  id: string
+  side: 'buy' | 'sell' | string
+  condition_id: string
+  token_id: string
+  market_title: string
+  market_slug: string | null
+  event_slug: string | null
+  category: string | null
+  outcome: string | null
+  size: number
+  price: number
+  notional: number
+  timestamp: string
+  transaction_hash: string | null
+}
+
+export interface LiveWalletRoundTrip {
+  id: string
+  condition_id: string
+  token_id: string
+  market_title: string
+  market_slug: string | null
+  event_slug: string | null
+  category: string | null
+  outcome: string | null
+  quantity: number
+  avg_buy_price: number
+  avg_sell_price: number
+  buy_notional: number
+  sell_notional: number
+  realized_pnl: number
+  roi_percent: number
+  opened_at: string
+  closed_at: string
+  hold_minutes: number
+  lots_matched: number
+}
+
+export interface LiveWalletOpenLot {
+  token_id: string
+  condition_id: string
+  market_title: string
+  market_slug: string | null
+  event_slug: string | null
+  category: string | null
+  outcome: string | null
+  remaining_size: number
+  avg_cost: number
+  cost_basis: number
+  opened_at: string
+}
+
+export interface LiveWalletPerformance {
+  wallet_address: string
+  generated_at: string
+  fills: LiveWalletFill[]
+  round_trips: LiveWalletRoundTrip[]
+  open_lots: LiveWalletOpenLot[]
+  summary: {
+    total_fills: number
+    buy_fills: number
+    sell_fills: number
+    total_round_trips: number
+    winning_round_trips: number
+    losing_round_trips: number
+    win_rate_percent: number
+    gross_profit: number
+    gross_loss: number
+    net_realized_pnl: number
+    total_buy_notional: number
+    total_sell_notional: number
+    avg_roi_percent: number
+    avg_hold_minutes: number
+    profit_factor: number
+    unmatched_sell_size: number
+    open_inventory_notional: number
+    open_inventory_size: number
+    open_lot_count: number
+  }
+}
+
+export const getLiveWalletPerformance = async (limit = 1000): Promise<LiveWalletPerformance> => {
+  const { data } = await api.get('/trader-orchestrator/live/performance', { params: { limit } })
+  return unwrapApiData(data)
+}
+
 export const executeOpportunityLive = async (params: {
   opportunity_id: string
   positions: any[]
@@ -1677,7 +1764,7 @@ export const updateTraderOrchestratorSettings = async (payload: TraderOrchestrat
   return unwrapApiData(data)
 }
 
-export type TraderSourceKey = 'scanner' | 'crypto' | 'news' | 'weather' | 'traders'
+export type TraderSourceKey = 'scanner' | 'crypto' | 'news' | 'weather' | 'traders' | 'manual'
 
 export interface TraderSourceConfig {
   source_key: TraderSourceKey | string
@@ -1792,6 +1879,69 @@ export interface TraderOrder {
   updated_at: string | null
 }
 
+export interface TraderLiveWalletPosition {
+  token_id: string
+  market_id: string
+  condition_id: string | null
+  market_question: string | null
+  outcome: string | null
+  direction: string | null
+  size: number
+  avg_price: number | null
+  current_price: number | null
+  initial_value: number | null
+  current_value: number | null
+  unrealized_pnl: number | null
+  yes_token_id: string | null
+  no_token_id: string | null
+  yes_price: number | null
+  no_price: number | null
+  market_slug: string | null
+  event_slug: string | null
+  market_url: string | null
+  is_managed: boolean
+  managed_order_id: string | null
+}
+
+export interface TraderLiveWalletPositionsPayload {
+  trader_id: string
+  wallet_address: string | null
+  positions: TraderLiveWalletPosition[]
+  managed_token_ids: string[]
+  managed_order_ids: string[]
+  summary: {
+    total_positions: number
+    managed_positions: number
+    unmanaged_positions: number
+    returned_positions: number
+  }
+}
+
+export interface TraderAdoptLiveWalletPositionPayload {
+  token_id: string
+  reason?: string
+  requested_by?: string
+}
+
+export interface TraderAdoptLiveWalletPositionResult {
+  status: string
+  trader_id: string
+  wallet_address: string
+  strategy_key?: string
+  token_id: string
+  market_id: string
+  direction: string
+  order: TraderOrder
+  position_inventory: {
+    trader_id: string
+    mode: string
+    open_positions: number
+    inserts: number
+    updates: number
+    closures: number
+  }
+}
+
 export interface TraderMarketHistoryPoint {
   t: number
   yes: number
@@ -1889,6 +2039,7 @@ export interface TraderStrategyValidationResult {
 const DEFAULT_STRATEGY_BY_SOURCE: Record<string, string> = {
   scanner: 'basic',
   crypto: 'btc_eth_highfreq',
+  manual: 'manual_wallet_position',
   news: 'news_edge',
   weather: 'weather_distribution',
   traders: 'traders_confluence',
@@ -2018,6 +2169,22 @@ export const getTraderOrders = async (
   return data.orders || []
 }
 
+export const getTraderLiveWalletPositions = async (
+  traderId: string,
+  params?: { include_managed?: boolean },
+): Promise<TraderLiveWalletPositionsPayload> => {
+  const { data } = await api.get(`/traders/${traderId}/positions/live-wallet`, { params })
+  return unwrapApiData(data)
+}
+
+export const adoptTraderLiveWalletPosition = async (
+  traderId: string,
+  payload: TraderAdoptLiveWalletPositionPayload,
+): Promise<TraderAdoptLiveWalletPositionResult> => {
+  const { data } = await api.post(`/traders/${traderId}/positions/live-wallet/adopt`, payload)
+  return unwrapApiData(data)
+}
+
 export const getAllTraderOrders = async (limit = 2000): Promise<TraderOrder[]> => {
   const { data } = await api.get('/traders/orders/all', {
     params: { limit: Math.max(1, Math.trunc(Number(limit) || 2000)) },
@@ -2040,7 +2207,7 @@ export const getTraderMarketHistory = async (
   const { data } = await api.get('/traders/market-history', {
     params: {
       market_ids: normalizedIds.join(','),
-      limit: Math.max(2, Math.min(600, Math.trunc(Number(limit) || 120))),
+      limit: Math.max(2, Math.min(5000, Math.trunc(Number(limit) || 120))),
     },
   })
   const payload = unwrapApiData(data)
@@ -3073,6 +3240,19 @@ export interface AIChatResponse {
   response: string
   model: string
   tokens_used: Record<string, number>
+  actions_applied?: Array<{
+    type: string
+    strategy_id?: string
+    data_source_id?: string
+    slug?: string
+    version?: number
+    status?: string
+  }>
+  action_errors?: Array<{
+    index?: number
+    type?: string
+    error: string
+  }>
 }
 
 export const sendAIChat = async (params: {
@@ -3081,8 +3261,77 @@ export const sendAIChat = async (params: {
   context_type?: string
   context_id?: string
   history?: AIChatMessage[]
+  allow_actions?: boolean
 }): Promise<AIChatResponse> => {
   const { data } = await api.post('/ai/chat', params, AI_TIMEOUT)
+  return unwrapApiData(data)
+}
+
+export interface AIStrategyDraftGenerationResponse {
+  name: string
+  slug: string
+  source_key: string
+  description: string
+  source_code: string
+  class_name: string
+  config: Record<string, unknown>
+  config_schema: Record<string, unknown>
+  aliases: string[]
+  validation: {
+    valid: boolean
+    class_name: string | null
+    errors: string[]
+    warnings: string[]
+    capabilities: Record<string, boolean>
+    inferred_type: string
+  }
+  used_repair_pass: boolean
+  model: string
+  tokens_used: Record<string, number>
+}
+
+export const generateAIStrategyDraft = async (params: {
+  description: string
+  source_key?: string
+  model?: string
+}): Promise<AIStrategyDraftGenerationResponse> => {
+  const { data } = await api.post('/ai/generate/strategy-draft', params, AI_TIMEOUT)
+  return unwrapApiData(data)
+}
+
+export interface AIDataSourceDraftGenerationResponse {
+  name: string
+  slug: string
+  source_key: string
+  source_kind: string
+  description: string
+  source_code: string
+  class_name: string
+  retention: {
+    max_records?: number
+    max_age_days?: number
+  }
+  config: Record<string, unknown>
+  config_schema: Record<string, unknown>
+  validation: {
+    valid: boolean
+    class_name: string | null
+    errors: string[]
+    warnings: string[]
+    capabilities: Record<string, boolean>
+  }
+  used_repair_pass: boolean
+  model: string
+  tokens_used: Record<string, number>
+}
+
+export const generateAIDataSourceDraft = async (params: {
+  description: string
+  source_key?: string
+  source_kind?: string
+  model?: string
+}): Promise<AIDataSourceDraftGenerationResponse> => {
+  const { data } = await api.post('/ai/generate/data-source-draft', params, AI_TIMEOUT)
   return unwrapApiData(data)
 }
 

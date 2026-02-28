@@ -268,6 +268,48 @@ async def test_submit_execution_leg_paper_still_simulates_execution():
 
 
 @pytest.mark.asyncio
+async def test_submit_execution_leg_shadow_uses_quote_only_path(monkeypatch):
+    midpoint_mock = AsyncMock(return_value=0.63)
+    execution_mock = AsyncMock(side_effect=AssertionError("shadow mode must not place live orders"))
+    monkeypatch.setattr(order_manager.polymarket_client, "get_midpoint", midpoint_mock)
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    token_id = "123456789012345678901"
+    signal = SimpleNamespace(
+        id="sig-shadow-1",
+        market_id="m-shadow-1",
+        direction="buy_yes",
+        entry_price=0.60,
+        market_question="Will shadow quote execute?",
+        payload_json={"selected_token_id": token_id},
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="shadow",
+        signal=signal,
+        leg={
+            "leg_id": "leg_1",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": signal.entry_price,
+        },
+        notional_usd=60.0,
+    )
+
+    assert result.status == "executed"
+    assert result.effective_price == pytest.approx(0.63, rel=1e-9)
+    assert result.error_message is None
+    assert result.payload["mode"] == "shadow"
+    assert result.payload["submission"] == "shadow_quote_simulated"
+    assert result.payload["quote_source"] == "polymarket_midpoint"
+    assert result.payload["token_id_source"] == "payload.selected_token_id"
+    midpoint_mock.assert_awaited_once_with(token_id)
+    execution_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_submit_execution_leg_rejects_tiny_price_without_floor_inflation():
     signal = SimpleNamespace(
         id="sig-4",

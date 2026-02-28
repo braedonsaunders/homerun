@@ -13,6 +13,7 @@ import {
   Search,
   Trophy,
   Target,
+  Bot,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -36,6 +37,8 @@ import {
   OrderBy,
   Category,
 } from '../services/api'
+import AddWalletToBotDialog from './AddWalletToBotDialog'
+import type { AddWalletToTraderBotResult } from '../lib/traderBotActions'
 
 interface WalletTrackerProps {
   onAnalyzeWallet?: (address: string, username?: string) => void
@@ -298,6 +301,8 @@ export default function WalletTracker({
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
   const [discoverModeState, setDiscoverMode] = useState<'leaderboard' | 'winrate'>('leaderboard')
   const [showFilters, setShowFilters] = useState(false)
+  const [addToBotWallet, setAddToBotWallet] = useState<{ address: string; label?: string | null } | null>(null)
+  const [addToBotMessage, setAddToBotMessage] = useState<string | null>(null)
 
   // Use props if provided, otherwise use internal state
   const currentSection = propSection ?? activeSection
@@ -447,6 +452,16 @@ export default function WalletTracker({
     })
   }
 
+  const openAddToBotDialog = (address: string, label?: string | null) => {
+    setAddToBotWallet({ address, label })
+  }
+
+  const handleAddToBotSuccess = (result: AddWalletToTraderBotResult) => {
+    const action = result.created ? 'Created bot and added wallet' : 'Added wallet to existing bot'
+    setAddToBotMessage(`${action}: ${result.trader.name}`)
+    setTimeout(() => setAddToBotMessage(null), 4500)
+  }
+
   const currentTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
   const isLoadingTraders = currentDiscoverMode === 'winrate' ? loadingWinRate : discoveringTraders
   const refreshCurrentTraders = currentDiscoverMode === 'winrate' ? refreshWinRate : refreshTraders
@@ -562,6 +577,12 @@ export default function WalletTracker({
             </TabsTrigger>
           </TabsList>
         </Tabs>
+      )}
+
+      {addToBotMessage && (
+        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+          {addToBotMessage}
+        </div>
       )}
 
       {currentSection === 'discover' && (
@@ -901,6 +922,14 @@ export default function WalletTracker({
                         <UserPlus className="w-3 h-3" />
                         Track
                       </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => openAddToBotDialog(trader.address, trader.username || null)}
+                        className="h-auto gap-1 px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded text-xs"
+                      >
+                        <Bot className="w-3 h-3" />
+                        Add To Bot
+                      </Button>
                       <a
                         href={`https://polymarket.com/profile/${trader.address}`}
                         target="_blank"
@@ -1195,6 +1224,13 @@ export default function WalletTracker({
                                 >
                                   <Activity className="w-3.5 h-3.5" />
                                 </button>
+                                <button
+                                  onClick={() => openAddToBotDialog(wallet.address, displayName)}
+                                  className="p-1 rounded bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition-colors"
+                                  title="Add wallet to bot"
+                                >
+                                  <Bot className="w-3.5 h-3.5" />
+                                </button>
                                 <a
                                   href={`https://polymarket.com/profile/${wallet.address}`}
                                   target="_blank"
@@ -1241,6 +1277,15 @@ export default function WalletTracker({
           )}
         </>
       )}
+      <AddWalletToBotDialog
+        open={Boolean(addToBotWallet)}
+        walletAddress={addToBotWallet?.address || null}
+        walletLabel={addToBotWallet?.label || null}
+        onOpenChange={(open) => {
+          if (!open) setAddToBotWallet(null)
+        }}
+        onAdded={handleAddToBotSuccess}
+      />
 
     </div>
   )

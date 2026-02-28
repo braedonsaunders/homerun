@@ -8,16 +8,22 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import MarketCatalog, ScannerSnapshot, TradeSignalEmission, get_db_session
+from config import settings
+from models.database import MarketCatalog, ScannerSnapshot, get_db_session
 from services.live_price_snapshot import normalize_binary_price_history
 from services.pause_state import global_pause_state
 from services.strategy_tune_agent import run_strategy_tune_agent
-from services.trader_orchestrator.position_lifecycle import reconcile_live_positions, reconcile_paper_positions
+from services.trader_orchestrator.position_lifecycle import (
+    reconcile_live_positions,
+    reconcile_paper_positions,
+    reconcile_shadow_positions,
+)
 from services.trader_orchestrator.session_engine import ExecutionSessionEngine
 from services.trader_orchestrator_state import (
+    adopt_live_wallet_position,
     cleanup_trader_open_orders,
     create_config_revision,
     create_trader,
@@ -29,6 +35,7 @@ from services.trader_orchestrator_state import (
     get_open_order_summary_for_trader,
     get_open_position_summary_for_trader,
     get_serialized_execution_session_detail,
+    list_live_wallet_positions_for_trader,
     list_serialized_trader_decisions,
     list_serialized_trader_events,
     list_serialized_execution_sessions,
@@ -99,6 +106,7 @@ class TraderDeleteAction(str, Enum):
 
 class TraderPositionCleanupScope(str, Enum):
     paper = "paper"
+    shadow = "shadow"
     live = "live"
     all = "all"
 
@@ -116,6 +124,12 @@ class TraderPositionCleanupRequest(BaseModel):
     target_status: str = Field(default="cancelled", min_length=1, max_length=64)
     reason: Optional[str] = None
     confirm_live: bool = False
+
+
+class TraderLiveWalletPositionAdoptRequest(BaseModel):
+    token_id: str = Field(..., min_length=1, max_length=256)
+    reason: Optional[str] = None
+    requested_by: Optional[str] = None
 
 
 class TraderExecutionSessionControlRequest(BaseModel):
@@ -146,10 +160,43 @@ def _collect_market_aliases(raw_market: Any) -> list[str]:
         raw_market.get("event_ticker"),
         raw_market.get("eventTicker"),
         raw_market.get("ticker"),
+        raw_market.get("token_id"),
+        raw_market.get("tokenId"),
+        raw_market.get("selected_token_id"),
+        raw_market.get("selectedTokenId"),
+        raw_market.get("asset_id"),
+        raw_market.get("assetId"),
+        raw_market.get("yes_token_id"),
+        raw_market.get("no_token_id"),
     ):
         normalized = normalize_market_id(candidate)
         if normalized and normalized not in aliases:
             aliases.append(normalized)
+
+    for key in ("clob_token_ids", "clobTokenIds", "token_ids", "tokenIds"):
+        values = raw_market.get(key)
+        if not isinstance(values, list):
+            continue
+        for candidate in values:
+            normalized = normalize_market_id(candidate)
+            if normalized and normalized not in aliases:
+                aliases.append(normalized)
+
+    tokens = raw_market.get("tokens")
+    if isinstance(tokens, list):
+        for token in tokens:
+            if not isinstance(token, dict):
+                continue
+            for candidate in (
+                token.get("token_id"),
+                token.get("tokenId"),
+                token.get("asset_id"),
+                token.get("assetId"),
+                token.get("id"),
+            ):
+                normalized = normalize_market_id(candidate)
+                if normalized and normalized not in aliases:
+                    aliases.append(normalized)
     return aliases
 
 
@@ -193,6 +240,9 @@ def _bind_market_payload_history(
     limit: int,
     *,
     keep_existing_aliases: bool = False,
+    now_ms: int | None = None,
+    window_seconds: int | None = None,
+    max_points: int | None = None,
 ) -> None:
     if not isinstance(raw_market, dict):
         return
@@ -202,7 +252,14 @@ def _bind_market_payload_history(
         return
 
     history_key = next((alias for alias in aliases if alias in normalized_history), None)
-    normalized_points = normalize_binary_price_history(raw_market.get("price_history"))
+    normalize_kwargs: dict[str, Any] = {}
+    if now_ms is not None:
+        normalize_kwargs["now_ms"] = int(now_ms)
+    if window_seconds is not None:
+        normalize_kwargs["window_seconds"] = max(60, int(window_seconds))
+    if max_points is not None:
+        normalize_kwargs["max_points"] = max(2, int(max_points))
+    normalized_points = normalize_binary_price_history(raw_market.get("price_history"), **normalize_kwargs)
     if len(normalized_points) >= 2:
         resolved_history_key = history_key or aliases[0]
         merged = _merge_normalized_binary_history(
@@ -219,52 +276,6 @@ def _bind_market_payload_history(
             if keep_existing_aliases and alias in alias_to_history_key:
                 continue
             alias_to_history_key[alias] = history_key
-
-
-def _signal_payload_market_history_candidates(
-    payload: dict[str, Any],
-    *,
-    fallback_market_id: str,
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-
-    raw_markets = payload.get("markets")
-    if isinstance(raw_markets, list):
-        for raw_market in raw_markets:
-            if isinstance(raw_market, dict):
-                candidates.append(raw_market)
-
-    live_market = payload.get("live_market")
-    if isinstance(live_market, dict):
-        history_tail = live_market.get("history_tail")
-        if isinstance(history_tail, list) and len(history_tail) >= 2:
-            candidates.append(
-                {
-                    "id": payload.get("market_id") or live_market.get("id") or fallback_market_id,
-                    "market_id": payload.get("market_id") or live_market.get("market_id"),
-                    "condition_id": payload.get("condition_id") or live_market.get("condition_id"),
-                    "slug": payload.get("market_slug") or payload.get("slug") or live_market.get("slug"),
-                    "event_slug": payload.get("event_slug") or live_market.get("event_slug"),
-                    "ticker": payload.get("ticker") or live_market.get("ticker"),
-                    "price_history": history_tail,
-                }
-            )
-
-    top_level_history = payload.get("price_history")
-    if isinstance(top_level_history, list) and len(top_level_history) >= 2:
-        candidates.append(
-            {
-                "id": payload.get("market_id") or fallback_market_id,
-                "market_id": payload.get("market_id") or fallback_market_id,
-                "condition_id": payload.get("condition_id"),
-                "slug": payload.get("market_slug") or payload.get("slug"),
-                "event_slug": payload.get("event_slug"),
-                "ticker": payload.get("ticker"),
-                "price_history": top_level_history,
-            }
-        )
-
-    return candidates
 
 
 def _assert_not_globally_paused() -> None:
@@ -294,8 +305,8 @@ async def get_all_traders(
     session: AsyncSession = Depends(get_db_session),
 ):
     mode_key = str(mode or "").strip().lower()
-    if mode_key and mode_key not in {"paper", "live"}:
-        raise HTTPException(status_code=422, detail="mode must be 'paper' or 'live'")
+    if mode_key and mode_key not in {"paper", "shadow", "live"}:
+        raise HTTPException(status_code=422, detail="mode must be 'paper', 'shadow', or 'live'")
     return {"traders": await list_traders(session, mode=mode_key or None)}
 
 
@@ -388,7 +399,7 @@ async def get_all_trader_orders_all(
 @router.get("/market-history")
 async def get_trader_market_history(
     market_ids: str = Query(default=""),
-    limit: int = Query(default=120, ge=2, le=600),
+    limit: int = Query(default=120, ge=2, le=5000),
     session: AsyncSession = Depends(get_db_session),
 ):
     requested_ids: list[str] = []
@@ -402,6 +413,11 @@ async def get_trader_market_history(
 
     if not requested_ids:
         return {"histories": {}, "updated_at": None}
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    scanner_window_seconds = max(60, int(getattr(settings, "SCANNER_SPARKLINE_WINDOW_HOURS", 24)) * 3600)
+    scanner_max_points = max(2, int(getattr(settings, "SCANNER_SPARKLINE_MAX_POINTS", 960)))
+    normalize_max_points = max(limit, scanner_max_points)
 
     row = (await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))).scalar_one_or_none()
     history_map = row.market_history_json if row is not None and isinstance(row.market_history_json, dict) else {}
@@ -420,7 +436,12 @@ async def get_trader_market_history(
         normalized_market_id = normalize_market_id(raw_market_id)
         if not normalized_market_id:
             continue
-        normalized_points = normalize_binary_price_history(raw_points)
+        normalized_points = normalize_binary_price_history(
+            raw_points,
+            now_ms=now_ms,
+            window_seconds=scanner_window_seconds,
+            max_points=normalize_max_points,
+        )
         if len(normalized_points) >= 2:
             normalized_history[normalized_market_id] = _merge_normalized_binary_history(
                 normalized_history.get(normalized_market_id, []),
@@ -442,6 +463,9 @@ async def get_trader_market_history(
                 normalized_history,
                 alias_to_history_key,
                 limit,
+                now_ms=now_ms,
+                window_seconds=scanner_window_seconds,
+                max_points=normalize_max_points,
             )
 
     for raw_market in market_catalog:
@@ -453,49 +477,53 @@ async def get_trader_market_history(
             alias_to_history_key,
             limit,
             keep_existing_aliases=True,
+            now_ms=now_ms,
+            window_seconds=scanner_window_seconds,
+            max_points=normalize_max_points,
         )
         aliases = _collect_market_aliases(raw_market)
         for alias in aliases:
             if alias not in catalog_by_alias:
                 catalog_by_alias[alias] = raw_market
 
-    unresolved_market_ids = [
+    unresolved_catalog_ids = [
         market_id
         for market_id in requested_ids
-        if len(normalized_history.get(alias_to_history_key.get(market_id, market_id), [])) < 2
+        if market_id not in catalog_by_alias
     ]
-
-    if unresolved_market_ids:
-        emission_rows = (
-            await session.execute(
-                select(TradeSignalEmission.market_id, TradeSignalEmission.payload_json)
-                .where(func.lower(TradeSignalEmission.market_id).in_(unresolved_market_ids))
-                .order_by(TradeSignalEmission.created_at.desc())
-                .limit(400)
-            )
-        ).all()
-
-        for raw_market_id, raw_payload in emission_rows:
-            fallback_market_id = normalize_market_id(raw_market_id)
-            payload = raw_payload if isinstance(raw_payload, dict) else {}
-            candidates = _signal_payload_market_history_candidates(payload, fallback_market_id=fallback_market_id or "")
-            if not candidates and fallback_market_id:
-                candidates = [{"id": fallback_market_id, "price_history": payload.get("price_history")}]
-            for candidate in candidates:
+    if unresolved_catalog_ids:
+        try:
+            from services.polymarket import polymarket_client
+        except Exception:
+            polymarket_client = None  # type: ignore[assignment]
+        if polymarket_client is not None:
+            for market_id in unresolved_catalog_ids:
+                try:
+                    if market_id.startswith("0x"):
+                        resolved_market = await polymarket_client.get_market_by_condition_id(market_id)
+                    else:
+                        resolved_market = await polymarket_client.get_market_by_token_id(market_id)
+                except Exception:
+                    resolved_market = None
+                if not isinstance(resolved_market, dict):
+                    continue
                 _bind_market_payload_history(
-                    candidate,
+                    resolved_market,
                     normalized_history,
                     alias_to_history_key,
                     limit,
+                    keep_existing_aliases=True,
+                    now_ms=now_ms,
+                    window_seconds=scanner_window_seconds,
+                    max_points=normalize_max_points,
                 )
+                for alias in _collect_market_aliases(resolved_market):
+                    if alias not in catalog_by_alias:
+                        catalog_by_alias[alias] = resolved_market
 
-    unresolved_market_ids = [
-        market_id
-        for market_id in requested_ids
-        if len(normalized_history.get(alias_to_history_key.get(market_id, market_id), [])) < 2
-    ]
+    backfill_market_ids = list(requested_ids)
 
-    if unresolved_market_ids:
+    if backfill_market_ids:
         try:
             from models.opportunity import Opportunity
             from services.scanner import scanner as market_scanner
@@ -505,7 +533,7 @@ async def get_trader_market_history(
 
         if market_scanner is not None and Opportunity is not None:
             backfill_targets: list[Any] = []
-            for market_id in unresolved_market_ids:
+            for market_id in backfill_market_ids:
                 catalog_market = catalog_by_alias.get(market_id)
                 market_payload: dict[str, Any] = {
                     "id": market_id,
@@ -558,6 +586,10 @@ async def get_trader_market_history(
 
             if backfill_targets:
                 try:
+                    backfill_attempt_map = getattr(market_scanner, "_market_history_backfill_attempt_ms", None)
+                    if isinstance(backfill_attempt_map, dict):
+                        for market_id in backfill_market_ids:
+                            backfill_attempt_map.pop(str(market_id), None)
                     await market_scanner.attach_price_history_to_opportunities(
                         backfill_targets,
                         now=datetime.now(timezone.utc),
@@ -571,6 +603,9 @@ async def get_trader_market_history(
                                 normalized_history,
                                 alias_to_history_key,
                                 limit,
+                                now_ms=now_ms,
+                                window_seconds=scanner_window_seconds,
+                                max_points=normalize_max_points,
                             )
                 except Exception:
                     pass
@@ -584,6 +619,72 @@ async def get_trader_market_history(
         "histories": histories,
         "updated_at": row.updated_at.isoformat() if row is not None and row.updated_at is not None else None,
     }
+
+
+@router.get("/{trader_id}/positions/live-wallet")
+async def get_trader_live_wallet_positions(
+    trader_id: str,
+    include_managed: bool = Query(default=True),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+    try:
+        return await list_live_wallet_positions_for_trader(
+            session,
+            trader_id=trader_id,
+            include_managed=bool(include_managed),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/{trader_id}/positions/live-wallet/adopt")
+async def adopt_trader_live_wallet_position(
+    trader_id: str,
+    request: TraderLiveWalletPositionAdoptRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    try:
+        result = await adopt_live_wallet_position(
+            session,
+            trader_id=trader_id,
+            token_id=request.token_id,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "already managed" in message:
+            raise HTTPException(status_code=409, detail=message)
+        if "not found in execution wallet positions" in message:
+            raise HTTPException(status_code=404, detail=message)
+        if "Execution wallet address is not configured" in message:
+            raise HTTPException(status_code=409, detail=message)
+        raise HTTPException(status_code=422, detail=message)
+
+    await create_trader_event(
+        session,
+        trader_id=trader_id,
+        event_type="trader_live_position_adopted",
+        severity="warn",
+        source="operator",
+        operator=request.requested_by,
+        message="Live wallet position adopted for trader management",
+        payload={
+            "token_id": result.get("token_id"),
+            "market_id": result.get("market_id"),
+            "direction": result.get("direction"),
+            "wallet_address": result.get("wallet_address"),
+            "order_id": ((result.get("order") or {}).get("id") if isinstance(result.get("order"), dict) else None),
+            "reason": request.reason,
+        },
+    )
+    return result
 
 
 @router.get("/{trader_id}")
@@ -667,10 +768,12 @@ async def delete_trader_route(
     open_summary = await get_open_position_summary_for_trader(session, trader_id)
     open_order_summary = await get_open_order_summary_for_trader(session, trader_id)
     open_live_positions = int(open_summary.get("live", 0))
+    open_shadow_positions = int(open_summary.get("shadow", 0))
     open_paper_positions = int(open_summary.get("paper", 0))
     open_other_positions = int(open_summary.get("other", 0))
     open_total_positions = int(open_summary.get("total", 0))
     open_live_orders = int(open_order_summary.get("live", 0))
+    open_shadow_orders = int(open_order_summary.get("shadow", 0))
     open_paper_orders = int(open_order_summary.get("paper", 0))
     open_other_orders = int(open_order_summary.get("other", 0))
     open_total_orders = int(open_order_summary.get("total", 0))
@@ -695,9 +798,11 @@ async def delete_trader_route(
             message="Trader disabled instead of deleted",
             payload={
                 "open_live_positions": open_live_positions,
+                "open_shadow_positions": open_shadow_positions,
                 "open_paper_positions": open_paper_positions,
                 "open_other_positions": open_other_positions,
                 "open_live_orders": open_live_orders,
+                "open_shadow_orders": open_shadow_orders,
                 "open_paper_orders": open_paper_orders,
                 "open_other_orders": open_other_orders,
             },
@@ -706,30 +811,39 @@ async def delete_trader_route(
             "status": "disabled",
             "trader_id": trader_id,
             "open_live_positions": open_live_positions,
+            "open_shadow_positions": open_shadow_positions,
             "open_paper_positions": open_paper_positions,
             "open_other_positions": open_other_positions,
             "open_live_orders": open_live_orders,
+            "open_shadow_orders": open_shadow_orders,
             "open_paper_orders": open_paper_orders,
             "open_other_orders": open_other_orders,
-            "message": "Trader disabled and paused. Resolve live exposure before permanent deletion.",
+            "message": "Trader disabled and paused. Resolve non-paper exposure before permanent deletion.",
         }
 
     if (
-        open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0
+        open_live_positions > 0
+        or open_shadow_positions > 0
+        or open_other_positions > 0
+        or open_live_orders > 0
+        or open_shadow_orders > 0
+        or open_other_orders > 0
     ) and action != TraderDeleteAction.force_delete:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "open_live_exposure",
                 "message": (
-                    "Trader has live exposure. Choose disable to pause safely, "
+                    "Trader has non-paper exposure. Choose disable to pause safely, "
                     "or action=force_delete to permanently delete now."
                 ),
                 "trader_id": trader_id,
                 "open_live_positions": open_live_positions,
+                "open_shadow_positions": open_shadow_positions,
                 "open_paper_positions": open_paper_positions,
                 "open_other_positions": open_other_positions,
                 "open_live_orders": open_live_orders,
+                "open_shadow_orders": open_shadow_orders,
                 "open_paper_orders": open_paper_orders,
                 "open_other_orders": open_other_orders,
                 "suggested_action": TraderDeleteAction.force_delete.value,
@@ -758,9 +872,11 @@ async def delete_trader_route(
             "deleted_trader_id": trader_id,
             "action": action.value,
             "open_live_positions_at_delete": open_live_positions,
+            "open_shadow_positions_at_delete": open_shadow_positions,
             "open_paper_positions_at_delete": open_paper_positions,
             "open_other_positions_at_delete": open_other_positions,
             "open_live_orders_at_delete": open_live_orders,
+            "open_shadow_orders_at_delete": open_shadow_orders,
             "open_paper_orders_at_delete": open_paper_orders,
             "open_other_orders_at_delete": open_other_orders,
         },
@@ -770,9 +886,11 @@ async def delete_trader_route(
         "trader_id": trader_id,
         "action": action.value,
         "open_live_positions": open_live_positions,
+        "open_shadow_positions": open_shadow_positions,
         "open_paper_positions": open_paper_positions,
         "open_other_positions": open_other_positions,
         "open_live_orders": open_live_orders,
+        "open_shadow_orders": open_shadow_orders,
         "open_paper_orders": open_paper_orders,
         "open_other_orders": open_other_orders,
         "open_total_positions": open_total_positions,
@@ -804,9 +922,14 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
 
     control = await read_orchestrator_control(session)
     mode = str(control.get("mode") or "paper").strip().lower()
-    await sync_trader_position_inventory(session, trader_id=trader_id, mode=mode if mode in {"paper", "live"} else None)
+    await sync_trader_position_inventory(
+        session,
+        trader_id=trader_id,
+        mode=mode if mode in {"paper", "shadow", "live"} else None,
+    )
     open_summary = await get_open_position_summary_for_trader(session, trader_id)
     open_live = int(open_summary.get("live", 0))
+    open_shadow = int(open_summary.get("shadow", 0))
     open_paper = int(open_summary.get("paper", 0))
     if mode == "live" and open_live > 0:
         await create_trader_event(
@@ -820,6 +943,15 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
                 "open_live_positions": open_live,
                 "open_paper_positions": open_paper,
             },
+        )
+    elif mode == "shadow" and open_shadow > 0:
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="trader_start_notice",
+            source="operator",
+            message="Trader started with existing shadow open positions",
+            payload={"open_shadow_positions": open_shadow},
         )
     elif mode == "paper" and open_paper > 0:
         await create_trader_event(
@@ -879,11 +1011,12 @@ async def cleanup_trader_positions(
 
     if request.method == TraderPositionCleanupMethod.mark_to_market and request.scope not in {
         TraderPositionCleanupScope.paper,
+        TraderPositionCleanupScope.shadow,
         TraderPositionCleanupScope.live,
     }:
         raise HTTPException(
             status_code=422,
-            detail="mark_to_market cleanup supports paper and live scopes (use scope=paper or scope=live)",
+            detail="mark_to_market cleanup supports paper, shadow, and live scopes",
         )
 
     if request.method == TraderPositionCleanupMethod.cancel:
@@ -912,6 +1045,18 @@ async def cleanup_trader_positions(
             )
             if not request.dry_run:
                 await sync_trader_position_inventory(session, trader_id=trader_id, mode="live")
+        elif request.scope == TraderPositionCleanupScope.shadow:
+            lifecycle_result = await reconcile_shadow_positions(
+                session,
+                trader_id=trader_id,
+                trader_params={},
+                dry_run=request.dry_run,
+                force_mark_to_market=True,
+                max_age_hours=request.max_age_hours,
+                reason=str(request.reason or "manual_mark_to_market_cleanup"),
+            )
+            if not request.dry_run:
+                await sync_trader_position_inventory(session, trader_id=trader_id, mode="shadow")
         else:
             lifecycle_result = await reconcile_paper_positions(
                 session,

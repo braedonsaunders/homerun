@@ -83,8 +83,14 @@ class PolymarketClient:
         then retries with exponential backoff when the server returns 429
         or a transient 5xx error.
         """
+        client_kind = "external"
         if client is None:
             client = await self._get_client()
+            client_kind = "default"
+        elif client is self._trading_client:
+            client_kind = "trading"
+        elif client is self._client:
+            client_kind = "default"
 
         endpoint = endpoint_for_url(url)
         last_response: Optional[httpx.Response] = None
@@ -97,7 +103,9 @@ class PolymarketClient:
                 # Read the body inside the retry loop so chunked/stream read
                 # failures are retried instead of escaping at response.json().
                 await response.aread()
-            except httpx.TransportError as exc:
+            except Exception as exc:
+                if not isinstance(exc, httpx.TransportError) and not self._is_retryable_closed_client_error(exc):
+                    raise
                 await self._reset_failed_client(client)
                 if attempt < _MAX_RETRIES - 1:
                     delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
@@ -118,6 +126,10 @@ class PolymarketClient:
                             url=url,
                             attempt=attempt + 1,
                         )
+                    if client_kind == "trading":
+                        client = await self._get_trading_client()
+                    elif client_kind == "default":
+                        client = await self._get_client()
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -151,6 +163,13 @@ class PolymarketClient:
 
         # Should not be reached, but just in case
         return last_response  # type: ignore[return-value]
+
+    @staticmethod
+    def _is_retryable_closed_client_error(exc: Exception) -> bool:
+        if not isinstance(exc, RuntimeError):
+            return False
+        message = str(exc).lower()
+        return "client has been closed" in message and "cannot send a request" in message
 
     async def _reset_failed_client(self, client: Optional[httpx.AsyncClient]) -> None:
         if client is None:
@@ -643,9 +662,47 @@ class PolymarketClient:
         return tags
 
     @staticmethod
+    def _extract_category(data: dict) -> str:
+        category_raw = data.get("category")
+        if isinstance(category_raw, dict):
+            category = str(
+                category_raw.get("label")
+                or category_raw.get("name")
+                or category_raw.get("value")
+                or ""
+            ).strip()
+        else:
+            category = str(category_raw or "").strip()
+        if category:
+            return category
+
+        events = data.get("events")
+        if isinstance(events, list) and events:
+            first = events[0]
+            if isinstance(first, dict):
+                event_category_raw = first.get("category")
+                if isinstance(event_category_raw, dict):
+                    event_category = str(
+                        event_category_raw.get("label")
+                        or event_category_raw.get("name")
+                        or event_category_raw.get("value")
+                        or ""
+                    ).strip()
+                else:
+                    event_category = str(event_category_raw or "").strip()
+                if event_category:
+                    return event_category
+
+        tags = PolymarketClient._extract_tags(data)
+        if tags:
+            return tags[0]
+        return ""
+
+    @staticmethod
     def _extract_market_info(market_data: dict) -> dict:
         """Extract standardized market info from a Gamma API market response."""
         token_ids = PolymarketClient._extract_token_ids_from_market(market_data)
+        category = PolymarketClient._extract_category(market_data)
         outcomes_raw = market_data.get("outcomes")
         if isinstance(outcomes_raw, str):
             text = outcomes_raw.strip()
@@ -759,6 +816,7 @@ class PolymarketClient:
             "volume": market_data.get("volume")
             if market_data.get("volume") is not None
             else market_data.get("volumeNum"),
+            "category": category or None,
             "tags": PolymarketClient._extract_tags(market_data),
         }
 

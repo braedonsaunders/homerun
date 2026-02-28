@@ -300,6 +300,8 @@ def _parse_structured_json_content(content: Any) -> Any:
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0  # seconds
+_LLM_RETRY_WARNING_COOLDOWN_SECONDS = 10.0
+_llm_retry_warning_cooldown_until = 0.0
 
 
 async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY):
@@ -319,6 +321,7 @@ async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, bas
         httpx.HTTPStatusError: If all retries are exhausted.
         httpx.RequestError: If a non-retryable request error occurs.
     """
+    global _llm_retry_warning_cooldown_until
     last_exc = None
     for attempt in range(max_retries):
         try:
@@ -331,13 +334,26 @@ async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, bas
                 )
                 if attempt < max_retries - 1:
                     delay = base_delay * (2**attempt)
-                    logger.warning(
-                        "LLM request returned %d, retrying in %.1fs (attempt %d/%d)",
-                        response.status_code,
-                        delay,
-                        attempt + 1,
-                        max_retries,
-                    )
+                    now_monotonic = time.monotonic()
+                    if now_monotonic >= _llm_retry_warning_cooldown_until:
+                        logger.warning(
+                            "LLM request returned %d, retrying in %.1fs (attempt %d/%d)",
+                            response.status_code,
+                            delay,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        _llm_retry_warning_cooldown_until = (
+                            now_monotonic + _LLM_RETRY_WARNING_COOLDOWN_SECONDS
+                        )
+                    else:
+                        logger.debug(
+                            "LLM request returned %d, retrying in %.1fs (attempt %d/%d, suppressed)",
+                            response.status_code,
+                            delay,
+                            attempt + 1,
+                            max_retries,
+                        )
                     await asyncio.sleep(delay)
                     continue
                 else:
@@ -347,13 +363,24 @@ async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, bas
             last_exc = exc
             if attempt < max_retries - 1:
                 delay = base_delay * (2**attempt)
-                logger.warning(
-                    "LLM request failed (%s), retrying in %.1fs (attempt %d/%d)",
-                    str(exc),
-                    delay,
-                    attempt + 1,
-                    max_retries,
-                )
+                now_monotonic = time.monotonic()
+                if now_monotonic >= _llm_retry_warning_cooldown_until:
+                    logger.warning(
+                        "LLM request failed (%s), retrying in %.1fs (attempt %d/%d)",
+                        str(exc),
+                        delay,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    _llm_retry_warning_cooldown_until = now_monotonic + _LLM_RETRY_WARNING_COOLDOWN_SECONDS
+                else:
+                    logger.debug(
+                        "LLM request failed (%s), retrying in %.1fs (attempt %d/%d, suppressed)",
+                        str(exc),
+                        delay,
+                        attempt + 1,
+                        max_retries,
+                    )
                 await asyncio.sleep(delay)
             else:
                 raise

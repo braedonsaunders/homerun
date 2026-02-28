@@ -559,6 +559,16 @@ async def submit_execution_leg(
     notional_usd: float,
 ) -> LegSubmitResult:
     mode_key = str(mode or "").strip().lower()
+    if mode_key not in {"paper", "live", "shadow"}:
+        return LegSubmitResult(
+            leg_id=str(leg.get("leg_id") or "leg"),
+            status="failed",
+            effective_price=None,
+            error_message=f"Unsupported execution mode '{mode_key or 'unknown'}'.",
+            payload={"mode": mode_key or "unknown", "submission": "rejected", "reason": "unsupported_mode"},
+            shares=None,
+            notional_usd=float(max(0.0, notional_usd)),
+        )
     leg_id = str(leg.get("leg_id") or "leg")
     notional = float(max(0.0, notional_usd))
     payload = _safe_signal_payload(signal)
@@ -595,7 +605,7 @@ async def submit_execution_leg(
                 error_message=None,
                 payload={
                     "mode": mode_key,
-                    "submission": "paper_ctf_simulated",
+                    "submission": "paper_ctf_simulated" if mode_key == "paper" else "shadow_ctf_simulated",
                     "ctf_action": ctf_action,
                     "condition_id": condition_id,
                     "requested_notional_usd": notional,
@@ -708,7 +718,7 @@ async def submit_execution_leg(
             notional_usd=notional,
         )
 
-    if mode_key != "live":
+    if mode_key == "paper":
         paper_result = _simulate_paper_execution(
             signal=signal,
             leg=leg,
@@ -763,7 +773,7 @@ async def submit_execution_leg(
             effective_price=price,
             error_message="No executable token_id resolved for execution leg.",
             payload={
-                "mode": "live",
+                "mode": mode_key,
                 "submission": "rejected",
                 "reason": "missing_token_id",
                 "token_resolution_attempts": token_attempts,
@@ -775,6 +785,65 @@ async def submit_execution_leg(
 
     time_in_force = str(leg.get("time_in_force") or "GTC").strip().upper()
     post_only = bool(leg.get("post_only", False))
+
+    if mode_key == "shadow":
+        try:
+            quote_price = safe_float(await asyncio.wait_for(polymarket_client.get_midpoint(token_id), timeout=1.5), None)
+        except Exception:
+            quote_price = None
+        quote_source = "polymarket_midpoint"
+        if quote_price is None or quote_price <= 0.0 or quote_price > 1.0:
+            quote_price = price
+            quote_source = "signal_price_fallback"
+        if quote_price is None or quote_price <= 0.0:
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="failed",
+                effective_price=price,
+                error_message="No executable quote available for shadow execution leg.",
+                payload={
+                    "mode": "shadow",
+                    "submission": "rejected",
+                    "reason": "missing_quote",
+                    "token_id": token_id,
+                    "token_id_source": token_source,
+                    "token_resolution_attempts": token_attempts,
+                    "leg": dict(leg),
+                },
+                shares=shares,
+                notional_usd=notional,
+            )
+        effective_shadow_notional = shares * quote_price
+        return LegSubmitResult(
+            leg_id=leg_id,
+            status="executed",
+            effective_price=quote_price,
+            error_message=None,
+            payload={
+                "mode": "shadow",
+                "submission": "shadow_quote_simulated",
+                "token_id": token_id,
+                "token_id_source": token_source,
+                "token_resolution_attempts": token_attempts,
+                "quote_source": quote_source,
+                "quote_price": quote_price,
+                "leg": dict(leg),
+                "shares": shares,
+                "filled_size": shares,
+                "average_fill_price": quote_price,
+                "filled_notional_usd": effective_shadow_notional,
+                "requested_shares": requested_shares,
+                "min_live_shares": _MIN_LIVE_SHARES,
+                "requested_notional_usd": notional,
+                "effective_notional_usd": effective_shadow_notional,
+                "time_in_force": time_in_force,
+                "post_only": post_only,
+            },
+            provider_order_id=None,
+            provider_clob_order_id=None,
+            shares=shares,
+            notional_usd=effective_shadow_notional,
+        )
 
     execution = await execute_live_order(
         token_id=token_id,

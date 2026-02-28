@@ -118,12 +118,23 @@ async def test_get_all_traders_forwards_mode_filter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_all_traders_forwards_shadow_mode_filter(monkeypatch):
+    session_obj = object()
+    list_traders_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(routes_traders, "list_traders", list_traders_mock)
+
+    await routes_traders.get_all_traders(mode="shadow", session=session_obj)
+
+    list_traders_mock.assert_awaited_once_with(session_obj, mode="shadow")
+
+
+@pytest.mark.asyncio
 async def test_get_all_traders_rejects_invalid_mode():
     with pytest.raises(HTTPException) as excinfo:
         await routes_traders.get_all_traders(mode="both", session=object())
 
     assert excinfo.value.status_code == 422
-    assert excinfo.value.detail == "mode must be 'paper' or 'live'"
+    assert excinfo.value.detail == "mode must be 'paper', 'shadow', or 'live'"
 
 
 @pytest.mark.asyncio
@@ -231,3 +242,101 @@ async def test_update_trader_route_resume_resets_loss_streak(monkeypatch):
     assert update_payload["metadata"]["loss_streak_reset_at"]
     event_payload = create_event_mock.await_args.kwargs["payload"]
     assert event_payload["loss_streak_reset_at"] == update_payload["metadata"]["loss_streak_reset_at"]
+
+
+@pytest.mark.asyncio
+async def test_get_trader_live_wallet_positions_forwards_include_managed(monkeypatch):
+    session_obj = object()
+    trader_id = "live-trader-1"
+    response_payload = {
+        "trader_id": trader_id,
+        "wallet_address": "0xabc",
+        "positions": [],
+        "managed_token_ids": [],
+        "managed_order_ids": [],
+        "summary": {
+            "total_positions": 0,
+            "managed_positions": 0,
+            "unmanaged_positions": 0,
+            "returned_positions": 0,
+        },
+    }
+    list_mock = AsyncMock(return_value=response_payload)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value={"id": trader_id}))
+    monkeypatch.setattr(routes_traders, "list_live_wallet_positions_for_trader", list_mock)
+
+    result = await routes_traders.get_trader_live_wallet_positions(
+        trader_id=trader_id,
+        include_managed=False,
+        session=session_obj,
+    )
+
+    assert result == response_payload
+    list_mock.assert_awaited_once_with(
+        session_obj,
+        trader_id=trader_id,
+        include_managed=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_adopt_trader_live_wallet_position_creates_event(monkeypatch):
+    session_obj = object()
+    trader_id = "live-trader-1"
+    adopt_result = {
+        "status": "adopted",
+        "trader_id": trader_id,
+        "wallet_address": "0xabc",
+        "token_id": "token-1",
+        "market_id": "0x" + "1" * 64,
+        "direction": "buy_yes",
+        "order": {"id": "order-123"},
+        "position_inventory": {"open_positions": 1},
+    }
+    adopt_mock = AsyncMock(return_value=adopt_result)
+    create_event_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value={"id": trader_id}))
+    monkeypatch.setattr(routes_traders, "adopt_live_wallet_position", adopt_mock)
+    monkeypatch.setattr(routes_traders, "create_trader_event", create_event_mock)
+
+    request = routes_traders.TraderLiveWalletPositionAdoptRequest(
+        token_id="token-1",
+        reason="adopt_manual_trade",
+        requested_by="tester",
+    )
+    result = await routes_traders.adopt_trader_live_wallet_position(
+        trader_id=trader_id,
+        request=request,
+        session=session_obj,
+    )
+
+    assert result == adopt_result
+    adopt_mock.assert_awaited_once_with(
+        session_obj,
+        trader_id=trader_id,
+        token_id="token-1",
+        reason="adopt_manual_trade",
+    )
+    create_event_mock.assert_awaited_once()
+    event_kwargs = create_event_mock.await_args.kwargs
+    assert event_kwargs["event_type"] == "trader_live_position_adopted"
+    assert event_kwargs["payload"]["order_id"] == "order-123"
+
+
+@pytest.mark.asyncio
+async def test_adopt_trader_live_wallet_position_maps_conflict(monkeypatch):
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value={"id": "live-trader-1"}))
+    monkeypatch.setattr(
+        routes_traders,
+        "adopt_live_wallet_position",
+        AsyncMock(side_effect=ValueError("Token 'token-1' is already managed by order order-123")),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.adopt_trader_live_wallet_position(
+            trader_id="live-trader-1",
+            request=routes_traders.TraderLiveWalletPositionAdoptRequest(token_id="token-1"),
+            session=object(),
+        )
+
+    assert excinfo.value.status_code == 409

@@ -41,6 +41,7 @@ from services.strategy_loader import (
     strategy_loader,
     validate_strategy_source,
 )
+from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.strategy_versioning import (
     create_strategy_version_snapshot,
     ensure_strategy_version_seeded,
@@ -241,9 +242,10 @@ def _infer_strategy_type(capabilities: dict) -> str:
     """Infer whether this is a detect, execute, or unified strategy."""
     has_any_detect = capabilities.get("has_detect") or capabilities.get("has_detect_async")
     has_evaluate = capabilities.get("has_evaluate")
+    has_should_exit = capabilities.get("has_should_exit")
     if has_any_detect and has_evaluate:
         return "unified"
-    if has_evaluate:
+    if has_evaluate or has_should_exit:
         return "execute"
     return "detect"
 
@@ -339,7 +341,8 @@ async def get_unified_template():
             "Create a class that extends BaseStrategy and implements detect() or "
             "detect_async() for opportunity detection. For execution strategies, "
             "implement evaluate(signal, context). Unified strategies can implement "
-            "both detect/detect_async and evaluate/should_exit."
+            "both detect/detect_async and evaluate/should_exit. Exit-only/manage-only "
+            "strategies should set allow_new_entries = False and implement should_exit()."
         ),
         "available_imports": [
             "models (Market, Event, Opportunity) — use Opportunity; ArbitrageOpportunity is removed",
@@ -458,6 +461,15 @@ async def get_unified_docs():
                     "description": (
                         "Optional orchestrator hint for crypto source strategies. "
                         "When true, evaluate() receives live_market enrichment."
+                    ),
+                },
+                "allow_new_entries": {
+                    "type": "bool",
+                    "required": False,
+                    "description": (
+                        "Optional strategy-level entry gate. "
+                        "Set False for manage-existing-only bots that should run "
+                        "should_exit() without opening new positions."
                     ),
                 },
             },
@@ -965,11 +977,21 @@ async def get_unified_docs():
                     "Optional class attribute (bool): request live_market enrichment "
                     "for evaluate() when using crypto source signals."
                 ),
+                "allow_new_entries": (
+                    "Optional class attribute (bool): set False to disable new entries "
+                    "and run this strategy in manage-existing-only mode."
+                ),
                 "strategy_params.accepted_signal_strategy_types": (
                     "Runtime override for routing allowlist; list or comma-separated string."
                 ),
                 "strategy_params.enable_live_market_context": (
                     "Runtime override for live context enrichment; true/false."
+                ),
+                "strategy_params.allow_new_entries": (
+                    "Runtime override for entry gating; true/false."
+                ),
+                "strategy_params.disable_new_entries": (
+                    "Runtime override alias; true disables new entries."
                 ),
             },
             "configuration_helpers": {
@@ -1550,7 +1572,7 @@ async def get_unified_docs():
         # ── Section 11: API Endpoints ────────────────────────────────
         "endpoints": {
             "strategies": {
-                "GET /strategy-manager": "List all strategies. Filters: ?type=detect|execute|unified, ?source_key=scanner|crypto, ?enabled=true",
+                "GET /strategy-manager": "List all strategies. Filters: ?type=detect|execute|unified, ?source_key=scanner|crypto|news|weather|traders|manual, ?enabled=true",
                 "GET /strategy-manager/template": "Get starter template source code",
                 "GET /strategy-manager/docs": "This documentation",
                 "GET /strategy-manager/{id}": "Get one strategy by ID",
@@ -1614,6 +1636,7 @@ async def list_strategies(
     async with AsyncSessionLocal() as session:
         # Seed system strategies to ensure they exist
         await ensure_system_opportunity_strategies_seeded(session)
+        await refresh_strategy_runtime_if_needed(session, source_keys=None, force=False)
 
         query = select(Strategy).order_by(
             Strategy.is_system.desc(),
@@ -1963,7 +1986,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
         original_slug = row.slug
         slug_changed = False
         snapshot_fields_changed: set[str] = set()
-        reload_required = False
+        reload_reasons: set[str] = set()
         prior_version = int(row.version or 1)
         next_source_key = str(req.source_key or row.source_key or "scanner").strip().lower()
 
@@ -1981,7 +2004,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
                 row.slug = next_slug
                 slug_changed = True
                 snapshot_fields_changed.add("slug")
-                reload_required = True
+                reload_reasons.add("slug")
 
         if req.source_code is not None and req.source_code != row.source_code:
             validation = validate_strategy_source(req.source_code)
@@ -1997,14 +2020,14 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
             if req.description is None and validation["strategy_description"]:
                 row.description = validation["strategy_description"]
             snapshot_fields_changed.add("source_code")
-            reload_required = True
+            reload_reasons.add("source_code")
 
         if req.config is not None:
             normalized_config = _normalize_strategy_config_for_source(next_source_key, req.config)
             if normalized_config != (row.config or {}):
                 row.config = normalized_config
                 snapshot_fields_changed.add("config")
-                reload_required = True
+                reload_reasons.add("config")
         if req.config_schema is not None:
             merged_schema = _merge_config_schemas(
                 req.config_schema,
@@ -2023,7 +2046,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
                 if normalized_existing_config != (row.config or {}):
                     row.config = normalized_existing_config
                     snapshot_fields_changed.add("config")
-                    reload_required = True
+                    reload_reasons.add("config")
             if not row.config_schema:
                 row.config_schema = _default_config_schema_for_source(next_source_key)
                 snapshot_fields_changed.add("config_schema")
@@ -2041,9 +2064,23 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
         if req.enabled is not None and req.enabled != row.enabled:
             row.enabled = req.enabled
             snapshot_fields_changed.add("enabled")
-            reload_required = True
+            reload_reasons.add("enabled")
 
-        if reload_required or slug_changed:
+        if reload_reasons == {"config"} and row.enabled:
+            try:
+                reconfigured = strategy_loader.reconfigure_loaded(
+                    row.slug,
+                    row.source_code,
+                    row.config or None,
+                )
+                if not reconfigured:
+                    strategy_loader.load(row.slug, row.source_code, row.config or None)
+                row.status = "loaded"
+                row.error_message = None
+            except StrategyValidationError as e:
+                row.status = "error"
+                row.error_message = str(e)
+        elif reload_reasons:
             if slug_changed:
                 strategy_loader.unload(original_slug)
             if row.enabled:

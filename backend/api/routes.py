@@ -363,6 +363,27 @@ async def get_opportunities(
     total = len(opportunities)
     paginated = opportunities[offset : offset + limit]
 
+    if paginated:
+        missing_history = []
+        for opp in paginated:
+            if any(
+                not isinstance(market.get("price_history"), list) or len(market.get("price_history") or []) < 2
+                for market in opp.markets
+                if isinstance(market, dict)
+            ):
+                missing_history.append(opp)
+        if missing_history:
+            try:
+                from services.scanner import scanner as market_scanner
+
+                await market_scanner.attach_price_history_to_opportunities(
+                    missing_history,
+                    timeout_seconds=2.0,
+                    block_for_backfill=True,
+                )
+            except Exception:
+                pass
+
     # Set total count header and return serialised list directly.
     # Using Response injection (not JSONResponse) lets FastAPI handle
     # content-negotiation and CORS headers correctly.
@@ -678,6 +699,21 @@ async def get_opportunity(
     opportunities = await shared_state.get_opportunities_from_db(session, None, source=source)
     for opp in opportunities:
         if opp.id == opportunity_id:
+            if any(
+                not isinstance(market.get("price_history"), list) or len(market.get("price_history") or []) < 2
+                for market in opp.markets
+                if isinstance(market, dict)
+            ):
+                try:
+                    from services.scanner import scanner as market_scanner
+
+                    await market_scanner.attach_price_history_to_opportunities(
+                        [opp],
+                        timeout_seconds=2.0,
+                        block_for_backfill=True,
+                    )
+                except Exception:
+                    pass
             return _serialize_with_sub_strategy(opp)
     raise HTTPException(status_code=404, detail="Opportunity not found")
 

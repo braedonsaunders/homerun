@@ -42,6 +42,7 @@ from services.smart_wallet_pool import (
 from services.wallet_tracker import wallet_tracker
 from services.worker_state import read_worker_snapshot
 from services.polymarket import polymarket_client
+from services.market_cache import CachedMarket
 from services.trader_data_access import (
     annotate_trader_signal_source_context,
 )
@@ -177,6 +178,230 @@ def _market_categories_from_flags(source_flags: dict) -> list[str]:
         if key.startswith("leaderboard_category_") and bool(enabled)
     ]
     return sorted(set(categories))
+
+
+PRIMARY_MARKET_CATEGORIES = {
+    "politics",
+    "sports",
+    "crypto",
+    "culture",
+    "economics",
+    "tech",
+    "finance",
+    "weather",
+}
+
+
+def _normalize_primary_market_category(raw: object) -> Optional[str]:
+    text = str(raw or "").strip().lower()
+    if not text or text in {"overall", "all"}:
+        return None
+    if text in PRIMARY_MARKET_CATEGORIES:
+        return text
+    if "crypto" in text or "bitcoin" in text or "ethereum" in text or "solana" in text:
+        return "crypto"
+    if "politic" in text or "election" in text:
+        return "politics"
+    if "sport" in text:
+        return "sports"
+    if "weather" in text or "hurricane" in text or "temperature" in text:
+        return "weather"
+    if "econ" in text or "inflation" in text or "gdp" in text:
+        return "economics"
+    if "financ" in text or "stocks" in text or "equity" in text:
+        return "finance"
+    if "tech" in text or "ai" in text or "science" in text:
+        return "tech"
+    if "culture" in text or "entertainment" in text:
+        return "culture"
+    return None
+
+
+def _token_ids_from_market_cache(extra_data: dict[str, Any]) -> list[str]:
+    raw = extra_data.get("token_ids")
+    if not isinstance(raw, list):
+        return []
+    token_ids: list[str] = []
+    seen: set[str] = set()
+    for token in raw:
+        normalized = normalize_market_id(token)
+        if not normalized or normalized in seen:
+            continue
+        token_ids.append(normalized)
+        seen.add(normalized)
+    return token_ids
+
+
+def _looks_like_condition_id(value: object) -> bool:
+    normalized = normalize_market_id(value)
+    if len(normalized) != 66 or not normalized.startswith("0x"):
+        return False
+    return all(ch in "0123456789abcdef" for ch in normalized[2:])
+
+
+def _primary_category_from_market_cache_row(
+    *,
+    category: object,
+    extra_data: dict[str, Any],
+) -> Optional[str]:
+    normalized = _normalize_primary_market_category(category)
+    if normalized:
+        return normalized
+
+    raw_tags = extra_data.get("tags")
+    tags: list[object] = []
+    if isinstance(raw_tags, list):
+        tags = raw_tags
+    elif isinstance(raw_tags, str) and raw_tags.strip():
+        tags = [raw_tags]
+    for tag in tags:
+        normalized = _normalize_primary_market_category(tag)
+        if normalized:
+            return normalized
+    return None
+
+
+async def _load_primary_market_category_profiles(
+    *,
+    session: AsyncSession,
+    wallet_addresses: list[str],
+) -> dict[str, dict[str, Any]]:
+    normalized_wallets = sorted({normalize_market_id(address) for address in wallet_addresses if address})
+    if not normalized_wallets:
+        return {}
+
+    activity_rows = (
+        await session.execute(
+            select(
+                func.lower(WalletActivityRollup.wallet_address).label("wallet_address"),
+                func.lower(WalletActivityRollup.market_id).label("market_id"),
+                func.count(WalletActivityRollup.id).label("trade_count"),
+                func.sum(func.coalesce(WalletActivityRollup.notional, 0.0)).label("total_notional"),
+            )
+            .where(func.lower(WalletActivityRollup.wallet_address).in_(normalized_wallets))
+            .group_by(
+                func.lower(WalletActivityRollup.wallet_address),
+                func.lower(WalletActivityRollup.market_id),
+            )
+        )
+    ).all()
+    if not activity_rows:
+        return {}
+
+    market_ids = sorted({normalize_market_id(row.market_id) for row in activity_rows if row.market_id})
+    if not market_ids:
+        return {}
+
+    market_category_by_id: dict[str, str] = {}
+    unresolved_market_ids = set(market_ids)
+
+    direct_rows = (
+        await session.execute(
+            select(
+                CachedMarket.condition_id,
+                CachedMarket.category,
+                CachedMarket.extra_data,
+            ).where(func.lower(CachedMarket.condition_id).in_(market_ids))
+        )
+    ).all()
+    for row in direct_rows:
+        extra_data = row.extra_data if isinstance(row.extra_data, dict) else {}
+        category = _primary_category_from_market_cache_row(
+            category=row.category,
+            extra_data=extra_data,
+        )
+        if not category:
+            continue
+
+        condition_id = normalize_market_id(row.condition_id)
+        if condition_id in unresolved_market_ids:
+            market_category_by_id[condition_id] = category
+            unresolved_market_ids.discard(condition_id)
+
+        for token_id in _token_ids_from_market_cache(extra_data):
+            if token_id in unresolved_market_ids:
+                market_category_by_id[token_id] = category
+                unresolved_market_ids.discard(token_id)
+
+    unresolved_token_ids = {market_id for market_id in unresolved_market_ids if not _looks_like_condition_id(market_id)}
+    if unresolved_token_ids:
+        supplemental_rows = (
+            await session.execute(
+                select(
+                    CachedMarket.condition_id,
+                    CachedMarket.category,
+                    CachedMarket.extra_data,
+                ).where(CachedMarket.extra_data.is_not(None))
+            )
+        ).all()
+        for row in supplemental_rows:
+            if not unresolved_token_ids:
+                break
+            extra_data = row.extra_data if isinstance(row.extra_data, dict) else {}
+            category = _primary_category_from_market_cache_row(
+                category=row.category,
+                extra_data=extra_data,
+            )
+            if not category:
+                continue
+
+            condition_id = normalize_market_id(row.condition_id)
+            if condition_id in unresolved_token_ids:
+                market_category_by_id[condition_id] = category
+                unresolved_token_ids.discard(condition_id)
+                unresolved_market_ids.discard(condition_id)
+
+            for token_id in _token_ids_from_market_cache(extra_data):
+                if token_id in unresolved_token_ids:
+                    market_category_by_id[token_id] = category
+                    unresolved_token_ids.discard(token_id)
+                    unresolved_market_ids.discard(token_id)
+
+    wallet_category_stats: dict[str, dict[str, dict[str, float]]] = {}
+    for row in activity_rows:
+        wallet_address = normalize_market_id(row.wallet_address)
+        market_id = normalize_market_id(row.market_id)
+        category = market_category_by_id.get(market_id)
+        if not category:
+            continue
+
+        stats_by_category = wallet_category_stats.setdefault(wallet_address, {})
+        bucket = stats_by_category.setdefault(category, {"trade_count": 0.0, "notional": 0.0})
+        bucket["trade_count"] += float(row.trade_count or 0.0)
+        bucket["notional"] += float(row.total_notional or 0.0)
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for wallet_address, stats_by_category in wallet_category_stats.items():
+        ranked = sorted(
+            stats_by_category.items(),
+            key=lambda entry: (
+                -float(entry[1].get("notional", 0.0)),
+                -float(entry[1].get("trade_count", 0.0)),
+                entry[0],
+            ),
+        )
+        if not ranked:
+            continue
+
+        category, top_stats = ranked[0]
+        total_notional = sum(float(values.get("notional", 0.0)) for values in stats_by_category.values())
+        total_trades = sum(float(values.get("trade_count", 0.0)) for values in stats_by_category.values())
+        if total_notional > 0:
+            share = float(top_stats.get("notional", 0.0)) / total_notional
+            basis = "notional"
+        elif total_trades > 0:
+            share = float(top_stats.get("trade_count", 0.0)) / total_trades
+            basis = "trade_count"
+        else:
+            continue
+
+        profiles[wallet_address] = {
+            "category": category,
+            "share": round(max(0.0, min(1.0, share)), 4),
+            "basis": basis,
+        }
+
+    return profiles
 
 
 def _normalize_win_rate_ratio(value: object) -> float:
@@ -1779,6 +2004,9 @@ async def get_pool_members(
                 "tags": wallet.tags or [],
                 "strategies_detected": wallet.strategies_detected or [],
                 "market_categories": categories,
+                "primary_market_category": None,
+                "primary_market_category_share": None,
+                "primary_market_category_basis": None,
                 "tracked_wallet": is_tracked,
                 "pool_flags": flags,
             }
@@ -1795,6 +2023,29 @@ async def get_pool_members(
 
         total = len(rows)
         page = rows[offset : offset + limit]
+        primary_profiles = await _load_primary_market_category_profiles(
+            session=session,
+            wallet_addresses=[str(row.get("address") or "") for row in page],
+        )
+        for row in page:
+            address_key = normalize_market_id(row.get("address"))
+            profile = primary_profiles.get(address_key)
+            if profile:
+                row["primary_market_category"] = profile.get("category")
+                row["primary_market_category_share"] = profile.get("share")
+                row["primary_market_category_basis"] = profile.get("basis")
+                continue
+
+            fallback_category = None
+            for category in row.get("market_categories") or []:
+                normalized = _normalize_primary_market_category(category)
+                if normalized:
+                    fallback_category = normalized
+                    break
+            row["primary_market_category"] = fallback_category
+            row["primary_market_category_share"] = None
+            row["primary_market_category_basis"] = "flags" if fallback_category else None
+
         return {
             "total": total,
             "offset": offset,

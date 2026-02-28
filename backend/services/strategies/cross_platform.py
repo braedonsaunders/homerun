@@ -478,6 +478,8 @@ class _KalshiMarketCache:
         self._ttl = ttl_seconds
         self._markets: list[Market] = []
         self._last_fetch: float = 0.0
+        self._read_cooldown_until: float = 0.0
+        self._read_429_warning_cooldown_until: float = 0.0
 
     @property
     def is_stale(self) -> bool:
@@ -593,20 +595,35 @@ class _KalshiMarketCache:
 
                     # Rate limit: pause between pages to avoid 429
                     if page > 0:
-                        time.sleep(0.2)
+                        time.sleep(0.35)
 
                     data = None
                     max_retries = 3
                     for attempt in range(max_retries + 1):
                         try:
+                            now = time.monotonic()
+                            if now < self._read_cooldown_until:
+                                time.sleep(self._read_cooldown_until - now)
                             resp = client.get(f"{self._api_url}/markets", params=params)
                             if resp.status_code == 429 and attempt < max_retries:
                                 backoff = 2**attempt  # 1s, 2s, 4s
-                                logger.warning(
-                                    "Kalshi markets 429, retrying",
-                                    attempt=attempt + 1,
-                                    backoff_seconds=backoff,
+                                retry_after = resp.headers.get("Retry-After")
+                                if retry_after:
+                                    try:
+                                        backoff = max(backoff, float(retry_after))
+                                    except ValueError:
+                                        pass
+                                self._read_cooldown_until = max(
+                                    self._read_cooldown_until,
+                                    time.monotonic() + backoff,
                                 )
+                                if time.monotonic() >= self._read_429_warning_cooldown_until:
+                                    logger.warning(
+                                        "Kalshi markets 429, retrying",
+                                        attempt=attempt + 1,
+                                        backoff_seconds=backoff,
+                                    )
+                                    self._read_429_warning_cooldown_until = time.monotonic() + 30.0
                                 time.sleep(backoff)
                                 continue
                             resp.raise_for_status()
@@ -836,7 +853,7 @@ class CrossPlatformStrategy(BaseStrategy):
         super().__init__()
         self._kalshi_cache = _KalshiMarketCache(
             api_url=settings.KALSHI_API_URL,
-            ttl_seconds=60,
+            ttl_seconds=180,
         )
         # Pre-compute token sets for Kalshi markets (refreshed with cache)
         self._kalshi_tokens: dict[str, set[str]] = {}

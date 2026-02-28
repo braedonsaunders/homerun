@@ -123,14 +123,14 @@ class ArbitrageScanner:
         self._market_id_to_condition_id: dict[str, str] = {}
         self._condition_id_to_market_id: dict[str, str] = {}
 
-        # Real yes/no price history for opportunity card sparklines.
-        # market_id -> [{t: epoch_ms, yes: float, no: float}, ...]
+        # Real market price history for opportunity card sparklines.
+        # market_id -> [{t: epoch_ms, idx_0: float, idx_1: float, ...}, ...]
         spark_window_hours = max(1, int(settings.SCANNER_SPARKLINE_WINDOW_HOURS))
         spark_sample_seconds = max(10, int(settings.SCANNER_SPARKLINE_SAMPLE_SECONDS))
         spark_max_points = max(30, int(settings.SCANNER_SPARKLINE_MAX_POINTS))
         spark_export_points = max(20, int(settings.SCANNER_SPARKLINE_EXPORT_POINTS))
 
-        self._market_price_history: dict[str, list[dict[str, float]]] = {}
+        self._market_price_history: dict[str, list[dict[str, object]]] = {}
         self._market_history_retention_seconds: int = spark_window_hours * 3600
         retention_points = int(self._market_history_retention_seconds / spark_sample_seconds) + 2
         self._market_history_max_points: int = max(spark_max_points, retention_points)
@@ -139,6 +139,7 @@ class ArbitrageScanner:
         # show multi-hour trend shape rather than a single refreshed point.
         self._market_history_sample_interval_ms: int = spark_sample_seconds * 1000
         self._market_token_ids: dict[str, tuple[str, str]] = {}
+        self._market_outcome_token_ids: dict[str, tuple[str, ...]] = {}
         self._market_history_backfill_done: set[str] = set()
         self._market_history_backfill_attempt_ms: dict[str, int] = {}
         self._market_history_backfill_retry_ms: int = 5 * 60 * 1000
@@ -231,38 +232,196 @@ class ArbitrageScanner:
                 return float(ask)
         return None
 
-    def _extract_market_yes_no_prices(self, market, prices: dict) -> tuple[Optional[float], Optional[float]]:
-        """Resolve yes/no prices from token mids with model fallback."""
-        yes = None
-        no = None
+    @staticmethod
+    def _coerce_history_price(raw: object) -> Optional[float]:
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not (0.0 <= price <= 1.01):
+            return None
+        return float(round(min(1.0, max(0.0, price)), 6))
 
-        token_ids = getattr(market, "clob_token_ids", None) or []
-        if len(token_ids) >= 2:
-            yes = self._price_value(prices.get(token_ids[0]))
-            no = self._price_value(prices.get(token_ids[1]))
+    @classmethod
+    def _build_market_history_point(
+        cls,
+        ts_ms: int,
+        outcome_prices: list[Optional[float]],
+    ) -> Optional[dict[str, object]]:
+        if ts_ms <= 0:
+            return None
 
+        normalized = list(outcome_prices)
+        while normalized and normalized[-1] is None:
+            normalized.pop()
+        if not normalized:
+            return None
+
+        if len(normalized) == 2:
+            if normalized[0] is None and normalized[1] is not None:
+                normalized[0] = cls._coerce_history_price(1.0 - float(normalized[1]))
+            if normalized[1] is None and normalized[0] is not None:
+                normalized[1] = cls._coerce_history_price(1.0 - float(normalized[0]))
+
+        finite_count = sum(1 for value in normalized if value is not None)
+        if finite_count < 2:
+            return None
+
+        point: dict[str, object] = {"t": float(ts_ms)}
+        complete_vector = True
+        for idx, value in enumerate(normalized):
+            if value is None:
+                complete_vector = False
+                continue
+            point[f"idx_{idx}"] = value
+
+        idx0 = point.get("idx_0")
+        idx1 = point.get("idx_1")
+        if isinstance(idx0, (int, float)):
+            point["yes"] = float(idx0)
+        if isinstance(idx1, (int, float)):
+            point["no"] = float(idx1)
+
+        if complete_vector:
+            point["outcome_prices"] = [point[f"idx_{i}"] for i in range(len(normalized))]
+        return point
+
+    @classmethod
+    def _normalize_history_point(cls, raw: object, cutoff_ms: int) -> Optional[dict[str, object]]:
+        if not isinstance(raw, dict):
+            return None
+
+        ts_raw = (
+            raw.get("t")
+            if raw.get("t") is not None
+            else (
+                raw.get("ts")
+                if raw.get("ts") is not None
+                else (raw.get("time") if raw.get("time") is not None else raw.get("timestamp"))
+            )
+        )
+        try:
+            ts = float(ts_raw)
+        except (TypeError, ValueError):
+            return None
+        if ts < 10_000_000_000:
+            ts *= 1000.0
+        ts_ms = int(ts)
+        if ts_ms < cutoff_ms:
+            return None
+
+        by_index: dict[int, Optional[float]] = {}
+
+        vector_raw = raw.get("outcome_prices")
+        if vector_raw is None:
+            vector_raw = raw.get("outcomePrices")
+        if vector_raw is None:
+            vector_raw = raw.get("prices")
+        if isinstance(vector_raw, list):
+            for idx, value in enumerate(vector_raw):
+                by_index[idx] = cls._coerce_history_price(value)
+
+        for key, value in raw.items():
+            key_text = str(key)
+            if not key_text.startswith("idx_"):
+                continue
+            idx_text = key_text[4:]
+            if not idx_text.isdigit():
+                continue
+            by_index[int(idx_text)] = cls._coerce_history_price(value)
+
+        yes = cls._coerce_history_price(raw.get("yes"))
         if yes is None:
-            try:
-                yes = float(market.yes_price)
-            except Exception:
-                yes = None
+            yes = cls._coerce_history_price(raw.get("y"))
+        if yes is None:
+            yes = cls._coerce_history_price(raw.get("p"))
+        no = cls._coerce_history_price(raw.get("no"))
         if no is None:
+            no = cls._coerce_history_price(raw.get("n"))
+        if 0 not in by_index and yes is not None:
+            by_index[0] = yes
+        if 1 not in by_index and no is not None:
+            by_index[1] = no
+
+        if not by_index:
+            return None
+
+        max_index = max(by_index.keys())
+        values = [by_index.get(i) for i in range(max_index + 1)]
+        return cls._build_market_history_point(ts_ms, values)
+
+    @staticmethod
+    def _history_point_signature(point: dict[str, object]) -> tuple[float, ...]:
+        vector = point.get("outcome_prices")
+        if isinstance(vector, list) and vector:
+            out: list[float] = []
+            for value in vector:
+                try:
+                    out.append(float(round(float(value), 6)))
+                except (TypeError, ValueError):
+                    out = []
+                    break
+            if out:
+                return tuple(out)
+
+        indexed: list[tuple[int, float]] = []
+        for key, value in point.items():
+            key_text = str(key)
+            if not key_text.startswith("idx_"):
+                continue
+            idx_text = key_text[4:]
+            if not idx_text.isdigit():
+                continue
             try:
-                no = float(market.no_price)
-            except Exception:
-                no = None
+                indexed.append((int(idx_text), float(round(float(value), 6))))
+            except (TypeError, ValueError):
+                continue
+        if indexed:
+            indexed.sort(key=lambda row: row[0])
+            return tuple(price for _, price in indexed)
 
-        if yes is None or no is None:
-            raw = getattr(market, "outcome_prices", None) or []
-            if len(raw) >= 2:
-                if yes is None:
-                    yes = float(raw[0])
-                if no is None:
-                    no = float(raw[1])
+        try:
+            yes = float(round(float(point.get("yes")), 6))
+            no = float(round(float(point.get("no")), 6))
+            return (yes, no)
+        except (TypeError, ValueError):
+            return ()
 
-        if yes is None or no is None:
+    def _extract_market_outcome_prices(self, market, prices: dict) -> list[Optional[float]]:
+        token_ids = [str(token_id or "").strip() for token_id in (getattr(market, "clob_token_ids", None) or [])]
+        token_ids = [token_id for token_id in token_ids if token_id]
+        existing_raw = list(getattr(market, "outcome_prices", None) or [])
+
+        size = max(len(token_ids), len(existing_raw), 2)
+        values: list[Optional[float]] = [None] * size
+
+        for idx, raw_price in enumerate(existing_raw):
+            if idx >= len(values):
+                break
+            parsed = self._coerce_history_price(raw_price)
+            if parsed is not None:
+                values[idx] = parsed
+
+        for idx, token_id in enumerate(token_ids):
+            if idx >= len(values):
+                break
+            parsed = self._price_value(prices.get(token_id))
+            if parsed is None:
+                continue
+            values[idx] = self._coerce_history_price(parsed)
+
+        return values
+
+    def _extract_market_yes_no_prices(self, market, prices: dict) -> tuple[Optional[float], Optional[float]]:
+        values = self._extract_market_outcome_prices(market, prices)
+        point = self._build_market_history_point(1, values)
+        if point is None:
             return None, None
-        return yes, no
+        yes = point.get("yes")
+        no = point.get("no")
+        if not isinstance(yes, (int, float)) or not isinstance(no, (int, float)):
+            return None, None
+        return float(yes), float(no)
 
     def _update_market_price_history(self, markets: list, prices: dict, ts: datetime) -> None:
         """Append current real market prices to bounded in-memory history."""
@@ -273,30 +432,22 @@ class ArbitrageScanner:
             market_ids = self._market_id_candidates_from_market(market)
             if not market_ids:
                 continue
-            yes, no = self._extract_market_yes_no_prices(market, prices)
-            if yes is None or no is None:
+            values = self._extract_market_outcome_prices(market, prices)
+            point = self._build_market_history_point(now_ms, values)
+            if point is None:
                 continue
-            if yes < 0 or no < 0:
+            point_sig = self._history_point_signature(point)
+            if not point_sig:
                 continue
-            if yes > 1.01 or no > 1.01:
-                continue
-
-            point = {
-                "t": float(now_ms),
-                "yes": float(round(yes, 6)),
-                "no": float(round(no, 6)),
-            }
             for market_id in market_ids:
                 history = self._market_price_history.setdefault(market_id, [])
                 if history:
                     last = history[-1]
-                    if (
-                        abs(last.get("yes", 0.0) - point["yes"]) < 1e-9
-                        and abs(last.get("no", 0.0) - point["no"]) < 1e-9
-                    ):
+                    last_sig = self._history_point_signature(last)
+                    if last_sig and last_sig == point_sig:
                         last_t = float(last.get("t", 0.0) or 0.0)
-                        if (point["t"] - last_t) < self._market_history_sample_interval_ms:
-                            last["t"] = point["t"]
+                        if (float(point["t"]) - last_t) < self._market_history_sample_interval_ms:
+                            last["t"] = float(point["t"])
                             continue
                 history.append(point)
 
@@ -311,42 +462,66 @@ class ArbitrageScanner:
                     del history[: len(history) - self._market_history_max_points]
 
     def _remember_market_tokens(self, markets: list) -> None:
-        """Cache YES/NO token IDs per market for historical backfill calls."""
+        """Cache token IDs per market for historical backfill calls."""
         for market in markets:
-            platform = str(getattr(market, "platform", "polymarket") or "polymarket")
+            platform = str(getattr(market, "platform", "polymarket") or "polymarket").lower()
             if platform != "polymarket":
                 continue
-            token_pair = self._coerce_polymarket_token_pair(getattr(market, "clob_token_ids", None))
-            if token_pair is None:
+            token_ids = self._coerce_polymarket_token_ids(getattr(market, "clob_token_ids", None))
+            if token_ids is None:
                 continue
             for market_id in self._market_id_candidates_from_market(market):
-                self._market_token_ids[market_id] = token_pair
+                self._market_outcome_token_ids[market_id] = token_ids
+                self._market_token_ids[market_id] = (token_ids[0], token_ids[1])
 
     @staticmethod
-    def _coerce_polymarket_token_pair(raw: object) -> Optional[tuple[str, str]]:
-        """Parse polymarket YES/NO token IDs from list/tuple/JSON-string payloads."""
-        parsed = raw
+    def _coerce_market_token_ids(raw_tokens: object) -> list[str]:
+        parsed = raw_tokens
         if isinstance(parsed, str):
             text = parsed.strip()
             if not text:
-                return None
+                return []
             try:
                 parsed = json.loads(text)
             except (TypeError, ValueError):
-                return None
+                parsed = [part.strip() for part in text.split(",") if part.strip()]
+        if not isinstance(parsed, (list, tuple)):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in parsed:
+            token_id = ""
+            if isinstance(item, dict):
+                token_id = str(
+                    item.get("token_id")
+                    or item.get("tokenId")
+                    or item.get("asset_id")
+                    or item.get("assetId")
+                    or item.get("id")
+                    or ""
+                ).strip()
+            else:
+                token_id = str(item or "").strip()
+            if not token_id or token_id in seen:
+                continue
+            seen.add(token_id)
+            out.append(token_id)
+        return out
 
-        if not isinstance(parsed, (list, tuple)) or len(parsed) < 2:
+    @classmethod
+    def _coerce_polymarket_token_ids(cls, raw: object) -> Optional[tuple[str, ...]]:
+        token_ids = [token_id for token_id in cls._coerce_market_token_ids(raw) if len(token_id) > 20]
+        if len(token_ids) < 2:
             return None
+        return tuple(token_ids)
 
-        yes_token = str(parsed[0] or "").strip()
-        no_token = str(parsed[1] or "").strip()
-        if not yes_token or not no_token or yes_token == no_token:
+    @classmethod
+    def _coerce_polymarket_token_pair(cls, raw: object) -> Optional[tuple[str, str]]:
+        """Parse polymarket YES/NO token IDs from list/tuple/JSON-string payloads."""
+        token_ids = cls._coerce_polymarket_token_ids(raw)
+        if token_ids is None:
             return None
-
-        # Real Polymarket token IDs are long hashes/ints; skip synthetic IDs.
-        if len(yes_token) <= 20 or len(no_token) <= 20:
-            return None
-        return yes_token, no_token
+        return token_ids[0], token_ids[1]
 
     @staticmethod
     def _market_id_candidates_from_market(market: object) -> list[str]:
@@ -399,17 +574,18 @@ class ArbitrageScanner:
         return self._expand_market_id_aliases(base_ids)
 
     def _remember_market_tokens_from_opportunities(self, opportunities: list[Opportunity]) -> None:
-        """Cache YES/NO token IDs from opportunity market dicts."""
+        """Cache token IDs from opportunity market dicts."""
         for opp in opportunities:
             for market in opp.markets:
                 platform = str(market.get("platform", "polymarket") or "polymarket").lower()
                 if platform != "polymarket":
                     continue
-                token_pair = self._coerce_polymarket_token_pair(market.get("clob_token_ids"))
-                if token_pair is None:
+                token_ids = self._coerce_polymarket_token_ids(market.get("clob_token_ids"))
+                if token_ids is None:
                     continue
                 for market_id in self._market_id_candidates_from_payload(market):
-                    self._market_token_ids[market_id] = token_pair
+                    self._market_outcome_token_ids[market_id] = token_ids
+                    self._market_token_ids[market_id] = (token_ids[0], token_ids[1])
 
     def _rebuild_realtime_graph(self, events: list, markets: list) -> None:
         """Build token->market and event<->market routing maps from cached snapshot."""
@@ -560,37 +736,37 @@ class ArbitrageScanner:
         """Mutate market outcome prices from live token prices to keep fingerprints current."""
         updated = 0
         for market in markets:
-            token_ids = getattr(market, "clob_token_ids", None) or []
+            token_ids = [str(token_id or "").strip() for token_id in (getattr(market, "clob_token_ids", None) or [])]
+            token_ids = [token_id for token_id in token_ids if token_id]
             if len(token_ids) < 2:
                 continue
-            yes_token = str(token_ids[0] or "")
-            no_token = str(token_ids[1] or "")
-            if not yes_token or not no_token:
+
+            current_prices = self._extract_market_outcome_prices(market, prices)
+            point = self._build_market_history_point(1, current_prices)
+            if point is None:
                 continue
 
-            yes_price = self._price_value(prices.get(yes_token))
-            no_price = self._price_value(prices.get(no_token))
-            if yes_price is None and no_price is None:
-                continue
-            if yes_price is None and no_price is not None and 0 <= no_price <= 1:
-                yes_price = 1.0 - no_price
-            if no_price is None and yes_price is not None and 0 <= yes_price <= 1:
-                no_price = 1.0 - yes_price
-            if yes_price is None or no_price is None:
+            incoming_sig = self._history_point_signature(point)
+            existing_raw = list(getattr(market, "outcome_prices", None) or [])
+            existing_sig: tuple[float, ...] = ()
+            if existing_raw:
+                existing_point = self._build_market_history_point(1, [self._coerce_history_price(v) for v in existing_raw])
+                if existing_point is not None:
+                    existing_sig = self._history_point_signature(existing_point)
+
+            if incoming_sig and existing_sig and incoming_sig == existing_sig:
                 continue
 
-            yes_val = float(round(min(1.0, max(0.0, yes_price)), 6))
-            no_val = float(round(min(1.0, max(0.0, no_price)), 6))
-            raw = list(getattr(market, "outcome_prices", None) or [])
-            if len(raw) >= 2 and abs(float(raw[0]) - yes_val) < 1e-9 and abs(float(raw[1]) - no_val) < 1e-9:
+            incoming_vector = point.get("outcome_prices")
+            if not isinstance(incoming_vector, list) or len(incoming_vector) < 2:
                 continue
-
-            market.outcome_prices = [yes_val, no_val]
+            market.outcome_prices = [float(v) for v in incoming_vector]
             tokens = getattr(market, "tokens", None) or []
-            if len(tokens) >= 2:
+            for idx, token in enumerate(tokens):
+                if idx >= len(market.outcome_prices):
+                    break
                 try:
-                    tokens[0].price = yes_val
-                    tokens[1].price = no_val
+                    token.price = market.outcome_prices[idx]
                 except Exception:
                     pass
             updated += 1
@@ -735,6 +911,7 @@ class ArbitrageScanner:
             self._cached_prices = {}
             self._market_price_history = {}
             self._market_token_ids = {}
+            self._market_outcome_token_ids = {}
             self._market_id_to_condition_id = {}
             self._condition_id_to_market_id = {}
             return
@@ -761,6 +938,11 @@ class ArbitrageScanner:
         self._market_token_ids = {
             market_id: token_pair
             for market_id, token_pair in self._market_token_ids.items()
+            if market_id in active_with_aliases
+        }
+        self._market_outcome_token_ids = {
+            market_id: token_ids
+            for market_id, token_ids in self._market_outcome_token_ids.items()
             if market_id in active_with_aliases
         }
         self._market_id_to_condition_id = {
@@ -809,19 +991,11 @@ class ArbitrageScanner:
 
     @staticmethod
     def _coerce_market_token_pair(raw_tokens: object) -> tuple[str, str] | None:
-        parsed = raw_tokens
-        if isinstance(parsed, str):
-            text = parsed.strip()
-            if not text:
-                return None
-            try:
-                parsed = json.loads(text)
-            except (TypeError, ValueError):
-                return None
-        if not isinstance(parsed, (list, tuple)) or len(parsed) < 2:
+        token_ids = ArbitrageScanner._coerce_market_token_ids(raw_tokens)
+        if len(token_ids) < 2:
             return None
-        yes_token = str(parsed[0] or "").strip()
-        no_token = str(parsed[1] or "").strip()
+        yes_token = token_ids[0]
+        no_token = token_ids[1]
         if not yes_token or not no_token:
             return None
         return yes_token, no_token
@@ -892,8 +1066,8 @@ class ArbitrageScanner:
         return max(30.0, ws_ttl * 2.0)
 
     def _market_price_is_stale(self, market: dict, now_ts: float, max_age_seconds: float) -> bool:
-        token_pair = self._coerce_market_token_pair(market.get("clob_token_ids"))
-        if token_pair is None:
+        token_ids = self._coerce_market_token_ids(market.get("clob_token_ids"))
+        if len(token_ids) < 2:
             return False
 
         explicit_fresh = market.get("is_price_fresh")
@@ -916,7 +1090,7 @@ class ArbitrageScanner:
         now: Optional[datetime] = None,
         drop_stale: bool = False,
     ) -> list[Opportunity]:
-        """Overlay fresh YES/NO prices onto opportunity markets from Redis/WS cache."""
+        """Overlay fresh token prices onto opportunity markets from Redis/WS cache."""
         if not opportunities:
             return opportunities
 
@@ -930,10 +1104,10 @@ class ArbitrageScanner:
             for market in opp.markets:
                 if not isinstance(market, dict):
                     continue
-                pair = self._coerce_market_token_pair(market.get("clob_token_ids"))
-                if pair is None:
+                market_token_ids = self._coerce_market_token_ids(market.get("clob_token_ids"))
+                if len(market_token_ids) < 2:
                     continue
-                for token_id in pair:
+                for token_id in market_token_ids:
                     if token_id not in seen_tokens:
                         seen_tokens.add(token_id)
                         token_ids.append(token_id)
@@ -960,39 +1134,67 @@ class ArbitrageScanner:
             for market in opp.markets:
                 if not isinstance(market, dict):
                     continue
-                pair = self._coerce_market_token_pair(market.get("clob_token_ids"))
+                token_ids = self._coerce_market_token_ids(market.get("clob_token_ids"))
                 yes_val: Optional[float] = None
                 no_val: Optional[float] = None
                 update_ts: Optional[float] = None
-                if pair is not None:
-                    yes_raw = live_prices.get(pair[0])
-                    no_raw = live_prices.get(pair[1])
-                    yes_live = self._price_value(yes_raw)
-                    no_live = self._price_value(no_raw)
-                    if yes_live is None and no_live is not None and 0.0 <= no_live <= 1.0:
-                        yes_live = 1.0 - no_live
-                    if no_live is None and yes_live is not None and 0.0 <= yes_live <= 1.0:
-                        no_live = 1.0 - yes_live
-                    if yes_live is not None and no_live is not None:
-                        yes_val = float(round(min(1.0, max(0.0, yes_live)), 6))
-                        no_val = float(round(min(1.0, max(0.0, no_live)), 6))
-                        ts_candidates = [self._price_timestamp(yes_raw), self._price_timestamp(no_raw)]
-                        ts_candidates = [ts for ts in ts_candidates if ts is not None]
-                        update_ts = max(ts_candidates) if ts_candidates else now_ts
+                updated_prices: list[Optional[float]] = []
+                existing_prices = market.get("outcome_prices")
+                if isinstance(existing_prices, list):
+                    updated_prices = [self._coerce_history_price(value) for value in existing_prices]
+                if len(token_ids) > len(updated_prices):
+                    updated_prices.extend([None] * (len(token_ids) - len(updated_prices)))
+
+                ts_candidates: list[float] = []
+                for idx, token_id in enumerate(token_ids):
+                    raw = live_prices.get(token_id)
+                    live_price = self._price_value(raw)
+                    if live_price is not None:
+                        while idx >= len(updated_prices):
+                            updated_prices.append(None)
+                        updated_prices[idx] = self._coerce_history_price(live_price)
+                    ts_candidate = self._price_timestamp(raw)
+                    if ts_candidate is not None:
+                        ts_candidates.append(ts_candidate)
+
+                if len(updated_prices) == 2:
+                    if updated_prices[0] is None and updated_prices[1] is not None:
+                        updated_prices[0] = self._coerce_history_price(1.0 - float(updated_prices[1]))
+                    if updated_prices[1] is None and updated_prices[0] is not None:
+                        updated_prices[1] = self._coerce_history_price(1.0 - float(updated_prices[0]))
+
+                if ts_candidates:
+                    update_ts = max(ts_candidates)
+
+                history_point = self._build_market_history_point(1, updated_prices)
+                if history_point is not None:
+                    vector = history_point.get("outcome_prices")
+                    if isinstance(vector, list) and len(vector) >= 2:
+                        market["outcome_prices"] = [float(value) for value in vector]
+                        try:
+                            yes_val = float(vector[0])
+                            no_val = float(vector[1])
+                        except (TypeError, ValueError, IndexError):
+                            yes_val = None
+                            no_val = None
 
                 if yes_val is not None and no_val is not None:
                     market["yes_price"] = yes_val
                     market["no_price"] = no_val
                     market["current_yes_price"] = yes_val
                     market["current_no_price"] = no_val
-                    market["outcome_prices"] = [yes_val, no_val]
+                    existing_vector = market.get("outcome_prices")
+                    if isinstance(existing_vector, list) and len(existing_vector) >= 2:
+                        market["outcome_prices"] = [yes_val, no_val, *existing_vector[2:]]
+                    else:
+                        market["outcome_prices"] = [yes_val, no_val]
                     market_id = str(market.get("id", "") or "")
                     if market_id:
                         market_price_lookup[market_id] = (yes_val, no_val)
 
                 if update_ts is None:
                     update_ts = self._parse_market_price_timestamp(market.get("price_updated_at"))
-                if update_ts is None and pair is not None and opp_seen_ts is not None:
+                if update_ts is None and token_ids and opp_seen_ts is not None:
                     try:
                         existing_yes = float(market.get("yes_price"))
                         existing_no = float(market.get("no_price"))
@@ -1007,7 +1209,7 @@ class ArbitrageScanner:
                     ):
                         update_ts = opp_seen_ts
                 if update_ts is None:
-                    market["is_price_fresh"] = False if pair is not None else True
+                    market["is_price_fresh"] = False if token_ids else True
                     market.setdefault("price_age_seconds", None)
                 else:
                     age_seconds = max(0.0, now_ts - update_ts)
@@ -1354,43 +1556,25 @@ class ArbitrageScanner:
 
         return all_opportunities
 
-    def _merge_market_history_points(self, market_id: str, incoming: list[dict[str, float]], now_ms: int) -> int:
+    def _merge_market_history_points(self, market_id: str, incoming: list[dict[str, object]], now_ms: int) -> int:
         """Merge incoming history into in-memory store and return merged length."""
         if not incoming:
             return len(self._market_price_history.get(market_id, []))
 
         cutoff_ms = now_ms - int(self._market_history_retention_seconds * 1000)
-        merged_by_ts: dict[int, dict[str, float]] = {}
+        merged_by_ts: dict[int, dict[str, object]] = {}
 
         for point in self._market_price_history.get(market_id, []):
-            try:
-                ts = int(float(point.get("t", 0)))
-                yes = float(point.get("yes", 0))
-                no = float(point.get("no", 0))
-            except (TypeError, ValueError):
+            normalized = self._normalize_history_point(point, cutoff_ms)
+            if normalized is None:
                 continue
-            if ts < cutoff_ms:
-                continue
-            if not (0 <= yes <= 1.01 and 0 <= no <= 1.01):
-                continue
-            merged_by_ts[ts] = {"t": float(ts), "yes": yes, "no": no}
+            merged_by_ts[int(float(normalized["t"]))] = normalized
 
         for point in incoming:
-            try:
-                ts = int(float(point.get("t", 0)))
-                yes = float(point.get("yes", 0))
-                no = float(point.get("no", 0))
-            except (TypeError, ValueError):
+            normalized = self._normalize_history_point(point, cutoff_ms)
+            if normalized is None:
                 continue
-            if ts < cutoff_ms:
-                continue
-            if not (0 <= yes <= 1.01 and 0 <= no <= 1.01):
-                continue
-            merged_by_ts[ts] = {
-                "t": float(ts),
-                "yes": float(round(min(1.0, max(0.0, yes)), 6)),
-                "no": float(round(min(1.0, max(0.0, no)), 6)),
-            }
+            merged_by_ts[int(float(normalized["t"]))] = normalized
 
         merged = [merged_by_ts[k] for k in sorted(merged_by_ts.keys())]
         if len(merged) > self._market_history_max_points:
@@ -1399,7 +1583,7 @@ class ArbitrageScanner:
         return len(merged)
 
     async def _backfill_market_history_for_opportunities(self, opportunities: list[Opportunity], now: datetime) -> None:
-        """Backfill multi-hour YES/NO history for visible opportunities."""
+        """Backfill multi-hour outcome history for visible opportunities."""
         if not opportunities:
             return
 
@@ -1433,7 +1617,7 @@ class ArbitrageScanner:
                 if platform == "kalshi":
                     kalshi_candidates.append(market_id)
                 else:
-                    if market_id not in self._market_token_ids:
+                    if market_id not in self._market_outcome_token_ids:
                         missing_polymarket_candidates.append(market_id)
                     else:
                         polymarket_candidates.append(market_id)
@@ -1448,11 +1632,11 @@ class ArbitrageScanner:
             ):
                 break
 
-        def _extract_token_pair_from_market_payload(payload: object) -> Optional[tuple[str, str]]:
+        def _extract_token_ids_from_market_payload(payload: object) -> Optional[tuple[str, ...]]:
             if not isinstance(payload, dict):
                 return None
 
-            direct = self._coerce_polymarket_token_pair(
+            direct = self._coerce_polymarket_token_ids(
                 payload.get("clob_token_ids")
                 or payload.get("clobTokenIds")
                 or payload.get("token_ids")
@@ -1468,33 +1652,39 @@ class ArbitrageScanner:
             for token in tokens:
                 if not isinstance(token, dict):
                     continue
-                token_id = str(token.get("token_id") or token.get("tokenId") or "").strip()
-                if token_id:
+                token_id = str(
+                    token.get("token_id")
+                    or token.get("tokenId")
+                    or token.get("asset_id")
+                    or token.get("assetId")
+                    or token.get("id")
+                    or ""
+                ).strip()
+                if token_id and len(token_id) > 20:
                     inferred_ids.append(token_id)
-                if len(inferred_ids) >= 2:
-                    break
-            return self._coerce_polymarket_token_pair(inferred_ids)
+            return self._coerce_polymarket_token_ids(inferred_ids)
 
         if missing_polymarket_candidates:
             resolver_semaphore = asyncio.Semaphore(max(1, self._market_history_backfill_concurrency))
 
-            async def _resolve_missing_token_pair(market_id: str) -> bool:
+            async def _resolve_missing_token_ids(market_id: str) -> bool:
                 async with resolver_semaphore:
                     try:
                         market_payload = await polymarket_client.get_market_by_condition_id(market_id)
                     except Exception:
                         market_payload = None
 
-                    token_pair = _extract_token_pair_from_market_payload(market_payload)
-                    if token_pair is None:
+                    token_ids = _extract_token_ids_from_market_payload(market_payload)
+                    if token_ids is None:
                         self._market_history_backfill_attempt_ms[market_id] = now_ms
                         return False
 
-                    self._market_token_ids[market_id] = token_pair
+                    self._market_outcome_token_ids[market_id] = token_ids
+                    self._market_token_ids[market_id] = (token_ids[0], token_ids[1])
                     return True
 
             resolution_results = await asyncio.gather(
-                *[_resolve_missing_token_pair(mid) for mid in missing_polymarket_candidates],
+                *[_resolve_missing_token_ids(mid) for mid in missing_polymarket_candidates],
                 return_exceptions=True,
             )
             for market_id, resolved in zip(missing_polymarket_candidates, resolution_results):
@@ -1512,92 +1702,72 @@ class ArbitrageScanner:
 
         async def _fetch_polymarket(
             market_id: str,
-        ) -> tuple[str, list[dict[str, float]], bool]:
+        ) -> tuple[str, list[dict[str, object]], bool]:
             async with semaphore:
                 self._market_history_backfill_attempt_ms[market_id] = now_ms
-                yes_token, no_token = self._market_token_ids[market_id]
-                yes_res, no_res = await asyncio.gather(
-                    polymarket_client.get_prices_history(
-                        yes_token,
-                        start_ts=start_s,
-                        end_ts=now_s,
-                    ),
-                    polymarket_client.get_prices_history(
-                        no_token,
-                        start_ts=start_s,
-                        end_ts=now_s,
-                    ),
-                    return_exceptions=True,
-                )
-
-                yes_hist = []
-                no_hist = []
-                if not isinstance(yes_res, Exception):
-                    yes_hist = yes_res
-                if not isinstance(no_res, Exception):
-                    no_hist = no_res
-                if not yes_hist and not no_hist:
+                token_ids = list(self._market_outcome_token_ids.get(market_id) or ())
+                if len(token_ids) < 2:
                     return market_id, [], False
 
-                yes_by_bucket: dict[int, float] = {}
-                no_by_bucket: dict[int, float] = {}
+                token_results = await asyncio.gather(
+                    *[
+                        polymarket_client.get_prices_history(
+                            token_id,
+                            start_ts=start_s,
+                            end_ts=now_s,
+                        )
+                        for token_id in token_ids
+                    ],
+                    return_exceptions=True,
+                )
+                history_by_outcome: list[dict[int, float]] = []
+                fetch_success = False
+                for result in token_results:
+                    by_bucket: dict[int, float] = {}
+                    if not isinstance(result, Exception):
+                        fetch_success = True
+                        for point in result:
+                            if not isinstance(point, dict):
+                                continue
+                            t = point.get("t")
+                            p = point.get("p")
+                            if t is None or p is None:
+                                continue
+                            try:
+                                ts = int(float(t))
+                                price = float(p)
+                            except (TypeError, ValueError):
+                                continue
+                            if ts < start_ms or ts > now_ms or not (0 <= price <= 1.01):
+                                continue
+                            bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
+                            by_bucket[bucket] = price
+                    history_by_outcome.append(by_bucket)
 
-                for point in yes_hist:
-                    t = point.get("t")
-                    p = point.get("p")
-                    if t is None or p is None:
-                        continue
-                    try:
-                        ts = int(float(t))
-                        price = float(p)
-                    except (TypeError, ValueError):
-                        continue
-                    if ts < start_ms or ts > now_ms or not (0 <= price <= 1.01):
-                        continue
-                    bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
-                    yes_by_bucket[bucket] = price
+                if not fetch_success:
+                    return market_id, [], False
 
-                for point in no_hist:
-                    t = point.get("t")
-                    p = point.get("p")
-                    if t is None or p is None:
-                        continue
-                    try:
-                        ts = int(float(t))
-                        price = float(p)
-                    except (TypeError, ValueError):
-                        continue
-                    if ts < start_ms or ts > now_ms or not (0 <= price <= 1.01):
-                        continue
-                    bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
-                    no_by_bucket[bucket] = price
+                buckets: set[int] = set()
+                for by_bucket in history_by_outcome:
+                    buckets.update(by_bucket.keys())
+                ordered_buckets = sorted(buckets)
 
-                buckets = sorted(set(yes_by_bucket.keys()) | set(no_by_bucket.keys()))
-                merged: list[dict[str, float]] = []
-                for bucket in buckets:
-                    yes = yes_by_bucket.get(bucket)
-                    no = no_by_bucket.get(bucket)
-                    if yes is None and no is None:
-                        continue
-                    if yes is None and no is not None and 0 <= no <= 1:
-                        yes = 1.0 - no
-                    if no is None and yes is not None and 0 <= yes <= 1:
-                        no = 1.0 - yes
-                    if yes is None or no is None:
-                        continue
-                    merged.append(
-                        {
-                            "t": float(bucket),
-                            "yes": float(round(min(1.0, max(0.0, yes)), 6)),
-                            "no": float(round(min(1.0, max(0.0, no)), 6)),
-                        }
-                    )
-                return market_id, merged, True
+                last_prices: list[Optional[float]] = [None] * len(history_by_outcome)
+                merged: list[dict[str, object]] = []
+                for bucket in ordered_buckets:
+                    for idx, by_bucket in enumerate(history_by_outcome):
+                        if bucket in by_bucket:
+                            last_prices[idx] = self._coerce_history_price(by_bucket[bucket])
+                    merged_point = self._build_market_history_point(bucket, list(last_prices))
+                    if merged_point is not None:
+                        merged.append(merged_point)
+
+                return market_id, merged, fetch_success
 
         updated = 0
         completed = 0
 
-        def _apply_backfill_results(results: list[tuple[str, list[dict[str, float]], bool]]) -> None:
+        def _apply_backfill_results(results: list[tuple[str, list[dict[str, object]], bool]]) -> None:
             nonlocal updated, completed
             for market_id, points, success in results:
                 if success:
@@ -1736,7 +1906,7 @@ class ArbitrageScanner:
 
     def get_market_history_for_opportunities(
         self, opportunities: list[Opportunity], max_points: Optional[int] = None
-    ) -> dict[str, list[dict[str, float]]]:
+    ) -> dict[str, list[dict[str, object]]]:
         """Return compact market history map for markets present in opportunities."""
         market_ids: set[str] = set()
         for opp in opportunities:
@@ -1744,7 +1914,7 @@ class ArbitrageScanner:
                 for market_id in self._market_history_lookup_ids(market):
                     market_ids.add(market_id)
 
-        out: dict[str, list[dict[str, float]]] = {}
+        out: dict[str, list[dict[str, object]]] = {}
         export_points = self._market_history_export_points if max_points is None else max_points
         limit = max(2, min(self._market_history_max_points, int(export_points)))
         for mid in market_ids:
@@ -1753,7 +1923,7 @@ class ArbitrageScanner:
                 out[mid] = hist[-limit:]
         return out
 
-    def get_broad_market_history(self, max_markets: int = 500) -> dict[str, list[dict[str, float]]]:
+    def get_broad_market_history(self, max_markets: int = 500) -> dict[str, list[dict[str, object]]]:
         """Export history for all cached markets, sorted by recency, capped at *max_markets*.
 
         Unlike ``get_market_history_for_opportunities`` which only returns history
@@ -1767,13 +1937,13 @@ class ArbitrageScanner:
 
         # Sort markets by most-recent data point (descending) so we keep the
         # most relevant markets when capping at max_markets.
-        def _last_ts(hist: list[dict[str, float]]) -> float:
+        def _last_ts(hist: list[dict[str, object]]) -> float:
             return float(hist[-1].get("t", 0)) if hist else 0.0
 
         candidates = [(mid, hist) for mid, hist in self._market_price_history.items() if len(hist) >= 2]
         candidates.sort(key=lambda pair: _last_ts(pair[1]), reverse=True)
 
-        out: dict[str, list[dict[str, float]]] = {}
+        out: dict[str, list[dict[str, object]]] = {}
         for mid, hist in candidates[:max_markets]:
             out[mid] = hist[-limit:]
         return out
@@ -1833,7 +2003,7 @@ class ArbitrageScanner:
         attached = 0
         for opp in opportunities:
             for market in opp.markets:
-                history: list[dict[str, float]] = []
+                history: list[dict[str, object]] = []
                 for market_id in self._market_history_lookup_ids(market):
                     candidate = market_history.get(market_id, [])
                     if len(candidate) > len(history):
@@ -1856,7 +2026,7 @@ class ArbitrageScanner:
             if row is None:
                 return 0
             db_history = row.market_history_json if isinstance(row.market_history_json, dict) else {}
-            fallback_history: dict[str, list[dict[str, float]]] = {}
+            fallback_history: dict[str, list[dict[str, object]]] = {}
             history_alias_map: dict[str, str] = {}
             if isinstance(row.opportunities_json, list):
                 needed_market_ids = set(market_ids)

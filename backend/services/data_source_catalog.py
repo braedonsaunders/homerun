@@ -1002,7 +1002,7 @@ def _events_wrapper_source_code(
                 "        if not api_key or not email:",
                 "            if not bool(getattr(self, '_missing_credentials_warned', False)):",
                 "                import logging as _log",
-                "                _log.getLogger('data_source.acled').warning('ACLED source requires api_key and email in config — skipping fetch')",
+                "                _log.getLogger('data_source.acled').info('ACLED source disabled: missing api_key/email config')",
                 "                self._missing_credentials_warned = True",
                 "            return []",
                 "        if not endpoint:",

@@ -12,7 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +64,16 @@ class RetryableAsyncSession(AsyncSession):
         "serialization failure",
         "could not serialize access",
         "lock not available",
+        "too many clients already",
+        "remaining connection slots are reserved",
+        "cannot connect now",
+        "connection is closed",
+        "underlying connection is closed",
+        "connection has been closed",
+        "closed the connection unexpectedly",
+        "terminating connection",
+        "connection reset by peer",
+        "broken pipe",
     )
 
     async def _await_cancellation_safe(self, operation) -> None:
@@ -75,33 +85,49 @@ class RetryableAsyncSession(AsyncSession):
             raise
 
     async def rollback(self) -> None:
-        await self._await_cancellation_safe(super().rollback())
+        try:
+            await self._await_cancellation_safe(super().rollback())
+        except Exception:
+            try:
+                await self.invalidate()
+            except Exception:
+                pass
+            raise
 
     async def close(self) -> None:
-        await self._await_cancellation_safe(super().close())
+        try:
+            await self._await_cancellation_safe(super().close())
+        except Exception:
+            try:
+                await self.invalidate()
+            except Exception:
+                pass
+
+    async def invalidate(self) -> None:
+        await self._await_cancellation_safe(super().invalidate())
+
+    async def _reset_after_failed_commit(self) -> None:
+        try:
+            await self.rollback()
+        except Exception:
+            try:
+                await self.invalidate()
+            except Exception:
+                pass
 
     async def commit(self) -> None:
         for attempt in range(1, self._COMMIT_RETRY_ATTEMPTS + 1):
             try:
                 await super().commit()
                 return
-            except OperationalError as exc:
+            except DBAPIError as exc:
                 message = str(getattr(exc, "orig", exc)).lower()
                 retryable = any(marker in message for marker in self._COMMIT_RETRYABLE_MESSAGES)
                 if not retryable or attempt >= self._COMMIT_RETRY_ATTEMPTS:
                     raise
-                await self.rollback()
+                await self._reset_after_failed_commit()
                 delay = min(self._COMMIT_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 0.4)
                 await asyncio.sleep(delay)
-
-    def __del__(self) -> None:
-        try:
-            sync_session = getattr(self, "sync_session", None)
-            if sync_session is not None:
-                sync_session.close()
-        except Exception:
-            pass
-
 
 class TradeStatus(enum.Enum):
     PENDING = "pending"
@@ -3244,7 +3270,19 @@ async def get_db_session() -> AsyncSession:
         yield session
     except BaseException:
         if session.in_transaction():
-            await session.rollback()
+            try:
+                await session.rollback()
+            except Exception:
+                try:
+                    await session.invalidate()
+                except Exception:
+                    pass
         raise
     finally:
-        await session.close()
+        try:
+            await session.close()
+        except Exception:
+            try:
+                await session.invalidate()
+            except Exception:
+                pass

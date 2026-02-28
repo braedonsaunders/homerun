@@ -443,10 +443,10 @@ async def build_live_signal_contexts(
     strict_ttl = max(0.05, float(getattr(settings, "WS_EXECUTION_PRICE_STALE_SECONDS", 1.0) or 1.0))
     relaxed_ttl = max(strict_ttl, float(getattr(settings, "WS_PRICE_STALE_SECONDS", 30.0) or 30.0))
     source_priority = {
-        "redis_strict": 0,
-        "ws_strict": 1,
-        "redis_relaxed": 2,
-        "ws_relaxed": 3,
+        "ws_strict": 0,
+        "ws_relaxed": 1,
+        "redis_strict": 2,
+        "redis_relaxed": 3,
         "http_batch": 4,
         "market_snapshot": 5,
         "history_tail": 6,
@@ -487,49 +487,6 @@ async def build_live_signal_contexts(
 
     if all_market_tokens:
         token_list = sorted(all_market_tokens)
-        try:
-            strict_rows = await redis_price_cache.read_prices(token_list, stale_seconds=strict_ttl)
-        except Exception as exc:
-            logger.warning(
-                "Redis strict price read failed",
-                token_count=len(token_list),
-                stale_seconds=strict_ttl,
-                exc_info=exc,
-            )
-            strict_rows = {}
-        for token_id, row in strict_rows.items():
-            if not isinstance(row, dict):
-                continue
-            _record_live_price(
-                token_id,
-                mid=row.get("mid"),
-                source="redis_strict",
-                observed_at_s=safe_float(row.get("ts")),
-            )
-
-        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
-        if unresolved and relaxed_ttl > strict_ttl + 1e-9:
-            try:
-                relaxed_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=relaxed_ttl)
-            except Exception as exc:
-                logger.warning(
-                    "Redis relaxed price read failed",
-                    token_count=len(unresolved),
-                    stale_seconds=relaxed_ttl,
-                    exc_info=exc,
-                )
-                relaxed_rows = {}
-            for token_id, row in relaxed_rows.items():
-                if not isinstance(row, dict):
-                    continue
-                _record_live_price(
-                    token_id,
-                    mid=row.get("mid"),
-                    source="redis_relaxed",
-                    observed_at_s=safe_float(row.get("ts")),
-                )
-
-        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
         feed_manager = None
         try:
             feed_manager = get_feed_manager()
@@ -539,8 +496,8 @@ async def build_live_signal_contexts(
                 exc_info=exc,
             )
             feed_manager = None
-        if unresolved and feed_manager is not None and getattr(feed_manager, "_started", False):
-            for token_id in unresolved:
+        if feed_manager is not None and getattr(feed_manager, "_started", False):
+            for token_id in token_list:
                 token_norm = _normalize_identifier(token_id)
                 if not token_norm:
                     continue
@@ -605,6 +562,50 @@ async def build_live_signal_contexts(
                     mid=parsed_mid,
                     source=source,
                     observed_at_s=observed_at_s,
+                )
+
+        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        if unresolved:
+            try:
+                strict_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=strict_ttl)
+            except Exception as exc:
+                logger.warning(
+                    "Redis strict price read failed",
+                    token_count=len(unresolved),
+                    stale_seconds=strict_ttl,
+                    exc_info=exc,
+                )
+                strict_rows = {}
+            for token_id, row in strict_rows.items():
+                if not isinstance(row, dict):
+                    continue
+                _record_live_price(
+                    token_id,
+                    mid=row.get("mid"),
+                    source="redis_strict",
+                    observed_at_s=safe_float(row.get("ts")),
+                )
+
+        unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        if unresolved and relaxed_ttl > strict_ttl + 1e-9:
+            try:
+                relaxed_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=relaxed_ttl)
+            except Exception as exc:
+                logger.warning(
+                    "Redis relaxed price read failed",
+                    token_count=len(unresolved),
+                    stale_seconds=relaxed_ttl,
+                    exc_info=exc,
+                )
+                relaxed_rows = {}
+            for token_id, row in relaxed_rows.items():
+                if not isinstance(row, dict):
+                    continue
+                _record_live_price(
+                    token_id,
+                    mid=row.get("mid"),
+                    source="redis_relaxed",
+                    observed_at_s=safe_float(row.get("ts")),
                 )
 
         unresolved = [token_id for token_id in token_list if token_id not in live_prices]
@@ -726,7 +727,9 @@ async def build_live_signal_contexts(
 
     await asyncio.gather(*[_resolve_history(token_id) for token_id in sorted(selected_tokens)])
 
-    fetched_at_iso = utcnow().isoformat() + "Z"
+    fetched_at_dt = utcnow()
+    fetched_at_iso = fetched_at_dt.isoformat().replace("+00:00", "Z")
+    fetched_at_epoch = fetched_at_dt.timestamp()
     contexts: dict[str, dict[str, Any]] = {}
     for row in signal_rows:
         signal = row["signal"]
@@ -842,11 +845,20 @@ async def build_live_signal_contexts(
         selected_source = str(selected_meta.get("source") or "").strip().lower()
         selected_age_ms = safe_float(selected_meta.get("age_ms"))
         selected_observed_at = selected_meta.get("observed_at") or None
+        if selected_observed_at is None and selected_live is not None:
+            selected_observed_at = fetched_at_iso
+        if selected_age_ms is None and selected_observed_at is not None:
+            selected_observed_s = _epoch_seconds_from_market_timestamp(selected_observed_at)
+            if selected_observed_s is not None:
+                selected_age_ms = max(0.0, (fetched_at_epoch - selected_observed_s) * 1000.0)
+        if selected_age_ms is None and selected_live is not None:
+            selected_age_ms = 0.0
         yes_source = str(yes_meta.get("source") or "").strip().lower() or None
         no_source = str(no_meta.get("source") or "").strip().lower() or None
         contexts[signal_id] = {
             "available": bool(selected_live is not None),
             "fetched_at": fetched_at_iso,
+            "live_market_fetched_at": fetched_at_iso,
             "market_id": signal_market_id or market_id,
             "condition_id": _normalize_identifier(market_info.get("condition_id") or market_id),
             "market_question": (

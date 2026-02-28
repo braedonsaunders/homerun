@@ -17,7 +17,7 @@ Setup:
 
 import asyncio
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from enum import Enum
 from typing import Any, Optional
@@ -50,6 +50,9 @@ POLYMARKET_SIGNATURE_TYPES = (0, 1, 2)
 DB_RETRY_ATTEMPTS = 3
 DB_RETRY_BASE_DELAY_SECONDS = 0.05
 DB_RETRY_MAX_DELAY_SECONDS = 0.3
+POST_ONLY_REPRICE_TICK = 0.01
+INITIALIZATION_RETRY_BACKOFF_SECONDS = 60.0
+MISSING_DEPENDENCY_RELOG_SECONDS = 300.0
 
 
 def _to_decimal(value) -> Decimal:
@@ -129,6 +132,23 @@ def _normalize_utc_datetime(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _is_post_only_cross_reject(error_message: str | None) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    return "post-only" in text and "crosses book" in text
+
+
+def _clamp_binary_price(value: float) -> float:
+    return max(POST_ONLY_REPRICE_TICK, min(0.99, float(value)))
+
+
+def _next_post_only_retry_price(side: "OrderSide", price: float) -> float:
+    if side == OrderSide.BUY:
+        return _clamp_binary_price(float(price) - POST_ONLY_REPRICE_TICK)
+    return _clamp_binary_price(float(price) + POST_ONLY_REPRICE_TICK)
 
 
 def _parse_provider_datetime(value: Any) -> datetime:
@@ -241,6 +261,9 @@ class LiveExecutionService:
         self._wallet_address: Optional[str] = None
         self._eoa_address: Optional[str] = None
         self._proxy_funder_address: Optional[str] = None
+        self._last_init_error: Optional[str] = None
+        self._init_retry_not_before: Optional[datetime] = None
+        self._last_missing_dependency_log_at: Optional[datetime] = None
         self._orders: OrderedDict[str, Order] = OrderedDict()
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
@@ -940,6 +963,8 @@ class LiveExecutionService:
         if self.is_ready():
             await self._sync_trading_transport()
             return True
+        if self._init_retry_not_before is not None and utcnow() < self._init_retry_not_before:
+            return False
         return await self.initialize()
 
     async def initialize(self) -> bool:
@@ -959,10 +984,14 @@ class LiveExecutionService:
             ) = await self._resolve_polymarket_credentials()
             if not all([private_key, api_key, api_secret, api_passphrase]):
                 logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
+                self._last_init_error = "missing_polymarket_credentials"
+                self._init_retry_not_before = None
                 return False
 
             self._eoa_address = None
             self._proxy_funder_address = None
+            self._last_init_error = None
+            self._init_retry_not_before = None
 
             try:
                 # Import py-clob-client
@@ -999,6 +1028,8 @@ class LiveExecutionService:
                             "Missing proxy funder for signature_type=%s. Set POLYMARKET_FUNDER or switch to signature_type=0.",
                             sig_type,
                         )
+                        self._last_init_error = f"missing_proxy_funder_signature_type_{sig_type}"
+                        self._init_retry_not_before = None
                         self._initialized = False
                         self._client = None
                         self._wallet_address = None
@@ -1050,10 +1081,20 @@ class LiveExecutionService:
                 except Exception as _bal_exc:
                     logger.warning("Balance probe during init failed (non-fatal): %s", _bal_exc)
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
+                self._last_init_error = None
+                self._init_retry_not_before = None
                 return True
 
             except ImportError:
-                logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+                now = utcnow()
+                if (
+                    self._last_missing_dependency_log_at is None
+                    or (now - self._last_missing_dependency_log_at).total_seconds() >= MISSING_DEPENDENCY_RELOG_SECONDS
+                ):
+                    logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+                    self._last_missing_dependency_log_at = now
+                self._last_init_error = "py-clob-client not installed"
+                self._init_retry_not_before = now + timedelta(seconds=INITIALIZATION_RETRY_BACKOFF_SECONDS)
                 self._initialized = False
                 self._client = None
                 self._wallet_address = None
@@ -1062,6 +1103,8 @@ class LiveExecutionService:
                 return False
             except Exception as e:
                 logger.error(f"Failed to initialize trading client: {e}")
+                self._last_init_error = str(e)
+                self._init_retry_not_before = None
                 self._initialized = False
                 self._client = None
                 self._wallet_address = None
@@ -1072,6 +1115,9 @@ class LiveExecutionService:
     def is_ready(self) -> bool:
         """Check if trading service is ready"""
         return self._initialized and self._client is not None
+
+    def get_last_init_error(self) -> Optional[str]:
+        return str(self._last_init_error or "").strip() or None
 
     def _sync_stats_from_decimals(self) -> None:
         self._stats.total_volume = float(self._total_volume)
@@ -2184,15 +2230,18 @@ class LiveExecutionService:
             from py_clob_client.clob_types import OrderArgs
             from py_clob_client.order_builder.constants import BUY, SELL
 
-            order_args = OrderArgs(
-                price=price,
-                size=size,
-                side=BUY if side == OrderSide.BUY else SELL,
-                token_id=token_id,
-            )
+            submit_price = float(price)
+            order_side = BUY if side == OrderSide.BUY else SELL
 
             max_attempts = 3 if side == OrderSide.SELL else 2
             for attempt in range(max_attempts):
+                order.price = submit_price
+                order_args = OrderArgs(
+                    price=submit_price,
+                    size=size,
+                    side=order_side,
+                    token_id=token_id,
+                )
                 try:
                     # Create and sign the order
                     signed_order = self._client.create_order(order_args)
@@ -2226,6 +2275,24 @@ class LiveExecutionService:
                                 attempt=attempt + 1,
                                 token_id=token_id,
                             )
+                            await asyncio.sleep(0)
+                            continue
+                    if (
+                        post_only
+                        and _is_post_only_cross_reject(error_text)
+                        and attempt < max_attempts - 1
+                    ):
+                        retry_price = _next_post_only_retry_price(side, submit_price)
+                        if abs(retry_price - submit_price) >= 1e-9:
+                            logger.warning(
+                                "Post-only order crossed book; repricing one tick and retrying",
+                                attempt=attempt + 1,
+                                token_id=token_id,
+                                side=side.value,
+                                from_price=round(submit_price, 6),
+                                to_price=round(retry_price, 6),
+                            )
+                            submit_price = retry_price
                             await asyncio.sleep(0)
                             continue
                     raise
@@ -2290,6 +2357,24 @@ class LiveExecutionService:
                             attempt=attempt + 1,
                             token_id=token_id,
                         )
+                        await asyncio.sleep(0)
+                        continue
+                if (
+                    post_only
+                    and _is_post_only_cross_reject(error_message)
+                    and attempt < max_attempts - 1
+                ):
+                    retry_price = _next_post_only_retry_price(side, submit_price)
+                    if abs(retry_price - submit_price) >= 1e-9:
+                        logger.warning(
+                            "Post-only order crossed book; repricing one tick and retrying",
+                            attempt=attempt + 1,
+                            token_id=token_id,
+                            side=side.value,
+                            from_price=round(submit_price, 6),
+                            to_price=round(retry_price, 6),
+                        )
+                        submit_price = retry_price
                         await asyncio.sleep(0)
                         continue
 

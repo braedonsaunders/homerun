@@ -137,6 +137,12 @@ class EventDispatcher:
                 float(getattr(settings, "EVENT_HANDLER_TIMEOUT_SECONDS", 60.0) or 60.0),
             )
         )
+        self._handler_cancel_grace_seconds = float(
+            max(
+                0.1,
+                float(getattr(settings, "EVENT_HANDLER_CANCEL_GRACE_SECONDS", 2.0) or 2.0),
+            )
+        )
         runtime_env = (
             str(os.getenv("HOMERUN_ENV", os.getenv("APP_ENV", "development")) or "development").strip().lower()
         )
@@ -146,6 +152,46 @@ class EventDispatcher:
         else:
             self._fail_on_unowned_remote = strict_override.strip().lower() in {"1", "true", "yes", "on"}
         self._timed_out_handler_tasks: set[asyncio.Task[Any]] = set()
+
+    def _consume_timed_out_handler_result(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        strategy: str | None = None,
+        event_type: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self._timed_out_handler_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "Strategy event handler failed after timeout",
+                strategy=strategy,
+                event_type=event_type,
+                timeout_seconds=timeout_seconds,
+                exc_info=exc,
+            )
+
+    def _track_timed_out_handler_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        strategy: str,
+        event_type: str,
+        timeout_seconds: float,
+    ) -> None:
+        self._timed_out_handler_tasks.add(task)
+        task.add_done_callback(
+            lambda done_task: self._consume_timed_out_handler_result(
+                done_task,
+                strategy=strategy,
+                event_type=event_type,
+                timeout_seconds=timeout_seconds,
+            )
+        )
 
     def subscribe(self, strategy_slug: str, event_type: str, handler: EventHandler) -> None:
         if event_type != "*" and event_type not in EventType._ALL:
@@ -201,12 +247,36 @@ class EventDispatcher:
                 await task
             except asyncio.CancelledError:
                 pass
-        timed_out_tasks = list(self._timed_out_handler_tasks)
-        self._timed_out_handler_tasks.clear()
-        for timed_out_task in timed_out_tasks:
+        pending_cancellations: list[asyncio.Task[Any]] = []
+        for timed_out_task in list(self._timed_out_handler_tasks):
             if timed_out_task.done():
+                self._consume_timed_out_handler_result(timed_out_task)
                 continue
             timed_out_task.cancel()
+            pending_cancellations.append(timed_out_task)
+        if pending_cancellations:
+            shutdown_grace_seconds = max(self._handler_cancel_grace_seconds, 2.0)
+            try:
+                done, pending = await asyncio.wait(
+                    pending_cancellations,
+                    timeout=shutdown_grace_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed while awaiting timed-out strategy handlers during shutdown",
+                    tasks=len(pending_cancellations),
+                    exc_info=exc,
+                )
+                done = set()
+                pending = set(pending_cancellations)
+            for done_task in done:
+                self._consume_timed_out_handler_result(done_task)
+            if pending:
+                logger.warning(
+                    "Timed-out strategy handlers still pending during shutdown",
+                    tasks=len(pending),
+                    shutdown_grace_seconds=shutdown_grace_seconds,
+                )
 
     async def dispatch(
         self,
@@ -287,31 +357,54 @@ class EventDispatcher:
             if done:
                 result = handler_task.result()
                 return result if isinstance(result, list) else []
-            self._timed_out_handler_tasks.add(handler_task)
-
-            def _consume_late_handler_result(task: asyncio.Task[Any]) -> None:
-                self._timed_out_handler_tasks.discard(task)
+            handler_task.cancel()
+            done_after_cancel, _pending_after_cancel = await asyncio.wait(
+                {handler_task},
+                timeout=self._handler_cancel_grace_seconds,
+            )
+            if done_after_cancel:
                 try:
-                    task.result()
-                except asyncio.CancelledError:
-                    return
-                except Exception as exc:
+                    handler_task.result()
                     logger.warning(
-                        "Strategy event handler failed after timeout",
+                        "Strategy event handler timed out but completed during cancellation grace period",
                         strategy=slug,
                         event_type=event.event_type,
                         timeout_seconds=timeout_seconds,
+                        cancel_grace_seconds=self._handler_cancel_grace_seconds,
+                    )
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "Strategy event handler timed out and was cancelled",
+                        strategy=slug,
+                        event_type=event.event_type,
+                        timeout_seconds=timeout_seconds,
+                        cancel_grace_seconds=self._handler_cancel_grace_seconds,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Strategy event handler timed out and failed during cancellation",
+                        strategy=slug,
+                        event_type=event.event_type,
+                        timeout_seconds=timeout_seconds,
+                        cancel_grace_seconds=self._handler_cancel_grace_seconds,
                         exc_info=exc,
                     )
-
-            handler_task.add_done_callback(_consume_late_handler_result)
-            logger.warning(
-                "Strategy event handler timed out",
-                strategy=slug,
-                event_type=event.event_type,
-                timeout_seconds=timeout_seconds,
-            )
-            return []
+                return []
+            else:
+                self._track_timed_out_handler_task(
+                    handler_task,
+                    strategy=slug,
+                    event_type=event.event_type,
+                    timeout_seconds=timeout_seconds,
+                )
+                logger.warning(
+                    "Strategy event handler timed out; cancellation grace exceeded",
+                    strategy=slug,
+                    event_type=event.event_type,
+                    timeout_seconds=timeout_seconds,
+                    cancel_grace_seconds=self._handler_cancel_grace_seconds,
+                )
+                return []
         except Exception as exc:
             logger.warning(
                 "Strategy event handler failed",

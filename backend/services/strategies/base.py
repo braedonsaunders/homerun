@@ -317,10 +317,10 @@ class BaseStrategy(ABC):
     mispricing_type: Optional[str] = None  # "within_market", "cross_market", "settlement_lag", "news_information"
 
     # Source key — which data pipeline feeds this strategy
-    source_key: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders"
+    source_key: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders", "manual"
 
     # Worker affinity — which worker should run this strategy's detect()
-    worker_affinity: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders"
+    worker_affinity: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders", "manual"
 
     # Opportunity TTL — how long detected opportunities stay valid (minutes)
     # None means use the global SCANNER_STALE_OPPORTUNITY_MINUTES default.
@@ -350,6 +350,9 @@ class BaseStrategy(ABC):
     # Use EventType.* constants (e.g. EventType.MARKET_DATA_REFRESH).
     # Unknown values are rejected at registration time by the EventDispatcher.
     subscriptions: list[str] = []
+    # Strategy-level entry gate. Set False for manage-existing-only strategies
+    # (for example, manual position adoption bots that should only run should_exit()).
+    allow_new_entries: bool = True
     supports_entry_take_profit_exit: bool = False
     default_open_order_timeout_seconds: Optional[float] = None
     # Realtime scanner routing for MARKET_DATA_REFRESH batches:

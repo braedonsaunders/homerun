@@ -15,6 +15,7 @@ from services.trader_orchestrator.sources.registry import (
 )
 from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
+    ensure_system_opportunity_strategies_seeded,
 )
 from services.strategy_loader import strategy_loader
 from services.strategy_sdk import StrategySDK
@@ -170,6 +171,7 @@ def _strategy_param_fields(row: Any, *, default_params: dict[str, Any]) -> list[
 
 
 async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
+    await ensure_system_opportunity_strategies_seeded(session)
     rows = list(
         (
             await session.execute(

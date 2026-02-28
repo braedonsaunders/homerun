@@ -1,36 +1,34 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type ElementType, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
-  ArrowDownRight,
-  ArrowUpRight,
   BarChart3,
   Calendar,
+  Clock3,
   RefreshCw,
   Target,
   TrendingDown,
   TrendingUp,
 } from 'lucide-react'
-import { cn } from '../lib/utils'
 import {
   Area,
   AreaChart,
   CartesianGrid,
-  Legend,
-  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
+import { cn } from '../lib/utils'
 import {
   getAccountTrades,
-  getAllTraderOrders,
+  getLiveWalletPerformance,
   getSimulationAccounts,
   getTraderOrchestratorStats,
-  SimulationAccount,
-  SimulationTrade,
-  TraderOrder,
+  type LiveWalletOpenLot,
+  type LiveWalletRoundTrip,
+  type SimulationAccount,
+  type SimulationTrade,
 } from '../services/api'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -43,68 +41,63 @@ import {
   TableHeader,
   TableRow,
 } from './ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 
-type ViewMode = 'simulation' | 'live' | 'all'
+type ViewMode = 'simulation' | 'live'
+type DetailTab = 'overview' | 'insights' | 'history'
 type TimeRange = '7d' | '30d' | '90d' | 'all'
+type HistorySortKey = 'closedAt' | 'marketQuestion' | 'category' | 'pnl' | 'roiPercent' | 'holdMinutes' | 'buyNotional' | 'sellNotional'
+type HistorySortDirection = 'asc' | 'desc'
+type HistoryOutcomeFilter = 'all' | 'wins' | 'losses' | 'breakeven'
 
-type VenuePresentation = {
-  label: string
-  detail: string
-  className: string
+type SimulationTradeWithAccount = SimulationTrade & {
+  accountName?: string
 }
 
-type UnifiedTrade = {
+type UnifiedTradeRow = {
   id: string
   source: 'sandbox' | 'live'
   strategy: string
   marketQuestion: string
-  marketId?: string
-  directionLabel: string
-  lifecycleLabel: string
-  outcomeHeadline: string
-  outcomeDetail: string
-  outcomeDetailCompact: string
-  modeLabel: string
-  venuePresentation: VenuePresentation
-  fillPx: number
-  fillProgressPercent: number | null
-  markPx: number
-  unrealized: number
-  dynamicEdgePercent: number
-  exitProgressPercent: number | null
-  providerSnapshotStatus?: string
-  createdAt?: string
-  updatedAt?: string
-  cost: number
+  marketId: string
+  outcome: string
+  category: string
+  quantity: number | null
+  buyPrice: number | null
+  sellPrice: number | null
+  buyNotional: number
+  sellNotional: number
   pnl: number | null
+  roiPercent: number
+  holdMinutes: number | null
   status: string
-  executedAt: string
+  openedAt: string
+  closedAt: string
   accountName?: string
   isResolved: boolean
   isWin: boolean
   isLoss: boolean
 }
 
-type StrategyRollup = {
-  strategy: string
+type RollupRow = {
+  key: string
+  label: string
   trades: number
   wins: number
   losses: number
   pnl: number
-  sandboxTrades: number
-  liveTrades: number
+  buyNotional: number
+  roiSum: number
 }
 
-type LiveTraderOrder = TraderOrder & {
-  executed_at: string
-  total_cost: number
-  strategy: string
+type PnlPoint = {
+  date: string
+  cumulativePnl: number
 }
 
 const VIEW_MODE_OPTIONS: Array<{ id: ViewMode; label: string }> = [
-  { id: 'all', label: 'Unified' },
-  { id: 'simulation', label: 'Sandbox' },
   { id: 'live', label: 'Live' },
+  { id: 'simulation', label: 'Sandbox' },
 ]
 
 const RANGE_OPTIONS: Array<{ id: TimeRange; label: string }> = [
@@ -113,21 +106,64 @@ const RANGE_OPTIONS: Array<{ id: TimeRange; label: string }> = [
   { id: '90d', label: '90D' },
   { id: 'all', label: 'All Time' },
 ]
+
 const TRADE_TAPE_PAGE_SIZE = 100
 
-const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
-const RESOLVED_ORDER_STATUSES = new Set([
-  'resolved',
-  'resolved_win',
-  'resolved_loss',
-  'closed_win',
-  'closed_loss',
-  'win',
-  'loss',
-])
-const FAILED_ORDER_STATUSES = new Set(['failed', 'rejected', 'error', 'cancelled'])
-const WIN_ORDER_STATUSES = new Set(['resolved_win', 'closed_win', 'win'])
-const LOSS_ORDER_STATUSES = new Set(['resolved_loss', 'closed_loss', 'loss'])
+const HISTORY_SORT_OPTIONS: Array<{ id: HistorySortKey; label: string }> = [
+  { id: 'closedAt', label: 'Closed Time' },
+  { id: 'pnl', label: 'P&L' },
+  { id: 'roiPercent', label: 'ROI' },
+  { id: 'holdMinutes', label: 'Hold Duration' },
+  { id: 'buyNotional', label: 'Buy Notional' },
+  { id: 'sellNotional', label: 'Sell Notional' },
+  { id: 'marketQuestion', label: 'Market' },
+  { id: 'category', label: 'Category' },
+]
+
+const SIM_RESOLVED_STATUSES = new Set(['resolved_win', 'resolved_loss', 'closed_win', 'closed_loss', 'win', 'loss'])
+const SIM_WIN_STATUSES = new Set(['resolved_win', 'closed_win', 'win'])
+const SIM_LOSS_STATUSES = new Set(['resolved_loss', 'closed_loss', 'loss'])
+
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
+const DAY_LABEL_BY_INDEX: Record<number, string> = {
+  0: 'Sun',
+  1: 'Mon',
+  2: 'Tue',
+  3: 'Wed',
+  4: 'Thu',
+  5: 'Fri',
+  6: 'Sat',
+}
+
+const TIME_BUCKETS: Array<{ key: string; label: string; startHour: number; endHour: number }> = [
+  { key: 'h00_03', label: '00-03', startHour: 0, endHour: 4 },
+  { key: 'h04_07', label: '04-07', startHour: 4, endHour: 8 },
+  { key: 'h08_11', label: '08-11', startHour: 8, endHour: 12 },
+  { key: 'h12_15', label: '12-15', startHour: 12, endHour: 16 },
+  { key: 'h16_19', label: '16-19', startHour: 16, endHour: 20 },
+  { key: 'h20_23', label: '20-23', startHour: 20, endHour: 24 },
+]
+
+function normalizeStatus(value: unknown): string {
+  return String(value || 'unknown').trim().toLowerCase()
+}
+
+function toTs(value: string | null | undefined): number {
+  if (!value) return 0
+  const parsed = new Date(value).getTime()
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function inTimeRange(value: string | null | undefined, range: TimeRange): boolean {
+  if (!value) return false
+  if (range === 'all') return true
+  const ts = toTs(value)
+  if (ts <= 0) return false
+  const now = Date.now()
+  const dayCount = range === '7d' ? 7 : range === '30d' ? 30 : 90
+  const cutoff = now - dayCount * 24 * 60 * 60 * 1000
+  return ts >= cutoff
+}
 
 function formatCurrency(value: number, compact = false): string {
   if (!Number.isFinite(value)) return '$0.00'
@@ -157,23 +193,19 @@ function formatPercent(value: number, digits = 1): string {
   return `${value.toFixed(digits)}%`
 }
 
-function formatDateLabel(dateStr: string): string {
-  const date = new Date(dateStr)
-  if (Number.isNaN(date.getTime())) return '--'
-  return date.toLocaleDateString(undefined, {
+function formatSignedPercent(value: number, digits = 1): string {
+  if (!Number.isFinite(value)) return '0.0%'
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : ''
+  return `${prefix}${Math.abs(value).toFixed(digits)}%`
+}
+
+function formatDateLabel(value: string): string {
+  const ts = toTs(value)
+  if (ts <= 0) return '--'
+  return new Date(ts).toLocaleDateString(undefined, {
     month: 'short',
     day: '2-digit',
   })
-}
-
-function normalizeStatus(value: unknown): string {
-  return String(value || 'unknown').trim().toLowerCase()
-}
-
-function toTs(value: string | null | undefined): number {
-  if (!value) return 0
-  const ts = new Date(value).getTime()
-  return Number.isFinite(ts) ? ts : 0
 }
 
 function formatRelativeAge(value: string | null | undefined): string {
@@ -186,287 +218,90 @@ function formatRelativeAge(value: string | null | undefined): string {
   return `${Math.round(ageMs / 86_400_000)}d`
 }
 
-function toFiniteNumber(value: unknown): number | null {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
+function formatDurationMinutes(minutes: number | null): string {
+  if (minutes === null || !Number.isFinite(minutes) || minutes < 0) return '—'
+  if (minutes < 60) return `${minutes.toFixed(0)}m`
+  const hours = minutes / 60
+  if (hours < 24) return `${hours.toFixed(1)}h`
+  return `${(hours / 24).toFixed(1)}d`
 }
 
-function clamp(value: number, minValue: number, maxValue: number): number {
-  if (value < minValue) return minValue
-  if (value > maxValue) return maxValue
-  return value
+function formatPrice(price: number | null): string {
+  if (price === null || !Number.isFinite(price)) return '—'
+  return price.toFixed(3)
 }
 
-function normalizeEdgePercent(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  if (Math.abs(value) <= 1) return value * 100
-  if (Math.abs(value) > 200) return value / 100
-  return value
+function formatQuantity(size: number | null): string {
+  if (size === null || !Number.isFinite(size)) return '—'
+  return size.toFixed(2)
 }
 
-function titleCaseStatusLabel(value: string): string {
-  const normalized = normalizeStatus(value)
-  if (!normalized) return 'Unknown'
-  return normalized
-    .split('_')
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
-    .join(' ')
-}
-
-function resolveOrderLifecycleLabel(status: string): string {
-  if (status === 'submitted' || status === 'pending' || status === 'queued') return 'Submitted'
-  if (status === 'open') return 'Working'
-  if (status === 'executed') return 'Filled'
-  if (status === 'cancelled') return 'Canceled'
-  if (status === 'rejected') return 'Rejected'
-  if (status === 'failed' || status === 'error') return 'Failed'
-  if (status === 'resolved_win') return 'Settled (Profit)'
-  if (status === 'resolved_loss') return 'Settled (Loss)'
-  if (status === 'closed_win') return 'Closed (Profit)'
-  if (status === 'closed_loss') return 'Closed (Loss)'
-  if (status === 'win') return 'Settled (Profit)'
-  if (status === 'loss') return 'Settled (Loss)'
-  if (status === 'resolved') return 'Settled'
-  return titleCaseStatusLabel(status)
-}
-
-function resolveOrderStatusBadgePresentation(
-  status: string,
-  pnl: number
-): { variant: 'default' | 'secondary' | 'destructive' | 'outline'; className: string } {
-  if (status === 'cancelled') {
-    return {
-      variant: 'outline',
-      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/20 dark:text-zinc-100',
-    }
-  }
-  if (status === 'open') {
-    return {
-      variant: 'outline',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/20 dark:text-sky-100',
-    }
-  }
-  if (status === 'executed') {
-    return {
-      variant: 'outline',
-      className: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/45 dark:bg-indigo-500/20 dark:text-indigo-100',
-    }
-  }
-  if (status === 'submitted' || status === 'pending' || status === 'queued') {
-    return {
-      variant: 'outline',
-      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/20 dark:text-amber-100',
-    }
-  }
-  if (WIN_ORDER_STATUSES.has(status)) {
-    return {
-      variant: 'outline',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
-    }
-  }
-  if (LOSS_ORDER_STATUSES.has(status) || FAILED_ORDER_STATUSES.has(status)) {
-    return {
-      variant: 'outline',
-      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
-    }
-  }
-  if (status === 'resolved') {
-    return {
-      variant: 'outline',
-      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
-    }
-  }
-  if (RESOLVED_ORDER_STATUSES.has(status)) {
-    if (pnl > 0) {
-      return {
-        variant: 'outline',
-        className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/20 dark:text-emerald-100',
-      }
-    }
-    if (pnl < 0) {
-      return {
-        variant: 'outline',
-        className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/20 dark:text-red-100',
-      }
-    }
-    return {
-      variant: 'outline',
-      className: 'border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-400/45 dark:bg-slate-500/20 dark:text-slate-100',
-    }
-  }
-  return {
-    variant: 'outline',
-    className: 'border-border bg-muted/50 text-foreground',
-  }
-}
-
-function resolveOrderOutcomeBadgeClassName(status: string): string {
-  if (status === 'cancelled') {
-    return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200'
-  }
-  if (FAILED_ORDER_STATUSES.has(status)) {
-    return 'border-red-300/90 bg-red-100/80 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
-  }
-  if (RESOLVED_ORDER_STATUSES.has(status)) {
-    return 'border-emerald-300/90 bg-emerald-100/80 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200'
-  }
-  return 'border-zinc-300/90 bg-zinc-100/80 text-zinc-800 dark:border-zinc-500/45 dark:bg-zinc-500/12 dark:text-zinc-200'
-}
-
-function resolveVenueStatusPresentation(providerSnapshotStatus: string): VenuePresentation {
-  const key = normalizeStatus(providerSnapshotStatus)
-  if (key === 'filled') {
-    return {
-      label: 'Filled',
-      detail: 'Venue reports the order as filled.',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
-    }
-  }
-  if (key === 'partially_filled') {
-    return {
-      label: 'Partial',
-      detail: 'Venue reports a partial fill.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
-    }
-  }
-  if (key === 'open') {
-    return {
-      label: 'Working',
-      detail: 'Venue order remains working on book.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
-    }
-  }
-  if (key === 'pending') {
-    return {
-      label: 'Pending',
-      detail: 'Venue has accepted but not yet worked the order.',
-      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
-    }
-  }
-  if (key === 'cancelled' || key === 'expired') {
-    return {
-      label: 'Canceled',
-      detail: 'Venue confirms cancellation/expiry.',
-      className: 'border-zinc-300 bg-zinc-100 text-zinc-900 dark:border-zinc-400/45 dark:bg-zinc-500/12 dark:text-zinc-200',
-    }
-  }
-  if (key === 'failed' || key === 'rejected') {
-    return {
-      label: 'Rejected',
-      detail: 'Venue reports failed/rejected execution.',
-      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200',
-    }
-  }
-  return {
-    label: '—',
-    detail: 'No venue status snapshot available.',
-    className: 'border-border bg-muted/50 text-muted-foreground',
-  }
-}
-
-function compactText(value: string, maxChars = 96): string {
+function normalizeCategory(value: string | null | undefined): string {
   const text = String(value || '').trim()
-  if (!text) return 'No reason provided'
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`
+  return text || 'Uncategorized'
 }
 
-function resolveOutcomePresentation(params: {
-  status: string
-  pnl: number | null
-  reason: string
-}): {
-  headline: string
-  detail: string
-  detailCompact: string
-} {
-  const { status, pnl, reason } = params
-  if (FAILED_ORDER_STATUSES.has(status)) {
-    const detail = reason || 'Execution did not complete.'
-    return {
-      headline: 'Execution Failed',
-      detail,
-      detailCompact: compactText(detail),
+function shortAddress(value: string | null | undefined): string {
+  const text = String(value || '').trim()
+  if (!text) return '--'
+  if (text.length <= 14) return text
+  return `${text.slice(0, 8)}...${text.slice(-6)}`
+}
+
+function toRoundTripPnl(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function toRoundTripNotional(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function aggregateRollup(rows: UnifiedTradeRow[], keySelector: (row: UnifiedTradeRow) => string): RollupRow[] {
+  const byKey = new Map<string, RollupRow>()
+
+  rows.forEach((row) => {
+    if (!row.isResolved || row.pnl === null) return
+    const key = keySelector(row)
+    const current = byKey.get(key) || {
+      key,
+      label: key,
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      pnl: 0,
+      buyNotional: 0,
+      roiSum: 0,
     }
-  }
-  if (RESOLVED_ORDER_STATUSES.has(status)) {
-    if ((pnl ?? 0) > 0) {
-      const detail = `Realized gain ${formatSignedCurrency(pnl || 0)}.`
-      return { headline: 'Profit Locked', detail, detailCompact: compactText(detail) }
-    }
-    if ((pnl ?? 0) < 0) {
-      const detail = `Realized loss ${formatSignedCurrency(pnl || 0)}.`
-      return { headline: 'Loss Realized', detail, detailCompact: compactText(detail) }
-    }
-    const detail = reason || 'Resolved without realized gain or loss.'
-    return { headline: 'Resolved Flat', detail, detailCompact: compactText(detail) }
-  }
-  if (OPEN_ORDER_STATUSES.has(status)) {
-    const detail = reason || 'Order is open and actively managed.'
-    return { headline: 'Position Open', detail, detailCompact: compactText(detail) }
-  }
-  const detail = reason || titleCaseStatusLabel(status)
-  return {
-    headline: titleCaseStatusLabel(status),
-    detail,
-    detailCompact: compactText(detail),
-  }
-}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+    current.trades += 1
+    current.pnl += row.pnl
+    current.buyNotional += row.buyNotional
+    current.roiSum += row.roiPercent
+    if (row.isWin) current.wins += 1
+    if (row.isLoss) current.losses += 1
 
-function resolveDirectionLabel(order: TraderOrder): string {
-  const explicitLabel = String(order.direction_label || '').trim()
-  if (explicitLabel) return explicitLabel
-  const side = String(order.direction_side || order.direction || '').trim().toUpperCase()
-  return side || '—'
-}
+    byKey.set(key, current)
+  })
 
-function resolvePendingExitProgressPercent(payload: Record<string, unknown> | null): number | null {
-  if (!payload || !isRecord(payload.pending_exit)) return null
-  const pendingExit = payload.pending_exit
-  const fillRatio = toFiniteNumber(pendingExit.fill_ratio)
-  if (fillRatio !== null && fillRatio >= 0) return clamp(fillRatio * 100, 0, 100)
-  const filledSize = toFiniteNumber(pendingExit.filled_size)
-  const exitSize = toFiniteNumber(pendingExit.exit_size)
-  if (filledSize !== null && exitSize !== null && exitSize > 0) {
-    return clamp((Math.max(0, filledSize) / exitSize) * 100, 0, 100)
-  }
-  return null
-}
-
-function computeDynamicEdgePercent(params: {
-  status: string
-  fillPx: number
-  markPx: number
-  pnl: number | null
-  cost: number
-  edgePercent: number
-}): number {
-  const {
-    status,
-    fillPx,
-    markPx,
-    pnl,
-    cost,
-    edgePercent,
-  } = params
-  if (OPEN_ORDER_STATUSES.has(status) && fillPx > 0 && markPx > 0) {
-    return ((markPx - fillPx) / fillPx) * 100
-  }
-  if (RESOLVED_ORDER_STATUSES.has(status) && cost > 0 && pnl !== null) {
-    return (pnl / cost) * 100
-  }
-  return edgePercent
+  return Array.from(byKey.values()).sort((left, right) => {
+    if (left.pnl === right.pnl) return right.trades - left.trades
+    return right.pnl - left.pnl
+  })
 }
 
 export default function PerformancePanel() {
-  const [viewMode, setViewMode] = useState<ViewMode>('all')
+  const [viewMode, setViewMode] = useState<ViewMode>('live')
+  const [detailTab, setDetailTab] = useState<DetailTab>('overview')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
   const [tradeTapePage, setTradeTapePage] = useState(1)
+  const [historyCategoryFilter, setHistoryCategoryFilter] = useState<string>('all')
+  const [historyOutcomeFilter, setHistoryOutcomeFilter] = useState<HistoryOutcomeFilter>('all')
+  const [historySearch, setHistorySearch] = useState('')
+  const [historySortKey, setHistorySortKey] = useState<HistorySortKey>('closedAt')
+  const [historySortDirection, setHistorySortDirection] = useState<HistorySortDirection>('desc')
 
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['simulation-accounts'],
@@ -481,26 +316,26 @@ export default function PerformancePanel() {
   const { data: orchestratorStats } = useQuery({
     queryKey: ['trader-orchestrator-stats'],
     queryFn: getTraderOrchestratorStats,
-    enabled: viewMode === 'live' || viewMode === 'all',
+    enabled: viewMode === 'live',
   })
 
   const {
     data: simulationTrades = [],
-    isLoading: simTradesLoading,
-    refetch: refetchSimTrades,
-  } = useQuery({
+    isLoading: simulationTradesLoading,
+    refetch: refetchSimulationTrades,
+  } = useQuery<SimulationTradeWithAccount[]>({
     queryKey: ['all-simulation-trades', selectedAccount, simulationAccountKey],
     queryFn: async () => {
       if (selectedAccount) {
-        const rows = await getAccountTrades(selectedAccount, 250)
+        const rows = await getAccountTrades(selectedAccount, 300)
         const accountName = accounts.find((account) => account.id === selectedAccount)?.name || 'Selected account'
         return rows.map((row) => ({ ...row, accountName }))
       }
 
       const responses = await Promise.all(
         accounts.map(async (account) => {
-          const rows = await getAccountTrades(account.id, 250)
-          return rows.map((row: SimulationTrade) => ({
+          const rows = await getAccountTrades(account.id, 300)
+          return rows.map((row) => ({
             ...row,
             accountName: account.name,
           }))
@@ -509,292 +344,348 @@ export default function PerformancePanel() {
 
       return responses
         .flat()
-        .sort((left, right) => new Date(right.executed_at).getTime() - new Date(left.executed_at).getTime())
+        .sort((left, right) => toTs(right.resolved_at || right.executed_at) - toTs(left.resolved_at || left.executed_at))
     },
-    enabled: accounts.length > 0 && (viewMode === 'simulation' || viewMode === 'all'),
+    enabled: accounts.length > 0 && viewMode === 'simulation',
   })
 
   const {
-    data: autoTrades = [],
-    isLoading: autoTradesLoading,
-    refetch: refetchAutoTrades,
-  } = useQuery<LiveTraderOrder[]>({
-    queryKey: ['trader-orders'],
-    queryFn: async () => {
-      const rows = await getAllTraderOrders(250)
-      const normalizedRows: LiveTraderOrder[] = []
-      rows.forEach((row) => {
-        if (String(row.mode || '').toLowerCase() !== 'live') return
-
-        const executedAt = row.executed_at || row.created_at
-        if (!executedAt) return
-
-        normalizedRows.push({
-          ...row,
-          executed_at: executedAt,
-          total_cost: Number(row.notional_usd || 0),
-          strategy: String(row.source || 'unknown'),
-        })
-      })
-      return normalizedRows
-    },
-    enabled: viewMode === 'live' || viewMode === 'all',
+    data: livePerformance,
+    isLoading: livePerformanceLoading,
+    refetch: refetchLivePerformance,
+  } = useQuery({
+    queryKey: ['live-wallet-performance'],
+    queryFn: () => getLiveWalletPerformance(1500),
+    enabled: viewMode === 'live',
+    retry: false,
+    refetchInterval: 15000,
   })
 
-  const isLoading = accountsLoading || simTradesLoading || autoTradesLoading
-
-  const filterByTimeRange = <T extends { executed_at: string }>(rows: T[]): T[] => {
-    if (timeRange === 'all') return rows
-    const now = Date.now()
-    const daysByRange: Record<Exclude<TimeRange, 'all'>, number> = {
-      '7d': 7,
-      '30d': 30,
-      '90d': 90,
-    }
-    const cutoff = now - daysByRange[timeRange] * 24 * 60 * 60 * 1000
-    return rows.filter((row) => {
-      const ts = new Date(row.executed_at).getTime()
-      return Number.isFinite(ts) && ts >= cutoff
-    })
-  }
-
-  const filteredSimTrades = useMemo(
-    () => filterByTimeRange(simulationTrades),
+  const filteredSimulationTrades = useMemo(
+    () => simulationTrades.filter((trade) => inTimeRange(trade.resolved_at || trade.executed_at, timeRange)),
     [simulationTrades, timeRange]
   )
 
-  const filteredAutoTrades = useMemo(
-    () => filterByTimeRange(autoTrades),
-    [autoTrades, timeRange]
+  const filteredLiveRoundTrips = useMemo(
+    () => (livePerformance?.round_trips || []).filter((row) => inTimeRange(row.closed_at, timeRange)),
+    [livePerformance?.round_trips, timeRange]
+  )
+
+  const filteredLiveOpenLots = useMemo(
+    () => (livePerformance?.open_lots || []).filter((row) => inTimeRange(row.opened_at, timeRange)),
+    [livePerformance?.open_lots, timeRange]
   )
 
   const unifiedTrades = useMemo(() => {
-    const rows: UnifiedTrade[] = []
+    const rows: UnifiedTradeRow[] = []
 
-    if (viewMode === 'simulation' || viewMode === 'all') {
-      filteredSimTrades.forEach((trade) => {
+    if (viewMode === 'simulation') {
+      filteredSimulationTrades.forEach((trade) => {
         const status = normalizeStatus(trade.status)
         const pnl = typeof trade.actual_pnl === 'number' ? trade.actual_pnl : null
-        const reason = `Sandbox execution · ${trade.strategy_type || 'unknown'}`
-        const outcome = resolveOutcomePresentation({ status, pnl, reason })
-        const cost = Number(trade.total_cost || 0)
-        const isResolved = RESOLVED_ORDER_STATUSES.has(status)
+        const buyNotional = Number(trade.total_cost || 0)
+        const isResolved = SIM_RESOLVED_STATUSES.has(status)
+        const openedAt = trade.executed_at
+        const closedAt = trade.resolved_at || trade.executed_at
+        const holdMinutes = trade.resolved_at
+          ? Math.max(0, (toTs(trade.resolved_at) - toTs(trade.executed_at)) / 60_000)
+          : null
+
         rows.push({
           id: `sim-${trade.id}`,
           source: 'sandbox',
           strategy: trade.strategy_type || 'unknown',
           marketQuestion: trade.opportunity_id || trade.strategy_type || 'sandbox position',
-          marketId: trade.opportunity_id,
-          directionLabel: '—',
-          lifecycleLabel: resolveOrderLifecycleLabel(status),
-          outcomeHeadline: outcome.headline,
-          outcomeDetail: outcome.detail,
-          outcomeDetailCompact: outcome.detailCompact,
-          modeLabel: 'PAPER',
-          venuePresentation: {
-            label: 'Sandbox',
-            detail: 'Paper simulation fill.',
-            className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
-          },
-          fillPx: 0,
-          fillProgressPercent: null,
-          markPx: 0,
-          unrealized: 0,
-          dynamicEdgePercent: pnl !== null && cost > 0 ? (pnl / cost) * 100 : 0,
-          exitProgressPercent: null,
-          createdAt: trade.executed_at,
-          updatedAt: trade.resolved_at || trade.executed_at,
-          cost,
+          marketId: trade.opportunity_id || '',
+          outcome: 'N/A',
+          category: trade.strategy_type || 'Sandbox',
+          quantity: null,
+          buyPrice: null,
+          sellPrice: null,
+          buyNotional,
+          sellNotional: pnl !== null ? buyNotional + pnl : 0,
           pnl,
+          roiPercent: pnl !== null && buyNotional > 0 ? (pnl / buyNotional) * 100 : 0,
+          holdMinutes,
           status,
-          executedAt: trade.executed_at,
-          accountName: (trade as SimulationTrade & { accountName?: string }).accountName,
+          openedAt,
+          closedAt,
+          accountName: trade.accountName,
           isResolved,
-          isWin: WIN_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) > 0),
-          isLoss: LOSS_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) < 0),
+          isWin: SIM_WIN_STATUSES.has(status) || (isResolved && (pnl ?? 0) > 0),
+          isLoss: SIM_LOSS_STATUSES.has(status) || (isResolved && (pnl ?? 0) < 0),
         })
       })
-    }
-
-    if (viewMode === 'live' || viewMode === 'all') {
-      filteredAutoTrades.forEach((trade) => {
-        const status = normalizeStatus(trade.status)
-        const pnl = typeof trade.actual_profit === 'number' ? trade.actual_profit : null
-        const cost = Number(trade.total_cost || 0)
-        const fillPx = toFiniteNumber(trade.average_fill_price ?? trade.effective_price ?? trade.entry_price) ?? 0
-        const markPx = toFiniteNumber(trade.current_price) ?? 0
-        const filledNotional = toFiniteNumber(trade.filled_notional_usd) ?? 0
-        const fillProgressPercent = cost > 0 && filledNotional > 0
-          ? clamp((filledNotional / cost) * 100, 0, 100)
-          : null
-        const unrealized = toFiniteNumber(trade.unrealized_pnl) ?? 0
-        const edgePercent = normalizeEdgePercent(toFiniteNumber(trade.edge_percent) ?? 0)
-        const payload = isRecord(trade.payload) ? trade.payload : null
-        const exitProgressPercent = resolvePendingExitProgressPercent(payload)
-        const reason = String(trade.close_reason || trade.reason || trade.error_message || '').trim()
-        const outcome = resolveOutcomePresentation({ status, pnl, reason })
-        const isResolved = RESOLVED_ORDER_STATUSES.has(status)
+    } else {
+      filteredLiveRoundTrips.forEach((trade: LiveWalletRoundTrip) => {
+        const pnl = toRoundTripPnl(trade.realized_pnl)
+        const buyNotional = toRoundTripNotional(trade.buy_notional)
         rows.push({
           id: `live-${trade.id}`,
           source: 'live',
-          strategy: String(trade.strategy || 'unknown'),
-          marketQuestion: String(trade.market_question || trade.market_id || 'Unknown market'),
-          marketId: String(trade.market_id || ''),
-          directionLabel: resolveDirectionLabel(trade),
-          lifecycleLabel: resolveOrderLifecycleLabel(status),
-          outcomeHeadline: outcome.headline,
-          outcomeDetail: outcome.detail,
-          outcomeDetailCompact: outcome.detailCompact,
-          modeLabel: String(trade.mode || '').trim().toUpperCase() || 'LIVE',
-          venuePresentation: resolveVenueStatusPresentation(String(trade.provider_snapshot_status || '')),
-          fillPx,
-          fillProgressPercent,
-          markPx,
-          unrealized,
-          dynamicEdgePercent: computeDynamicEdgePercent({
-            status,
-            fillPx,
-            markPx,
-            pnl,
-            cost,
-            edgePercent,
-          }),
-          exitProgressPercent,
-          providerSnapshotStatus: normalizeStatus(trade.provider_snapshot_status),
-          createdAt: trade.created_at || trade.executed_at,
-          updatedAt: trade.updated_at || trade.mark_updated_at || trade.executed_at,
-          cost,
+          strategy: 'wallet_roundtrip',
+          marketQuestion: String(trade.market_title || trade.condition_id || 'Unknown market'),
+          marketId: String(trade.condition_id || trade.token_id || ''),
+          outcome: String(trade.outcome || 'N/A').toUpperCase(),
+          category: normalizeCategory(trade.category),
+          quantity: Number.isFinite(Number(trade.quantity)) ? Number(trade.quantity) : null,
+          buyPrice: Number.isFinite(Number(trade.avg_buy_price)) ? Number(trade.avg_buy_price) : null,
+          sellPrice: Number.isFinite(Number(trade.avg_sell_price)) ? Number(trade.avg_sell_price) : null,
+          buyNotional,
+          sellNotional: toRoundTripNotional(trade.sell_notional),
           pnl,
-          status,
-          executedAt: trade.executed_at,
-          isResolved,
-          isWin: WIN_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) > 0),
-          isLoss: LOSS_ORDER_STATUSES.has(status) || (isResolved && (pnl ?? 0) < 0),
+          roiPercent: Number.isFinite(Number(trade.roi_percent)) ? Number(trade.roi_percent) : (buyNotional > 0 ? (pnl / buyNotional) * 100 : 0),
+          holdMinutes: Number.isFinite(Number(trade.hold_minutes)) ? Number(trade.hold_minutes) : null,
+          status: 'closed',
+          openedAt: String(trade.opened_at || trade.closed_at),
+          closedAt: String(trade.closed_at),
+          isResolved: true,
+          isWin: pnl > 0,
+          isLoss: pnl < 0,
         })
       })
     }
 
-    rows.sort((left, right) => new Date(right.executedAt).getTime() - new Date(left.executedAt).getTime())
+    rows.sort((left, right) => toTs(right.closedAt) - toTs(left.closedAt))
     return rows
-  }, [filteredAutoTrades, filteredSimTrades, viewMode])
+  }, [filteredLiveRoundTrips, filteredSimulationTrades, viewMode])
+
+  const historyCategoryOptions = useMemo(() => {
+    const categories = new Set<string>()
+    unifiedTrades.forEach((trade) => {
+      const category = normalizeCategory(trade.category)
+      if (category) categories.add(category)
+    })
+    return Array.from(categories).sort((left, right) => left.localeCompare(right))
+  }, [unifiedTrades])
+
+  const filteredSortedHistoryTrades = useMemo(() => {
+    const query = historySearch.trim().toLowerCase()
+
+    const filtered = unifiedTrades.filter((trade) => {
+      const category = normalizeCategory(trade.category)
+      if (historyCategoryFilter !== 'all' && category !== historyCategoryFilter) return false
+      if (historyOutcomeFilter === 'wins' && !trade.isWin) return false
+      if (historyOutcomeFilter === 'losses' && !trade.isLoss) return false
+      if (historyOutcomeFilter === 'breakeven' && (trade.isWin || trade.isLoss)) return false
+
+      if (!query) return true
+      const haystack = `${trade.marketQuestion} ${trade.marketId} ${trade.outcome} ${trade.category} ${trade.strategy} ${trade.accountName || ''}`.toLowerCase()
+      return haystack.includes(query)
+    })
+
+    const sorted = [...filtered]
+    sorted.sort((left, right) => {
+      if (historySortKey === 'marketQuestion' || historySortKey === 'category') {
+        const leftText = historySortKey === 'marketQuestion' ? left.marketQuestion : normalizeCategory(left.category)
+        const rightText = historySortKey === 'marketQuestion' ? right.marketQuestion : normalizeCategory(right.category)
+        const cmp = leftText.localeCompare(rightText)
+        return historySortDirection === 'asc' ? cmp : -cmp
+      }
+
+      let leftValue = 0
+      let rightValue = 0
+      switch (historySortKey) {
+        case 'closedAt':
+          leftValue = toTs(left.closedAt)
+          rightValue = toTs(right.closedAt)
+          break
+        case 'pnl':
+          leftValue = left.pnl ?? 0
+          rightValue = right.pnl ?? 0
+          break
+        case 'roiPercent':
+          leftValue = left.roiPercent
+          rightValue = right.roiPercent
+          break
+        case 'holdMinutes':
+          leftValue = left.holdMinutes ?? -1
+          rightValue = right.holdMinutes ?? -1
+          break
+        case 'buyNotional':
+          leftValue = left.buyNotional
+          rightValue = right.buyNotional
+          break
+        case 'sellNotional':
+          leftValue = left.sellNotional
+          rightValue = right.sellNotional
+          break
+      }
+
+      const cmp = leftValue - rightValue
+      if (cmp === 0) return toTs(right.closedAt) - toTs(left.closedAt)
+      return historySortDirection === 'asc' ? cmp : -cmp
+    })
+
+    return sorted
+  }, [
+    historyCategoryFilter,
+    historyOutcomeFilter,
+    historySearch,
+    historySortDirection,
+    historySortKey,
+    unifiedTrades,
+  ])
 
   const tradeTapePageCount = useMemo(
-    () => Math.max(1, Math.ceil(unifiedTrades.length / TRADE_TAPE_PAGE_SIZE)),
-    [unifiedTrades.length]
+    () => Math.max(1, Math.ceil(filteredSortedHistoryTrades.length / TRADE_TAPE_PAGE_SIZE)),
+    [filteredSortedHistoryTrades.length]
   )
 
   useEffect(() => {
     setTradeTapePage((current) => Math.min(current, tradeTapePageCount))
   }, [tradeTapePageCount])
 
+  useEffect(() => {
+    setHistoryCategoryFilter('all')
+    setHistoryOutcomeFilter('all')
+    setHistorySearch('')
+    setHistorySortKey('closedAt')
+    setHistorySortDirection('desc')
+  }, [viewMode])
+
+  useEffect(() => {
+    setTradeTapePage(1)
+  }, [
+    detailTab,
+    historyCategoryFilter,
+    historyOutcomeFilter,
+    historySearch,
+    historySortDirection,
+    historySortKey,
+    timeRange,
+    viewMode,
+  ])
+
   const pagedUnifiedTrades = useMemo(() => {
     const start = (tradeTapePage - 1) * TRADE_TAPE_PAGE_SIZE
-    return unifiedTrades.slice(start, start + TRADE_TAPE_PAGE_SIZE)
-  }, [tradeTapePage, unifiedTrades])
+    return filteredSortedHistoryTrades.slice(start, start + TRADE_TAPE_PAGE_SIZE)
+  }, [filteredSortedHistoryTrades, tradeTapePage])
+
+  const resolvedRows = useMemo(
+    () => unifiedTrades.filter((trade) => trade.isResolved && trade.pnl !== null),
+    [unifiedTrades]
+  )
 
   const summary = useMemo(() => {
-    const resolved = unifiedTrades.filter((trade) => trade.isResolved)
-    const wins = resolved.filter((trade) => trade.isWin)
-    const losses = resolved.filter((trade) => trade.isLoss)
+    const wins = resolvedRows.filter((trade) => trade.isWin)
+    const losses = resolvedRows.filter((trade) => trade.isLoss)
 
-    const totalPnl = unifiedTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0)
-    const totalCost = unifiedTrades.reduce((sum, trade) => sum + trade.cost, 0)
-    const openTrades = unifiedTrades.filter((trade) => !trade.isResolved).length
-    const winRate = resolved.length > 0 ? (wins.length / resolved.length) * 100 : 0
-    const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
-    const avgPnl = unifiedTrades.length > 0 ? totalPnl / unifiedTrades.length : 0
+    const totalPnl = resolvedRows.reduce((sum, trade) => sum + (trade.pnl || 0), 0)
+    const totalCost = resolvedRows.reduce((sum, trade) => sum + trade.buyNotional, 0)
+    const averagePnl = resolvedRows.length > 0 ? totalPnl / resolvedRows.length : 0
+    const averageHoldMinutes = resolvedRows.length > 0
+      ? resolvedRows.reduce((sum, trade) => sum + (trade.holdMinutes || 0), 0) / resolvedRows.length
+      : 0
 
-    const grossWins = wins.reduce((sum, trade) => sum + Math.max(0, trade.pnl ?? 0), 0)
-    const grossLosses = losses.reduce((sum, trade) => sum + Math.abs(Math.min(0, trade.pnl ?? 0)), 0)
+    const grossWins = wins.reduce((sum, trade) => sum + Math.max(0, trade.pnl || 0), 0)
+    const grossLosses = losses.reduce((sum, trade) => sum + Math.abs(Math.min(0, trade.pnl || 0)), 0)
     const profitFactor = grossLosses > 0
       ? grossWins / grossLosses
       : grossWins > 0
-        ? Infinity
+        ? 999
         : 0
+
+    const openSimulationTrades = filteredSimulationTrades.filter(
+      (trade) => !SIM_RESOLVED_STATUSES.has(normalizeStatus(trade.status))
+    ).length
+    const openLiveLots = filteredLiveOpenLots.length
+    const openLiveNotional = filteredLiveOpenLots.reduce((sum, lot: LiveWalletOpenLot) => sum + Number(lot.cost_basis || 0), 0)
 
     return {
       totalTrades: unifiedTrades.length,
-      resolvedTrades: resolved.length,
-      openTrades,
+      resolvedTrades: resolvedRows.length,
+      openTrades: viewMode === 'live' ? openLiveLots : openSimulationTrades,
+      openLiveLots,
+      openLiveNotional,
       wins: wins.length,
       losses: losses.length,
       totalPnl,
       totalCost,
-      winRate,
-      roi,
-      avgPnl,
+      winRate: resolvedRows.length > 0 ? (wins.length / resolvedRows.length) * 100 : 0,
+      roi: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
+      avgPnl: averagePnl,
+      avgHoldMinutes: averageHoldMinutes,
       profitFactor,
+      grossWins,
+      grossLosses,
     }
-  }, [unifiedTrades])
+  }, [filteredLiveOpenLots, filteredSimulationTrades, resolvedRows, unifiedTrades, viewMode])
 
-  const strategyLeaderboard = useMemo(() => {
-    const byStrategy = new Map<string, StrategyRollup>()
+  const advancedMetrics = useMemo(() => {
+    const wins = resolvedRows.filter((row) => row.isWin)
+    const losses = resolvedRows.filter((row) => row.isLoss)
 
-    unifiedTrades.forEach((trade) => {
-      const key = trade.strategy || 'unknown'
-      const current = byStrategy.get(key) || {
-        strategy: key,
-        trades: 0,
-        wins: 0,
-        losses: 0,
-        pnl: 0,
-        sandboxTrades: 0,
-        liveTrades: 0,
-      }
+    const avgWin = wins.length > 0
+      ? wins.reduce((sum, row) => sum + (row.pnl || 0), 0) / wins.length
+      : 0
 
-      current.trades += 1
-      current.pnl += trade.pnl ?? 0
-      current.wins += trade.isWin ? 1 : 0
-      current.losses += trade.isLoss ? 1 : 0
-      current.sandboxTrades += trade.source === 'sandbox' ? 1 : 0
-      current.liveTrades += trade.source === 'live' ? 1 : 0
+    const avgLoss = losses.length > 0
+      ? losses.reduce((sum, row) => sum + (row.pnl || 0), 0) / losses.length
+      : 0
 
-      byStrategy.set(key, current)
-    })
+    const winRate = resolvedRows.length > 0 ? wins.length / resolvedRows.length : 0
+    const expectancy = (winRate * avgWin) + ((1 - winRate) * avgLoss)
 
-    return Array.from(byStrategy.values()).sort((left, right) => {
-      if (left.pnl === right.pnl) return right.trades - left.trades
-      return right.pnl - left.pnl
-    })
-  }, [unifiedTrades])
+    const sortedRoi = resolvedRows
+      .map((row) => row.roiPercent)
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+
+    const sortedHold = resolvedRows
+      .map((row) => row.holdMinutes)
+      .filter((value): value is number => value !== null && Number.isFinite(value))
+      .sort((a, b) => a - b)
+
+    const median = (arr: number[]): number => {
+      if (arr.length === 0) return 0
+      const mid = Math.floor(arr.length / 2)
+      return arr.length % 2 === 0 ? (arr[mid - 1] + arr[mid]) / 2 : arr[mid]
+    }
+
+    const bestTrade = resolvedRows.reduce((best, row) => {
+      const pnl = row.pnl || 0
+      if (best === null || pnl > (best.pnl || 0)) return row
+      return best
+    }, null as UnifiedTradeRow | null)
+
+    const worstTrade = resolvedRows.reduce((worst, row) => {
+      const pnl = row.pnl || 0
+      if (worst === null || pnl < (worst.pnl || 0)) return row
+      return worst
+    }, null as UnifiedTradeRow | null)
+
+    return {
+      avgWin,
+      avgLoss,
+      expectancy,
+      medianRoi: median(sortedRoi),
+      medianHold: median(sortedHold),
+      bestTrade,
+      worstTrade,
+    }
+  }, [resolvedRows])
 
   const cumulativePnlData = useMemo(() => {
-    const daily = new Map<string, { sim: number; live: number }>()
+    const daily = new Map<string, number>()
 
-    filteredSimTrades.forEach((trade) => {
-      const day = trade.executed_at?.split('T')[0]
+    resolvedRows.forEach((trade) => {
+      const day = (trade.closedAt || '').split('T')[0]
       if (!day) return
-      const current = daily.get(day) || { sim: 0, live: 0 }
-      current.sim += trade.actual_pnl || 0
-      daily.set(day, current)
-    })
-
-    filteredAutoTrades.forEach((trade) => {
-      const day = trade.executed_at?.split('T')[0]
-      if (!day) return
-      const current = daily.get(day) || { sim: 0, live: 0 }
-      current.live += trade.actual_profit || 0
-      daily.set(day, current)
+      daily.set(day, (daily.get(day) || 0) + Number(trade.pnl || 0))
     })
 
     const sortedDays = Array.from(daily.keys()).sort()
-    let cumSim = 0
-    let cumLive = 0
+    let cumulative = 0
 
     return sortedDays.map((day) => {
-      const row = daily.get(day) || { sim: 0, live: 0 }
-      cumSim += row.sim
-      cumLive += row.live
+      cumulative += daily.get(day) || 0
       return {
         date: day,
-        dailySimPnl: row.sim,
-        dailyLivePnl: row.live,
-        cumSimPnl: cumSim,
-        cumLivePnl: cumLive,
-        cumTotalPnl: cumSim + cumLive,
+        cumulativePnl: cumulative,
       }
     })
-  }, [filteredAutoTrades, filteredSimTrades])
+  }, [resolvedRows])
 
   const maxDrawdown = useMemo(() => {
     if (cumulativePnlData.length === 0) return 0
@@ -803,32 +694,172 @@ export default function PerformancePanel() {
     let drawdown = 0
 
     cumulativePnlData.forEach((point) => {
-      const value = viewMode === 'simulation'
-        ? point.cumSimPnl
-        : viewMode === 'live'
-          ? point.cumLivePnl
-          : point.cumTotalPnl
-      if (value > peak) peak = value
-      drawdown = Math.max(drawdown, peak - value)
+      if (point.cumulativePnl > peak) peak = point.cumulativePnl
+      drawdown = Math.max(drawdown, peak - point.cumulativePnl)
     })
 
     return drawdown
-  }, [cumulativePnlData, viewMode])
+  }, [cumulativePnlData])
+
+  const categoryRollup = useMemo(
+    () => aggregateRollup(
+      resolvedRows,
+      (row) => viewMode === 'live' ? normalizeCategory(row.category) : row.strategy
+    ),
+    [resolvedRows, viewMode]
+  )
+
+  const weekdayRollup = useMemo(() => {
+    const rows = aggregateRollup(resolvedRows, (row) => {
+      const dayIndex = new Date(row.closedAt).getDay()
+      return DAY_LABEL_BY_INDEX[dayIndex] || 'Unknown'
+    })
+
+    const byLabel = new Map(rows.map((row) => [row.label, row]))
+    return DAY_ORDER.map((dayIndex) => {
+      const label = DAY_LABEL_BY_INDEX[dayIndex]
+      return byLabel.get(label) || {
+        key: label,
+        label,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        pnl: 0,
+        buyNotional: 0,
+        roiSum: 0,
+      }
+    })
+  }, [resolvedRows])
+
+  const timeOfDayRollup = useMemo(() => {
+    const byBucket = new Map<string, RollupRow>()
+
+    TIME_BUCKETS.forEach((bucket) => {
+      byBucket.set(bucket.key, {
+        key: bucket.key,
+        label: bucket.label,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        pnl: 0,
+        buyNotional: 0,
+        roiSum: 0,
+      })
+    })
+
+    resolvedRows.forEach((row) => {
+      const hour = new Date(row.closedAt).getHours()
+      const bucket = TIME_BUCKETS.find((entry) => hour >= entry.startHour && hour < entry.endHour)
+      if (!bucket) return
+      const current = byBucket.get(bucket.key)
+      if (!current) return
+
+      current.trades += 1
+      current.pnl += row.pnl || 0
+      current.buyNotional += row.buyNotional
+      current.roiSum += row.roiPercent
+      if (row.isWin) current.wins += 1
+      if (row.isLoss) current.losses += 1
+    })
+
+    return TIME_BUCKETS.map((bucket) => byBucket.get(bucket.key) as RollupRow)
+  }, [resolvedRows])
+
+  const patternInsights = useMemo(() => {
+    const ordered = [...resolvedRows].sort((left, right) => toTs(left.closedAt) - toTs(right.closedAt))
+    let currentWinStreak = 0
+    let currentLossStreak = 0
+    let maxWinStreak = 0
+    let maxLossStreak = 0
+
+    ordered.forEach((trade) => {
+      const pnl = trade.pnl ?? 0
+      if (pnl > 0) {
+        currentWinStreak += 1
+        currentLossStreak = 0
+      } else if (pnl < 0) {
+        currentLossStreak += 1
+        currentWinStreak = 0
+      } else {
+        currentWinStreak = 0
+        currentLossStreak = 0
+      }
+      if (currentWinStreak > maxWinStreak) maxWinStreak = currentWinStreak
+      if (currentLossStreak > maxLossStreak) maxLossStreak = currentLossStreak
+    })
+
+    const activeDays = new Set(
+      ordered
+        .map((trade) => (trade.closedAt || '').split('T')[0])
+        .filter(Boolean)
+    ).size
+    const tradesPerActiveDay = activeDays > 0 ? ordered.length / activeDays : 0
+
+    const dayRows = weekdayRollup.filter((row) => row.trades > 0)
+    const bestDay = dayRows.reduce((best, row) => {
+      if (best === null || row.pnl > best.pnl) return row
+      return best
+    }, null as RollupRow | null)
+    const worstDay = dayRows.reduce((worst, row) => {
+      if (worst === null || row.pnl < worst.pnl) return row
+      return worst
+    }, null as RollupRow | null)
+
+    const timeRows = timeOfDayRollup.filter((row) => row.trades > 0)
+    const bestSession = timeRows.reduce((best, row) => {
+      if (best === null || row.pnl > best.pnl) return row
+      return best
+    }, null as RollupRow | null)
+    const worstSession = timeRows.reduce((worst, row) => {
+      if (worst === null || row.pnl < worst.pnl) return row
+      return worst
+    }, null as RollupRow | null)
+
+    const totalCategoryNotional = categoryRollup.reduce((sum, row) => sum + row.buyNotional, 0)
+    const topCategory = categoryRollup.length > 0
+      ? [...categoryRollup].sort((left, right) => right.buyNotional - left.buyNotional)[0]
+      : null
+    const topCategoryNotionalShare = (
+      totalCategoryNotional > 0 && topCategory
+        ? (topCategory.buyNotional / totalCategoryNotional) * 100
+        : 0
+    )
+    const topCategoryTradeShare = (
+      resolvedRows.length > 0 && topCategory
+        ? (topCategory.trades / resolvedRows.length) * 100
+        : 0
+    )
+
+    return {
+      maxWinStreak,
+      maxLossStreak,
+      activeDays,
+      tradesPerActiveDay,
+      bestDay,
+      worstDay,
+      bestSession,
+      worstSession,
+      topCategory,
+      topCategoryNotionalShare,
+      topCategoryTradeShare,
+    }
+  }, [categoryRollup, resolvedRows, timeOfDayRollup, weekdayRollup])
+
+  const isLoading = accountsLoading || simulationTradesLoading || livePerformanceLoading
 
   const handleRefresh = () => {
-    if (viewMode === 'simulation' || viewMode === 'all') {
-      void refetchSimTrades()
+    if (viewMode === 'simulation') {
+      void refetchSimulationTrades()
+      return
     }
-    if (viewMode === 'live' || viewMode === 'all') {
-      void refetchAutoTrades()
-    }
+    void refetchLivePerformance()
   }
 
+  const modeLabel = viewMode === 'live' ? 'Live' : 'Sandbox'
+
   return (
-    <div className="h-full min-h-0 flex flex-col gap-1.5">
-      {/* Control Strip */}
+    <div className="h-full min-h-0 flex flex-col gap-2 overflow-hidden">
       <div className="shrink-0 space-y-2">
-        {/* Row 1: Title + refresh */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold flex items-center gap-2">
@@ -836,8 +867,13 @@ export default function PerformancePanel() {
               Performance
             </h2>
             <Badge variant="outline" className="text-[10px] border-border/50">
-              {summary.totalTrades} trades
+              {modeLabel} • {summary.totalTrades} trades
             </Badge>
+            {viewMode === 'live' && (
+              <Badge variant="outline" className="text-[10px] border-border/50">
+                Wallet {shortAddress(livePerformance?.wallet_address)}
+              </Badge>
+            )}
           </div>
 
           <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={isLoading} className="h-7 px-2">
@@ -845,7 +881,6 @@ export default function PerformancePanel() {
           </Button>
         </div>
 
-        {/* Row 2: Scope + time range + account */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1">
             {VIEW_MODE_OPTIONS.map((option) => (
@@ -885,7 +920,7 @@ export default function PerformancePanel() {
             ))}
           </div>
 
-          {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
+          {viewMode === 'simulation' && accounts.length > 0 && (
             <>
               <div className="w-px h-5 bg-border/50" />
               <select
@@ -903,10 +938,9 @@ export default function PerformancePanel() {
         </div>
       </div>
 
-      {/* Metric Strip */}
       <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
         <MetricChip
-          label="P&L"
+          label="Realized P&L"
           value={formatSignedCurrency(summary.totalPnl, true)}
           detail={formatCurrency(summary.totalPnl)}
           icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
@@ -914,7 +948,7 @@ export default function PerformancePanel() {
         />
         <MetricChip
           label="ROI"
-          value={formatPercent(summary.roi)}
+          value={formatSignedPercent(summary.roi)}
           detail={`on ${formatCurrency(summary.totalCost, true)}`}
           icon={Target}
           valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
@@ -929,143 +963,323 @@ export default function PerformancePanel() {
         <MetricChip
           label="Open"
           value={String(summary.openTrades)}
-          detail={`${summary.resolvedTrades} closed`}
+          detail={viewMode === 'live' ? `${formatCurrency(summary.openLiveNotional, true)} inventory` : `${summary.resolvedTrades} closed`}
           icon={Calendar}
         />
         <MetricChip
-          label="Avg P&L"
-          value={formatSignedCurrency(summary.avgPnl)}
-          icon={summary.avgPnl >= 0 ? ArrowUpRight : ArrowDownRight}
-          valueClassName={summary.avgPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
+          label="Expectancy"
+          value={formatSignedCurrency(advancedMetrics.expectancy, true)}
+          detail={`${formatSignedCurrency(advancedMetrics.avgWin, true)} avg win / ${formatSignedCurrency(advancedMetrics.avgLoss, true)} avg loss`}
+          icon={TrendingUp}
+          valueClassName={advancedMetrics.expectancy >= 0 ? 'text-emerald-300' : 'text-red-300'}
+        />
+        <MetricChip
+          label="Median Hold"
+          value={formatDurationMinutes(advancedMetrics.medianHold)}
+          icon={Clock3}
         />
         <MetricChip
           label="Drawdown"
           value={formatCurrency(maxDrawdown, true)}
-          detail={Number.isFinite(summary.profitFactor) ? `PF ${summary.profitFactor === Infinity ? '∞' : summary.profitFactor.toFixed(2)}` : ''}
+          detail={`PF ${summary.profitFactor >= 999 ? '∞' : summary.profitFactor.toFixed(2)}`}
           icon={TrendingDown}
           valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
         />
       </div>
 
-      {/* Main content */}
-      <div className="flex-1 min-h-0 flex flex-col gap-2">
-        {/* Chart + Leaderboard */}
-        <div className="shrink-0 h-[260px] grid gap-2 xl:grid-cols-12">
-          <div className="xl:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
-            <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
-              <p className="text-xs font-semibold flex items-center gap-1.5">
-                <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
-                Cumulative P&L
-              </p>
-              {orchestratorStats?.last_trade_at && (
-                <span className="text-[10px] text-muted-foreground">
-                  last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
-                </span>
-              )}
-            </div>
-            <div className="flex-1 min-h-0">
-              {cumulativePnlData.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                  No trade history in range.
-                </div>
-              ) : (
-                <PerformancePnlChart data={cumulativePnlData} viewMode={viewMode} />
-              )}
-            </div>
-          </div>
+      <Tabs
+        value={detailTab}
+        onValueChange={(value) => setDetailTab(value as DetailTab)}
+        className="flex-1 min-h-0 flex flex-col"
+      >
+        <TabsList className="h-auto w-fit rounded-lg border border-border/80 bg-background/70 p-1">
+          <TabsTrigger value="overview" className="h-7 px-3 text-xs">Overview</TabsTrigger>
+          <TabsTrigger value="insights" className="h-7 px-3 text-xs">Insights</TabsTrigger>
+          <TabsTrigger value="history" className="h-7 px-3 text-xs">History</TabsTrigger>
+        </TabsList>
 
-          <div className="xl:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col">
-            <p className="shrink-0 text-xs font-semibold mb-2">Strategy Leaderboard</p>
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="space-y-1.5 pr-2">
-                {strategyLeaderboard.length === 0 ? (
-                  <div className="text-xs text-muted-foreground text-center py-4">No strategy activity.</div>
-                ) : (
-                  strategyLeaderboard.slice(0, 12).map((row) => {
-                    const winRate = row.wins + row.losses > 0 ? (row.wins / (row.wins + row.losses)) * 100 : 0
-                    return (
-                      <div key={row.strategy} className="rounded border border-border/50 bg-background/30 px-2 py-1.5">
-                        <div className="flex items-center justify-between gap-1">
-                          <p className="truncate text-xs">{row.strategy}</p>
-                          <p className={cn('text-[11px] font-mono', row.pnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
-                            {formatSignedCurrency(row.pnl, true)}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mt-0.5">
-                          <span>{row.trades}t</span>
-                          <span>{formatPercent(winRate)}</span>
-                          <span>{row.liveTrades}L/{row.sandboxTrades}S</span>
-                        </div>
-                      </div>
-                    )
-                  })
+        <TabsContent value="overview" className="mt-2 flex-1 min-h-0">
+          <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
+            <div className="lg:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+              <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
+                <p className="text-xs font-semibold flex items-center gap-1.5">
+                  <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
+                  {modeLabel} Cumulative Realized P&L
+                </p>
+                {viewMode === 'live' && orchestratorStats?.last_trade_at && (
+                  <span className="text-[10px] text-muted-foreground">
+                    last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
+                  </span>
                 )}
               </div>
-            </ScrollArea>
-          </div>
-        </div>
+              <div className="flex-1 min-h-0">
+                {cumulativePnlData.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                    No trade history in range.
+                  </div>
+                ) : (
+                  <PerformancePnlChart data={cumulativePnlData} mode={viewMode} />
+                )}
+              </div>
+            </div>
 
-        {/* Trade Tape — fills remaining space */}
-        <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
-          <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
-            <p className="text-xs font-semibold">Trade Tape</p>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-muted-foreground">
-                {unifiedTrades.length} trades • {TRADE_TAPE_PAGE_SIZE}/page
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-5 px-1.5 text-[10px]"
-                onClick={() => setTradeTapePage((page) => Math.max(1, page - 1))}
-                disabled={tradeTapePage <= 1}
-              >
-                Prev
-              </Button>
-              <span className="min-w-[62px] text-center text-[10px] font-mono text-muted-foreground">
-                {tradeTapePage}/{tradeTapePageCount}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-5 px-1.5 text-[10px]"
-                onClick={() => setTradeTapePage((page) => Math.min(tradeTapePageCount, page + 1))}
-                disabled={tradeTapePage >= tradeTapePageCount}
-              >
-                Next
-              </Button>
+            <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+              <p className="shrink-0 text-xs font-semibold mb-2">Quick Insights</p>
+              <div className="space-y-2 text-xs">
+                <InsightStat
+                  label="Best Trade"
+                  value={advancedMetrics.bestTrade ? formatSignedCurrency(advancedMetrics.bestTrade.pnl || 0, true) : '—'}
+                  hint={advancedMetrics.bestTrade ? advancedMetrics.bestTrade.marketQuestion : 'No closed trades'}
+                  positive={(advancedMetrics.bestTrade?.pnl || 0) >= 0}
+                />
+                <InsightStat
+                  label="Worst Trade"
+                  value={advancedMetrics.worstTrade ? formatSignedCurrency(advancedMetrics.worstTrade.pnl || 0, true) : '—'}
+                  hint={advancedMetrics.worstTrade ? advancedMetrics.worstTrade.marketQuestion : 'No closed trades'}
+                  positive={false}
+                />
+                <InsightStat
+                  label="Median ROI"
+                  value={formatSignedPercent(advancedMetrics.medianRoi)}
+                  hint="Robust against outliers"
+                  positive={advancedMetrics.medianRoi >= 0}
+                />
+                <InsightStat
+                  label="Gross Win/Loss"
+                  value={`${formatCurrency(summary.grossWins, true)} / ${formatCurrency(summary.grossLosses, true)}`}
+                  hint="Absolute dollars"
+                />
+              </div>
             </div>
           </div>
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="w-full overflow-x-auto">
-              <Table className="w-full table-fixed">
-                <TableHeader>
-                  <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
-                    <TableHead className="w-[26%] text-[10px]">Market</TableHead>
-                    <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                    <TableHead className="w-[24%] text-[10px]">Lifecycle / Outcome</TableHead>
-                    <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
-                    <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
-                    <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
-                    <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
-                    <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
-                    <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
-                    <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
-                    <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
-                    <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                    <TableHead className="w-[5%] text-[10px]">Age</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pagedUnifiedTrades.map((trade) => {
-                    const statusBadge = resolveOrderStatusBadgePresentation(trade.status, trade.pnl ?? 0)
-                    const outcomeBadgeClassName = resolveOrderOutcomeBadgeClassName(trade.status)
-                    const updatedAt = trade.updatedAt || trade.executedAt
-                    const venueTitle = `${trade.venuePresentation.detail}`
-                      + (trade.providerSnapshotStatus ? ` • provider:${trade.providerSnapshotStatus}` : '')
-                    return (
+        </TabsContent>
+
+        <TabsContent value="insights" className="mt-2 flex-1 min-h-0">
+          <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
+            <div className="lg:col-span-5 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
+              <p className="shrink-0 text-xs font-semibold mb-2">
+                {viewMode === 'live' ? 'Market Category Performance' : 'Strategy Performance'}
+              </p>
+              <ScrollArea className="flex-1 min-h-0">
+                <div className="space-y-1.5 pr-2">
+                  {categoryRollup.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">No closed trades in range.</p>
+                  ) : (
+                    categoryRollup.map((row) => {
+                      const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
+                      const avgRoi = row.trades > 0 ? row.roiSum / row.trades : 0
+                      return (
+                        <div key={row.key} className="rounded border border-border/50 bg-background/30 px-2 py-1.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <p className="truncate text-xs">{row.label}</p>
+                            <p className={cn('text-[11px] font-mono', row.pnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+                              {formatSignedCurrency(row.pnl, true)}
+                            </p>
+                          </div>
+                          <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            <span>{row.trades}t</span>
+                            <span>{formatPercent(winRate)}</span>
+                            <span>{formatSignedPercent(avgRoi)}</span>
+                          </div>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+
+            <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
+              <p className="shrink-0 text-xs font-semibold mb-2">Time Performance</p>
+              <ScrollArea className="flex-1 min-h-0">
+                <div className="space-y-3 pr-2">
+                  <section>
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Day of Week</p>
+                    <div className="space-y-1">
+                      {weekdayRollup.map((row) => {
+                        const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
+                        return (
+                          <div key={row.key} className="flex items-center justify-between rounded border border-border/40 bg-background/20 px-2 py-1">
+                            <span className="text-[10px] text-muted-foreground">{row.label}</span>
+                            <div className="flex items-center gap-2 text-[10px]">
+                              <span className={cn('font-mono', row.pnl >= 0 ? 'text-emerald-300' : row.pnl < 0 ? 'text-red-300' : 'text-muted-foreground')}>
+                                {formatSignedCurrency(row.pnl, true)}
+                              </span>
+                              <span className="text-muted-foreground">{row.trades}t</span>
+                              <span className="text-muted-foreground">{formatPercent(winRate)}</span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+
+                  <section>
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Time of Day</p>
+                    <div className="space-y-1">
+                      {timeOfDayRollup.map((row) => {
+                        const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
+                        return (
+                          <div key={row.key} className="flex items-center justify-between rounded border border-border/40 bg-background/20 px-2 py-1">
+                            <span className="text-[10px] text-muted-foreground">{row.label}</span>
+                            <div className="flex items-center gap-2 text-[10px]">
+                              <span className={cn('font-mono', row.pnl >= 0 ? 'text-emerald-300' : row.pnl < 0 ? 'text-red-300' : 'text-muted-foreground')}>
+                                {formatSignedCurrency(row.pnl, true)}
+                              </span>
+                              <span className="text-muted-foreground">{row.trades}t</span>
+                              <span className="text-muted-foreground">{formatPercent(winRate)}</span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                </div>
+              </ScrollArea>
+            </div>
+
+            <div className="lg:col-span-3 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
+              <p className="shrink-0 text-xs font-semibold mb-2">Pattern Insights</p>
+              <ScrollArea className="flex-1 min-h-0">
+                <div className="space-y-2 pr-2 text-xs">
+                  <InsightStat
+                    label="Best Day"
+                    value={patternInsights.bestDay ? `${patternInsights.bestDay.label} ${formatSignedCurrency(patternInsights.bestDay.pnl, true)}` : '—'}
+                    hint={patternInsights.bestDay ? `${patternInsights.bestDay.trades} trades, ${formatPercent((patternInsights.bestDay.wins / Math.max(1, patternInsights.bestDay.trades)) * 100)} win rate` : 'No closed trades in range'}
+                    positive={(patternInsights.bestDay?.pnl || 0) >= 0}
+                  />
+                  <InsightStat
+                    label="Weakest Day"
+                    value={patternInsights.worstDay ? `${patternInsights.worstDay.label} ${formatSignedCurrency(patternInsights.worstDay.pnl, true)}` : '—'}
+                    hint={patternInsights.worstDay ? `${patternInsights.worstDay.trades} trades, ${formatPercent((patternInsights.worstDay.wins / Math.max(1, patternInsights.worstDay.trades)) * 100)} win rate` : 'No closed trades in range'}
+                    positive={false}
+                  />
+                  <InsightStat
+                    label="Best Session"
+                    value={patternInsights.bestSession ? `${patternInsights.bestSession.label} ${formatSignedCurrency(patternInsights.bestSession.pnl, true)}` : '—'}
+                    hint={patternInsights.bestSession ? `${patternInsights.bestSession.trades} trades in this time bucket` : 'No closed trades in range'}
+                    positive={(patternInsights.bestSession?.pnl || 0) >= 0}
+                  />
+                  <InsightStat
+                    label="Streak Profile"
+                    value={`${patternInsights.maxWinStreak}W / ${patternInsights.maxLossStreak}L`}
+                    hint={`${patternInsights.activeDays} active days, ${patternInsights.tradesPerActiveDay.toFixed(1)} trades/day`}
+                    positive={patternInsights.maxWinStreak >= patternInsights.maxLossStreak}
+                  />
+                  <InsightStat
+                    label="Top Category Concentration"
+                    value={patternInsights.topCategory ? `${patternInsights.topCategory.label} ${formatPercent(patternInsights.topCategoryNotionalShare)}` : '—'}
+                    hint={patternInsights.topCategory ? `${formatPercent(patternInsights.topCategoryTradeShare)} of closed trades` : 'No category concentration in range'}
+                  />
+                </div>
+              </ScrollArea>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="history" className="mt-2 flex-1 min-h-0">
+          <div className="h-full min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
+            <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
+              <p className="text-xs font-semibold">Trade History</p>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-muted-foreground">
+                  {filteredSortedHistoryTrades.length}/{unifiedTrades.length} trades • {TRADE_TAPE_PAGE_SIZE}/page
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => setTradeTapePage((page) => Math.max(1, page - 1))}
+                  disabled={tradeTapePage <= 1}
+                >
+                  Prev
+                </Button>
+                <span className="min-w-[62px] text-center text-[10px] font-mono text-muted-foreground">
+                  {tradeTapePage}/{tradeTapePageCount}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => setTradeTapePage((page) => Math.min(tradeTapePageCount, page + 1))}
+                  disabled={tradeTapePage >= tradeTapePageCount}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+
+            <div className="shrink-0 border-b border-border/40 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={historySearch}
+                  onChange={(event) => setHistorySearch(event.target.value)}
+                  placeholder="Search market, outcome, category, strategy"
+                  className="h-7 min-w-[220px] flex-1 rounded-md border border-border bg-background/80 px-2 text-xs"
+                />
+                <select
+                  value={historyCategoryFilter}
+                  onChange={(event) => setHistoryCategoryFilter(event.target.value)}
+                  className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
+                >
+                  <option value="all">{viewMode === 'live' ? 'All categories' : 'All strategy categories'}</option>
+                  {historyCategoryOptions.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+                <select
+                  value={historyOutcomeFilter}
+                  onChange={(event) => setHistoryOutcomeFilter(event.target.value as HistoryOutcomeFilter)}
+                  className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
+                >
+                  <option value="all">All outcomes</option>
+                  <option value="wins">Wins only</option>
+                  <option value="losses">Losses only</option>
+                  <option value="breakeven">Breakeven only</option>
+                </select>
+                <select
+                  value={historySortKey}
+                  onChange={(event) => setHistorySortKey(event.target.value as HistorySortKey)}
+                  className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
+                >
+                  {HISTORY_SORT_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </select>
+                <select
+                  value={historySortDirection}
+                  onChange={(event) => setHistorySortDirection(event.target.value as HistorySortDirection)}
+                  className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
+                >
+                  <option value="desc">Desc</option>
+                  <option value="asc">Asc</option>
+                </select>
+              </div>
+            </div>
+
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="w-full overflow-x-auto">
+                <Table className="min-w-[1024px]">
+                  <TableHeader>
+                    <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+                      <TableHead className="text-[10px]">Market</TableHead>
+                      <TableHead className="text-[10px]">Outcome</TableHead>
+                      <TableHead className="text-[10px] text-right">Qty</TableHead>
+                      <TableHead className="text-[10px] text-right">Buy Px</TableHead>
+                      <TableHead className="text-[10px] text-right">Sell Px</TableHead>
+                      <TableHead className="text-[10px] text-right">Buy $</TableHead>
+                      <TableHead className="text-[10px] text-right">Sell $</TableHead>
+                      <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                      <TableHead className="text-[10px] text-right">ROI</TableHead>
+                      <TableHead className="text-[10px] text-right">Hold</TableHead>
+                      <TableHead className="text-[10px]">Category</TableHead>
+                      <TableHead className="text-[10px]">Closed</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pagedUnifiedTrades.map((trade) => (
                       <TableRow key={trade.id} className="text-[11px] leading-tight hover:bg-muted/30">
-                        <TableCell className="max-w-[260px] py-0.5">
+                        <TableCell className="max-w-[260px] py-1">
                           <div className="flex min-w-0 items-center gap-1">
                             <Badge
                               variant="outline"
@@ -1080,93 +1294,50 @@ export default function PerformancePanel() {
                             </Badge>
                             <span className="truncate" title={trade.marketQuestion}>{trade.marketQuestion}</span>
                           </div>
-                          <p className="truncate text-[9px] leading-none text-muted-foreground" title={`${trade.strategy}${trade.accountName ? ` • ${trade.accountName}` : ''}`}>
+                          <p
+                            className="truncate text-[9px] leading-none text-muted-foreground"
+                            title={`${trade.strategy}${trade.accountName ? ` • ${trade.accountName}` : ''}`}
+                          >
                             {trade.strategy}{trade.accountName ? ` • ${trade.accountName}` : ''}
                           </p>
                         </TableCell>
-                        <TableCell className="py-0.5">
-                          <Badge
-                            variant="outline"
-                            className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground"
-                            title={trade.directionLabel}
-                          >
-                            {trade.directionLabel}
+                        <TableCell className="py-1">
+                          <Badge variant="outline" className="h-4 max-w-[120px] truncate border-border/80 bg-muted/60 px-1 text-[9px] text-muted-foreground">
+                            {trade.outcome}
                           </Badge>
                         </TableCell>
-                        <TableCell className="py-0.5 min-w-[260px]">
-                          <div className="min-w-0 space-y-0">
-                            <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-                              <Badge
-                                variant={statusBadge.variant}
-                                title={`Raw status: ${trade.status}`}
-                                className={cn('h-4 shrink-0 whitespace-nowrap px-1 text-[9px] font-semibold', statusBadge.className)}
-                              >
-                                {trade.lifecycleLabel}
-                              </Badge>
-                              <Badge
-                                variant="outline"
-                                title={trade.outcomeDetail}
-                                className={cn('h-4 max-w-[180px] truncate px-1 text-[9px] font-medium', outcomeBadgeClassName)}
-                              >
-                                {trade.outcomeHeadline}
-                              </Badge>
-                              <Badge variant="outline" className="h-4 max-w-[100px] truncate border-border/80 bg-background/80 px-1 text-[9px] font-medium text-foreground/85">
-                                {trade.modeLabel}
-                              </Badge>
-                            </div>
-                            <p className="truncate text-[9px] leading-none text-foreground/85" title={trade.outcomeDetail}>
-                              <span className="font-medium text-muted-foreground">Reason:</span> {trade.outcomeDetailCompact}
-                            </p>
-                          </div>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{formatQuantity(trade.quantity)}</TableCell>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{formatPrice(trade.buyPrice)}</TableCell>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{formatPrice(trade.sellPrice)}</TableCell>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{trade.buyNotional > 0 ? formatCurrency(trade.buyNotional, true) : '—'}</TableCell>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{trade.sellNotional > 0 ? formatCurrency(trade.sellNotional, true) : '—'}</TableCell>
+                        <TableCell className={cn('text-right font-mono py-1 text-[10px]', (trade.pnl ?? 0) > 0 ? 'text-emerald-500' : (trade.pnl ?? 0) < 0 ? 'text-red-500' : '')}>
+                          {trade.pnl !== null ? formatSignedCurrency(trade.pnl, true) : '—'}
                         </TableCell>
-                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatCurrency(trade.cost, true)}</TableCell>
-                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{trade.fillPx > 0 ? trade.fillPx.toFixed(3) : '—'}</TableCell>
-                        <TableCell className="text-right font-mono py-0.5 text-[10px]">
-                          {trade.fillProgressPercent !== null ? formatPercent(trade.fillProgressPercent, 0) : '—'}
+                        <TableCell className={cn('text-right font-mono py-1 text-[10px]', trade.roiPercent > 0 ? 'text-emerald-500' : trade.roiPercent < 0 ? 'text-red-500' : '')}>
+                          {trade.pnl !== null ? formatSignedPercent(trade.roiPercent) : '—'}
                         </TableCell>
-                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', trade.markPx > 0 && 'text-sky-300')}>
-                          {trade.markPx > 0 ? trade.markPx.toFixed(3) : '—'}
-                        </TableCell>
-                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', trade.unrealized > 0 ? 'text-emerald-500' : trade.unrealized < 0 ? 'text-red-500' : '')}>
-                          {OPEN_ORDER_STATUSES.has(trade.status) ? formatCurrency(trade.unrealized, true) : '—'}
-                        </TableCell>
-                        <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(trade.dynamicEdgePercent)}</TableCell>
-                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px]', (trade.pnl ?? 0) > 0 ? 'text-emerald-500' : (trade.pnl ?? 0) < 0 ? 'text-red-500' : '')}>
-                          {RESOLVED_ORDER_STATUSES.has(trade.status) && trade.pnl !== null ? formatSignedCurrency(trade.pnl) : '—'}
-                        </TableCell>
-                        <TableCell className="py-0.5">
-                          <Badge
-                            variant="outline"
-                            title={venueTitle}
-                            className={cn('h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold', trade.venuePresentation.className)}
-                          >
-                            {trade.venuePresentation.label}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-right font-mono py-0.5 text-[10px]">
-                          {trade.exitProgressPercent !== null ? formatPercent(trade.exitProgressPercent, 0) : '—'}
-                        </TableCell>
-                        <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                          <span title={`${trade.modeLabel} • created:${trade.createdAt ? new Date(trade.createdAt).toLocaleString() : 'n/a'} • updated:${trade.updatedAt ? new Date(trade.updatedAt).toLocaleString() : 'n/a'}`}>
-                            {formatRelativeAge(updatedAt)}
-                          </span>
+                        <TableCell className="text-right font-mono py-1 text-[10px]">{formatDurationMinutes(trade.holdMinutes)}</TableCell>
+                        <TableCell className="py-1 text-[10px] text-muted-foreground truncate" title={trade.category}>{trade.category}</TableCell>
+                        <TableCell className="py-1 text-[9px] text-muted-foreground">
+                          <span title={new Date(trade.closedAt).toLocaleString()}>{formatRelativeAge(trade.closedAt)}</span>
                         </TableCell>
                       </TableRow>
-                    )
-                  })}
-                  {unifiedTrades.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={13} className="py-6 text-center text-xs text-muted-foreground">
-                        No trades for this view and range.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </ScrollArea>
-        </div>
-      </div>
+                    ))}
+                    {filteredSortedHistoryTrades.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={12} className="py-6 text-center text-xs text-muted-foreground">
+                          No trades match the current filters.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </ScrollArea>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
@@ -1181,7 +1352,7 @@ function MetricChip({
   label: string
   value: string
   detail?: string
-  icon: React.ElementType
+  icon: ElementType
   valueClassName?: string
 }) {
   return (
@@ -1193,41 +1364,51 @@ function MetricChip({
   )
 }
 
+function InsightStat({
+  label,
+  value,
+  hint,
+  positive,
+}: {
+  label: string
+  value: string
+  hint: string
+  positive?: boolean
+}) {
+  return (
+    <div className="rounded border border-border/50 bg-background/30 px-2 py-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={cn('text-sm font-mono', positive === undefined ? 'text-foreground' : positive ? 'text-emerald-300' : 'text-red-300')}>
+        {value}
+      </p>
+      <p className="truncate text-[10px] text-muted-foreground" title={hint}>{hint}</p>
+    </div>
+  )
+}
+
 function PerformancePnlChart({
   data,
-  viewMode,
+  mode,
 }: {
-  data: Array<{
-    date: string
-    cumSimPnl: number
-    cumLivePnl: number
-    cumTotalPnl: number
-  }>
-  viewMode: ViewMode
+  data: PnlPoint[]
+  mode: ViewMode
 }) {
-  const showSandbox = viewMode === 'simulation' || viewMode === 'all'
-  const showLive = viewMode === 'live' || viewMode === 'all'
+  const stroke = mode === 'live' ? '#22d3ee' : '#f59e0b'
+  const gradientId = mode === 'live' ? 'liveModeGradient' : 'sandboxModeGradient'
+  const label = mode === 'live' ? 'Live cumulative' : 'Sandbox cumulative'
 
-  const tooltipFormatter = (value: number, key: string) => {
-    const label = key === 'cumSimPnl'
-      ? 'Sandbox cumulative'
-      : key === 'cumLivePnl'
-        ? 'Live cumulative'
-        : 'Unified cumulative'
-    return [formatCurrency(value), label]
+  const tooltipFormatter = (value: number | string | undefined) => {
+    const numericValue = Number(value)
+    return [formatCurrency(Number.isFinite(numericValue) ? numericValue : 0), label] as [string, string]
   }
 
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={data} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
         <defs>
-          <linearGradient id="sandboxGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.32} />
-            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.04} />
-          </linearGradient>
-          <linearGradient id="liveGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.32} />
-            <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.04} />
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={stroke} stopOpacity={0.32} />
+            <stop offset="95%" stopColor={stroke} stopOpacity={0.04} />
           </linearGradient>
         </defs>
 
@@ -1238,74 +1419,32 @@ function PerformancePnlChart({
           tickFormatter={formatDateLabel}
           tick={{ fontSize: 11 }}
           stroke="hsl(var(--muted-foreground))"
-          axisLine={{ stroke: 'hsl(var(--border))' }}
-          tickLine={{ stroke: 'hsl(var(--border))' }}
         />
         <YAxis
-          tickFormatter={(value: number) => formatCurrency(value, true)}
           tick={{ fontSize: 11 }}
-          width={72}
           stroke="hsl(var(--muted-foreground))"
-          axisLine={{ stroke: 'hsl(var(--border))' }}
-          tickLine={{ stroke: 'hsl(var(--border))' }}
+          tickFormatter={(value) => formatCurrency(value, true)}
         />
 
         <Tooltip
-          formatter={(value, key) => tooltipFormatter(Number(value), String(key))}
-          labelFormatter={(label) => `Date ${label}`}
+          formatter={tooltipFormatter}
+          labelFormatter={(value) => new Date(value).toLocaleDateString()}
           contentStyle={{
             borderRadius: 10,
-            border: '1px solid hsl(var(--border))',
-            background: 'hsl(var(--popover))',
-            color: 'hsl(var(--popover-foreground))',
+            borderColor: 'hsl(var(--border))',
+            backgroundColor: 'hsl(var(--background) / 0.95)',
             fontSize: 12,
           }}
         />
 
-        <Legend
-          wrapperStyle={{ fontSize: '11px' }}
-          formatter={(value) => {
-            if (value === 'cumSimPnl') return 'Sandbox'
-            if (value === 'cumLivePnl') return 'Live'
-            return 'Unified'
-          }}
+        <Area
+          type="monotone"
+          dataKey="cumulativePnl"
+          stroke={stroke}
+          fill={`url(#${gradientId})`}
+          strokeWidth={2}
+          dot={false}
         />
-
-        {showSandbox && (
-          <Area
-            type="monotone"
-            dataKey="cumSimPnl"
-            stroke="#f59e0b"
-            strokeWidth={2}
-            fill="url(#sandboxGradient)"
-            dot={false}
-            activeDot={{ r: 4, stroke: '#f59e0b', strokeWidth: 2, fill: 'hsl(var(--background))' }}
-          />
-        )}
-
-        {showLive && (
-          <Area
-            type="monotone"
-            dataKey="cumLivePnl"
-            stroke="#22d3ee"
-            strokeWidth={2}
-            fill="url(#liveGradient)"
-            dot={false}
-            activeDot={{ r: 4, stroke: '#22d3ee', strokeWidth: 2, fill: 'hsl(var(--background))' }}
-          />
-        )}
-
-        {viewMode === 'all' && (
-          <Line
-            type="monotone"
-            dataKey="cumTotalPnl"
-            stroke="#34d399"
-            strokeWidth={2}
-            dot={false}
-            strokeDasharray="5 3"
-            activeDot={{ r: 4, stroke: '#34d399', strokeWidth: 2, fill: 'hsl(var(--background))' }}
-          />
-        )}
       </AreaChart>
     </ResponsiveContainer>
   )

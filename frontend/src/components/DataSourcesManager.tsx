@@ -18,6 +18,7 @@ import {
   Save,
   Search,
   Settings2,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -45,8 +46,10 @@ import {
   getUnifiedDataSourceRuns,
   getUnifiedDataSourceTemplate,
   getUnifiedDataSources,
+  generateAIDataSourceDraft,
   reloadUnifiedDataSource,
   runUnifiedDataSource,
+  AIDataSourceDraftGenerationResponse,
   UnifiedDataSource,
   UnifiedDataSourceTemplatePreset,
   updateUnifiedDataSource,
@@ -70,6 +73,30 @@ function normalizeSlug(value: string): string {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_]/g, '_')
+}
+
+function pythonStringLiteral(value: string): string {
+  return `"${String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')}"`
+}
+
+function applySourceMetadataToCode(
+  sourceCode: string,
+  {
+    sourceName,
+    sourceDescription,
+  }: {
+    sourceName: string
+    sourceDescription: string
+  }
+): string {
+  let out = String(sourceCode || '')
+  out = out.replace(/^\s*name\s*=\s*".*"$/m, `    name = ${pythonStringLiteral(sourceName)}`)
+  out = out.replace(/^\s*description\s*=\s*".*"$/m, `    description = ${pythonStringLiteral(sourceDescription)}`)
+  return out
 }
 
 function inferClassName(sourceCode: string): string | null {
@@ -247,7 +274,17 @@ const DEFAULT_NEW_SOURCE_PRESET_ID = 'python_custom'
 const DEFAULT_REST_API_PRESET_ID = 'rest_api_custom'
 const CREATE_SOURCE_KIND_ORDER = ['python', 'rss', 'rest_api', 'twitter']
 
-export default function DataSourcesManager() {
+export default function DataSourcesManager({
+  onOpenCopilot,
+}: {
+  onOpenCopilot?: (options?: {
+    contextType?: string
+    contextId?: string
+    label?: string
+    prompt?: string
+    autoSend?: boolean
+  }) => void
+}) {
   const queryClient = useQueryClient()
   const loadedEditorSourceKeyRef = useRef<string | null>(null)
 
@@ -270,6 +307,9 @@ export default function DataSourcesManager() {
   const [newSourceTemplateKey, setNewSourceTemplateKey] = useState(DEFAULT_NEW_SOURCE_PRESET_ID)
   const [newSourceSlugDirty, setNewSourceSlugDirty] = useState(false)
   const [newSourceError, setNewSourceError] = useState<string | null>(null)
+  const [newSourceAiPrompt, setNewSourceAiPrompt] = useState('')
+  const [newSourceAiDraft, setNewSourceAiDraft] = useState<AIDataSourceDraftGenerationResponse | null>(null)
+  const [newSourceUseAiDraft, setNewSourceUseAiDraft] = useState(false)
 
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
   const [draftToken, setDraftToken] = useState<string | null>(null)
@@ -442,15 +482,40 @@ export default function DataSourcesManager() {
   }, [newSourceTemplateKey, templatesForCreateKind, templatePresets])
 
   const newSourceTemplatePreviewCode = useMemo(
-    () => selectedCreateTemplate?.source_code || templateQuery.data?.template || FALLBACK_TEMPLATE,
-    [selectedCreateTemplate?.source_code, templateQuery.data?.template]
+    () => {
+      if (newSourceUseAiDraft && newSourceAiDraft?.source_code) {
+        const title = String(newSourceName || '').trim() || 'Custom Data Source'
+        const description = String(newSourceDescription || '').trim() || `${title} source`
+        return applySourceMetadataToCode(String(newSourceAiDraft.source_code || ''), {
+          sourceName: title,
+          sourceDescription: description,
+        })
+      }
+      return selectedCreateTemplate?.source_code || templateQuery.data?.template || FALLBACK_TEMPLATE
+    },
+    [
+      selectedCreateTemplate?.source_code,
+      templateQuery.data?.template,
+      newSourceUseAiDraft,
+      newSourceAiDraft?.source_code,
+      newSourceName,
+      newSourceDescription,
+    ]
   )
 
   const sourceKeys = useMemo(() => {
     const known = ['custom', 'stories', 'events']
-    const dynamic = [...new Set(catalog.map((s) => String(s.source_key || '').toLowerCase()).filter(Boolean))]
+    const dynamic = [
+      ...new Set(
+        [
+          ...catalog.map((s) => String(s.source_key || '').toLowerCase()),
+          String(newSourceSourceKey || '').toLowerCase(),
+          String(editorSourceKey || '').toLowerCase(),
+        ].filter(Boolean)
+      ),
+    ]
     return [...new Set([...known, ...dynamic])]
-  }, [catalog])
+  }, [catalog, newSourceSourceKey, editorSourceKey])
 
   const grouped = useMemo(() => {
     let rows = [...catalog]
@@ -685,7 +750,43 @@ export default function DataSourcesManager() {
     },
   })
 
+  const generateAiDraftMutation = useMutation({
+    mutationFn: async () => {
+      const prompt = String(newSourceAiPrompt || '').trim()
+      if (!prompt) throw new Error('Describe the data source you want to generate.')
+      return generateAIDataSourceDraft({
+        description: prompt,
+        source_key: String(newSourceSourceKey || '').trim().toLowerCase() || 'custom',
+        source_kind: String(newSourceTemplateKind || '').trim().toLowerCase() || 'python',
+      })
+    },
+    onSuccess: (draft) => {
+      setNewSourceAiDraft(draft)
+      setNewSourceUseAiDraft(true)
+      const requestedKind = String(draft.source_kind || 'python').trim().toLowerCase() || 'python'
+      const normalizedKind = templateKinds.includes(requestedKind) ? requestedKind : 'python'
+      const normalizedSourceKey = String(draft.source_key || 'custom').trim().toLowerCase() || 'custom'
+      const normalizedSlug = normalizeSlug(String(draft.slug || '').trim() || 'custom_source')
+      setNewSourceName(String(draft.name || '').trim() || 'Custom Data Source')
+      setNewSourceSlug(normalizedSlug)
+      setNewSourceSlugDirty(true)
+      setNewSourceDescription(String(draft.description || '').trim())
+      setNewSourceTemplateKind(normalizedKind)
+      setNewSourceSourceKey(normalizedSourceKey)
+      const preferredTemplate = templatePresets.find((preset) => String(preset.source_kind || '').trim().toLowerCase() === normalizedKind)
+      if (preferredTemplate) {
+        setNewSourceTemplateKey(preferredTemplate.id)
+      }
+      setNewSourceError(null)
+    },
+    onError: (error: unknown) => {
+      setNewSourceError(errorMessage(error, 'AI generation failed'))
+    },
+  })
+
   const busy =
+    generateAiDraftMutation.isPending
+    || templateQuery.isFetching
     saveMutation.isPending
     || validateMutation.isPending
     || reloadMutation.isPending
@@ -710,6 +811,9 @@ export default function DataSourcesManager() {
     setNewSourceSlug(`${slugPrefix}_${nonce}`)
     setNewSourceSlugDirty(false)
     setNewSourceError(null)
+    setNewSourceAiPrompt('')
+    setNewSourceAiDraft(null)
+    setNewSourceUseAiDraft(false)
   }
 
   const createDraftFromModal = () => {
@@ -718,6 +822,7 @@ export default function DataSourcesManager() {
     const normalizedSourceKind = String(newSourceTemplateKind || '').trim().toLowerCase()
     const normalizedSourceKey = String(newSourceSourceKey || '').trim().toLowerCase() || 'custom'
     const selectedTemplate = selectedCreateTemplate
+    const useAiDraft = Boolean(newSourceUseAiDraft && newSourceAiDraft)
 
     if (!trimmedName) {
       setNewSourceError('Source name is required.')
@@ -732,21 +837,36 @@ export default function DataSourcesManager() {
       return
     }
 
-    const templateConfig = selectedTemplate.config || {}
-    const templateSchema = selectedTemplate.config_schema || { param_fields: [] }
+    const aiDraft = newSourceAiDraft
+    const templateConfig = useAiDraft && aiDraft && aiDraft.config && typeof aiDraft.config === 'object' && !Array.isArray(aiDraft.config)
+      ? (aiDraft.config as Record<string, unknown>)
+      : selectedTemplate.config || {}
+    const templateSchema = useAiDraft && aiDraft && aiDraft.config_schema && typeof aiDraft.config_schema === 'object' && !Array.isArray(aiDraft.config_schema)
+      ? (aiDraft.config_schema as Record<string, unknown>)
+      : selectedTemplate.config_schema || { param_fields: [] }
+    const templateRetention = useAiDraft && aiDraft
+      ? normalizeRetentionPolicy(aiDraft.retention || {})
+      : normalizeRetentionPolicy(selectedTemplate.retention || {})
     const nextLimit = Number((templateConfig as Record<string, unknown>).limit)
+    const baseSourceCode = useAiDraft
+      ? String(aiDraft?.source_code || '').trim()
+      : String(selectedTemplate.source_code || templateQuery.data?.template || FALLBACK_TEMPLATE)
+    const renderedSourceCode = applySourceMetadataToCode(baseSourceCode, {
+      sourceName: trimmedName,
+      sourceDescription: String(newSourceDescription || '').trim() || `${trimmedName} source`,
+    })
 
     setSelectedSourceId(null)
     loadedEditorSourceKeyRef.current = null
     setDraftToken(`draft_${Date.now()}`)
     setEditorSlug(normalizedSlug)
-    setEditorSourceKind(String(selectedTemplate.source_kind || normalizedSourceKind || 'python').trim().toLowerCase() || 'python')
+    setEditorSourceKind(normalizedSourceKind || 'python')
     setEditorSourceKey(normalizedSourceKey)
     setEditorName(trimmedName)
     setEditorDescription(String(newSourceDescription || '').trim())
     setEditorEnabled(true)
-    setEditorCode(selectedTemplate.source_code || templateQuery.data?.template || FALLBACK_TEMPLATE)
-    setEditorRetention(normalizeRetentionPolicy(selectedTemplate.retention || {}))
+    setEditorCode(renderedSourceCode || FALLBACK_TEMPLATE)
+    setEditorRetention(templateRetention)
     setEditorConfigJson(JSON.stringify(templateConfig, null, 2))
     setEditorSchemaJson(JSON.stringify(templateSchema, null, 2))
     setRunLimit(Number.isFinite(nextLimit) ? Math.max(1, Math.min(5000, Math.round(nextLimit))) : 500)
@@ -851,6 +971,23 @@ export default function DataSourcesManager() {
               <p className="px-3 py-6 text-xs text-red-300 text-center">
                 {errorMessage(sourcesQuery.error, 'Failed to load data sources.')}
               </p>
+            ) : sourcesQuery.isPending ? (
+              <div className="space-y-1">
+                {Array.from({ length: 7 }).map((_, index) => (
+                  <div
+                    key={`source-skeleton-${index}`}
+                    className="rounded-md border border-border/40 bg-background/35 px-2.5 py-2 animate-pulse"
+                  >
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="h-3 w-28 rounded bg-muted/60" />
+                      <div className="h-4 w-12 rounded bg-muted/55" />
+                    </div>
+                    <div className="mt-2 h-2.5 w-36 rounded bg-muted/55" />
+                    <div className="mt-1.5 h-2.5 w-16 rounded bg-muted/50" />
+                    <div className="mt-1.5 h-6 w-full rounded bg-muted/45" />
+                  </div>
+                ))}
+              </div>
             ) : flatFiltered.length === 0 ? (
               <p className="px-3 py-6 text-xs text-muted-foreground text-center">No data sources found.</p>
             ) : (
@@ -984,6 +1121,27 @@ export default function DataSourcesManager() {
                   <BookOpen className="w-3 h-3" />
                   API Docs
                 </Button>
+                {selectedSource && onOpenCopilot && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    onClick={() =>
+                      onOpenCopilot({
+                        contextType: 'data_source',
+                        contextId: selectedSource.id,
+                        label: selectedSource.name || selectedSource.slug || 'Data Source',
+                        prompt: 'Review this data source and suggest robust parsing/normalization improvements. Apply direct changes when appropriate.',
+                        autoSend: false,
+                      })
+                    }
+                    disabled={busy}
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Copilot
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="outline"
@@ -1489,6 +1647,80 @@ export default function DataSourcesManager() {
 
                 <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[1.2fr_0.8fr]">
                   <div className="space-y-4">
+                    <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 px-3 py-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+                            Generate with AI
+                          </p>
+                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                            Describe the external site/API/feed and required normalized records.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 gap-1.5 text-[11px] bg-cyan-600 hover:bg-cyan-500 text-white"
+                          onClick={() => generateAiDraftMutation.mutate()}
+                          disabled={generateAiDraftMutation.isPending || !newSourceAiPrompt.trim()}
+                        >
+                          {generateAiDraftMutation.isPending ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          Generate
+                        </Button>
+                      </div>
+                      <textarea
+                        value={newSourceAiPrompt}
+                        onChange={(event) => {
+                          setNewSourceAiPrompt(event.target.value)
+                          setNewSourceError(null)
+                        }}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 text-foreground outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        rows={3}
+                        placeholder="Connect obscure event feed from xyzsite.com and normalize records with stable id, title, timestamp, category, and geopoint when available."
+                      />
+                      {newSourceAiDraft && (
+                        <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-2 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] text-cyan-100">
+                              Generated by {newSourceAiDraft.model || 'AI'}{newSourceAiDraft.used_repair_pass ? ' with repair pass' : ''}
+                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  'h-4 px-1.5 text-[9px] border',
+                                  newSourceAiDraft.validation?.valid
+                                    ? 'border-emerald-500/35 text-emerald-300 bg-emerald-500/10'
+                                    : 'border-amber-500/35 text-amber-300 bg-amber-500/10'
+                                )}
+                              >
+                                {newSourceAiDraft.validation?.valid ? 'Validated' : 'Needs review'}
+                              </Badge>
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-muted-foreground">Use AI Draft</span>
+                                <Switch checked={newSourceUseAiDraft} onCheckedChange={setNewSourceUseAiDraft} />
+                              </div>
+                            </div>
+                          </div>
+                          {!newSourceAiDraft.validation?.valid && (newSourceAiDraft.validation?.errors || []).slice(0, 2).map((error, index) => (
+                            <p key={`source-ai-error-${index}`} className="text-[10px] text-amber-300 font-mono">
+                              {error}
+                            </p>
+                          ))}
+                          {(newSourceAiDraft.validation?.warnings || []).slice(0, 2).map((warning, index) => (
+                            <p key={`source-ai-warning-${index}`} className="text-[10px] text-muted-foreground font-mono">
+                              {warning}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <Label className="text-[11px] text-muted-foreground">Name</Label>

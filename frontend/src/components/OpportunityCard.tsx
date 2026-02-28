@@ -569,29 +569,76 @@ function OpportunityCard({
           label,
           price: multiMarketOutcomes.prices[i] ?? null,
         }))
-        // Merge price histories from all sub-markets
-        const mergedHistory: Record<string, unknown>[] = []
-        const maxLen = Math.max(
-          ...opportunity.markets.map((m) => Array.isArray(m.price_history) ? m.price_history.length : 0),
-          0,
-        )
-        for (let j = 0; j < maxLen; j++) {
-          const point: Record<string, unknown> = {}
-          opportunity.markets.forEach((m, i) => {
-            const hist = Array.isArray(m.price_history) ? m.price_history : []
-            const entry = hist[j] as Record<string, unknown> | undefined
-            if (entry) {
-              // Extract YES price from this sub-market's history point
-              const yesVal = entry.yes ?? entry.y ?? entry.p ?? entry.price
-              if (yesVal != null) point[`idx_${i}`] = yesVal
-              // Preserve timestamp from first market
-              if (i === 0 && entry.t != null) point.t = entry.t
-            }
-          })
-          if (Object.keys(point).length > 1 || (Object.keys(point).length === 1 && !('t' in point))) {
-            mergedHistory.push(point)
-          }
+        // Merge price histories by timestamp (not by index) so uneven history
+        // lengths still align correctly across legs.
+        const mergedByTs = new Map<number, Record<string, unknown>>()
+        let syntheticTs = 1
+        const coerceTs = (value: unknown): number | null => {
+          const raw = Number(value)
+          if (!Number.isFinite(raw)) return null
+          return raw > 10_000_000_000 ? raw : raw * 1000
         }
+        const coercePrice = (value: unknown): number | null => {
+          const raw = Number(value)
+          if (!Number.isFinite(raw)) return null
+          if (raw < 0 || raw > 1.01) return null
+          return raw
+        }
+        const pointTs = (entry: Record<string, unknown> | unknown[]): number => {
+          if (Array.isArray(entry)) {
+            const first = coerceTs(entry[0])
+            if (first != null) return first
+          } else {
+            const ts = (
+              coerceTs(entry.t)
+              ?? coerceTs(entry.ts)
+              ?? coerceTs(entry.time)
+              ?? coerceTs(entry.timestamp)
+            )
+            if (ts != null) return ts
+          }
+          syntheticTs += 1
+          return syntheticTs
+        }
+        const pointYes = (entry: Record<string, unknown> | unknown[]): number | null => {
+          if (Array.isArray(entry)) {
+            const start = coerceTs(entry[0]) != null ? 1 : 0
+            return coercePrice(entry[start])
+          }
+          const direct = (
+            coercePrice(entry.yes)
+            ?? coercePrice(entry.y)
+            ?? coercePrice(entry.idx_0)
+            ?? coercePrice(entry.p)
+            ?? coercePrice(entry.price)
+          )
+          if (direct != null) return direct
+          const rawOutcomePrices = entry.outcome_prices
+          if (Array.isArray(rawOutcomePrices) && rawOutcomePrices.length > 0) {
+            return coercePrice(rawOutcomePrices[0])
+          }
+          return null
+        }
+        opportunity.markets.forEach((m, i) => {
+          const hist = Array.isArray(m.price_history) ? m.price_history : []
+          hist.forEach((rawEntry) => {
+            const entry = (
+              Array.isArray(rawEntry)
+                ? rawEntry as unknown[]
+                : (rawEntry as Record<string, unknown> | null)
+            )
+            if (!entry) return
+            const yesVal = pointYes(entry)
+            if (yesVal == null) return
+            const ts = pointTs(entry)
+            const existing = mergedByTs.get(ts) ?? { t: ts }
+            existing[`idx_${i}`] = yesVal
+            mergedByTs.set(ts, existing)
+          })
+        })
+        const mergedHistory = Array.from(mergedByTs.entries())
+          .sort((a, b) => a[0] - b[0])
+          .map(([, point]) => point)
         return buildOutcomeSparklineSeries(
           mergedHistory.length > 0 ? mergedHistory : undefined,
           fallbacks,

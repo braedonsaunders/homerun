@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   X,
   Send,
@@ -39,6 +39,7 @@ export default function AICopilotPanel({
   contextLabel,
   seedPrompt,
 }: AICopilotPanelProps) {
+  const queryClient = useQueryClient()
   const [messages, setMessages] = useState<AIChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [input, setInput] = useState('')
@@ -113,6 +114,7 @@ export default function AICopilotPanel({
         session_id: sessionId || undefined,
         context_type: contextType,
         context_id: contextId,
+        allow_actions: true,
       })
       return result
     },
@@ -120,6 +122,26 @@ export default function AICopilotPanel({
       if (data.session_id) {
         setSessionId(data.session_id)
         window.localStorage.setItem(sessionStorageKey, data.session_id)
+      }
+      const applied = Array.isArray(data.actions_applied) ? data.actions_applied : []
+      if (applied.length > 0) {
+        for (const action of applied) {
+          const actionType = String(action?.type || '').trim().toLowerCase()
+          if (actionType === 'update_strategy') {
+            queryClient.invalidateQueries({ queryKey: ['unified-strategies'] })
+            queryClient.invalidateQueries({ queryKey: ['unified-strategy-versions'] })
+            queryClient.invalidateQueries({ queryKey: ['strategies'] })
+            queryClient.invalidateQueries({ queryKey: ['plugins'] })
+            queryClient.invalidateQueries({ queryKey: ['trader-config-schema'] })
+            queryClient.invalidateQueries({ queryKey: ['trader-sources'] })
+          } else if (actionType === 'update_data_source') {
+            queryClient.invalidateQueries({ queryKey: ['unified-data-sources'] })
+            queryClient.invalidateQueries({ queryKey: ['unified-data-source'] })
+            queryClient.invalidateQueries({ queryKey: ['unified-data-source-runs'] })
+            queryClient.invalidateQueries({ queryKey: ['unified-data-source-records-preview'] })
+            queryClient.invalidateQueries({ queryKey: ['events-sources'] })
+          }
+        }
       }
       setMessages((prev) => [
         ...prev,
@@ -170,12 +192,30 @@ export default function AICopilotPanel({
     }
   }
 
-  const quickActions = [
-    { label: 'Analyze risk factors', prompt: 'What are the main risk factors for this opportunity?' },
-    { label: 'Resolution safety', prompt: 'How safe is the resolution criteria? Any ambiguities?' },
-    { label: 'Should I trade?', prompt: 'Given the current data, should I execute this trade? What are the pros and cons?' },
-    { label: 'Explain strategy', prompt: 'Explain how this arbitrage strategy works and why this opportunity exists.' },
-  ]
+  const quickActions = useMemo(() => {
+    if (contextType === 'strategy') {
+      return [
+        { label: 'Explain code', prompt: 'Explain this strategy code end-to-end: detect/evaluate/exit and main risk tradeoffs.' },
+        { label: 'Improve evaluate()', prompt: 'Improve evaluate() to tighten risk gating and produce clearer DecisionCheck outputs.' },
+        { label: 'Add feature', prompt: 'Add a configurable filter for market liquidity and wire it into default_config + config_schema. Apply the code changes directly.' },
+        { label: 'Review safety', prompt: 'Review this strategy for potential logic bugs, execution hazards, and invalid assumptions.' },
+      ]
+    }
+    if (contextType === 'data_source') {
+      return [
+        { label: 'Explain source', prompt: 'Explain this data source pipeline and where it may fail in production.' },
+        { label: 'Harden parsing', prompt: 'Improve this source to better normalize timestamps, IDs, and categories. Apply the code changes directly.' },
+        { label: 'Add geotags', prompt: 'Add robust geotag support and ensure output follows the record contract. Apply the code changes directly.' },
+        { label: 'Retention review', prompt: 'Recommend retention/config changes for this source based on its expected volume and usage.' },
+      ]
+    }
+    return [
+      { label: 'Analyze risk factors', prompt: 'What are the main risk factors for this opportunity?' },
+      { label: 'Resolution safety', prompt: 'How safe is the resolution criteria? Any ambiguities?' },
+      { label: 'Should I trade?', prompt: 'Given the current data, should I execute this trade? What are the pros and cons?' },
+      { label: 'Explain strategy', prompt: 'Explain how this arbitrage strategy works and why this opportunity exists.' },
+    ]
+  }, [contextType])
 
   if (!isOpen) return null
 
@@ -258,14 +298,22 @@ export default function AICopilotPanel({
                 <Bot className="w-6 h-6 text-purple-400" />
               </div>
               <p className="text-sm text-muted-foreground mb-1">
-                Ask me anything about your trades
+                {contextType === 'strategy'
+                  ? 'Ask me anything about this strategy'
+                  : contextType === 'data_source'
+                    ? 'Ask me anything about this data source'
+                    : 'Ask me anything about your trades'}
               </p>
               <p className="text-xs text-muted-foreground mb-4">
-                I can analyze opportunities, assess risk, and help you make decisions.
+                {contextType === 'strategy'
+                  ? 'I can explain the code, suggest improvements, and apply direct strategy edits when requested.'
+                  : contextType === 'data_source'
+                    ? 'I can analyze ingestion logic, improve normalization, and apply direct source edits when requested.'
+                    : 'I can analyze opportunities, assess risk, and help you make decisions.'}
               </p>
 
               {/* Quick Actions */}
-              {(contextType === 'opportunity' || contextType === 'trader_signal') && (
+              {(contextType === 'opportunity' || contextType === 'trader_signal' || contextType === 'strategy' || contextType === 'data_source') && (
                 <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
                   {quickActions.map((action) => (
                     <Card

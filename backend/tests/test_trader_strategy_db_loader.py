@@ -76,7 +76,7 @@ def test_validate_strategy_source_accepts_on_event_only_strategy():
     assert validation["capabilities"]["has_evaluate"] is False
 
 
-def test_validate_strategy_source_rejects_should_exit_only_strategy():
+def test_validate_strategy_source_accepts_should_exit_only_strategy():
     source_code = "\n".join(
         [
             "from services.strategies.base import BaseStrategy, ExitDecision",
@@ -89,8 +89,11 @@ def test_validate_strategy_source_rejects_should_exit_only_strategy():
         ]
     )
     validation = validate_strategy_source(source_code, "ExitOnlyStrategy")
-    assert validation["valid"] is False
-    assert any("must implement at least one of" in err for err in validation["errors"])
+    assert validation["valid"] is True
+    assert validation["capabilities"]["has_should_exit"] is True
+    assert validation["capabilities"]["has_detect"] is False
+    assert validation["capabilities"]["has_detect_async"] is False
+    assert validation["capabilities"]["has_evaluate"] is False
 
 
 def test_loader_sets_slug_identity_and_merges_config_for_dynamic_strategy():
@@ -134,6 +137,38 @@ def test_loader_sets_slug_identity_and_merges_config_for_dynamic_strategy():
 
     loader.unload("config_aware_strategy")
     assert loader.get_strategy("config_aware_strategy") is None
+
+
+def test_loader_reconfigure_loaded_updates_runtime_without_recompile():
+    source_code = "\n".join(
+        [
+            "from services.strategies.base import BaseStrategy",
+            "",
+            "class RuntimeConfigStrategy(BaseStrategy):",
+            "    name = 'Runtime Config'",
+            "    description = 'Config-only updates should stay in-process'",
+            "    default_config = {'threshold': 0.15, 'window': 5}",
+            "    def detect(self, events, markets, prices):",
+            "        return []",
+        ]
+    )
+    loader = StrategyDBLoader()
+    loaded = loader.load("runtime_config_strategy", source_code, {"threshold": 0.35})
+    original_instance_id = id(loaded.instance)
+    original_source_hash = loaded.source_hash
+
+    reconfigured = loader.reconfigure_loaded("runtime_config_strategy", source_code, {"threshold": 0.9})
+    assert reconfigured is True
+
+    after = loader.get_strategy("runtime_config_strategy")
+    assert after is not None
+    assert id(after.instance) == original_instance_id
+    assert after.instance.config["threshold"] == 0.9
+    assert after.instance.config["window"] == 5
+    assert after.source_hash != original_source_hash
+
+    missing = loader.reconfigure_loaded("not_loaded_strategy", source_code, {"threshold": 0.1})
+    assert missing is False
 
 
 @pytest.mark.asyncio

@@ -316,6 +316,14 @@ class WorkflowOrchestrator:
         self._is_cycling = False
         self._negative_cache = _NegativeCache()
 
+    @staticmethod
+    async def _release_session_connection(session: AsyncSession) -> None:
+        try:
+            if session.in_transaction():
+                await session.rollback()
+        except Exception:
+            pass
+
     async def run_cycle(self, session: AsyncSession) -> dict:
         """Run one cycle. Caller (worker) owns loop scheduling and control flow."""
         if self._is_cycling:
@@ -335,6 +343,7 @@ class WorkflowOrchestrator:
             from services.news.reranker import reranker
 
             wf_settings = await shared_state.get_news_settings(session)
+            await self._release_session_connection(session)
 
             # 1) Sync articles from provider feeds.
             try:
@@ -425,6 +434,7 @@ class WorkflowOrchestrator:
                 min_liquidity=market_min_liquidity,
                 max_days_to_resolution=market_max_days_to_resolution,
             )
+            await self._release_session_connection(session)
             if not market_infos:
                 return {
                     "status": "no_markets",
@@ -504,6 +514,7 @@ class WorkflowOrchestrator:
                 hourly_spend_cap = float(wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0)
                 effective_call_cap = cycle_llm_call_cap
                 estimated_cost_per_call = 0.02
+            await self._release_session_connection(session)
 
             budget = CycleBudget(
                 llm_available=bool(llm_available and global_remaining > 0),
@@ -817,6 +828,7 @@ class WorkflowOrchestrator:
                         cached_hits.append(hit)
                     else:
                         to_estimate.append(rc)
+                await self._release_session_connection(session)
 
                 edge_calls_wanted = min(len(to_estimate), stage_budget.remaining("edge_estimation"))
                 llm_calls_for_edges = budget.reserve_calls(edge_calls_wanted)

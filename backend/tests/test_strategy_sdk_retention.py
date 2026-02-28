@@ -147,14 +147,14 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["min_liquidity_usd_opening"] == 4000.0
     assert defaults["max_spread_pct"] == 0.08
     assert defaults["max_signal_age_seconds"] == 35.0
-    assert defaults["max_open_order_seconds"] == 14.0
-    assert defaults["max_live_context_age_seconds"] == 3.0
+    assert defaults["max_open_order_seconds"] == 45.0
+    assert defaults["max_live_context_age_seconds"] == 5.0
     assert defaults["max_oracle_age_seconds"] == 20.0
     assert defaults["max_oracle_age_ms"] == 20000.0
     assert defaults["require_oracle_for_directional"] is True
     assert defaults["oracle_source_policy"] == "degrade"
     assert defaults["min_seconds_left_for_entry_5m"] == 60.0
-    assert defaults["min_seconds_left_for_entry_15m"] == 180.0
+    assert defaults["min_seconds_left_for_entry_15m"] == 90.0
     assert defaults["min_seconds_left_for_entry_1h"] == 360.0
     assert defaults["opening_directional_buy_yes_enabled"] is False
     assert defaults["opening_directional_buy_yes_block_elapsed_pct"] == 0.10
@@ -184,11 +184,24 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["trailing_stop_activation_profit_pct"] == 4.0
     assert defaults["trailing_stop_activation_profit_pct_5m"] == 4.0
     assert defaults["force_flatten_seconds_left_5m"] == 90.0
-    assert defaults["force_flatten_max_profit_pct"] == 3.0
+    assert defaults["force_flatten_max_profit_pct"] == 100.0
+    assert defaults["force_flatten_min_loss_pct"] == 0.0
     assert defaults["resolution_risk_flatten_enabled"] is True
     assert defaults["resolution_risk_seconds_left_5m"] == 105.0
     assert defaults["resolution_risk_max_profit_pct"] == 6.0
     assert defaults["enforce_min_exit_notional"] is True
+    assert defaults["hard_stop_loss_enabled"] is True
+    assert defaults["hard_stop_loss_pct"] == 20.0
+    assert defaults["hard_stop_loss_pct_5m"] == 15.0
+    assert defaults["hard_stop_loss_pct_15m"] == 18.0
+    assert defaults["hard_stop_loss_pct_1h"] == 22.0
+    assert defaults["hard_stop_loss_pct_4h"] == 25.0
+    assert defaults["immediate_stop_loss_requires_time_pressure"] is False
+    assert defaults["stop_loss_activation_seconds_5m"] == 0
+    assert defaults["min_edge_percent"] == 2.5
+    assert defaults["min_confidence"] == 0.42
+    assert defaults["directional_max_entry_price_ceiling"] == 0.65
+    assert defaults["maker_max_entry_price_ceiling"] == 0.70
 
 
 def test_strategy_entry_take_profit_exit_param_resolution():

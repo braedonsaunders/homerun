@@ -7,6 +7,13 @@ import MLModelsPanel from './MLModelsPanel'
 type StrategiesPanelProps = {
   initialSourceFilter?: string | null
   onSourceFilterApplied?: () => void
+  onOpenCopilot?: (options?: {
+    contextType?: string
+    contextId?: string
+    label?: string
+    prompt?: string
+    autoSend?: boolean
+  }) => void
 }
 
 type ViewMode = 'strategies' | 'ml-models'
@@ -14,6 +21,7 @@ type ViewMode = 'strategies' | 'ml-models'
 export default function StrategiesPanel({
   initialSourceFilter,
   onSourceFilterApplied,
+  onOpenCopilot,
 }: StrategiesPanelProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('strategies')
 
@@ -53,6 +61,7 @@ export default function StrategiesPanel({
           <UnifiedStrategiesManager
             initialSourceFilter={initialSourceFilter}
             onSourceFilterApplied={onSourceFilterApplied}
+            onOpenCopilot={onOpenCopilot}
           />
         )}
         {viewMode === 'ml-models' && <MLModelsPanel />}

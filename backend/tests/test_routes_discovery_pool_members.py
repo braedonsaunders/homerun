@@ -35,14 +35,27 @@ class _RowsResult:
         return self._rows
 
 
-def _make_session(wallets):
+def _make_session(
+    wallets,
+    *,
+    tracked_rows=None,
+    activity_rows=None,
+    cached_market_rows=None,
+    supplemental_cached_market_rows=None,
+):
     # Query order inside get_pool_members:
     # 1) select(DiscoveredWallet)
     # 2) select(TrackedWallet.address, TrackedWallet.label)
+    # 3) wallet_activity_rollups aggregation (for primary market category)
+    # 4) cached_markets direct condition_id lookup
+    # 5) cached_markets supplemental token lookup
     execute = AsyncMock(
         side_effect=[
             _ScalarResult(wallets),
-            _RowsResult([]),
+            _RowsResult(tracked_rows or []),
+            _RowsResult(activity_rows or []),
+            _RowsResult(cached_market_rows or []),
+            _RowsResult(supplemental_cached_market_rows or []),
         ]
     )
     return SimpleNamespace(execute=execute)
@@ -85,6 +98,23 @@ def _wallet(
         cluster_id=None,
         source_flags=source_flags or {},
         last_analyzed_at=utcnow(),
+    )
+
+
+def _activity_row(*, wallet_address: str, market_id: str, trade_count: int, total_notional: float):
+    return SimpleNamespace(
+        wallet_address=wallet_address,
+        market_id=market_id,
+        trade_count=trade_count,
+        total_notional=total_notional,
+    )
+
+
+def _cached_market_row(*, condition_id: str, category: str | None, extra_data: dict | None = None):
+    return SimpleNamespace(
+        condition_id=condition_id,
+        category=category,
+        extra_data=extra_data if isinstance(extra_data, dict) else None,
     )
 
 
@@ -243,3 +273,97 @@ async def test_pool_members_keeps_blocked_metadata_for_non_pool_rows():
     assert row["eligibility_status"] == "blocked"
     assert row["eligibility_blockers"] == [{"code": "recommendation_blocked", "label": "Recommendation blocked"}]
     assert row["selection_reasons"] == [{"code": "recommendation_blocked", "label": "Recommendation blocked"}]
+
+
+@pytest.mark.asyncio
+async def test_pool_members_primary_market_category_uses_notional_weight():
+    wallet = _wallet(
+        address="0xabc",
+        win_rate=0.72,
+        total_pnl=2100.0,
+        total_trades=140,
+    )
+    session = _make_session(
+        [wallet],
+        activity_rows=[
+            _activity_row(
+                wallet_address="0xabc",
+                market_id="0xmarket_crypto",
+                trade_count=5,
+                total_notional=1400.0,
+            ),
+            _activity_row(
+                wallet_address="0xabc",
+                market_id="0xmarket_sports",
+                trade_count=16,
+                total_notional=600.0,
+            ),
+        ],
+        cached_market_rows=[
+            _cached_market_row(condition_id="0xmarket_crypto", category="Crypto"),
+            _cached_market_row(condition_id="0xmarket_sports", category="Sports"),
+        ],
+    )
+
+    out = await _call_pool_members(session)
+    row = out["members"][0]
+    assert row["primary_market_category"] == "crypto"
+    assert row["primary_market_category_basis"] == "notional"
+    assert row["primary_market_category_share"] == pytest.approx(0.70, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_pool_members_primary_market_category_falls_back_to_trade_count_when_notional_absent():
+    wallet = _wallet(
+        address="0xdef",
+        win_rate=0.66,
+        total_pnl=900.0,
+        total_trades=90,
+    )
+    session = _make_session(
+        [wallet],
+        activity_rows=[
+            _activity_row(
+                wallet_address="0xdef",
+                market_id="0xmarket_politics",
+                trade_count=3,
+                total_notional=0.0,
+            ),
+            _activity_row(
+                wallet_address="0xdef",
+                market_id="0xmarket_crypto",
+                trade_count=9,
+                total_notional=0.0,
+            ),
+        ],
+        cached_market_rows=[
+            _cached_market_row(condition_id="0xmarket_politics", category="Politics"),
+            _cached_market_row(condition_id="0xmarket_crypto", category="Crypto"),
+        ],
+    )
+
+    out = await _call_pool_members(session)
+    row = out["members"][0]
+    assert row["primary_market_category"] == "crypto"
+    assert row["primary_market_category_basis"] == "trade_count"
+    assert row["primary_market_category_share"] == pytest.approx(0.75, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_pool_members_primary_market_category_falls_back_to_flags_when_activity_missing():
+    wallet = _wallet(
+        address="0x123",
+        win_rate=0.61,
+        total_pnl=300.0,
+        total_trades=40,
+        source_flags={
+            "leaderboard_category_politics": True,
+            "leaderboard_category_crypto": True,
+        },
+    )
+
+    out = await _call_pool_members(_make_session([wallet]))
+    row = out["members"][0]
+    assert row["primary_market_category"] == "crypto"
+    assert row["primary_market_category_basis"] == "flags"
+    assert row["primary_market_category_share"] is None

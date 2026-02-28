@@ -28,6 +28,13 @@ _SOURCE_ADAPTERS: dict[str, SourceAdapter] = {
         domains=["crypto"],
         signal_types=["crypto_market"],
     ),
+    "manual": SourceAdapter(
+        key="manual",
+        label="Manual Positions",
+        description="Manually adopted live positions managed without new entries.",
+        domains=["event_markets"],
+        signal_types=["manual_position"],
+    ),
     "news": SourceAdapter(
         key="news",
         label="News Workflow",

@@ -288,3 +288,63 @@ async def test_reconcile_active_sessions_escalates_hedging_timeout(monkeypatch):
     assert "Hedge timeout exceeded" in cancel_session_mock.await_args.kwargs["reason"]
     assert create_event_mock.await_count == 1
     assert create_event_mock.await_args.kwargs["event_type"] == "hedge_timeout"
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_skips_already_terminal_trader_orders(monkeypatch):
+    db = SimpleNamespace(commit=AsyncMock(), get=AsyncMock())
+    engine = session_engine_module.ExecutionSessionEngine(db)
+
+    session_detail = {
+        "session": {"status": "working", "signal_id": "signal-1"},
+        "orders": [
+            {
+                "status": "open",
+                "trader_order_id": "order-1",
+                "provider_order_id": "provider-1",
+                "provider_clob_order_id": "clob-1",
+            }
+        ],
+        "legs": [],
+    }
+    terminal_order = SimpleNamespace(
+        status="cancelled",
+        payload_json={},
+        reason="cleanup:max_open_order_timeout:crypto",
+        notional_usd=0.0,
+        executed_at=None,
+        updated_at=None,
+    )
+    db.get = AsyncMock(return_value=terminal_order)
+
+    monkeypatch.setattr(
+        session_engine_module,
+        "get_execution_session_detail",
+        AsyncMock(return_value=session_detail),
+    )
+    cancel_provider_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(session_engine_module, "cancel_live_provider_order", cancel_provider_mock)
+    update_leg_mock = AsyncMock()
+    monkeypatch.setattr(session_engine_module, "update_execution_leg", update_leg_mock)
+    update_status_mock = AsyncMock()
+    monkeypatch.setattr(session_engine_module, "update_execution_session_status", update_status_mock)
+    set_signal_status_mock = AsyncMock()
+    monkeypatch.setattr(session_engine_module, "set_trade_signal_status", set_signal_status_mock)
+    create_event_mock = AsyncMock()
+    monkeypatch.setattr(session_engine_module, "create_execution_session_event", create_event_mock)
+    publish_mock = AsyncMock()
+    monkeypatch.setattr(session_engine_module.event_bus, "publish", publish_mock)
+
+    result = await engine.cancel_session(
+        session_id="session-1",
+        reason="Session timed out before all legs completed.",
+        terminal_status="expired",
+    )
+
+    assert result is True
+    assert cancel_provider_mock.await_count == 0
+    assert db.get.await_count == 1
+    assert update_leg_mock.await_count == 0
+    assert update_status_mock.await_count == 1
+    assert set_signal_status_mock.await_count == 1
+    assert create_event_mock.await_count == 1

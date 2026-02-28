@@ -272,6 +272,26 @@ async def get_weather_opportunities(
 
     total = len(opps)
     opps = opps[offset : offset + limit]
+    if opps:
+        missing_history = []
+        for opp in opps:
+            if any(
+                not isinstance(market.get("price_history"), list) or len(market.get("price_history") or []) < 2
+                for market in opp.markets
+                if isinstance(market, dict)
+            ):
+                missing_history.append(opp)
+        if missing_history:
+            try:
+                from services.scanner import scanner as market_scanner
+
+                await market_scanner.attach_price_history_to_opportunities(
+                    missing_history,
+                    timeout_seconds=2.0,
+                    block_for_backfill=True,
+                )
+            except Exception:
+                pass
     serialized = [serialize_opportunity_with_links(o) for o in opps]
     return {
         "total": total,

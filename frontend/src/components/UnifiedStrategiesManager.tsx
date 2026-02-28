@@ -18,6 +18,7 @@ import {
   Save,
   Search,
   Settings2,
+  Sparkles,
   Trash2,
   X,
   Zap,
@@ -45,8 +46,10 @@ import {
   overrideValidationStrategy,
   restoreUnifiedStrategyVersion,
   clearValidationStrategyOverride,
+  generateAIStrategyDraft,
   UnifiedStrategy,
   UnifiedStrategyVersion,
+  AIStrategyDraftGenerationResponse,
 } from '../services/api'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
 import StrategyBacktestFlyout from './StrategyBacktestFlyout'
@@ -138,6 +141,26 @@ function renderTemplateSource(
   return out
 }
 
+function applyStrategyMetadataToSource(
+  sourceCode: string,
+  {
+    strategyName,
+    strategyDescription,
+    sourceKey,
+  }: {
+    strategyName: string
+    strategyDescription: string
+    sourceKey: string
+  }
+): string {
+  let out = String(sourceCode || '')
+  out = out.replace(/^\s*name\s*=\s*".*"$/m, `    name = ${pythonStringLiteral(strategyName)}`)
+  out = out.replace(/^\s*description\s*=\s*".*"$/m, `    description = ${pythonStringLiteral(strategyDescription)}`)
+  out = out.replace(/^\s*source_key\s*=\s*".*"$/m, `    source_key = ${pythonStringLiteral(sourceKey)}`)
+  out = out.replace(/^\s*worker_affinity\s*=\s*".*"$/m, `    worker_affinity = ${pythonStringLiteral(sourceKey)}`)
+  return out
+}
+
 function inferClassName(sourceCode: string): string | null {
   const classPattern = /class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:/gm
   let match: RegExpExecArray | null = classPattern.exec(sourceCode)
@@ -198,6 +221,7 @@ const SOURCE_LABELS: Record<string, string> = {
   scanner: 'Scanner',
   news: 'News',
   crypto: 'Crypto',
+  manual: 'Manual',
   weather: 'Weather',
   traders: 'Traders',
 }
@@ -362,9 +386,17 @@ function healthStatusClass(status: string): string {
 export default function UnifiedStrategiesManager({
   initialSourceFilter,
   onSourceFilterApplied,
+  onOpenCopilot,
 }: {
   initialSourceFilter?: string | null
   onSourceFilterApplied?: () => void
+  onOpenCopilot?: (options?: {
+    contextType?: string
+    contextId?: string
+    label?: string
+    prompt?: string
+    autoSend?: boolean
+  }) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -391,6 +423,9 @@ export default function UnifiedStrategiesManager({
   const [newStrategyTemplateKey, setNewStrategyTemplateKey] = useState(DEFAULT_NEW_TEMPLATE_KEY)
   const [newStrategySlugDirty, setNewStrategySlugDirty] = useState(false)
   const [newStrategyError, setNewStrategyError] = useState<string | null>(null)
+  const [newStrategyAiPrompt, setNewStrategyAiPrompt] = useState('')
+  const [newStrategyAiDraft, setNewStrategyAiDraft] = useState<AIStrategyDraftGenerationResponse | null>(null)
+  const [newStrategyUseAiDraft, setNewStrategyUseAiDraft] = useState(false)
 
   // Editor state
   const [editorSlug, setEditorSlug] = useState('')
@@ -527,6 +562,15 @@ export default function UnifiedStrategiesManager({
   }, [newStrategyTemplateKey, newStrategyTemplates])
 
   const newStrategyPreviewCode = useMemo(() => {
+    if (newStrategyUseAiDraft && newStrategyAiDraft?.source_code) {
+      const title = String(newStrategyName || '').trim() || 'Custom Strategy'
+      const description = String(newStrategyDescription || '').trim() || `${title} strategy`
+      return applyStrategyMetadataToSource(String(newStrategyAiDraft.source_code || ''), {
+        strategyName: title,
+        strategyDescription: description,
+        sourceKey: normalizeStrategySourceFilter(newStrategySourceKey),
+      })
+    }
     if (!selectedNewTemplate) return ''
     const title = String(newStrategyName || '').trim() || 'Custom Strategy'
     const description = String(newStrategyDescription || '').trim() || `${title} strategy`
@@ -536,7 +580,15 @@ export default function UnifiedStrategiesManager({
       strategyDescription: description,
       sourceKey: normalizeStrategySourceFilter(newStrategySourceKey),
     })
-  }, [selectedNewTemplate, newStrategyName, newStrategyDescription, newStrategySourceKey, newStrategyClassName])
+  }, [
+    selectedNewTemplate,
+    newStrategyName,
+    newStrategyDescription,
+    newStrategySourceKey,
+    newStrategyClassName,
+    newStrategyUseAiDraft,
+    newStrategyAiDraft?.source_code,
+  ])
 
   const grouped = useMemo(() => {
     let rows = [...catalog]
@@ -952,9 +1004,34 @@ export default function UnifiedStrategiesManager({
     },
   })
 
+  const generateDraftMutation = useMutation({
+    mutationFn: async () => {
+      const prompt = String(newStrategyAiPrompt || '').trim()
+      if (!prompt) throw new Error('Describe the strategy you want to generate.')
+      return generateAIStrategyDraft({
+        description: prompt,
+        source_key: normalizeStrategySourceFilter(newStrategySourceKey),
+      })
+    },
+    onSuccess: (draft) => {
+      setNewStrategyAiDraft(draft)
+      setNewStrategyUseAiDraft(true)
+      setNewStrategyName(String(draft.name || 'Custom Strategy').trim() || 'Custom Strategy')
+      setNewStrategySlug(normalizeSlug(draft.slug || 'custom_strategy'))
+      setNewStrategySlugDirty(true)
+      setNewStrategySourceKey(normalizeStrategySourceFilter(draft.source_key || newStrategySourceKey))
+      setNewStrategyDescription(String(draft.description || '').trim())
+      setNewStrategyError(null)
+    },
+    onError: (error: unknown) => {
+      setNewStrategyError(errorMessage(error, 'AI generation failed'))
+    },
+  })
+
   const healthBusy = overrideStrategyMutation.isPending || clearOverrideMutation.isPending
 
   const busy =
+    generateDraftMutation.isPending ||
     saveMutation.isPending ||
     validateMutation.isPending ||
     reloadMutation.isPending ||
@@ -974,6 +1051,9 @@ export default function UnifiedStrategiesManager({
     setNewStrategyTemplateKey(DEFAULT_NEW_TEMPLATE_KEY)
     setNewStrategySlugDirty(false)
     setNewStrategyError(null)
+    setNewStrategyAiPrompt('')
+    setNewStrategyAiDraft(null)
+    setNewStrategyUseAiDraft(false)
     setShowCreateModal(true)
   }
 
@@ -983,6 +1063,7 @@ export default function UnifiedStrategiesManager({
     const trimmedName = String(newStrategyName || '').trim()
     const trimmedDescription = String(newStrategyDescription || '').trim()
     const selectedTemplate = selectedNewTemplate || newStrategyTemplates[0]
+    const useAiDraft = Boolean(newStrategyUseAiDraft && newStrategyAiDraft)
 
     if (!trimmedName) {
       setNewStrategyError('Strategy name is required.')
@@ -997,8 +1078,33 @@ export default function UnifiedStrategiesManager({
       return
     }
 
-    const renderedSource = renderTemplateSource(selectedTemplate.template, {
-      className: newStrategyClassName,
+    const aiDraft = newStrategyAiDraft
+    const aiSourceCode = String(aiDraft?.source_code || '').trim()
+    const nextConfig =
+      useAiDraft && aiDraft && aiDraft.config && typeof aiDraft.config === 'object' && !Array.isArray(aiDraft.config)
+        ? (aiDraft.config as Record<string, unknown>)
+        : {}
+    const nextSchema =
+      useAiDraft && aiDraft && aiDraft.config_schema && typeof aiDraft.config_schema === 'object' && !Array.isArray(aiDraft.config_schema)
+        ? (aiDraft.config_schema as Record<string, unknown>)
+        : { param_fields: [] }
+    const nextAliases =
+      useAiDraft && aiDraft && Array.isArray(aiDraft.aliases)
+        ? aiDraft.aliases
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+        : []
+
+    const baseSource = useAiDraft && aiSourceCode
+      ? aiSourceCode
+      : renderTemplateSource(selectedTemplate.template, {
+        className: newStrategyClassName,
+        strategyName: trimmedName,
+        strategyDescription: trimmedDescription || `${trimmedName} strategy`,
+        sourceKey: normalizedSourceKey,
+      })
+
+    const renderedSource = applyStrategyMetadataToSource(baseSource, {
       strategyName: trimmedName,
       strategyDescription: trimmedDescription || `${trimmedName} strategy`,
       sourceKey: normalizedSourceKey,
@@ -1012,9 +1118,9 @@ export default function UnifiedStrategiesManager({
     setEditorDescription(trimmedDescription)
     setEditorEnabled(true)
     setEditorCode(renderedSource)
-    setEditorConfigJson('{}')
-    setEditorSchemaJson('{"param_fields": []}')
-    setEditorAliasesCsv('')
+    setEditorConfigJson(JSON.stringify(nextConfig, null, 2))
+    setEditorSchemaJson(JSON.stringify(nextSchema, null, 2))
+    setEditorAliasesCsv(nextAliases.join(', '))
     setEditorError(null)
     setValidation(null)
     setShowSettings(true)
@@ -1142,7 +1248,27 @@ export default function UnifiedStrategiesManager({
         {/* Strategy list — grouped by source_key */}
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-1.5 space-y-1">
-            {flatFiltered.length === 0 ? (
+            {strategiesQuery.isPending ? (
+              <div className="space-y-1">
+                {Array.from({ length: 7 }).map((_, index) => (
+                  <div
+                    key={`strategy-skeleton-${index}`}
+                    className="rounded-md border border-border/40 bg-background/35 px-2.5 py-2 animate-pulse"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="h-3 w-28 rounded bg-muted/60" />
+                      <div className="h-4 w-12 rounded bg-muted/55" />
+                    </div>
+                    <div className="mt-2 h-2.5 w-36 rounded bg-muted/55" />
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <div className="h-2 w-10 rounded bg-muted/50" />
+                      <div className="h-2 w-8 rounded bg-muted/45" />
+                      <div className="h-2 w-12 rounded bg-muted/50" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : flatFiltered.length === 0 ? (
               <p className="px-3 py-6 text-xs text-muted-foreground text-center">No strategies found.</p>
             ) : (
               Object.entries(grouped).map(([sourceKey, strategies]) => (
@@ -1374,6 +1500,27 @@ export default function UnifiedStrategiesManager({
                   <BookOpen className="w-3 h-3" />
                   API Docs
                 </Button>
+                {selectedStrategy && onOpenCopilot && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    onClick={() =>
+                      onOpenCopilot({
+                        contextType: 'strategy',
+                        contextId: selectedStrategy.id,
+                        label: selectedStrategy.name || selectedStrategy.slug || 'Strategy',
+                        prompt: 'Review this strategy and suggest concrete improvements based on current source code and SDK context.',
+                        autoSend: false,
+                      })
+                    }
+                    disabled={busy}
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Copilot
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="outline"
@@ -1864,6 +2011,80 @@ export default function UnifiedStrategiesManager({
 
                 <div className="grid gap-4 p-4 lg:grid-cols-[1.2fr_0.8fr]">
                   <div className="space-y-4">
+                    <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 px-3 py-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+                            Generate with AI
+                          </p>
+                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                            Describe the strategy behavior, markets, and risk controls.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 gap-1.5 text-[11px] bg-violet-600 hover:bg-violet-500 text-white"
+                          onClick={() => generateDraftMutation.mutate()}
+                          disabled={generateDraftMutation.isPending || !newStrategyAiPrompt.trim()}
+                        >
+                          {generateDraftMutation.isPending ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          Generate
+                        </Button>
+                      </div>
+                      <textarea
+                        value={newStrategyAiPrompt}
+                        onChange={(event) => {
+                          setNewStrategyAiPrompt(event.target.value)
+                          setNewStrategyError(null)
+                        }}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 text-foreground outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        rows={3}
+                        placeholder="Build a momentum strategy on BTC/ETH event markets with volatility filters, configurable edge threshold, and strict stop-loss logic."
+                      />
+                      {newStrategyAiDraft && (
+                        <div className="rounded-md border border-violet-500/30 bg-violet-500/10 px-2.5 py-2 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] text-violet-200">
+                              Generated by {newStrategyAiDraft.model || 'AI'}{newStrategyAiDraft.used_repair_pass ? ' with repair pass' : ''}
+                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  'h-4 px-1.5 text-[9px] border',
+                                  newStrategyAiDraft.validation?.valid
+                                    ? 'border-emerald-500/35 text-emerald-300 bg-emerald-500/10'
+                                    : 'border-amber-500/35 text-amber-300 bg-amber-500/10'
+                                )}
+                              >
+                                {newStrategyAiDraft.validation?.valid ? 'Validated' : 'Needs review'}
+                              </Badge>
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-muted-foreground">Use AI Draft</span>
+                                <Switch checked={newStrategyUseAiDraft} onCheckedChange={setNewStrategyUseAiDraft} />
+                              </div>
+                            </div>
+                          </div>
+                          {!newStrategyAiDraft.validation?.valid && (newStrategyAiDraft.validation?.errors || []).slice(0, 2).map((err, index) => (
+                            <p key={`strategy-ai-error-${index}`} className="text-[10px] text-amber-300 font-mono">
+                              {err}
+                            </p>
+                          ))}
+                          {(newStrategyAiDraft.validation?.warnings || []).slice(0, 2).map((warning, index) => (
+                            <p key={`strategy-ai-warning-${index}`} className="text-[10px] text-muted-foreground font-mono">
+                              {warning}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <Label className="text-[11px] text-muted-foreground">Name</Label>

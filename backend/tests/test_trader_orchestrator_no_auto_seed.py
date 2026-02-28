@@ -224,19 +224,36 @@ async def test_create_trader_scopes_by_mode_and_list_filter(postgres_session_fac
                 ],
             },
         )
+        shadow = await create_trader(
+            session,
+            {
+                "name": "Shadow Scoped Trader",
+                "mode": "shadow",
+                "source_configs": [
+                    {
+                        "source_key": "crypto",
+                        "strategy_key": "btc_eth_highfreq",
+                        "strategy_params": {},
+                    }
+                ],
+            },
+        )
         paper_rows = await list_traders(session, mode="paper")
+        shadow_rows = await list_traders(session, mode="shadow")
         live_rows = await list_traders(session, mode="live")
 
     assert paper["mode"] == "paper"
+    assert shadow["mode"] == "shadow"
     assert live["mode"] == "live"
     assert {row["id"] for row in paper_rows} == {paper["id"]}
+    assert {row["id"] for row in shadow_rows} == {shadow["id"]}
     assert {row["id"] for row in live_rows} == {live["id"]}
 
 
 @pytest.mark.asyncio
 async def test_create_trader_rejects_invalid_mode(postgres_session_factory):
     async with postgres_session_factory() as session:
-        with pytest.raises(ValueError, match="mode must be 'paper' or 'live'"):
+        with pytest.raises(ValueError, match="mode must be 'paper', 'shadow', or 'live'"):
             await create_trader(
                 session,
                 {

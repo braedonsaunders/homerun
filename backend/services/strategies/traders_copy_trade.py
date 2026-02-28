@@ -8,6 +8,8 @@ from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, 
 from services.strategy_sdk import StrategySDK
 from utils.converters import safe_float, to_confidence
 
+_MAX_LIVE_COPY_SIGNAL_AGE_SECONDS = 5.0
+
 
 def _to_utc(value: Any) -> datetime | None:
     if isinstance(value, datetime):
@@ -61,7 +63,14 @@ class TradersCopyTradeStrategy(BaseStrategy):
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
         signal_strategy = str(getattr(signal, "strategy_type", "") or "").strip().lower()
+        accepted_strategy_types = {
+            str(item or "").strip().lower()
+            for item in self.accepted_signal_strategy_types
+            if str(item or "").strip()
+        }
+        accepted_strategy_types.add(self.strategy_type)
         side = str(copy_event.get("side") or source_trade.get("side") or "").strip().upper()
+        source_tx_hash = str(copy_event.get("tx_hash") or source_trade.get("tx_hash") or "").strip()
         token_id = str(payload.get("selected_token_id") or payload.get("token_id") or "").strip()
         signal_entry_price = safe_float(
             getattr(signal, "entry_price", None),
@@ -80,8 +89,21 @@ class TradersCopyTradeStrategy(BaseStrategy):
             sizing_price = signal_entry_price if signal_entry_price > 0.0 else entry_price
             source_notional = max(0.0, source_size * max(0.0, sizing_price))
 
-        detected_at = _to_utc(copy_event.get("detected_at") or source_trade.get("detected_at"))
-        age_seconds = 0.0
+        detected_at = _to_utc(
+            copy_event.get("detected_at")
+            or source_trade.get("detected_at")
+            or copy_event.get("timestamp")
+            or source_trade.get("timestamp")
+        )
+        requested_max_signal_age_seconds = max(
+            1.0,
+            safe_float(params.get("max_signal_age_seconds"), _MAX_LIVE_COPY_SIGNAL_AGE_SECONDS),
+        )
+        max_signal_age_seconds = min(
+            _MAX_LIVE_COPY_SIGNAL_AGE_SECONDS,
+            requested_max_signal_age_seconds,
+        )
+        age_seconds = max_signal_age_seconds + 1.0
         if detected_at is not None:
             age_seconds = max(0.0, (datetime.now(timezone.utc) - detected_at).total_seconds())
 
@@ -147,8 +169,11 @@ class TradersCopyTradeStrategy(BaseStrategy):
             DecisionCheck(
                 "strategy_type",
                 "Signal strategy matches",
-                signal_strategy == self.strategy_type,
-                detail=f"signal={signal_strategy or 'unknown'}",
+                signal_strategy in accepted_strategy_types,
+                detail=(
+                    f"signal={signal_strategy or 'unknown'} "
+                    f"accepted={','.join(sorted(accepted_strategy_types)) or 'none'}"
+                ),
             ),
             DecisionCheck(
                 "traders_scope",
@@ -156,6 +181,12 @@ class TradersCopyTradeStrategy(BaseStrategy):
                 scope_passed,
                 detail=scope_detail,
                 payload=scope_payload,
+            ),
+            DecisionCheck(
+                "source_trade",
+                "Source trade tx hash present",
+                bool(source_tx_hash),
+                detail="copy_event.tx_hash or source_trade.tx_hash required",
             ),
             DecisionCheck("token", "Token id present", bool(token_id), detail="selected_token_id or token_id required"),
             DecisionCheck(
@@ -212,11 +243,20 @@ class TradersCopyTradeStrategy(BaseStrategy):
                 ),
             ),
             DecisionCheck(
+                "signal_timestamp",
+                "Signal timestamp available",
+                detected_at is not None,
+                detail="copy_event.detected_at or copy_event.timestamp required",
+            ),
+            DecisionCheck(
                 "max_age",
                 "Signal freshness",
-                age_seconds <= max(1.0, safe_float(params.get("max_signal_age_seconds"), 900.0)),
+                age_seconds <= max_signal_age_seconds,
                 score=age_seconds,
-                detail=f"max={max(1.0, safe_float(params.get('max_signal_age_seconds'), 900.0)):.0f}s",
+                detail=(
+                    f"max={max_signal_age_seconds:.0f}s "
+                    f"requested={requested_max_signal_age_seconds:.0f}s"
+                ),
             ),
             DecisionCheck(
                 "copy_delay",

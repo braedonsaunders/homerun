@@ -367,7 +367,7 @@ class StrategySDK:
         "min_confidence": 0.45,
         "min_source_notional_usd": 10.0,
         "max_entry_price": 0.98,
-        "max_signal_age_seconds": 900,
+        "max_signal_age_seconds": 5,
         "min_live_liquidity_usd": 150.0,
         "max_adverse_entry_drift_pct": 2.0,
         "copy_delay_seconds": 0,
@@ -411,7 +411,7 @@ class StrategySDK:
                 "label": "Max Signal Age (sec)",
                 "type": "integer",
                 "min": 1,
-                "max": 3600,
+                "max": 5,
             },
             {
                 "key": "min_live_liquidity_usd",
@@ -2665,9 +2665,9 @@ class StrategySDK:
         cfg["max_entry_price"] = StrategySDK._coerce_float(cfg.get("max_entry_price"), 0.98, 0.0, 1.0)
         cfg["max_signal_age_seconds"] = StrategySDK._coerce_int(
             cfg.get("max_signal_age_seconds"),
-            900,
+            5,
             1,
-            3600,
+            5,
         )
         cfg["min_live_liquidity_usd"] = StrategySDK._coerce_float(
             cfg.get("min_live_liquidity_usd"),

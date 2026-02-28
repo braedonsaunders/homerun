@@ -25,10 +25,10 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-from sqlalchemy import Column, String, Float, Integer, DateTime, Index
+from sqlalchemy import Column, String, Float, Integer, Index
 
 from config import settings
-from models.database import Base, AsyncSessionLocal
+from models.database import Base, AsyncSessionLocal, DateTime
 from services.shared_state import _commit_with_retry
 from utils.logger import get_logger
 
@@ -36,8 +36,12 @@ logger = get_logger("wallet_ws_monitor")
 
 # ==================== CONSTANTS ====================
 
-# Polymarket CTF Exchange contract on Polygon
-CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+# Polymarket exchange contracts on Polygon that emit OrderFilled.
+CTF_EXCHANGE_ADDRESSES = (
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    "0xc5D563A36AE78145C45A50134D48A1215220F80a",
+)
+CTF_EXCHANGE_ADDRESS_SET = {address.lower() for address in CTF_EXCHANGE_ADDRESSES}
 
 # OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)
 # keccak256 topic hash
@@ -96,7 +100,7 @@ class WalletMonitorEvent(Base):
     tx_hash = Column(String, nullable=True)
     block_number = Column(Integer, nullable=True)
     detection_latency_ms = Column(Float, nullable=True)
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=utcnow)
 
     __table_args__ = (
         Index("idx_wme_wallet", "wallet_address"),
@@ -175,15 +179,19 @@ def _decode_address_from_topic(topic_hex: str) -> str:
 def _parse_order_filled_log(log: dict) -> Optional[dict]:
     """Parse an OrderFilled event log into a structured dict.
 
-    OrderFilled event layout:
+    Current layout (indexed addresses):
         topic[0]: event signature hash
         topic[1]: orderHash (bytes32, indexed)
-        data: maker (address), taker (address), makerAssetId (uint256),
-              takerAssetId (uint256), makerAmountFilled (uint256),
-              takerAmountFilled (uint256), fee (uint256)
+        topic[2]: maker (address, indexed)
+        topic[3]: taker (address, indexed)
+        data: makerAssetId, takerAssetId, makerAmountFilled,
+              takerAmountFilled, fee
 
-    Note: Only orderHash is indexed. The remaining parameters are in
-    the data field, each as a 32-byte ABI word.
+    Legacy layout (non-indexed addresses):
+        topic[0]: event signature hash
+        topic[1]: orderHash (bytes32, indexed)
+        data: maker, taker, makerAssetId, takerAssetId,
+              makerAmountFilled, takerAmountFilled, fee
     """
     topics = log.get("topics", [])
     data = log.get("data", "0x")
@@ -194,20 +202,37 @@ def _parse_order_filled_log(log: dict) -> Optional[dict]:
     # Strip 0x prefix from data
     data_hex = data[2:] if data.startswith("0x") else data
 
-    # Each ABI word is 64 hex chars (32 bytes)
-    if len(data_hex) < 64 * 7:
-        return None
-
-    words = [data_hex[i * 64 : (i + 1) * 64] for i in range(7)]
-
     order_hash = topics[1]
-    maker = _decode_address_from_topic("0x" + words[0])
-    taker = _decode_address_from_topic("0x" + words[1])
-    maker_asset_id = _decode_uint256(words[2])
-    taker_asset_id = _decode_uint256(words[3])
-    maker_amount_filled = _decode_uint256(words[4])
-    taker_amount_filled = _decode_uint256(words[5])
-    fee = _decode_uint256(words[6])
+    maker = ""
+    taker = ""
+    maker_asset_id = 0
+    taker_asset_id = 0
+    maker_amount_filled = 0
+    taker_amount_filled = 0
+    fee = 0
+
+    # Indexed-address layout: 5 ABI words in data.
+    if len(topics) >= 4 and len(data_hex) >= 64 * 5:
+        words = [data_hex[i * 64 : (i + 1) * 64] for i in range(5)]
+        maker = _decode_address_from_topic(topics[2])
+        taker = _decode_address_from_topic(topics[3])
+        maker_asset_id = _decode_uint256(words[0])
+        taker_asset_id = _decode_uint256(words[1])
+        maker_amount_filled = _decode_uint256(words[2])
+        taker_amount_filled = _decode_uint256(words[3])
+        fee = _decode_uint256(words[4])
+    # Legacy non-indexed-address layout: 7 ABI words in data.
+    elif len(data_hex) >= 64 * 7:
+        words = [data_hex[i * 64 : (i + 1) * 64] for i in range(7)]
+        maker = _decode_address_from_topic("0x" + words[0])
+        taker = _decode_address_from_topic("0x" + words[1])
+        maker_asset_id = _decode_uint256(words[2])
+        taker_asset_id = _decode_uint256(words[3])
+        maker_amount_filled = _decode_uint256(words[4])
+        taker_amount_filled = _decode_uint256(words[5])
+        fee = _decode_uint256(words[6])
+    else:
+        return None
 
     return {
         "order_hash": order_hash,
@@ -224,45 +249,70 @@ def _parse_order_filled_log(log: dict) -> Optional[dict]:
 def _determine_trade_side_and_details(parsed: dict, wallet_address: str) -> tuple[str, str, float, float]:
     """Determine trade side, token_id, size, and price from parsed log data.
 
-    If the wallet is the maker, they placed the order:
-      - token_id = makerAssetId (what they are giving)
-      - size = makerAmountFilled
-      - The maker is SELLING makerAssetId and BUYING takerAssetId
-      - price = takerAmountFilled / makerAmountFilled (how much taker asset per maker asset)
+    The exchange uses asset-id ``0`` as collateral (USDC leg) and non-zero
+    asset ids for outcome tokens.
 
-    If the wallet is the taker, they filled an existing order:
-      - token_id = takerAssetId (what they are giving)
-      - size = takerAmountFilled
-      - The taker is SELLING takerAssetId and BUYING makerAssetId
-      - price = makerAmountFilled / takerAmountFilled
+    For maker-side fills:
+      - makerAssetId=0, takerAssetId=token => BUY token
+      - makerAssetId=token, takerAssetId=0 => SELL token
 
-    In Polymarket context, BUY means acquiring outcome tokens, SELL means disposing.
-    We simplify: if wallet is maker -> SELL, if wallet is taker -> BUY.
-
-    Amounts are in raw units (typically 6 decimals for USDC, but token-dependent).
-    We normalize to float using 1e6 divisor for USDC-denominated amounts.
+    For taker-side fills, the mapping is mirrored.
     """
+    def _ratio(numerator: float, denominator: float) -> float:
+        if denominator <= 0.0:
+            return 0.0
+        return numerator / denominator
+
     wallet_lower = wallet_address.lower()
     maker_lower = parsed["maker"].lower()
+    taker_lower = parsed["taker"].lower()
 
-    # Normalize amounts (Polymarket uses 6 decimal USDC)
+    maker_asset_id = str(parsed.get("maker_asset_id") or "")
+    taker_asset_id = str(parsed.get("taker_asset_id") or "")
+
+    # Normalize amounts (Polymarket uses 6 decimal fixed-point quantities).
     maker_amount = parsed["maker_amount_filled"] / 1e6
     taker_amount = parsed["taker_amount_filled"] / 1e6
 
     if wallet_lower == maker_lower:
-        # Wallet is the maker (placed the order) -> they are selling their asset
-        side = "SELL"
-        token_id = parsed["maker_asset_id"]
-        size = maker_amount
-        price = taker_amount / maker_amount if maker_amount > 0 else 0.0
+        if maker_asset_id == "0" and taker_asset_id != "0":
+            side = "BUY"
+            token_id = taker_asset_id
+            size = taker_amount
+            price = _ratio(maker_amount, taker_amount)
+        elif taker_asset_id == "0" and maker_asset_id != "0":
+            side = "SELL"
+            token_id = maker_asset_id
+            size = maker_amount
+            price = _ratio(taker_amount, maker_amount)
+        else:
+            side = "SELL"
+            token_id = maker_asset_id if maker_asset_id != "0" else taker_asset_id
+            size = maker_amount if maker_asset_id != "0" else taker_amount
+            price = _ratio(taker_amount, maker_amount) if maker_amount > 0.0 else _ratio(maker_amount, taker_amount)
+    elif wallet_lower == taker_lower:
+        if maker_asset_id == "0" and taker_asset_id != "0":
+            side = "SELL"
+            token_id = taker_asset_id
+            size = taker_amount
+            price = _ratio(maker_amount, taker_amount)
+        elif taker_asset_id == "0" and maker_asset_id != "0":
+            side = "BUY"
+            token_id = maker_asset_id
+            size = maker_amount
+            price = _ratio(taker_amount, maker_amount)
+        else:
+            side = "BUY"
+            token_id = maker_asset_id if maker_asset_id != "0" else taker_asset_id
+            size = maker_amount if maker_asset_id != "0" else taker_amount
+            price = _ratio(maker_amount, taker_amount) if taker_amount > 0.0 else _ratio(taker_amount, maker_amount)
     else:
-        # Wallet is the taker (filled the order) -> they are buying maker's asset
-        side = "BUY"
-        token_id = parsed["taker_asset_id"]
-        size = taker_amount
-        price = maker_amount / taker_amount if taker_amount > 0 else 0.0
+        side = ""
+        token_id = ""
+        size = 0.0
+        price = 0.0
 
-    return side, token_id, size, price
+    return side, str(token_id), max(0.0, size), max(0.0, price)
 
 
 # ==================== MONITOR SERVICE ====================
@@ -633,7 +683,7 @@ class WalletWebSocketMonitor:
         """Process a new block by querying for OrdersFilled events.
 
         Calls eth_getLogs on the HTTP RPC endpoint for the specific block,
-        filtering by the CTF Exchange address and the OrderFilled event topic.
+        filtering by Polymarket exchange addresses and the OrderFilled event topic.
         Any matching logs involving tracked wallets are processed.
 
         Args:
@@ -731,7 +781,7 @@ class WalletWebSocketMonitor:
                 {
                     "fromBlock": block_hex,
                     "toBlock": block_hex,
-                    "address": CTF_EXCHANGE_ADDRESS,
+                    "address": list(CTF_EXCHANGE_ADDRESSES),
                     "topics": [ORDER_FILLED_TOPIC],
                 }
             ],
@@ -929,12 +979,18 @@ class WalletWebSocketMonitor:
         if maker_lower in self._tracked_sources:
             matched_wallet = maker_lower
         elif taker_lower in self._tracked_sources:
+            # For taker-side matches, ignore third-party maker legs. These
+            # mirror the same fill and can invert side/token inference.
+            if maker_lower not in CTF_EXCHANGE_ADDRESS_SET:
+                return
             matched_wallet = taker_lower
         else:
             return  # Neither maker nor taker is tracked
 
         # Determine trade details
         side, token_id, size, price = _determine_trade_side_and_details(parsed, matched_wallet)
+        if side not in {"BUY", "SELL"} or not token_id or token_id == "0":
+            return
 
         tx_hash = log.get("transactionHash", "")
 
@@ -1012,6 +1068,7 @@ class WalletWebSocketMonitor:
                 error=_exception_text(e),
                 wallet=event.wallet_address,
                 tx_hash=event.tx_hash,
+                exc_info=e,
             )
 
     # ==================== CALLBACKS ====================

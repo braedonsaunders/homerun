@@ -376,6 +376,9 @@ export interface PoolMember {
   tags: string[]
   strategies_detected: string[]
   market_categories: string[]
+  primary_market_category?: string | null
+  primary_market_category_share?: number | null
+  primary_market_category_basis?: 'notional' | 'trade_count' | 'flags' | string | null
   tracked_wallet: boolean
   pool_flags: {
     manual_include: boolean

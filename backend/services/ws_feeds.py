@@ -57,7 +57,7 @@ def _is_expected_close(exc: Exception) -> bool:
             received = getattr(exc, "rcvd", None)
             sent = getattr(exc, "sent", None)
             close_code = getattr(received, "code", None) or getattr(sent, "code", None)
-        return close_code in {1000, 1001}
+        return close_code in {None, 1000, 1001, 1005}
     return False
 
 

@@ -684,7 +684,7 @@ class ValidationService:
         enable_provider_checks = _coerce_bool(payload.get("enable_provider_checks"), False)
         run_llm_analysis = _coerce_bool(payload.get("run_llm_analysis"), False)
 
-        script_path = (_repo_root() / "scripts" / "live_truth_monitor.py").resolve()
+        script_path = (_repo_root() / "scripts" / "monitoring" / "live_truth_monitor.py").resolve()
         if not script_path.exists() or not script_path.is_file():
             raise RuntimeError(f"Missing monitor script: {script_path}")
 
@@ -1064,6 +1064,10 @@ class ValidationService:
                         TraderOrder.actual_profit,
                         TraderOrder.edge_percent,
                         TraderOrder.confidence,
+                        TraderOrder.signal_id,
+                        TraderOrder.direction,
+                        TraderOrder.effective_price,
+                        TraderOrder.created_at,
                     )
                     .join(TradeSignal, TraderOrder.signal_id == TradeSignal.id, isouter=True)
                     .where(TraderOrder.created_at >= cutoff)
@@ -1085,6 +1089,15 @@ class ValidationService:
             "realized_pnl_total": 0.0,
             "by_source": {},
             "by_strategy": {},
+            "shadow_live_price_drift": {
+                "sample_size": 0,
+                "matched_shadow_rows": 0,
+                "unmatched_shadow_rows": 0,
+                "mean_abs_drift": 0.0,
+                "p95_abs_drift": 0.0,
+                "mean_abs_drift_bps": 0.0,
+                "max_abs_drift_bps": 0.0,
+            },
         }
         if not rows:
             return summary
@@ -1093,11 +1106,27 @@ class ValidationService:
         confidences: list[float] = []
         by_source: dict[str, dict[str, Any]] = {}
         by_strategy: dict[str, dict[str, Any]] = {}
+        live_prices_by_signal_direction: dict[tuple[str, str], list[tuple[datetime | None, float]]] = {}
+        shadow_price_rows: list[tuple[str, str, datetime | None, float]] = []
 
-        for source, strategy_type, status, mode, notional, actual_profit, edge, confidence in rows:
+        for (
+            source,
+            strategy_type,
+            status,
+            mode,
+            notional,
+            actual_profit,
+            edge,
+            confidence,
+            signal_id,
+            direction,
+            effective_price,
+            created_at,
+        ) in rows:
             source_key = str(source or "unknown")
             strategy_key = str(strategy_type or "unknown")
             status_key = str(status or "unknown").strip().lower()
+            mode_key = str(mode or "unknown").strip().lower()
 
             if edge is not None:
                 edges.append(float(edge))
@@ -1148,7 +1177,6 @@ class ValidationService:
             source_row["terminal"] += int(is_terminal)
             source_row["notional_total_usd"] += notional_value
             source_row["realized_pnl_total"] += pnl_value
-            mode_key = str(mode or "unknown")
             source_row["modes"][mode_key] = int(source_row["modes"].get(mode_key, 0)) + 1
 
             strategy_row = by_strategy.setdefault(
@@ -1174,6 +1202,18 @@ class ValidationService:
             strategy_row["notional_total_usd"] += notional_value
             strategy_row["realized_pnl_total"] += pnl_value
 
+            signal_key = str(signal_id or "").strip()
+            direction_key = str(direction or "").strip().lower()
+            price_value = float(effective_price or 0.0)
+            if not signal_key or not direction_key or price_value <= 0.0:
+                continue
+            pair_key = (signal_key, direction_key)
+            created_key = _parse_datetime(created_at)
+            if mode_key == "live":
+                live_prices_by_signal_direction.setdefault(pair_key, []).append((created_key, price_value))
+            elif mode_key == "shadow":
+                shadow_price_rows.append((signal_key, direction_key, created_key, price_value))
+
         sample_size = int(summary["sample_size"])
         summary["failure_rate"] = float(summary["failed"]) / sample_size if sample_size > 0 else 0.0
         summary["avg_edge_percent"] = sum(edges) / len(edges) if edges else 0.0
@@ -1194,6 +1234,49 @@ class ValidationService:
             ),
             reverse=True,
         )
+        abs_drifts: list[float] = []
+        abs_drift_bps: list[float] = []
+        matched_shadow_rows = 0
+        unmatched_shadow_rows = 0
+        for signal_key, direction_key, shadow_created_at, shadow_price in shadow_price_rows:
+            candidates = live_prices_by_signal_direction.get((signal_key, direction_key), [])
+            if not candidates:
+                unmatched_shadow_rows += 1
+                continue
+            if shadow_created_at is None:
+                live_price = candidates[-1][1]
+            else:
+                live_price = min(
+                    candidates,
+                    key=lambda item: (
+                        abs((shadow_created_at - item[0]).total_seconds())
+                        if item[0] is not None
+                        else float("inf")
+                    ),
+                )[1]
+            if live_price <= 0.0:
+                unmatched_shadow_rows += 1
+                continue
+            matched_shadow_rows += 1
+            abs_drift = abs(shadow_price - live_price)
+            abs_drifts.append(abs_drift)
+            abs_drift_bps.append((abs_drift / live_price) * 10_000.0)
+
+        p95_abs_drift = 0.0
+        if abs_drifts:
+            sorted_abs_drifts = sorted(abs_drifts)
+            p95_index = min(len(sorted_abs_drifts) - 1, int(math.ceil(len(sorted_abs_drifts) * 0.95)) - 1)
+            p95_abs_drift = sorted_abs_drifts[p95_index]
+
+        summary["shadow_live_price_drift"] = {
+            "sample_size": len(shadow_price_rows),
+            "matched_shadow_rows": matched_shadow_rows,
+            "unmatched_shadow_rows": unmatched_shadow_rows,
+            "mean_abs_drift": (sum(abs_drifts) / len(abs_drifts)) if abs_drifts else 0.0,
+            "p95_abs_drift": p95_abs_drift,
+            "mean_abs_drift_bps": (sum(abs_drift_bps) / len(abs_drift_bps)) if abs_drift_bps else 0.0,
+            "max_abs_drift_bps": max(abs_drift_bps) if abs_drift_bps else 0.0,
+        }
         return summary
 
     async def compute_events_resolver_metrics(

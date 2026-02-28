@@ -224,6 +224,20 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
 
 
+def _extract_trader_strategy_keys(trader: Trader) -> list[str]:
+    raw_configs = trader.source_configs_json
+    if not isinstance(raw_configs, list):
+        return []
+    keys: list[str] = []
+    for item in raw_configs:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("strategy_key") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
 async def _resolve_target_trader(config: MonitorConfig) -> Trader:
     async with AsyncSessionLocal() as session:
         if config.trader_id:
@@ -234,10 +248,7 @@ async def _resolve_target_trader(config: MonitorConfig) -> Trader:
 
         base_query = (
             select(Trader)
-            .where(
-                Trader.is_enabled == True,  # noqa: E712
-                func.lower(func.coalesce(Trader.strategy_key, "")) == "btc_eth_highfreq",
-            )
+            .where(Trader.is_enabled == True)  # noqa: E712
             .order_by(desc(Trader.updated_at))
         )
         if config.trader_name:
@@ -408,6 +419,15 @@ async def _fetch_wallet_context() -> dict[str, Any]:
                 error = f"{error}; {exc}"
             else:
                 error = str(exc)
+    if not ready and not error:
+        runtime_error = None
+        try:
+            runtime_error = trading_service.get_last_init_error()
+        except Exception:
+            runtime_error = None
+        runtime_error_text = str(runtime_error or "").strip()
+        if runtime_error_text:
+            error = runtime_error_text
 
     return {
         "ready": ready,
@@ -493,6 +513,7 @@ def _make_alert_record(
 async def run_monitor(config: MonitorConfig) -> int:
     trader = await _resolve_target_trader(config)
     trader_id = str(trader.id)
+    strategy_keys = _extract_trader_strategy_keys(trader)
     started_at = utcnow()
     ends_at = started_at + timedelta(seconds=max(1, config.duration_seconds))
     started_mono = time.monotonic()
@@ -514,7 +535,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                 "poll_seconds": config.poll_seconds,
                 "trader_id": trader_id,
                 "trader_name": str(trader.name),
-                "strategy_key": str(trader.strategy_key),
+                "strategy_keys": strategy_keys,
                 "provider_checks_enabled": bool(config.enable_provider_checks),
                 "report_path": str(report_path),
             }
@@ -577,6 +598,7 @@ async def run_monitor(config: MonitorConfig) -> int:
                 exec_rows: list[ExecutionSessionOrder] = cycle_state["execution_orders"]
                 decisions: list[TraderDecision] = cycle_state["decisions"]
                 events: list[TraderEvent] = cycle_state["events"]
+                active_count = sum(cycle_state["status_counts"].get(k, 0) for k in LIVE_ACTIVE_STATUSES)
 
                 exec_rows_by_order: dict[str, list[ExecutionSessionOrder]] = {}
                 for exec_row in exec_rows:
@@ -655,6 +677,59 @@ async def run_monitor(config: MonitorConfig) -> int:
                             root_cause="Trader was disabled while monitor expected active live execution.",
                             required_fix="Re-enable trader only after verifying live risk and wallet funding state.",
                             rule="trader_disabled",
+                        )
+                    )
+
+                if config.enable_provider_checks and active_count > 0 and not wallet_ctx["ready"]:
+                    wallet_error = str(wallet_ctx.get("error") or "").strip()
+                    lowered_wallet_error = wallet_error.lower()
+                    dependency_missing = "py-clob-client" in lowered_wallet_error
+                    credential_missing = "missing_polymarket_credentials" in lowered_wallet_error
+                    proxy_missing = "missing_proxy_funder_signature_type" in lowered_wallet_error
+                    provider_rule = "provider_not_ready"
+                    provider_root_cause = (
+                        "Provider checks are enabled but live execution service is not initialized while active orders exist."
+                    )
+                    provider_required_fix = (
+                        "Reinitialize live execution service and confirm credentials/funder resolution before continuing live trading."
+                    )
+                    if dependency_missing:
+                        provider_rule = "provider_dependency_missing"
+                        provider_root_cause = (
+                            "Live execution dependency py-clob-client is missing, so provider truth checks cannot run."
+                        )
+                        provider_required_fix = (
+                            "Install trading dependencies (`backend/requirements-trading.txt`) in the running backend environment."
+                        )
+                    elif credential_missing:
+                        provider_rule = "provider_credentials_missing"
+                        provider_root_cause = "Polymarket credentials are missing while live orders remain active."
+                        provider_required_fix = (
+                            "Set valid Polymarket API credentials and restart provider reconciliation."
+                        )
+                    elif proxy_missing:
+                        provider_rule = "provider_proxy_funder_missing"
+                        provider_root_cause = "Proxy funder resolution failed for configured signature type."
+                        provider_required_fix = (
+                            "Configure `POLYMARKET_FUNDER` or use signature_type=0 for the execution wallet."
+                        )
+                    new_alerts.append(
+                        _make_alert_record(
+                            ts=now,
+                            trader_id=trader_id,
+                            order=None,
+                            signal_id="",
+                            market_question="",
+                            local_status_reason=f"provider_ready={wallet_ctx['ready']} error={wallet_error or 'unknown'}",
+                            provider_clob_order_id="",
+                            provider_status="unavailable",
+                            provider_filled_size=None,
+                            provider_price=None,
+                            wallet_position_size=None,
+                            verdict="drift",
+                            root_cause=provider_root_cause,
+                            required_fix=provider_required_fix,
+                            rule=provider_rule,
                         )
                     )
 
@@ -1037,7 +1112,6 @@ async def run_monitor(config: MonitorConfig) -> int:
                         max_open_positions,
                     ),
                 )
-                active_count = sum(cycle_state["status_counts"].get(k, 0) for k in LIVE_ACTIVE_STATUSES)
                 latest_decision = decisions[0] if decisions else None
                 if latest_decision is not None:
                     latest_decision_id = str(latest_decision.id)

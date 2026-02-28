@@ -134,7 +134,7 @@ def _execution_profile_for_signal(
             "constraints": {
                 "max_unhedged_notional_usd": 0.0,
                 "hedge_timeout_seconds": 12,
-                "session_timeout_seconds": 90,
+                "session_timeout_seconds": 240,
                 "max_reprice_attempts": 2,
                 "pair_lock": legs_count > 1,
                 "leg_fill_tolerance_ratio": 0.02,
@@ -793,7 +793,9 @@ class ExecutionSessionEngine:
                         pending_exit["last_error"] = str(tp_submit.error_message or "failed_to_place_take_profit_exit")
                     order_payload["pending_live_exit"] = pending_exit
 
-            persisted_order_status = "open" if mode == "live" and normalized_status == "executed" else normalized_status
+            persisted_order_status = (
+                "open" if mode in {"live", "shadow"} and normalized_status == "executed" else normalized_status
+            )
 
             trader_order = await create_trader_order(
                 self.db,
@@ -1035,6 +1037,13 @@ class ExecutionSessionEngine:
             status_key = str(order.get("status") or "").strip().lower()
             if status_key not in {"open", "submitted"}:
                 continue
+            trader_order_id = str(order.get("trader_order_id") or "").strip()
+            trader_order = await self.db.get(TraderOrder, trader_order_id) if trader_order_id else None
+            if trader_order is not None:
+                local_status_key = str(trader_order.status or "").strip().lower()
+                if local_status_key not in {"open", "submitted", "executed"}:
+                    continue
+
             provider_order_id = str(order.get("provider_order_id") or "").strip()
             provider_clob_order_id = str(order.get("provider_clob_order_id") or "").strip()
             cancel_targets: list[str] = []
@@ -1048,49 +1057,47 @@ class ExecutionSessionEngine:
                     cancel_success = True
                     break
 
-            trader_order_id = str(order.get("trader_order_id") or "").strip()
-            if trader_order_id:
-                trader_order = await self.db.get(TraderOrder, trader_order_id)
-                if trader_order is not None:
-                    payload = dict(trader_order.payload_json or {})
-                    filled_notional_usd, _, _ = _extract_live_fill_metrics(payload)
-                    has_fill = filled_notional_usd > 0.0
-                    if has_fill:
-                        next_status = "executed"
-                        next_notional = max(0.0, filled_notional_usd)
-                        if next_notional <= 0.0:
-                            next_notional = max(0.0, abs(safe_float(trader_order.notional_usd, 0.0) or 0.0))
-                        trader_order.status = next_status
-                        trader_order.notional_usd = float(next_notional)
-                        if trader_order.executed_at is None and next_notional > 0.0:
-                            trader_order.executed_at = now
-                    else:
-                        next_status = "cancelled"
-                        trader_order.status = next_status
-                        trader_order.notional_usd = 0.0
+            if trader_order is None:
+                continue
+            payload = dict(trader_order.payload_json or {})
+            filled_notional_usd, _, _ = _extract_live_fill_metrics(payload)
+            has_fill = filled_notional_usd > 0.0
+            if has_fill:
+                next_status = "executed"
+                next_notional = max(0.0, filled_notional_usd)
+                if next_notional <= 0.0:
+                    next_notional = max(0.0, abs(safe_float(trader_order.notional_usd, 0.0) or 0.0))
+                trader_order.status = next_status
+                trader_order.notional_usd = float(next_notional)
+                if trader_order.executed_at is None and next_notional > 0.0:
+                    trader_order.executed_at = now
+            else:
+                next_status = "cancelled"
+                trader_order.status = next_status
+                trader_order.notional_usd = 0.0
 
-                    payload["session_cancel"] = {
-                        "cancelled_at": _iso_utc(now),
-                        "session_id": session_id,
-                        "terminal_status": terminal_key,
-                        "reason": reason,
-                        "provider_cancel_targets": cancel_targets,
-                        "provider_cancel_success": bool(cancel_success),
-                    }
-                    trader_order.payload_json = _sync_order_runtime_payload(
-                        payload=payload,
-                        status=next_status,
-                        now=now,
-                        provider_snapshot_status=next_status if next_status == "cancelled" else None,
-                        mapped_status="cancelled" if next_status == "cancelled" else "executed",
-                    )
-                    trader_order.updated_at = now
-                    if reason:
-                        if trader_order.reason:
-                            trader_order.reason = f"{trader_order.reason} | session:{terminal_key}:{reason}"
-                        else:
-                            trader_order.reason = f"session:{terminal_key}:{reason}"
-                    updated_trader_orders.append(trader_order)
+            payload["session_cancel"] = {
+                "cancelled_at": _iso_utc(now),
+                "session_id": session_id,
+                "terminal_status": terminal_key,
+                "reason": reason,
+                "provider_cancel_targets": cancel_targets,
+                "provider_cancel_success": bool(cancel_success),
+            }
+            trader_order.payload_json = _sync_order_runtime_payload(
+                payload=payload,
+                status=next_status,
+                now=now,
+                provider_snapshot_status=next_status if next_status == "cancelled" else None,
+                mapped_status="cancelled" if next_status == "cancelled" else "executed",
+            )
+            trader_order.updated_at = now
+            if reason:
+                if trader_order.reason:
+                    trader_order.reason = f"{trader_order.reason} | session:{terminal_key}:{reason}"
+                else:
+                    trader_order.reason = f"session:{terminal_key}:{reason}"
+            updated_trader_orders.append(trader_order)
 
         for leg in detail.get("legs", []):
             leg_status = str(leg.get("status") or "").strip().lower()

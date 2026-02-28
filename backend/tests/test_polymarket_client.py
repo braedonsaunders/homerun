@@ -53,6 +53,23 @@ class _FakeStreamingClient:
         return _FakeStreamingResponse()
 
 
+class _ClosedThenHealthyClient:
+    def __init__(self, fail_once: bool = False):
+        self._fail_once = fail_once
+        self.calls = 0
+        self.is_closed = False
+
+    async def get(self, _url, **_kwargs):
+        self.calls += 1
+        if self._fail_once and self.calls == 1:
+            self.is_closed = True
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        return _FakeStreamingResponse()
+
+    async def aclose(self):
+        self.is_closed = True
+
+
 def test_rate_limited_get_retries_when_body_read_fails(monkeypatch):
     client = PolymarketClient()
 
@@ -89,6 +106,35 @@ def test_rate_limited_get_raises_after_body_read_failures(monkeypatch):
         asyncio.run(client._rate_limited_get("https://example.com/test", client=fake_client))
 
     assert fake_client.calls == 4
+
+
+def test_rate_limited_get_recovers_when_client_closed_runtime_error(monkeypatch):
+    client = PolymarketClient()
+
+    async def _fake_acquire(_endpoint):
+        return None
+
+    async def _fake_sleep(_seconds):
+        return None
+
+    first_client = _ClosedThenHealthyClient(fail_once=True)
+    second_client = _ClosedThenHealthyClient(fail_once=False)
+    client._client = first_client
+
+    async def _fake_get_client():
+        client._client = second_client
+        return second_client
+
+    monkeypatch.setattr("services.polymarket.rate_limiter.acquire", _fake_acquire)
+    monkeypatch.setattr("services.polymarket.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(client, "_get_client", _fake_get_client)
+
+    response = asyncio.run(client._rate_limited_get("https://example.com/test", client=first_client))
+
+    assert response.status_code == 200
+    assert first_client.calls == 1
+    assert second_client.calls == 1
+    assert first_client.is_closed is True
 
 
 def test_extract_market_info_from_trades_prefers_matching_condition():

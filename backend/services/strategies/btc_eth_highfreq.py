@@ -178,8 +178,8 @@ def _crypto_hf_param_value(config: dict[str, Any], base_key: str, timeframe: Any
 
 
 CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
-    "min_edge_percent": 2.0,
-    "min_confidence": 0.40,
+    "min_edge_percent": 0.30,
+    "min_confidence": 0.42,
     "max_risk_score": 0.80,
     "base_size_usd": 20.0,
     "max_size_usd": 150.0,
@@ -193,19 +193,19 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "min_liquidity_usd_opening": 4000.0,
     "max_spread_pct": 0.08,
     "max_signal_age_seconds": 35.0,
-    "max_open_order_seconds": 14.0,
-    "max_signal_age_seconds_5m": 1.25,
-    "max_signal_age_seconds_15m": 2.5,
-    "max_signal_age_seconds_1h": 4.0,
-    "max_signal_age_seconds_4h": 6.0,
-    "max_market_data_age_ms": 1200,
-    "max_market_data_age_ms_5m": 700,
-    "max_market_data_age_ms_15m": 900,
-    "max_market_data_age_ms_1h": 1200,
-    "max_market_data_age_ms_4h": 1500,
+    "max_open_order_seconds": 45.0,
+    "max_signal_age_seconds_5m": 2.5,
+    "max_signal_age_seconds_15m": 4.5,
+    "max_signal_age_seconds_1h": 7.5,
+    "max_signal_age_seconds_4h": 10.0,
+    "max_market_data_age_ms": 1800,
+    "max_market_data_age_ms_5m": 1300,
+    "max_market_data_age_ms_15m": 1600,
+    "max_market_data_age_ms_1h": 2000,
+    "max_market_data_age_ms_4h": 2500,
     "enforce_market_data_freshness": True,
     "require_market_data_age_for_sources": ["crypto"],
-    "max_live_context_age_seconds": 3.0,
+    "max_live_context_age_seconds": 5.0,
     "max_oracle_age_seconds": 20.0,
     "max_oracle_age_ms": 20_000.0,
     "require_oracle_for_directional": True,
@@ -216,7 +216,7 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "oracle_fallback_degrade_edge_multiplier_direct": 1.15,
     "oracle_fallback_degrade_confidence_multiplier_direct": 1.04,
     "oracle_fallback_degrade_size_multiplier_direct": 0.70,
-    "min_edge_persistence_ms": 600,
+    "min_edge_persistence_ms": 250,
     "max_recent_move_zscore_for_entry": 2.25,
     "max_spread_widening_bps": 28.0,
     "max_orderbook_imbalance": 0.92,
@@ -236,8 +236,12 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "entry_executable_exit_ratio_floor_closing": 0.24,
     "directional_min_entry_price_floor": 0.25,
     "maker_min_entry_price_floor": 0.16,
-    "directional_max_entry_price_ceiling": 0.99,
-    "maker_max_entry_price_ceiling": 0.95,
+    "directional_max_entry_price_ceiling": 0.75,
+    "maker_max_entry_price_ceiling": 0.75,
+    "directional_max_entry_price_ceiling_buy_yes": 0.72,
+    "directional_max_entry_price_ceiling_buy_no": 0.85,
+    "maker_max_entry_price_ceiling_buy_yes": 0.72,
+    "maker_max_entry_price_ceiling_buy_no": 0.85,
     "rapid_take_profit_pct": 10.0,
     "rapid_take_profit_pct_5m": 10.0,
     "rapid_take_profit_pct_15m": 10.0,
@@ -303,7 +307,7 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "immediate_stop_loss_pct_1h": 3.0,
     "immediate_stop_loss_pct_4h": 4.0,
     "immediate_stop_loss_enabled": True,
-    "immediate_stop_loss_requires_time_pressure": True,
+    "immediate_stop_loss_requires_time_pressure": False,
     "immediate_stop_loss_seconds_left": 120.0,
     "immediate_stop_loss_seconds_left_5m": 75.0,
     "immediate_stop_loss_seconds_left_15m": 210.0,
@@ -315,7 +319,7 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "immediate_stop_loss_elapsed_pct_1h": 0.72,
     "immediate_stop_loss_elapsed_pct_4h": 0.78,
     "stop_loss_activation_seconds": 90,
-    "stop_loss_activation_seconds_5m": 45.0,
+    "stop_loss_activation_seconds_5m": 0,
     "stop_loss_activation_seconds_15m": 120.0,
     "stop_loss_activation_seconds_1h": 300.0,
     "stop_loss_activation_seconds_4h": 900.0,
@@ -332,9 +336,9 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "force_flatten_seconds_left_15m": 210.0,
     "force_flatten_seconds_left_1h": 480.0,
     "force_flatten_seconds_left_4h": 900.0,
-    "force_flatten_max_profit_pct": 3.0,
+    "force_flatten_max_profit_pct": 100.0,
     "force_flatten_headroom_floor": 1.0,
-    "force_flatten_min_loss_pct": 2.0,
+    "force_flatten_min_loss_pct": 0.0,
     "resolution_risk_flatten_enabled": True,
     "resolution_risk_seconds_left": 180.0,
     "resolution_risk_seconds_left_5m": 105.0,
@@ -350,6 +354,12 @@ CRYPTO_HF_SCOPE_DEFAULTS: dict[str, Any] = {
     "close_on_inactive_market": False,
     "preplace_take_profit_exit": False,
     "enforce_min_exit_notional": True,
+    "hard_stop_loss_enabled": True,
+    "hard_stop_loss_pct": 20.0,
+    "hard_stop_loss_pct_5m": 15.0,
+    "hard_stop_loss_pct_15m": 18.0,
+    "hard_stop_loss_pct_1h": 22.0,
+    "hard_stop_loss_pct_4h": 25.0,
 }
 
 
@@ -376,25 +386,18 @@ def crypto_highfreq_direction_allowed(
     if normalized_direction not in {"buy_yes", "buy_no"}:
         return True, "direction_not_supported"
 
-    if mode == "directional":
-        yes_enabled = _coerce_bool(
-            cfg.get("opening_directional_buy_yes_enabled"),
-            _coerce_bool(defaults.get("opening_directional_buy_yes_enabled"), False),
-        )
-        no_enabled = _coerce_bool(
-            cfg.get("opening_directional_buy_no_enabled"),
-            _coerce_bool(defaults.get("opening_directional_buy_no_enabled"), True),
-        )
-    else:
-        return True, "mode_not_gated"
+    yes_enabled = _coerce_bool(
+        cfg.get("opening_directional_buy_yes_enabled"),
+        _coerce_bool(defaults.get("opening_directional_buy_yes_enabled"), False),
+    )
+    no_enabled = _coerce_bool(
+        cfg.get("opening_directional_buy_no_enabled"),
+        _coerce_bool(defaults.get("opening_directional_buy_no_enabled"), True),
+    )
 
     if normalized_direction == "buy_yes":
         if yes_enabled:
             return True, f"opening_{mode}_buy_yes_enabled={yes_enabled}"
-        if mode != "directional":
-            if normalized_regime == "opening":
-                return False, f"opening_{mode}_buy_yes_enabled={yes_enabled}"
-            return True, "regime_not_opening"
 
         elapsed_ratio: Optional[float] = None
         timeframe_seconds: Optional[float] = None
@@ -1614,7 +1617,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
     requires_historical_prices = True
     subscriptions = ["crypto_update"]
     supports_entry_take_profit_exit = True
-    default_open_order_timeout_seconds = 20.0
+    default_open_order_timeout_seconds = 45.0
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=1.0,
@@ -1632,6 +1635,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # use polymarket_fee_curve() for price-specific calculations.
         # See: https://docs.polymarket.com/polymarket-learn/trading/maker-rebates-program
         self.fee = _cfg.BTC_ETH_HF_FEE_ESTIMATE  # default ~1.56% at 50% probability
+        # Override the global MIN_PROFIT_THRESHOLD (2.5%) gate in create_opportunity().
+        # With the edge floor removed, real oracle diffs are typically 0.5-3% — below the
+        # global 2.5% gate.  All real edge/confidence filtering happens in evaluate(),
+        # so the detect path just needs to pass every market through.
+        self.min_profit = 0.0
         # Per-market price history keyed by market ID
         self._price_histories: dict[str, MarketPriceHistory] = {}
         # Runtime anti-churn controls used by evaluate().
@@ -2205,6 +2213,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             resolution_risk = 0.10 * (1.0 - remaining_secs / _MAKER_QUOTE_RESOLUTION_RISK_SECONDS)
         else:
             resolution_risk = 0.0
+
+        # Binary risk: near-50/50 prices have maximum binary resolution exposure
+        midpoint_distance = abs(0.5 - min(c.yes_price, c.no_price))
+        if midpoint_distance < 0.15:  # Within $0.35-$0.65 range
+            resolution_risk += 0.08 * (1.0 - midpoint_distance / 0.15)
 
         expected_profit = spread_capture * fill_prob - resolution_risk
         if expected_profit <= 0.0:
@@ -3419,7 +3432,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         edge_tracker_key = f"{market_id}|{direction}|{active_mode}" if market_id else ""
         min_edge_persistence_ms = max(
             0,
-            int(to_float(params.get("min_edge_persistence_ms", 1400), 1400.0)),
+            int(to_float(params.get("min_edge_persistence_ms", 250), 250.0)),
         )
         edge_persistence_elapsed_ms: Optional[int] = None
         edge_persistence_ok = True
@@ -3553,23 +3566,51 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             else "entry_price unavailable"
         )
         directional_entry_price_ceiling = clamp(
-            to_float(params.get("directional_max_entry_price_ceiling", 0.75), 0.75),
+            to_float(params.get("directional_max_entry_price_ceiling", 0.99), 0.99),
             0.01,
             1.0,
         )
         maker_entry_price_ceiling = clamp(
-            to_float(params.get("maker_max_entry_price_ceiling", 0.70), 0.70),
+            to_float(params.get("maker_max_entry_price_ceiling", 0.95), 0.95),
             0.01,
             1.0,
         )
-        default_entry_price_ceiling = (
-            maker_entry_price_ceiling if active_mode == "maker_quote" else directional_entry_price_ceiling
-        )
-        if regime == "opening":
-            default_entry_price_ceiling = min(
-                default_entry_price_ceiling,
-                0.68 if active_mode == "maker_quote" else 0.72,
-            )
+        if active_mode == "maker_quote":
+            if direction == "buy_yes":
+                default_entry_price_ceiling = clamp(
+                    to_float(params.get("maker_max_entry_price_ceiling_buy_yes", maker_entry_price_ceiling), maker_entry_price_ceiling),
+                    0.01,
+                    1.0,
+                )
+            elif direction == "buy_no":
+                default_entry_price_ceiling = clamp(
+                    to_float(params.get("maker_max_entry_price_ceiling_buy_no", maker_entry_price_ceiling), maker_entry_price_ceiling),
+                    0.01,
+                    1.0,
+                )
+            else:
+                default_entry_price_ceiling = maker_entry_price_ceiling
+        else:
+            if direction == "buy_yes":
+                default_entry_price_ceiling = clamp(
+                    to_float(
+                        params.get("directional_max_entry_price_ceiling_buy_yes", directional_entry_price_ceiling),
+                        directional_entry_price_ceiling,
+                    ),
+                    0.01,
+                    1.0,
+                )
+            elif direction == "buy_no":
+                default_entry_price_ceiling = clamp(
+                    to_float(
+                        params.get("directional_max_entry_price_ceiling_buy_no", directional_entry_price_ceiling),
+                        directional_entry_price_ceiling,
+                    ),
+                    0.01,
+                    1.0,
+                )
+            else:
+                default_entry_price_ceiling = directional_entry_price_ceiling
         entry_price_ceiling = clamp(
             to_float(params.get("max_entry_price_ceiling"), default_entry_price_ceiling),
             0.01,
@@ -4285,6 +4326,29 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         current_price = self._float(state.get("current_price"))
         if entry_price is not None and entry_price > 0.0 and current_price is not None and current_price > 0.0:
             pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
+
+            # --- HARD stop-loss (unconditional — no time pressure, no activation delay) ---
+            hard_stop_loss_pct_raw = _crypto_hf_param_value(config, "hard_stop_loss_pct", timeframe)
+            if hard_stop_loss_pct_raw is None:
+                hard_stop_loss_pct_raw = config.get("hard_stop_loss_pct", 20.0)
+            hard_stop_loss_pct = max(1.0, to_float(hard_stop_loss_pct_raw, 20.0))
+            hard_stop_enabled = to_bool(config.get("hard_stop_loss_enabled"), True)
+
+            if hard_stop_enabled and pnl_pct <= -hard_stop_loss_pct:
+                context_payload["_crypto_hf_rapid_exit_state"] = context_payload.get(
+                    "_crypto_hf_rapid_exit_state", {}
+                )
+                return {
+                    "config": config,
+                    "decision": {
+                        "action": "close",
+                        "reason": (
+                            f"Hard stop-loss triggered "
+                            f"(pnl={pnl_pct:.2f}% <= -{hard_stop_loss_pct:.1f}%)"
+                        ),
+                        "close_price": current_price,
+                    },
+                }
 
             seconds_left = self._float(
                 _first_present(
@@ -5216,8 +5280,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 entry_price = down_price
 
             # Baseline edge/confidence — evaluate() will recompute these.
-            # Must exceed strategy min_profit (2.5%) to pass create_opportunity.
-            edge_percent = max(abs(diff_pct), 3.0)
+            # self.min_profit is set to 0.0 so create_opportunity() never gates
+            # on ROI in the detect path; real filtering happens in evaluate().
+            edge_percent = abs(diff_pct)
             confidence = clamp(0.40 + clamp(abs(diff_pct) / 1.0, 0.0, 0.20), 0.35, 0.70)
             min_required_edge = 0.0  # No filtering in detect
 
@@ -5335,6 +5400,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                         "oracle_price": oracle_price,
                         "live_market_fetched_at": live_market_fetched_at,
                         "market_data_age_ms": market_data_age_ms,
+                        "actual_oracle_diff_pct": diff_pct,
+                        "edge_is_floored": edge_percent > abs(diff_pct),
                     },
                 }
             ],
@@ -5388,6 +5455,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 "oracle_price": oracle_price,
                 "live_market_fetched_at": live_market_fetched_at,
                 "market_data_age_ms": market_data_age_ms,
+                "actual_oracle_diff_pct": diff_pct,
+                "edge_is_floored": edge_percent > abs(diff_pct),
             }
         return opp
 

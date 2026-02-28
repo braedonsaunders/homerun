@@ -49,6 +49,27 @@ def _mark_touch_interval_seconds(params: dict[str, Any], *, mode: str) -> float:
     return _MARK_TOUCH_INTERVAL_SECONDS
 
 
+async def _strategy_exit_instance(session: AsyncSession, strategy_slug: str) -> Any | None:
+    slug = str(strategy_slug or "").strip().lower()
+    if not slug:
+        return None
+    from services.strategy_loader import strategy_loader
+
+    loaded = strategy_loader.get_strategy(slug)
+    if loaded is None:
+        try:
+            await strategy_loader.reload_from_db(slug, session)
+        except Exception as exc:
+            logger.debug("Failed lazy strategy reload for exit decision (%s): %s", slug, exc)
+        loaded = strategy_loader.get_strategy(slug)
+    if loaded is None:
+        return None
+    instance = getattr(loaded, "instance", None)
+    if instance is None or not hasattr(instance, "should_exit"):
+        return None
+    return instance
+
+
 async def _publish_trader_order_updates(rows: list[TraderOrder]) -> None:
     if not rows:
         return
@@ -1190,19 +1211,39 @@ async def reconcile_paper_positions(
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
     reason: str = "paper_position_lifecycle",
+    position_mode: str = "paper",
+    param_prefix: str = "paper",
+    enable_simulation_ledger: bool = True,
 ) -> dict[str, Any]:
     params = dict(trader_params or {})
-    take_profit_pct = safe_float(params.get("paper_take_profit_pct"))
-    stop_loss_pct = safe_float(params.get("paper_stop_loss_pct"))
-    max_hold_minutes = safe_float(params.get("paper_max_hold_minutes"))
-    min_hold_minutes = max(0.0, safe_float(params.get("paper_min_hold_minutes")) or 0.0)
-    trailing_stop_pct = safe_float(params.get("paper_trailing_stop_pct"))
-    resolve_only = _safe_bool(params.get("paper_resolve_only"), False)
-    close_on_inactive_market = _safe_bool(params.get("paper_close_on_inactive_market"), False)
-    resolution_infer_from_prices = _safe_bool(params.get("paper_resolution_infer_from_prices"), True)
+    mode_key = str(position_mode or "paper").strip().lower()
+    if mode_key not in {"paper", "shadow"}:
+        raise ValueError("position_mode must be 'paper' or 'shadow'")
+    prefix_key = str(param_prefix or mode_key).strip().lower()
+
+    def _param(name: str, default: Any = None) -> Any:
+        prefixed_key = f"{prefix_key}_{name}"
+        if prefixed_key in params:
+            return params.get(prefixed_key)
+        if name in params:
+            return params.get(name)
+        if prefix_key != "paper":
+            paper_key = f"paper_{name}"
+            if paper_key in params:
+                return params.get(paper_key)
+        return default
+
+    take_profit_pct = safe_float(_param("take_profit_pct"))
+    stop_loss_pct = safe_float(_param("stop_loss_pct"))
+    max_hold_minutes = safe_float(_param("max_hold_minutes"))
+    min_hold_minutes = max(0.0, safe_float(_param("min_hold_minutes")) or 0.0)
+    trailing_stop_pct = safe_float(_param("trailing_stop_pct"))
+    resolve_only = _safe_bool(_param("resolve_only"), False)
+    close_on_inactive_market = _safe_bool(_param("close_on_inactive_market"), False)
+    resolution_infer_from_prices = _safe_bool(_param("resolution_infer_from_prices"), True)
     resolution_settle_floor = min(
         1.0,
-        max(0.5, safe_float(params.get("paper_resolution_settle_floor")) or 0.98),
+        max(0.5, safe_float(_param("resolution_settle_floor")) or 0.98),
     )
 
     candidates = list(
@@ -1210,7 +1251,7 @@ async def reconcile_paper_positions(
             await session.execute(
                 select(TraderOrder).where(
                     TraderOrder.trader_id == trader_id,
-                    func.lower(func.coalesce(TraderOrder.mode, "")) == "paper",
+                    func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key,
                     func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(PAPER_ACTIVE_STATUSES)),
                 )
             )
@@ -1347,13 +1388,7 @@ async def reconcile_paper_positions(
                 # decision before falling through to default TP/SL/etc.
                 strategy_slug = (payload.get("strategy_type") or "").strip().lower()
                 strategy_exit = None
-                _exit_instance = None
-                if strategy_slug:
-                    from services.strategy_loader import strategy_loader
-
-                    loaded = strategy_loader.get_strategy(strategy_slug)
-                    if loaded and hasattr(loaded.instance, "should_exit"):
-                        _exit_instance = loaded.instance
+                _exit_instance = await _strategy_exit_instance(session, strategy_slug) if strategy_slug else None
                 if _exit_instance is not None:
                     try:
 
@@ -1379,7 +1414,7 @@ async def reconcile_paper_positions(
                         min_order_size_usd = _resolve_position_min_order_size_usd(
                             trader_params=params,
                             payload=payload,
-                            mode="paper",
+                            mode=mode_key,
                         )
                         market_state_dict = {
                             "current_price": current_price,
@@ -1510,7 +1545,7 @@ async def reconcile_paper_positions(
 
         simulation_close: dict[str, Any] | None = None
         simulation_ledger = payload.get("simulation_ledger")
-        if not dry_run and isinstance(simulation_ledger, dict):
+        if not dry_run and enable_simulation_ledger and isinstance(simulation_ledger, dict):
             sim_account_id = str(simulation_ledger.get("account_id") or "").strip()
             sim_trade_id = str(simulation_ledger.get("trade_id") or "").strip()
             sim_position_id = str(simulation_ledger.get("position_id") or "").strip()
@@ -1630,6 +1665,7 @@ async def reconcile_paper_positions(
 
     return {
         "trader_id": trader_id,
+        "mode": mode_key,
         "dry_run": bool(dry_run),
         "matched": len(candidates),
         "would_close": would_close,
@@ -1643,6 +1679,30 @@ async def reconcile_paper_positions(
         "reverse_signals_emitted": sum(len(ids) for ids in reverse_signal_ids_by_source.values()),
         "details": details,
     }
+
+
+async def reconcile_shadow_positions(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    trader_params: Optional[dict[str, Any]] = None,
+    dry_run: bool = False,
+    force_mark_to_market: bool = False,
+    max_age_hours: Optional[int] = None,
+    reason: str = "shadow_position_lifecycle",
+) -> dict[str, Any]:
+    return await reconcile_paper_positions(
+        session,
+        trader_id=trader_id,
+        trader_params=trader_params,
+        dry_run=dry_run,
+        force_mark_to_market=force_mark_to_market,
+        max_age_hours=max_age_hours,
+        reason=reason,
+        position_mode="shadow",
+        param_prefix="shadow",
+        enable_simulation_ledger=False,
+    )
 
 
 async def reconcile_live_positions(
@@ -3084,65 +3144,62 @@ async def reconcile_live_positions(
                 # decision before falling through to default TP/SL/etc.
                 strategy_slug = (payload.get("strategy_type") or "").strip().lower()
                 strategy_exit = None
-                if strategy_slug:
-                    from services.strategy_loader import strategy_loader
+                _exit_instance = await _strategy_exit_instance(session, strategy_slug) if strategy_slug else None
+                if _exit_instance is not None:
+                    try:
 
-                    loaded = strategy_loader.get_strategy(strategy_slug)
-                    if loaded and hasattr(loaded.instance, "should_exit"):
-                        try:
+                        class _LivePositionView:
+                            pass
 
-                            class _LivePositionView:
-                                pass
+                        pos_view = _LivePositionView()
+                        pos_view.entry_price = entry_price
+                        pos_view.current_price = exit_eval_price
+                        pos_view.highest_price = highest_price
+                        pos_view.lowest_price = lowest_price
+                        pos_view.age_minutes = age_minutes
+                        pos_view.pnl_percent = pnl_pct
+                        pos_view.filled_size = (
+                            filled_size
+                            if filled_size > 0.0
+                            else (notional / entry_price if entry_price > 0 else 0.0)
+                        )
+                        pos_view.notional_usd = notional
+                        if "strategy_context" not in payload:
+                            payload["strategy_context"] = {}
+                        pos_view.strategy_context = payload["strategy_context"]
+                        pos_view.config = payload.get("strategy_exit_config", {})
+                        pos_view.outcome_idx = outcome_idx
 
-                            pos_view = _LivePositionView()
-                            pos_view.entry_price = entry_price
-                            pos_view.current_price = exit_eval_price
-                            pos_view.highest_price = highest_price
-                            pos_view.lowest_price = lowest_price
-                            pos_view.age_minutes = age_minutes
-                            pos_view.pnl_percent = pnl_pct
-                            pos_view.filled_size = (
-                                filled_size
-                                if filled_size > 0.0
-                                else (notional / entry_price if entry_price > 0 else 0.0)
-                            )
-                            pos_view.notional_usd = notional
-                            if "strategy_context" not in payload:
-                                payload["strategy_context"] = {}
-                            pos_view.strategy_context = payload["strategy_context"]
-                            pos_view.config = payload.get("strategy_exit_config", {})
-                            pos_view.outcome_idx = outcome_idx
+                        min_order_size_usd = _resolve_position_min_order_size_usd(
+                            trader_params=params,
+                            payload=payload,
+                            mode="live",
+                        )
+                        market_state_dict = {
+                            "current_price": exit_eval_price,
+                            "market_tradable": market_tradable,
+                            "is_resolved": False,
+                            "winning_outcome": None,
+                            "seconds_left": market_seconds_left,
+                            "end_time": market_end_time,
+                            "token_id": token_id,
+                            "mark_source": exit_eval_price_source,
+                            "min_order_size_usd": min_order_size_usd,
+                            "notional_usd": notional,
+                        }
 
-                            min_order_size_usd = _resolve_position_min_order_size_usd(
-                                trader_params=params,
-                                payload=payload,
-                                mode="live",
-                            )
-                            market_state_dict = {
-                                "current_price": exit_eval_price,
-                                "market_tradable": market_tradable,
-                                "is_resolved": False,
-                                "winning_outcome": None,
-                                "seconds_left": market_seconds_left,
-                                "end_time": market_end_time,
-                                "token_id": token_id,
-                                "mark_source": exit_eval_price_source,
-                                "min_order_size_usd": min_order_size_usd,
-                                "notional_usd": notional,
-                            }
-
-                            exit_decision = loaded.instance.should_exit(pos_view, market_state_dict)
-                            exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
-                            if exit_action == "close":
-                                strategy_exit = exit_decision
-                            elif exit_action == "reduce":
-                                strategy_exit = exit_decision
-                        except Exception as exc:
-                            logger.warning(
-                                "Strategy should_exit() error for %s: %s",
-                                strategy_slug,
-                                exc,
-                            )
+                        exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
+                        exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
+                        if exit_action == "close":
+                            strategy_exit = exit_decision
+                        elif exit_action == "reduce":
+                            strategy_exit = exit_decision
+                    except Exception as exc:
+                        logger.warning(
+                            "Strategy should_exit() error for %s: %s",
+                            strategy_slug,
+                            exc,
+                        )
 
                 if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
                     if not dry_run:

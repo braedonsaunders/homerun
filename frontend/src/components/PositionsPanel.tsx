@@ -2,7 +2,8 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAtomValue } from 'jotai'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Liveline, type WindowOption } from 'liveline'
 import {
   AlertTriangle,
   ArrowDownAZ,
@@ -14,6 +15,7 @@ import {
   ExternalLink,
   Gauge,
   Layers,
+  Loader2,
   Maximize2,
   RefreshCw,
   Search,
@@ -27,18 +29,22 @@ import { cn } from '../lib/utils'
 import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { selectedAccountIdAtom, themeAtom } from '../store/atoms'
 import {
+  adoptTraderLiveWalletPosition,
   getAccountPositions,
   getAllTraderOrders,
   getCryptoMarkets,
   getKalshiPositions,
   getKalshiStatus,
   getSimulationAccounts,
+  getTraderMarketHistory,
+  getTraders,
   getTradingPositions,
   type CryptoMarket,
   type KalshiAccountStatus,
   type KalshiPosition,
   type SimulationAccount,
   type SimulationPosition,
+  type Trader,
   type TraderOrder,
   type TradingPosition,
 } from '../services/api'
@@ -50,6 +56,7 @@ import { ScrollArea } from './ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
+import { FlashNumber } from './AnimatedNumber'
 
 type ViewMode = 'all' | 'sandbox' | 'live'
 type LiveVenueFilter = 'all' | 'polymarket' | 'kalshi'
@@ -62,7 +69,25 @@ type SortDirection = 'asc' | 'desc'
 type ExposureFloor = 'all' | '100' | '500' | '1000' | '5000'
 
 const OPEN_PAPER_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
+const OPEN_LIVE_MANAGED_ORDER_STATUSES = new Set([
+  'pending',
+  'submitted',
+  'open',
+  'partially_filled',
+  'executed',
+])
 const POSITIONS_TABLE_PAGE_SIZE = 100
+const LIVE_MARK_FRESH_MS = 15_000
+const MODAL_MARKET_HISTORY_LIMIT = 5000
+const LIVELINE_WINDOW_PRESETS: WindowOption[] = [
+  { label: 'All', secs: 60 * 60 * 24 * 365 * 10 },
+  { label: '7d', secs: 60 * 60 * 24 * 7 },
+  { label: '3d', secs: 60 * 60 * 24 * 3 },
+  { label: '24h', secs: 60 * 60 * 24 },
+  { label: '6h', secs: 60 * 60 * 6 },
+  { label: '1h', secs: 60 * 60 },
+  { label: '15m', secs: 60 * 15 },
+]
 
 const VENUE_META: Record<PositionVenue, {
   label: string
@@ -109,6 +134,12 @@ interface PositionRow {
   unrealizedPnl: number | null
   pnlPercent: number | null
   openedAt: string | null
+  markUpdatedAt: string | null
+  markFresh: boolean
+  tokenId: string | null
+  managedByBot: string | null
+  managedBotId: string | null
+  managedOrderId: string | null
   marketUrl: string | null
   markMode: PriceMarkMode
 }
@@ -134,6 +165,49 @@ function readString(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function readTimestamp(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = readString(record[key])
+    if (value) return value
+  }
+  return null
+}
+
+function normalizeTokenKey(value: unknown): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function extractManagedTokenFromOrder(order: TraderOrder): string | null {
+  const payload = (order.payload && typeof order.payload === 'object')
+    ? order.payload as Record<string, unknown>
+    : {}
+  const liveMarket = (payload.live_market && typeof payload.live_market === 'object')
+    ? payload.live_market as Record<string, unknown>
+    : {}
+  const providerReconciliation = (payload.provider_reconciliation && typeof payload.provider_reconciliation === 'object')
+    ? payload.provider_reconciliation as Record<string, unknown>
+    : {}
+  const providerSnapshot = (providerReconciliation.snapshot && typeof providerReconciliation.snapshot === 'object')
+    ? providerReconciliation.snapshot as Record<string, unknown>
+    : {}
+
+  const candidates: unknown[] = [
+    payload.selected_token_id,
+    payload.token_id,
+    payload.asset_id,
+    liveMarket.selected_token_id,
+    liveMarket.token_id,
+    liveMarket.asset_id,
+    providerSnapshot.token_id,
+    providerSnapshot.asset_id,
+  ]
+  for (const candidate of candidates) {
+    const token = normalizeTokenKey(candidate)
+    if (token) return token
+  }
+  return null
 }
 
 function formatUsd(value: number, decimals = 2): string {
@@ -212,7 +286,49 @@ function compareNullable(a: number | null, b: number | null, direction: SortDire
   return direction === 'asc' ? a - b : b - a
 }
 
+function readErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error) {
+    const candidate = error as {
+      message?: unknown
+      response?: {
+        data?: {
+          detail?: unknown
+          message?: unknown
+          error?: unknown
+        }
+      }
+    }
+    const responseData = candidate.response?.data
+    const detail = String(
+      responseData?.detail
+      ?? responseData?.message
+      ?? responseData?.error
+      ?? candidate.message
+      ?? ''
+    ).trim()
+    if (detail) return detail
+  }
+  return fallback
+}
+
+function readFinite(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function toUnixSeconds(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (value > 1e12) return Math.trunc(value / 1000)
+  if (value > 1e10) return Math.trunc(value / 1000)
+  return Math.trunc(value)
+}
+
 export default function PositionsPanel() {
+  const queryClient = useQueryClient()
   const globalSelectedAccountId = useAtomValue(selectedAccountIdAtom)
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => (
@@ -237,7 +353,16 @@ export default function PositionsPanel() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [positionsPage, setPositionsPage] = useState(1)
   const [modalMarket, setModalMarket] = useState<CryptoMarket | null>(null)
+  const [modalRow, setModalRow] = useState<PositionRow | null>(null)
+  const [assignLiveTraderId, setAssignLiveTraderId] = useState('')
+  const [adoptError, setAdoptError] = useState<string | null>(null)
+  const [adoptSuccess, setAdoptSuccess] = useState<string | null>(null)
   const closeMarketModal = () => setModalMarket(null)
+  const closeRowModal = () => {
+    setModalRow(null)
+    setAdoptError(null)
+    setAdoptSuccess(null)
+  }
   const themeMode = useAtomValue(themeAtom)
 
   const { data: cryptoMarkets } = useQuery({
@@ -255,15 +380,22 @@ export default function PositionsPanel() {
     return map
   }, [cryptoMarkets])
 
-  // Market modal: body scroll lock + escape key
+  // Modal stack: body scroll lock + escape key
   useEffect(() => {
-    if (!modalMarket) return
+    if (!modalMarket && !modalRow) return
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMarketModal() }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (modalMarket) {
+        closeMarketModal()
+        return
+      }
+      closeRowModal()
+    }
     window.addEventListener('keydown', onKey)
     return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey) }
-  }, [modalMarket])
+  }, [modalMarket, modalRow])
 
   const shouldShowSandbox = viewMode === 'sandbox' || viewMode === 'all'
   const shouldShowLive = viewMode === 'live' || viewMode === 'all'
@@ -333,7 +465,7 @@ export default function PositionsPanel() {
     isLoading: traderOrdersLoading,
     refetch: refetchTraderOrders,
   } = useQuery<TraderOrder[]>({
-    queryKey: ['positions-panel', 'trader-orders-open-paper'],
+    queryKey: ['positions-panel', 'trader-orders-open'],
     queryFn: async () => {
       try {
         return await getAllTraderOrders(220)
@@ -341,12 +473,28 @@ export default function PositionsPanel() {
         return []
       }
     },
-    enabled: shouldShowSandbox,
+    enabled: shouldShowSandbox || shouldShowLive,
+    refetchInterval: shouldShowLive ? 2000 : (shouldShowSandbox ? 3000 : false),
+    staleTime: 0,
+    refetchOnMount: 'always',
+    retry: false,
+  })
+
+  const {
+    data: liveTraders = [],
+  } = useQuery<Trader[]>({
+    queryKey: ['positions-panel', 'live-traders'],
+    queryFn: () => getTraders({ mode: 'live' }),
+    enabled: shouldShowLive,
+    refetchInterval: shouldShowLive ? 5000 : false,
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: false,
   })
 
   const {
     data: polymarketLivePositions = [],
+    dataUpdatedAt: polymarketLiveUpdatedAt,
     isLoading: polymarketLiveLoading,
     refetch: refetchPolymarketLivePositions,
   } = useQuery<TradingPosition[]>({
@@ -359,6 +507,9 @@ export default function PositionsPanel() {
       }
     },
     enabled: shouldFetchPolymarketLive,
+    refetchInterval: shouldFetchPolymarketLive ? 2000 : false,
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: false,
   })
 
@@ -375,6 +526,7 @@ export default function PositionsPanel() {
 
   const {
     data: kalshiLivePositions = [],
+    dataUpdatedAt: kalshiLiveUpdatedAt,
     isLoading: kalshiLiveLoading,
     refetch: refetchKalshiLivePositions,
   } = useQuery<KalshiPosition[]>({
@@ -387,6 +539,9 @@ export default function PositionsPanel() {
       }
     },
     enabled: shouldFetchKalshiLive && Boolean(kalshiStatus?.authenticated),
+    refetchInterval: shouldFetchKalshiLive && Boolean(kalshiStatus?.authenticated) ? 5000 : false,
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: false,
   })
 
@@ -416,6 +571,12 @@ export default function PositionsPanel() {
         unrealizedPnl,
         pnlPercent,
         openedAt: position.opened_at,
+        markUpdatedAt: position.current_price === null ? null : position.opened_at,
+        markFresh: false,
+        tokenId: position.token_id ?? null,
+        managedByBot: null,
+        managedBotId: null,
+        managedOrderId: null,
         marketUrl: buildPolymarketMarketUrl({
           eventSlug: position.event_slug,
           marketSlug: position.market_slug,
@@ -429,6 +590,178 @@ export default function PositionsPanel() {
   const accountNameById = useMemo(() => {
     return new Map(accounts.map((account) => [account.id, account.name]))
   }, [accounts])
+
+  const liveTraderNameById = useMemo(() => {
+    return new Map(liveTraders.map((trader) => [trader.id, trader.name]))
+  }, [liveTraders])
+
+  const sortedLiveTraders = useMemo(
+    () => [...liveTraders].sort((left, right) => left.name.localeCompare(right.name)),
+    [liveTraders]
+  )
+
+  const openRowModal = (row: PositionRow) => {
+    setModalRow(row)
+    setAdoptError(null)
+    setAdoptSuccess(null)
+  }
+
+  useEffect(() => {
+    if (!modalRow || modalRow.venue !== 'polymarket-live' || modalRow.managedBotId) return
+    setAssignLiveTraderId((current) => {
+      if (current && liveTraderNameById.has(current)) return current
+      return sortedLiveTraders[0]?.id || ''
+    })
+  }, [liveTraderNameById, modalRow, sortedLiveTraders])
+
+  const assignLivePositionMutation = useMutation({
+    mutationFn: async (params: { traderId: string; tokenId: string }) => {
+      return adoptTraderLiveWalletPosition(params.traderId, {
+        token_id: params.tokenId,
+        reason: 'manual_wallet_position_adopt_positions_tab',
+        requested_by: 'positions_panel',
+      })
+    },
+    onMutate: () => {
+      setAdoptError(null)
+      setAdoptSuccess(null)
+    },
+    onSuccess: (_, variables) => {
+      const assignedBotName = liveTraderNameById.get(variables.traderId) || 'selected bot'
+      setAdoptSuccess(`Position is now managed by ${assignedBotName}.`)
+      setModalRow((current) => {
+        if (!current || current.tokenId !== variables.tokenId) return current
+        return {
+          ...current,
+          managedByBot: assignedBotName,
+          managedBotId: variables.traderId,
+        }
+      })
+      void queryClient.invalidateQueries({ queryKey: ['positions-panel', 'trader-orders-open'] })
+      void queryClient.invalidateQueries({ queryKey: ['positions-panel', 'polymarket-live-open-positions'] })
+    },
+    onError: (error: unknown) => {
+      setAdoptError(readErrorMessage(error, 'Failed to assign position to bot'))
+    },
+  })
+
+  const modalRowMarketIds = useMemo(() => {
+    if (!modalRow) return []
+    const ids = new Set<string>()
+    const marketId = readString(modalRow.marketId)
+    if (marketId) ids.add(marketId.toLowerCase())
+    const tokenId = readString(modalRow.tokenId)
+    if (tokenId) ids.add(tokenId.toLowerCase())
+    return Array.from(ids)
+  }, [modalRow])
+
+  const modalRowMarketIdsKey = modalRowMarketIds.join('|')
+
+  const modalRowHistoryQuery = useQuery({
+    queryKey: ['positions-panel', 'modal-market-history', modalRowMarketIdsKey],
+    enabled: modalRowMarketIds.length > 0,
+    refetchInterval: modalRow ? 2000 : false,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    queryFn: async () => {
+      if (modalRowMarketIds.length === 0) return {}
+      return getTraderMarketHistory(modalRowMarketIds, MODAL_MARKET_HISTORY_LIMIT)
+    },
+  })
+
+  const modalRowHistorySeries = useMemo(() => {
+    if (!modalRow) return [] as Array<{ time: number; value: number }>
+    const allHistories = modalRowHistoryQuery.data || {}
+    const candidateKeys = [
+      normalizeTokenKey(modalRow.marketId),
+      normalizeTokenKey(modalRow.tokenId),
+      readString(modalRow.marketId),
+      readString(modalRow.tokenId),
+    ]
+    let rawHistory: unknown = null
+    for (const key of candidateKeys) {
+      if (!key) continue
+      const candidate = allHistories[key]
+      if (!Array.isArray(candidate)) continue
+      rawHistory = candidate
+      break
+    }
+    if (!Array.isArray(rawHistory)) return [] as Array<{ time: number; value: number }>
+
+    const useNoSeries = isNoSide(modalRow.side)
+    const normalized: Array<{ time: number; value: number }> = []
+
+    rawHistory.forEach((point) => {
+      if (!point || typeof point !== 'object') return
+      const row = point as unknown as Record<string, unknown>
+      const rawTime = readFinite(row.t)
+      if (rawTime === null || rawTime <= 0) return
+      const value = useNoSeries
+        ? readFinite(row.no, row.idx_1)
+        : readFinite(row.yes, row.idx_0)
+      if (value === null || value < 0) return
+      normalized.push({
+        time: Math.max(1, toUnixSeconds(rawTime)),
+        value,
+      })
+    })
+
+    normalized.sort((left, right) => left.time - right.time)
+
+    const deduped: Array<{ time: number; value: number }> = []
+    normalized.forEach((point) => {
+      const previous = deduped[deduped.length - 1]
+      if (previous && previous.time === point.time) {
+        deduped[deduped.length - 1] = point
+        return
+      }
+      deduped.push(point)
+    })
+
+    if (deduped.length >= 2) return deduped
+    return [] as Array<{ time: number; value: number }>
+  }, [modalRow, modalRowHistoryQuery.data])
+
+  const modalRowLivelineValue = useMemo(() => {
+    const latest = modalRowHistorySeries[modalRowHistorySeries.length - 1]
+    return latest ? latest.value : 0
+  }, [modalRowHistorySeries])
+
+  const modalRowLivelineColor = useMemo(() => {
+    if (!modalRow) return '#22c55e'
+    return (modalRow.unrealizedPnl || 0) >= 0 ? '#22c55e' : '#ef4444'
+  }, [modalRow])
+
+  const managedBotByTokenId = useMemo(() => {
+    const map = new Map<string, {
+      traderId: string
+      traderName: string
+      orderId: string | null
+      updatedAtTs: number
+    }>()
+    traderOrders.forEach((order) => {
+      const mode = String(order.mode || '').trim().toLowerCase()
+      if (mode !== 'live') return
+      const status = String(order.status || '').trim().toLowerCase()
+      if (!OPEN_LIVE_MANAGED_ORDER_STATUSES.has(status)) return
+
+      const tokenKey = extractManagedTokenFromOrder(order)
+      if (!tokenKey) return
+
+      const traderId = String(order.trader_id || '').trim()
+      const traderName = liveTraderNameById.get(traderId) || traderId || 'Unknown bot'
+      const updatedAtTs = toTimestamp(order.updated_at || order.executed_at || order.created_at)
+      const current = map.get(tokenKey)
+      if (current && current.updatedAtTs > updatedAtTs) return
+      map.set(tokenKey, {
+        traderId,
+        traderName,
+        orderId: readString(order.id),
+        updatedAtTs,
+      })
+    })
+    return map
+  }, [liveTraderNameById, traderOrders])
 
   const simulationCoverageKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -556,6 +889,12 @@ export default function PositionsPanel() {
           unrealizedPnl: null,
           pnlPercent: null,
           openedAt: bucket.lastUpdated,
+          markUpdatedAt: null,
+          markFresh: false,
+          tokenId: null,
+          managedByBot: null,
+          managedBotId: null,
+          managedOrderId: null,
           marketUrl: bucket.marketUrl,
           markMode: 'entry_estimate',
         }
@@ -565,12 +904,21 @@ export default function PositionsPanel() {
   }, [accountNameById, selectedSandboxAccount, simulationCoverageKeys, traderOrders])
 
   const polymarketLiveRows = useMemo<PositionRow[]>(() => {
+    const fallbackMarkTs = polymarketLiveUpdatedAt > 0
+      ? new Date(polymarketLiveUpdatedAt).toISOString()
+      : null
+    const now = Date.now()
+    const freshCutoff = now - LIVE_MARK_FRESH_MS
     return polymarketLivePositions.map((position) => {
+      const record = position as unknown as Record<string, unknown>
       const costBasis = position.size * position.average_cost
       const marketValue = position.size * position.current_price
       const unrealizedPnl = position.unrealized_pnl
       const pnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0
       const side = normalizeDirection(position.outcome)
+      const markUpdatedAt = readTimestamp(record, ['mark_updated_at', 'last_marked_at', 'updated_at']) || fallbackMarkTs
+      const markFresh = position.current_price > 0 && toTimestamp(markUpdatedAt) >= freshCutoff
+      const managed = managedBotByTokenId.get(normalizeTokenKey(position.token_id))
       return {
         key: `pm-live:${position.market_id}:${position.token_id}:${position.outcome}`,
         venue: 'polymarket-live',
@@ -588,7 +936,13 @@ export default function PositionsPanel() {
         marketValue,
         unrealizedPnl,
         pnlPercent,
-        openedAt: null,
+        openedAt: markUpdatedAt,
+        markUpdatedAt,
+        markFresh,
+        tokenId: position.token_id,
+        managedByBot: managed?.traderName || null,
+        managedBotId: managed?.traderId || null,
+        managedOrderId: managed?.orderId || null,
         marketUrl: buildPolymarketMarketUrl({
           eventSlug: position.event_slug,
           marketSlug: position.market_slug,
@@ -597,15 +951,24 @@ export default function PositionsPanel() {
         markMode: 'live',
       }
     })
-  }, [polymarketLivePositions])
+  }, [managedBotByTokenId, polymarketLivePositions, polymarketLiveUpdatedAt])
 
   const kalshiLiveRows = useMemo<PositionRow[]>(() => {
+    const fallbackMarkTs = kalshiLiveUpdatedAt > 0
+      ? new Date(kalshiLiveUpdatedAt).toISOString()
+      : null
+    const now = Date.now()
+    const freshCutoff = now - LIVE_MARK_FRESH_MS
     return kalshiLivePositions.map((position) => {
+      const record = position as unknown as Record<string, unknown>
       const costBasis = position.size * position.average_cost
       const marketValue = position.size * position.current_price
       const unrealizedPnl = position.unrealized_pnl
       const pnlPercent = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0
       const side = normalizeDirection(position.outcome)
+      const markUpdatedAt = readTimestamp(record, ['mark_updated_at', 'last_marked_at', 'updated_at']) || fallbackMarkTs
+      const markFresh = position.current_price > 0 && toTimestamp(markUpdatedAt) >= freshCutoff
+      const managed = managedBotByTokenId.get(normalizeTokenKey(position.token_id))
       return {
         key: `kalshi-live:${position.market_id}:${position.token_id}:${position.outcome}`,
         venue: 'kalshi-live',
@@ -623,7 +986,13 @@ export default function PositionsPanel() {
         marketValue,
         unrealizedPnl,
         pnlPercent,
-        openedAt: null,
+        openedAt: markUpdatedAt,
+        markUpdatedAt,
+        markFresh,
+        tokenId: position.token_id,
+        managedByBot: managed?.traderName || null,
+        managedBotId: managed?.traderId || null,
+        managedOrderId: managed?.orderId || null,
         marketUrl: buildKalshiMarketUrl({
           marketTicker: position.market_id,
           eventTicker: position.event_slug,
@@ -631,7 +1000,7 @@ export default function PositionsPanel() {
         markMode: 'live',
       }
     })
-  }, [kalshiLivePositions])
+  }, [kalshiLivePositions, kalshiLiveUpdatedAt, managedBotByTokenId])
 
   const baseRows = useMemo(() => {
     if (viewMode === 'sandbox') return [...simulationRows, ...autotraderPaperRows]
@@ -651,7 +1020,7 @@ export default function PositionsPanel() {
 
     return baseRows.filter((row) => {
       if (query) {
-        const haystack = `${row.marketQuestion} ${row.marketId} ${row.accountLabel} ${row.venueLabel} ${row.side} ${row.sideLabel}`.toLowerCase()
+        const haystack = `${row.marketQuestion} ${row.marketId} ${row.accountLabel} ${row.venueLabel} ${row.side} ${row.sideLabel} ${row.managedByBot || ''}`.toLowerCase()
         if (!haystack.includes(query)) return false
       }
 
@@ -695,8 +1064,8 @@ export default function PositionsPanel() {
       }
 
       if (sortField === 'updated') {
-        const leftTs = toTimestamp(left.openedAt)
-        const rightTs = toTimestamp(right.openedAt)
+        const leftTs = toTimestamp(left.markUpdatedAt || left.openedAt)
+        const rightTs = toTimestamp(right.markUpdatedAt || right.openedAt)
         return sortDirection === 'asc' ? leftTs - rightTs : rightTs - leftTs
       }
 
@@ -800,6 +1169,7 @@ export default function PositionsPanel() {
 
   const isLoading = (
     (shouldShowSandbox && (accountsLoading || simulationPositionsLoading || traderOrdersLoading))
+    || (shouldShowLive && traderOrdersLoading)
     || (shouldFetchPolymarketLive && polymarketLiveLoading)
     || (shouldFetchKalshiLive && (kalshiStatusLoading || (Boolean(kalshiStatus?.authenticated) && kalshiLiveLoading)))
   )
@@ -1066,7 +1436,7 @@ export default function PositionsPanel() {
               </div>
               <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/60">
                 <div className="w-full overflow-x-auto">
-                  <Table className="min-w-[1240px]">
+                  <Table className="min-w-[1320px]">
                     <TableHeader>
                       <TableRow>
                         <TableHead className="text-[11px]">Market</TableHead>
@@ -1080,6 +1450,7 @@ export default function PositionsPanel() {
                         <TableHead className="text-[11px] text-right">Conf</TableHead>
                         <TableHead className="text-[11px] text-right">Orders</TableHead>
                         <TableHead className="text-[11px] text-right">Mode</TableHead>
+                        <TableHead className="text-[11px]">Bot</TableHead>
                         <TableHead className="text-[11px]">Updated</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1089,11 +1460,15 @@ export default function PositionsPanel() {
                         const modeLabel = row.venue === 'polymarket-live' || row.venue === 'kalshi-live' ? 'LIVE' : 'PAPER'
                         const exposureShare = totalExposure > 0 ? (row.marketValue / totalExposure) * 100 : 0
                         return (
-                          <TableRow key={row.key} className="text-xs hover:bg-muted/30">
+                          <TableRow
+                            key={row.key}
+                            className="cursor-pointer text-xs hover:bg-muted/30"
+                            onClick={() => openRowModal(row)}
+                          >
                             <TableCell className="max-w-[260px] truncate py-1" title={row.marketQuestion}>
                               <p className="truncate">{row.marketQuestion}</p>
-                              <p className="text-[10px] text-muted-foreground truncate" title={`${row.marketId} • ${row.accountLabel} • ${row.venueLabel}${row.status ? ` • ${row.status}` : ''}`}>
-                                {row.marketId} • {row.accountLabel} • {row.venueLabel}{row.status ? ` • ${row.status}` : ''}
+                              <p className="text-[10px] text-muted-foreground truncate" title={`${row.marketId} • ${row.accountLabel} • ${row.venueLabel}${row.status ? ` • ${row.status}` : ''}${row.managedByBot ? ` • Bot ${row.managedByBot}` : ''}`}>
+                                {row.marketId} • {row.accountLabel} • {row.venueLabel}{row.status ? ` • ${row.status}` : ''}{row.managedByBot ? ` • Bot ${row.managedByBot}` : ''}
                               </p>
                             </TableCell>
                             <TableCell className="py-1">
@@ -1103,6 +1478,7 @@ export default function PositionsPanel() {
                                     href={row.marketUrl}
                                     target="_blank"
                                     rel="noopener noreferrer"
+                                    onClick={(event) => event.stopPropagation()}
                                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                     title="Open market"
                                   >
@@ -1111,7 +1487,10 @@ export default function PositionsPanel() {
                                 ) : null}
                                 {cryptoMarketsMap.has(row.marketId) ? (
                                   <button
-                                    onClick={() => setModalMarket(cryptoMarketsMap.get(row.marketId)!)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      setModalMarket(cryptoMarketsMap.get(row.marketId)!)
+                                    }}
                                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
                                     title="View live market"
                                   >
@@ -1133,8 +1512,18 @@ export default function PositionsPanel() {
                               <div className="text-[9px] text-muted-foreground">{exposureShare.toFixed(1)}%</div>
                             </TableCell>
                             <TableCell className="text-right font-mono py-1">{formatOptionalPrice(row.entryPrice)}</TableCell>
-                            <TableCell className={cn('text-right font-mono py-1', hasLiveMark && 'text-sky-300')}>
-                              {formatOptionalPrice(row.currentPrice)}
+                            <TableCell className={cn('text-right font-mono py-1', row.markFresh && 'text-sky-300')}>
+                              {row.currentPrice !== null ? (
+                                hasLiveMark ? (
+                                  <FlashNumber
+                                    value={row.currentPrice}
+                                    decimals={4}
+                                    className={cn('font-mono text-xs', row.markFresh && 'data-glow-blue')}
+                                    positiveClass="data-glow-green"
+                                    negativeClass="data-glow-red"
+                                  />
+                                ) : formatOptionalPrice(row.currentPrice)
+                              ) : formatOptionalPrice(row.currentPrice)}
                             </TableCell>
                             <TableCell className={cn('text-right font-mono py-1', (row.unrealizedPnl || 0) > 0 ? 'text-emerald-500' : (row.unrealizedPnl || 0) < 0 ? 'text-red-500' : '')}>
                               {row.unrealizedPnl !== null ? formatSignedUsd(row.unrealizedPnl) : '—'}
@@ -1145,8 +1534,35 @@ export default function PositionsPanel() {
                             <TableCell className="text-right font-mono py-1">—</TableCell>
                             <TableCell className="text-right font-mono py-1">—</TableCell>
                             <TableCell className="text-right font-mono py-1">{modeLabel}</TableCell>
+                            <TableCell className="py-1 text-[10px]">
+                              {row.managedByBot ? (
+                                <Badge
+                                  variant="outline"
+                                  className="h-5 max-w-[180px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-cyan-300"
+                                  title={row.managedOrderId ? `${row.managedByBot} • order ${row.managedOrderId}` : row.managedByBot}
+                                >
+                                  Managed: {row.managedByBot}
+                                </Badge>
+                              ) : (
+                                row.venue === 'polymarket-live' ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-5 px-1.5 text-[10px]"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      openRowModal(row)
+                                    }}
+                                  >
+                                    Assign
+                                  </Button>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )
+                              )}
+                            </TableCell>
                             <TableCell className="py-1 text-[10px] text-muted-foreground">
-                              {formatRelativeTime(row.openedAt)}
+                              {formatRelativeTime(row.markUpdatedAt || row.openedAt)}
                             </TableCell>
                           </TableRow>
                         )
@@ -1220,6 +1636,201 @@ export default function PositionsPanel() {
       {/* Market modal portal */}
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
+          {modalRow && (
+            <motion.div
+              key={`position-row-modal-${modalRow.key}`}
+              className="fixed inset-0 z-[121] flex items-center justify-center p-4 sm:p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.div
+                className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                onClick={closeRowModal}
+                aria-hidden
+              />
+              <motion.div
+                className="relative z-10 w-full max-w-[960px] max-h-[90vh] overflow-y-auto rounded-2xl border border-border/70 bg-background p-4 shadow-2xl"
+                role="dialog"
+                aria-modal="true"
+                initial={{ scale: 0.94, opacity: 0, y: 22 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.97, opacity: 0, y: 14 }}
+                transition={{ type: 'spring', stiffness: 260, damping: 28, mass: 0.9 }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold" title={modalRow.marketQuestion}>{modalRow.marketQuestion}</h3>
+                    <p className="truncate text-[11px] text-muted-foreground" title={modalRow.marketId}>
+                      {modalRow.marketId}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{modalRow.venueLabel}</Badge>
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{modalRow.sideLabel}</Badge>
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/80 bg-muted/60 text-muted-foreground">{modalRow.accountLabel}</Badge>
+                      {modalRow.managedByBot ? (
+                        <Badge
+                          variant="outline"
+                          className="h-5 max-w-[220px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-cyan-300"
+                          title={modalRow.managedOrderId ? `${modalRow.managedByBot} • order ${modalRow.managedOrderId}` : modalRow.managedByBot}
+                        >
+                          Managed by {modalRow.managedByBot}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {modalRow.marketUrl ? (
+                      <a
+                        href={modalRow.marketUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
+                        title="Open market"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    ) : null}
+                    {cryptoMarketsMap.has(modalRow.marketId) ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => setModalMarket(cryptoMarketsMap.get(modalRow.marketId)!)}
+                      >
+                        <Maximize2 className="mr-1 h-3 w-3" />
+                        Market
+                      </Button>
+                    ) : null}
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={closeRowModal}>
+                      Close
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Exposure</p>
+                    <p className="text-sm font-mono">{formatUsd(modalRow.marketValue)}</p>
+                    <p className="text-[10px] text-muted-foreground">Cost: {formatUsd(modalRow.costBasis)}</p>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Entry / Mark</p>
+                    <p className="text-sm font-mono">
+                      {formatOptionalPrice(modalRow.entryPrice)}
+                      <span className="mx-1 text-muted-foreground">→</span>
+                      {formatOptionalPrice(modalRow.currentPrice)}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">{modalRow.markMode === 'live' ? 'Live mark' : 'Entry estimate'}</p>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Unrealized</p>
+                    <p className={cn('text-sm font-mono', (modalRow.unrealizedPnl || 0) > 0 ? 'text-emerald-500' : (modalRow.unrealizedPnl || 0) < 0 ? 'text-red-500' : '')}>
+                      {modalRow.unrealizedPnl !== null ? formatSignedUsd(modalRow.unrealizedPnl) : '—'}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">{modalRow.pnlPercent !== null ? formatSignedPct(modalRow.pnlPercent) : '—'}</p>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Timing</p>
+                    <p className="text-sm font-mono">{formatRelativeTime(modalRow.markUpdatedAt || modalRow.openedAt)}</p>
+                    <p className="truncate text-[10px] text-muted-foreground" title={modalRow.tokenId || undefined}>
+                      Token: {modalRow.tokenId || 'n/a'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className={cn(
+                  'mt-3 overflow-hidden rounded-lg border',
+                  themeMode === 'dark'
+                    ? 'border-slate-700/40 bg-gradient-to-b from-slate-900/75 via-slate-950/80 to-black/90'
+                    : 'border-slate-200/90 bg-gradient-to-b from-white via-slate-50 to-slate-100/70'
+                )}>
+                  {modalRowHistorySeries.length >= 2 ? (
+                    <Liveline
+                      data={modalRowHistorySeries}
+                      value={modalRowLivelineValue}
+                      color={modalRowLivelineColor}
+                      theme={themeMode}
+                      showValue
+                      valueMomentumColor
+                      grid
+                      badge
+                      pulse
+                      fill
+                      windows={LIVELINE_WINDOW_PRESETS}
+                      windowStyle="rounded"
+                      lerpSpeed={0.1}
+                      padding={{ top: 8, right: 80, bottom: 24, left: 14 }}
+                      formatValue={(value) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`}
+                      referenceLine={modalRow.entryPrice !== null ? { value: modalRow.entryPrice, label: 'Entry' } : undefined}
+                      style={{ height: 260 }}
+                    />
+                  ) : (
+                    <div className="h-[260px] flex items-center justify-center text-xs text-muted-foreground">
+                      {modalRowHistoryQuery.isFetching ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Loading market history...
+                        </>
+                      ) : (
+                        'No market history available yet.'
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {modalRow.venue === 'polymarket-live' && !modalRow.managedByBot && (
+                  <div className="mt-3 rounded-md border border-border/60 bg-card/80 p-3">
+                    <p className="text-[11px] font-semibold">Assign To Live Bot</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      Attach this live wallet position to a bot so lifecycle logic can continue managing it.
+                    </p>
+                    {sortedLiveTraders.length === 0 ? (
+                      <div className="mt-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300">
+                        No live bots available. Create or enable a LIVE bot first.
+                      </div>
+                    ) : !modalRow.tokenId ? (
+                      <div className="mt-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300">
+                        This row does not include a token id, so it cannot be assigned.
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <Select value={assignLiveTraderId} onValueChange={setAssignLiveTraderId}>
+                          <SelectTrigger className="h-8 w-full sm:w-[240px] bg-background/70 text-xs">
+                            <SelectValue placeholder="Select live bot" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {sortedLiveTraders.map((trader) => (
+                              <SelectItem key={trader.id} value={trader.id}>{trader.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          size="sm"
+                          className="h-8 px-3 text-xs"
+                          disabled={!assignLiveTraderId || assignLivePositionMutation.isPending}
+                          onClick={() => assignLivePositionMutation.mutate({
+                            traderId: assignLiveTraderId,
+                            tokenId: modalRow.tokenId!,
+                          })}
+                        >
+                          {assignLivePositionMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                          Assign Position
+                        </Button>
+                      </div>
+                    )}
+                    {adoptError ? <p className="mt-2 text-xs text-red-500">{adoptError}</p> : null}
+                    {adoptSuccess ? <p className="mt-2 text-xs text-emerald-400">{adoptSuccess}</p> : null}
+                  </div>
+                )}
+              </motion.div>
+            </motion.div>
+          )}
           {modalMarket && (
             <motion.div
               key={`position-market-modal-${modalMarket.id}`}

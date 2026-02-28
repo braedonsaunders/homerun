@@ -8,6 +8,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from config import settings
 from sqlalchemy import and_, desc, func, or_, select, update as sa_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +46,7 @@ from services.worker_state import (
 )
 from services.simulation import simulation_service
 from services.live_execution_service import live_execution_service
+from services.polymarket import polymarket_client
 from services.trader_orchestrator.sources.registry import normalize_source_key
 from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
@@ -120,17 +122,8 @@ TRADER_ORDER_STATUS_TTL_SECONDS = 14 * 24 * 60 * 60
 _TRADER_SCOPE_MODES = set(StrategySDK.TRADER_SCOPE_MODE_CANONICAL)
 _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 30.0
 _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 120.0
-_LEGACY_STRATEGY_KEY_ALIASES = {
-    "strategy.default": "btc_eth_highfreq",
-    "crypto_15m": "btc_eth_highfreq",
-    "crypto_5m": "btc_eth_highfreq",
-}
-_LEGACY_CRYPTO_TIMEFRAME_SCOPE_KEYS = {
-    "allowed_timeframes",
-    "enforce_hard_timeframe_allowlist",
-    "hard_allowed_timeframes",
-}
-_TRADER_MODES = {"paper", "live"}
+_TRADER_MODES = {"paper", "shadow", "live"}
+_MANUAL_LIVE_POSITION_SOURCE = "manual_wallet_position"
 
 
 def _now() -> datetime:
@@ -143,7 +136,7 @@ def _new_id() -> str:
 
 def _normalize_mode_key(mode: Any) -> str:
     key = str(mode or "").strip().lower()
-    if key in {"paper", "live"}:
+    if key in _TRADER_MODES:
         return key
     return "other"
 
@@ -340,7 +333,7 @@ def _normalize_global_risk(value: Any) -> dict[str, Any]:
 
 def _normalize_control_settings(value: Any) -> dict[str, Any]:
     settings = dict(value) if isinstance(value, dict) else {}
-    legacy_runtime_keys = {
+    removed_keys = {
         "enable_live_market_context",
         "live_market_history_window_seconds",
         "live_market_history_fidelity_seconds",
@@ -357,42 +350,16 @@ def _normalize_control_settings(value: Any) -> dict[str, Any]:
         "paper_account_id",
     }
 
-    legacy_runtime: dict[str, Any] = {}
-    legacy_live_market: dict[str, Any] = {}
-    if "enable_live_market_context" in settings:
-        legacy_live_market["enabled"] = bool(settings.get("enable_live_market_context"))
-    if "live_market_history_window_seconds" in settings:
-        legacy_live_market["history_window_seconds"] = settings.get("live_market_history_window_seconds")
-    if "live_market_history_fidelity_seconds" in settings:
-        legacy_live_market["history_fidelity_seconds"] = settings.get("live_market_history_fidelity_seconds")
-    if "live_market_history_max_points" in settings:
-        legacy_live_market["max_history_points"] = settings.get("live_market_history_max_points")
-    if "live_market_context_timeout_seconds" in settings:
-        legacy_live_market["timeout_seconds"] = settings.get("live_market_context_timeout_seconds")
-    if legacy_live_market:
-        legacy_runtime["live_market_context"] = legacy_live_market
-    if "trader_cycle_timeout_seconds" in settings:
-        legacy_runtime["trader_cycle_timeout_seconds"] = settings.get("trader_cycle_timeout_seconds")
-
-    runtime_seed = dict(settings.get("global_runtime") or {})
-    for key, runtime_value in legacy_runtime.items():
-        if key == "live_market_context":
-            merged_live_market = dict(runtime_seed.get("live_market_context") or {})
-            merged_live_market.update(runtime_value)
-            runtime_seed["live_market_context"] = merged_live_market
-            continue
-        runtime_seed[key] = runtime_value
-
     normalized = {
         "global_risk": _normalize_global_risk(settings.get("global_risk")),
-        "global_runtime": _normalize_global_runtime_settings(runtime_seed),
+        "global_runtime": _normalize_global_runtime_settings(settings.get("global_runtime")),
         "trading_domains": _coerce_string_list(settings.get("trading_domains"), ["event_markets", "crypto"]),
         "enabled_strategies": _coerce_string_list(settings.get("enabled_strategies"), list_system_strategy_keys()),
         "llm_verify_trades": bool(settings.get("llm_verify_trades", False)),
         "paper_account_id": (str(settings.get("paper_account_id") or "").strip() or None),
     }
     for key, raw_value in settings.items():
-        if key in normalized_keys or key in legacy_runtime_keys:
+        if key in normalized_keys or key in removed_keys:
             continue
         normalized[key] = raw_value
     return normalized
@@ -422,11 +389,288 @@ def _extract_order_condition_id(row: TraderOrder) -> str:
     )
 
 
+def _extract_order_token_id(row: TraderOrder) -> str:
+    payload = dict(row.payload_json or {})
+    token_id = str(payload.get("token_id") or payload.get("selected_token_id") or "").strip()
+    if token_id:
+        return token_id
+    provider_reconciliation = payload.get("provider_reconciliation")
+    if isinstance(provider_reconciliation, dict):
+        snapshot = provider_reconciliation.get("snapshot")
+        if isinstance(snapshot, dict):
+            token_id = str(snapshot.get("asset_id") or snapshot.get("asset") or snapshot.get("token_id") or "").strip()
+            if token_id:
+                return token_id
+    return ""
+
+
+async def _resolve_execution_wallet_address() -> str:
+    wallet = ""
+    try:
+        wallet = str(live_execution_service.get_execution_wallet_address() or "").strip()
+    except Exception:
+        wallet = ""
+    if wallet:
+        return wallet
+
+    try:
+        await live_execution_service.ensure_initialized()
+    except Exception:
+        pass
+
+    try:
+        wallet = str(live_execution_service.get_execution_wallet_address() or "").strip()
+    except Exception:
+        wallet = ""
+    if wallet:
+        return wallet
+
+    try:
+        runtime_signature_type = getattr(live_execution_service, "_balance_signature_type", None)
+        signature_type = (
+            int(runtime_signature_type)
+            if isinstance(runtime_signature_type, int)
+            else int(getattr(settings, "POLYMARKET_SIGNATURE_TYPE", 1))
+        )
+    except Exception:
+        signature_type = 1
+
+    try:
+        wallet = str(live_execution_service._funder_for_signature_type(signature_type) or "").strip()
+    except Exception:
+        wallet = ""
+    if wallet:
+        return wallet
+
+    try:
+        wallet = str(live_execution_service._get_wallet_address() or "").strip()
+    except Exception:
+        wallet = ""
+    return wallet
+
+
+def _wallet_position_token_key(token_id: Any) -> str:
+    return str(token_id or "").strip().lower()
+
+
+def _read_wallet_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _read_wallet_float(payload: dict[str, Any], *keys: str) -> Optional[float]:
+    for key in keys:
+        parsed = safe_float(payload.get(key))
+        if parsed is not None:
+            return float(parsed)
+    return None
+
+
+def _extract_market_token_ids(market_info: dict[str, Any]) -> list[str]:
+    for key in ("token_ids", "tokenIds", "clob_token_ids", "clobTokenIds"):
+        raw = market_info.get(key)
+        if not isinstance(raw, list):
+            continue
+        out = [str(token_id or "").strip() for token_id in raw if str(token_id or "").strip()]
+        if out:
+            return out
+    return []
+
+
+def _extract_market_outcomes(market_info: dict[str, Any]) -> list[str]:
+    raw = market_info.get("outcomes")
+    if not isinstance(raw, list):
+        return []
+    return [str(value or "").strip().lower() for value in raw if str(value or "").strip()]
+
+
+def _extract_binary_market_prices(market_info: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+    yes_price = safe_float(market_info.get("yes_price"))
+    no_price = safe_float(market_info.get("no_price"))
+    if yes_price is not None and no_price is not None:
+        return yes_price, no_price
+
+    outcome_prices = market_info.get("outcome_prices")
+    if not isinstance(outcome_prices, list):
+        outcome_prices = market_info.get("outcomePrices")
+    if not isinstance(outcome_prices, list) or len(outcome_prices) < 2:
+        return yes_price, no_price
+
+    outcomes = _extract_market_outcomes(market_info)
+    if outcomes and len(outcomes) == len(outcome_prices):
+        for index, label in enumerate(outcomes):
+            parsed_price = safe_float(outcome_prices[index])
+            if parsed_price is None:
+                continue
+            if label == "yes":
+                yes_price = parsed_price
+            elif label == "no":
+                no_price = parsed_price
+
+    if yes_price is None:
+        yes_price = safe_float(outcome_prices[0])
+    if no_price is None:
+        no_price = safe_float(outcome_prices[1])
+    return yes_price, no_price
+
+
+def _normalize_wallet_outcome_and_direction(
+    wallet_position: dict[str, Any],
+    *,
+    market_info: dict[str, Any],
+    token_id: str,
+) -> tuple[str, str]:
+    outcome_text = _read_wallet_text(wallet_position, "outcome", "position_side", "side").lower()
+    if outcome_text in {"yes", "buy_yes"}:
+        return "yes", "buy_yes"
+    if outcome_text in {"no", "buy_no"}:
+        return "no", "buy_no"
+
+    outcome_index = safe_int(
+        wallet_position.get("outcomeIndex") if wallet_position.get("outcomeIndex") is not None else wallet_position.get("outcome_index"),
+        None,
+    )
+    token_ids = _extract_market_token_ids(market_info)
+    if outcome_index is None and token_ids:
+        normalized_token = _wallet_position_token_key(token_id)
+        for index, known_token in enumerate(token_ids):
+            if _wallet_position_token_key(known_token) == normalized_token:
+                outcome_index = index
+                break
+
+    if outcome_index is None:
+        return "", ""
+
+    outcomes = _extract_market_outcomes(market_info)
+    if outcomes and 0 <= outcome_index < len(outcomes):
+        label = outcomes[outcome_index]
+        if label == "yes":
+            return "yes", "buy_yes"
+        if label == "no":
+            return "no", "buy_no"
+
+    if outcome_index == 0:
+        return "yes", "buy_yes"
+    if outcome_index == 1:
+        return "no", "buy_no"
+    return "", ""
+
+
+def _normalize_wallet_position_row(
+    wallet_position: dict[str, Any],
+    *,
+    market_info: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    token_id = _read_wallet_text(wallet_position, "asset", "asset_id", "assetId", "token_id", "tokenId")
+    if not token_id:
+        return None
+
+    size = _read_wallet_float(wallet_position, "size", "positionSize", "shares", "amount")
+    if size is None or size <= 0.0:
+        return None
+
+    condition_id = _normalize_condition_id(
+        _read_wallet_text(wallet_position, "conditionId", "condition_id", "market", "market_id", "marketId")
+    )
+    market_id = condition_id or _read_wallet_text(wallet_position, "market", "market_id", "marketId") or token_id
+
+    avg_price = _read_wallet_float(wallet_position, "avgPrice", "avg_price", "avgCost", "average_cost")
+    initial_value = _read_wallet_float(wallet_position, "initialValue", "initial_value")
+    current_price = _read_wallet_float(
+        wallet_position,
+        "currentPrice",
+        "current_price",
+        "curPrice",
+        "cur_price",
+        "markPrice",
+        "mark_price",
+        "price",
+    )
+    current_value = _read_wallet_float(wallet_position, "currentValue", "current_value")
+    unrealized_pnl = _read_wallet_float(wallet_position, "cashPnl", "cash_pnl", "unrealizedPnl", "unrealized_pnl")
+
+    if (avg_price is None or avg_price <= 0.0) and initial_value is not None and initial_value > 0.0 and size > 0.0:
+        avg_price = initial_value / size
+    if (initial_value is None or initial_value <= 0.0) and avg_price is not None and avg_price > 0.0:
+        initial_value = size * avg_price
+    if (current_price is None or current_price <= 0.0) and current_value is not None and current_value > 0.0 and size > 0.0:
+        current_price = current_value / size
+    if current_value is None and current_price is not None and current_price > 0.0:
+        current_value = current_price * size
+    if unrealized_pnl is None and current_value is not None and initial_value is not None:
+        unrealized_pnl = current_value - initial_value
+
+    outcome, direction = _normalize_wallet_outcome_and_direction(
+        wallet_position,
+        market_info=market_info,
+        token_id=token_id,
+    )
+
+    token_ids = _extract_market_token_ids(market_info)
+    outcomes = _extract_market_outcomes(market_info)
+    yes_token_id = ""
+    no_token_id = ""
+    if token_ids:
+        yes_index = 0
+        no_index = 1 if len(token_ids) > 1 else 0
+        for index, label in enumerate(outcomes):
+            if label == "yes":
+                yes_index = index
+            elif label == "no":
+                no_index = index
+        if 0 <= yes_index < len(token_ids):
+            yes_token_id = str(token_ids[yes_index] or "").strip()
+        if 0 <= no_index < len(token_ids):
+            no_token_id = str(token_ids[no_index] or "").strip()
+
+    yes_price, no_price = _extract_binary_market_prices(market_info)
+    market_slug = _read_wallet_text(market_info, "slug")
+    event_slug = _read_wallet_text(market_info, "event_slug", "eventSlug")
+    market_question = (
+        _read_wallet_text(wallet_position, "title", "market_question", "marketQuestion", "question")
+        or _read_wallet_text(market_info, "question", "market_question", "title")
+    )
+    market_url = (
+        build_polymarket_market_url(
+            event_slug=event_slug or None,
+            market_slug=market_slug or None,
+            market_id=market_id,
+            condition_id=condition_id or market_id,
+        )
+        or ""
+    ).strip()
+
+    return {
+        "token_id": token_id,
+        "market_id": market_id,
+        "condition_id": condition_id or None,
+        "market_question": market_question or None,
+        "outcome": outcome or None,
+        "direction": direction or None,
+        "size": float(size),
+        "avg_price": float(avg_price) if avg_price is not None and avg_price > 0.0 else None,
+        "current_price": float(current_price) if current_price is not None and current_price > 0.0 else None,
+        "initial_value": float(initial_value) if initial_value is not None and initial_value > 0.0 else None,
+        "current_value": float(current_value) if current_value is not None and current_value > 0.0 else None,
+        "unrealized_pnl": float(unrealized_pnl) if unrealized_pnl is not None else None,
+        "yes_token_id": yes_token_id or None,
+        "no_token_id": no_token_id or None,
+        "yes_price": float(yes_price) if yes_price is not None else None,
+        "no_price": float(no_price) if no_price is not None else None,
+        "market_slug": market_slug or None,
+        "event_slug": event_slug or None,
+        "market_url": market_url or None,
+    }
+
+
 def _active_statuses_for_mode(mode: Any) -> set[str]:
     mode_key = _normalize_mode_key(mode)
     if mode_key == "paper":
         return PAPER_ACTIVE_ORDER_STATUSES
-    if mode_key == "live":
+    if mode_key in {"live", "shadow"}:
         return LIVE_ACTIVE_ORDER_STATUSES
     return OPEN_ORDER_STATUSES
 
@@ -799,7 +1043,7 @@ def _extract_live_fill_metrics(payload: dict[str, Any]) -> tuple[float, float, O
 
 def _live_active_notional(mode: Any, status: Any, row_notional: float, payload: dict[str, Any]) -> float:
     mode_key = _normalize_mode_key(mode)
-    if mode_key != "live":
+    if mode_key not in {"live", "shadow"}:
         return max(0.0, abs(row_notional))
 
     status_key = _normalize_status_key(status)
@@ -973,8 +1217,7 @@ def _normalize_resume_policy(value: Any) -> str:
 
 
 def _normalize_strategy_key(value: Any) -> str:
-    key = str(value or "").strip().lower()
-    return _LEGACY_STRATEGY_KEY_ALIASES.get(key, key)
+    return str(value or "").strip().lower()
 
 
 def _normalize_trader_mode(value: Any) -> str:
@@ -982,7 +1225,7 @@ def _normalize_trader_mode(value: Any) -> str:
     if not mode:
         return "paper"
     if mode not in _TRADER_MODES:
-        raise ValueError("mode must be 'paper' or 'live'")
+        raise ValueError("mode must be 'paper', 'shadow', or 'live'")
     return mode
 
 
@@ -1043,9 +1286,6 @@ def _normalize_strategy_params(value: Any, source_key: str, strategy_key: str = 
     out = dict(params)
     normalized_source = str(source_key or "").strip().lower()
     normalized_strategy_key = str(strategy_key or "").strip().lower()
-    if normalized_source == "crypto":
-        for legacy_key in _LEGACY_CRYPTO_TIMEFRAME_SCOPE_KEYS:
-            out.pop(legacy_key, None)
     if normalized_source == "traders":
         if normalized_strategy_key == "traders_copy_trade":
             return StrategySDK.validate_traders_copy_trade_config(out)
@@ -2019,22 +2259,31 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
     open_order_summary = await get_open_order_summary_for_trader(session, trader_id)
 
     open_live_positions = int(open_position_summary.get("live", 0))
+    open_shadow_positions = int(open_position_summary.get("shadow", 0))
     open_other_positions = int(open_position_summary.get("other", 0))
     open_total_positions = int(open_position_summary.get("total", 0))
     open_live_orders = int(open_order_summary.get("live", 0))
+    open_shadow_orders = int(open_order_summary.get("shadow", 0))
     open_other_orders = int(open_order_summary.get("other", 0))
     open_total_orders = int(open_order_summary.get("total", 0))
 
     if (
-        open_live_positions > 0 or open_other_positions > 0 or open_live_orders > 0 or open_other_orders > 0
+        open_live_positions > 0
+        or open_shadow_positions > 0
+        or open_other_positions > 0
+        or open_live_orders > 0
+        or open_shadow_orders > 0
+        or open_other_orders > 0
     ) and not force:
         raise ValueError(
-            f"Trader {trader_id} has live/unknown exposure: "
+            f"Trader {trader_id} has non-paper exposure: "
             f"{open_live_positions} live open position(s), "
+            f"{open_shadow_positions} shadow open position(s), "
             f"{open_other_positions} unknown-mode open position(s), "
             f"{open_live_orders} live active order(s), and "
+            f"{open_shadow_orders} shadow active order(s), and "
             f"{open_other_orders} unknown-mode active order(s). "
-            "Flatten live exposure first, or pass force=True to delete anyway."
+            "Flatten non-paper exposure first, or pass force=True to delete anyway."
         )
 
     if force and open_total_orders > 0:
@@ -2626,7 +2875,7 @@ async def list_active_execution_sessions(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            query = query.where(func.lower(func.coalesce(ExecutionSession.mode, "")).not_in(["paper", "live"]))
+            query = query.where(func.lower(func.coalesce(ExecutionSession.mode, "")).not_in(list(_TRADER_MODES)))
         else:
             query = query.where(func.lower(func.coalesce(ExecutionSession.mode, "")) == mode_key)
     query = query.order_by(ExecutionSession.created_at.asc()).limit(max(1, min(limit, 2000)))
@@ -3549,6 +3798,361 @@ async def reconcile_live_provider_orders(
     }
 
 
+async def list_live_wallet_positions_for_trader(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    include_managed: bool = True,
+) -> dict[str, Any]:
+    trader_row = await session.get(Trader, trader_id)
+    if trader_row is None:
+        raise ValueError("Trader not found")
+
+    wallet_address = await _resolve_execution_wallet_address()
+    if not wallet_address:
+        return {
+            "trader_id": trader_id,
+            "wallet_address": None,
+            "positions": [],
+            "managed_token_ids": [],
+            "managed_order_ids": [],
+            "summary": {
+                "total_positions": 0,
+                "managed_positions": 0,
+                "unmanaged_positions": 0,
+                "returned_positions": 0,
+            },
+        }
+
+    try:
+        wallet_positions_raw = await polymarket_client.get_wallet_positions_with_prices(wallet_address)
+    except Exception as exc:
+        raise ValueError(f"Failed to fetch execution wallet positions: {exc}") from exc
+    if not isinstance(wallet_positions_raw, list):
+        wallet_positions_raw = []
+
+    active_live_rows = list(
+        (
+            await session.execute(
+                select(TraderOrder).where(
+                    TraderOrder.trader_id == trader_id,
+                    func.lower(func.coalesce(TraderOrder.mode, "")) == "live",
+                    func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(LIVE_ACTIVE_ORDER_STATUSES)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    managed_by_token: dict[str, str] = {}
+    for row in active_live_rows:
+        token_id = _wallet_position_token_key(_extract_order_token_id(row))
+        if token_id and token_id not in managed_by_token:
+            managed_by_token[token_id] = str(row.id)
+
+    condition_lookups: dict[str, Any] = {}
+    token_lookups: dict[str, Any] = {}
+    for wallet_position in wallet_positions_raw:
+        if not isinstance(wallet_position, dict):
+            continue
+        token_id = _read_wallet_text(wallet_position, "asset", "asset_id", "assetId", "token_id", "tokenId")
+        if not token_id:
+            continue
+        condition_id = _normalize_condition_id(
+            _read_wallet_text(wallet_position, "conditionId", "condition_id", "market", "market_id", "marketId")
+        )
+        if condition_id:
+            if condition_id not in condition_lookups:
+                condition_lookups[condition_id] = polymarket_client.get_market_by_condition_id(condition_id)
+        token_key = _wallet_position_token_key(token_id)
+        if token_key and token_key not in token_lookups:
+            token_lookups[token_key] = polymarket_client.get_market_by_token_id(token_id)
+
+    markets_by_condition: dict[str, dict[str, Any]] = {}
+    markets_by_token: dict[str, dict[str, Any]] = {}
+    if condition_lookups:
+        condition_results = await asyncio.gather(*condition_lookups.values(), return_exceptions=True)
+        for condition_id, result in zip(condition_lookups.keys(), condition_results):
+            if isinstance(result, dict):
+                markets_by_condition[condition_id] = result
+    if token_lookups:
+        token_results = await asyncio.gather(*token_lookups.values(), return_exceptions=True)
+        for token_key, result in zip(token_lookups.keys(), token_results):
+            if isinstance(result, dict):
+                markets_by_token[token_key] = result
+
+    total_positions = 0
+    managed_positions = 0
+    normalized_positions: list[dict[str, Any]] = []
+    seen_tokens: set[str] = set()
+    for wallet_position in wallet_positions_raw:
+        if not isinstance(wallet_position, dict):
+            continue
+        token_id = _read_wallet_text(wallet_position, "asset", "asset_id", "assetId", "token_id", "tokenId")
+        token_key = _wallet_position_token_key(token_id)
+        if not token_key or token_key in seen_tokens:
+            continue
+        seen_tokens.add(token_key)
+
+        condition_id = _normalize_condition_id(
+            _read_wallet_text(wallet_position, "conditionId", "condition_id", "market", "market_id", "marketId")
+        )
+        market_info = dict(markets_by_condition.get(condition_id) or {})
+        if not market_info:
+            market_info = dict(markets_by_token.get(token_key) or {})
+
+        normalized = _normalize_wallet_position_row(
+            wallet_position,
+            market_info=market_info,
+        )
+        if normalized is None:
+            continue
+
+        total_positions += 1
+        managed_order_id = managed_by_token.get(token_key)
+        is_managed = managed_order_id is not None
+        if is_managed:
+            managed_positions += 1
+        normalized["is_managed"] = is_managed
+        normalized["managed_order_id"] = managed_order_id
+        if include_managed or not is_managed:
+            normalized_positions.append(normalized)
+
+    normalized_positions.sort(
+        key=lambda item: (
+            bool(item.get("is_managed", False)),
+            -float(item.get("current_value") or item.get("initial_value") or 0.0),
+        )
+    )
+
+    return {
+        "trader_id": trader_id,
+        "wallet_address": wallet_address,
+        "positions": normalized_positions,
+        "managed_token_ids": sorted(managed_by_token.keys()),
+        "managed_order_ids": sorted(set(managed_by_token.values())),
+        "summary": {
+            "total_positions": total_positions,
+            "managed_positions": managed_positions,
+            "unmanaged_positions": max(0, total_positions - managed_positions),
+            "returned_positions": len(normalized_positions),
+        },
+    }
+
+
+async def adopt_live_wallet_position(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    token_id: str,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    trader_row = await session.get(Trader, trader_id)
+    if trader_row is None:
+        raise ValueError("Trader not found")
+
+    trader_mode = _normalize_trader_mode(trader_row.mode)
+    if trader_mode != "live":
+        raise ValueError("Trader mode must be live to adopt wallet positions")
+
+    requested_token_key = _wallet_position_token_key(token_id)
+    if not requested_token_key:
+        raise ValueError("token_id is required")
+    metadata_json = trader_row.metadata_json if isinstance(trader_row.metadata_json, dict) else {}
+    assigned_strategy_key = _normalize_strategy_key(metadata_json.get("manual_position_strategy_key"))
+    if not assigned_strategy_key:
+        source_configs = _normalize_source_configs(trader_row.source_configs_json)
+        for source_config in source_configs:
+            candidate = _normalize_strategy_key(source_config.get("strategy_key"))
+            if candidate:
+                assigned_strategy_key = candidate
+                break
+    if not assigned_strategy_key:
+        raise ValueError("Trader must have a configured strategy before adopting live wallet positions")
+    await _validate_strategy_key(session, assigned_strategy_key)
+
+    wallet_snapshot = await list_live_wallet_positions_for_trader(
+        session,
+        trader_id=trader_id,
+        include_managed=True,
+    )
+    wallet_address = str(wallet_snapshot.get("wallet_address") or "").strip()
+    if not wallet_address:
+        raise ValueError("Execution wallet address is not configured")
+
+    positions = list(wallet_snapshot.get("positions") or [])
+    target_position = next(
+        (
+            position
+            for position in positions
+            if _wallet_position_token_key(position.get("token_id")) == requested_token_key
+        ),
+        None,
+    )
+    if target_position is None:
+        raise ValueError(f"Token '{token_id}' not found in execution wallet positions")
+    if bool(target_position.get("is_managed")):
+        managed_order_id = str(target_position.get("managed_order_id") or "").strip()
+        if managed_order_id:
+            raise ValueError(f"Token '{token_id}' is already managed by order {managed_order_id}")
+        raise ValueError(f"Token '{token_id}' is already managed by this trader")
+
+    direction = str(target_position.get("direction") or "").strip().lower()
+    if direction not in {"buy_yes", "buy_no"}:
+        raise ValueError("Unable to infer binary direction for wallet position")
+
+    size = max(0.0, safe_float(target_position.get("size"), 0.0) or 0.0)
+    if size <= 0.0:
+        raise ValueError("Wallet position size must be greater than zero")
+
+    entry_price = safe_float(target_position.get("avg_price"))
+    initial_value = safe_float(target_position.get("initial_value"))
+    if (entry_price is None or entry_price <= 0.0) and initial_value is not None and initial_value > 0.0:
+        entry_price = initial_value / size
+    if entry_price is None or entry_price <= 0.0:
+        raise ValueError("Unable to infer average entry price for wallet position")
+
+    notional_usd = initial_value if initial_value is not None and initial_value > 0.0 else (size * entry_price)
+    if notional_usd <= 0.0:
+        raise ValueError("Unable to infer position notional value for wallet position")
+
+    current_price = safe_float(target_position.get("current_price"))
+    if current_price is None or current_price <= 0.0:
+        current_price = entry_price
+
+    resolved_token_id = str(target_position.get("token_id") or "").strip()
+    condition_id = _normalize_condition_id(target_position.get("condition_id") or target_position.get("market_id"))
+    market_id = str(target_position.get("market_id") or condition_id or resolved_token_id).strip()
+    if not market_id:
+        raise ValueError("Unable to resolve market id for wallet position")
+
+    selected_outcome = "yes" if direction == "buy_yes" else "no"
+    yes_token_id = str(target_position.get("yes_token_id") or "").strip()
+    no_token_id = str(target_position.get("no_token_id") or "").strip()
+    yes_price = safe_float(target_position.get("yes_price"))
+    no_price = safe_float(target_position.get("no_price"))
+    market_slug = str(target_position.get("market_slug") or "").strip()
+    event_slug = str(target_position.get("event_slug") or "").strip()
+    market_url = str(target_position.get("market_url") or "").strip()
+    market_question = str(target_position.get("market_question") or "").strip() or None
+
+    now = _now()
+    reason_text = str(reason or "manual_wallet_position_adopt").strip() or "manual_wallet_position_adopt"
+    mark_price = float(current_price)
+    provider_snapshot = {
+        "normalized_status": "filled",
+        "status": "filled",
+        "asset_id": resolved_token_id,
+        "token_id": resolved_token_id,
+        "filled_size": float(size),
+        "average_fill_price": float(entry_price),
+        "filled_notional_usd": float(notional_usd),
+    }
+    payload_json: dict[str, Any] = {
+        "source": _MANUAL_LIVE_POSITION_SOURCE,
+        "strategy_type": assigned_strategy_key,
+        "market_id": market_id,
+        "condition_id": condition_id or None,
+        "token_id": resolved_token_id,
+        "selected_token_id": resolved_token_id,
+        "selected_outcome": selected_outcome,
+        "yes_token_id": yes_token_id or None,
+        "no_token_id": no_token_id or None,
+        "market_slug": market_slug or None,
+        "event_slug": event_slug or None,
+        "market_url": market_url or None,
+        "live_market": {
+            "market_data_source": "wallet_position_import",
+            "condition_id": condition_id or None,
+            "selected_token_id": resolved_token_id,
+            "selected_outcome": selected_outcome,
+            "yes_token_id": yes_token_id or None,
+            "no_token_id": no_token_id or None,
+            "live_selected_price": float(mark_price),
+            "live_yes_price": float(yes_price) if yes_price is not None else None,
+            "live_no_price": float(no_price) if no_price is not None else None,
+            "live_market_fetched_at": to_iso(now),
+            "fetched_at": to_iso(now),
+        },
+        "provider_reconciliation": {
+            "source": "wallet_position_import",
+            "snapshot_status": "filled",
+            "mapped_status": "executed",
+            "reconciled_at": to_iso(now),
+            "filled_size": float(size),
+            "average_fill_price": float(entry_price),
+            "filled_notional_usd": float(notional_usd),
+            "snapshot": provider_snapshot,
+        },
+        "position_state": {
+            "highest_price": float(mark_price),
+            "lowest_price": float(mark_price),
+            "last_mark_price": float(mark_price),
+            "last_mark_source": "wallet_mark",
+            "last_marked_at": to_iso(now),
+        },
+        "wallet_position_import": {
+            "wallet_address": wallet_address,
+            "token_id": resolved_token_id,
+            "market_id": market_id,
+            "size": float(size),
+            "avg_price": float(entry_price),
+            "current_price": float(mark_price),
+            "initial_value": float(notional_usd),
+            "current_value": safe_float(target_position.get("current_value")),
+            "imported_at": to_iso(now),
+            "reason": reason_text,
+        },
+    }
+
+    order_row = TraderOrder(
+        id=_new_id(),
+        trader_id=trader_id,
+        signal_id=None,
+        decision_id=None,
+        source=_MANUAL_LIVE_POSITION_SOURCE,
+        strategy_key=assigned_strategy_key,
+        strategy_version=None,
+        market_id=market_id,
+        market_question=market_question,
+        direction=direction,
+        mode="live",
+        status="open",
+        notional_usd=float(notional_usd),
+        entry_price=float(entry_price),
+        effective_price=float(entry_price),
+        edge_percent=None,
+        confidence=None,
+        actual_profit=None,
+        reason=reason_text,
+        payload_json=payload_json,
+        error_message=None,
+        created_at=now,
+        executed_at=now,
+        updated_at=now,
+    )
+    session.add(order_row)
+    await _commit_with_retry(session)
+    await session.refresh(order_row)
+
+    position_inventory = await sync_trader_position_inventory(
+        session,
+        trader_id=trader_id,
+        mode="live",
+    )
+    return {
+        "status": "adopted",
+        "trader_id": trader_id,
+        "wallet_address": wallet_address,
+        "strategy_key": assigned_strategy_key,
+        "token_id": resolved_token_id,
+        "market_id": market_id,
+        "direction": direction,
+        "order": _serialize_order(order_row),
+        "position_inventory": position_inventory,
+    }
+
+
 async def sync_trader_position_inventory(
     session: AsyncSession,
     *,
@@ -3560,7 +4164,7 @@ async def sync_trader_position_inventory(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")).not_in(["paper", "live"]))
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")).not_in(list(_TRADER_MODES)))
         else:
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
 
@@ -3641,7 +4245,7 @@ async def sync_trader_position_inventory(
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
             existing_query = existing_query.where(
-                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"])
+                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(list(_TRADER_MODES))
             )
         else:
             existing_query = existing_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
@@ -3762,7 +4366,7 @@ async def get_open_position_count_for_trader(
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
             position_query = position_query.where(
-                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"])
+                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(list(_TRADER_MODES))
             )
         else:
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
@@ -3790,7 +4394,7 @@ async def get_open_position_count_for_trader(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            order_query = order_query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+            order_query = order_query.where(func.lower(func.coalesce(TraderOrder.mode, "")).not_in(list(_TRADER_MODES)))
         else:
             order_query = order_query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
 
@@ -3832,7 +4436,7 @@ async def get_open_market_ids_for_trader(
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
             position_query = position_query.where(
-                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"])
+                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(list(_TRADER_MODES))
             )
         else:
             position_query = position_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
@@ -3880,12 +4484,14 @@ async def get_open_position_summary_for_trader(session: AsyncSession, trader_id:
         )
     ).all()
 
-    summary = {"live": 0, "paper": 0, "other": 0, "total": 0}
+    summary = {"live": 0, "shadow": 0, "paper": 0, "other": 0, "total": 0}
     for row in rows:
         mode_key = _normalize_mode_key(row.mode)
         count = int(row.count or 0)
         if mode_key == "live":
             summary["live"] += count
+        elif mode_key == "shadow":
+            summary["shadow"] += count
         elif mode_key == "paper":
             summary["paper"] += count
         else:
@@ -3937,7 +4543,7 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
         )
     ).all()
 
-    summary = {"live": 0, "paper": 0, "other": 0, "total": 0}
+    summary = {"live": 0, "shadow": 0, "paper": 0, "other": 0, "total": 0}
     for row in rows:
         mode = _normalize_mode_key(row.mode)
         if not _is_active_order_status(mode, row.status):
@@ -3945,6 +4551,8 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
         count = int(row.count or 0)
         if mode == "live":
             summary["live"] += count
+        elif mode == "shadow":
+            summary["shadow"] += count
         elif mode == "paper":
             summary["paper"] += count
         else:
@@ -4057,7 +4665,7 @@ def _order_has_fill(row: TraderOrder) -> bool:
     payload = dict(row.payload_json or {})
     row_notional = max(0.0, abs(safe_float(row.notional_usd, 0.0) or 0.0))
 
-    if mode_key == "live":
+    if mode_key in {"live", "shadow"}:
         filled_notional_usd, filled_shares, _ = _extract_live_fill_metrics(payload)
         if filled_notional_usd > 0.0 or filled_shares > 0.0:
             return True
@@ -4081,11 +4689,11 @@ async def cleanup_trader_open_orders(
 ) -> dict[str, Any]:
     scope_key = str(scope or "paper").strip().lower()
     if scope_key == "all":
-        allowed_modes = {"paper", "live", "other"}
-    elif scope_key in {"paper", "live"}:
+        allowed_modes = {"paper", "shadow", "live", "other"}
+    elif scope_key in {"paper", "shadow", "live"}:
         allowed_modes = {scope_key}
     else:
-        raise ValueError("scope must be one of: paper, live, all")
+        raise ValueError("scope must be one of: paper, shadow, live, all")
 
     query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
     rows = list((await session.execute(query)).scalars().all())
@@ -4120,7 +4728,7 @@ async def cleanup_trader_open_orders(
 
         candidates.append(row)
 
-    mode_breakdown = {"paper": 0, "live": 0, "other": 0}
+    mode_breakdown = {"paper": 0, "shadow": 0, "live": 0, "other": 0}
     status_breakdown: dict[str, int] = {}
     for row in candidates:
         mode_key = _normalize_mode_key(row.mode)
@@ -4132,6 +4740,9 @@ async def cleanup_trader_open_orders(
     provider_cancel_attempted = 0
     provider_cancelled = 0
     provider_cancel_failed = 0
+    execution_order_updates = 0
+    execution_leg_updates = 0
+    execution_session_updates = 0
     if not dry_run and candidates:
         now = _now()
         note_reason = str(reason or "manual_position_cleanup").strip()
@@ -4153,15 +4764,17 @@ async def cleanup_trader_open_orders(
             if not key or key in execution_order_by_trader_order:
                 continue
             execution_order_by_trader_order[key] = execution_order
+        touched_leg_ids: set[str] = set()
+        touched_session_ids: set[str] = set()
 
         for row in candidates:
             mode_key = _normalize_mode_key(row.mode)
             previous_status = str(row.status or "")
             existing_payload = dict(row.payload_json or {})
+            execution_order = execution_order_by_trader_order.get(str(row.id))
 
             if mode_key == "live" and not _is_active_order_status(mode_key, target_status):
                 provider_cancel_attempted += 1
-                execution_order = execution_order_by_trader_order.get(str(row.id))
                 provider_order_id, provider_clob_order_id = _resolve_provider_order_ids(
                     order_payload=existing_payload,
                     session_order=execution_order,
@@ -4262,7 +4875,73 @@ async def cleanup_trader_open_orders(
                     row.reason = f"{row.reason} | cleanup:{note_reason}"
                 else:
                     row.reason = f"cleanup:{note_reason}"
+
+            if execution_order is not None and not _is_active_order_status(mode_key, target_status):
+                execution_order.status = str(target_status)
+                execution_order.updated_at = now
+                if note_reason:
+                    if execution_order.reason:
+                        execution_order.reason = f"{execution_order.reason} | cleanup:{note_reason}"
+                    else:
+                        execution_order.reason = f"cleanup:{note_reason}"
+                    execution_order.error_message = note_reason
+                execution_payload = dict(execution_order.payload_json or {})
+                execution_payload["cleanup"] = {
+                    "target_status": str(target_status),
+                    "reason": note_reason,
+                    "performed_at": to_iso(now),
+                }
+                execution_order.payload_json = execution_payload
+                execution_order_updates += 1
+                leg_id = str(execution_order.leg_id or "").strip()
+                if leg_id:
+                    touched_leg_ids.add(leg_id)
+                session_id = str(execution_order.session_id or "").strip()
+                if session_id:
+                    touched_session_ids.add(session_id)
             updated += 1
+
+        if touched_leg_ids and not _is_active_order_status(scope_key, target_status):
+            leg_target_status = str(target_status).strip().lower()
+            if leg_target_status not in {"cancelled", "failed", "expired"}:
+                leg_target_status = "cancelled"
+            for leg_id in sorted(touched_leg_ids):
+                leg_row = await session.get(ExecutionSessionLeg, leg_id)
+                if leg_row is None:
+                    continue
+                leg_status_key = _normalize_status_key(leg_row.status)
+                if leg_status_key in {"completed", "failed", "cancelled", "expired"}:
+                    continue
+                leg_row.status = leg_target_status
+                if note_reason:
+                    leg_row.last_error = note_reason
+                leg_row.updated_at = now
+                execution_leg_updates += 1
+                session_id = str(leg_row.session_id or "").strip()
+                if session_id:
+                    touched_session_ids.add(session_id)
+
+        if touched_session_ids and not _is_active_order_status(scope_key, target_status):
+            for session_id in sorted(touched_session_ids):
+                if not session_id:
+                    continue
+                session_row = await _refresh_execution_session_rollups(session, session_id=session_id)
+                if session_row is None:
+                    continue
+                session_status_key = _normalize_status_key(session_row.status)
+                if session_status_key not in ACTIVE_EXECUTION_SESSION_STATUSES:
+                    continue
+                legs_open = int(session_row.legs_open or 0)
+                legs_failed = int(session_row.legs_failed or 0)
+                legs_completed = int(session_row.legs_completed or 0)
+                if legs_open <= 0 and legs_failed > 0 and legs_completed == 0:
+                    session_row.status = "failed"
+                    session_row.error_message = (
+                        f"Order cleanup transitioned all active legs to {target_status} ({note_reason})."
+                    )
+                    session_row.completed_at = now
+                    session_row.updated_at = now
+                    execution_session_updates += 1
         await _commit_with_retry(session)
         await sync_trader_position_inventory(session, trader_id=trader_id)
 
@@ -4282,6 +4961,9 @@ async def cleanup_trader_open_orders(
         "provider_cancel_attempted": provider_cancel_attempted,
         "provider_cancelled": provider_cancelled,
         "provider_cancel_failed": provider_cancel_failed,
+        "execution_order_updates": execution_order_updates,
+        "execution_leg_updates": execution_leg_updates,
+        "execution_session_updates": execution_session_updates,
     }
 
 
@@ -4426,7 +5108,7 @@ async def get_unrealized_pnl(
             continue
         quantity = (
             float(filled_shares)
-            if order_mode == "live" and filled_shares > 0.0
+            if order_mode in {"live", "shadow"} and filled_shares > 0.0
             else float(notional / entry_price if entry_price > 0 else 0.0)
         )
         if quantity <= 0:

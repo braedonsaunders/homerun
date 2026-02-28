@@ -173,7 +173,7 @@ async def test_delete_blocks_live_exposure_without_force(tmp_path):
             await session.commit()
             await sync_trader_position_inventory(session, trader_id=trader_id)
 
-            with pytest.raises(ValueError, match="live/unknown exposure"):
+            with pytest.raises(ValueError, match="non-paper exposure"):
                 await delete_trader(session, trader_id, force=False)
             assert await session.get(Trader, trader_id) is not None
     finally:

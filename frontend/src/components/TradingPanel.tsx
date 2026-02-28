@@ -83,7 +83,7 @@ import { toTimeValueSeries } from '../lib/priceHistory'
 import StrategyConfigForm from './StrategyConfigForm'
 
 type FeedFilter = 'all' | 'decision' | 'order' | 'event'
-type TradeStatusFilter = 'all' | 'open' | 'resolved' | 'failed'
+type TradeStatusFilter = 'all' | 'open_resolved' | 'open' | 'resolved' | 'failed'
 type DecisionOutcomeFilter = 'all' | 'selected' | 'blocked' | 'skipped'
 type AllBotsTab = 'overview' | 'trades' | 'positions'
 type TradeAction = 'BUY' | 'SELL'
@@ -94,6 +94,14 @@ type PositionSortDirection = 'asc' | 'desc'
 type BotRosterSort = 'name_asc' | 'name_desc' | 'pnl_desc' | 'pnl_asc' | 'open_desc' | 'activity_desc'
 type BotRosterGroupBy = 'none' | 'status' | 'source'
 type TerminalDensity = 'compact' | 'expanded'
+
+const TRADE_STATUS_FILTER_OPTIONS: Array<{ value: TradeStatusFilter; label: string }> = [
+  { value: 'all', label: 'all' },
+  { value: 'open_resolved', label: 'open+resolved' },
+  { value: 'open', label: 'open' },
+  { value: 'resolved', label: 'resolved' },
+  { value: 'failed', label: 'failed' },
+]
 
 type TerminalLeg = {
   action: TradeAction | null
@@ -387,6 +395,22 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     })),
   },
   {
+    key: 'manual',
+    label: 'Manual Positions',
+    description: 'Manually adopted live positions managed without new entries.',
+    domains: ['event_markets'],
+    signal_types: ['manual_position'],
+    strategy_options: [
+      {
+        key: 'manual_wallet_position',
+        label: 'Manual Manage Hold',
+        description: '',
+        default_params: {},
+        param_fields: [],
+      },
+    ],
+  },
+  {
     key: 'news',
     label: 'News Workflow',
     description: 'News-driven intents and event reactions.',
@@ -404,11 +428,11 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   },
   {
     key: 'traders',
-    label: 'Wallet Signals',
-    description: 'Tracked/pool/individual/group wallet activity signals.',
+    label: 'Traders',
+    description: 'Tracked/pool/individual/group trader activity signals.',
     domains: ['event_markets'],
     signal_types: ['confluence'],
-    strategy_options: [{ key: 'traders_confluence', label: 'Wallet Confluence', description: '', default_params: {}, param_fields: [] }],
+    strategy_options: [{ key: 'traders_confluence', label: 'Traders Confluence', description: '', default_params: {}, param_fields: [] }],
   },
   {
     key: 'weather',
@@ -424,9 +448,10 @@ const STRATEGY_LABELS: Record<string, string> = {
   basic: 'Opportunity General',
   btc_eth_highfreq: 'Crypto High-Frequency',
   crypto_spike_reversion: 'Crypto Spike Reversion',
+  manual_wallet_position: 'Manual Manage Hold',
   news_edge: 'News Reaction',
   weather_distribution: 'Weather Distribution',
-  traders_confluence: 'Wallet Confluence',
+  traders_confluence: 'Traders Confluence',
   flash_crash_reversion: 'Opportunity Flash Reversion',
   tail_end_carry: 'Opportunity Tail Carry',
 }
@@ -434,6 +459,7 @@ const STRATEGY_LABELS: Record<string, string> = {
 const DEFAULT_STRATEGY_KEY = 'btc_eth_highfreq'
 const DEFAULT_STRATEGY_BY_SOURCE: Record<string, string> = {
   crypto: 'btc_eth_highfreq',
+  manual: 'manual_wallet_position',
   scanner: 'basic',
   news: 'news_edge',
   weather: 'weather_distribution',
@@ -2022,25 +2048,26 @@ function buildTradeLifecycleStages(args: {
   return stages
 }
 
-function tradeLifecycleStageClassName(stage: TradeLifecycleStage): string {
+function tradeLifecycleStageClassName(stage: TradeLifecycleStage, pulseCurrentStage: boolean): string {
   const base = 'inline-flex h-4 items-center rounded-full border px-1.5 text-[8px] font-semibold whitespace-nowrap'
   if (stage.state === 'future') {
     return `${base} border-border/60 bg-background/50 text-muted-foreground/65`
   }
   if (stage.state === 'current') {
+    const pulseClass = pulseCurrentStage ? ' animate-pulse' : ''
     if (stage.tone === 'success') {
-      return `${base} border-emerald-300 bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/60 animate-pulse dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200`
+      return `${base} border-emerald-300 bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/60${pulseClass} dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200`
     }
     if (stage.tone === 'warning') {
-      return `${base} border-amber-300 bg-amber-100 text-amber-900 ring-1 ring-amber-300/60 animate-pulse dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200`
+      return `${base} border-amber-300 bg-amber-100 text-amber-900 ring-1 ring-amber-300/60${pulseClass} dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200`
     }
     if (stage.tone === 'danger') {
-      return `${base} border-red-300 bg-red-100 text-red-900 ring-1 ring-red-300/60 animate-pulse dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200`
+      return `${base} border-red-300 bg-red-100 text-red-900 ring-1 ring-red-300/60${pulseClass} dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200`
     }
     if (stage.tone === 'info') {
-      return `${base} border-sky-300 bg-sky-100 text-sky-900 ring-1 ring-sky-300/60 animate-pulse dark:border-sky-400/45 dark:bg-sky-500/15 dark:text-sky-200`
+      return `${base} border-sky-300 bg-sky-100 text-sky-900 ring-1 ring-sky-300/60${pulseClass} dark:border-sky-400/45 dark:bg-sky-500/15 dark:text-sky-200`
     }
-    return `${base} border-border bg-muted/70 text-foreground ring-1 ring-border/70 animate-pulse`
+    return `${base} border-border bg-muted/70 text-foreground ring-1 ring-border/70${pulseClass}`
   }
   if (stage.tone === 'success') {
     return `${base} border-emerald-300/80 bg-emerald-100/70 text-emerald-900 dark:border-emerald-400/40 dark:bg-emerald-500/12 dark:text-emerald-200`
@@ -2066,6 +2093,7 @@ function renderTradeLifecycleFlow(args: {
   closeTrigger: string | null
   pendingExitLabel?: string | null
   pendingExitTone?: 'neutral' | 'warning'
+  pulseCurrentStage?: boolean
 }): ReactNode {
   const stages = buildTradeLifecycleStages({
     status: args.status,
@@ -2078,13 +2106,14 @@ function renderTradeLifecycleFlow(args: {
   if (args.executionSummary && args.executionSummary !== '—') metaParts.push(args.executionSummary)
   if (args.venueLabel && args.venueLabel !== '—') metaParts.push(`Venue ${args.venueLabel}`)
   if (args.pendingExitLabel) metaParts.push(args.pendingExitLabel)
+  const pulseCurrentStage = Boolean(args.pulseCurrentStage)
 
   return (
     <div className="w-full px-2 py-0.5">
       <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
         {stages.map((stage, index) => (
           <div key={stage.key} className="flex items-center gap-1">
-            <span className={tradeLifecycleStageClassName(stage)}>{stage.label}</span>
+            <span className={tradeLifecycleStageClassName(stage, pulseCurrentStage)}>{stage.label}</span>
             {index < stages.length - 1 && <ChevronRight className="h-3 w-3 text-muted-foreground/65" />}
           </div>
         ))}
@@ -3802,6 +3831,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [confirmLiveStartOpen, setConfirmLiveStartOpen] = useState(false)
   const [globalSettingsFlyoutOpen, setGlobalSettingsFlyoutOpen] = useState(false)
   const [globalSettingsSaveError, setGlobalSettingsSaveError] = useState<string | null>(null)
+  const [controlActionError, setControlActionError] = useState<string | null>(null)
   const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null))
   const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'tune' | 'decisions' | 'performance'>('trades')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
@@ -3835,7 +3865,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [tuneDraftDirty, setTuneDraftDirty] = useState(false)
   const [tuneSaveError, setTuneSaveError] = useState<string | null>(null)
   const [tuneIteratePrompt, setTuneIteratePrompt] = useState(
-    'Analyze recent trader performance and tune source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
+    'Analyze recent trader performance and optimize source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
   )
   const [tuneIterateModel, setTuneIterateModel] = useState('')
   const [tuneIterateMaxIterations, setTuneIterateMaxIterations] = useState('12')
@@ -3846,6 +3876,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [tuneAutoLastRunAt, setTuneAutoLastRunAt] = useState<number | null>(null)
   const [tuneRevertSnapshot, setTuneRevertSnapshot] = useState<TuneRevertSnapshot | null>(null)
   const [tuneRevertError, setTuneRevertError] = useState<string | null>(null)
+  const [tuneParamSectionTab, setTuneParamSectionTab] = useState('')
 
   const overviewQuery = useQuery({
     queryKey: ['trader-orchestrator-overview'],
@@ -4384,6 +4415,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     tradersScopeGroupOptions,
     tradersScopeWalletOptions,
   ])
+  useEffect(() => {
+    if (dynamicStrategyParamSections.length === 0) {
+      if (tuneParamSectionTab !== '') setTuneParamSectionTab('')
+      return
+    }
+    if (dynamicStrategyParamSections.some((section) => section.sectionKey === tuneParamSectionTab)) return
+    setTuneParamSectionTab(dynamicStrategyParamSections[0].sectionKey)
+  }, [dynamicStrategyParamSections, tuneParamSectionTab])
   const tradingScheduleDraft = useMemo(
     () => normalizeTradingScheduleDraft(parsedDraftMetadata.value?.trading_schedule_utc),
     [parsedDraftMetadata.value]
@@ -4652,7 +4691,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setTuneDraftDirty(false)
     setTuneSaveError(null)
     setTuneIteratePrompt(
-      'Analyze recent trader performance and tune source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
+      'Analyze recent trader performance and optimize source strategy parameters for higher risk-adjusted PnL. Apply only high-confidence parameter updates.'
     )
     setTuneIterateModel('')
     setTuneIterateMaxIterations('12')
@@ -4677,7 +4716,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setTuneDraftDirty(false)
     setTuneSaveError(null)
     setTuneIteratePrompt(
-      'Analyze this trader performance and tune source strategy parameters for measurable, risk-adjusted PnL improvement.'
+      'Analyze this trader performance and optimize source strategy parameters for measurable, risk-adjusted PnL improvement.'
     )
     setTuneIterateModel('')
     setTuneIterateMaxIterations('12')
@@ -4837,7 +4876,36 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
   const killSwitchMutation = useMutation({
     mutationFn: (enabled: boolean) => setTraderOrchestratorLiveKillSwitch(enabled),
-    onSuccess: refreshAll,
+    onMutate: () => {
+      setControlActionError(null)
+    },
+    onSuccess: (result: any, enabled: boolean) => {
+      queryClient.setQueryData(['trader-orchestrator-overview'], (current: any) => {
+        if (!current || typeof current !== 'object') {
+          return current
+        }
+        const currentControl = current.control && typeof current.control === 'object' ? current.control : {}
+        const currentConfig = current.config && typeof current.config === 'object' ? current.config : {}
+        const responseControl = result?.control && typeof result.control === 'object' ? result.control : {}
+        const killSwitchValue = Boolean(result?.kill_switch ?? responseControl.kill_switch ?? enabled)
+        return {
+          ...current,
+          control: {
+            ...currentControl,
+            ...responseControl,
+            kill_switch: killSwitchValue,
+          },
+          config: {
+            ...currentConfig,
+            kill_switch: killSwitchValue,
+          },
+        }
+      })
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setControlActionError(errorMessage(error, 'Failed to update Block new orders'))
+    },
   })
 
   const updateGlobalSettingsMutation = useMutation({
@@ -5117,14 +5185,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const runTuneIterateMutation = useMutation({
     mutationFn: async ({ trigger }: { trigger: 'manual' | 'auto' }) => {
       if (!selectedTrader) {
-        throw new Error('Select a bot before running tune.')
+        throw new Error('Select a bot before running agent.')
       }
       if (trigger !== 'manual' && trigger !== 'auto') {
         throw new Error('Invalid tune trigger.')
       }
       const prompt = tuneIteratePrompt.trim()
       if (!prompt) {
-        throw new Error('Enter a tune prompt.')
+        throw new Error('Enter an agent prompt.')
       }
       const maxIterations = Math.max(1, Math.min(24, Math.trunc(toNumber(tuneIterateMaxIterations || 12))))
       return runTraderTuneIteration(selectedTrader.id, {
@@ -5153,7 +5221,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     },
     onError: (error: unknown, variables) => {
       if (variables.trigger === 'manual') {
-        setTuneIterateError(errorMessage(error, 'Failed to run tune'))
+        setTuneIterateError(errorMessage(error, 'Failed to run agent'))
       }
     },
   })
@@ -5305,15 +5373,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   })
 
   const worker = overviewQuery.data?.worker
+  const orchestratorControl = overviewQuery.data?.control
   const orchestratorConfig = overviewQuery.data?.config || null
   const metrics = overviewQuery.data?.metrics
-  const killSwitchOn = Boolean(overviewQuery.data?.control?.kill_switch)
-  const orchestratorEnabled = Boolean(overviewQuery.data?.control?.is_enabled) && !Boolean(overviewQuery.data?.control?.is_paused)
+  const killSwitchOn = Boolean(orchestratorControl?.kill_switch)
+  const orchestratorEnabled = Boolean(orchestratorControl?.is_enabled) && !Boolean(orchestratorControl?.is_paused)
   const workerActivity = String(worker?.current_activity || '').trim().toLowerCase()
   const orchestratorWorkerRunning = Boolean(worker?.running)
   const orchestratorRunning = orchestratorEnabled && orchestratorWorkerRunning
+  const orchestratorControlMismatch = orchestratorWorkerRunning && !orchestratorEnabled
+  const orchestratorStartStopActive = orchestratorEnabled || orchestratorWorkerRunning
   const orchestratorBlocked = orchestratorEnabled && !orchestratorWorkerRunning && workerActivity.startsWith('blocked')
-  const orchestratorStatusLabel = orchestratorBlocked ? 'BLOCKED' : orchestratorRunning ? 'RUNNING' : 'STOPPED'
+  const orchestratorStatusLabel = orchestratorBlocked
+    ? 'BLOCKED'
+    : orchestratorWorkerRunning
+      ? 'RUNNING'
+      : 'STOPPED'
 
   const controlBusy =
     startBySelectedAccountMutation.isPending ||
@@ -5808,6 +5883,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         const status = normalizeStatus(order.status)
         const matchesStatus =
           tradeStatusFilter === 'all' ||
+          (tradeStatusFilter === 'open_resolved' && (OPEN_ORDER_STATUSES.has(status) || RESOLVED_ORDER_STATUSES.has(status))) ||
           (tradeStatusFilter === 'open' && OPEN_ORDER_STATUSES.has(status)) ||
           (tradeStatusFilter === 'resolved' && RESOLVED_ORDER_STATUSES.has(status)) ||
           (tradeStatusFilter === 'failed' && FAILED_ORDER_STATUSES.has(status))
@@ -6002,6 +6078,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         const status = normalizeStatus(order.status)
         const matchesStatus =
           allBotsTradeStatusFilter === 'all' ||
+          (allBotsTradeStatusFilter === 'open_resolved' && (OPEN_ORDER_STATUSES.has(status) || RESOLVED_ORDER_STATUSES.has(status))) ||
           (allBotsTradeStatusFilter === 'open' && OPEN_ORDER_STATUSES.has(status)) ||
           (allBotsTradeStatusFilter === 'resolved' && RESOLVED_ORDER_STATUSES.has(status)) ||
           (allBotsTradeStatusFilter === 'failed' && FAILED_ORDER_STATUSES.has(status))
@@ -6694,6 +6771,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => (selectedDecision ? resolveDecisionDirectionPresentation(selectedDecision) : { side: null, label: 'N/A' }),
     [selectedDecision]
   )
+  const decisionDetailLoading = decisionDetailQuery.isPending || (decisionDetailQuery.isFetching && !decisionDetailQuery.data)
   const decisionChecks = decisionDetailQuery.data?.checks || []
   const decisionOrders = decisionDetailQuery.data?.orders || []
   const decisionOutcomeSummary = useMemo(() => {
@@ -6813,16 +6891,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
   const canStartOrchestrator =
     !controlBusy &&
-    !orchestratorEnabled &&
+    !orchestratorStartStopActive &&
     Boolean(selectedAccountId) &&
     selectedAccountValid &&
     !(selectedAccountIsLive && killSwitchOn)
-  const canStopOrchestrator = !controlBusy && orchestratorEnabled
-  const startStopIsConfigured = orchestratorEnabled
-  const startStopIsRunning = orchestratorRunning
+  const canStopOrchestrator = !controlBusy && orchestratorStartStopActive
+  const startStopIsConfigured = orchestratorStartStopActive
+  const startStopIsRunning = orchestratorWorkerRunning
   const startStopIsStarting =
     startBySelectedAccountMutation.isPending ||
-    (startStopIsConfigured && !startStopIsRunning && workerActivity.includes('start command queued'))
+    (orchestratorEnabled && !startStopIsRunning && workerActivity.includes('start command queued'))
   const startStopIsStopping = stopByModeMutation.isPending
   const startStopPending = startStopIsStarting || startStopIsStopping
   const startStopDisabled = startStopPending || (startStopIsConfigured ? !canStopOrchestrator : !canStartOrchestrator)
@@ -6862,7 +6940,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           >
             {startStopPending ? (
               <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
-            ) : startStopIsConfigured && startStopIsRunning ? (
+            ) : startStopIsConfigured ? (
               <Square className="w-3.5 h-3.5 mr-1" />
             ) : selectedAccountIsLive ? (
               <Zap className="w-3.5 h-3.5 mr-1" />
@@ -6874,7 +6952,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               : startStopIsStopping
                 ? 'Stopping...'
                 : startStopIsConfigured
-                  ? (startStopIsRunning ? 'Stop' : 'Start')
+                  ? 'Stop'
                   : selectedAccountMode.toUpperCase()}
           </Button>
           <div className="flex items-center gap-1.5 rounded border border-red-500/30 bg-red-500/5 px-1.5 py-0.5">
@@ -6904,7 +6982,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               'w-1.5 h-1.5 rounded-full',
               worker?.last_error
                 ? 'bg-amber-400'
-                : orchestratorRunning
+                : orchestratorWorkerRunning
                   ? 'bg-emerald-500'
                   : 'bg-amber-400'
             )}
@@ -6914,9 +6992,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         </div>
 
         <div className="flex items-center gap-1.5">
-          <Badge className="h-5 px-1.5 text-[10px]" variant={orchestratorBlocked ? 'destructive' : orchestratorRunning ? 'default' : 'secondary'}>
+          <Badge
+            className="h-5 px-1.5 text-[10px]"
+            variant={orchestratorBlocked ? 'destructive' : orchestratorWorkerRunning ? 'default' : 'secondary'}
+          >
             {orchestratorStatusLabel}
           </Badge>
+          {orchestratorControlMismatch ? (
+            <Badge className="h-5 px-1.5 text-[10px]" variant="destructive">
+              DESYNC
+            </Badge>
+          ) : null}
           <Badge className="h-5 px-1.5 text-[10px]" variant={selectedAccountMode === 'live' ? 'destructive' : 'outline'}>
             {selectedAccountMode.toUpperCase()}
           </Badge>
@@ -6959,6 +7045,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           </Button>
         </div>
       </div>
+      {controlActionError ? (
+        <div className="shrink-0 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+          {controlActionError}
+        </div>
+      ) : null}
 
       {/* ── Main: Roster Rail + Work Area ── */}
       <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[240px_minmax(0,1fr)]">
@@ -7503,15 +7594,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           placeholder="Search bot, market, source..."
                           className="h-6 w-56 text-[11px]"
                         />
-                        {(['all', 'open', 'resolved', 'failed'] as TradeStatusFilter[]).map((status) => (
+                        {TRADE_STATUS_FILTER_OPTIONS.map((statusOption) => (
                           <Button
-                            key={status}
+                            key={statusOption.value}
                             size="sm"
-                            variant={allBotsTradeStatusFilter === status ? 'default' : 'outline'}
-                            onClick={() => setAllBotsTradeStatusFilter(status)}
+                            variant={allBotsTradeStatusFilter === statusOption.value ? 'default' : 'outline'}
+                            onClick={() => setAllBotsTradeStatusFilter(statusOption.value)}
                             className="h-5 px-2 text-[10px]"
                           >
-                            {status}
+                            {statusOption.label}
                           </Button>
                         ))}
                         <span className="ml-auto text-[10px] font-mono text-muted-foreground">{filteredAllTradeHistory.length} rows</span>
@@ -7729,46 +7820,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillPx > 0 ? fillPx.toFixed(3) : '\u2014'}</TableCell>
                                         <TableCell className="text-right font-mono py-0.5 text-[10px]">{fillProgressPercent !== null ? formatPercent(fillProgressPercent, 0) : '\u2014'}</TableCell>
                                         <TableCell className="text-right font-mono py-0.5 text-[10px]">{markPx > 0 ? markPx.toFixed(3) : '\u2014'}</TableCell>
-                                        <TableCell className="py-0.5 text-right">
-                                          {OPEN_ORDER_STATUSES.has(status) ? (
-                                            <span
-                                              className={cn(
-                                                'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
-                                                unrealized > 0
-                                                  ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
-                                                  : unrealized < 0
-                                                    ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
-                                                    : 'border-border/70 bg-background/80 text-foreground/85'
-                                              )}
-                                            >
-                                              {formatCurrency(unrealized)}
-                                            </span>
-                                          ) : (
-                                            <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
-                                              \u2014
-                                            </span>
-                                          )}
+                                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px] font-semibold', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
+                                          {OPEN_ORDER_STATUSES.has(status) ? formatCurrency(unrealized) : '\u2014'}
                                         </TableCell>
                                         <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
-                                        <TableCell className="py-0.5 text-right">
-                                          {RESOLVED_ORDER_STATUSES.has(status) ? (
-                                            <span
-                                              className={cn(
-                                                'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
-                                                pnl > 0
-                                                  ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
-                                                  : pnl < 0
-                                                    ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
-                                                    : 'border-border/70 bg-background/80 text-foreground/85'
-                                              )}
-                                            >
-                                              {formatCurrency(pnl)}
-                                            </span>
-                                          ) : (
-                                            <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
-                                              \u2014
-                                            </span>
-                                          )}
+                                        <TableCell className={cn('text-right font-mono py-0.5 text-[10px] font-semibold', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
+                                          {RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl) : '\u2014'}
                                         </TableCell>
                                         <TableCell className="py-0.5">
                                           <Badge
@@ -7799,6 +7856,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                             closeTrigger,
                                             pendingExitLabel,
                                             pendingExitTone,
+                                            pulseCurrentStage: OPEN_ORDER_STATUSES.has(status) && String(order.mode || '').toLowerCase() === 'live',
                                           })}
                                         </TableCell>
                                       </TableRow>
@@ -8206,8 +8264,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   <div className="h-full flex flex-col min-h-0 gap-1.5">
                     <div className="shrink-0 flex flex-wrap items-center gap-1 px-1">
                       <Input value={tradeSearch} onChange={(event) => setTradeSearch(event.target.value)} placeholder="Search..." className="h-6 w-36 text-[11px]" />
-                      {(['all', 'open', 'resolved', 'failed'] as TradeStatusFilter[]).map((status) => (
-                        <Button key={status} size="sm" variant={tradeStatusFilter === status ? 'default' : 'outline'} onClick={() => setTradeStatusFilter(status)} className="h-5 px-2 text-[10px]">{status}</Button>
+                      {TRADE_STATUS_FILTER_OPTIONS.map((statusOption) => (
+                        <Button
+                          key={statusOption.value}
+                          size="sm"
+                          variant={tradeStatusFilter === statusOption.value ? 'default' : 'outline'}
+                          onClick={() => setTradeStatusFilter(statusOption.value)}
+                          className="h-5 px-2 text-[10px]"
+                        >
+                          {statusOption.label}
+                        </Button>
                       ))}
                     </div>
                     <div className="shrink-0 grid grid-cols-2 gap-1 px-1 sm:grid-cols-4 lg:grid-cols-8">
@@ -8383,53 +8449,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           />
                                         ) : '\u2014'}
                                       </TableCell>
-                                      <TableCell className="py-0.5 text-right">
+                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px] font-semibold', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}>
                                         {OPEN_ORDER_STATUSES.has(status) ? (
-                                          <span
-                                            className={cn(
-                                              'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
-                                              unrealized > 0
-                                                ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
-                                                : unrealized < 0
-                                                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
-                                                  : 'border-border/70 bg-background/80 text-foreground/85'
-                                            )}
-                                          >
-                                            <FlashNumber
-                                              value={unrealized}
-                                              decimals={2}
-                                              prefix="$"
-                                              className="font-mono text-[10px] font-semibold"
-                                              positiveClass="data-glow-green"
-                                              negativeClass="data-glow-red"
-                                            />
-                                          </span>
-                                        ) : (
-                                          <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
-                                            \u2014
-                                          </span>
-                                        )}
+                                          <FlashNumber
+                                            value={unrealized}
+                                            decimals={2}
+                                            prefix="$"
+                                            className={cn('font-mono text-[10px] font-semibold', unrealized > 0 ? 'text-emerald-500' : unrealized < 0 ? 'text-red-500' : '')}
+                                            positiveClass="data-glow-green"
+                                            negativeClass="data-glow-red"
+                                          />
+                                        ) : '\u2014'}
                                       </TableCell>
                                       <TableCell className="text-right font-mono py-0.5 text-[10px]">{formatPercent(dynamicEdgePercent)}</TableCell>
-                                      <TableCell className="py-0.5 text-right">
-                                        {RESOLVED_ORDER_STATUSES.has(status) ? (
-                                          <span
-                                            className={cn(
-                                              'inline-flex h-4 min-w-[68px] items-center justify-end rounded-full border px-1.5 font-mono text-[10px] font-semibold',
-                                              pnl > 0
-                                                ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200'
-                                                : pnl < 0
-                                                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200'
-                                                  : 'border-border/70 bg-background/80 text-foreground/85'
-                                            )}
-                                          >
-                                            {formatCurrency(pnl, true)}
-                                          </span>
-                                        ) : (
-                                          <span className="inline-flex h-4 min-w-[68px] items-center justify-center rounded-full border border-border/70 bg-background/70 px-1.5 font-mono text-[10px] font-semibold text-muted-foreground">
-                                            \u2014
-                                          </span>
-                                        )}
+                                      <TableCell className={cn('text-right font-mono py-0.5 text-[10px] font-semibold', pnl > 0 ? 'text-emerald-500' : pnl < 0 ? 'text-red-500' : '')}>
+                                        {RESOLVED_ORDER_STATUSES.has(status) ? formatCurrency(pnl, true) : '\u2014'}
                                       </TableCell>
                                       <TableCell className="py-0.5">
                                         <Badge
@@ -8468,6 +8502,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           closeTrigger,
                                           pendingExitLabel,
                                           pendingExitTone,
+                                          pulseCurrentStage: OPEN_ORDER_STATUSES.has(status) && String(order.mode || '').toLowerCase() === 'live',
                                         })}
                                       </TableCell>
                                     </TableRow>
@@ -8485,28 +8520,31 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                 {workTab === 'tune' && (
                   <div className="h-full min-h-0 overflow-hidden px-1">
-                    <ScrollArea className="h-full min-h-0 rounded-md border border-border/50 bg-muted/10">
-                      <div className="space-y-2 p-2">
-                        {!selectedTrader ? (
-                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-100">
-                            Select a bot to tune parameters.
-                          </div>
-                        ) : (
-                          <>
-                            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2.5 space-y-2">
+                    <div className="h-full min-h-0 rounded-md border border-border/50 bg-muted/10 p-2">
+                      {!selectedTrader ? (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-100">
+                          Select a bot to use the agent.
+                        </div>
+                      ) : (
+                        <div
+                          className="grid h-full min-h-0 gap-2"
+                          style={{ gridTemplateRows: 'minmax(0, calc(33.333% + 20px)) minmax(0, calc(66.667% - 20px))' }}
+                        >
+                          <div className="min-h-0 overflow-hidden rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2.5">
+                            <div className="flex h-full min-h-0 flex-col gap-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-1.5">
-                                  <p className="text-[11px] font-medium">Tune Agent</p>
+                                  <p className="text-[11px] font-medium">Agent</p>
                                   <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
                                     {tuneIterateResponse?.session_id ? shortId(tuneIterateResponse.session_id) : 'idle'}
                                   </Badge>
                                   {runTuneIterateMutation.isPending ? (
-                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-500/15 text-amber-500">
+                                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-amber-500">
                                       RUNNING
                                     </span>
                                   ) : null}
                                   {tuneAutoEnabled ? (
-                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-emerald-500/15 text-emerald-500">
+                                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-500">
                                       AUTO
                                     </span>
                                   ) : null}
@@ -8516,17 +8554,29 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 </p>
                               </div>
                               <p className="text-[10px] text-muted-foreground/80">
-                                Run targeted parameter tuning from the latest trader context. High-confidence updates are applied immediately.
+                                Run the agent against the latest trader context. High-confidence parameter updates apply immediately.
                               </p>
-                              <div className="grid gap-2 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-                                <div className="space-y-2">
-                                  <textarea
-                                    value={tuneIteratePrompt}
-                                    onChange={(event) => setTuneIteratePrompt(event.target.value)}
-                                    className="w-full min-h-[120px] rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs leading-relaxed"
-                                    placeholder="Describe optimization goal, constraints, and risk preferences..."
-                                  />
-                                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                              <div
+                                className={cn(
+                                  'grid min-h-0 flex-1 gap-2 overflow-hidden',
+                                  tuneIterateResponse && !runTuneIterateMutation.isPending
+                                    ? 'xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]'
+                                    : ''
+                                )}
+                              >
+                                <div className="min-h-0 flex flex-col gap-1.5">
+                                  <details className="rounded-md border border-border/60 bg-background/80 px-2 py-1">
+                                    <summary className="cursor-pointer text-[10px] font-medium text-muted-foreground">
+                                      Agent Prompt
+                                    </summary>
+                                    <textarea
+                                      value={tuneIteratePrompt}
+                                      onChange={(event) => setTuneIteratePrompt(event.target.value)}
+                                      className="mt-1 min-h-[72px] max-h-[96px] w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs leading-relaxed"
+                                      placeholder="Describe optimization goal, constraints, and risk preferences..."
+                                    />
+                                  </details>
+                                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                                     <div>
                                       <Label className="text-[11px] text-muted-foreground">Model Override</Label>
                                       <Input
@@ -8548,8 +8598,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                       />
                                     </div>
                                     <div>
-                                      <Label className="text-[11px] text-muted-foreground">Auto Tune</Label>
-                                      <div className="mt-1 h-8 px-2 rounded-md border border-border/60 bg-background flex items-center justify-between">
+                                      <Label className="text-[11px] text-muted-foreground">Auto Agent</Label>
+                                      <div className="mt-1 flex h-8 items-center justify-between rounded-md border border-border/60 bg-background px-2">
                                         <span className="text-[10px] text-muted-foreground">
                                           {selectedTraderExecutionEnabled ? 'while trading' : 'bot disabled'}
                                         </span>
@@ -8577,7 +8627,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   </div>
                                   {tuneAutoEnabled ? (
                                     <p className="text-[10px] text-muted-foreground/80">
-                                      Auto tune runs every {Math.max(1, Math.min(360, Math.trunc(toNumber(tuneAutoIntervalMinutes || 15) || 15)))} minute(s) while this bot is enabled.
+                                      Agent runs every {Math.max(1, Math.min(360, Math.trunc(toNumber(tuneAutoIntervalMinutes || 15) || 15)))} minute(s) while this bot is enabled.
                                       {tuneAutoLastRunAt ? ` Last run: ${formatTimestamp(new Date(tuneAutoLastRunAt).toISOString())}.` : ''}
                                     </p>
                                   ) : null}
@@ -8586,101 +8636,71 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   ) : null}
                                   <Button
                                     size="sm"
-                                    className="h-8 text-xs"
+                                    className="h-8 shrink-0 text-xs"
                                     onClick={() => runTuneIterateMutation.mutate({ trigger: 'manual' })}
                                     disabled={runTuneIterateMutation.isPending || !selectedTrader}
                                   >
                                     {runTuneIterateMutation.isPending ? (
-                                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                                     ) : (
-                                      <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+                                      <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                                     )}
-                                    {runTuneIterateMutation.isPending ? 'Tuning...' : 'Run Tune'}
+                                    {runTuneIterateMutation.isPending ? 'Running...' : 'Run Agent'}
                                   </Button>
                                 </div>
 
-                                <div className="rounded-md border border-border/60 bg-background/70 p-2 space-y-1.5">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Latest Tune Result</p>
-                                    <Badge variant="outline" className="h-4 px-1 text-[9px] font-mono">
-                                      {tuneIterateAppliedUpdates.length} updates
-                                    </Badge>
-                                  </div>
-                                  {tuneIterateResponse ? (
-                                    <>
-                                      <div className="rounded border border-border/50 bg-background/60 px-2 py-1.5 space-y-1">
-                                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Summary</p>
-                                        {tuneIterateParsed && typeof tuneIterateParsed.summary === 'string' ? (
-                                          <p className="text-[10px] text-foreground/90">
-                                            {String(tuneIterateParsed.summary)}
-                                          </p>
-                                        ) : (
-                                          <p className="text-[10px] text-muted-foreground/80">No summary returned by model.</p>
-                                        )}
+                                {tuneIterateResponse && !runTuneIterateMutation.isPending ? (
+                                  <div className="min-h-0 rounded-md border border-border/60 bg-background/70 p-2">
+                                    <div className="flex h-full min-h-0 flex-col gap-1.5">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Latest Agent Result</p>
+                                        <Badge variant="outline" className="h-4 px-1 text-[9px] font-mono">
+                                          {tuneIterateAppliedUpdates.length} updates
+                                        </Badge>
                                       </div>
-
-                                      <div className="rounded border border-border/50 bg-background/60 px-2 py-1.5 space-y-1">
-                                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Parameters Changed</p>
-                                        {tuneIterateAppliedUpdates.length > 0 ? (
-                                          <div className="space-y-0.5">
-                                            {tuneIterateAppliedUpdates.slice(0, 12).map((update, index) => (
-                                              <p key={`${index}-${update.source_key}-${update.strategy_key}`} className="text-[10px] text-foreground/90">
-                                                {index + 1}. {update.source_key}:{update.strategy_key}{' -> '}{update.changed_keys.join(', ')}
-                                              </p>
-                                            ))}
+                                      <div className="space-y-1.5">
+                                        <div className="space-y-1 rounded border border-border/50 bg-background/60 px-2 py-1.5">
+                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Summary</p>
+                                          {tuneIterateParsed && typeof tuneIterateParsed.summary === 'string' ? (
+                                            <p className="line-clamp-3 text-[10px] text-foreground/90">
+                                              {String(tuneIterateParsed.summary)}
+                                            </p>
+                                          ) : (
+                                            <p className="text-[10px] text-muted-foreground/80">No summary returned by model.</p>
+                                          )}
+                                        </div>
+                                        <div className="grid grid-cols-3 gap-1">
+                                          <div className="rounded border border-border/50 bg-background/60 px-2 py-1">
+                                            <p className="text-[9px] uppercase text-muted-foreground">Issues</p>
+                                            <p className="text-[10px] font-mono">{tuneIterateIssues.length}</p>
                                           </div>
+                                          <div className="rounded border border-border/50 bg-background/60 px-2 py-1">
+                                            <p className="text-[9px] uppercase text-muted-foreground">Actions</p>
+                                            <p className="text-[10px] font-mono">{tuneIterateActions.length}</p>
+                                          </div>
+                                          <div className="rounded border border-border/50 bg-background/60 px-2 py-1">
+                                            <p className="text-[9px] uppercase text-muted-foreground">Next</p>
+                                            <p className="text-[10px] font-mono">{tuneIterateNextSteps.length}</p>
+                                          </div>
+                                        </div>
+                                        {tuneIterateAppliedUpdates.length > 0 ? (
+                                          <p className="line-clamp-2 text-[10px] text-muted-foreground/90">
+                                            Latest: {tuneIterateAppliedUpdates[0].source_key}:{tuneIterateAppliedUpdates[0].strategy_key}{' -> '}
+                                            {tuneIterateAppliedUpdates[0].changed_keys.join(', ')}
+                                          </p>
                                         ) : (
                                           <p className="text-[10px] text-muted-foreground/80">No parameter changes were applied.</p>
                                         )}
                                       </div>
-
-                                      {tuneIterateIssues.length > 0 ? (
-                                        <div className="space-y-0.5">
-                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Issues Identified</p>
-                                          {tuneIterateIssues.slice(0, 10).map((issue, index) => (
-                                            <p key={`${index}-${issue}`} className="text-[10px] text-foreground/90">
-                                              {index + 1}. {issue}
-                                            </p>
-                                          ))}
-                                        </div>
-                                      ) : null}
-                                      {tuneIterateActions.length > 0 ? (
-                                        <div className="space-y-0.5">
-                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Actions Taken</p>
-                                          {tuneIterateActions.slice(0, 8).map((action, index) => (
-                                            <p key={`${index}-${action}`} className="text-[10px] text-foreground/90">
-                                              {index + 1}. {action}
-                                            </p>
-                                          ))}
-                                        </div>
-                                      ) : null}
-                                      {tuneIterateNextSteps.length > 0 ? (
-                                        <div className="space-y-0.5">
-                                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Suggested Next</p>
-                                          {tuneIterateNextSteps.slice(0, 8).map((step, index) => (
-                                            <p key={`${index}-${step}`} className="text-[10px] text-muted-foreground/90">
-                                              {index + 1}. {step}
-                                            </p>
-                                          ))}
-                                        </div>
-                                      ) : null}
-                                      <details className="rounded border border-border/50 bg-background/50 px-2 py-1">
-                                        <summary className="cursor-pointer text-[10px] text-muted-foreground">Raw agent response</summary>
-                                        <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] font-mono text-muted-foreground/90">
-                                          {tuneIterateResponse.answer || JSON.stringify(tuneIterateResponse.raw, null, 2)}
-                                        </pre>
-                                      </details>
-                                    </>
-                                  ) : (
-                                    <p className="text-[10px] text-muted-foreground/80">
-                                      No tune run yet for this session.
-                                    </p>
-                                  )}
-                                </div>
+                                    </div>
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
+                          </div>
 
-                            <div className="rounded-md border border-border/60 bg-background/70 p-2.5 space-y-2">
+                          <div className="min-h-0 rounded-md border border-border/60 bg-background/70 p-2.5">
+                            <div className="flex h-full min-h-0 flex-col gap-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-1.5">
                                   <p className="text-[11px] font-medium">Parameter Workspace</p>
@@ -8688,7 +8708,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     {dynamicStrategyParamSections.reduce((sum, section) => sum + section.fieldKeys.length, 0)} fields
                                   </Badge>
                                   {tuneDraftDirty ? (
-                                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-500/15 text-amber-500">
+                                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-amber-500">
                                       UNSAVED
                                     </span>
                                   ) : null}
@@ -8722,7 +8742,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     }
                                   >
                                     {revertTuneParametersMutation.isPending ? (
-                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                                     ) : null}
                                     Revert Last Applied
                                   </Button>
@@ -8734,7 +8754,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     disabled={saveTuneParametersMutation.isPending || !tuneDraftDirty}
                                   >
                                     {saveTuneParametersMutation.isPending ? (
-                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                                     ) : null}
                                     Save Parameters
                                   </Button>
@@ -8757,49 +8777,69 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               {dynamicStrategyParamSections.length === 0 ? (
                                 <p className="text-[10px] text-muted-foreground/80">No dynamic parameter fields available for this bot.</p>
                               ) : (
-                                <div className="space-y-2">
-                                  {dynamicStrategyParamSections.map((section, sectionIndex) => (
-                                    <details
-                                      key={section.sectionKey}
-                                      className="rounded-md border border-border/60 bg-background/50 p-2"
-                                      open={sectionIndex === 0}
-                                    >
-                                      <summary className="cursor-pointer text-[11px] font-medium flex items-center justify-between">
-                                        <span>{section.sourceLabel} · {section.strategyLabel}</span>
-                                        <span className="text-[9px] text-muted-foreground">{section.fieldKeys.length} fields</span>
-                                      </summary>
-                                      <div className="mt-2 space-y-2">
-                                        {section.groups.map((group) => (
-                                          <details key={`${section.sectionKey}:${group.key}`} className="rounded-md border border-border/50 bg-background/70 p-2" open={group.key === 'scope'}>
-                                            <summary className="cursor-pointer text-[10px] font-medium flex items-center justify-between">
-                                              <span>{group.label}</span>
-                                              <span className="text-[9px] text-muted-foreground">{group.fields.length}</span>
-                                            </summary>
-                                            <div className="mt-2">
+                                <Tabs
+                                  value={tuneParamSectionTab}
+                                  onValueChange={setTuneParamSectionTab}
+                                  className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                                >
+                                  <div className="shrink-0 overflow-x-auto pb-1">
+                                    <TabsList className="h-auto w-max min-w-full justify-start gap-1 rounded-md border border-border/50 bg-background/60 p-1">
+                                      {dynamicStrategyParamSections.map((section) => (
+                                        <TabsTrigger key={section.sectionKey} value={section.sectionKey} className="h-6 gap-1 px-2 text-[10px]">
+                                          <span className="max-w-[220px] truncate">{section.sourceLabel} · {section.strategyLabel}</span>
+                                          <span className="text-[9px] text-muted-foreground">{section.fieldKeys.length}</span>
+                                        </TabsTrigger>
+                                      ))}
+                                    </TabsList>
+                                  </div>
+
+                                  {dynamicStrategyParamSections.map((section) => (
+                                    <TabsContent key={section.sectionKey} value={section.sectionKey} className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+                                      {section.groups.length === 0 ? (
+                                        <p className="text-[10px] text-muted-foreground/80">No grouped parameter fields are available for this strategy.</p>
+                                      ) : (
+                                        <Tabs defaultValue={section.groups[0].key} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                                          <div className="shrink-0 overflow-x-auto pb-1">
+                                            <TabsList className="h-auto w-max min-w-full justify-start gap-1 rounded-md border border-border/50 bg-background/50 p-1">
+                                              {section.groups.map((group) => (
+                                                <TabsTrigger key={`${section.sectionKey}:${group.key}`} value={group.key} className="h-6 gap-1 px-2 text-[10px]">
+                                                  <span>{group.label}</span>
+                                                  <span className="text-[9px] text-muted-foreground">{group.fields.length}</span>
+                                                </TabsTrigger>
+                                              ))}
+                                            </TabsList>
+                                          </div>
+
+                                          {section.groups.map((group) => (
+                                            <TabsContent
+                                              key={`${section.sectionKey}:panel:${group.key}`}
+                                              value={group.key}
+                                              className="mt-0 min-h-0 flex-1 overflow-auto rounded-md border border-border/50 bg-background/65 p-2"
+                                            >
                                               <StrategyConfigForm
                                                 schema={{ param_fields: group.fields as any[] }}
                                                 values={section.values}
                                                 onChange={(nextValues) => applyDynamicStrategyFormValues(section.fieldKeys, nextValues)}
                                               />
-                                            </div>
-                                          </details>
-                                        ))}
-                                      </div>
-                                    </details>
+                                            </TabsContent>
+                                          ))}
+                                        </Tabs>
+                                      )}
+                                    </TabsContent>
                                   ))}
-                                </div>
+                                </Tabs>
                               )}
                             </div>
-                          </>
-                        )}
-                      </div>
-                    </ScrollArea>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
                 {workTab === 'decisions' && (
                   <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] px-1">
-                    <div className="flex flex-col gap-1.5 min-h-0 overflow-hidden">
+                    <div className="flex min-w-0 flex-col gap-1.5 min-h-0 overflow-hidden">
                       <Input value={decisionSearch} onChange={(event) => setDecisionSearch(event.target.value)} placeholder="Search decisions..." className="h-6 text-[11px] shrink-0" />
                       <div className="shrink-0 flex items-center justify-between gap-2">
                         <p className="text-[10px] text-muted-foreground">Showing {filteredDecisions.length}/{selectedDecisions.length}</p>
@@ -8855,7 +8895,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </button>
                       </div>
                       <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
-                        <div className="space-y-0.5 p-1.5 text-xs">
+                        <div className="space-y-0.5 p-1.5 pr-2 text-xs">
                           {filteredDecisions.length === 0 ? (
                             <p className="py-4 text-center text-muted-foreground">No decisions.</p>
                           ) : (
@@ -8869,17 +8909,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   type="button"
                                   onClick={() => setSelectedDecisionId(decision.id)}
                                   className={cn(
-                                    'w-full text-left rounded border px-2 py-1 transition-colors',
+                                    'w-full min-w-0 text-left rounded border px-2 py-1 transition-colors',
                                     isActive ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-border/50 hover:bg-muted/40',
                                     outcome === 'selected' && !isActive ? 'border-emerald-500/25' :
                                     outcome === 'blocked' && !isActive ? 'border-red-500/25' : ''
                                   )}
                                 >
-                                  <div className="flex items-center justify-between gap-2 font-mono">
-                                    <span className="truncate max-w-[180px]" title={marketLabel}>{marketLabel}</span>
+                                  <div className="flex min-w-0 items-center justify-between gap-2 font-mono">
+                                    <span className="min-w-0 flex-1 truncate" title={marketLabel}>{marketLabel}</span>
                                     <Badge variant={outcome === 'selected' ? 'default' : outcome === 'blocked' ? 'destructive' : 'outline'} className="text-[9px] h-4 px-1 shrink-0">{outcome}</Badge>
                                   </div>
-                                  <p className="text-[10px] text-muted-foreground truncate">{decision.reason || decision.strategy_key}</p>
+                                  <p className="min-w-0 text-[10px] text-muted-foreground truncate">{decision.reason || decision.strategy_key}</p>
                                 </button>
                               )
                             })
@@ -8888,7 +8928,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       </ScrollArea>
                     </div>
 
-                    <div className="flex flex-col gap-1.5 min-h-0 overflow-hidden">
+                    <div className="flex min-w-0 flex-col gap-1.5 min-h-0 overflow-hidden">
                       {selectedDecision ? (
                         <>
                           <div className="shrink-0 rounded-md border border-border p-2 text-xs space-y-1">
@@ -8906,7 +8946,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <p className="text-[10px]">Reason: {selectedDecision.reason || 'n/a'}</p>
                           </div>
 
-                          {decisionChecks.length > 0 ? (
+                          {decisionDetailLoading ? (
+                            <div className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10 p-2">
+                              <div className="space-y-1.5 animate-pulse">
+                                <div className="h-2.5 w-40 rounded bg-muted/60" />
+                                {Array.from({ length: 6 }).map((_, index) => (
+                                  <div key={`decision-check-skeleton-${index}`} className="rounded border border-border/40 bg-background/35 px-2 py-1.5">
+                                    <div className="h-2.5 w-44 rounded bg-muted/55" />
+                                    <div className="mt-1.5 h-2 w-[92%] rounded bg-muted/50" />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : decisionChecks.length > 0 ? (
                             <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
                               <div className="space-y-1 p-2 text-xs">
                                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Checks ({decisionPassCount} pass / {decisionFailCount} fail)</p>
@@ -9752,10 +9804,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   ))}
                                 </SelectContent>
                               </Select>
-                              <div className="mt-1.5 flex items-center justify-between gap-1.5">
+                              <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
                                 <Badge
                                   variant="outline"
-                                  className="h-4 px-1.5 text-[9px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10"
+                                  className="h-4 min-w-0 flex-1 truncate px-1.5 text-[9px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10"
                                 >
                                   {latestVersion != null ? `Latest v${latestVersion}` : 'Latest'}
                                 </Badge>
@@ -9763,7 +9815,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   value={selectedVersionToken}
                                   onValueChange={(value) => setSourceStrategyVersion(sourceKey, value)}
                                 >
-                                  <SelectTrigger className="h-7 w-[142px] text-[10px] font-mono">
+                                  <SelectTrigger className="h-7 w-[142px] shrink-0 text-[10px] font-mono">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>

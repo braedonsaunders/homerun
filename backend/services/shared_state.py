@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -119,7 +119,7 @@ async def _commit_with_retry(session: AsyncSession) -> None:
         try:
             await session.commit()
             return
-        except (OperationalError, InterfaceError) as exc:
+        except DBAPIError as exc:
             await session.rollback()
             is_locked = _is_retryable_db_error(exc)
             is_last = attempt >= DB_RETRY_ATTEMPTS - 1

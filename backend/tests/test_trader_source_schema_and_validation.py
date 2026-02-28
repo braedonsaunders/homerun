@@ -24,6 +24,7 @@ async def test_source_schema_excludes_events_and_omni(tmp_path):
         schema = await build_trader_config_schema(session)
     source_keys = {str(source.get("key")) for source in schema.get("sources", [])}
     assert "events" not in source_keys
+    assert "manual" in source_keys
 
     strategy_keys = {
         str(option.get("key"))
@@ -31,6 +32,7 @@ async def test_source_schema_excludes_events_and_omni(tmp_path):
         for option in (source.get("strategy_options") or [])
     }
     assert "omni_aggressive" not in strategy_keys
+    assert "manual_wallet_position" in strategy_keys
     await engine.dispose()
 
 

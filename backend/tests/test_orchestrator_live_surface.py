@@ -36,6 +36,7 @@ def test_orchestrator_live_route_surface_is_complete():
         ("DELETE", "/trader-orchestrator/live/orders/{order_id}"),
         ("DELETE", "/trader-orchestrator/live/orders"),
         ("GET", "/trader-orchestrator/live/positions"),
+        ("GET", "/trader-orchestrator/live/performance"),
         ("GET", "/trader-orchestrator/live/balance"),
         ("POST", "/trader-orchestrator/live/execute-opportunity"),
         ("POST", "/trader-orchestrator/live/emergency-stop"),
