@@ -98,14 +98,6 @@ class MacroFeedSource(BaseDataSource):
         return out
 ```
 
-Then use:
-
-- `POST /api/data-sources/validate`
-- `POST /api/data-sources`
-- `POST /api/data-sources/{id}/run`
-
-Or create it from the UI: `Data -> Sources`.
-
 ## Write a Strategy (full Python)
 
 ![Strategy Editor — Source Code & Settings](../screenshots/strategy-editor.png)
@@ -179,15 +171,6 @@ class MacroShockStrategy(BaseStrategy):
 
         return opportunities
 ```
-
-Then use:
-
-- `POST /api/strategy-manager/validate`
-- `POST /api/validation/code-backtest`
-- `POST /api/strategy-manager`
-- `POST /api/strategy-manager/{id}/reload`
-
-Or create/edit it from the UI: `Strategies`.
 
 ## Architecture
 
