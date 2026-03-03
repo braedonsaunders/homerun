@@ -483,7 +483,6 @@ async def _run_loop() -> None:
     fallback_sequence = 0
     catalog_tokens: set[str] = set()
     critical_tokens: set[str] = set()
-    critical_condition_ids: set[str] = set()
     critical_market_ids: set[str] = set()
     desired_tokens: set[str] = set()
     market_tokens: dict[str, tuple[str, str]] = {}
@@ -749,7 +748,6 @@ async def _run_loop() -> None:
                     await clear_worker_run_request(session, worker_name)
 
                 critical_tokens = set(critical_universe.get("critical_tokens") or [])
-                critical_condition_ids = set(critical_universe.get("critical_condition_ids") or [])
                 critical_market_ids = set(critical_universe.get("critical_market_ids") or [])
                 tracked_market_tokens = {
                     market_id: market_tokens[market_id]
