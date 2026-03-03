@@ -221,55 +221,6 @@ External APIs / RSS / Python Sources
                               Paper / Live execution paths
 ```
 
-## Key API Surface
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/strategy-manager` | List strategies with capabilities/runtime metadata |
-| `GET /api/strategy-manager/template` | Strategy starter template |
-| `GET /api/strategy-manager/docs` | Strategy developer reference |
-| `POST /api/strategy-manager/validate` | Validate strategy source code |
-| `POST /api/strategy-manager/{id}/reload` | Recompile/reload strategy runtime |
-| `GET /api/data-sources` | List data sources |
-| `GET /api/data-sources/template` | Data-source templates/presets |
-| `GET /api/data-sources/docs` | Data-source developer reference |
-| `POST /api/data-sources/validate` | Validate source code |
-| `POST /api/data-sources/{id}/run` | Execute ingestion now |
-| `GET /api/data-sources/{id}/runs` | Source run history |
-| `GET /api/data-sources/{id}/records` | Normalized records |
-| `GET /api/opportunities` | Unified opportunities feed |
-| `POST /api/validation/code-backtest*` | Detect/evaluate/exit code backtests |
-
-## Project Layout
-
-```text
-homerun/
-├── backend/
-│   ├── api/                    # FastAPI routes
-│   ├── services/               # Strategy runtime, data-source runtime, orchestrator
-│   ├── workers/                # Background workers
-│   ├── models/                 # ORM + Pydantic models
-│   └── main.py                 # App entrypoint
-├── frontend/
-│   └── src/
-│       ├── components/         # UI panels (Strategies, Data Sources, Trading, Validation)
-│       ├── services/           # API client layer
-│       └── hooks/store/lib
-├── scripts/                    # setup/run helpers
-└── tui.py                      # terminal UI
-```
-
-## Development Commands
-
-```bash
-make setup      # install backend/frontend deps and bootstrap runtime prerequisites
-make dev        # backend + frontend dev servers
-make run        # launch TUI runtime
-make stop       # stop services on dev ports
-make build      # frontend build
-make clean      # remove generated artifacts
-```
-
 ## Safety and Risk
 
 - This software can drive real-money trading decisions.
