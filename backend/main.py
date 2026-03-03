@@ -918,10 +918,11 @@ async def readiness_check():
     }
 
 
-@app.get("/health/tui")
-async def tui_health_check():
-    """Lightweight health snapshot for high-frequency TUI polling."""
-    redis_healthy = await redis_streams.ping()
+_tui_health_cache: Optional[dict] = None
+
+
+async def _tui_health_db_queries() -> dict:
+    """DB-dependent portion of the TUI health check."""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
         discovery_status = await discovery_shared_state.get_discovery_status_from_db(session)
@@ -933,14 +934,28 @@ async def tui_health_check():
             news_workflow_status = {}
         worker_status_rows = await list_worker_snapshots(session, include_stats=True)
         orchestrator_snapshot = await read_orchestrator_snapshot(session)
+    return {
+        "scanner_status": scanner_status,
+        "discovery_status": discovery_status,
+        "news_workflow_status": news_workflow_status,
+        "worker_status_rows": worker_status_rows,
+        "orchestrator_snapshot": orchestrator_snapshot,
+        "database": True,
+    }
 
+
+def _build_tui_health_response(db: dict, redis_healthy: bool) -> dict:
+    scanner_status = db.get("scanner_status", {})
+    discovery_status = db.get("discovery_status", {})
+    news_workflow_status = db.get("news_workflow_status", {})
+    worker_status_rows = db.get("worker_status_rows", [])
+    orchestrator_snapshot = db.get("orchestrator_snapshot", {})
     worker_status = {row.get("worker_name"): row for row in worker_status_rows}
-
     return {
         "status": "healthy",
         "timestamp": utcnow().isoformat(),
         "checks": {
-            "database": True,
+            "database": db.get("database", False),
             "redis": redis_healthy,
         },
         "services": {
@@ -995,6 +1010,24 @@ async def tui_health_check():
             "api_rate_limit": inbound_api_rate_limiter.status(),
         },
     }
+
+
+@app.get("/health/tui")
+async def tui_health_check():
+    """Lightweight health snapshot for high-frequency TUI polling.
+
+    The DB queries are wrapped in a short timeout so that pool contention
+    doesn't block the response and cause the TUI to flap OFFLINE/ONLINE.
+    When the pool is busy the last successful result is served instead.
+    """
+    global _tui_health_cache
+    redis_healthy = await redis_streams.ping()
+    try:
+        db = await asyncio.wait_for(_tui_health_db_queries(), timeout=2.0)
+        _tui_health_cache = db
+    except (asyncio.TimeoutError, Exception):
+        db = _tui_health_cache or {"database": False}
+    return _build_tui_health_response(db, redis_healthy)
 
 
 def _get_news_status() -> dict:

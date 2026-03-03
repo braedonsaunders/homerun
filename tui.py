@@ -18,6 +18,7 @@ from typing import Optional
 
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.events import Resize
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import (
@@ -38,15 +39,35 @@ from textual.widgets import (
 # ---------------------------------------------------------------------------
 _win_job_handle = None
 
+# PIDs of direct child processes (backend, frontend) for SIGBREAK cleanup.
+_child_pids: set = set()
+
 if sys.platform == "win32":
     try:
         import ctypes.wintypes
 
         _kernel32 = ctypes.windll.kernel32
 
+        # Set proper restype/argtypes for 64-bit handle safety.
+        _HANDLE = ctypes.wintypes.HANDLE
+        _BOOL = ctypes.wintypes.BOOL
+        _DWORD = ctypes.wintypes.DWORD
+        _LPVOID = ctypes.wintypes.LPVOID
+
+        _kernel32.CreateJobObjectW.restype = _HANDLE
+        _kernel32.CreateJobObjectW.argtypes = [_LPVOID, ctypes.wintypes.LPCWSTR]
+        _kernel32.SetInformationJobObject.restype = _BOOL
+        _kernel32.SetInformationJobObject.argtypes = [_HANDLE, ctypes.c_int, _LPVOID, _DWORD]
+        _kernel32.AssignProcessToJobObject.restype = _BOOL
+        _kernel32.AssignProcessToJobObject.argtypes = [_HANDLE, _HANDLE]
+        _kernel32.OpenProcess.restype = _HANDLE
+        _kernel32.OpenProcess.argtypes = [_DWORD, _BOOL, _DWORD]
+        _kernel32.CloseHandle.restype = _BOOL
+        _kernel32.CloseHandle.argtypes = [_HANDLE]
+
         # Job Object constants
         _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+        _JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS = 9
 
         class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
             _fields_ = [
@@ -77,7 +98,7 @@ if sys.platform == "win32":
             info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             _kernel32.SetInformationJobObject(
                 _win_job_handle,
-                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                _JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
                 ctypes.byref(info),
                 ctypes.sizeof(info),
             )
@@ -87,6 +108,7 @@ if sys.platform == "win32":
 
 def _assign_to_job(proc: subprocess.Popen) -> None:
     """Assign a subprocess to the Windows Job Object so it dies when we die."""
+    _child_pids.add(proc.pid)
     if _win_job_handle is None or sys.platform != "win32":
         return
     try:
@@ -96,6 +118,98 @@ def _assign_to_job(proc: subprocess.Popen) -> None:
             _kernel32.CloseHandle(handle)
     except Exception:
         pass
+
+
+def _terminate_process_tree(root_pid: int) -> None:
+    """Kill *root_pid* and every descendant using Win32 API only.
+
+    No subprocess spawning — safe to call from a SIGBREAK signal handler
+    where the console is being torn down and new processes can't start.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        TH32CS_SNAPPROCESS = 0x00000002
+        PROCESS_TERMINATE = 0x0001
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", _DWORD),
+                ("cntUsage", _DWORD),
+                ("th32ProcessID", _DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", _DWORD),
+                ("cntThreads", _DWORD),
+                ("th32ParentProcessID", _DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", _DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        _kernel32.CreateToolhelp32Snapshot.restype = _HANDLE
+        _kernel32.CreateToolhelp32Snapshot.argtypes = [_DWORD, _DWORD]
+        _kernel32.Process32First.restype = _BOOL
+        _kernel32.Process32First.argtypes = [_HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+        _kernel32.Process32Next.restype = _BOOL
+        _kernel32.Process32Next.argtypes = [_HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+        _kernel32.TerminateProcess.restype = _BOOL
+        _kernel32.TerminateProcess.argtypes = [_HANDLE, ctypes.c_uint]
+
+        snap = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        INVALID = ctypes.wintypes.HANDLE(-1).value  # INVALID_HANDLE_VALUE
+        if snap is None or snap == INVALID:
+            return
+
+        # Build parent → [children] map from snapshot.
+        children: dict[int, list[int]] = {}
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        if _kernel32.Process32First(snap, ctypes.byref(entry)):
+            while True:
+                children.setdefault(entry.th32ParentProcessID, []).append(
+                    entry.th32ProcessID
+                )
+                if not _kernel32.Process32Next(snap, ctypes.byref(entry)):
+                    break
+        _kernel32.CloseHandle(snap)
+
+        # BFS to collect all descendants.
+        to_kill: list[int] = []
+        queue = [root_pid]
+        while queue:
+            pid = queue.pop(0)
+            to_kill.append(pid)
+            queue.extend(children.get(pid, []))
+
+        # Terminate leaves first, then parents.
+        for pid in reversed(to_kill):
+            try:
+                h = _kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+                if h:
+                    _kernel32.TerminateProcess(h, 1)
+                    _kernel32.CloseHandle(h)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _sigbreak_kill_children() -> None:
+    """Kill all tracked child process trees via Win32 API.
+
+    Uses TerminateProcess (direct kernel call) instead of taskkill.exe
+    (subprocess) because during console teardown new processes may fail
+    to start.  Also closes the Job Object handle as a safety net.
+    """
+    for pid in _child_pids:
+        _terminate_process_tree(pid)
+    # Close Job Object handle — triggers KILL_ON_JOB_CLOSE for anything
+    # the tree-walk missed (e.g. processes that escaped the parent tree).
+    if _win_job_handle:
+        try:
+            _kernel32.CloseHandle(_win_job_handle)
+        except Exception:
+            pass
 
 
 def _run_osascript(script: str) -> bool:
@@ -275,12 +389,26 @@ def _ensure_startup_terminal_size() -> None:
         return
     if sys.platform == "darwin" and _resize_macos_terminal_window_to_quarter_screen():
         return
-    if sys.platform == "win32" and _resize_windows_terminal_window_to_quarter_screen():
-        return
-    cols, lines = _target_terminal_size()
     if sys.platform == "win32":
+        if os.environ.get("WT_SESSION"):
+            # Windows Terminal manages its own window size.  MoveWindow
+            # targets the hidden conhost handle and inflating the buffer
+            # beyond the visible area breaks rendering.  Sync the console
+            # buffer to the actual visible size so they match exactly.
+            try:
+                current = shutil.get_terminal_size(fallback=(80, 24))
+                _resize_windows_console(current.columns, current.lines)
+            except Exception:
+                pass
+            return
+        # Classic cmd.exe / PowerShell console host: MoveWindow positions the
+        # physical window; mode-con resizes both buffer and window.
+        _resize_windows_terminal_window_to_quarter_screen()
+        time.sleep(0.3)
+        cols, lines = _target_terminal_size()
         _resize_windows_console(cols, lines)
         return
+    cols, lines = _target_terminal_size()
     _resize_posix_terminal(cols, lines)
 
 
@@ -1123,6 +1251,113 @@ class HomerunApp(App):
         self.set_interval(LOG_FLUSH_MS / 1000.0, self._flush_log_buffer)
         # Check scroll state less frequently (not on_idle which fires constantly)
         self.set_interval(0.5, self._check_scroll_follow)
+        # Windows: after Textual starts, inject a synthetic resize event
+        # into the console input buffer.  This goes through the exact same
+        # path as a manual resize (EventMonitor → Resize → Screen relayout).
+        if sys.platform == "win32":
+            self.set_timer(0.3, self._inject_windows_resize_event)
+
+    def _inject_windows_resize_event(self) -> None:
+        """Inject a WINDOW_BUFFER_SIZE_EVENT into the console input buffer.
+
+        On Windows, Textual's initial render can use stale dimensions
+        because:
+          1. ``mode con:`` ran before ``app.run()`` and the alt screen
+             buffer may have initialised with different dimensions.
+          2. ``enable_application_mode()`` stripped ``ENABLE_WINDOW_INPUT``
+             so no resize event was delivered (we monkey-patch it back,
+             but the initial render still has the wrong size).
+
+        Injecting a real ``WINDOW_BUFFER_SIZE_EVENT`` via ``WriteConsoleInputW``
+        makes Textual's ``EventMonitor`` thread see it on the next poll
+        iteration — exactly the same code-path as a manual resize.
+        """
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            kernel32 = ctypes.windll.kernel32
+
+            kernel32.GetStdHandle.restype = ctypes.wintypes.HANDLE
+            kernel32.GetStdHandle.argtypes = [ctypes.wintypes.DWORD]
+
+            hOut = kernel32.GetStdHandle(-11 & 0xFFFFFFFF)  # STD_OUTPUT_HANDLE
+            hIn = kernel32.GetStdHandle(-10 & 0xFFFFFFFF)   # STD_INPUT_HANDLE
+
+            # --- Read actual viewport size from the console ---
+            class COORD(ctypes.Structure):
+                _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+            class SMALL_RECT(ctypes.Structure):
+                _fields_ = [
+                    ("Left", ctypes.c_short),
+                    ("Top", ctypes.c_short),
+                    ("Right", ctypes.c_short),
+                    ("Bottom", ctypes.c_short),
+                ]
+
+            class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", COORD),
+                    ("dwCursorPosition", COORD),
+                    ("wAttributes", ctypes.c_ushort),
+                    ("srWindow", SMALL_RECT),
+                    ("dwMaximumWindowSize", COORD),
+                ]
+
+            csbi = CONSOLE_SCREEN_BUFFER_INFO()
+            if not kernel32.GetConsoleScreenBufferInfo(hOut, ctypes.byref(csbi)):
+                return
+
+            width = csbi.srWindow.Right - csbi.srWindow.Left + 1
+            height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
+
+            # --- Also ensure ENABLE_WINDOW_INPUT is set (belt-and-suspenders) ---
+            mode = ctypes.wintypes.DWORD()
+            kernel32.GetConsoleMode(hIn, ctypes.byref(mode))
+            if not (mode.value & 0x0008):  # ENABLE_WINDOW_INPUT
+                kernel32.SetConsoleMode(hIn, mode.value | 0x0008)
+
+            # --- Build an INPUT_RECORD with WINDOW_BUFFER_SIZE_EVENT ---
+            WINDOW_BUFFER_SIZE_EVENT = 0x0004
+
+            class WINDOW_BUFFER_SIZE_RECORD(ctypes.Structure):
+                _fields_ = [("dwSize", COORD)]
+
+            class _EventUnion(ctypes.Union):
+                _fields_ = [
+                    ("WindowBufferSizeEvent", WINDOW_BUFFER_SIZE_RECORD),
+                    ("_padding", ctypes.c_byte * 16),
+                ]
+
+            class INPUT_RECORD(ctypes.Structure):
+                _fields_ = [
+                    ("EventType", ctypes.wintypes.WORD),
+                    ("Event", _EventUnion),
+                ]
+
+            record = INPUT_RECORD()
+            record.EventType = WINDOW_BUFFER_SIZE_EVENT
+            record.Event.WindowBufferSizeEvent.dwSize.X = width
+            record.Event.WindowBufferSizeEvent.dwSize.Y = height
+
+            kernel32.WriteConsoleInputW.restype = ctypes.wintypes.BOOL
+            kernel32.WriteConsoleInputW.argtypes = [
+                ctypes.wintypes.HANDLE,
+                ctypes.c_void_p,
+                ctypes.wintypes.DWORD,
+                ctypes.POINTER(ctypes.wintypes.DWORD),
+            ]
+
+            written = ctypes.wintypes.DWORD(0)
+            kernel32.WriteConsoleInputW(
+                hIn, ctypes.byref(record), 1, ctypes.byref(written)
+            )
+        except Exception:
+            pass
+
+    def on_resize(self, event: Resize) -> None:
+        self.refresh(layout=True)
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
@@ -2320,27 +2555,19 @@ class HomerunApp(App):
     def _kill_children(self) -> None:
         """Kill child processes and close their pipes to unblock reader threads.
 
-        The backend spawns worker subprocesses (via asyncio.create_subprocess_exec).
-        taskkill /T kills the process tree, but on Windows subprocess children
-        can escape the tree if the parent exits first.  As a safety net, we also
-        sweep for any orphaned Homerun worker processes by command-line pattern.
+        Uses _terminate_process_tree (Win32 TerminateProcess) which is
+        instantaneous and doesn't spawn subprocesses.  Falls back to
+        _kill_orphaned_workers() for anything that escaped the tree.
         """
         procs = [
             p
             for p in (self.backend_proc, self.frontend_proc)
             if p and p.poll() is None
         ]
-        # Kill all child processes (non-blocking).
-        # On Windows, proc.kill() only kills the direct child; use taskkill /T
-        # to terminate the entire process tree (npm → node, etc.).
         for proc in procs:
             try:
                 if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                        timeout=5,
-                    )
+                    _terminate_process_tree(proc.pid)
                 else:
                     proc.kill()
             except Exception:
@@ -2442,28 +2669,50 @@ def main() -> None:
         print(f"Setup not complete. Run {setup_cmd} first.")
         sys.exit(1)
 
-    # On Windows, closing the terminal window sends SIGBREAK. Handle it to
-    # trigger a clean exit (the Job Object will clean up children regardless,
-    # but this lets _kill_children() run for a more orderly shutdown).
+    # On Windows, closing the terminal window sends SIGBREAK.  Kill all child
+    # process trees explicitly (taskkill /F /T) so workers don't survive.
     if sys.platform == "win32":
         def _sigbreak_handler(signum, frame):
+            _sigbreak_kill_children()
             os._exit(0)
         signal.signal(signal.SIGBREAK, _sigbreak_handler)
 
     _ensure_startup_terminal_size()
 
+    # ------------------------------------------------------------------
+    # Monkey-patch Textual's win32 driver to restore ENABLE_WINDOW_INPUT.
+    #
+    # Textual's enable_application_mode() (win32.py line 179) sets the
+    # stdin console mode to ENABLE_VIRTUAL_TERMINAL_INPUT *only*, which
+    # strips ENABLE_WINDOW_INPUT (0x0008).  Without that flag, Windows
+    # never delivers WINDOW_BUFFER_SIZE_EVENT records, so Textual's
+    # EventMonitor thread never sees terminal resizes — the TUI renders
+    # at the initial size until the user manually resizes the window.
+    #
+    # We wrap the original function to re-add ENABLE_WINDOW_INPUT after
+    # Textual sets its mode.
+    # ------------------------------------------------------------------
+    if sys.platform == "win32":
+        import textual.drivers.win32 as _tw32
+
+        _original_enable_application_mode = _tw32.enable_application_mode
+
+        def _patched_enable_application_mode() -> "Callable[[], None]":
+            restore = _original_enable_application_mode()
+            current_mode = _tw32.get_console_mode(sys.__stdin__)
+            _tw32.set_console_mode(
+                sys.__stdin__, current_mode | _tw32.ENABLE_WINDOW_INPUT
+            )
+            return restore
+
+        _tw32.enable_application_mode = _patched_enable_application_mode
+
     app = HomerunApp()
     app.run()
 
-    # Close the Job Object handle — this triggers JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    # which terminates ALL child processes (workers, backend, frontend) immediately.
-    # This is the safety net that guarantees cleanup even if _kill_children() missed
-    # something or if the TUI exited abnormally.
-    if _win_job_handle:
-        try:
-            _kernel32.CloseHandle(_win_job_handle)
-        except Exception:
-            pass
+    # Kill any remaining child process trees, then close the Job Object handle
+    # (triggers KILL_ON_JOB_CLOSE as a safety net).
+    _sigbreak_kill_children()
 
     # Force-exit to avoid hanging on background thread joins.
     # Textual worker threads (subprocess readers) may still be blocked

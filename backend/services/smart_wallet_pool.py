@@ -1466,6 +1466,7 @@ class SmartWalletPoolService:
         cutoff_rising_retention = now - timedelta(hours=INACTIVE_RISING_RETENTION_HOURS)
         quality_only_mode = self._recompute_mode == POOL_RECOMPUTE_MODE_QUALITY_ONLY
 
+        # -- Phase 1: Read aggregates + load wallets (short-lived session) --
         async with AsyncSessionLocal() as session:
             one_hour = await session.execute(
                 select(
@@ -1498,334 +1499,344 @@ class SmartWalletPoolService:
 
             wallets_result = await session.execute(select(DiscoveredWallet))
             wallets = list(wallets_result.scalars().all())
-            current_pool_set = {
-                wallet.address for wallet in wallets if wallet.in_top_pool and not self._is_pool_blocked(wallet)
-            }
+            # Detach wallet ORM objects so the read session can close while
+            # we run the (potentially slow) Python scoring computation.
+            for w in wallets:
+                session.expunge(w)
 
-            selection_scores: dict[str, float] = {}
-            insider_scores: dict[str, float] = {}
-            source_confidence_scores: dict[str, float] = {}
-            active_recently: dict[str, bool] = {}
-            tier_hint: dict[str, str] = {}
-            eligibility_blockers: dict[str, list[dict[str, str]]] = {}
-            eligible_addresses: set[str] = set()
+        # -- Phase 2: Pure Python computation (no DB connection held) --
+        current_pool_set = {
+            wallet.address for wallet in wallets if wallet.in_top_pool and not self._is_pool_blocked(wallet)
+        }
 
-            for wallet in wallets:
-                row_24 = map_24h.get(wallet.address, {})
-                trades_1h = map_1h.get(wallet.address, 0)
-                trades_24h = int(row_24.get("trades_24h", 0))
-                unique_markets_24h = int(row_24.get("unique_markets_24h", 0))
+        selection_scores: dict[str, float] = {}
+        insider_scores: dict[str, float] = {}
+        source_confidence_scores: dict[str, float] = {}
+        active_recently: dict[str, bool] = {}
+        tier_hint: dict[str, str] = {}
+        eligibility_blockers: dict[str, list[dict[str, str]]] = {}
+        eligible_addresses: set[str] = set()
 
-                last_trade_at = row_24.get("last_trade_at")
-                if last_trade_at is None:
-                    # Keep existing value when no new events are present.
-                    last_trade_at = wallet.last_trade_at
+        for wallet in wallets:
+            row_24 = map_24h.get(wallet.address, {})
+            trades_1h = map_1h.get(wallet.address, 0)
+            trades_24h = int(row_24.get("trades_24h", 0))
+            unique_markets_24h = int(row_24.get("unique_markets_24h", 0))
 
-                quality = self._score_quality(wallet)
-                activity = self._score_activity(
-                    trades_1h,
-                    trades_24h,
-                    last_trade_at,
-                    now,
-                    wallet=wallet,
-                )
-                stability = self._score_stability(wallet)
-                composite = clamp(0.45 * quality + 0.35 * activity + 0.20 * stability, 0.0, 1.0)
-                insider = clamp(float(wallet.insider_score or 0.0), 0.0, 1.0)
-                source_confidence = self._score_source_confidence(wallet)
-                diversity_score = clamp(unique_markets_24h / 14.0, 0.0, 1.0)
-                momentum = clamp(0.6 * (trades_1h / 4.0) + 0.4 * (trades_24h / 24.0), 0.0, 1.0)
-                selection_score = self._score_selection(
-                    composite=composite,
-                    rank_score=float(wallet.rank_score or 0.0),
-                    insider_score=insider,
-                    source_confidence=source_confidence,
-                    diversity_score=diversity_score,
-                    momentum_score=momentum,
-                )
+            last_trade_at = row_24.get("last_trade_at")
+            if last_trade_at is None:
+                # Keep existing value when no new events are present.
+                last_trade_at = wallet.last_trade_at
 
-                wallet.trades_1h = trades_1h
-                wallet.trades_24h = trades_24h
-                wallet.unique_markets_24h = unique_markets_24h
-                wallet.last_trade_at = last_trade_at
-                wallet.quality_score = quality
-                wallet.activity_score = activity
-                wallet.stability_score = stability
-                wallet.composite_score = composite
-                selection_scores[wallet.address] = selection_score
-                insider_scores[wallet.address] = insider
-                source_confidence_scores[wallet.address] = source_confidence
-                is_recent = bool(last_trade_at is not None and last_trade_at >= cutoff_active)
-                is_retained_rising = (
-                    wallet.address in current_pool_set
-                    and INACTIVE_RISING_RETENTION_HOURS > 0
-                    and last_trade_at is not None
-                    and last_trade_at >= cutoff_rising_retention
-                )
-                active_recently[wallet.address] = is_recent
+            quality = self._score_quality(wallet)
+            activity = self._score_activity(
+                trades_1h,
+                trades_24h,
+                last_trade_at,
+                now,
+                wallet=wallet,
+            )
+            stability = self._score_stability(wallet)
+            composite = clamp(0.45 * quality + 0.35 * activity + 0.20 * stability, 0.0, 1.0)
+            insider = clamp(float(wallet.insider_score or 0.0), 0.0, 1.0)
+            source_confidence = self._score_source_confidence(wallet)
+            diversity_score = clamp(unique_markets_24h / 14.0, 0.0, 1.0)
+            momentum = clamp(0.6 * (trades_1h / 4.0) + 0.4 * (trades_24h / 24.0), 0.0, 1.0)
+            selection_score = self._score_selection(
+                composite=composite,
+                rank_score=float(wallet.rank_score or 0.0),
+                insider_score=insider,
+                source_confidence=source_confidence,
+                diversity_score=diversity_score,
+                momentum_score=momentum,
+            )
 
-                blockers = self._eligibility_blockers(wallet)
-                core_eligible, rising_eligible = self._tier_eligibility(
-                    wallet,
-                    is_active_recent=is_recent,
-                    is_retained_rising=is_retained_rising,
-                )
-                if core_eligible:
-                    tier_hint[wallet.address] = "core"
-                elif rising_eligible:
+            wallet.trades_1h = trades_1h
+            wallet.trades_24h = trades_24h
+            wallet.unique_markets_24h = unique_markets_24h
+            wallet.last_trade_at = last_trade_at
+            wallet.quality_score = quality
+            wallet.activity_score = activity
+            wallet.stability_score = stability
+            wallet.composite_score = composite
+            selection_scores[wallet.address] = selection_score
+            insider_scores[wallet.address] = insider
+            source_confidence_scores[wallet.address] = source_confidence
+            is_recent = bool(last_trade_at is not None and last_trade_at >= cutoff_active)
+            is_retained_rising = (
+                wallet.address in current_pool_set
+                and INACTIVE_RISING_RETENTION_HOURS > 0
+                and last_trade_at is not None
+                and last_trade_at >= cutoff_rising_retention
+            )
+            active_recently[wallet.address] = is_recent
+
+            blockers = self._eligibility_blockers(wallet)
+            core_eligible, rising_eligible = self._tier_eligibility(
+                wallet,
+                is_active_recent=is_recent,
+                is_retained_rising=is_retained_rising,
+            )
+            if core_eligible:
+                tier_hint[wallet.address] = "core"
+            elif rising_eligible:
+                tier_hint[wallet.address] = "rising"
+            else:
+                tier_hint[wallet.address] = "blocked"
+                if not blockers:
+                    blockers = [
+                        {
+                            "code": "tier_thresholds_not_met",
+                            "label": "Tier thresholds not met",
+                            "detail": ("Wallet did not satisfy core or rising quality tier thresholds."),
+                        }
+                    ]
+            eligibility_blockers[wallet.address] = blockers
+
+            if self._is_pool_blocked(wallet):
+                continue
+            if self._is_pool_manually_included(wallet):
+                eligible_addresses.add(wallet.address)
+                if tier_hint.get(wallet.address) == "blocked":
                     tier_hint[wallet.address] = "rising"
-                else:
-                    tier_hint[wallet.address] = "blocked"
-                    if not blockers:
-                        blockers = [
-                            {
-                                "code": "tier_thresholds_not_met",
-                                "label": "Tier thresholds not met",
-                                "detail": ("Wallet did not satisfy core or rising quality tier thresholds."),
-                            }
-                        ]
-                eligibility_blockers[wallet.address] = blockers
+                continue
+            if blockers:
+                continue
+            if core_eligible or rising_eligible:
+                eligible_addresses.add(wallet.address)
 
-                if self._is_pool_blocked(wallet):
-                    continue
-                if self._is_pool_manually_included(wallet):
-                    eligible_addresses.add(wallet.address)
-                    if tier_hint.get(wallet.address) == "blocked":
-                        tier_hint[wallet.address] = "rising"
-                    continue
-                if blockers:
-                    continue
-                if core_eligible or rising_eligible:
-                    eligible_addresses.add(wallet.address)
+        ranked_wallets = sorted(
+            wallets,
+            key=lambda w: (
+                selection_scores.get(w.address, 0.0),
+                w.composite_score or 0.0,
+                w.rank_score or 0.0,
+            ),
+            reverse=True,
+        )
+        wallet_by_address = {w.address: w for w in wallets}
+        eligible_ranked = [w for w in ranked_wallets if w.address in eligible_addresses]
+        manual_includes = [
+            w.address for w in ranked_wallets if self._is_pool_manually_included(w) and not self._is_pool_blocked(w)
+        ]
+        core_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "core"]
+        rising_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "rising"]
+        effective_target_size = self._effective_target_pool_size(
+            selection_scores=selection_scores,
+            eligible_addresses=eligible_addresses,
+            manual_includes=manual_includes,
+            quality_only_mode=quality_only_mode,
+        )
+        self._stats["effective_target_pool_size"] = effective_target_size
+        diversified_ranked = self._rank_with_cluster_diversity(
+            eligible_ranked,
+            target_size=effective_target_size,
+        )
 
-            ranked_wallets = sorted(
-                wallets,
-                key=lambda w: (
-                    selection_scores.get(w.address, 0.0),
-                    w.composite_score or 0.0,
-                    w.rank_score or 0.0,
-                ),
-                reverse=True,
+        desired: list[str] = []
+        desired_set: set[str] = set()
+        self._append_unique_inplace(
+            desired,
+            desired_set,
+            manual_includes,
+            effective_target_size,
+        )
+        core_target_size = max(1, int(effective_target_size * 0.70)) if effective_target_size > 0 else 0
+        self._append_unique_inplace(
+            desired,
+            desired_set,
+            core_candidates,
+            core_target_size,
+        )
+        self._append_unique_inplace(
+            desired,
+            desired_set,
+            rising_candidates,
+            effective_target_size,
+        )
+        self._append_unique_inplace(
+            desired,
+            desired_set,
+            [w.address for w in diversified_ranked],
+            effective_target_size,
+        )
+        if not quality_only_mode:
+            self._append_unique_inplace(
+                desired,
+                desired_set,
+                [w.address for w in diversified_ranked if active_recently.get(w.address, False)],
+                effective_target_size,
             )
-            wallet_by_address = {w.address: w for w in wallets}
-            eligible_ranked = [w for w in ranked_wallets if w.address in eligible_addresses]
-            manual_includes = [
-                w.address for w in ranked_wallets if self._is_pool_manually_included(w) and not self._is_pool_blocked(w)
-            ]
-            core_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "core"]
-            rising_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "rising"]
-            effective_target_size = self._effective_target_pool_size(
-                selection_scores=selection_scores,
-                eligible_addresses=eligible_addresses,
+
+        current_pool = list(current_pool_set)
+        final_pool, churn_rate = self._apply_churn_guard(
+            desired=desired,
+            current=current_pool,
+            scores=selection_scores,
+            quality_only_mode=quality_only_mode,
+        )
+        if manual_includes:
+            final_pool = self._enforce_manual_includes(
+                final_pool=final_pool,
                 manual_includes=manual_includes,
-                quality_only_mode=quality_only_mode,
-            )
-            self._stats["effective_target_pool_size"] = effective_target_size
-            diversified_ranked = self._rank_with_cluster_diversity(
-                eligible_ranked,
-                target_size=effective_target_size,
-            )
-
-            desired: list[str] = []
-            desired_set: set[str] = set()
-            self._append_unique_inplace(
-                desired,
-                desired_set,
-                manual_includes,
-                effective_target_size,
-            )
-            core_target_size = max(1, int(effective_target_size * 0.70)) if effective_target_size > 0 else 0
-            self._append_unique_inplace(
-                desired,
-                desired_set,
-                core_candidates,
-                core_target_size,
-            )
-            self._append_unique_inplace(
-                desired,
-                desired_set,
-                rising_candidates,
-                effective_target_size,
-            )
-            self._append_unique_inplace(
-                desired,
-                desired_set,
-                [w.address for w in diversified_ranked],
-                effective_target_size,
-            )
-            if not quality_only_mode:
-                self._append_unique_inplace(
-                    desired,
-                    desired_set,
-                    [w.address for w in diversified_ranked if active_recently.get(w.address, False)],
-                    effective_target_size,
-                )
-
-            current_pool = list(current_pool_set)
-            final_pool, churn_rate = self._apply_churn_guard(
-                desired=desired,
-                current=current_pool,
                 scores=selection_scores,
-                quality_only_mode=quality_only_mode,
+                eligible_addresses=eligible_addresses,
             )
-            if manual_includes:
-                final_pool = self._enforce_manual_includes(
-                    final_pool=final_pool,
-                    manual_includes=manual_includes,
-                    scores=selection_scores,
-                    eligible_addresses=eligible_addresses,
-                )
 
-            final_index = {address: i for i, address in enumerate(final_pool)}
-            score_ranks = self._score_ranks(selection_scores)
-            desired_set = set(desired)
-            current_set = set(current_pool)
-            cluster_counts = self._count_clusters(final_pool, wallet_by_address)
-            cluster_cap = max(3, int(max(effective_target_size, 1) * MAX_CLUSTER_SHARE))
-            final_wallets = [wallet_by_address[address] for address in final_pool if address in wallet_by_address]
-            analyzed_pool_count = sum(1 for w in final_wallets if w.last_analyzed_at is not None)
-            profitable_pool_count = sum(1 for w in final_wallets if bool(w.is_profitable))
-            copy_candidate_pool_count = sum(
-                1 for w in final_wallets if str(w.recommendation or "").strip().lower() == "copy_candidate"
+        final_index = {address: i for i, address in enumerate(final_pool)}
+        score_ranks = self._score_ranks(selection_scores)
+        desired_set = set(desired)
+        current_set = set(current_pool)
+        cluster_counts = self._count_clusters(final_pool, wallet_by_address)
+        cluster_cap = max(3, int(max(effective_target_size, 1) * MAX_CLUSTER_SHARE))
+        final_wallets = [wallet_by_address[address] for address in final_pool if address in wallet_by_address]
+        analyzed_pool_count = sum(1 for w in final_wallets if w.last_analyzed_at is not None)
+        profitable_pool_count = sum(1 for w in final_wallets if bool(w.is_profitable))
+        copy_candidate_pool_count = sum(
+            1 for w in final_wallets if str(w.recommendation or "").strip().lower() == "copy_candidate"
+        )
+        pool_size = len(final_wallets)
+        analyzed_pool_pct = round((analyzed_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
+        profitable_pool_pct = round((profitable_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
+        copy_candidate_pool_pct = round((copy_candidate_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
+        previous_copy_pct = self._last_copy_candidate_pct
+        copy_pct_delta = (
+            round(copy_candidate_pool_pct - previous_copy_pct, 2) if previous_copy_pct is not None else 0.0
+        )
+        self._last_copy_candidate_pct = copy_candidate_pool_pct
+
+        slo_violations: list[str] = []
+        if pool_size > 0 and analyzed_pool_pct < SLO_MIN_ANALYZED_PCT:
+            slo_violations.append("analyzed_pool_pct_below_slo")
+        if pool_size > 0 and profitable_pool_pct < SLO_MIN_PROFITABLE_PCT:
+            slo_violations.append("profitable_pool_pct_below_slo")
+
+        auto_enforced = False
+        if slo_violations and self._recompute_mode == POOL_RECOMPUTE_MODE_BALANCED:
+            self._recompute_mode = POOL_RECOMPUTE_MODE_QUALITY_ONLY
+            auto_enforced = True
+            logger.warning(
+                "Pool SLO violated; switching recompute mode to quality_only",
+                violations=slo_violations,
+                analyzed_pool_pct=analyzed_pool_pct,
+                profitable_pool_pct=profitable_pool_pct,
+                pool_size=pool_size,
             )
-            pool_size = len(final_wallets)
-            analyzed_pool_pct = round((analyzed_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            profitable_pool_pct = round((profitable_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            copy_candidate_pool_pct = round((copy_candidate_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            previous_copy_pct = self._last_copy_candidate_pct
-            copy_pct_delta = (
-                round(copy_candidate_pool_pct - previous_copy_pct, 2) if previous_copy_pct is not None else 0.0
-            )
-            self._last_copy_candidate_pct = copy_candidate_pool_pct
 
-            slo_violations: list[str] = []
-            if pool_size > 0 and analyzed_pool_pct < SLO_MIN_ANALYZED_PCT:
-                slo_violations.append("analyzed_pool_pct_below_slo")
-            if pool_size > 0 and profitable_pool_pct < SLO_MIN_PROFITABLE_PCT:
-                slo_violations.append("profitable_pool_pct_below_slo")
+        self._stats["recompute_mode"] = self._recompute_mode
+        self._stats["analyzed_pool_pct"] = analyzed_pool_pct
+        self._stats["profitable_pool_pct"] = profitable_pool_pct
+        self._stats["copy_candidate_pool_pct"] = copy_candidate_pool_pct
+        self._stats["copy_candidate_pool_pct_delta"] = copy_pct_delta
+        self._stats["slo_violations"] = slo_violations
+        self._stats["quality_only_auto_enforced"] = auto_enforced
 
-            auto_enforced = False
-            if slo_violations and self._recompute_mode == POOL_RECOMPUTE_MODE_BALANCED:
-                self._recompute_mode = POOL_RECOMPUTE_MODE_QUALITY_ONLY
-                auto_enforced = True
-                logger.warning(
-                    "Pool SLO violated; switching recompute mode to quality_only",
-                    violations=slo_violations,
-                    analyzed_pool_pct=analyzed_pool_pct,
-                    profitable_pool_pct=profitable_pool_pct,
-                    pool_size=pool_size,
-                )
-
-            self._stats["recompute_mode"] = self._recompute_mode
-            self._stats["analyzed_pool_pct"] = analyzed_pool_pct
-            self._stats["profitable_pool_pct"] = profitable_pool_pct
-            self._stats["copy_candidate_pool_pct"] = copy_candidate_pool_pct
-            self._stats["copy_candidate_pool_pct_delta"] = copy_pct_delta
-            self._stats["slo_violations"] = slo_violations
-            self._stats["quality_only_auto_enforced"] = auto_enforced
-
-            for wallet in wallets:
-                idx = final_index.get(wallet.address)
-                reason_rows: list[dict[str, str]]
-                wallet.in_top_pool = idx is not None
-                if idx is None:
-                    wallet.pool_tier = None
-                    if self._is_pool_blacklisted(wallet):
-                        reason_rows = [
-                            {
-                                "code": "blacklisted",
-                                "label": "Blacklisted from pool",
-                                "detail": "Operator blacklist flag is enabled for this wallet.",
-                            }
-                        ]
-                    elif self._is_pool_manually_excluded(wallet):
-                        reason_rows = [
-                            {
-                                "code": "manual_exclude",
-                                "label": "Manually excluded",
-                                "detail": "Operator manual exclusion flag is enabled for this wallet.",
-                            }
-                        ]
-                    elif eligibility_blockers.get(wallet.address):
-                        reason_rows = list(eligibility_blockers.get(wallet.address, []))
-                    else:
-                        reason_rows = [
-                            {
-                                "code": "below_selection_cutoff",
-                                "label": "Below pool cutoff",
-                                "detail": "Wallet did not clear current rank/churn thresholds for the active pool.",
-                            }
-                        ]
+        for wallet in wallets:
+            idx = final_index.get(wallet.address)
+            reason_rows: list[dict[str, str]]
+            wallet.in_top_pool = idx is not None
+            if idx is None:
+                wallet.pool_tier = None
+                if self._is_pool_blacklisted(wallet):
+                    reason_rows = [
+                        {
+                            "code": "blacklisted",
+                            "label": "Blacklisted from pool",
+                            "detail": "Operator blacklist flag is enabled for this wallet.",
+                        }
+                    ]
+                elif self._is_pool_manually_excluded(wallet):
+                    reason_rows = [
+                        {
+                            "code": "manual_exclude",
+                            "label": "Manually excluded",
+                            "detail": "Operator manual exclusion flag is enabled for this wallet.",
+                        }
+                    ]
+                elif eligibility_blockers.get(wallet.address):
+                    reason_rows = list(eligibility_blockers.get(wallet.address, []))
                 else:
-                    hint = tier_hint.get(wallet.address)
-                    wallet.pool_tier = "core" if hint == "core" else "rising"
-                    reason_rows = self._derive_selection_reasons(
-                        wallet=wallet,
-                        address=wallet.address,
-                        selection_score=selection_scores.get(wallet.address, 0.0),
-                        insider_score=insider_scores.get(wallet.address, 0.0),
-                        cutoff_72h=cutoff_72h,
-                        desired_addresses=desired_set,
-                        current_addresses=current_set,
-                        cluster_count=cluster_counts.get(self._cluster_id(wallet), 0),
-                        cluster_cap=cluster_cap,
-                    )
+                    reason_rows = [
+                        {
+                            "code": "below_selection_cutoff",
+                            "label": "Below pool cutoff",
+                            "detail": "Wallet did not clear current rank/churn thresholds for the active pool.",
+                        }
+                    ]
+            else:
+                hint = tier_hint.get(wallet.address)
+                wallet.pool_tier = "core" if hint == "core" else "rising"
+                reason_rows = self._derive_selection_reasons(
+                    wallet=wallet,
+                    address=wallet.address,
+                    selection_score=selection_scores.get(wallet.address, 0.0),
+                    insider_score=insider_scores.get(wallet.address, 0.0),
+                    cutoff_72h=cutoff_72h,
+                    desired_addresses=desired_set,
+                    current_addresses=current_set,
+                    cluster_count=cluster_counts.get(self._cluster_id(wallet), 0),
+                    cluster_cap=cluster_cap,
+                )
 
-                primary_reason = reason_rows[0]["code"] if reason_rows else None
-                wallet.pool_membership_reason = primary_reason
+            primary_reason = reason_rows[0]["code"] if reason_rows else None
+            wallet.pool_membership_reason = primary_reason
 
-                rank = score_ranks.get(wallet.address)
-                percentile = self._rank_percentile(rank, len(score_ranks))
-                source_flags = self._source_flags(wallet)
-                if not isinstance(source_flags, dict):
-                    source_flags = {}
-                # Force a fresh dict assignment so ORM JSON columns always persist nested updates.
-                source_flags = dict(source_flags)
-                analysis_freshness_hours = self._analysis_freshness_hours(wallet, now)
-                status = "eligible" if wallet.address in eligible_addresses else "blocked"
-                blockers_payload = list(eligibility_blockers.get(wallet.address, []))
-                if self._is_pool_manually_included(wallet) and not self._is_pool_blocked(wallet):
-                    status = "eligible"
-                if wallet.in_top_pool:
-                    status = "eligible"
-                source_flags[POOL_SELECTION_META_KEY] = {
-                    "version": POOL_SELECTION_META_VERSION,
-                    "quality_gate_version": QUALITY_GATE_VERSION,
-                    "recompute_mode": self._recompute_mode,
-                    "eligibility_status": status,
-                    "eligibility_blockers": blockers_payload,
-                    "analysis_freshness_hours": analysis_freshness_hours,
-                    "selection_score": round(selection_scores.get(wallet.address, 0.0), 6),
-                    "selection_rank": int(rank) if rank is not None else None,
-                    "selection_percentile": percentile,
-                    "reasons": reason_rows,
-                    "score_breakdown": {
-                        "composite_score": round(float(wallet.composite_score or 0.0), 6),
-                        "quality_score": round(float(wallet.quality_score or 0.0), 6),
-                        "activity_score": round(float(wallet.activity_score or 0.0), 6),
-                        "stability_score": round(float(wallet.stability_score or 0.0), 6),
-                        "rank_score": round(float(wallet.rank_score or 0.0), 6),
-                        "insider_score": round(insider_scores.get(wallet.address, 0.0), 6),
-                        "source_confidence": round(
-                            source_confidence_scores.get(wallet.address, 0.0),
-                            6,
-                        ),
-                        "trades_1h": int(wallet.trades_1h or 0),
-                        "trades_24h": int(wallet.trades_24h or 0),
-                        "unique_markets_24h": int(wallet.unique_markets_24h or 0),
-                    },
-                    "active_within_hours": (
-                        round(
-                            max((now - wallet.last_trade_at).total_seconds(), 0.0) / 3600.0,
-                            2,
-                        )
-                        if wallet.last_trade_at
-                        else None
+            rank = score_ranks.get(wallet.address)
+            percentile = self._rank_percentile(rank, len(score_ranks))
+            source_flags = self._source_flags(wallet)
+            if not isinstance(source_flags, dict):
+                source_flags = {}
+            # Force a fresh dict assignment so ORM JSON columns always persist nested updates.
+            source_flags = dict(source_flags)
+            analysis_freshness_hours = self._analysis_freshness_hours(wallet, now)
+            status = "eligible" if wallet.address in eligible_addresses else "blocked"
+            blockers_payload = list(eligibility_blockers.get(wallet.address, []))
+            if self._is_pool_manually_included(wallet) and not self._is_pool_blocked(wallet):
+                status = "eligible"
+            if wallet.in_top_pool:
+                status = "eligible"
+            source_flags[POOL_SELECTION_META_KEY] = {
+                "version": POOL_SELECTION_META_VERSION,
+                "quality_gate_version": QUALITY_GATE_VERSION,
+                "recompute_mode": self._recompute_mode,
+                "eligibility_status": status,
+                "eligibility_blockers": blockers_payload,
+                "analysis_freshness_hours": analysis_freshness_hours,
+                "selection_score": round(selection_scores.get(wallet.address, 0.0), 6),
+                "selection_rank": int(rank) if rank is not None else None,
+                "selection_percentile": percentile,
+                "reasons": reason_rows,
+                "score_breakdown": {
+                    "composite_score": round(float(wallet.composite_score or 0.0), 6),
+                    "quality_score": round(float(wallet.quality_score or 0.0), 6),
+                    "activity_score": round(float(wallet.activity_score or 0.0), 6),
+                    "stability_score": round(float(wallet.stability_score or 0.0), 6),
+                    "rank_score": round(float(wallet.rank_score or 0.0), 6),
+                    "insider_score": round(insider_scores.get(wallet.address, 0.0), 6),
+                    "source_confidence": round(
+                        source_confidence_scores.get(wallet.address, 0.0),
+                        6,
                     ),
-                    "updated_at": now.isoformat(),
-                }
-                wallet.source_flags = source_flags
+                    "trades_1h": int(wallet.trades_1h or 0),
+                    "trades_24h": int(wallet.trades_24h or 0),
+                    "unique_markets_24h": int(wallet.unique_markets_24h or 0),
+                },
+                "active_within_hours": (
+                    round(
+                        max((now - wallet.last_trade_at).total_seconds(), 0.0) / 3600.0,
+                        2,
+                    )
+                    if wallet.last_trade_at
+                    else None
+                ),
+                "updated_at": now.isoformat(),
+            }
+            wallet.source_flags = source_flags
 
+        # -- Phase 3: Write modified wallets back (short-lived session) --
+        async with AsyncSessionLocal() as session:
+            for wallet in wallets:
+                await session.merge(wallet)
             await session.commit()
 
         await self._sync_ws_membership(final_pool)

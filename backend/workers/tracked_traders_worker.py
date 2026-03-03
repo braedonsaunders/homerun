@@ -66,6 +66,49 @@ _RETRYABLE_DB_MAX_DELAY_SECONDS = 2.0
 
 _T = TypeVar("_T")
 
+# Grace period (seconds) given to a timed-out task to clean up DB sessions
+# before the result is abandoned.  This is critical: asyncio.wait_for
+# hard-cancels tasks, which interrupts session.close() mid-flight and
+# causes the "clean up" SAWarning connection leak.  Using asyncio.wait +
+# explicit cancel + grace avoids that.
+_CANCEL_GRACE_SECONDS = 5.0
+
+
+async def _graceful_timeout(coro, *, timeout: float, label: str):
+    """Run *coro* with a timeout, but give it a grace period to clean up.
+
+    Unlike ``asyncio.wait_for`` which hard-cancels immediately:
+      1. Wrap the coroutine in a task.
+      2. ``asyncio.wait`` with the timeout (no cancellation).
+      3. If it didn't finish, cancel the task and wait again for a short
+         grace period so ``session.close()`` / ``rollback()`` inside the
+         coroutine can complete.
+      4. Raise ``asyncio.TimeoutError`` to the caller.
+
+    This prevents the GC "clean up" SAWarning on asyncpg connections.
+    """
+    task = asyncio.create_task(coro)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if done:
+        return task.result()
+
+    # Timed out — cancel and give a grace period for DB cleanup.
+    task.cancel()
+    done_after, _ = await asyncio.wait({task}, timeout=_CANCEL_GRACE_SECONDS)
+    if done_after:
+        # Suppress CancelledError; propagate real exceptions.
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
+    else:
+        logger.warning(
+            "%s: task did not finish within %ss cancel-grace; abandoning",
+            label,
+            _CANCEL_GRACE_SECONDS,
+        )
+    raise asyncio.TimeoutError()
+
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     try:
@@ -374,7 +417,7 @@ async def _run_loop() -> None:
             if requested or now >= next_full_sweep:
                 activity_labels.append("full_sweep")
                 try:
-                    await asyncio.wait_for(smart_wallet_pool.run_full_sweep(), timeout=180)
+                    await _graceful_timeout(smart_wallet_pool.run_full_sweep(), timeout=180, label="full_sweep")
                 except asyncio.TimeoutError:
                     activity_labels.append("full_sweep_timeout")
                     logger.warning("Tracked-traders full_sweep timed out after 180s")
@@ -383,7 +426,7 @@ async def _run_loop() -> None:
             if requested or now >= next_incremental:
                 activity_labels.append("incremental_refresh")
                 try:
-                    await asyncio.wait_for(smart_wallet_pool.run_incremental_refresh(), timeout=90)
+                    await _graceful_timeout(smart_wallet_pool.run_incremental_refresh(), timeout=90, label="incremental_refresh")
                 except asyncio.TimeoutError:
                     activity_labels.append("incremental_refresh_timeout")
                     logger.warning("Tracked-traders incremental_refresh timed out after 90s")
@@ -392,7 +435,7 @@ async def _run_loop() -> None:
             if requested or now >= next_reconcile:
                 activity_labels.append("activity_reconcile")
                 try:
-                    await asyncio.wait_for(smart_wallet_pool.reconcile_activity(), timeout=45)
+                    await _graceful_timeout(smart_wallet_pool.reconcile_activity(), timeout=45, label="activity_reconcile")
                 except asyncio.TimeoutError:
                     activity_labels.append("activity_reconcile_timeout")
                     logger.warning("Tracked-traders activity_reconcile timed out after 45s")
@@ -401,7 +444,7 @@ async def _run_loop() -> None:
             if requested or now >= next_recompute:
                 activity_labels.append("pool_recompute")
                 try:
-                    await asyncio.wait_for(smart_wallet_pool.recompute_pool(), timeout=90)
+                    await _graceful_timeout(smart_wallet_pool.recompute_pool(), timeout=90, label="pool_recompute")
                 except asyncio.TimeoutError:
                     activity_labels.append("pool_recompute_timeout")
                     logger.warning("Tracked-traders pool_recompute timed out after 90s")
@@ -409,7 +452,7 @@ async def _run_loop() -> None:
 
             activity_labels.append("confluence_scan")
             try:
-                await asyncio.wait_for(wallet_intelligence.confluence.scan_for_confluence(), timeout=45)
+                await _graceful_timeout(wallet_intelligence.confluence.scan_for_confluence(), timeout=45, label="confluence_scan")
             except asyncio.TimeoutError:
                 activity_labels.append("confluence_scan_timeout")
                 logger.warning("Tracked-traders confluence_scan timed out after 45s")
@@ -520,7 +563,7 @@ async def _run_loop() -> None:
                 try:
                     await _run_with_retryable_db_retries(
                         "full_intelligence",
-                        lambda: asyncio.wait_for(wallet_intelligence.run_full_analysis(), timeout=180),
+                        lambda: _graceful_timeout(wallet_intelligence.run_full_analysis(), timeout=180, label="full_intelligence"),
                     )
                 except asyncio.TimeoutError:
                     activity_labels.append("full_intelligence_timeout")
@@ -541,7 +584,7 @@ async def _run_loop() -> None:
                 try:
                     rescore = await _run_with_retryable_db_retries(
                         "insider_rescore",
-                        lambda: asyncio.wait_for(insider_detector.rescore_wallets(stale_minutes=15), timeout=90),
+                        lambda: _graceful_timeout(insider_detector.rescore_wallets(stale_minutes=15), timeout=90, label="insider_rescore"),
                     )
                     insider_flagged = int(rescore.get("flagged_insiders") or 0)
                     last_insider_flagged = insider_flagged

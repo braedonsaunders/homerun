@@ -4671,7 +4671,9 @@ async def run_worker_loop() -> None:
                         manage_only_reasons.append("kill_switch")
 
                     # WS feed health gate — auto-pause when Polymarket WS is persistently down
-                    if not skip_cycle and not manage_only_cycle and mode == "live":
+                    # Must run even when manage_only_cycle (e.g. global_pause from WS auto-pause)
+                    # so the recovery branch can clear _ws_auto_paused and unpause.
+                    if not skip_cycle and mode == "live":
                         try:
                             ws_health = get_feed_manager().health_check()
                             poly_failures = ws_health.get("polymarket", {}).get("stats", {}).get("consecutive_failures", 0)
@@ -4698,16 +4700,20 @@ async def run_worker_loop() -> None:
                                 manage_only_reasons.append("ws_feed_down")
                             elif _ws_auto_paused and poly_failures == 0:
                                 _ws_auto_paused = False
-                                await update_orchestrator_control(session, is_paused=False)
                                 await create_trader_event(
                                     session,
                                     trader_id=None,
                                     event_type="ws_feed_recovery",
                                     source="worker",
-                                    severity="info",
-                                    message="Polymarket WS feed recovered. Auto-trader resumed.",
+                                    severity="warning",
+                                    message=(
+                                        "Polymarket WS feed recovered. "
+                                        "Orchestrator remains paused — resume manually when ready."
+                                    ),
                                 )
-                                logger.info("Polymarket WS recovered, auto-resuming orchestrator")
+                                logger.warning(
+                                    "Polymarket WS recovered; orchestrator remains paused (manual resume required)"
+                                )
                         except Exception as exc:
                             logger.debug("WS health check skipped: %s", exc)
 

@@ -7,6 +7,7 @@ liquidity/spread quality and non-trivial expected repricing room.
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from datetime import timezone
 from typing import Any, Optional
@@ -78,6 +79,7 @@ class TailEndCarryStrategy(BaseStrategy):
         "min_repricing_buffer": 0.015,
         "repricing_weight": 0.45,
         "max_opportunities": 120,
+        "exclude_market_keywords": "",
         "panic_drop_threshold": 0.08,
         "panic_window_points": 6,
         "panic_recovery_ratio_max": 0.20,
@@ -137,6 +139,113 @@ class TailEndCarryStrategy(BaseStrategy):
         ask = self._book_value(payload, "ask") or self._book_value(payload, "best_ask")
         return price, bid, ask, token_id
 
+    # ------------------------------------------------------------------
+    # Keyword exclusion helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _append_text(chunks: list[str], value: Any) -> None:
+        text = str(value or "").strip().lower()
+        if text:
+            chunks.append(text)
+
+    @staticmethod
+    def _normalize_excluded_keywords(value: Any) -> list[str]:
+        if isinstance(value, str):
+            candidates: list[Any] = [token.strip() for token in value.split(",")]
+        elif isinstance(value, list):
+            candidates = list(value)
+        else:
+            candidates = []
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in candidates:
+            token = str(raw or "").strip().lower()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+        return out
+
+    @staticmethod
+    def _keyword_in_text(keyword: str, text: str) -> bool:
+        if not keyword or not text:
+            return False
+        if len(keyword) <= 4 and keyword.replace("-", "").replace("_", "").isalnum():
+            return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+        return keyword in text
+
+    @classmethod
+    def _first_blocked_keyword(cls, text: str, excluded_keywords: list[str]) -> str | None:
+        for keyword in excluded_keywords:
+            if cls._keyword_in_text(keyword, text):
+                return keyword
+        return None
+
+    @classmethod
+    def _market_text(cls, market: Market, event: Optional[Event]) -> str:
+        chunks: list[str] = []
+        for value in (market.id, market.question, market.slug, market.group_item_title, market.event_slug):
+            cls._append_text(chunks, value)
+        for tag in list(getattr(market, "tags", []) or []):
+            cls._append_text(chunks, tag)
+        if event is not None:
+            for value in (event.id, event.slug, event.title, event.category):
+                cls._append_text(chunks, value)
+            for tag in list(getattr(event, "tags", []) or []):
+                cls._append_text(chunks, tag)
+        return " | ".join(chunks)
+
+    @classmethod
+    def _signal_market_text(cls, signal: Any, payload: dict[str, Any]) -> str:
+        chunks: list[str] = []
+        for value in (
+            getattr(signal, "market_question", None),
+            payload.get("market_question"),
+            payload.get("title"),
+            payload.get("description"),
+            payload.get("market_id"),
+            payload.get("market_slug"),
+            payload.get("event_title"),
+            payload.get("event_slug"),
+            payload.get("category"),
+        ):
+            cls._append_text(chunks, value)
+        markets = payload.get("markets")
+        if isinstance(markets, list):
+            for raw_market in markets[:2]:
+                if not isinstance(raw_market, dict):
+                    continue
+                for value in (
+                    raw_market.get("id"),
+                    raw_market.get("question"),
+                    raw_market.get("slug"),
+                    raw_market.get("event_slug"),
+                    raw_market.get("group_item_title"),
+                ):
+                    cls._append_text(chunks, value)
+                tags = raw_market.get("tags")
+                if isinstance(tags, list):
+                    for tag in tags:
+                        cls._append_text(chunks, tag)
+                else:
+                    cls._append_text(chunks, tags)
+        event = payload.get("event")
+        if isinstance(event, dict):
+            for value in (event.get("id"), event.get("slug"), event.get("title"), event.get("category")):
+                cls._append_text(chunks, value)
+            tags = event.get("tags")
+            if isinstance(tags, list):
+                for tag in tags:
+                    cls._append_text(chunks, tag)
+            else:
+                cls._append_text(chunks, tags)
+        return " | ".join(chunks)
+
+    # ------------------------------------------------------------------
+    # Detection
+    # ------------------------------------------------------------------
+
     def detect(
         self,
         events: list[Event],
@@ -159,6 +268,7 @@ class TailEndCarryStrategy(BaseStrategy):
         panic_drop_threshold = clamp(safe_float(cfg.get("panic_drop_threshold"), 0.08), 0.02, 0.30)
         panic_window_points = max(3, int(safe_float(cfg.get("panic_window_points"), 6)))
         panic_recovery_ratio_max = clamp(safe_float(cfg.get("panic_recovery_ratio_max"), 0.20), 0.0, 0.9)
+        excluded_keywords = self._normalize_excluded_keywords(cfg.get("exclude_market_keywords"))
 
         event_by_market: dict[str, Event] = {}
         for event in events:
@@ -172,6 +282,10 @@ class TailEndCarryStrategy(BaseStrategy):
         for market in markets:
             if market.closed or not market.active:
                 continue
+            if excluded_keywords:
+                market_text = self._market_text(market, event_by_market.get(market.id))
+                if self._first_blocked_keyword(market_text, excluded_keywords) is not None:
+                    continue
             if safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
                 continue
             if (
@@ -297,12 +411,22 @@ class TailEndCarryStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def custom_checks(self, signal: Any, context: dict, params: dict, payload: dict) -> list[DecisionCheck]:
-        """Tail carry: source, strategy type, entry band, resolution window checks."""
+        """Tail carry: source, strategy type, entry band, resolution window, keyword exclusion checks."""
         min_entry = clamp(to_float(params.get("min_entry_price", 0.85), 0.85), 0.01, 0.995)
         max_entry = clamp(to_float(params.get("max_entry_price", 0.999), 0.999), min_entry, 0.999)
         min_upside_percent = clamp(to_float(params.get("min_upside_percent", 10.0), 10.0), 10.0, 100.0)
         min_days = max(0.0, to_float(params.get("min_days_to_resolution", 0.01), 0.01))
         max_days = max(min_days + 0.005, to_float(params.get("max_days_to_resolution", 2.0), 2.0))
+
+        excluded_keywords = self._normalize_excluded_keywords(
+            params.get("exclude_market_keywords", self.config.get("exclude_market_keywords", ""))
+        )
+        keyword_ok = True
+        blocked_keyword: str | None = None
+        if excluded_keywords:
+            signal_text = self._signal_market_text(signal, payload)
+            blocked_keyword = self._first_blocked_keyword(signal_text, excluded_keywords)
+            keyword_ok = blocked_keyword is None
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
         strategy_type = (
@@ -333,6 +457,12 @@ class TailEndCarryStrategy(BaseStrategy):
         return [
             DecisionCheck("source", "Scanner source", source == "scanner", detail="Requires source=scanner."),
             DecisionCheck("strategy", "Tail carry strategy type", strategy_ok, detail="strategy=tail_end_carry"),
+            DecisionCheck(
+                "keyword_exclusion",
+                "Market keyword exclusion",
+                keyword_ok,
+                detail=f"blocked by '{blocked_keyword}'" if blocked_keyword else "no excluded keywords matched",
+            ),
             DecisionCheck(
                 "entry",
                 "Entry probability band",

@@ -90,8 +90,18 @@ class ConfluenceDetector:
         except Exception:
             pass
 
+    _MARKET_CONTEXT_CONCURRENCY = 8
+
     async def scan_for_confluence(self) -> list[dict]:
-        """Scan recent wallet activity rollups and upsert confluence signals."""
+        """Scan recent wallet activity rollups and upsert confluence signals.
+
+        Structured in discrete phases to minimise database connection hold-time:
+          Phase 1 – read activity events (single short-lived session)
+          Phase 2 – group & filter (pure Python, no session)
+          Phase 3 – batch-fetch conflicting notionals (single short-lived session)
+          Phase 4 – batch-fetch market context via HTTP (no session)
+          Phase 5 – batch-upsert all signals (single short-lived session)
+        """
         logger.info("Starting confluence scan...")
         now = utcnow()
         cutoff_60m = now - timedelta(minutes=60)
@@ -105,6 +115,7 @@ class ConfluenceDetector:
         wallet_map = {w["address"]: w for w in wallets}
         addresses = list(wallet_map.keys())
 
+        # -- Phase 1: read activity events --
         async with AsyncSessionLocal() as session:
             events: list[WalletActivityRollup] = []
             for address_chunk in _iter_chunks(addresses):
@@ -123,6 +134,7 @@ class ConfluenceDetector:
             await self.expire_old_signals()
             return await self.get_active_signals()
 
+        # -- Phase 2: group events and build candidate list (pure Python) --
         grouped: dict[tuple[str, str], list[WalletActivityRollup]] = {}
         for event in events:
             side = self._normalize_side(event.side)
@@ -131,14 +143,13 @@ class ConfluenceDetector:
             key = (event.market_id, side)
             grouped.setdefault(key, []).append(event)
 
-        signals_created = 0
+        # Pre-compute per-market-side stats, filtering by wallet count early.
+        candidates: list[dict] = []
         for (market_id, side), side_events in grouped.items():
             unique_wallets = {e.wallet_address.lower() for e in side_events if e.wallet_address}
             if len(unique_wallets) < self.MIN_WALLETS_WATCH:
                 continue
 
-            # Calculate adjusted wallet count by entity cluster to reduce
-            # multi-wallet inflation from the same controller.
             cluster_groups: dict[str, set[str]] = {}
             unclustered = 0
             for addr in unique_wallets:
@@ -173,80 +184,112 @@ class ConfluenceDetector:
             sizes = [abs(float(e.size or 0)) for e in active_events if e.size]
             avg_entry_price = sum(prices) / len(prices) if prices else None
             total_size = sum(sizes) if sizes else None
-
             net_notional = sum(abs(float(e.notional or 0.0)) for e in active_events)
-            conflicting_notional = await self._conflicting_notional(
-                market_id=market_id,
-                side=side,
-                addresses=addresses,
-                cutoff=cutoff_60m,
-            )
-
             timestamps = [e.traded_at for e in active_events if e.traded_at]
             timing_tightness = self._timing_tightness(timestamps)
 
-            market_context = await self._resolve_market_context(market_id)
+            candidates.append({
+                "market_id": market_id,
+                "side": side,
+                "unique_wallets": unique_wallets,
+                "cluster_adjusted": cluster_adjusted,
+                "window_minutes": window_minutes,
+                "wallets_sorted": wallets_sorted,
+                "avg_rank": avg_rank,
+                "weighted_wallet_score": weighted_wallet_score,
+                "anomaly_avg": anomaly_avg,
+                "core_wallets": core_wallets,
+                "avg_entry_price": avg_entry_price,
+                "total_size": total_size,
+                "net_notional": net_notional,
+                "timing_tightness": timing_tightness,
+            })
+
+        if not candidates:
+            await self.expire_old_signals()
+            return await self.get_active_signals()
+
+        # -- Phase 3: batch-fetch conflicting notionals (single session) --
+        conflicting_map = await self._batch_conflicting_notional(
+            candidates=[(c["market_id"], c["side"]) for c in candidates],
+            addresses=addresses,
+            cutoff=cutoff_60m,
+        )
+
+        # -- Phase 4: batch-fetch market context via HTTP (no DB session) --
+        unique_market_ids = list({c["market_id"] for c in candidates})
+        market_context_map = await self._batch_resolve_market_context(unique_market_ids)
+
+        # -- Phase 5: compute conviction + batch-upsert signals (single session) --
+        signal_payloads: list[dict] = []
+        broadcast_payloads: list[dict] = []
+        for c in candidates:
+            market_id = c["market_id"]
+            side = c["side"]
+            conflicting_notional = conflicting_map.get((market_id, side), 0.0)
+            market_context = market_context_map.get(market_id, {})
             outcome = "YES" if side == "BUY" else "NO"
             signal_type = "multi_wallet_buy" if side == "BUY" else "multi_wallet_sell"
-            tier = self._tier_for_count(cluster_adjusted)
+            tier = self._tier_for_count(c["cluster_adjusted"])
             conviction = self._conviction_score(
-                adjusted_wallet_count=cluster_adjusted,
-                weighted_wallet_score=weighted_wallet_score,
-                timing_tightness=timing_tightness,
-                net_notional=net_notional,
+                adjusted_wallet_count=c["cluster_adjusted"],
+                weighted_wallet_score=c["weighted_wallet_score"],
+                timing_tightness=c["timing_tightness"],
+                net_notional=c["net_notional"],
                 conflicting_notional=conflicting_notional,
                 market_liquidity=market_context.get("liquidity"),
                 market_volume_24h=market_context.get("volume_24h"),
-                anomaly_avg=anomaly_avg,
-                unique_wallet_count=len(unique_wallets),
+                anomaly_avg=c["anomaly_avg"],
+                unique_wallet_count=len(c["unique_wallets"]),
             )
             strength = max(0.0, min(conviction / 100.0, 1.0))
-
-            await self._upsert_signal(
-                market_id=market_id,
-                market_question=market_context.get("question") or "",
-                signal_type=signal_type,
-                strength=strength,
-                conviction_score=conviction,
-                tier=tier,
-                window_minutes=window_minutes,
-                wallet_count=len(unique_wallets),
-                cluster_adjusted_wallet_count=cluster_adjusted,
-                unique_core_wallets=core_wallets,
-                weighted_wallet_score=weighted_wallet_score,
-                wallets=wallets_sorted,
-                outcome=outcome,
-                avg_entry_price=avg_entry_price,
-                total_size=total_size,
-                avg_wallet_rank=avg_rank,
-                net_notional=net_notional,
-                conflicting_notional=conflicting_notional,
-                market_slug=market_context.get("market_slug"),
-                market_liquidity=market_context.get("liquidity"),
-                market_volume_24h=market_context.get("volume_24h"),
-            )
+            signal_payloads.append({
+                "market_id": market_id,
+                "market_question": market_context.get("question") or "",
+                "signal_type": signal_type,
+                "strength": strength,
+                "conviction_score": conviction,
+                "tier": tier,
+                "window_minutes": c["window_minutes"],
+                "wallet_count": len(c["unique_wallets"]),
+                "cluster_adjusted_wallet_count": c["cluster_adjusted"],
+                "unique_core_wallets": c["core_wallets"],
+                "weighted_wallet_score": c["weighted_wallet_score"],
+                "wallets": c["wallets_sorted"],
+                "outcome": outcome,
+                "avg_entry_price": c["avg_entry_price"],
+                "total_size": c["total_size"],
+                "avg_wallet_rank": c["avg_rank"],
+                "net_notional": c["net_notional"],
+                "conflicting_notional": conflicting_notional,
+                "market_slug": market_context.get("market_slug"),
+                "market_liquidity": market_context.get("liquidity"),
+                "market_volume_24h": market_context.get("volume_24h"),
+            })
             if tier in ("HIGH", "EXTREME"):
-                await self._broadcast_signal_event(
-                    {
-                        "market_id": market_id,
-                        "market_question": market_context.get("question") or "",
-                        "market_slug": market_context.get("market_slug"),
-                        "outcome": outcome,
-                        "tier": tier,
-                        "conviction_score": conviction,
-                        "cluster_adjusted_wallet_count": cluster_adjusted,
-                        "wallet_count": len(unique_wallets),
-                        "window_minutes": window_minutes,
-                        "detected_at": now.isoformat(),
-                    }
-                )
-            signals_created += 1
+                broadcast_payloads.append({
+                    "market_id": market_id,
+                    "market_question": market_context.get("question") or "",
+                    "market_slug": market_context.get("market_slug"),
+                    "outcome": outcome,
+                    "tier": tier,
+                    "conviction_score": conviction,
+                    "cluster_adjusted_wallet_count": c["cluster_adjusted"],
+                    "wallet_count": len(c["unique_wallets"]),
+                    "window_minutes": c["window_minutes"],
+                    "detected_at": now.isoformat(),
+                })
+
+        await self._batch_upsert_signals(signal_payloads)
+
+        for payload in broadcast_payloads:
+            await self._broadcast_signal_event(payload)
 
         await self.expire_old_signals()
         active = await self.get_active_signals()
         logger.info(
             "Confluence scan complete",
-            signals_created=signals_created,
+            signals_created=len(signal_payloads),
             active_signals=len(active),
         )
         return active
@@ -424,30 +467,133 @@ class ConfluenceDetector:
         conviction = base - concentration_penalty - anomaly_penalty
         return round(max(0.0, min(conviction, 100.0)), 2)
 
-    async def _conflicting_notional(
+    async def _batch_conflicting_notional(
         self,
-        market_id: str,
-        side: str,
+        candidates: list[tuple[str, str]],
         addresses: list[str],
         cutoff: datetime,
-    ) -> float:
-        opposite = "SELL" if side == "BUY" else "BUY"
-        if not addresses:
-            return 0.0
-        total_notional = 0.0
+    ) -> dict[tuple[str, str], float]:
+        """Fetch conflicting notional for all market/side pairs in one session."""
+        if not candidates or not addresses:
+            return {}
+        result_map: dict[tuple[str, str], float] = {}
         async with AsyncSessionLocal() as session:
-            for address_chunk in _iter_chunks(addresses):
-                result = await session.execute(
-                    select(func.sum(WalletActivityRollup.notional)).where(
-                        WalletActivityRollup.market_id == market_id,
-                        WalletActivityRollup.wallet_address.in_(address_chunk),
-                        WalletActivityRollup.traded_at >= cutoff,
-                        WalletActivityRollup.side.in_([opposite, "YES" if opposite == "BUY" else "NO"]),
+            for market_id, side in candidates:
+                opposite = "SELL" if side == "BUY" else "BUY"
+                opposite_sides = [opposite, "YES" if opposite == "BUY" else "NO"]
+                total = 0.0
+                for address_chunk in _iter_chunks(addresses):
+                    result = await session.execute(
+                        select(func.sum(WalletActivityRollup.notional)).where(
+                            WalletActivityRollup.market_id == market_id,
+                            WalletActivityRollup.wallet_address.in_(address_chunk),
+                            WalletActivityRollup.traded_at >= cutoff,
+                            WalletActivityRollup.side.in_(opposite_sides),
+                        )
                     )
+                    total += float(result.scalar() or 0.0)
+                result_map[(market_id, side)] = total
+        return result_map
+
+    async def _batch_resolve_market_context(self, market_ids: list[str]) -> dict[str, dict]:
+        """Fetch market context for all market IDs concurrently (no DB session)."""
+        sem = asyncio.Semaphore(self._MARKET_CONTEXT_CONCURRENCY)
+
+        async def _fetch(mid: str) -> tuple[str, dict]:
+            async with sem:
+                return mid, await self._resolve_market_context(mid)
+
+        results = await asyncio.gather(
+            *[_fetch(mid) for mid in market_ids],
+            return_exceptions=True,
+        )
+        context_map: dict[str, dict] = {}
+        for r in results:
+            if isinstance(r, Exception):
+                continue
+            mid, ctx = r
+            context_map[mid] = ctx
+        return context_map
+
+    async def _batch_upsert_signals(self, payloads: list[dict]) -> None:
+        """Upsert all confluence signals in a single session + commit."""
+        if not payloads:
+            return
+        now = utcnow()
+        async with AsyncSessionLocal() as session:
+            for p in payloads:
+                result = await session.execute(
+                    select(MarketConfluenceSignal)
+                    .where(
+                        MarketConfluenceSignal.market_id == p["market_id"],
+                        MarketConfluenceSignal.outcome == p["outcome"],
+                    )
+                    .order_by(MarketConfluenceSignal.last_seen_at.desc())
+                    .limit(1)
                 )
-                value = result.scalar() or 0.0
-                total_notional += float(value or 0.0)
-        return total_notional
+                existing = result.scalars().first()
+
+                if existing:
+                    existing.signal_type = p["signal_type"]
+                    existing.strength = p["strength"]
+                    existing.conviction_score = p["conviction_score"]
+                    existing.tier = p["tier"]
+                    existing.window_minutes = p["window_minutes"]
+                    existing.wallet_count = p["wallet_count"]
+                    existing.cluster_adjusted_wallet_count = p["cluster_adjusted_wallet_count"]
+                    existing.unique_core_wallets = p["unique_core_wallets"]
+                    existing.weighted_wallet_score = p["weighted_wallet_score"]
+                    existing.wallets = p["wallets"]
+                    existing.avg_entry_price = p["avg_entry_price"]
+                    existing.total_size = p["total_size"]
+                    existing.avg_wallet_rank = p["avg_wallet_rank"]
+                    existing.net_notional = p["net_notional"]
+                    existing.conflicting_notional = p["conflicting_notional"]
+                    existing.market_liquidity = p["market_liquidity"]
+                    existing.market_volume_24h = p["market_volume_24h"]
+                    existing.last_seen_at = now
+                    existing.detected_at = now
+                    existing.is_active = True
+                    existing.expired_at = None
+                    if p["market_slug"]:
+                        existing.market_slug = p["market_slug"]
+                    if p["market_question"]:
+                        existing.market_question = p["market_question"]
+                    if p["conviction_score"] >= (existing.conviction_score or 0) + 5:
+                        existing.cooldown_until = now + timedelta(minutes=5)
+                else:
+                    session.add(
+                        MarketConfluenceSignal(
+                            id=str(uuid.uuid4()),
+                            market_id=p["market_id"],
+                            market_question=p["market_question"],
+                            market_slug=p["market_slug"],
+                            signal_type=p["signal_type"],
+                            strength=p["strength"],
+                            conviction_score=p["conviction_score"],
+                            tier=p["tier"],
+                            window_minutes=p["window_minutes"],
+                            wallet_count=p["wallet_count"],
+                            cluster_adjusted_wallet_count=p["cluster_adjusted_wallet_count"],
+                            unique_core_wallets=p["unique_core_wallets"],
+                            weighted_wallet_score=p["weighted_wallet_score"],
+                            wallets=p["wallets"],
+                            outcome=p["outcome"],
+                            avg_entry_price=p["avg_entry_price"],
+                            total_size=p["total_size"],
+                            avg_wallet_rank=p["avg_wallet_rank"],
+                            net_notional=p["net_notional"],
+                            conflicting_notional=p["conflicting_notional"],
+                            market_liquidity=p["market_liquidity"],
+                            market_volume_24h=p["market_volume_24h"],
+                            is_active=True,
+                            first_seen_at=now,
+                            last_seen_at=now,
+                            detected_at=now,
+                            cooldown_until=now + timedelta(minutes=5),
+                        )
+                    )
+            await session.commit()
 
     async def _resolve_market_context(self, market_id: str) -> dict:
         market_slug = None
@@ -476,109 +622,6 @@ class ConfluenceDetector:
             "liquidity": liquidity,
             "volume_24h": volume_24h,
         }
-
-    async def _upsert_signal(
-        self,
-        market_id: str,
-        market_question: str,
-        signal_type: str,
-        strength: float,
-        conviction_score: float,
-        tier: str,
-        window_minutes: int,
-        wallet_count: int,
-        cluster_adjusted_wallet_count: int,
-        unique_core_wallets: int,
-        weighted_wallet_score: float,
-        wallets: list[str],
-        outcome: Optional[str],
-        avg_entry_price: Optional[float],
-        total_size: Optional[float],
-        avg_wallet_rank: Optional[float],
-        net_notional: Optional[float],
-        conflicting_notional: Optional[float],
-        market_slug: Optional[str] = None,
-        market_liquidity: Optional[float] = None,
-        market_volume_24h: Optional[float] = None,
-    ):
-        """Create or update a confluence signal in the database."""
-        now = utcnow()
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(MarketConfluenceSignal)
-                .where(
-                    MarketConfluenceSignal.market_id == market_id,
-                    MarketConfluenceSignal.outcome == outcome,
-                )
-                .order_by(MarketConfluenceSignal.last_seen_at.desc())
-                .limit(1)
-            )
-            existing = result.scalars().first()
-
-            if existing:
-                existing.signal_type = signal_type
-                existing.strength = strength
-                existing.conviction_score = conviction_score
-                existing.tier = tier
-                existing.window_minutes = window_minutes
-                existing.wallet_count = wallet_count
-                existing.cluster_adjusted_wallet_count = cluster_adjusted_wallet_count
-                existing.unique_core_wallets = unique_core_wallets
-                existing.weighted_wallet_score = weighted_wallet_score
-                existing.wallets = wallets
-                existing.avg_entry_price = avg_entry_price
-                existing.total_size = total_size
-                existing.avg_wallet_rank = avg_wallet_rank
-                existing.net_notional = net_notional
-                existing.conflicting_notional = conflicting_notional
-                existing.market_liquidity = market_liquidity
-                existing.market_volume_24h = market_volume_24h
-                existing.last_seen_at = now
-                existing.detected_at = now
-                existing.is_active = True
-                existing.expired_at = None
-                if market_slug:
-                    existing.market_slug = market_slug
-                if market_question:
-                    existing.market_question = market_question
-                # Cooldown is used by downstream alerting so repeated scans
-                # do not spam notifications.
-                if conviction_score >= (existing.conviction_score or 0) + 5:
-                    existing.cooldown_until = now + timedelta(minutes=5)
-            else:
-                session.add(
-                    MarketConfluenceSignal(
-                        id=str(uuid.uuid4()),
-                        market_id=market_id,
-                        market_question=market_question,
-                        market_slug=market_slug,
-                        signal_type=signal_type,
-                        strength=strength,
-                        conviction_score=conviction_score,
-                        tier=tier,
-                        window_minutes=window_minutes,
-                        wallet_count=wallet_count,
-                        cluster_adjusted_wallet_count=cluster_adjusted_wallet_count,
-                        unique_core_wallets=unique_core_wallets,
-                        weighted_wallet_score=weighted_wallet_score,
-                        wallets=wallets,
-                        outcome=outcome,
-                        avg_entry_price=avg_entry_price,
-                        total_size=total_size,
-                        avg_wallet_rank=avg_wallet_rank,
-                        net_notional=net_notional,
-                        conflicting_notional=conflicting_notional,
-                        market_liquidity=market_liquidity,
-                        market_volume_24h=market_volume_24h,
-                        is_active=True,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                        detected_at=now,
-                        cooldown_until=now + timedelta(minutes=5),
-                    )
-                )
-
-            await session.commit()
 
     async def get_active_signals(
         self,

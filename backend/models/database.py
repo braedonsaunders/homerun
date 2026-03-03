@@ -76,35 +76,94 @@ class RetryableAsyncSession(AsyncSession):
         "broken pipe",
     )
 
-    async def _await_cancellation_safe(self, operation) -> None:
-        task = asyncio.create_task(operation)
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
+    # ------------------------------------------------------------------
+    # Background cleanup tasks – prevent GC from collecting the tasks
+    # before they complete (the event loop only weakly references tasks).
+    # ------------------------------------------------------------------
+    _cleanup_tasks: set = set()
+
+    @classmethod
+    def _fire_and_forget(cls, coro) -> None:
+        """Schedule *coro* as a background task that cannot be cancelled."""
+        task = asyncio.create_task(coro)
+        cls._cleanup_tasks.add(task)
+        task.add_done_callback(cls._cleanup_tasks.discard)
+
+    # ------------------------------------------------------------------
+    # Session lifecycle – close / rollback / invalidate
+    # ------------------------------------------------------------------
 
     async def rollback(self) -> None:
         try:
-            await self._await_cancellation_safe(super().rollback())
+            await super().rollback()
+        except asyncio.CancelledError:
+            # Ensure rollback completes even if we are cancelled.
+            self._fire_and_forget(self._do_rollback_or_invalidate())
+            raise
         except Exception:
             try:
-                await self.invalidate()
+                await super().invalidate()
             except Exception:
                 pass
             raise
 
     async def close(self) -> None:
+        """Return the underlying connection to the pool.  Never raises.
+
+        If the calling task is cancelled mid-close, the cleanup task
+        continues in the background so the connection is *always*
+        returned to the pool (or invalidated).
+        """
+        # Create the cleanup task and hold a strong reference so it
+        # survives GC even if the calling task is cancelled.
+        task = asyncio.create_task(self._do_close_or_invalidate())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
         try:
-            await self._await_cancellation_safe(super().close())
+            await asyncio.shield(task)
+        except (asyncio.CancelledError, Exception):
+            # task keeps running — connection WILL be returned.
+            pass
+
+    async def invalidate(self) -> None:
+        try:
+            await super().invalidate()
+        except asyncio.CancelledError:
+            self._fire_and_forget(self._do_invalidate())
+            raise
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Internal helpers (run inside fire-and-forget tasks)
+    # ------------------------------------------------------------------
+
+    async def _do_close_or_invalidate(self) -> None:
+        """Close the session; fall back to invalidate on any error."""
+        try:
+            await super().close()
         except Exception:
             try:
-                await self.invalidate()
+                await super().invalidate()
             except Exception:
                 pass
 
-    async def invalidate(self) -> None:
-        await self._await_cancellation_safe(super().invalidate())
+    async def _do_rollback_or_invalidate(self) -> None:
+        """Rollback; fall back to invalidate on any error."""
+        try:
+            await super().rollback()
+        except Exception:
+            try:
+                await super().invalidate()
+            except Exception:
+                pass
+
+    async def _do_invalidate(self) -> None:
+        """Invalidate, swallowing errors."""
+        try:
+            await super().invalidate()
+        except Exception:
+            pass
 
     async def _reset_after_failed_commit(self) -> None:
         try:
@@ -3224,6 +3283,37 @@ _engine_kw["connect_args"] = {
 
 async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
 
+# ---------------------------------------------------------------------------
+# Pool event listeners – detect connections checked out for too long and
+# log them as warnings so we can find the source of leaks.
+# ---------------------------------------------------------------------------
+import logging as _logging
+import time as _time
+from sqlalchemy import event as _sa_event
+
+_db_logger = _logging.getLogger("homerun.db.pool")
+
+@_sa_event.listens_for(async_engine.sync_engine, "checkout")
+def _on_checkout(dbapi_connection, connection_record, connection_proxy):
+    connection_record.info["checkout_time"] = _time.monotonic()
+
+@_sa_event.listens_for(async_engine.sync_engine, "checkin")
+def _on_checkin(dbapi_connection, connection_record):
+    checkout_time = connection_record.info.pop("checkout_time", None)
+    if checkout_time is not None:
+        elapsed = _time.monotonic() - checkout_time
+        if elapsed > 15.0:
+            _db_logger.warning(
+                "Connection held for %.1fs before return to pool", elapsed
+            )
+
+@_sa_event.listens_for(async_engine.sync_engine, "invalidate")
+def _on_invalidate(dbapi_connection, connection_record, exception):
+    _db_logger.warning(
+        "Connection invalidated (exception=%s)",
+        type(exception).__name__ if exception else "None",
+    )
+
 AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
 
@@ -3265,7 +3355,7 @@ async def init_database():
 
 
 async def get_db_session() -> AsyncSession:
-    """Get database session"""
+    """Get database session via FastAPI ``Depends()``."""
     session = AsyncSessionLocal()
     try:
         yield session
@@ -3280,10 +3370,6 @@ async def get_db_session() -> AsyncSession:
                     pass
         raise
     finally:
-        try:
-            await session.close()
-        except Exception:
-            try:
-                await session.invalidate()
-            except Exception:
-                pass
+        # close() is guaranteed to never raise (it handles
+        # CancelledError and falls back to invalidate internally).
+        await session.close()

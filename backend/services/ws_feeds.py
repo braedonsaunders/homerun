@@ -719,6 +719,21 @@ class PolymarketWSFeed:
             self._ws = ws
             self._state = ConnectionState.CONNECTED
             self.stats.connection_uptime_start = time.monotonic()
+
+            # Reset failure counters immediately on successful connect so
+            # downstream health logic sees a healthy feed right away, not
+            # only after the first message arrives (which can be delayed in
+            # low-traffic periods).
+            if self._reconnect_attempt > 0:
+                was_failing = self.stats.consecutive_failures >= MAX_RECONNECT_ATTEMPTS
+                self._reconnect_attempt = 0
+                self.stats.consecutive_failures = 0
+                if was_failing and self.on_recovery:
+                    try:
+                        await self.on_recovery()
+                    except Exception:
+                        logger.exception("on_recovery callback error")
+
             logger.info("Polymarket WS connected", url=self._ws_url)
 
             # Re-subscribe to everything tracked
@@ -736,18 +751,6 @@ class PolymarketWSFeed:
                     recv_time = time.monotonic()
                     self.stats.messages_received += 1
                     self.stats.last_message_at = recv_time
-
-                    # Reset failure counter on first successful message after reconnect
-                    if self._reconnect_attempt > 0:
-                        was_failing = self.stats.consecutive_failures >= MAX_RECONNECT_ATTEMPTS
-                        self._reconnect_attempt = 0
-                        self.stats.consecutive_failures = 0
-                        if was_failing and self.on_recovery:
-                            try:
-                                await self.on_recovery()
-                            except Exception:
-                                logger.exception("on_recovery callback error")
-                        logger.info("Polymarket WS recovered, attempt counter reset")
 
                     try:
                         data = json.loads(raw)

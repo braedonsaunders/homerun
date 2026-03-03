@@ -400,21 +400,20 @@ class DataSourceLoader:
         return rows
 
     async def refresh_all_from_db(self, session: AsyncSession | None = None) -> dict[str, Any]:
+        import contextlib
+
         from models.database import AsyncSessionLocal, DataSource
 
-        own_session = False
-        db: AsyncSession
-        if session is None:
-            db = AsyncSessionLocal()
-            own_session = True
-        else:
-            db = session
+        async with contextlib.AsyncExitStack() as _stack:
+            if session is None:
+                db: AsyncSession = await _stack.enter_async_context(AsyncSessionLocal())
+            else:
+                db = session
 
-        loaded: list[str] = []
-        errors: dict[str, str] = {}
-        db_state_changed = False
+            loaded: list[str] = []
+            errors: dict[str, str] = {}
+            db_state_changed = False
 
-        try:
             rows = (
                 (await db.execute(select(DataSource).order_by(DataSource.sort_order.asc(), DataSource.slug.asc())))
                 .scalars()
@@ -491,13 +490,6 @@ class DataSourceLoader:
 
             if db_state_changed:
                 await db.commit()
-        except Exception:
-            if own_session:
-                await db.rollback()
-            raise
-        finally:
-            if own_session:
-                await db.close()
 
         return {"loaded": loaded, "errors": errors}
 

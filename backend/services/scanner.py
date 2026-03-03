@@ -2153,8 +2153,6 @@ class ArbitrageScanner:
             loaded_count = len(result.get("loaded", []))
             error_count = len(result.get("errors", {}))
             self._plugins_loaded = True
-            if loaded_count > 0:
-                print(f"Loaded {loaded_count} strategies ({error_count} errors)")
         except Exception as e:
             print(f"Error loading strategies: {e}")
 

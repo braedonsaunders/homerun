@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import uuid
 from typing import Any, Optional
 
@@ -308,11 +309,11 @@ class SimulationService:
         commit: bool = True,
     ) -> dict[str, Any]:
         """Record a paper autotrader fill into simulation account ledger."""
-        should_close = session is None
-        if session is None:
-            session = AsyncSessionLocal()
+        async with contextlib.AsyncExitStack() as stack:
+            if session is None:
+                session = await stack.enter_async_context(AsyncSessionLocal())
+                commit = True
 
-        try:
             normalized_notional = float(notional_usd or 0.0)
             normalized_entry_price = float(entry_price or 0.0)
             normalized_entry_fee = max(0.0, float(execution_fee_usd or 0.0))
@@ -423,13 +424,6 @@ class SimulationService:
                 "quantity": quantity,
                 "opened_at": now.isoformat() + "Z",
             }
-        except Exception:
-            if should_close:
-                await session.rollback()
-            raise
-        finally:
-            if should_close:
-                await session.close()
 
     async def close_orchestrator_paper_fill(
         self,
@@ -446,11 +440,11 @@ class SimulationService:
         commit: bool = True,
     ) -> dict[str, Any]:
         """Resolve an orchestrator-paper simulation fill at a provided close mark."""
-        should_close = session is None
-        if session is None:
-            session = AsyncSessionLocal()
+        async with contextlib.AsyncExitStack() as stack:
+            if session is None:
+                session = await stack.enter_async_context(AsyncSessionLocal())
+                commit = True
 
-        try:
             normalized_close_price = max(0.0, float(close_price or 0.0))
 
             account = await session.get(SimulationAccount, account_id)
@@ -558,13 +552,6 @@ class SimulationService:
                 "reason": str(reason or ""),
                 "resolved_at": now.isoformat() + "Z",
             }
-        except Exception:
-            if should_close:
-                await session.rollback()
-            raise
-        finally:
-            if should_close:
-                await session.close()
 
     async def resolve_trade(
         self,
@@ -573,11 +560,10 @@ class SimulationService:
         session: AsyncSession = None,
     ) -> SimulationTrade:
         """Resolve a trade when market settles"""
-        should_close = session is None
-        if session is None:
-            session = AsyncSessionLocal()
+        async with contextlib.AsyncExitStack() as stack:
+            if session is None:
+                session = await stack.enter_async_context(AsyncSessionLocal())
 
-        try:
             trade = await session.get(SimulationTrade, trade_id)
             if not trade:
                 raise ValueError(f"Trade not found: {trade_id}")
@@ -637,13 +623,6 @@ class SimulationService:
             )
 
             return trade
-        except Exception:
-            if should_close:
-                await session.rollback()
-            raise
-        finally:
-            if should_close:
-                await session.close()
 
     async def get_open_positions(self, account_id: str) -> list[SimulationPosition]:
         """Get all open positions for an account"""
