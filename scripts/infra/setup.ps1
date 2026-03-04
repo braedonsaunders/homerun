@@ -20,6 +20,28 @@ function Get-ProjectRedisRuntimeDir {
     return (Join-Path (Get-Location).Path "data\runtime\redis")
 }
 
+function Get-InstallerLogDir {
+    $logDir = Join-Path (Get-Location).Path "data\runtime\logs"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    return $logDir
+}
+
+function Show-LogTail {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    Write-Host "$Label (tail):" -ForegroundColor Yellow
+    Get-Content -Path $Path -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  $_" -ForegroundColor DarkYellow
+    }
+}
+
 function Find-RedisServer {
     $projectRuntimeDir = Get-ProjectRedisRuntimeDir
     if (Test-Path $projectRuntimeDir) {
@@ -204,6 +226,62 @@ function Install-PortableRedisRuntime {
     }
 }
 
+function Try-InstallMemuraiWithWinget {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        return $false
+    }
+
+    $logDir = Get-InstallerLogDir
+    $logPath = Join-Path $logDir "memurai-winget-install.log"
+    Write-Host "Installing Memurai via winget..." -ForegroundColor Cyan
+    try {
+        & winget install --id Memurai.MemuraiDeveloper --exact --silent --disable-interactivity --accept-source-agreements --accept-package-agreements 2>&1 | Tee-Object -FilePath $logPath | Out-Null
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0 -and (Test-RedisRuntimeAvailable)) {
+            Write-Host "Redis runtime installed via winget (Memurai.MemuraiDeveloper)." -ForegroundColor Green
+            return $true
+        }
+        Write-Host "Winget Memurai install failed (exit code $exitCode)." -ForegroundColor Yellow
+        Write-Host "Log: $logPath" -ForegroundColor Yellow
+        Show-LogTail -Path $logPath -Label "winget output"
+        return $false
+    } catch {
+        Write-Host "Winget Memurai install threw an exception: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Log: $logPath" -ForegroundColor Yellow
+        Show-LogTail -Path $logPath -Label "winget output"
+        return $false
+    }
+}
+
+function Try-InstallMemuraiWithChocolatey {
+    $choco = Get-Command choco -ErrorAction SilentlyContinue
+    if (-not $choco) {
+        return $false
+    }
+
+    $logDir = Get-InstallerLogDir
+    $logPath = Join-Path $logDir "memurai-choco-install.log"
+    Write-Host "Installing Memurai via Chocolatey..." -ForegroundColor Cyan
+    try {
+        & choco install memurai-developer -y --no-progress 2>&1 | Tee-Object -FilePath $logPath | Out-Null
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0 -and (Test-RedisRuntimeAvailable)) {
+            Write-Host "Redis runtime installed via Chocolatey (memurai-developer)." -ForegroundColor Green
+            return $true
+        }
+        Write-Host "Chocolatey Memurai install failed (exit code $exitCode)." -ForegroundColor Yellow
+        Write-Host "Log: $logPath" -ForegroundColor Yellow
+        Show-LogTail -Path $logPath -Label "choco output"
+        return $false
+    } catch {
+        Write-Host "Chocolatey Memurai install threw an exception: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Log: $logPath" -ForegroundColor Yellow
+        Show-LogTail -Path $logPath -Label "choco output"
+        return $false
+    }
+}
+
 function Ensure-RedisRuntime {
     if (Test-RedisRuntimeAvailable) {
         Write-Host "Redis runtime prerequisite found (Streams-capable runtime)." -ForegroundColor Green
@@ -220,28 +298,12 @@ function Ensure-RedisRuntime {
 
     Write-Host "Redis Streams-capable runtime missing. Attempting to install Memurai..." -ForegroundColor Cyan
 
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($winget) {
-        try {
-            winget install --id Memurai.MemuraiDeveloper --exact --silent --accept-source-agreements --accept-package-agreements *> $null
-            if (Test-RedisRuntimeAvailable) {
-                Write-Host "Redis runtime installed via winget (Memurai.MemuraiDeveloper)." -ForegroundColor Green
-                return $true
-            }
-        } catch {
-        }
+    if (Try-InstallMemuraiWithWinget) {
+        return $true
     }
 
-    $choco = Get-Command choco -ErrorAction SilentlyContinue
-    if ($choco) {
-        try {
-            choco install memurai-developer -y *> $null
-            if (Test-RedisRuntimeAvailable) {
-                Write-Host "Redis runtime installed via Chocolatey (memurai-developer)." -ForegroundColor Green
-                return $true
-            }
-        } catch {
-        }
+    if (Try-InstallMemuraiWithChocolatey) {
+        return $true
     }
 
     Write-Host "Memurai install unavailable. Attempting portable Redis runtime download..." -ForegroundColor Cyan
