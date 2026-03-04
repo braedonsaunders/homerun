@@ -202,6 +202,77 @@ function Find-PostgresBinDir {
     return $null
 }
 
+function Get-PostgresBinaryMajorVersion {
+    param([string]$PostgresBinDir)
+
+    $postgresExe = Join-Path $PostgresBinDir "postgres.exe"
+    if (-not (Test-Path $postgresExe)) {
+        return $null
+    }
+
+    try {
+        $versionOutput = (& $postgresExe --version 2>&1 | Out-String).Trim()
+    } catch {
+        return $null
+    }
+
+    $versionMatch = [regex]::Match($versionOutput, '(\d+)\.(\d+)')
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    try {
+        return [int]$versionMatch.Groups[1].Value
+    } catch {
+        return $null
+    }
+}
+
+function Move-PostgresDataDirToStale {
+    param([string]$DataDir)
+
+    if (-not (Test-Path $DataDir)) {
+        return
+    }
+
+    $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+    $staleDir = "${DataDir}.stale.${timestamp}"
+    try {
+        Move-Item -Path $DataDir -Destination $staleDir -Force -ErrorAction Stop
+        Write-Host "Moved incompatible Postgres data directory to $staleDir" -ForegroundColor Yellow
+    } catch {
+        # Fall back to best-effort cleanup if rename fails.
+        try {
+            $entries = Get-ChildItem -Path $DataDir -Force -ErrorAction SilentlyContinue
+            foreach ($entry in $entries) {
+                Remove-Item -Path $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host "Cleared stale Postgres data directory contents at $DataDir" -ForegroundColor Yellow
+        } catch {
+        }
+    }
+}
+
+function Show-PostgresInitLogs {
+    param(
+        [string]$InitStdoutPath,
+        [string]$InitStderrPath
+    )
+
+    if (Test-Path $InitStdoutPath) {
+        Write-Host "Postgres init stdout (tail):" -ForegroundColor Yellow
+        Get-Content -Path $InitStdoutPath -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  $_" -ForegroundColor DarkYellow
+        }
+    }
+    if (Test-Path $InitStderrPath) {
+        Write-Host "Postgres init stderr (tail):" -ForegroundColor Yellow
+        Get-Content -Path $InitStderrPath -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  $_" -ForegroundColor DarkYellow
+        }
+    }
+}
+
 function Find-MemuraiServer {
     if ($env:MEMURAI_EXE -and (Test-Path $env:MEMURAI_EXE)) {
         return $env:MEMURAI_EXE
@@ -709,26 +780,39 @@ function Start-PostgresLocal {
         return $false
     }
 
+    $binaryMajorVersion = Get-PostgresBinaryMajorVersion -PostgresBinDir $binDir
     $pgVersionPath = Join-Path $DataDir "PG_VERSION"
     $pgInitLogPath = Join-Path $DataDir "initdb.log"
     $pgInitErrLogPath = Join-Path $DataDir "initdb.err.log"
     $pgServerLogPath = Join-Path $DataDir "postgresql.log"
+
+    if (Test-Path $pgVersionPath) {
+        try {
+            $existingMajorText = (Get-Content -Path $pgVersionPath -TotalCount 1 -ErrorAction Stop | Out-String).Trim()
+            $existingMajorVersion = [int]$existingMajorText
+            if (($null -ne $binaryMajorVersion) -and ($existingMajorVersion -ne $binaryMajorVersion)) {
+                Write-Host "Postgres data dir version $existingMajorVersion is incompatible with installed Postgres $binaryMajorVersion. Reinitializing local data dir..." -ForegroundColor Yellow
+                Move-PostgresDataDirToStale -DataDir $DataDir
+                New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+                $pgVersionPath = Join-Path $DataDir "PG_VERSION"
+            }
+        } catch {
+        }
+    }
+
     if (-not (Test-Path $pgVersionPath)) {
         try {
-            $existingEntries = Get-ChildItem -Path $DataDir -Force -ErrorAction SilentlyContinue
-            if ($existingEntries) {
-                foreach ($entry in $existingEntries) {
-                    Remove-Item -Path $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                }
+            $existingEntries = @(Get-ChildItem -Path $DataDir -Force -ErrorAction SilentlyContinue)
+            if ($existingEntries.Count -gt 0) {
+                Move-PostgresDataDirToStale -DataDir $DataDir
+                New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
             }
 
             $initArgs = @(
                 "-D", $DataDir,
                 "-U", $User,
                 "--encoding=UTF8",
-                "--auth=trust",
-                "--auth-host=trust",
-                "--auth-local=trust",
+                "-A", "trust",
                 "--no-instructions"
             )
             $initProc = Start-Process -FilePath $initdbPath -ArgumentList $initArgs -RedirectStandardOutput $pgInitLogPath -RedirectStandardError $pgInitErrLogPath -WindowStyle Hidden -PassThru
@@ -736,11 +820,13 @@ function Start-PostgresLocal {
             if (-not $initProc.HasExited) {
                 Stop-Process -Id $initProc.Id -Force -ErrorAction SilentlyContinue
                 Write-Host "Postgres initialization timed out after 120s. See: $pgInitLogPath, $pgInitErrLogPath" -ForegroundColor Yellow
+                Show-PostgresInitLogs -InitStdoutPath $pgInitLogPath -InitStderrPath $pgInitErrLogPath
                 return $false
             }
             $initProc.Refresh()
             if ($initProc.ExitCode -ne 0) {
                 Write-Host "Postgres initialization failed. See: $pgInitLogPath, $pgInitErrLogPath" -ForegroundColor Yellow
+                Show-PostgresInitLogs -InitStdoutPath $pgInitLogPath -InitStderrPath $pgInitErrLogPath
                 return $false
             }
 
