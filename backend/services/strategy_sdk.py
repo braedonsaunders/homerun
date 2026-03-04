@@ -876,12 +876,39 @@ class StrategySDK:
         return str(value or "").strip().lower()
 
     @staticmethod
+    def normalize_trader_wallet_weights(
+        value: Any,
+        *,
+        min_weight: float = 0.0,
+        max_weight: float = 100.0,
+    ) -> dict[str, float]:
+        raw = value if isinstance(value, dict) else {}
+        weights: dict[str, float] = {}
+        floor = float(min_weight)
+        ceiling = max(float(max_weight), floor)
+        for raw_wallet, raw_weight in raw.items():
+            wallet = StrategySDK.normalize_trader_wallet(raw_wallet)
+            if not wallet:
+                continue
+            try:
+                parsed_weight = float(raw_weight)
+            except Exception:
+                continue
+            if parsed_weight != parsed_weight:
+                continue
+            weights[wallet] = max(floor, min(ceiling, parsed_weight))
+        return weights
+
+    @staticmethod
     def extract_trader_signal_wallets(signal: Any) -> set[str]:
         payload = signal if isinstance(signal, dict) else getattr(signal, "payload_json", None)
         if not isinstance(payload, dict):
             payload = {}
 
         wallets: set[str] = set()
+        direct_wallet = StrategySDK.normalize_trader_wallet(payload.get("wallet_address") or payload.get("source_wallet"))
+        if direct_wallet:
+            wallets.add(direct_wallet)
         for raw in payload.get("wallets") or []:
             normalized = StrategySDK.normalize_trader_wallet(raw)
             if normalized:
@@ -896,9 +923,30 @@ class StrategySDK:
             normalized = StrategySDK.normalize_trader_wallet(item.get("address"))
             if normalized:
                 wallets.add(normalized)
+        source_trade_payload = payload.get("source_trade")
+        source_trade_payload = source_trade_payload if isinstance(source_trade_payload, dict) else {}
+        source_wallet_payload = StrategySDK.normalize_trader_wallet(
+            source_trade_payload.get("wallet_address") or source_trade_payload.get("source_wallet")
+        )
+        if source_wallet_payload:
+            wallets.add(source_wallet_payload)
 
         strategy_context = payload.get("strategy_context")
         if isinstance(strategy_context, dict):
+            copy_event = strategy_context.get("copy_event")
+            copy_event = copy_event if isinstance(copy_event, dict) else {}
+            copy_wallet = StrategySDK.normalize_trader_wallet(
+                copy_event.get("wallet_address") or copy_event.get("source_wallet")
+            )
+            if copy_wallet:
+                wallets.add(copy_wallet)
+            source_trade = strategy_context.get("source_trade")
+            source_trade = source_trade if isinstance(source_trade, dict) else {}
+            source_wallet = StrategySDK.normalize_trader_wallet(
+                source_trade.get("wallet_address") or source_trade.get("source_wallet")
+            )
+            if source_wallet:
+                wallets.add(source_wallet)
             for raw in strategy_context.get("wallets") or []:
                 normalized = StrategySDK.normalize_trader_wallet(raw)
                 if normalized:
@@ -932,6 +980,35 @@ class StrategySDK:
                         wallets.add(normalized)
 
         return wallets
+
+    @staticmethod
+    def extract_primary_trader_signal_wallet(signal: Any) -> str:
+        payload = signal if isinstance(signal, dict) else getattr(signal, "payload_json", None)
+        if not isinstance(payload, dict):
+            payload = {}
+
+        strategy_context = payload.get("strategy_context")
+        strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+        copy_event = strategy_context.get("copy_event")
+        copy_event = copy_event if isinstance(copy_event, dict) else {}
+        source_trade = payload.get("source_trade")
+        source_trade = source_trade if isinstance(source_trade, dict) else {}
+
+        candidates = (
+            copy_event.get("wallet_address"),
+            copy_event.get("source_wallet"),
+            source_trade.get("wallet_address"),
+            source_trade.get("source_wallet"),
+            payload.get("wallet_address"),
+            payload.get("source_wallet"),
+        )
+        for raw in candidates:
+            wallet = StrategySDK.normalize_trader_wallet(raw)
+            if wallet:
+                return wallet
+
+        wallets = sorted(StrategySDK.extract_trader_signal_wallets(signal))
+        return wallets[0] if wallets else ""
 
     @staticmethod
     def build_trader_scope_runtime_context(

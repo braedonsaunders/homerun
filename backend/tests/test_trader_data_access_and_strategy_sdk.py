@@ -305,3 +305,33 @@ def test_strategy_sdk_match_trader_signal_scope_uses_runtime_context():
     matched, payload = StrategySDK.match_trader_signal_scope(signal, scope_context)
     assert matched is True
     assert payload["matched_modes"] == ["pool"]
+
+
+def test_strategy_sdk_normalize_trader_wallet_weights_clamps_and_filters():
+    weights = StrategySDK.normalize_trader_wallet_weights(
+        {
+            "0xAAA": "1.25",
+            "0xbbb": "-10",
+            "bad": "not-a-number",
+        },
+        min_weight=0.0,
+        max_weight=2.0,
+    )
+    assert weights == {
+        "0xaaa": 1.25,
+        "0xbbb": 0.0,
+    }
+
+
+def test_strategy_sdk_extract_primary_trader_signal_wallet_prefers_copy_context():
+    signal = {
+        "wallets": ["0x1111111111111111111111111111111111111111"],
+        "source_trade": {"wallet_address": "0x2222222222222222222222222222222222222222"},
+        "strategy_context": {
+            "copy_event": {"wallet_address": "0x3333333333333333333333333333333333333333"},
+        },
+    }
+    assert (
+        StrategySDK.extract_primary_trader_signal_wallet(signal)
+        == "0x3333333333333333333333333333333333333333"
+    )

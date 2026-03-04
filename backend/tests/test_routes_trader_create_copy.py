@@ -134,17 +134,17 @@ async def test_get_all_traders_rejects_invalid_mode():
         await routes_traders.get_all_traders(mode="both", session=object())
 
     assert excinfo.value.status_code == 422
-    assert excinfo.value.detail == "mode must be 'paper', 'shadow', or 'live'"
+    assert excinfo.value.detail == "mode must be 'shadow' or 'live'"
 
 
 @pytest.mark.asyncio
-async def test_start_trader_enables_and_unpauses(monkeypatch):
+async def test_start_trader_unpauses_active_trader(monkeypatch):
     session_obj = object()
     trader_id = "trader-1"
     existing = {
         "id": trader_id,
         "name": "Any Trader",
-        "is_enabled": False,
+        "is_enabled": True,
         "is_paused": True,
         "metadata": {"resume_policy": "resume_full"},
     }
@@ -160,6 +160,19 @@ async def test_start_trader_enables_and_unpauses(monkeypatch):
     sync_inventory_mock = AsyncMock(return_value=None)
     open_summary_mock = AsyncMock(return_value={"live": 0, "paper": 0})
     create_event_mock = AsyncMock(return_value=None)
+    copy_bootstrap_mock = AsyncMock(
+        return_value={
+            "trader_id": trader_id,
+            "status": "completed",
+            "reason": "ok",
+            "wallets_targeted": 2,
+            "wallets_scanned": 2,
+            "positions_seen": 4,
+            "positions_queued": 3,
+            "signals_created": 3,
+            "errors": [],
+        }
+    )
 
     monkeypatch.setattr(routes_traders, "_assert_not_globally_paused", lambda: None)
     monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value=existing))
@@ -168,22 +181,38 @@ async def test_start_trader_enables_and_unpauses(monkeypatch):
     monkeypatch.setattr(routes_traders, "sync_trader_position_inventory", sync_inventory_mock)
     monkeypatch.setattr(routes_traders, "get_open_position_summary_for_trader", open_summary_mock)
     monkeypatch.setattr(routes_traders, "create_trader_event", create_event_mock)
+    monkeypatch.setattr(
+        routes_traders.traders_copy_trade_signal_service,
+        "copy_existing_open_positions_for_trader",
+        copy_bootstrap_mock,
+    )
 
     result = await routes_traders.start_trader(trader_id=trader_id, session=session_obj)
 
-    assert result == updated
+    assert result["id"] == updated["id"]
+    assert result["is_enabled"] is True
+    assert result["is_paused"] is False
+    assert result["copy_bootstrap"]["status"] == "completed"
     update_trader_mock.assert_awaited_once()
     update_payload = update_trader_mock.await_args.args[2]
-    assert update_payload["is_enabled"] is True
+    assert "is_enabled" not in update_payload
     assert update_payload["is_paused"] is False
     assert update_payload["metadata"]["loss_streak_reset_reason"] == "operator_start"
     assert isinstance(update_payload["metadata"]["loss_streak_reset_at"], str)
     assert update_payload["metadata"]["loss_streak_reset_at"]
-    create_event_mock.assert_awaited_once()
-    event_kwargs = create_event_mock.await_args.kwargs
-    assert event_kwargs["event_type"] == "trader_started"
-    assert event_kwargs["message"] == "Trader resumed"
-    assert event_kwargs["payload"]["loss_streak_reset_at"] == update_payload["metadata"]["loss_streak_reset_at"]
+    copy_bootstrap_mock.assert_awaited_once_with(
+        trader_id=trader_id,
+        copy_existing_positions=None,
+    )
+    assert create_event_mock.await_count == 2
+    bootstrap_event = create_event_mock.await_args_list[0].kwargs
+    started_event = create_event_mock.await_args_list[1].kwargs
+    assert bootstrap_event["event_type"] == "trader_copy_bootstrap"
+    assert bootstrap_event["payload"]["status"] == "completed"
+    assert started_event["event_type"] == "trader_started"
+    assert started_event["message"] == "Trader resumed"
+    assert started_event["payload"]["loss_streak_reset_at"] == update_payload["metadata"]["loss_streak_reset_at"]
+    assert started_event["payload"]["copy_bootstrap"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -197,6 +226,197 @@ async def test_start_trader_returns_404_when_missing(monkeypatch):
 
     assert excinfo.value.status_code == 404
     assert excinfo.value.detail == "Trader not found"
+
+
+@pytest.mark.asyncio
+async def test_start_trader_forwards_copy_existing_override(monkeypatch):
+    session_obj = object()
+    trader_id = "trader-override"
+    existing = {
+        "id": trader_id,
+        "name": "Copy Trader",
+        "is_enabled": True,
+        "is_paused": True,
+        "metadata": {},
+    }
+    updated = {
+        "id": trader_id,
+        "name": "Copy Trader",
+        "is_enabled": True,
+        "is_paused": False,
+        "mode": "shadow",
+    }
+    copy_bootstrap_mock = AsyncMock(return_value={"status": "skipped", "reason": "operator_disabled_copy_existing_positions"})
+    monkeypatch.setattr(routes_traders, "_assert_not_globally_paused", lambda: None)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value=existing))
+    monkeypatch.setattr(routes_traders, "update_trader", AsyncMock(return_value=updated))
+    monkeypatch.setattr(routes_traders, "read_orchestrator_control", AsyncMock(return_value={"mode": "shadow"}))
+    monkeypatch.setattr(routes_traders, "sync_trader_position_inventory", AsyncMock(return_value=None))
+    monkeypatch.setattr(routes_traders, "get_open_position_summary_for_trader", AsyncMock(return_value={"live": 0, "shadow": 0}))
+    monkeypatch.setattr(routes_traders, "create_trader_event", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        routes_traders.traders_copy_trade_signal_service,
+        "copy_existing_open_positions_for_trader",
+        copy_bootstrap_mock,
+    )
+
+    await routes_traders.start_trader(
+        trader_id=trader_id,
+        request=routes_traders.TraderStartRequest(copy_existing_positions=False),
+        session=session_obj,
+    )
+
+    copy_bootstrap_mock.assert_awaited_once_with(
+        trader_id=trader_id,
+        copy_existing_positions=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_trader_rejects_inactive(monkeypatch):
+    session_obj = object()
+    trader_id = "inactive-trader"
+    monkeypatch.setattr(routes_traders, "_assert_not_globally_paused", lambda: None)
+    monkeypatch.setattr(
+        routes_traders,
+        "get_trader",
+        AsyncMock(
+            return_value={
+                "id": trader_id,
+                "mode": "shadow",
+                "is_enabled": False,
+                "is_paused": True,
+                "metadata": {},
+            }
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.start_trader(
+            trader_id=trader_id,
+            request=routes_traders.TraderStartRequest(),
+            session=session_obj,
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "trader_inactive"
+
+
+@pytest.mark.asyncio
+async def test_stop_trader_close_all_requires_live_confirm(monkeypatch):
+    trader_id = "live-trader"
+    monkeypatch.setattr(
+        routes_traders,
+        "get_trader",
+        AsyncMock(
+            return_value={
+                "id": trader_id,
+                "mode": "live",
+                "is_enabled": True,
+                "is_paused": False,
+            }
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.stop_trader(
+            trader_id=trader_id,
+            request=routes_traders.TraderStopRequest(
+                stop_lifecycle=routes_traders.TraderStopLifecycleMode.close_all_positions,
+                confirm_live=False,
+            ),
+            session=object(),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "confirm_live_required"
+
+
+@pytest.mark.asyncio
+async def test_stop_trader_close_all_requires_confirm_even_in_shadow_mode(monkeypatch):
+    trader_id = "shadow-trader-close-all"
+    monkeypatch.setattr(
+        routes_traders,
+        "get_trader",
+        AsyncMock(
+            return_value={
+                "id": trader_id,
+                "mode": "shadow",
+                "is_enabled": True,
+                "is_paused": False,
+            }
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.stop_trader(
+            trader_id=trader_id,
+            request=routes_traders.TraderStopRequest(
+                stop_lifecycle=routes_traders.TraderStopLifecycleMode.close_all_positions,
+                confirm_live=False,
+            ),
+            session=object(),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "confirm_live_required"
+
+
+@pytest.mark.asyncio
+async def test_stop_trader_close_shadow_runs_cleanup(monkeypatch):
+    session_obj = object()
+    trader_id = "shadow-trader"
+    monkeypatch.setattr(
+        routes_traders,
+        "get_trader",
+        AsyncMock(
+            return_value={
+                "id": trader_id,
+                "mode": "shadow",
+                "is_enabled": True,
+                "is_paused": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        routes_traders,
+        "set_trader_paused",
+        AsyncMock(
+            return_value={
+                "id": trader_id,
+                "mode": "shadow",
+                "is_enabled": True,
+                "is_paused": True,
+            }
+        ),
+    )
+    cleanup_orders_mock = AsyncMock(return_value={"updated": 2, "matched": 2})
+    reconcile_shadow_mock = AsyncMock(
+        return_value={"matched": 3, "closed": 2, "held": 1, "skipped": 0, "total_realized_pnl": 12.5}
+    )
+    sync_inventory_mock = AsyncMock(return_value=None)
+    create_event_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(routes_traders, "cleanup_trader_open_orders", cleanup_orders_mock)
+    monkeypatch.setattr(routes_traders, "reconcile_shadow_positions", reconcile_shadow_mock)
+    monkeypatch.setattr(routes_traders, "sync_trader_position_inventory", sync_inventory_mock)
+    monkeypatch.setattr(routes_traders, "create_trader_event", create_event_mock)
+
+    result = await routes_traders.stop_trader(
+        trader_id=trader_id,
+        request=routes_traders.TraderStopRequest(
+            stop_lifecycle=routes_traders.TraderStopLifecycleMode.close_shadow_positions,
+        ),
+        session=session_obj,
+    )
+
+    assert result["id"] == trader_id
+    assert result["stop_lifecycle"]["mode"] == "close_shadow_positions"
+    assert result["stop_lifecycle"]["cleanup"]["orders"]["updated"] == 2
+    assert result["stop_lifecycle"]["cleanup"]["shadow"]["closed"] == 2
+    cleanup_orders_mock.assert_awaited_once()
+    reconcile_shadow_mock.assert_awaited_once()
+    sync_inventory_mock.assert_awaited_once_with(session_obj, trader_id=trader_id, mode="shadow")
+    create_event_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -340,3 +560,50 @@ async def test_adopt_trader_live_wallet_position_maps_conflict(monkeypatch):
         )
 
     assert excinfo.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_get_trader_copy_analytics_forwards_params(monkeypatch):
+    session_obj = object()
+    trader_id = "trader-copy-1"
+    payload = {
+        "trader_id": trader_id,
+        "mode": "live",
+        "summary": {"total_orders": 3},
+        "leaders": [],
+    }
+    analytics_mock = AsyncMock(return_value=payload)
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value={"id": trader_id}))
+    monkeypatch.setattr(routes_traders, "get_trader_copy_analytics", analytics_mock)
+
+    result = await routes_traders.get_trader_copy_analytics_route(
+        trader_id=trader_id,
+        mode="live",
+        limit=250,
+        leader_limit=7,
+        session=session_obj,
+    )
+
+    assert result == payload
+    analytics_mock.assert_awaited_once_with(
+        session_obj,
+        trader_id=trader_id,
+        mode="live",
+        limit=250,
+        leader_limit=7,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_trader_copy_analytics_rejects_invalid_mode(monkeypatch):
+    monkeypatch.setattr(routes_traders, "get_trader", AsyncMock(return_value={"id": "trader-copy-1"}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes_traders.get_trader_copy_analytics_route(
+            trader_id="trader-copy-1",
+            mode="invalid",
+            session=object(),
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail == "mode must be 'shadow' or 'live'"

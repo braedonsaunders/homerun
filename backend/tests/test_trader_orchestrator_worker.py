@@ -679,7 +679,7 @@ def _base_control_payload() -> dict:
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
-                "live_market_context": {"enabled": False},
+                "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
         },
     }
@@ -757,7 +757,7 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
-                "live_market_context": {"enabled": False},
+                "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
             "paper_account_id": "paper-1",
         },
@@ -888,7 +888,7 @@ async def test_run_trader_once_emits_filtered_heartbeat_for_crypto_scope_prefilt
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
-                "live_market_context": {"enabled": False},
+                "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
             "paper_account_id": "paper-1",
         },
@@ -2151,7 +2151,7 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
-                "live_market_context": {"enabled": False},
+                "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
             "paper_account_id": "paper-1",
         },

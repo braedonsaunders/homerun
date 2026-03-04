@@ -431,6 +431,10 @@ BACKEND_DIR = PROJECT_ROOT / "backend"
 LOG_MAX_LINES = 5000
 LOG_TRIM_BATCH = 1000  # Remove this many lines when cap is hit
 LOG_FLUSH_MS = 500  # Flush buffered lines every N ms
+HEALTH_POLL_INTERVAL_SECONDS = 3.0
+HEALTH_REQUEST_TIMEOUT_SECONDS = 2.5
+HEALTH_FAILURES_BEFORE_OFFLINE = 2
+HEALTH_OFFLINE_GRACE_SECONDS = 10.0
 
 # Log level ordering for filter comparison
 LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
@@ -1141,6 +1145,10 @@ class HomerunApp(App):
         self._worker_last_state: dict[str, str] = {}
         self._worker_last_activity: dict[str, str] = {}
         self._worker_last_error: dict[str, str] = {}
+        self._health_poll_lock = threading.Lock()
+        self._health_poll_inflight = False
+        self._health_last_success_monotonic = 0.0
+        self._health_consecutive_failures = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -2164,8 +2172,8 @@ class HomerunApp(App):
 
     # ---- Periodic health polling ----
     def _poll_health(self) -> None:
-        """Set up a periodic timer to poll /health/detailed."""
-        self.set_interval(3.0, self._fetch_health)
+        """Set up a periodic timer to poll /health/tui."""
+        self.set_interval(HEALTH_POLL_INTERVAL_SECONDS, self._fetch_health)
 
     @work(thread=True)
     def _fetch_health(self) -> None:
@@ -2173,19 +2181,29 @@ class HomerunApp(App):
         import urllib.request
         import urllib.error
 
+        with self._health_poll_lock:
+            if self._health_poll_inflight:
+                return
+            self._health_poll_inflight = True
+
         try:
             req = urllib.request.Request(HEALTH_URL, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=HEALTH_REQUEST_TIMEOUT_SECONDS) as resp:
                 data = json.loads(resp.read().decode())
                 self.call_from_thread(self._apply_health, data)
         except (urllib.error.URLError, Exception):
             self.call_from_thread(self._apply_health_offline)
+        finally:
+            with self._health_poll_lock:
+                self._health_poll_inflight = False
 
     def _apply_health(self, data: dict) -> None:
         """Update all dashboard widgets from health data."""
         self.backend_healthy = True
         self.health_data = data
         self.health_poll_count += 1
+        self._health_consecutive_failures = 0
+        self._health_last_success_monotonic = time.monotonic()
         services = data.get("services", {})
         workers = data.get("workers")
         if workers is None:
@@ -2217,7 +2235,16 @@ class HomerunApp(App):
         self._update_runtime_metrics()
 
     def _apply_health_offline(self) -> None:
-        """Mark backend as offline; check worker/frontend processes directly."""
+        """Mark backend as offline after bounded health poll failure debounce."""
+        self._health_consecutive_failures += 1
+        if self._health_last_success_monotonic > 0:
+            if self._health_consecutive_failures < HEALTH_FAILURES_BEFORE_OFFLINE:
+                self._update_runtime_metrics()
+                return
+            age_since_success = time.monotonic() - self._health_last_success_monotonic
+            if age_since_success < HEALTH_OFFLINE_GRACE_SECONDS:
+                self._update_runtime_metrics()
+                return
         self.backend_healthy = False
         self._update_platform_item("svc-backend", "BACKEND", False)
         self._update_platform_item("svc-database", "DATABASE", False)

@@ -541,6 +541,7 @@ async def _run_loop() -> None:
                     deduped_opportunities,
                     source="traders",
                     sweep_missing=True,
+                    refresh_prices=False,
                 )
                 await shared_state.write_traders_snapshot(
                     session,

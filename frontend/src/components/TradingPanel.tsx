@@ -26,8 +26,10 @@ import {
   Zap,
 } from 'lucide-react'
 import {
+  activateTrader,
   armTraderOrchestratorLiveStart,
   createTrader,
+  deactivateTrader,
   deleteTrader,
   getAllTraderDecisions,
   getAllTraderOrders,
@@ -45,8 +47,10 @@ import {
   runTraderOnce,
   runTraderOrchestratorLivePreflight,
   setTraderOrchestratorLiveKillSwitch,
+  startTrader,
   startTraderOrchestrator,
   startTraderOrchestratorLive,
+  stopTrader,
   stopTraderOrchestrator,
   stopTraderOrchestratorLive,
   runTraderTuneIteration,
@@ -54,6 +58,8 @@ import {
   type TraderConfigSchema,
   type TraderEvent,
   type TraderOrder,
+  type TraderStopPayload,
+  type TraderStopLifecycleMode,
   type TraderSourceConfig,
   type TraderSource,
   type TraderTuneAgentResponse,
@@ -94,7 +100,7 @@ type PositionSortDirection = 'asc' | 'desc'
 type BotRosterSort = 'name_asc' | 'name_desc' | 'pnl_desc' | 'pnl_asc' | 'open_desc' | 'activity_desc'
 type BotRosterGroupBy = 'none' | 'status' | 'source'
 type TerminalDensity = 'compact' | 'expanded'
-type TraderToggleAction = 'enable' | 'disable'
+type TraderToggleAction = 'start' | 'stop' | 'activate' | 'deactivate'
 
 const TRADE_STATUS_FILTER_OPTIONS: Array<{ value: TradeStatusFilter; label: string }> = [
   { value: 'all', label: 'all' },
@@ -194,7 +200,7 @@ type BotMarketModalState = {
   scope: BotMarketModalScope
 }
 
-type TraderRuntimeStatus = 'running' | 'paused_engine' | 'disabled'
+type TraderRuntimeStatus = 'running' | 'engine_stopped' | 'bot_stopped' | 'inactive'
 
 type TraderStatusPresentation = {
   key: TraderRuntimeStatus
@@ -1223,24 +1229,40 @@ function isTraderExecutionEnabled(
   return Boolean(trader?.is_enabled) && !Boolean(trader?.is_paused)
 }
 
+function isTraderActive(
+  trader: Pick<Trader, 'is_enabled'> | null | undefined
+): boolean {
+  return Boolean(trader?.is_enabled)
+}
+
 function resolveTraderStatusPresentation(
   trader: Pick<Trader, 'is_enabled' | 'is_paused'> | null | undefined,
   orchestratorExecutionActive: boolean
 ): TraderStatusPresentation {
-  if (!isTraderExecutionEnabled(trader)) {
+  if (!isTraderActive(trader)) {
     return {
-      key: 'disabled',
-      label: 'Disabled',
+      key: 'inactive',
+      label: 'Inactive',
       dotClassName: 'bg-zinc-500',
       badgeVariant: 'outline',
       badgeClassName: '',
     }
   }
 
+  if (Boolean(trader?.is_paused)) {
+    return {
+      key: 'bot_stopped',
+      label: 'Bot Stopped',
+      dotClassName: 'bg-slate-400',
+      badgeVariant: 'outline',
+      badgeClassName: 'border-slate-400/35 bg-slate-500/10 text-slate-300',
+    }
+  }
+
   if (!orchestratorExecutionActive) {
     return {
-      key: 'paused_engine',
-      label: 'Paused (Engine)',
+      key: 'engine_stopped',
+      label: 'Engine Stopped',
       dotClassName: 'bg-amber-400',
       badgeVariant: 'outline',
       badgeClassName: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
@@ -2609,6 +2631,32 @@ function traderSourceKeys(trader: Trader): string[] {
   return []
 }
 
+function isTradersCopyTradeSourceConfig(sourceConfig: TraderSourceConfig | null | undefined): boolean {
+  if (!sourceConfig) return false
+  const sourceKey = normalizeSourceKey(String(sourceConfig.source_key || ''))
+  const strategyKey = String(sourceConfig.strategy_key || '').trim().toLowerCase()
+  return sourceKey === 'traders' && strategyKey === 'traders_copy_trade'
+}
+
+function traderHasCopyTradeSource(trader: Trader | null | undefined): boolean {
+  if (!trader || !Array.isArray(trader.source_configs)) return false
+  return trader.source_configs.some((sourceConfig) => isTradersCopyTradeSourceConfig(sourceConfig))
+}
+
+function traderCopyExistingOnStartDefault(trader: Trader | null | undefined): boolean {
+  if (!trader || !Array.isArray(trader.source_configs)) return false
+  for (const sourceConfig of trader.source_configs) {
+    if (!isTradersCopyTradeSourceConfig(sourceConfig)) continue
+    const params = isRecord(sourceConfig.strategy_params)
+      ? (sourceConfig.strategy_params as Record<string, unknown>)
+      : {}
+    if (toBoolean(params.copy_existing_positions_on_start, false)) {
+      return true
+    }
+  }
+  return false
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
@@ -3856,6 +3904,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [botRosterSort, setBotRosterSort] = useState<BotRosterSort>('name_asc')
   const [botRosterGroupBy, setBotRosterGroupBy] = useState<BotRosterGroupBy>('status')
   const [confirmLiveStartOpen, setConfirmLiveStartOpen] = useState(false)
+  const [confirmTraderStartOpen, setConfirmTraderStartOpen] = useState(false)
+  const [confirmTraderStopOpen, setConfirmTraderStopOpen] = useState(false)
+  const [enableCopyExistingPositions, setEnableCopyExistingPositions] = useState(false)
+  const [stopLifecycleMode, setStopLifecycleMode] = useState<TraderStopLifecycleMode>('keep_positions')
+  const [stopConfirmLiveClose, setStopConfirmLiveClose] = useState(false)
   const [globalSettingsFlyoutOpen, setGlobalSettingsFlyoutOpen] = useState(false)
   const [globalSettingsSaveError, setGlobalSettingsSaveError] = useState<string | null>(null)
   const [controlActionError, setControlActionError] = useState<string | null>(null)
@@ -4195,6 +4248,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   )
   const selectedTraderSourceConfigs = useMemo(
     () => (Array.isArray(selectedTrader?.source_configs) ? selectedTrader.source_configs : []),
+    [selectedTrader]
+  )
+  const selectedTraderHasCopySource = useMemo(
+    () => traderHasCopyTradeSource(selectedTrader),
+    [selectedTrader]
+  )
+  const selectedTraderCopyExistingOnStartDefault = useMemo(
+    () => traderCopyExistingOnStartDefault(selectedTrader),
     [selectedTrader]
   )
 
@@ -5287,13 +5348,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     },
   })
 
-  const traderEnableMutation = useMutation({
-    mutationFn: (traderId: string) => updateTrader(traderId, { is_enabled: true, is_paused: false }),
-    onMutate: (traderId: string) => {
+  const traderStartMutation = useMutation({
+    mutationFn: ({ traderId, copyExistingPositions }: { traderId: string; copyExistingPositions?: boolean }) =>
+      startTrader(traderId, { copy_existing_positions: copyExistingPositions }),
+    onMutate: ({ traderId }: { traderId: string; copyExistingPositions?: boolean }) => {
       setSaveError(null)
       setTraderTogglePendingById((current) => ({
         ...current,
-        [traderId]: 'enable',
+        [traderId]: 'start',
       }))
     },
     onSuccess: (updatedTrader) => {
@@ -5309,9 +5371,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       refreshAll()
     },
     onError: (error: unknown) => {
-      setSaveError(errorMessage(error, 'Failed to enable bot'))
+      setSaveError(errorMessage(error, 'Failed to start bot'))
     },
-    onSettled: (_data, _error, traderId) => {
+    onSettled: (_data, _error, variables) => {
+      const traderId = variables?.traderId
       if (!traderId) return
       setTraderTogglePendingById((current) => {
         if (!(traderId in current)) return current
@@ -5322,13 +5385,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     },
   })
 
-  const traderDisableMutation = useMutation({
-    mutationFn: (traderId: string) => updateTrader(traderId, { is_enabled: false, is_paused: true }),
-    onMutate: (traderId: string) => {
+  const traderStopMutation = useMutation({
+    mutationFn: ({ traderId, payload }: { traderId: string; payload: TraderStopPayload }) =>
+      stopTrader(traderId, payload),
+    onMutate: ({ traderId }: { traderId: string; payload: TraderStopPayload }) => {
       setSaveError(null)
       setTraderTogglePendingById((current) => ({
         ...current,
-        [traderId]: 'disable',
+        [traderId]: 'stop',
       }))
     },
     onSuccess: (updatedTrader) => {
@@ -5344,9 +5408,82 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       refreshAll()
     },
     onError: (error: unknown) => {
-      setSaveError(errorMessage(error, 'Failed to disable bot'))
+      setSaveError(errorMessage(error, 'Failed to stop bot'))
     },
-    onSettled: (_data, _error, traderId) => {
+    onSettled: (_data, _error, variables) => {
+      const traderId = variables?.traderId
+      if (!traderId) return
+      setTraderTogglePendingById((current) => {
+        if (!(traderId in current)) return current
+        const next = { ...current }
+        delete next[traderId]
+        return next
+      })
+    },
+  })
+
+  const traderActivateMutation = useMutation({
+    mutationFn: ({ traderId }: { traderId: string }) => activateTrader(traderId, {}),
+    onMutate: ({ traderId }: { traderId: string }) => {
+      setSaveError(null)
+      setTraderTogglePendingById((current) => ({
+        ...current,
+        [traderId]: 'activate',
+      }))
+    },
+    onSuccess: (updatedTrader) => {
+      queryClient.setQueriesData({ queryKey: ['traders-list'] }, (current: unknown) => {
+        if (!Array.isArray(current)) return current
+        return current.map((candidate) => {
+          if (!candidate || typeof candidate !== 'object') return candidate
+          const trader = candidate as Trader
+          if (trader.id !== updatedTrader.id) return candidate
+          return updatedTrader
+        })
+      })
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setSaveError(errorMessage(error, 'Failed to activate bot'))
+    },
+    onSettled: (_data, _error, variables) => {
+      const traderId = variables?.traderId
+      if (!traderId) return
+      setTraderTogglePendingById((current) => {
+        if (!(traderId in current)) return current
+        const next = { ...current }
+        delete next[traderId]
+        return next
+      })
+    },
+  })
+
+  const traderDeactivateMutation = useMutation({
+    mutationFn: ({ traderId }: { traderId: string }) => deactivateTrader(traderId, {}),
+    onMutate: ({ traderId }: { traderId: string }) => {
+      setSaveError(null)
+      setTraderTogglePendingById((current) => ({
+        ...current,
+        [traderId]: 'deactivate',
+      }))
+    },
+    onSuccess: (updatedTrader) => {
+      queryClient.setQueriesData({ queryKey: ['traders-list'] }, (current: unknown) => {
+        if (!Array.isArray(current)) return current
+        return current.map((candidate) => {
+          if (!candidate || typeof candidate !== 'object') return candidate
+          const trader = candidate as Trader
+          if (trader.id !== updatedTrader.id) return candidate
+          return updatedTrader
+        })
+      })
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setSaveError(errorMessage(error, 'Failed to set bot inactive'))
+    },
+    onSettled: (_data, _error, variables) => {
+      const traderId = variables?.traderId
       if (!traderId) return
       setTraderTogglePendingById((current) => {
         if (!(traderId in current)) return current
@@ -5657,7 +5794,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const orchestratorWorkerRunning = Boolean(worker?.running)
   const orchestratorRunning = orchestratorEnabled && orchestratorWorkerRunning
   const orchestratorControlMismatch = orchestratorWorkerRunning && !orchestratorEnabled
-  const orchestratorStartStopActive = orchestratorEnabled || orchestratorWorkerRunning
+  const orchestratorStartStopActive = orchestratorEnabled
   const orchestratorBlocked = orchestratorEnabled && !orchestratorWorkerRunning && workerActivity.startsWith('blocked')
   const orchestratorStatusLabel = orchestratorBlocked
     ? 'BLOCKED'
@@ -6667,7 +6804,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         resolved: toNumber(performance?.resolved),
         pnl: toNumber(performance?.pnl),
         latestActivityTs,
-        isInactive: !isTraderExecutionEnabled(trader),
+        isInactive: !isTraderActive(trader),
       }
     })
   }, [orchestratorRunning, sourceLabelByKey, traderPerformanceById, traders])
@@ -6726,12 +6863,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         if (row.status.key === 'running') {
           label = 'Running'
           order = 0
-        } else if (row.status.key === 'paused_engine') {
-          label = 'Paused (Engine)'
+        } else if (row.status.key === 'engine_stopped') {
+          label = 'Engine Stopped'
           order = 1
+        } else if (row.status.key === 'bot_stopped') {
+          label = 'Bot Stopped'
+          order = 2
         } else {
           label = 'Inactive'
-          order = 2
+          order = 3
         }
       } else {
         key = row.primarySourceKey
@@ -7002,7 +7142,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     })
   }, [allBotsLeaderboardRows, allBotsOverviewBuckets, allOrders])
 
-  const enabledTraderCount = useMemo(
+  const activeTraderCount = useMemo(
+    () => traders.filter((trader) => isTraderActive(trader)).length,
+    [traders]
+  )
+
+  const startedTraderCount = useMemo(
     () => traders.filter((trader) => isTraderExecutionEnabled(trader)).length,
     [traders]
   )
@@ -7022,14 +7167,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     ? 'Signal events wake matching bots immediately, with high-frequency monitoring active for crypto bots.'
     : 'Signal events wake matching bots immediately; fallback intervals apply when no new events arrive.'
 
-  const disabledTraderCount = useMemo(
-    () => Math.max(0, traders.length - enabledTraderCount),
-    [traders.length, enabledTraderCount]
+  const inactiveTraderCount = useMemo(
+    () => Math.max(0, traders.length - activeTraderCount),
+    [traders.length, activeTraderCount]
   )
 
   const runningTraderCount = useMemo(
-    () => (orchestratorRunning ? enabledTraderCount : 0),
-    [orchestratorRunning, enabledTraderCount]
+    () => (orchestratorRunning ? startedTraderCount : 0),
+    [orchestratorRunning, startedTraderCount]
   )
 
 
@@ -7098,16 +7243,95 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     ? traderTogglePendingById[selectedTrader.id] || null
     : null
   const selectedTraderExecutionEnabled = isTraderExecutionEnabled(selectedTrader)
-  const selectedTraderCanEnable = Boolean(
+  const selectedTraderIsActive = Boolean(selectedTrader?.is_enabled)
+  const selectedTraderIsStopped = Boolean(selectedTrader?.is_paused)
+  const selectedTraderCanStart = Boolean(
     selectedTrader
-    && !selectedTraderExecutionEnabled
-    && selectedTraderPendingAction !== 'enable'
+    && selectedTraderIsActive
+    && selectedTraderIsStopped
+    && selectedTraderPendingAction !== 'start'
   )
-  const selectedTraderCanDisable = Boolean(
-    selectedTrader?.is_enabled
-    && selectedTraderPendingAction !== 'disable'
+  const selectedTraderCanStop = Boolean(
+    selectedTrader
+    && selectedTraderIsActive
+    && !selectedTraderIsStopped
+    && selectedTraderPendingAction !== 'stop'
+  )
+  const selectedTraderCanActivate = Boolean(
+    selectedTrader
+    && !selectedTraderIsActive
+    && selectedTraderPendingAction !== 'activate'
+  )
+  const selectedTraderCanDeactivate = Boolean(
+    selectedTrader
+    && selectedTraderIsActive
+    && selectedTraderPendingAction !== 'deactivate'
   )
   const selectedTraderControlPending = selectedTraderPendingAction !== null
+  const stopLifecycleNeedsLiveConfirm = Boolean(
+    selectedTrader
+    && stopLifecycleMode === 'close_all_positions'
+  )
+
+  const requestStartTrader = () => {
+    if (!selectedTrader || selectedTraderControlPending) return
+    if (!selectedTraderIsActive) {
+      setSaveError('Activate this bot before starting it.')
+      return
+    }
+    if (selectedTraderHasCopySource) {
+      setEnableCopyExistingPositions(selectedTraderCopyExistingOnStartDefault)
+      setConfirmTraderStartOpen(true)
+      return
+    }
+    traderStartMutation.mutate({ traderId: selectedTrader.id })
+  }
+
+  const confirmStartTrader = () => {
+    if (!selectedTrader) return
+    setConfirmTraderStartOpen(false)
+    traderStartMutation.mutate({
+      traderId: selectedTrader.id,
+      copyExistingPositions: selectedTraderHasCopySource ? enableCopyExistingPositions : undefined,
+    })
+  }
+
+  const requestStopTrader = () => {
+    if (!selectedTrader || selectedTraderControlPending) return
+    if (!selectedTraderIsActive) {
+      setSaveError('This bot is inactive and already not running.')
+      return
+    }
+    setStopLifecycleMode('keep_positions')
+    setStopConfirmLiveClose(false)
+    setConfirmTraderStopOpen(true)
+  }
+
+  const confirmStopTrader = () => {
+    if (!selectedTrader) return
+    if (stopLifecycleNeedsLiveConfirm && !stopConfirmLiveClose) {
+      setSaveError('Enable "confirm live close" before requesting live position cleanup.')
+      return
+    }
+    setConfirmTraderStopOpen(false)
+    traderStopMutation.mutate({
+      traderId: selectedTrader.id,
+      payload: {
+        stop_lifecycle: stopLifecycleMode,
+        confirm_live: stopLifecycleNeedsLiveConfirm ? stopConfirmLiveClose : undefined,
+      },
+    })
+  }
+
+  const requestActivateTrader = () => {
+    if (!selectedTrader || selectedTraderControlPending) return
+    traderActivateMutation.mutate({ traderId: selectedTrader.id })
+  }
+
+  const requestDeactivateTrader = () => {
+    if (!selectedTrader || selectedTraderControlPending) return
+    traderDeactivateMutation.mutate({ traderId: selectedTrader.id })
+  }
 
   useEffect(() => {
     if (!tuneAutoEnabled) return
@@ -7498,7 +7722,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 </div>
                                 <div className="shrink-0 flex items-center gap-1 text-[9px] text-cyan-300">
                                   <Loader2 className="w-3 h-3 animate-spin" />
-                                  {pendingToggleAction === 'enable' ? 'Enabling...' : 'Disabling...'}
+                                  {pendingToggleAction === 'start'
+                                    ? 'Starting...'
+                                    : pendingToggleAction === 'stop'
+                                      ? 'Stopping...'
+                                      : pendingToggleAction === 'activate'
+                                        ? 'Activating...'
+                                        : 'Deactivating...'}
                                 </div>
                               </div>
                             ) : (
@@ -7549,8 +7779,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1.5">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Running Bots</p>
-                      <p className="text-sm font-mono">{runningTraderCount}/{enabledTraderCount}</p>
-                      <p className="text-[10px] text-muted-foreground">Disabled {disabledTraderCount}</p>
+                      <p className="text-sm font-mono">{runningTraderCount}/{activeTraderCount}</p>
+                      <p className="text-[10px] text-muted-foreground">Inactive {inactiveTraderCount}</p>
                     </div>
                     <div className="rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2.5 py-1.5">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Selected Signals</p>
@@ -8429,10 +8659,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     className={cn('h-5 px-1.5 text-[10px]', selectedTraderStatus.badgeClassName)}
                     variant={selectedTraderStatus.badgeVariant}
                   >
-                    {selectedTraderPendingAction === 'enable'
-                      ? 'Enabling...'
-                      : selectedTraderPendingAction === 'disable'
-                        ? 'Disabling...'
+                    {selectedTraderPendingAction === 'start'
+                      ? 'Starting...'
+                      : selectedTraderPendingAction === 'stop'
+                        ? 'Stopping...'
+                        : selectedTraderPendingAction === 'activate'
+                          ? 'Activating...'
+                          : selectedTraderPendingAction === 'deactivate'
+                            ? 'Deactivating...'
                         : selectedTraderStatus.label}
                   </Badge>
                   <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-muted-foreground">
@@ -8451,16 +8685,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       size="sm"
                       variant="outline"
                       className="h-6 px-2 text-[10px]"
-                      disabled={selectedTraderControlPending || !selectedTraderCanEnable}
-                      onClick={() => traderEnableMutation.mutate(selectedTrader.id)}
+                      disabled={selectedTraderControlPending || !selectedTraderCanStart}
+                      onClick={requestStartTrader}
                     >
-                      {selectedTraderPendingAction === 'enable' ? (
+                      {selectedTraderPendingAction === 'start' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Enabling...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Starting...
                         </>
                       ) : (
                         <>
-                          <Play className="w-3 h-3 mr-0.5" /> Enable
+                          <Play className="w-3 h-3 mr-0.5" /> Start
                         </>
                       )}
                     </Button>
@@ -8468,16 +8702,44 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       size="sm"
                       variant="outline"
                       className="h-6 px-2 text-[10px]"
-                      disabled={selectedTraderControlPending || !selectedTraderCanDisable}
-                      onClick={() => traderDisableMutation.mutate(selectedTrader.id)}
+                      disabled={selectedTraderControlPending || !selectedTraderCanStop}
+                      onClick={requestStopTrader}
                     >
-                      {selectedTraderPendingAction === 'disable' ? (
+                      {selectedTraderPendingAction === 'stop' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Disabling...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Stopping...
                         </>
                       ) : (
                         <>
-                          <Square className="w-3 h-3 mr-0.5" /> Disable
+                          <Square className="w-3 h-3 mr-0.5" /> Stop
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={selectedTraderIsActive ? 'secondary' : 'outline'}
+                      className="h-6 px-2 text-[10px]"
+                      disabled={
+                        selectedTraderControlPending
+                        || (selectedTraderIsActive ? !selectedTraderCanDeactivate : !selectedTraderCanActivate)
+                      }
+                      onClick={selectedTraderIsActive ? requestDeactivateTrader : requestActivateTrader}
+                    >
+                      {selectedTraderPendingAction === 'activate' ? (
+                        <>
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Activating...
+                        </>
+                      ) : selectedTraderPendingAction === 'deactivate' ? (
+                        <>
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Deactivating...
+                        </>
+                      ) : selectedTraderIsActive ? (
+                        <>
+                          <Square className="w-3 h-3 mr-0.5" /> Deactivate
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3 h-3 mr-0.5" /> Activate
                         </>
                       )}
                     </Button>
@@ -8988,7 +9250,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                       <Label className="text-[11px] text-muted-foreground">Auto Agent</Label>
                                       <div className="mt-1 flex h-8 items-center justify-between rounded-md border border-border/60 bg-background px-2">
                                         <span className="text-[10px] text-muted-foreground">
-                                          {selectedTraderExecutionEnabled ? 'while trading' : 'bot disabled'}
+                                          {selectedTraderExecutionEnabled ? 'while trading' : 'bot stopped/inactive'}
                                         </span>
                                         <Switch
                                           checked={tuneAutoEnabled}
@@ -9679,6 +9941,110 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
             >
               {startBySelectedAccountMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Confirm Start Live
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmTraderStartOpen} onOpenChange={setConfirmTraderStartOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start Trader</DialogTitle>
+            <DialogDescription>
+              Start this active trader and optionally seed copy signals from currently open source-wallet positions.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedTraderHasCopySource ? (
+            <div className="rounded-md border border-border p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium">Copy existing open positions on start</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Generates startup copy signals for current source-wallet positions in configured scope.
+                  </p>
+                </div>
+                <Switch
+                  checked={enableCopyExistingPositions}
+                  onCheckedChange={setEnableCopyExistingPositions}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Strategy default: {selectedTraderCopyExistingOnStartDefault ? 'enabled' : 'disabled'}.
+              </p>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmTraderStartOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmStartTrader}
+              disabled={traderStartMutation.isPending || !selectedTrader}
+            >
+              {traderStartMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Start Trader
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmTraderStopOpen} onOpenChange={setConfirmTraderStopOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Stop Trader</DialogTitle>
+            <DialogDescription>
+              Stop this trader and choose how existing positions/orders should be handled.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label>Stop lifecycle</Label>
+              <Select
+                value={stopLifecycleMode}
+                onValueChange={(value) => {
+                  setStopLifecycleMode(value as TraderStopLifecycleMode)
+                  setStopConfirmLiveClose(false)
+                }}
+              >
+                <SelectTrigger className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep_positions">Keep existing positions</SelectItem>
+                  <SelectItem value="close_shadow_positions">Close shadow positions</SelectItem>
+                  <SelectItem value="close_all_positions">Close live + shadow positions</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {stopLifecycleNeedsLiveConfirm ? (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-medium text-amber-700 dark:text-amber-100">Confirm live close</p>
+                    <p className="text-[11px] text-amber-700/90 dark:text-amber-100/90">
+                      This action can close live positions and cancel live open orders.
+                    </p>
+                  </div>
+                  <Switch checked={stopConfirmLiveClose} onCheckedChange={setStopConfirmLiveClose} />
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmTraderStopOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmStopTrader}
+              disabled={
+                traderStopMutation.isPending
+                || !selectedTrader
+                || (stopLifecycleNeedsLiveConfirm && !stopConfirmLiveClose)
+              }
+            >
+              {traderStopMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Stop Trader
             </Button>
           </DialogFooter>
         </DialogContent>

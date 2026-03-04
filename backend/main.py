@@ -537,6 +537,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize live execution service if credentials are configured
         trading_initialized = await live_execution_service.initialize()
+        await traders_copy_trade_signal_service.refresh_scope()
         if trading_initialized:
             logger.info("Live execution service initialized")
         else:

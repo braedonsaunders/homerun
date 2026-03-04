@@ -3293,25 +3293,66 @@ from sqlalchemy import event as _sa_event
 
 _db_logger = _logging.getLogger("homerun.db.pool")
 
+
+def _pool_task_context() -> tuple[str, str]:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return "sync", "sync"
+    if task is None:
+        return "unknown", "unknown"
+    task_name = "unknown"
+    try:
+        task_name = task.get_name() or f"task-{id(task)}"
+    except Exception:
+        task_name = f"task-{id(task)}"
+    coro = task.get_coro()
+    coro_name = getattr(coro, "__qualname__", getattr(coro, "__name__", type(coro).__name__))
+    return task_name, str(coro_name or "unknown")
+
+
 @_sa_event.listens_for(async_engine.sync_engine, "checkout")
 def _on_checkout(dbapi_connection, connection_record, connection_proxy):
+    task_name, coro_name = _pool_task_context()
     connection_record.info["checkout_time"] = _time.monotonic()
+    connection_record.info["checkout_task_name"] = task_name
+    connection_record.info["checkout_task_coro"] = coro_name
 
 @_sa_event.listens_for(async_engine.sync_engine, "checkin")
 def _on_checkin(dbapi_connection, connection_record):
     checkout_time = connection_record.info.pop("checkout_time", None)
+    checkout_task_name = connection_record.info.pop("checkout_task_name", "unknown")
+    checkout_task_coro = connection_record.info.pop("checkout_task_coro", "unknown")
     if checkout_time is not None:
         elapsed = _time.monotonic() - checkout_time
         if elapsed > 15.0:
             _db_logger.warning(
-                "Connection held for %.1fs before return to pool", elapsed
+                "Connection held for %.1fs before return to pool (task=%s, coro=%s)",
+                elapsed,
+                checkout_task_name,
+                checkout_task_coro,
             )
 
 @_sa_event.listens_for(async_engine.sync_engine, "invalidate")
 def _on_invalidate(dbapi_connection, connection_record, exception):
+    checkout_time = connection_record.info.get("checkout_time")
+    checkout_task_name = connection_record.info.get("checkout_task_name", "unknown")
+    checkout_task_coro = connection_record.info.get("checkout_task_coro", "unknown")
+    if checkout_time is not None:
+        elapsed = _time.monotonic() - checkout_time
+        _db_logger.warning(
+            "Connection invalidated after %.1fs checked out (exception=%s, task=%s, coro=%s)",
+            elapsed,
+            type(exception).__name__ if exception else "None",
+            checkout_task_name,
+            checkout_task_coro,
+        )
+        return
     _db_logger.warning(
-        "Connection invalidated (exception=%s)",
+        "Connection invalidated (exception=%s, task=%s, coro=%s)",
         type(exception).__name__ if exception else "None",
+        checkout_task_name,
+        checkout_task_coro,
     )
 
 AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, expire_on_commit=False)

@@ -687,6 +687,7 @@ async def _run_loop() -> None:
                             opportunities,
                             source="events",
                             sweep_missing=True,
+                            refresh_prices=False,
                         )
             except Exception as exc:
                 logger.warning("Events DataEvent dispatch/bridge failed: %s", exc)

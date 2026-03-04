@@ -369,6 +369,8 @@ async def build_live_signal_contexts(
     market_fetch_timeout_seconds: float = 3.0,
     prices_batch_timeout_seconds: float = 3.0,
     history_fetch_timeout_seconds: float = 3.0,
+    strict_ws_only: bool = False,
+    allow_redis_strict: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Fetch live market prices + movement context for a set of trade signals."""
     signal_rows: list[dict[str, Any]] = []
@@ -415,14 +417,15 @@ async def build_live_signal_contexts(
             market_infos[market_id] = merged
 
     market_ids_to_fetch: list[str] = []
-    for market_id in market_ids:
-        existing = market_infos.get(market_id) or {}
-        yes_hint, no_hint = _extract_yes_no_tokens(existing)
-        if yes_hint is not None or no_hint is not None:
-            continue
-        if _is_token_id(market_id):
-            continue
-        market_ids_to_fetch.append(market_id)
+    if not strict_ws_only:
+        for market_id in market_ids:
+            existing = market_infos.get(market_id) or {}
+            yes_hint, no_hint = _extract_yes_no_tokens(existing)
+            if yes_hint is not None or no_hint is not None:
+                continue
+            if _is_token_id(market_id):
+                continue
+            market_ids_to_fetch.append(market_id)
     await asyncio.gather(*[_resolve_market(mid) for mid in market_ids_to_fetch])
 
     yes_no_tokens_by_market: dict[str, tuple[Optional[str], Optional[str]]] = {}
@@ -438,6 +441,26 @@ async def build_live_signal_contexts(
             all_market_tokens.add(yes_token)
         if no_token:
             all_market_tokens.add(no_token)
+
+    selected_tokens: set[str] = set()
+    selected_token_by_signal: dict[str, Optional[str]] = {}
+    for row in signal_rows:
+        signal_id = row["signal_id"]
+        market_id = row["market_lookup_id"]
+        direction = row["direction"]
+        yes_token, no_token = yes_no_tokens_by_market.get(market_id, (None, None))
+
+        selected: Optional[str] = None
+        if direction == "buy_yes":
+            selected = yes_token
+        elif direction == "buy_no":
+            selected = no_token
+        else:
+            selected = yes_token or no_token
+
+        selected_token_by_signal[signal_id] = selected
+        if selected:
+            selected_tokens.add(selected)
 
     now_epoch = time.time()
     strict_ttl = max(0.05, float(getattr(settings, "WS_EXECUTION_PRICE_STALE_SECONDS", 1.0) or 1.0))
@@ -505,6 +528,63 @@ async def build_live_signal_contexts(
                 exc_info=exc,
             )
             feed_manager = None
+        polymarket_ws_tokens = [token_id for token_id in token_list if _is_token_id(token_id)]
+        if feed_manager is not None and strict_ws_only:
+            try:
+                if not getattr(feed_manager, "_started", False):
+                    await feed_manager.start()
+                if getattr(feed_manager, "_started", False) and polymarket_ws_tokens:
+                    required_tokens = [
+                        token_id
+                        for token_id in sorted(selected_tokens)
+                        if _is_token_id(token_id)
+                    ]
+                    if not required_tokens:
+                        required_tokens = list(polymarket_ws_tokens)
+
+                    def _token_has_fresh_ws_price(token_id: str) -> bool:
+                        try:
+                            mid = feed_manager.cache.get_mid_price(token_id)
+                        except Exception:
+                            mid = None
+                        if safe_float(mid) is None:
+                            return False
+                        age_s = None
+                        try:
+                            age_s = safe_float(feed_manager.cache.staleness(token_id))
+                        except Exception:
+                            age_s = None
+                        return age_s is not None and age_s <= strict_ttl
+
+                    missing_required = [token_id for token_id in required_tokens if not _token_has_fresh_ws_price(token_id)]
+                    if missing_required:
+                        # Subscribe only missing strict tokens and wait briefly for fresh snapshots.
+                        await feed_manager.polymarket_feed.subscribe(missing_required)
+                    else:
+                        missing_required = []
+
+                    warmup_seconds = max(
+                        0.0,
+                        min(
+                            1.5,
+                            float(getattr(settings, "WS_STRICT_CONTEXT_WARMUP_SECONDS", 0.75) or 0.75),
+                        ),
+                    )
+                    if missing_required and warmup_seconds > 0.0:
+                        warmup_deadline = time.monotonic() + warmup_seconds
+                        while True:
+                            still_missing = [token_id for token_id in missing_required if not _token_has_fresh_ws_price(token_id)]
+                            if not still_missing:
+                                break
+                            if time.monotonic() >= warmup_deadline:
+                                break
+                            await asyncio.sleep(0.01)
+            except Exception as exc:
+                logger.warning(
+                    "Strict WS warmup subscribe failed",
+                    token_count=len(selected_tokens) or len(polymarket_ws_tokens),
+                    exc_info=exc,
+                )
         if feed_manager is not None and getattr(feed_manager, "_started", False):
             for token_id in token_list:
                 token_norm = _normalize_identifier(token_id)
@@ -533,7 +613,7 @@ async def build_live_signal_contexts(
                     )
                     age_s = None
                 if age_s is not None:
-                    if age_s > strict_ttl:
+                    if age_s > strict_ttl and not strict_ws_only:
                         continue
                     source = "ws_strict"
                     observed_at_s = now_epoch - max(0.0, float(age_s))
@@ -561,14 +641,20 @@ async def build_live_signal_contexts(
                 )
 
         unresolved = [token_id for token_id in token_list if token_id not in live_prices]
-        if unresolved:
+        if unresolved and allow_redis_strict:
+            redis_strict_ttl = strict_ttl
+            if strict_ws_only:
+                redis_strict_ttl = max(
+                    redis_strict_ttl,
+                    max(0.1, float(getattr(settings, "WS_PRICE_STALE_SECONDS", 30.0) or 30.0)),
+                )
             try:
-                strict_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=strict_ttl)
+                strict_rows = await redis_price_cache.read_prices(unresolved, stale_seconds=redis_strict_ttl)
             except Exception as exc:
                 logger.warning(
                     "Redis strict price read failed",
                     token_count=len(unresolved),
-                    stale_seconds=strict_ttl,
+                    stale_seconds=redis_strict_ttl,
                     exc_info=exc,
                 )
                 strict_rows = {}
@@ -583,7 +669,7 @@ async def build_live_signal_contexts(
                 )
 
         unresolved = [token_id for token_id in token_list if token_id not in live_prices]
-        if unresolved:
+        if unresolved and not strict_ws_only:
             batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
             try:
                 batch = await asyncio.wait_for(
@@ -607,26 +693,6 @@ async def build_live_signal_contexts(
                     source="http_batch",
                     observed_at_s=now_epoch,
                 )
-
-    selected_tokens: set[str] = set()
-    selected_token_by_signal: dict[str, Optional[str]] = {}
-    for row in signal_rows:
-        signal_id = row["signal_id"]
-        market_id = row["market_lookup_id"]
-        direction = row["direction"]
-        yes_token, no_token = yes_no_tokens_by_market.get(market_id, (None, None))
-
-        selected: Optional[str] = None
-        if direction == "buy_yes":
-            selected = yes_token
-        elif direction == "buy_no":
-            selected = no_token
-        else:
-            selected = yes_token or no_token
-
-        selected_token_by_signal[signal_id] = selected
-        if selected:
-            selected_tokens.add(selected)
 
     history_points_by_token: dict[str, list[dict[str, float]]] = {}
     history_sem = asyncio.Semaphore(max(1, int(max_history_concurrency)))
@@ -674,6 +740,10 @@ async def build_live_signal_contexts(
             if len(normalized_from_cache) >= 2:
                 history_points_by_token[token_id] = normalized_from_cache
                 return
+
+        if strict_ws_only:
+            history_points_by_token[token_id] = []
+            return
 
         async with history_sem:
             try:
@@ -733,7 +803,7 @@ async def build_live_signal_contexts(
             snapshot_observed_s = _epoch_seconds_from_market_timestamp(market_info.get(key))
             if snapshot_observed_s is not None:
                 break
-        if yes_live is None:
+        if yes_live is None and not strict_ws_only:
             yes_snapshot = safe_float(market_info.get("yes_price"))
             if yes_snapshot is not None and 0.0 <= yes_snapshot <= 1.01:
                 yes_live = float(yes_snapshot)
@@ -747,7 +817,7 @@ async def build_live_signal_contexts(
                         else None
                     ),
                 }
-        if no_live is None:
+        if no_live is None and not strict_ws_only:
             no_snapshot = safe_float(market_info.get("no_price"))
             if no_snapshot is not None and 0.0 <= no_snapshot <= 1.01:
                 no_live = float(no_snapshot)
@@ -783,7 +853,7 @@ async def build_live_signal_contexts(
                 selected_meta = no_meta
 
         selected_history = history_points_by_token.get(selected_token, []) if selected_token else []
-        if selected_live is None and selected_history:
+        if selected_live is None and selected_history and not strict_ws_only:
             selected_live = selected_history[-1]["p"]
             selected_history_ts_s = safe_float(selected_history[-1].get("t"))
             if selected_history_ts_s is not None:
@@ -817,6 +887,13 @@ async def build_live_signal_contexts(
 
         timing = _extract_market_timing(market_info)
         selected_source = str(selected_meta.get("source") or "").strip().lower()
+        strict_sources = {"ws_strict"}
+        if allow_redis_strict:
+            strict_sources.add("redis_strict")
+        if strict_ws_only and selected_source not in strict_sources:
+            selected_live = None
+            selected_meta = {}
+            selected_source = ""
         selected_age_ms = safe_float(selected_meta.get("age_ms"))
         selected_observed_at = selected_meta.get("observed_at") or None
         if selected_observed_at is None and selected_live is not None and selected_source == "http_batch":

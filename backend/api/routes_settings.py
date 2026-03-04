@@ -5,15 +5,26 @@ Endpoints for managing application settings.
 """
 
 import asyncio
+import uuid
+from enum import Enum
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from config import settings as runtime_settings
-from models.database import AsyncSessionLocal, AppSettings
+from models.database import (
+    AsyncSessionLocal,
+    AppSettings,
+    DataSource,
+    Strategy,
+    StrategyVersion,
+    TraderOrchestratorControl,
+)
+from services.strategy_versioning import normalize_strategy_version
 from utils.logger import get_logger
+from utils.utcnow import utcnow
 from utils.secrets import decrypt_secret
 from api.settings_helpers import (
     apply_update_request,
@@ -29,6 +40,7 @@ from api.settings_helpers import (
     trading_proxy_payload,
     ui_lock_payload,
     events_payload,
+    set_encrypted_secret,
 )
 
 logger = get_logger(__name__)
@@ -691,6 +703,881 @@ class UpdateSettingsRequest(BaseModel):
     search_filters: Optional[SearchFilterSettings] = None
 
 
+class SettingsTransferCategory(str, Enum):
+    BOT_TRADERS = "bot_traders"
+    STRATEGIES = "strategies"
+    DATA_SOURCES = "data_sources"
+    MARKET_CREDENTIALS = "market_credentials"
+    VPN_CONFIGURATION = "vpn_configuration"
+    LLM_CONFIGURATION = "llm_configuration"
+    TELEGRAM_CONFIGURATION = "telegram_configuration"
+
+
+SETTINGS_TRANSFER_CATEGORY_ORDER: tuple[str, ...] = (
+    SettingsTransferCategory.BOT_TRADERS.value,
+    SettingsTransferCategory.STRATEGIES.value,
+    SettingsTransferCategory.DATA_SOURCES.value,
+    SettingsTransferCategory.MARKET_CREDENTIALS.value,
+    SettingsTransferCategory.VPN_CONFIGURATION.value,
+    SettingsTransferCategory.LLM_CONFIGURATION.value,
+    SettingsTransferCategory.TELEGRAM_CONFIGURATION.value,
+)
+
+_ALLOWED_DATA_SOURCE_KINDS = {"python", "rss", "rest_api", "twitter"}
+_ALLOWED_LLM_PROVIDERS = {"none", "openai", "anthropic", "google", "xai", "deepseek", "ollama", "lmstudio"}
+
+
+class SettingsExportRequest(BaseModel):
+    include_categories: Optional[list[SettingsTransferCategory]] = None
+
+
+class SettingsImportRequest(BaseModel):
+    bundle: dict[str, Any] = Field(default_factory=dict)
+    include_categories: Optional[list[SettingsTransferCategory]] = None
+
+
+def _coerce_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _coerce_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _coerce_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _coerce_categories(raw_values: Any) -> list[str]:
+    if not isinstance(raw_values, list):
+        return []
+    categories: list[str] = []
+    valid = set(SETTINGS_TRANSFER_CATEGORY_ORDER)
+    for value in raw_values:
+        normalized = str(value or "").strip().lower()
+        if not normalized or normalized not in valid or normalized in categories:
+            continue
+        categories.append(normalized)
+    return categories
+
+
+def _resolve_export_categories(include_categories: Optional[list[SettingsTransferCategory]]) -> list[str]:
+    if not include_categories:
+        return list(SETTINGS_TRANSFER_CATEGORY_ORDER)
+    categories: list[str] = []
+    for category in include_categories:
+        value = str(category.value if isinstance(category, SettingsTransferCategory) else category).strip().lower()
+        if value and value not in categories and value in SETTINGS_TRANSFER_CATEGORY_ORDER:
+            categories.append(value)
+    if not categories:
+        raise HTTPException(status_code=400, detail="At least one export category is required.")
+    return categories
+
+
+def _resolve_import_categories(
+    include_categories: Optional[list[SettingsTransferCategory]],
+    bundle: dict[str, Any],
+) -> list[str]:
+    if include_categories:
+        categories = _resolve_export_categories(include_categories)
+        if categories:
+            return categories
+
+    bundle_categories = _coerce_categories(bundle.get("categories"))
+    if bundle_categories:
+        return bundle_categories
+    inferred = [category for category in SETTINGS_TRANSFER_CATEGORY_ORDER if category in bundle]
+    if inferred:
+        return inferred
+    return list(SETTINGS_TRANSFER_CATEGORY_ORDER)
+
+
+async def _get_or_create_settings_row(session) -> AppSettings:
+    result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = AppSettings(id="default")
+        session.add(row)
+        await session.flush()
+    return row
+
+
+def _serialize_trader_for_transfer(trader: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(trader.get("name") or "").strip(),
+        "description": trader.get("description"),
+        "mode": str(trader.get("mode") or "shadow").strip().lower() or "shadow",
+        "source_configs": [dict(item) for item in trader.get("source_configs") or [] if isinstance(item, dict)],
+        "risk_limits": _coerce_dict(trader.get("risk_limits")),
+        "metadata": _coerce_dict(trader.get("metadata")),
+        "is_enabled": bool(trader.get("is_enabled", True)),
+        "is_paused": bool(trader.get("is_paused", False)),
+        "interval_seconds": int(trader.get("interval_seconds") or 60),
+    }
+
+
+def _serialize_orchestrator_control_for_transfer(row: TraderOrchestratorControl) -> dict[str, Any]:
+    return {
+        "is_enabled": bool(row.is_enabled),
+        "is_paused": bool(row.is_paused),
+        "mode": _coerce_string(row.mode) or "shadow",
+        "run_interval_seconds": int(row.run_interval_seconds or 5),
+        "kill_switch": bool(row.kill_switch),
+        "settings_json": _coerce_dict(row.settings_json),
+    }
+
+
+def _strategy_version_to_transfer_payload(row: StrategyVersion) -> dict[str, Any]:
+    return {
+        "version": int(row.version or 1),
+        "is_latest": bool(row.is_latest),
+        "name": row.name,
+        "description": row.description,
+        "source_code": str(row.source_code or ""),
+        "class_name": row.class_name,
+        "config": _coerce_dict(row.config),
+        "config_schema": _coerce_dict(row.config_schema),
+        "aliases": list(row.aliases or []),
+        "enabled": bool(row.enabled),
+        "is_system": bool(row.is_system),
+        "sort_order": int(row.sort_order or 0),
+        "parent_version": int(row.parent_version) if row.parent_version is not None else None,
+        "created_by": row.created_by,
+        "reason": row.reason,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _strategy_row_to_transfer_payload(row: Strategy, versions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "slug": str(row.slug or "").strip().lower(),
+        "source_key": str(row.source_key or "scanner").strip().lower() or "scanner",
+        "name": str(row.name or row.slug or "").strip(),
+        "description": row.description,
+        "source_code": str(row.source_code or ""),
+        "class_name": _coerce_string(row.class_name),
+        "is_system": bool(row.is_system),
+        "enabled": bool(row.enabled),
+        "config": _coerce_dict(row.config),
+        "config_schema": _coerce_dict(row.config_schema),
+        "aliases": list(row.aliases or []),
+        "version": int(row.version or 1),
+        "sort_order": int(row.sort_order or 0),
+        "versions": versions,
+    }
+
+
+def _data_source_row_to_transfer_payload(row: DataSource) -> dict[str, Any]:
+    return {
+        "slug": str(row.slug or "").strip().lower(),
+        "source_key": str(row.source_key or "custom").strip().lower() or "custom",
+        "source_kind": str(row.source_kind or "python").strip().lower() or "python",
+        "name": str(row.name or row.slug or "").strip(),
+        "description": row.description,
+        "source_code": str(row.source_code or ""),
+        "class_name": _coerce_string(row.class_name),
+        "is_system": bool(row.is_system),
+        "enabled": bool(row.enabled),
+        "retention": _coerce_dict(row.retention),
+        "config": _coerce_dict(row.config),
+        "config_schema": _coerce_dict(row.config_schema),
+        "version": int(row.version or 1),
+        "sort_order": int(row.sort_order or 0),
+    }
+
+
+async def _export_transfer_bundle(categories: list[str]) -> tuple[dict[str, Any], dict[str, int]]:
+    from services.trader_orchestrator_state import list_traders
+
+    bundle: dict[str, Any] = {
+        "schema_version": 1,
+        "exported_at": utcnow().isoformat(),
+        "categories": list(categories),
+    }
+    counts = {category: 0 for category in SETTINGS_TRANSFER_CATEGORY_ORDER}
+
+    async with AsyncSessionLocal() as session:
+        settings_row: AppSettings | None = None
+        needs_settings = any(
+            category in categories
+            for category in (
+                SettingsTransferCategory.MARKET_CREDENTIALS.value,
+                SettingsTransferCategory.VPN_CONFIGURATION.value,
+                SettingsTransferCategory.LLM_CONFIGURATION.value,
+                SettingsTransferCategory.TELEGRAM_CONFIGURATION.value,
+            )
+        )
+        if needs_settings:
+            settings_row = await _get_or_create_settings_row(session)
+
+        if SettingsTransferCategory.BOT_TRADERS.value in categories:
+            traders = await list_traders(session)
+            exported_traders = [_serialize_trader_for_transfer(trader) for trader in traders]
+            orchestrator_row = await session.get(TraderOrchestratorControl, "default")
+            bundle[SettingsTransferCategory.BOT_TRADERS.value] = {
+                "traders": exported_traders,
+                "orchestrator": (
+                    _serialize_orchestrator_control_for_transfer(orchestrator_row) if orchestrator_row is not None else None
+                ),
+            }
+            counts[SettingsTransferCategory.BOT_TRADERS.value] = len(exported_traders)
+
+        if SettingsTransferCategory.STRATEGIES.value in categories:
+            strategy_rows = (
+                (
+                    await session.execute(
+                        select(Strategy).order_by(Strategy.sort_order.asc(), Strategy.slug.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            versions_by_strategy_id: dict[str, list[dict[str, Any]]] = {}
+            strategy_ids = [str(row.id) for row in strategy_rows if str(row.id or "").strip()]
+            if strategy_ids:
+                version_rows = (
+                    (
+                        await session.execute(
+                            select(StrategyVersion)
+                            .where(StrategyVersion.strategy_id.in_(strategy_ids))
+                            .order_by(StrategyVersion.strategy_slug.asc(), StrategyVersion.version.asc())
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for version_row in version_rows:
+                    strategy_id = str(version_row.strategy_id or "").strip()
+                    if not strategy_id:
+                        continue
+                    versions_by_strategy_id.setdefault(strategy_id, []).append(
+                        _strategy_version_to_transfer_payload(version_row)
+                    )
+
+            exported_strategies = [
+                _strategy_row_to_transfer_payload(
+                    row,
+                    versions_by_strategy_id.get(str(row.id), []),
+                )
+                for row in strategy_rows
+            ]
+            bundle[SettingsTransferCategory.STRATEGIES.value] = exported_strategies
+            counts[SettingsTransferCategory.STRATEGIES.value] = len(exported_strategies)
+
+        if SettingsTransferCategory.DATA_SOURCES.value in categories:
+            source_rows = (
+                (
+                    await session.execute(
+                        select(DataSource).order_by(DataSource.sort_order.asc(), DataSource.slug.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            exported_sources = [_data_source_row_to_transfer_payload(row) for row in source_rows]
+            bundle[SettingsTransferCategory.DATA_SOURCES.value] = exported_sources
+            counts[SettingsTransferCategory.DATA_SOURCES.value] = len(exported_sources)
+
+        if SettingsTransferCategory.MARKET_CREDENTIALS.value in categories:
+            if settings_row is None:
+                settings_row = await _get_or_create_settings_row(session)
+            market_credentials = {
+                "polymarket": {
+                    "api_key": decrypt_secret(settings_row.polymarket_api_key),
+                    "api_secret": decrypt_secret(settings_row.polymarket_api_secret),
+                    "api_passphrase": decrypt_secret(settings_row.polymarket_api_passphrase),
+                    "private_key": decrypt_secret(settings_row.polymarket_private_key),
+                },
+                "kalshi": {
+                    "email": _coerce_string(settings_row.kalshi_email),
+                    "password": decrypt_secret(settings_row.kalshi_password),
+                    "api_key": decrypt_secret(settings_row.kalshi_api_key),
+                },
+            }
+            bundle[SettingsTransferCategory.MARKET_CREDENTIALS.value] = market_credentials
+            counts[SettingsTransferCategory.MARKET_CREDENTIALS.value] = 1
+
+        if SettingsTransferCategory.VPN_CONFIGURATION.value in categories:
+            if settings_row is None:
+                settings_row = await _get_or_create_settings_row(session)
+            vpn_configuration = {
+                "enabled": bool(settings_row.trading_proxy_enabled),
+                "proxy_url": decrypt_secret(settings_row.trading_proxy_url),
+                "verify_ssl": bool(getattr(settings_row, "trading_proxy_verify_ssl", True)),
+                "timeout": float(getattr(settings_row, "trading_proxy_timeout", 30.0) or 30.0),
+                "require_vpn": bool(getattr(settings_row, "trading_proxy_require_vpn", True)),
+            }
+            bundle[SettingsTransferCategory.VPN_CONFIGURATION.value] = vpn_configuration
+            counts[SettingsTransferCategory.VPN_CONFIGURATION.value] = 1
+
+        if SettingsTransferCategory.LLM_CONFIGURATION.value in categories:
+            if settings_row is None:
+                settings_row = await _get_or_create_settings_row(session)
+            llm_configuration = {
+                "provider": str(settings_row.llm_provider or "none").strip().lower() or "none",
+                "model": _coerce_string(settings_row.llm_model),
+                "max_monthly_spend": float(getattr(settings_row, "ai_max_monthly_spend", 50.0) or 0.0),
+                "openai_api_key": decrypt_secret(settings_row.openai_api_key),
+                "anthropic_api_key": decrypt_secret(settings_row.anthropic_api_key),
+                "google_api_key": decrypt_secret(settings_row.google_api_key),
+                "xai_api_key": decrypt_secret(settings_row.xai_api_key),
+                "deepseek_api_key": decrypt_secret(settings_row.deepseek_api_key),
+                "ollama_api_key": decrypt_secret(settings_row.ollama_api_key),
+                "ollama_base_url": _coerce_string(settings_row.ollama_base_url),
+                "lmstudio_api_key": decrypt_secret(settings_row.lmstudio_api_key),
+                "lmstudio_base_url": _coerce_string(settings_row.lmstudio_base_url),
+            }
+            bundle[SettingsTransferCategory.LLM_CONFIGURATION.value] = llm_configuration
+            counts[SettingsTransferCategory.LLM_CONFIGURATION.value] = 1
+
+        if SettingsTransferCategory.TELEGRAM_CONFIGURATION.value in categories:
+            if settings_row is None:
+                settings_row = await _get_or_create_settings_row(session)
+            notify_min_roi_raw = getattr(settings_row, "notify_min_roi", None)
+            interval_minutes_raw = getattr(settings_row, "notify_autotrader_summary_interval_minutes", None)
+            telegram_configuration = {
+                "enabled": bool(getattr(settings_row, "notifications_enabled", False)),
+                "telegram_bot_token": decrypt_secret(getattr(settings_row, "telegram_bot_token", None)),
+                "telegram_chat_id": _coerce_string(getattr(settings_row, "telegram_chat_id", None)),
+                "notify_on_opportunity": bool(getattr(settings_row, "notify_on_opportunity", True)),
+                "notify_on_trade": bool(getattr(settings_row, "notify_on_trade", True)),
+                "notify_min_roi": float(notify_min_roi_raw if notify_min_roi_raw is not None else 5.0),
+                "notify_autotrader_orders": bool(getattr(settings_row, "notify_autotrader_orders", False)),
+                "notify_autotrader_closes": bool(getattr(settings_row, "notify_autotrader_closes", True)),
+                "notify_autotrader_issues": bool(getattr(settings_row, "notify_autotrader_issues", True)),
+                "notify_autotrader_timeline": bool(getattr(settings_row, "notify_autotrader_timeline", True)),
+                "notify_autotrader_summary_interval_minutes": int(
+                    interval_minutes_raw if interval_minutes_raw is not None else 60
+                ),
+                "notify_autotrader_summary_per_trader": bool(
+                    getattr(settings_row, "notify_autotrader_summary_per_trader", False)
+                ),
+            }
+            bundle[SettingsTransferCategory.TELEGRAM_CONFIGURATION.value] = telegram_configuration
+            counts[SettingsTransferCategory.TELEGRAM_CONFIGURATION.value] = 1
+
+    return bundle, counts
+
+
+def _apply_market_credentials_import(settings_row: AppSettings, payload: dict[str, Any]) -> None:
+    polymarket = _coerce_dict(payload.get("polymarket"))
+    kalshi = _coerce_dict(payload.get("kalshi"))
+
+    set_encrypted_secret(settings_row, "polymarket_api_key", _coerce_string(polymarket.get("api_key")))
+    set_encrypted_secret(settings_row, "polymarket_api_secret", _coerce_string(polymarket.get("api_secret")))
+    set_encrypted_secret(settings_row, "polymarket_api_passphrase", _coerce_string(polymarket.get("api_passphrase")))
+    set_encrypted_secret(settings_row, "polymarket_private_key", _coerce_string(polymarket.get("private_key")))
+
+    settings_row.kalshi_email = _coerce_string(kalshi.get("email"))
+    set_encrypted_secret(settings_row, "kalshi_password", _coerce_string(kalshi.get("password")))
+    set_encrypted_secret(settings_row, "kalshi_api_key", _coerce_string(kalshi.get("api_key")))
+
+
+def _apply_vpn_configuration_import(settings_row: AppSettings, payload: dict[str, Any]) -> None:
+    timeout_raw = payload.get("timeout")
+    timeout_value = 30.0
+    if timeout_raw is not None:
+        try:
+            timeout_value = float(timeout_raw)
+        except (TypeError, ValueError):
+            timeout_value = 30.0
+    timeout_value = max(5.0, min(120.0, timeout_value))
+
+    settings_row.trading_proxy_enabled = bool(payload.get("enabled", False))
+    settings_row.trading_proxy_verify_ssl = bool(payload.get("verify_ssl", True))
+    settings_row.trading_proxy_timeout = timeout_value
+    settings_row.trading_proxy_require_vpn = bool(payload.get("require_vpn", True))
+    set_encrypted_secret(settings_row, "trading_proxy_url", _coerce_string(payload.get("proxy_url")))
+
+
+def _apply_llm_configuration_import(settings_row: AppSettings, payload: dict[str, Any]) -> None:
+    provider = str(payload.get("provider") or "none").strip().lower() or "none"
+    if provider not in _ALLOWED_LLM_PROVIDERS:
+        raise ValueError(f"Unsupported LLM provider '{provider}'.")
+
+    monthly_spend_raw = payload.get("max_monthly_spend")
+    monthly_spend = 0.0
+    if monthly_spend_raw is not None:
+        try:
+            monthly_spend = float(monthly_spend_raw)
+        except (TypeError, ValueError):
+            monthly_spend = 0.0
+    monthly_spend = max(0.0, monthly_spend)
+
+    settings_row.llm_provider = provider
+    settings_row.llm_model = _coerce_string(payload.get("model"))
+    settings_row.ai_default_model = _coerce_string(payload.get("model"))
+    settings_row.ai_max_monthly_spend = monthly_spend
+    settings_row.ollama_base_url = _coerce_string(payload.get("ollama_base_url"))
+    settings_row.lmstudio_base_url = _coerce_string(payload.get("lmstudio_base_url"))
+
+    set_encrypted_secret(settings_row, "openai_api_key", _coerce_string(payload.get("openai_api_key")))
+    set_encrypted_secret(settings_row, "anthropic_api_key", _coerce_string(payload.get("anthropic_api_key")))
+    set_encrypted_secret(settings_row, "google_api_key", _coerce_string(payload.get("google_api_key")))
+    set_encrypted_secret(settings_row, "xai_api_key", _coerce_string(payload.get("xai_api_key")))
+    set_encrypted_secret(settings_row, "deepseek_api_key", _coerce_string(payload.get("deepseek_api_key")))
+    set_encrypted_secret(settings_row, "ollama_api_key", _coerce_string(payload.get("ollama_api_key")))
+    set_encrypted_secret(settings_row, "lmstudio_api_key", _coerce_string(payload.get("lmstudio_api_key")))
+
+
+def _apply_telegram_configuration_import(settings_row: AppSettings, payload: dict[str, Any]) -> None:
+    notify_min_roi_raw = payload.get("notify_min_roi")
+    notify_min_roi = 5.0
+    if notify_min_roi_raw is not None:
+        try:
+            notify_min_roi = float(notify_min_roi_raw)
+        except (TypeError, ValueError):
+            notify_min_roi = 5.0
+    notify_min_roi = max(0.0, notify_min_roi)
+
+    summary_interval_raw = payload.get("notify_autotrader_summary_interval_minutes")
+    summary_interval_minutes = 60
+    if summary_interval_raw is not None:
+        try:
+            summary_interval_minutes = int(summary_interval_raw)
+        except (TypeError, ValueError):
+            summary_interval_minutes = 60
+    summary_interval_minutes = max(5, min(1440, summary_interval_minutes))
+
+    settings_row.notifications_enabled = bool(payload.get("enabled", False))
+    set_encrypted_secret(settings_row, "telegram_bot_token", _coerce_string(payload.get("telegram_bot_token")))
+    settings_row.telegram_chat_id = _coerce_string(payload.get("telegram_chat_id"))
+    settings_row.notify_on_opportunity = bool(payload.get("notify_on_opportunity", True))
+    settings_row.notify_on_trade = bool(payload.get("notify_on_trade", True))
+    settings_row.notify_min_roi = notify_min_roi
+    settings_row.notify_autotrader_orders = bool(payload.get("notify_autotrader_orders", False))
+    settings_row.notify_autotrader_closes = bool(payload.get("notify_autotrader_closes", True))
+    settings_row.notify_autotrader_issues = bool(payload.get("notify_autotrader_issues", True))
+    settings_row.notify_autotrader_timeline = bool(payload.get("notify_autotrader_timeline", True))
+    settings_row.notify_autotrader_summary_interval_minutes = summary_interval_minutes
+    settings_row.notify_autotrader_summary_per_trader = bool(payload.get("notify_autotrader_summary_per_trader", False))
+
+
+def _normalize_strategy_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    from services.strategy_loader import validate_strategy_source
+
+    slug = str(raw.get("slug") or "").strip().lower()
+    if not slug:
+        raise ValueError("Each strategy requires a non-empty slug.")
+
+    source_code = str(raw.get("source_code") or "")
+    if len(source_code.strip()) < 10:
+        raise ValueError(f"Strategy '{slug}' has invalid source_code.")
+
+    requested_class_name = _coerce_string(raw.get("class_name"))
+    validation = validate_strategy_source(source_code, class_name=requested_class_name)
+    if not bool(validation.get("valid")):
+        errors = "; ".join(str(error) for error in list(validation.get("errors") or [])) or "unknown validation error"
+        raise ValueError(f"Strategy '{slug}' failed source validation: {errors}")
+
+    parsed_version = normalize_strategy_version(raw.get("version"))
+    version = int(parsed_version or 1)
+    if version <= 0:
+        version = 1
+
+    source_key = str(raw.get("source_key") or "scanner").strip().lower() or "scanner"
+    sort_order_raw = raw.get("sort_order")
+    try:
+        sort_order = int(sort_order_raw if sort_order_raw is not None else 0)
+    except (TypeError, ValueError):
+        sort_order = 0
+
+    aliases: list[str] = []
+    for alias in raw.get("aliases") or []:
+        normalized_alias = _coerce_string(alias)
+        if normalized_alias and normalized_alias not in aliases:
+            aliases.append(normalized_alias)
+
+    return {
+        "slug": slug,
+        "source_key": source_key,
+        "name": _coerce_string(raw.get("name")) or slug,
+        "description": _coerce_string(raw.get("description")),
+        "source_code": source_code,
+        "class_name": requested_class_name or _coerce_string(validation.get("class_name")),
+        "is_system": bool(raw.get("is_system", False)),
+        "enabled": bool(raw.get("enabled", True)),
+        "config": _coerce_dict(raw.get("config")),
+        "config_schema": _coerce_dict(raw.get("config_schema")),
+        "aliases": aliases,
+        "version": version,
+        "sort_order": sort_order,
+        "versions": _coerce_dict_list(raw.get("versions")),
+    }
+
+
+def _normalize_data_source_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    from services.data_source_loader import validate_data_source_source
+
+    slug = str(raw.get("slug") or "").strip().lower()
+    if not slug:
+        raise ValueError("Each data source requires a non-empty slug.")
+
+    source_code = str(raw.get("source_code") or "")
+    if len(source_code.strip()) < 10:
+        raise ValueError(f"Data source '{slug}' has invalid source_code.")
+
+    source_kind = str(raw.get("source_kind") or "python").strip().lower() or "python"
+    if source_kind not in _ALLOWED_DATA_SOURCE_KINDS:
+        raise ValueError(f"Data source '{slug}' has unsupported source_kind '{source_kind}'.")
+
+    requested_class_name = _coerce_string(raw.get("class_name"))
+    validation = validate_data_source_source(source_code, class_name=requested_class_name)
+    if not bool(validation.get("valid")):
+        errors = "; ".join(str(error) for error in list(validation.get("errors") or [])) or "unknown validation error"
+        raise ValueError(f"Data source '{slug}' failed source validation: {errors}")
+
+    version_raw = raw.get("version")
+    try:
+        version = int(version_raw if version_raw is not None else 1)
+    except (TypeError, ValueError):
+        version = 1
+    version = max(1, version)
+
+    sort_order_raw = raw.get("sort_order")
+    try:
+        sort_order = int(sort_order_raw if sort_order_raw is not None else 0)
+    except (TypeError, ValueError):
+        sort_order = 0
+
+    return {
+        "slug": slug,
+        "source_key": str(raw.get("source_key") or "custom").strip().lower() or "custom",
+        "source_kind": source_kind,
+        "name": _coerce_string(raw.get("name")) or slug,
+        "description": _coerce_string(raw.get("description")),
+        "source_code": source_code,
+        "class_name": requested_class_name or _coerce_string(validation.get("class_name")),
+        "is_system": bool(raw.get("is_system", False)),
+        "enabled": bool(raw.get("enabled", True)),
+        "retention": _coerce_dict(raw.get("retention")),
+        "config": _coerce_dict(raw.get("config")),
+        "config_schema": _coerce_dict(raw.get("config_schema")),
+        "version": version,
+        "sort_order": sort_order,
+    }
+
+
+def _normalize_trader_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    name = _coerce_string(raw.get("name"))
+    if not name:
+        raise ValueError("Each trader requires a non-empty name.")
+
+    interval_raw = raw.get("interval_seconds")
+    try:
+        interval_seconds = int(interval_raw if interval_raw is not None else 60)
+    except (TypeError, ValueError):
+        interval_seconds = 60
+    interval_seconds = max(1, min(86400, interval_seconds))
+
+    return {
+        "name": name,
+        "description": _coerce_string(raw.get("description")),
+        "mode": str(raw.get("mode") or "shadow").strip().lower() or "shadow",
+        "source_configs": _coerce_dict_list(raw.get("source_configs")),
+        "risk_limits": _coerce_dict(raw.get("risk_limits")),
+        "metadata": _coerce_dict(raw.get("metadata")),
+        "is_enabled": bool(raw.get("is_enabled", True)),
+        "is_paused": bool(raw.get("is_paused", False)),
+        "interval_seconds": interval_seconds,
+    }
+
+
+async def _import_strategies(session, payload: Any) -> dict[str, Any]:
+    normalized_payloads = [_normalize_strategy_payload(item) for item in _coerce_dict_list(payload)]
+    seen: set[str] = set()
+    for row in normalized_payloads:
+        slug = row["slug"]
+        if slug in seen:
+            raise ValueError(f"Duplicate strategy slug '{slug}' in import bundle.")
+        seen.add(slug)
+
+    now = utcnow()
+    existing_rows = (
+        (await session.execute(select(Strategy).order_by(Strategy.slug.asc()))).scalars().all()
+    )
+    existing_by_slug = {str(row.slug or "").strip().lower(): row for row in existing_rows}
+
+    created = 0
+    updated = 0
+    versions_imported = 0
+    imported_slugs: list[str] = []
+
+    strategy_rows_by_slug: dict[str, Strategy] = {}
+    version_payloads_by_slug: dict[str, list[dict[str, Any]]] = {}
+
+    for normalized in normalized_payloads:
+        slug = normalized["slug"]
+        row = existing_by_slug.get(slug)
+        if row is None:
+            row = Strategy(
+                id=uuid.uuid4().hex,
+                slug=slug,
+                created_at=now,
+            )
+            session.add(row)
+            existing_by_slug[slug] = row
+            created += 1
+        else:
+            updated += 1
+
+        row.source_key = normalized["source_key"]
+        row.name = normalized["name"]
+        row.description = normalized["description"]
+        row.source_code = normalized["source_code"]
+        row.class_name = normalized["class_name"]
+        row.is_system = bool(normalized["is_system"])
+        row.enabled = bool(normalized["enabled"])
+        row.status = "unloaded"
+        row.error_message = None
+        row.config = normalized["config"]
+        row.config_schema = normalized["config_schema"]
+        row.aliases = normalized["aliases"]
+        row.version = int(normalized["version"])
+        row.sort_order = int(normalized["sort_order"])
+        row.updated_at = now
+
+        strategy_rows_by_slug[slug] = row
+        version_payloads_by_slug[slug] = normalized["versions"]
+        imported_slugs.append(slug)
+
+    await session.flush()
+
+    for slug, row in strategy_rows_by_slug.items():
+        await session.execute(
+            delete(StrategyVersion).where(StrategyVersion.strategy_id == str(row.id))
+        )
+        provided_versions = version_payloads_by_slug.get(slug, [])
+        parsed_versions: dict[int, dict[str, Any]] = {}
+        for provided_version in provided_versions:
+            try:
+                parsed_number = normalize_strategy_version(provided_version.get("version"))
+            except ValueError:
+                continue
+            if parsed_number is None or parsed_number <= 0:
+                continue
+            parsed_versions[int(parsed_number)] = dict(provided_version)
+
+        if not parsed_versions:
+            parsed_versions[int(row.version or 1)] = {
+                "version": int(row.version or 1),
+                "name": row.name,
+                "description": row.description,
+                "source_code": row.source_code,
+                "class_name": row.class_name,
+                "config": _coerce_dict(row.config),
+                "config_schema": _coerce_dict(row.config_schema),
+                "aliases": list(row.aliases or []),
+                "enabled": bool(row.enabled),
+                "is_system": bool(row.is_system),
+                "sort_order": int(row.sort_order or 0),
+            }
+
+        if int(row.version or 1) not in parsed_versions:
+            parsed_versions[int(row.version or 1)] = {
+                "version": int(row.version or 1),
+                "name": row.name,
+                "description": row.description,
+                "source_code": row.source_code,
+                "class_name": row.class_name,
+                "config": _coerce_dict(row.config),
+                "config_schema": _coerce_dict(row.config_schema),
+                "aliases": list(row.aliases or []),
+                "enabled": bool(row.enabled),
+                "is_system": bool(row.is_system),
+                "sort_order": int(row.sort_order or 0),
+            }
+
+        latest_version = int(row.version or 1)
+        if latest_version not in parsed_versions:
+            latest_version = max(parsed_versions.keys())
+            row.version = latest_version
+
+        for version_number in sorted(parsed_versions.keys()):
+            version_payload = parsed_versions[version_number]
+            snapshot = StrategyVersion(
+                id=uuid.uuid4().hex,
+                strategy_id=str(row.id),
+                strategy_slug=slug,
+                source_key=str(row.source_key or "scanner").strip().lower() or "scanner",
+                version=int(version_number),
+                is_latest=bool(version_number == latest_version),
+                name=_coerce_string(version_payload.get("name")) or row.name,
+                description=_coerce_string(version_payload.get("description")),
+                source_code=str(version_payload.get("source_code") or row.source_code or ""),
+                class_name=_coerce_string(version_payload.get("class_name")) or row.class_name,
+                config=_coerce_dict(version_payload.get("config")) or _coerce_dict(row.config),
+                config_schema=_coerce_dict(version_payload.get("config_schema")) or _coerce_dict(row.config_schema),
+                aliases=version_payload.get("aliases")
+                if isinstance(version_payload.get("aliases"), list)
+                else list(row.aliases or []),
+                enabled=bool(version_payload.get("enabled", row.enabled)),
+                is_system=bool(version_payload.get("is_system", row.is_system)),
+                sort_order=int(version_payload.get("sort_order", row.sort_order or 0) or 0),
+                parent_version=normalize_strategy_version(version_payload.get("parent_version"))
+                if version_payload.get("parent_version") is not None
+                else None,
+                created_by=_coerce_string(version_payload.get("created_by")),
+                reason=_coerce_string(version_payload.get("reason")) or "settings_import",
+                created_at=now,
+            )
+            session.add(snapshot)
+            versions_imported += 1
+
+    return {
+        "created": created,
+        "updated": updated,
+        "versions_imported": versions_imported,
+        "imported_slugs": imported_slugs,
+    }
+
+
+async def _import_data_sources(session, payload: Any) -> dict[str, Any]:
+    normalized_payloads = [_normalize_data_source_payload(item) for item in _coerce_dict_list(payload)]
+    seen: set[str] = set()
+    for row in normalized_payloads:
+        slug = row["slug"]
+        if slug in seen:
+            raise ValueError(f"Duplicate data source slug '{slug}' in import bundle.")
+        seen.add(slug)
+
+    now = utcnow()
+    existing_rows = (
+        (await session.execute(select(DataSource).order_by(DataSource.slug.asc()))).scalars().all()
+    )
+    existing_by_slug = {str(row.slug or "").strip().lower(): row for row in existing_rows}
+
+    created = 0
+    updated = 0
+    imported_slugs: list[str] = []
+
+    for normalized in normalized_payloads:
+        slug = normalized["slug"]
+        row = existing_by_slug.get(slug)
+        if row is None:
+            row = DataSource(
+                id=uuid.uuid4().hex,
+                slug=slug,
+                created_at=now,
+            )
+            session.add(row)
+            existing_by_slug[slug] = row
+            created += 1
+        else:
+            updated += 1
+
+        row.source_key = normalized["source_key"]
+        row.source_kind = normalized["source_kind"]
+        row.name = normalized["name"]
+        row.description = normalized["description"]
+        row.source_code = normalized["source_code"]
+        row.class_name = normalized["class_name"]
+        row.is_system = bool(normalized["is_system"])
+        row.enabled = bool(normalized["enabled"])
+        row.status = "unloaded"
+        row.error_message = None
+        row.retention = normalized["retention"]
+        row.config = normalized["config"]
+        row.config_schema = normalized["config_schema"]
+        row.version = int(normalized["version"])
+        row.sort_order = int(normalized["sort_order"])
+        row.updated_at = now
+        imported_slugs.append(slug)
+
+    return {
+        "created": created,
+        "updated": updated,
+        "imported_slugs": imported_slugs,
+    }
+
+
+async def _apply_orchestrator_control_import(session, payload: dict[str, Any]) -> bool:
+    control_payload = _coerce_dict(payload)
+    if not control_payload:
+        return False
+
+    row = await session.get(TraderOrchestratorControl, "default")
+    if row is None:
+        row = TraderOrchestratorControl(id="default")
+        session.add(row)
+
+    interval_raw = control_payload.get("run_interval_seconds")
+    try:
+        interval_seconds = int(interval_raw if interval_raw is not None else (row.run_interval_seconds or 5))
+    except (TypeError, ValueError):
+        interval_seconds = int(row.run_interval_seconds or 5)
+    interval_seconds = max(1, min(3600, interval_seconds))
+
+    row.is_enabled = bool(control_payload.get("is_enabled", row.is_enabled))
+    row.is_paused = bool(control_payload.get("is_paused", row.is_paused))
+    row.mode = str(control_payload.get("mode") or row.mode or "shadow").strip().lower() or "shadow"
+    row.run_interval_seconds = interval_seconds
+    row.kill_switch = bool(control_payload.get("kill_switch", row.kill_switch))
+    row.settings_json = _coerce_dict(control_payload.get("settings_json"))
+    row.updated_at = utcnow()
+    return True
+
+
+async def _import_traders(session, payload: Any) -> dict[str, Any]:
+    from services.trader_orchestrator_state import create_trader, list_traders, update_trader
+
+    payload_dict = _coerce_dict(payload)
+    if payload_dict:
+        traders_payload = payload_dict.get("traders")
+        orchestrator_payload = _coerce_dict(payload_dict.get("orchestrator"))
+    else:
+        traders_payload = payload
+        orchestrator_payload = {}
+
+    normalized_payloads = [_normalize_trader_payload(item) for item in _coerce_dict_list(traders_payload)]
+    seen: set[str] = set()
+    for row in normalized_payloads:
+        key = str(row["name"]).strip().lower()
+        if key in seen:
+            raise ValueError(f"Duplicate trader name '{row['name']}' in import bundle.")
+        seen.add(key)
+
+    existing = await list_traders(session)
+    existing_by_name = {
+        str(trader.get("name") or "").strip().lower(): trader
+        for trader in existing
+        if str(trader.get("name") or "").strip()
+    }
+
+    created = 0
+    updated = 0
+    imported_names: list[str] = []
+
+    for normalized in normalized_payloads:
+        name_key = str(normalized["name"]).strip().lower()
+        existing_trader = existing_by_name.get(name_key)
+        if existing_trader is None:
+            created_trader = await create_trader(session, normalized)
+            existing_by_name[str(created_trader.get("name") or "").strip().lower()] = created_trader
+            created += 1
+        else:
+            updated_trader = await update_trader(session, str(existing_trader["id"]), normalized)
+            if updated_trader is None:
+                raise ValueError(f"Unable to update trader '{normalized['name']}'.")
+            existing_by_name[str(updated_trader.get("name") or "").strip().lower()] = updated_trader
+            updated += 1
+        imported_names.append(normalized["name"])
+
+    orchestrator_updated = await _apply_orchestrator_control_import(session, orchestrator_payload)
+
+    return {
+        "created": created,
+        "updated": updated,
+        "orchestrator_updated": 1 if orchestrator_updated else 0,
+        "imported_names": imported_names,
+    }
+
+
 async def get_or_create_settings() -> AppSettings:
     """Get existing settings or create default"""
     async with AsyncSessionLocal() as session:
@@ -984,6 +1871,190 @@ async def get_search_filter_settings():
 async def update_search_filter_settings(request: SearchFilterSettings):
     """Update search filter settings only"""
     return await update_settings(UpdateSettingsRequest(search_filters=request))
+
+
+@router.post("/export")
+async def export_settings_bundle(request: SettingsExportRequest):
+    """Export selected settings/trader/strategy/source configuration as a JSON bundle."""
+    try:
+        categories = _resolve_export_categories(request.include_categories)
+        bundle, counts = await _export_transfer_bundle(categories)
+        return {
+            "status": "success",
+            "bundle": bundle,
+            "counts": counts,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to export settings bundle", exc_info=exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/import")
+async def import_settings_bundle(request: SettingsImportRequest):
+    """Import selected settings/trader/strategy/source configuration from a JSON bundle."""
+    bundle = request.bundle if isinstance(request.bundle, dict) else {}
+    if not bundle:
+        raise HTTPException(status_code=400, detail="Import bundle is required.")
+
+    schema_version = bundle.get("schema_version")
+    if schema_version not in (None, 1):
+        raise HTTPException(status_code=400, detail=f"Unsupported settings bundle schema_version '{schema_version}'.")
+
+    categories = _resolve_import_categories(request.include_categories, bundle)
+    if not categories:
+        raise HTTPException(status_code=400, detail="At least one import category is required.")
+
+    results: dict[str, Any] = {}
+    needs_llm_reinit = False
+    needs_proxy_reinit = False
+
+    try:
+        async with AsyncSessionLocal() as session:
+            telegram_payload = bundle.get(SettingsTransferCategory.TELEGRAM_CONFIGURATION.value)
+            settings_row: AppSettings | None = None
+            if any(
+                category in categories
+                for category in (
+                    SettingsTransferCategory.MARKET_CREDENTIALS.value,
+                    SettingsTransferCategory.VPN_CONFIGURATION.value,
+                    SettingsTransferCategory.LLM_CONFIGURATION.value,
+                )
+            ) or (
+                SettingsTransferCategory.TELEGRAM_CONFIGURATION.value in categories
+                and telegram_payload is not None
+            ):
+                settings_row = await _get_or_create_settings_row(session)
+
+            if SettingsTransferCategory.STRATEGIES.value in categories:
+                strategy_result = await _import_strategies(
+                    session,
+                    bundle.get(SettingsTransferCategory.STRATEGIES.value),
+                )
+                results[SettingsTransferCategory.STRATEGIES.value] = {
+                    "created": strategy_result["created"],
+                    "updated": strategy_result["updated"],
+                    "versions_imported": strategy_result["versions_imported"],
+                }
+
+            if SettingsTransferCategory.DATA_SOURCES.value in categories:
+                source_result = await _import_data_sources(
+                    session,
+                    bundle.get(SettingsTransferCategory.DATA_SOURCES.value),
+                )
+                results[SettingsTransferCategory.DATA_SOURCES.value] = {
+                    "created": source_result["created"],
+                    "updated": source_result["updated"],
+                }
+
+            if SettingsTransferCategory.MARKET_CREDENTIALS.value in categories:
+                if settings_row is None:
+                    settings_row = await _get_or_create_settings_row(session)
+                _apply_market_credentials_import(
+                    settings_row,
+                    _coerce_dict(bundle.get(SettingsTransferCategory.MARKET_CREDENTIALS.value)),
+                )
+                results[SettingsTransferCategory.MARKET_CREDENTIALS.value] = {"updated": 1}
+
+            if SettingsTransferCategory.VPN_CONFIGURATION.value in categories:
+                if settings_row is None:
+                    settings_row = await _get_or_create_settings_row(session)
+                _apply_vpn_configuration_import(
+                    settings_row,
+                    _coerce_dict(bundle.get(SettingsTransferCategory.VPN_CONFIGURATION.value)),
+                )
+                needs_proxy_reinit = True
+                results[SettingsTransferCategory.VPN_CONFIGURATION.value] = {"updated": 1}
+
+            if SettingsTransferCategory.LLM_CONFIGURATION.value in categories:
+                if settings_row is None:
+                    settings_row = await _get_or_create_settings_row(session)
+                _apply_llm_configuration_import(
+                    settings_row,
+                    _coerce_dict(bundle.get(SettingsTransferCategory.LLM_CONFIGURATION.value)),
+                )
+                needs_llm_reinit = True
+                results[SettingsTransferCategory.LLM_CONFIGURATION.value] = {"updated": 1}
+
+            if SettingsTransferCategory.TELEGRAM_CONFIGURATION.value in categories:
+                if telegram_payload is None:
+                    results[SettingsTransferCategory.TELEGRAM_CONFIGURATION.value] = {"updated": 0}
+                else:
+                    if settings_row is None:
+                        settings_row = await _get_or_create_settings_row(session)
+                    _apply_telegram_configuration_import(
+                        settings_row,
+                        _coerce_dict(telegram_payload),
+                    )
+                    results[SettingsTransferCategory.TELEGRAM_CONFIGURATION.value] = {"updated": 1}
+
+            if SettingsTransferCategory.BOT_TRADERS.value in categories:
+                trader_result = await _import_traders(
+                    session,
+                    bundle.get(SettingsTransferCategory.BOT_TRADERS.value),
+                )
+                results[SettingsTransferCategory.BOT_TRADERS.value] = {
+                    "created": trader_result["created"],
+                    "updated": trader_result["updated"],
+                    "orchestrator_updated": trader_result["orchestrator_updated"],
+                }
+
+            if settings_row is not None:
+                settings_row.updated_at = utcnow()
+
+            await session.commit()
+
+            if SettingsTransferCategory.STRATEGIES.value in categories:
+                from services.strategy_loader import strategy_loader
+
+                refresh_result = await strategy_loader.refresh_all_from_db(session=session)
+                results["strategies_runtime"] = {
+                    "loaded": len(refresh_result.get("loaded", [])),
+                    "errors": len((refresh_result.get("errors") or {}).keys()),
+                }
+
+            if SettingsTransferCategory.DATA_SOURCES.value in categories:
+                from services.data_source_loader import data_source_loader
+
+                refresh_result = await data_source_loader.refresh_all_from_db(session=session)
+                results["data_sources_runtime"] = {
+                    "loaded": len(refresh_result.get("loaded", [])),
+                    "errors": len((refresh_result.get("errors") or {}).keys()),
+                }
+
+        if needs_llm_reinit:
+            try:
+                from services.ai import get_llm_manager
+
+                manager = get_llm_manager()
+                await manager.initialize()
+            except RuntimeError:
+                pass
+            except Exception as reinit_exc:
+                logger.error("Failed to re-initialize LLM manager after settings import", exc_info=reinit_exc)
+
+        if needs_proxy_reinit:
+            try:
+                from services.trading_proxy import reload_proxy_settings
+
+                await reload_proxy_settings()
+            except Exception as reinit_exc:
+                logger.error("Failed to re-initialize trading proxy after settings import", exc_info=reinit_exc)
+
+        return {
+            "status": "success",
+            "imported_categories": categories,
+            "results": results,
+            "imported_at": utcnow().isoformat(),
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed to import settings bundle", exc_info=exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ==================== VALIDATION ENDPOINTS ====================

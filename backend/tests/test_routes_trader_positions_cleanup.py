@@ -64,7 +64,7 @@ async def _seed_trader_with_order(session: AsyncSession) -> None:
             source="crypto",
             market_id="market-1",
             direction="buy_yes",
-            mode="paper",
+            mode="shadow",
             status="executed",
             notional_usd=40.0,
             entry_price=0.4,
@@ -92,7 +92,7 @@ async def test_mark_to_market_dry_run_keeps_status(tmp_path, monkeypatch):
             result = await routes_traders.cleanup_trader_positions(
                 "trader-1",
                 routes_traders.TraderPositionCleanupRequest(
-                    scope=routes_traders.TraderPositionCleanupScope.paper,
+                    scope=routes_traders.TraderPositionCleanupScope.shadow,
                     method=routes_traders.TraderPositionCleanupMethod.mark_to_market,
                     dry_run=True,
                 ),
@@ -124,7 +124,7 @@ async def test_mark_to_market_updates_realized_pnl_and_status(tmp_path, monkeypa
             result = await routes_traders.cleanup_trader_positions(
                 "trader-1",
                 routes_traders.TraderPositionCleanupRequest(
-                    scope=routes_traders.TraderPositionCleanupScope.paper,
+                    scope=routes_traders.TraderPositionCleanupScope.shadow,
                     method=routes_traders.TraderPositionCleanupMethod.mark_to_market,
                     dry_run=False,
                 ),
@@ -163,12 +163,12 @@ async def test_live_cleanup_requires_confirm(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_open_order_count_includes_executed_paper_positions(tmp_path):
+async def test_open_order_count_includes_executed_shadow_positions(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     try:
         async with session_factory() as session:
             await _seed_trader_with_order(session)
-            count = await get_open_order_count_for_trader(session, "trader-1", mode="paper")
+            count = await get_open_order_count_for_trader(session, "trader-1", mode="shadow")
             assert count == 1
     finally:
         await engine.dispose()
@@ -189,7 +189,7 @@ async def test_open_position_count_aggregates_same_market_direction(tmp_path):
                     source="crypto",
                     market_id="market-1",
                     direction="buy_yes",
-                    mode="paper",
+                    mode="shadow",
                     status="submitted",
                     notional_usd=20.0,
                     entry_price=0.5,
@@ -200,9 +200,9 @@ async def test_open_position_count_aggregates_same_market_direction(tmp_path):
             )
             await session.commit()
 
-            await sync_trader_position_inventory(session, trader_id="trader-1", mode="paper")
-            open_orders = await get_open_order_count_for_trader(session, "trader-1", mode="paper")
-            open_positions = await get_open_position_count_for_trader(session, "trader-1", mode="paper")
+            await sync_trader_position_inventory(session, trader_id="trader-1", mode="shadow")
+            open_orders = await get_open_order_count_for_trader(session, "trader-1", mode="shadow")
+            open_positions = await get_open_position_count_for_trader(session, "trader-1", mode="shadow")
 
             assert open_orders == 2
             assert open_positions == 1

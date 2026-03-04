@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
@@ -18,6 +18,8 @@ import {
   Loader2,
   Trash2,
   Play,
+  Download,
+  Upload,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -37,14 +39,18 @@ import {
   getDatabaseMaintenanceStats,
   getLLMModels,
   refreshLLMModels,
+  exportSettingsBundle,
+  importSettingsBundle,
   runWorkerOnce,
   type DatabaseFlushTarget,
   type LLMModelOption,
   type DiscoverySettings,
   type UILockSettings,
+  type SettingsTransferCategory,
+  type SettingsExportBundle,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'security' | 'vpn' | 'discovery' | 'maintenance'
+type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'security' | 'vpn' | 'discovery' | 'maintenance' | 'transfer'
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   max_discovered_wallets: 20_000,
@@ -98,6 +104,24 @@ const DEFAULT_UI_LOCK_SETTINGS: UILockSettings = {
   idle_timeout_minutes: 15,
   has_password: false,
 }
+
+const SETTINGS_TRANSFER_CATEGORIES: Array<{
+  id: SettingsTransferCategory
+  label: string
+  description: string
+}> = [
+  { id: 'bot_traders', label: 'Bot Traders', description: 'Configured trader bots and risk/runtime settings' },
+  { id: 'strategies', label: 'Strategies', description: 'Strategy definitions, source code, and version snapshots' },
+  { id: 'data_sources', label: 'Data Sources', description: 'Data-source definitions and retention/config' },
+  { id: 'market_credentials', label: 'Market Credentials', description: 'Polymarket + Kalshi API credentials' },
+  { id: 'vpn_configuration', label: 'VPN Configuration', description: 'Trading proxy URL and VPN enforcement settings' },
+  { id: 'llm_configuration', label: 'LLM Configuration', description: 'Provider, model, API keys, and spend cap' },
+  {
+    id: 'telegram_configuration',
+    label: 'Telegram Setup',
+    description: 'Bot token, chat ID, and notification delivery rules',
+  },
+]
 
 const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefined): DiscoverySettings => {
   if (!value || typeof value !== 'object') {
@@ -259,6 +283,22 @@ export default function SettingsPanel({
     confirm_password: '',
     clear_password: false,
   })
+
+  const transferFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [transferCategories, setTransferCategories] = useState<Record<SettingsTransferCategory, boolean>>(() => {
+    const initial: Record<SettingsTransferCategory, boolean> = {
+      bot_traders: true,
+      strategies: true,
+      data_sources: true,
+      market_credentials: true,
+      vpn_configuration: true,
+      llm_configuration: true,
+      telegram_configuration: true,
+    }
+    return initial
+  })
+  const [importBundle, setImportBundle] = useState<SettingsExportBundle | null>(null)
+  const [importFileName, setImportFileName] = useState<string>('')
 
   const queryClient = useQueryClient()
 
@@ -452,6 +492,120 @@ export default function SettingsPanel({
     },
   })
 
+  const selectedTransferCategories = SETTINGS_TRANSFER_CATEGORIES
+    .filter((category) => transferCategories[category.id])
+    .map((category) => category.id)
+
+  const exportSettingsMutation = useMutation({
+    mutationFn: (categories: SettingsTransferCategory[]) => exportSettingsBundle({ include_categories: categories }),
+    onSuccess: (data, categories) => {
+      const blob = new Blob([JSON.stringify(data.bundle, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      anchor.href = url
+      anchor.download = `homerun-settings-${timestamp}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setSaveMessage({ type: 'success', text: `Exported ${categories.length} configuration categories` })
+      setTimeout(() => setSaveMessage(null), 5000)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to export settings bundle' })
+      setTimeout(() => setSaveMessage(null), 7000)
+    },
+  })
+
+  const importSettingsMutation = useMutation({
+    mutationFn: ({ bundle, categories }: { bundle: Record<string, unknown>; categories: SettingsTransferCategory[] }) =>
+      importSettingsBundle({ bundle, include_categories: categories }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries()
+      const importedCount = Array.isArray(data.imported_categories) ? data.imported_categories.length : 0
+      setSaveMessage({ type: 'success', text: `Imported ${importedCount} configuration categories` })
+      setTimeout(() => setSaveMessage(null), 6000)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to import settings bundle' })
+      setTimeout(() => setSaveMessage(null), 8000)
+    },
+  })
+
+  const setAllTransferCategories = (checked: boolean) => {
+    setTransferCategories({
+      bot_traders: checked,
+      strategies: checked,
+      data_sources: checked,
+      market_credentials: checked,
+      vpn_configuration: checked,
+      llm_configuration: checked,
+      telegram_configuration: checked,
+    })
+  }
+
+  const toggleTransferCategory = (category: SettingsTransferCategory) => {
+    setTransferCategories((prev) => ({ ...prev, [category]: !prev[category] }))
+  }
+
+  const handleTransferFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Invalid settings bundle format')
+      }
+      setImportBundle(parsed as SettingsExportBundle)
+      setImportFileName(file.name)
+      setSaveMessage({ type: 'success', text: `Loaded import bundle: ${file.name}` })
+      setTimeout(() => setSaveMessage(null), 4000)
+    } catch {
+      setImportBundle(null)
+      setImportFileName('')
+      setSaveMessage({ type: 'error', text: 'Invalid JSON file. Select a valid settings bundle export.' })
+      setTimeout(() => setSaveMessage(null), 7000)
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const handleExportBundle = () => {
+    if (!selectedTransferCategories.length) {
+      setSaveMessage({ type: 'error', text: 'Select at least one category to export.' })
+      setTimeout(() => setSaveMessage(null), 5000)
+      return
+    }
+    exportSettingsMutation.mutate(selectedTransferCategories)
+  }
+
+  const handleImportBundle = () => {
+    if (!importBundle) {
+      setSaveMessage({ type: 'error', text: 'Select a settings bundle JSON file first.' })
+      setTimeout(() => setSaveMessage(null), 5000)
+      return
+    }
+    if (!selectedTransferCategories.length) {
+      setSaveMessage({ type: 'error', text: 'Select at least one category to import.' })
+      setTimeout(() => setSaveMessage(null), 5000)
+      return
+    }
+    const confirmed = window.confirm(
+      'Import selected categories now?\n\nThis overwrites current configuration values in those categories.'
+    )
+    if (!confirmed) {
+      return
+    }
+    importSettingsMutation.mutate({
+      bundle: importBundle as unknown as Record<string, unknown>,
+      categories: selectedTransferCategories,
+    })
+  }
+
   const handleSaveSection = (section: SettingsSection) => {
     const updates: any = {}
 
@@ -606,6 +760,8 @@ export default function SettingsPanel({
         return vpnForm.enabled ? 'Active' : 'Disabled'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
+      case 'transfer':
+        return `${selectedTransferCategories.length} selected`
       default:
         return ''
     }
@@ -629,6 +785,8 @@ export default function SettingsPanel({
         return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
+      case 'transfer':
+        return 'text-cyan-400 bg-cyan-500/10'
       default:
         return 'text-muted-foreground bg-muted'
     }
@@ -642,6 +800,7 @@ export default function SettingsPanel({
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
+    { id: 'transfer', icon: Upload, label: 'Import / Export', description: 'Migrate trading configuration bundle' },
   ]
 
   return (
@@ -1563,6 +1722,122 @@ export default function SettingsPanel({
                             {testVpnMutation.data.message}
                           </Badge>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Import/Export Settings */}
+                  {section.id === 'transfer' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Categories</p>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => setAllTransferCategories(true)}
+                            >
+                              All
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => setAllTransferCategories(false)}
+                            >
+                              None
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {SETTINGS_TRANSFER_CATEGORIES.map((category) => (
+                            <Card key={category.id} className="bg-muted border-border/50">
+                              <CardContent className="p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-sm font-medium">{category.label}</p>
+                                    <p className="text-xs text-muted-foreground">{category.description}</p>
+                                  </div>
+                                  <Switch
+                                    checked={transferCategories[category.id]}
+                                    onCheckedChange={() => toggleTransferCategory(category.id)}
+                                  />
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+
+                        <Card className="bg-amber-500/5 border-amber-500/25">
+                          <CardContent className="p-3">
+                            <p className="text-xs text-amber-300 font-medium">Sensitive export warning</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Export bundles include plaintext API credentials for selected categories. Store them securely.
+                            </p>
+                          </CardContent>
+                        </Card>
+
+                        <Card className="bg-muted border-border/50">
+                          <CardContent className="p-3 space-y-2">
+                            <p className="text-xs uppercase tracking-widest text-muted-foreground">Import Bundle</p>
+                            <input
+                              ref={transferFileInputRef}
+                              type="file"
+                              accept="application/json,.json"
+                              className="hidden"
+                              onChange={handleTransferFileSelect}
+                            />
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => transferFileInputRef.current?.click()}
+                              >
+                                <Upload className="w-3.5 h-3.5 mr-1.5" />
+                                Choose JSON
+                              </Button>
+                              <span className="text-xs text-muted-foreground">
+                                {importFileName || 'No file selected'}
+                              </span>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Button
+                          size="sm"
+                          onClick={handleExportBundle}
+                          disabled={exportSettingsMutation.isPending || !selectedTransferCategories.length}
+                        >
+                          {exportSettingsMutation.isPending ? (
+                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5 mr-1.5" />
+                          )}
+                          Export Bundle
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleImportBundle}
+                          disabled={importSettingsMutation.isPending || !importBundle || !selectedTransferCategories.length}
+                        >
+                          {importSettingsMutation.isPending ? (
+                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                          ) : (
+                            <Upload className="w-3.5 h-3.5 mr-1.5" />
+                          )}
+                          Import Bundle
+                        </Button>
                       </div>
                     </div>
                   )}

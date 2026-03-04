@@ -551,6 +551,7 @@ class EventDispatcher:
                             opportunities,
                             source=bridge_source,
                             sweep_missing=bool(bridge_policy.sweep_missing),
+                            refresh_prices=False,
                         )
                     logger.info(
                         "Remote DataEvent opportunities bridged",

@@ -82,6 +82,7 @@ from services.trader_orchestrator_state import (
     create_trader_event,
     create_trader_order as _create_trader_order,
     get_consecutive_loss_count,
+    get_trader_copy_leader_exposure,
     get_daily_realized_pnl,
     get_gross_exposure,
     get_unrealized_pnl,
@@ -93,6 +94,7 @@ from services.trader_orchestrator_state import (
     get_open_market_ids_for_trader,
     get_open_position_count_for_trader,
     get_trader_signal_cursor,
+    list_live_wallet_positions_for_trader,
     list_traders,
     list_unconsumed_trade_signals,
     reconcile_live_provider_orders,
@@ -129,7 +131,7 @@ _LOSS_STREAK_RESET_AT_KEY = "loss_streak_reset_at"
 _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
 _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
-_TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 15
+_TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 1
 _trader_cycle_heartbeat_last_emitted: dict[str, datetime] = {}
 _TRADE_SIGNAL_STREAM_DRAIN_READS = 4
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
@@ -474,6 +476,13 @@ def _coerce_optional_bool(value: Any) -> bool | None:
     if text in {"0", "false", "no", "off"}:
         return False
     return None
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    parsed = _coerce_optional_bool(value)
+    if parsed is None:
+        return bool(default)
+    return bool(parsed)
 
 
 def _normalize_strategy_type_values(raw: Any) -> set[str]:
@@ -1994,14 +2003,28 @@ def _signal_matches_traders_scope(signal: Any, scope_context: dict[str, Any]) ->
     return StrategySDK.match_trader_signal_scope(signal, scope_context)
 
 
-async def _persist_trader_cycle_heartbeat(session: Any, trader_id: str) -> None:
+async def _persist_trader_cycle_heartbeat(
+    session: Any,
+    trader_id: str,
+    *,
+    advance_run_clock: bool = True,
+) -> None:
     row = await session.get(Trader, trader_id)
     if row is None:
         return
+    touched = False
     now = utcnow()
-    row.last_run_at = now
-    row.requested_run_at = None
-    row.updated_at = now
+    if advance_run_clock:
+        row.last_run_at = now
+        row.updated_at = now
+        touched = True
+    if row.requested_run_at is not None:
+        row.requested_run_at = None
+        if not advance_run_clock:
+            row.updated_at = now
+        touched = True
+    if not touched:
+        return
     await _commit_with_retry(
         session,
         retry_attempts=2,
@@ -2775,7 +2798,11 @@ async def _run_trader_once(
                 )
 
         if not effective_process_signals:
-            await _persist_trader_cycle_heartbeat(session, trader_id)
+            await _persist_trader_cycle_heartbeat(
+                session,
+                trader_id,
+                advance_run_clock=bool(process_signals),
+            )
             return 0, 0, processed_signals
 
         is_high_frequency_trader = _is_high_frequency_crypto_trader(trader)
@@ -2813,6 +2840,48 @@ async def _run_trader_once(
         )
         scan_batch_size = min(scan_batch_size, max_signals_per_cycle)
         enable_live_market_context = bool(live_market_context_settings.get("enabled", True))
+        strict_ws_pricing_only = _coerce_bool(
+            live_market_context_settings.get("strict_ws_pricing_only"),
+            bool(DEFAULT_LIVE_MARKET_CONTEXT.get("strict_ws_pricing_only", True)),
+        )
+        if strict_ws_pricing_only and not enable_live_market_context:
+            enable_live_market_context = True
+        strict_ws_pricing_enforced = bool(strict_ws_pricing_only and enable_live_market_context)
+        allow_redis_strict_prices = _coerce_bool(
+            live_market_context_settings.get("allow_redis_strict_prices"),
+            bool(DEFAULT_LIVE_MARKET_CONTEXT.get("allow_redis_strict_prices", True)),
+        )
+        strict_ws_price_sources = ["ws_strict"]
+        if allow_redis_strict_prices:
+            strict_ws_price_sources.append("redis_strict")
+        strict_ws_price_source_set = set(strict_ws_price_sources)
+        strict_market_data_age_ms = int(
+            max(
+                25,
+                min(
+                    10_000,
+                    safe_int(
+                        live_market_context_settings.get("max_market_data_age_ms"),
+                        int(DEFAULT_LIVE_MARKET_CONTEXT.get("max_market_data_age_ms", 100)),
+                    ),
+                ),
+            )
+        )
+        scanner_strict_market_data_age_ms = int(
+            max(
+                strict_market_data_age_ms,
+                min(
+                    300_000,
+                    max(
+                        100,
+                        safe_int(
+                            getattr(settings, "SCANNER_STRICT_WS_MAX_AGE_MS", 30000),
+                            30000,
+                        ),
+                    ),
+                ),
+            )
+        )
         history_window_seconds = int(
             max(
                 300,
@@ -3038,6 +3107,8 @@ async def _run_trader_once(
                 traders_params.get("traders_scope"),
             )
         edge_calibration_cache: dict[str, dict[str, Any]] = {}
+        copy_inventory_context: dict[str, Any] = {}
+        copy_inventory_loaded = False
 
         # Kill switch is the very first gate: short-circuit before any signal
         # fetching, live-market context building, or risk evaluation.
@@ -3179,6 +3250,9 @@ async def _run_trader_once(
             if enable_live_market_context:
                 context_candidates: list[Any] = []
                 for sig in signals:
+                    if strict_ws_pricing_enforced:
+                        context_candidates.append(sig)
+                        continue
                     source_key = normalize_source_key(getattr(sig, "source", ""))
                     source_config = source_configs.get(source_key)
                     if _supports_live_market_context(sig, source_config):
@@ -3199,6 +3273,8 @@ async def _run_trader_once(
                             market_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
                             prices_batch_timeout_seconds=live_market_context_request_timeout_seconds,
                             history_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
+                            strict_ws_only=strict_ws_pricing_enforced,
+                            allow_redis_strict=allow_redis_strict_prices,
                         ),
                         timeout=live_market_context_timeout_seconds,
                     )
@@ -3248,8 +3324,73 @@ async def _run_trader_once(
                     requested_strategy_key = str(source_config.get("requested_strategy_key") or "").strip().lower()
                     strategy_key_for_output = requested_strategy_key or strategy_key
                     strategy_params = dict(source_config.get("strategy_params") or {})
+                    strict_age_budget_ms = strict_market_data_age_ms
+                    if signal_source == "scanner":
+                        strict_age_budget_ms = scanner_strict_market_data_age_ms
+                    if strict_ws_pricing_enforced:
+                        strategy_params.setdefault("require_strict_ws_pricing", True)
+                        strategy_params.setdefault("strict_ws_price_sources", list(strict_ws_price_sources))
+                        strategy_params.setdefault("max_market_data_age_ms", strict_age_budget_ms)
                     requested_strategy_version = normalize_strategy_version(source_config.get("strategy_version"))
                     live_context = live_contexts.get(signal_id, {})
+                    if strict_ws_pricing_enforced:
+                        live_source = str(
+                            live_context.get("market_data_source")
+                            or live_context.get("live_selected_price_source")
+                            or ""
+                        ).strip().lower()
+                        live_price = safe_float(live_context.get("live_selected_price"), None)
+                        live_age_ms = safe_float(live_context.get("market_data_age_ms"), None)
+                        strict_context_ok = (
+                            live_source in strict_ws_price_source_set
+                            and live_price is not None
+                            and live_price > 0.0
+                            and live_age_ms is not None
+                            and live_age_ms <= strict_age_budget_ms
+                        )
+                        if not strict_context_ok:
+                            live_reason_parts: list[str] = []
+                            live_reason_parts.append(f"source={live_source or 'unknown'}")
+                            live_reason_parts.append(
+                                f"age_ms={live_age_ms:.0f}" if live_age_ms is not None else "age_ms=unknown"
+                            )
+                            live_reason_parts.append(f"max_age_ms={strict_age_budget_ms}")
+                            await record_signal_consumption(
+                                session,
+                                trader_id=trader_id,
+                                signal_id=signal_id,
+                                outcome="skipped",
+                                reason=(
+                                    "Strict WS pricing required; "
+                                    f"live market context unavailable ({', '.join(live_reason_parts)})"
+                                ),
+                                payload={
+                                    "strict_ws_pricing_only": True,
+                                    "strict_ws_price_sources": list(strict_ws_price_sources),
+                                    "market_data_source": live_source or None,
+                                    "market_data_age_ms": live_age_ms,
+                                    "max_market_data_age_ms": strict_age_budget_ms,
+                                    "live_selected_price": live_price,
+                                    "live_market_available": bool(live_context.get("available")),
+                                },
+                                commit=False,
+                            )
+                            await upsert_trader_signal_cursor(
+                                session,
+                                trader_id=trader_id,
+                                last_signal_created_at=_signal_cursor_timestamp(signal),
+                                last_signal_id=signal_id,
+                                commit=False,
+                            )
+                            await _commit_with_retry(session)
+                            cursor_created_at = _signal_cursor_timestamp(signal)
+                            cursor_signal_id = signal_id
+                            processed_signals += 1
+                            prefiltered_signals += 1
+                            prefiltered_by_reason["strict_ws_pricing"] = (
+                                prefiltered_by_reason.get("strict_ws_pricing", 0) + 1
+                            )
+                            continue
                     runtime_signal = RuntimeTradeSignalView(signal, live_context=live_context)
                     runtime_signal.source = signal_source
                     traders_scope_payload: dict[str, Any] | None = None
@@ -3696,6 +3837,138 @@ async def _run_trader_once(
                             processed_signals += 1
                             continue
 
+                    copy_risk_context: dict[str, Any] = {}
+                    copy_allocation_context: dict[str, Any] = {}
+                    copy_inventory_context_for_signal: dict[str, Any] = {}
+                    if signal_source == "traders" and resolved_strategy_key == "traders_copy_trade":
+                        runtime_signal_payload = (
+                            runtime_signal.payload_json
+                            if isinstance(getattr(runtime_signal, "payload_json", None), dict)
+                            else {}
+                        )
+                        runtime_strategy_context = (
+                            runtime_signal_payload.get("strategy_context")
+                            if isinstance(runtime_signal_payload.get("strategy_context"), dict)
+                            else {}
+                        )
+                        runtime_copy_event = (
+                            runtime_strategy_context.get("copy_event")
+                            if isinstance(runtime_strategy_context.get("copy_event"), dict)
+                            else {}
+                        )
+                        runtime_source_trade = (
+                            runtime_signal_payload.get("source_trade")
+                            if isinstance(runtime_signal_payload.get("source_trade"), dict)
+                            else {}
+                        )
+                        copy_signal_side = str(
+                            runtime_copy_event.get("side")
+                            or runtime_source_trade.get("side")
+                            or ""
+                        ).strip().upper()
+                        source_wallet = StrategySDK.extract_primary_trader_signal_wallet(runtime_signal)
+                        trader_total_daily_pnl = float(trader_daily_pnl + trader_unrealized_pnl)
+                        configured_daily_loss_cap_usd = abs(
+                            safe_float(
+                                effective_risk_limits.get("max_daily_loss_usd"),
+                                safe_float(global_limits.get("max_daily_loss_usd"), 0.0),
+                            )
+                            or 0.0
+                        )
+                        trader_drawdown_pct = None
+                        trader_metadata = trader.get("metadata") if isinstance(trader.get("metadata"), dict) else {}
+                        for drawdown_key in (
+                            "copy_drawdown_pct",
+                            "drawdown_pct",
+                            "account_drawdown_pct",
+                        ):
+                            if drawdown_key not in trader_metadata:
+                                continue
+                            trader_drawdown_pct = safe_float(trader_metadata.get(drawdown_key), None)
+                            if trader_drawdown_pct is not None:
+                                trader_drawdown_pct = max(0.0, trader_drawdown_pct)
+                                break
+                        if trader_drawdown_pct is None and configured_daily_loss_cap_usd > 0.0:
+                            trader_drawdown_pct = max(
+                                0.0,
+                                (-trader_total_daily_pnl / configured_daily_loss_cap_usd) * 100.0,
+                            )
+                        trader_daily_loss_usd = max(0.0, -float(trader_total_daily_pnl))
+                        copy_risk_context = {
+                            "trader_drawdown_pct": trader_drawdown_pct,
+                            "trader_daily_loss_usd": trader_daily_loss_usd,
+                            "trader_total_daily_pnl_usd": trader_total_daily_pnl,
+                            "configured_daily_loss_cap_usd": configured_daily_loss_cap_usd,
+                        }
+
+                        current_source_exposure_usd = await get_trader_source_exposure(
+                            session,
+                            trader_id=trader_id,
+                            source=signal_source,
+                            mode=run_mode,
+                        )
+                        current_leader_exposure_usd = (
+                            await get_trader_copy_leader_exposure(
+                                session,
+                                trader_id=trader_id,
+                                source_wallet=source_wallet,
+                                mode=run_mode,
+                            )
+                            if source_wallet
+                            else 0.0
+                        )
+                        copy_allocation_context = {
+                            "source_wallet": source_wallet,
+                            "current_source_exposure_usd": float(current_source_exposure_usd),
+                            "current_leader_exposure_usd": float(current_leader_exposure_usd),
+                        }
+
+                        if run_mode == "live":
+                            if not copy_inventory_loaded or copy_signal_side == "SELL":
+                                copy_inventory_loaded = True
+                                try:
+                                    wallet_snapshot = await list_live_wallet_positions_for_trader(
+                                        session,
+                                        trader_id=trader_id,
+                                        include_managed=True,
+                                    )
+                                except Exception as exc:
+                                    copy_inventory_context = {
+                                        "available": False,
+                                        "wallet_address": None,
+                                        "token_inventory": {},
+                                        "error": str(exc),
+                                        "fetched_at": utcnow().isoformat(),
+                                    }
+                                else:
+                                    token_inventory: dict[str, dict[str, Any]] = {}
+                                    for raw_position in wallet_snapshot.get("positions") or []:
+                                        if not isinstance(raw_position, dict):
+                                            continue
+                                        token_key = str(raw_position.get("token_id") or "").strip().lower()
+                                        if not token_key:
+                                            continue
+                                        size = max(0.0, safe_float(raw_position.get("size"), 0.0))
+                                        existing_token = token_inventory.get(token_key)
+                                        if existing_token is None:
+                                            token_inventory[token_key] = {
+                                                "size": size,
+                                                "market_id": str(raw_position.get("market_id") or "").strip(),
+                                                "outcome": str(raw_position.get("outcome") or "").strip().upper() or None,
+                                                "direction": str(raw_position.get("direction") or "").strip().lower() or None,
+                                                "current_price": safe_float(raw_position.get("current_price"), None),
+                                            }
+                                        else:
+                                            existing_token["size"] = float(existing_token.get("size", 0.0) or 0.0) + size
+                                    copy_inventory_context = {
+                                        "available": bool(token_inventory),
+                                        "wallet_address": wallet_snapshot.get("wallet_address"),
+                                        "token_inventory": token_inventory,
+                                        "error": None,
+                                        "fetched_at": utcnow().isoformat(),
+                                    }
+                            copy_inventory_context_for_signal = copy_inventory_context
+
                     loop = asyncio.get_running_loop()
                     decision_obj = await loop.run_in_executor(
                         None,
@@ -3711,6 +3984,9 @@ async def _run_trader_once(
                                 traders_scope_context if signal_source == "traders" else None
                             ),
                             "edge_calibration": edge_calibration_profile,
+                            "copy_risk_context": copy_risk_context,
+                            "copy_allocation_context": copy_allocation_context,
+                            "copy_inventory_context": copy_inventory_context_for_signal,
                         },
                     )
                     checks_payload = _checks_to_payload(decision_obj.checks)
@@ -3954,6 +4230,17 @@ async def _run_trader_once(
                                 "pending_live_exit_statuses": risk_runtime_payload["pending_live_exit_statuses"],
                                 "live_risk_clamps": risk_runtime_payload["live_risk_clamps"],
                                 "trading_schedule_ok": risk_runtime_payload["trading_schedule_ok"],
+                            },
+                            "copy_runtime": {
+                                "risk": copy_risk_context,
+                                "allocation": copy_allocation_context,
+                                "inventory": {
+                                    "available": bool(copy_inventory_context_for_signal.get("available")),
+                                    "wallet_address": copy_inventory_context_for_signal.get("wallet_address"),
+                                    "token_count": len(copy_inventory_context_for_signal.get("token_inventory") or {}),
+                                    "error": copy_inventory_context_for_signal.get("error"),
+                                    "fetched_at": copy_inventory_context_for_signal.get("fetched_at"),
+                                },
                             },
                             "portfolio_runtime": portfolio_runtime_payload,
                             "experiment": {
@@ -4534,6 +4821,11 @@ async def run_worker_loop() -> None:
     stream_last_claim_run_at: datetime | None = None
     if not await ensure_trade_signal_group():
         logger.warning("Trade signal stream group ensure failed; worker will continue with scheduled polling fallback")
+    maintenance_interval_seconds = max(
+        0.5,
+        float(getattr(settings, "ORCHESTRATOR_MAINTENANCE_INTERVAL_SECONDS", 5.0) or 5.0),
+    )
+    last_maintenance_at: datetime | None = None
 
     try:
         while True:
@@ -4543,6 +4835,10 @@ async def run_worker_loop() -> None:
             manual_force_cycle = False
             cycle_trigger = runtime_trigger_event
             runtime_trigger_event = None
+            stream_triggered_cycle = bool(
+                isinstance(cycle_trigger, dict)
+                and str(cycle_trigger.get("event_type") or "").strip().lower() == "trade_signal_stream"
+            )
             cycle_stream_entry_ids: list[str] = []
             if isinstance(cycle_trigger, dict):
                 cycle_stream_entry_ids = [
@@ -4550,8 +4846,15 @@ async def run_worker_loop() -> None:
                     for entry_id in (cycle_trigger.get("stream_entry_ids") or [])
                     if str(entry_id).strip()
                 ]
+            now_for_maintenance = utcnow()
+            maintenance_due = (
+                last_maintenance_at is None
+                or (now_for_maintenance - last_maintenance_at).total_seconds() >= maintenance_interval_seconds
+            )
+            run_maintenance = bool(not stream_triggered_cycle or maintenance_due)
             manage_only_cycle = False
             manage_only_reasons: list[str] = []
+            needs_live_execution_init = False
             mode = "shadow"
             control: dict[str, Any] = {}
             traders: list[dict[str, Any]] = []
@@ -4564,41 +4867,42 @@ async def run_worker_loop() -> None:
                     continue
 
                 async with AsyncSessionLocal() as session:
-                    try:
-                        await expire_stale_signals(session)
-                    except OperationalError as exc:
-                        if _is_retryable_db_error(exc):
+                    if run_maintenance:
+                        try:
+                            await expire_stale_signals(session)
+                        except OperationalError as exc:
+                            if _is_retryable_db_error(exc):
+                                if hasattr(session, "rollback"):
+                                    await session.rollback()
+                                logger.warning("Skipped stale-signal expiry due to transient DB error")
+                            else:
+                                raise
+                        except Exception as exc:
                             if hasattr(session, "rollback"):
                                 await session.rollback()
-                            logger.warning("Skipped stale-signal expiry due to transient DB error")
-                        else:
-                            raise
-                    except Exception as exc:
-                        if hasattr(session, "rollback"):
-                            await session.rollback()
-                        logger.warning("Failed stale-signal expiry pass: %s", exc)
-                    try:
-                        await refresh_strategy_runtime_if_needed(session, source_keys=None)
-                    except Exception as exc:
-                        if hasattr(session, "rollback"):
-                            await session.rollback()
-                        logger.warning("Failed strategy runtime refresh pass: %s", exc)
+                            logger.warning("Failed stale-signal expiry pass: %s", exc)
+                        try:
+                            await refresh_strategy_runtime_if_needed(session, source_keys=None)
+                        except Exception as exc:
+                            if hasattr(session, "rollback"):
+                                await session.rollback()
+                            logger.warning("Failed strategy runtime refresh pass: %s", exc)
 
-                    try:
-                        orphan_cleanup = await _reconcile_orphan_open_orders(session)
-                        if orphan_cleanup.get("rows_seen", 0) > 0:
-                            logger.warning(
-                                "Reconciled orphan trader orders",
-                                extra={"orphan_cleanup": orphan_cleanup},
-                            )
-                    except Exception as exc:
-                        if hasattr(session, "rollback"):
-                            await session.rollback()
-                        logger.warning("Failed orphan-order reconciliation pass: %s", exc)
+                        try:
+                            orphan_cleanup = await _reconcile_orphan_open_orders(session)
+                            if orphan_cleanup.get("rows_seen", 0) > 0:
+                                logger.warning(
+                                    "Reconciled orphan trader orders",
+                                    extra={"orphan_cleanup": orphan_cleanup},
+                                )
+                        except Exception as exc:
+                            if hasattr(session, "rollback"):
+                                await session.rollback()
+                            logger.warning("Failed orphan-order reconciliation pass: %s", exc)
 
                     control = await read_orchestrator_control(session)
                     control_active = bool(control.get("is_enabled", False)) and not bool(control.get("is_paused", True))
-                    if control_active:
+                    if control_active and run_maintenance:
                         try:
                             stale_watchdog = await _run_terminal_stale_order_watchdog(session)
                             if stale_watchdog.get("alerted", 0) > 0:
@@ -4610,6 +4914,8 @@ async def run_worker_loop() -> None:
                             if hasattr(session, "rollback"):
                                 await session.rollback()
                             logger.warning("Failed stale-terminal-order watchdog pass: %s", exc)
+                    if run_maintenance:
+                        last_maintenance_at = utcnow()
                     mode = _canonical_trader_mode(control.get("mode"), default="shadow")
                     cycle_interval = max(
                         1,
@@ -4731,23 +5037,27 @@ async def run_worker_loop() -> None:
                                     stats=await compute_orchestrator_metrics(session),
                                 )
                                 skip_cycle = True
-                            elif not await live_execution_service.ensure_initialized():
-                                await _write_orchestrator_snapshot_best_effort(
-                                    session,
-                                    running=False,
-                                    enabled=True,
-                                    current_activity="Blocked: live trading service failed to initialize",
-                                    interval_seconds=cycle_interval,
-                                    last_error=None,
-                                    stats=await compute_orchestrator_metrics(session),
-                                )
-                                skip_cycle = True
+                            else:
+                                needs_live_execution_init = True
 
                     if not skip_cycle and not traders:
                         traders = await list_traders(
                             session,
                             mode=mode if mode in {"shadow", "live"} else None,
                         )
+
+                if not skip_cycle and needs_live_execution_init and not await live_execution_service.ensure_initialized():
+                    async with AsyncSessionLocal() as session:
+                        await _write_orchestrator_snapshot_best_effort(
+                            session,
+                            running=False,
+                            enabled=True,
+                            current_activity="Blocked: live trading service failed to initialize",
+                            interval_seconds=cycle_interval,
+                            last_error=None,
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                    skip_cycle = True
 
                 if skip_cycle:
                     if cycle_stream_entry_ids:
@@ -4841,6 +5151,8 @@ async def run_worker_loop() -> None:
                         else ""
                     ) or ("requested_run" if manual_force_cycle else "scheduled")
                     metrics["cycle_trigger"] = trigger_label
+                    metrics["maintenance_run"] = bool(run_maintenance)
+                    metrics["maintenance_interval_seconds"] = float(maintenance_interval_seconds)
                     open_orders = int(metrics.get("open_orders", 0) or 0)
                     activity = (
                         f"Cycle[{trigger_label}] signals={total_processed_signals} "

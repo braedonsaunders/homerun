@@ -25,9 +25,6 @@ from models.database import (
     AsyncSessionLocal,
     OpportunityEvent,
     TradeSignalSnapshot,
-    TraderDecision,
-    TraderEvent,
-    TraderOrder,
     EventsSignal,
     EventsSnapshot,
 )
@@ -78,9 +75,6 @@ class SnapshotBroadcaster:
         self._last_world_status_sig: Optional[tuple] = None
         self._last_world_update_sig: Optional[tuple] = None
         self._last_orchestrator_status_sig: Optional[tuple] = None
-        self._last_trader_decision_ts: Optional[datetime] = None
-        self._last_trader_order_ts: Optional[datetime] = None
-        self._last_trader_event_ts: Optional[datetime] = None
         # Async queue fed by event bus subscription.
         self._event_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
@@ -293,9 +287,6 @@ class SnapshotBroadcaster:
         self._last_world_status_sig = None
         self._last_world_update_sig = None
         self._last_orchestrator_status_sig = None
-        self._last_trader_decision_ts = None
-        self._last_trader_order_ts = None
-        self._last_trader_event_ts = None
         logger.info("Snapshot broadcaster stopped")
 
     # ------------------------------------------------------------------
@@ -353,6 +344,10 @@ class SnapshotBroadcaster:
         workers publish to event_bus and Redis stream fan-out delivers
         those events to this process. It catches any data that workers may
         not have published to the bus.
+
+        Trader terminal streams (events/decisions/orders) are intentionally
+        excluded from fallback polling so terminal cadence is driven only by
+        real-time event bus delivery.
         """
         while self._running:
             try:
@@ -393,31 +388,6 @@ class SnapshotBroadcaster:
                         event_query = event_query.where(OpportunityEvent.created_at > self._last_event_ts)
                     event_query = event_query.limit(200)
                     event_rows = (await session.execute(event_query)).scalars().all()
-                    decision_query = select(TraderDecision).order_by(TraderDecision.created_at.asc())
-                    if self._last_trader_decision_ts is not None:
-                        decision_query = decision_query.where(TraderDecision.created_at > self._last_trader_decision_ts)
-                    decision_query = decision_query.limit(200)
-                    decision_rows = (await session.execute(decision_query)).scalars().all()
-
-                    trader_event_query = select(TraderEvent).order_by(
-                        TraderEvent.created_at.asc(),
-                        TraderEvent.id.asc(),
-                    )
-                    if self._last_trader_event_ts is not None:
-                        trader_event_query = trader_event_query.where(
-                            TraderEvent.created_at > self._last_trader_event_ts
-                        )
-                    trader_event_query = trader_event_query.limit(200)
-                    trader_event_rows = (await session.execute(trader_event_query)).scalars().all()
-
-                    trade_query = select(TraderOrder).order_by(
-                        TraderOrder.updated_at.asc(),
-                        TraderOrder.id.asc(),
-                    )
-                    if self._last_trader_order_ts is not None:
-                        trade_query = trade_query.where(TraderOrder.updated_at > self._last_trader_order_ts)
-                    trade_query = trade_query.limit(200)
-                    order_rows = (await session.execute(trade_query)).scalars().all()
 
                 if event_rows:
                     self._last_event_ts = event_rows[-1].created_at
@@ -734,88 +704,6 @@ class SnapshotBroadcaster:
                             "data": orchestrator_status,
                         }
                     )
-
-                if decision_rows:
-                    self._last_trader_decision_ts = decision_rows[-1].created_at
-                    for row in decision_rows:
-                        await manager.broadcast(
-                            {
-                                "type": "trader_decision",
-                                "data": {
-                                    "id": row.id,
-                                    "trader_id": row.trader_id,
-                                    "signal_id": row.signal_id,
-                                    "source": row.source,
-                                    "strategy_key": row.strategy_key,
-                                    "decision": row.decision,
-                                    "reason": row.reason,
-                                    "score": row.score,
-                                    "event_id": row.event_id,
-                                    "trace_id": row.trace_id,
-                                    "checks_summary": row.checks_summary_json or {},
-                                    "risk_snapshot": row.risk_snapshot_json or {},
-                                    "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                                },
-                            }
-                        )
-
-                if trader_event_rows:
-                    self._last_trader_event_ts = trader_event_rows[-1].created_at
-                    for row in trader_event_rows:
-                        await manager.broadcast(
-                            {
-                                "type": "trader_event",
-                                "data": {
-                                    "id": row.id,
-                                    "trader_id": row.trader_id,
-                                    "event_type": row.event_type,
-                                    "severity": row.severity,
-                                    "source": row.source,
-                                    "operator": row.operator,
-                                    "message": row.message,
-                                    "trace_id": row.trace_id,
-                                    "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                                },
-                            }
-                        )
-
-                if order_rows:
-                    latest_order = order_rows[-1]
-                    self._last_trader_order_ts = latest_order.updated_at or latest_order.created_at
-                    for row in order_rows:
-                        await manager.broadcast(
-                            {
-                                "type": "trader_order",
-                                "data": {
-                                    "id": row.id,
-                                    "trader_id": row.trader_id,
-                                    "signal_id": row.signal_id,
-                                    "decision_id": row.decision_id,
-                                    "source": row.source,
-                                    "market_id": row.market_id,
-                                    "market_question": row.market_question,
-                                    "direction": row.direction,
-                                    "status": row.status,
-                                    "mode": row.mode,
-                                    "notional_usd": row.notional_usd,
-                                    "entry_price": row.entry_price,
-                                    "effective_price": row.effective_price,
-                                    "edge_percent": row.edge_percent,
-                                    "confidence": row.confidence,
-                                    "actual_profit": row.actual_profit,
-                                    "reason": row.reason,
-                                    "error_message": row.error_message,
-                                    "event_id": row.event_id,
-                                    "trace_id": row.trace_id,
-                                    "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                                    "executed_at": row.executed_at.isoformat() if row.executed_at else None,
-                                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-                                },
-                            }
-                        )
 
             except asyncio.CancelledError:
                 break

@@ -29,6 +29,7 @@ from models.database import (
 from services.kalshi_client import kalshi_client
 from services.optimization.vwap import OrderBook, OrderBookLevel
 from services.polymarket import polymarket_client
+from services.crypto_ws_stream import publish_crypto_ws_update_batch
 from services.redis_price_cache import redis_price_cache
 from services.shared_state import read_market_catalog
 from services.trader_orchestrator_state import (
@@ -73,6 +74,10 @@ _TOKEN_LIST_KEYS = {
     "clobtokenids",
 }
 _MAX_EVALUATION_SIGNALS_PER_TRADER = 600
+_CRYPTO_WS_STREAM_DEBOUNCE_SECONDS = max(
+    0.005,
+    min(0.1, float(getattr(settings, "CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS", 0.05) or 0.05)),
+)
 
 
 def _is_polymarket_token(token_id: str) -> bool:
@@ -427,6 +432,27 @@ def _fallback_updates_from_prices(
     return updates, seq
 
 
+async def _collect_crypto_live_tokens() -> set[str]:
+    """Collect active crypto market token IDs so WS stays subscribed to current short-horizon legs."""
+    try:
+        from services.crypto_service import get_crypto_service
+    except Exception:
+        return set()
+
+    try:
+        markets = await asyncio.to_thread(get_crypto_service().get_live_markets, False)
+    except Exception:
+        return set()
+
+    out: set[str] = set()
+    for market in markets or []:
+        for token_id in getattr(market, "clob_token_ids", None) or []:
+            token = _normalize_token_id(token_id)
+            if token and _is_polymarket_token(token):
+                out.add(token)
+    return out
+
+
 async def _run_loop() -> None:
     worker_name = "market_data"
     heartbeat_interval = max(
@@ -471,6 +497,7 @@ async def _run_loop() -> None:
         "kalshi_subscriptions": 0,
         "critical_tokens": 0,
         "critical_markets": 0,
+        "crypto_live_tokens": 0,
         "held_markets": 0,
         "evaluation_markets": 0,
         "evaluation_signals": 0,
@@ -484,12 +511,61 @@ async def _run_loop() -> None:
     catalog_tokens: set[str] = set()
     critical_tokens: set[str] = set()
     critical_market_ids: set[str] = set()
+    crypto_live_tokens: set[str] = set()
     desired_tokens: set[str] = set()
     market_tokens: dict[str, tuple[str, str]] = {}
     tracked_market_tokens: dict[str, tuple[str, str]] = {}
     subscribed_poly_tokens: set[str] = set()
     subscribed_kalshi_tickers: set[str] = set()
     next_stale_poll_at = datetime.now(timezone.utc)
+    ws_update_callback_registered = False
+    crypto_ws_changed_tokens: set[str] = set()
+    crypto_ws_emit_task: asyncio.Task[None] | None = None
+    crypto_ws_batches_emitted = 0
+    crypto_ws_tokens_emitted = 0
+
+    def _on_ws_price_update(
+        token_id: str,
+        _mid: float,
+        _bid: float,
+        _ask: float,
+        _exchange_ts: float,
+        _ingest_ts: float,
+        _sequence: int,
+    ) -> None:
+        nonlocal crypto_ws_emit_task
+        token = _normalize_token_id(token_id)
+        if not token or not _is_polymarket_token(token):
+            return
+        crypto_ws_changed_tokens.add(token)
+        if crypto_ws_emit_task is not None and not crypto_ws_emit_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            crypto_ws_emit_task = loop.create_task(_drain_crypto_ws_updates())
+        except RuntimeError:
+            pass
+
+    async def _drain_crypto_ws_updates() -> None:
+        nonlocal crypto_ws_batches_emitted
+        nonlocal crypto_ws_tokens_emitted
+        while True:
+            await asyncio.sleep(_CRYPTO_WS_STREAM_DEBOUNCE_SECONDS)
+            if not crypto_ws_changed_tokens:
+                return
+            token_batch = sorted(crypto_ws_changed_tokens)
+            crypto_ws_changed_tokens.clear()
+            try:
+                entry_id = await publish_crypto_ws_update_batch(
+                    token_ids=token_batch,
+                    source="market_data_worker",
+                )
+            except Exception as exc:
+                logger.warning("Failed to publish crypto WS token update batch: %s", exc)
+                entry_id = None
+            if entry_id is not None:
+                crypto_ws_batches_emitted += 1
+                crypto_ws_tokens_emitted += len(token_batch)
 
     async def _write_heartbeat() -> None:
         async with AsyncSessionLocal() as session:
@@ -518,6 +594,7 @@ async def _run_loop() -> None:
                     "kalshi_subscriptions": int(state.get("kalshi_subscriptions", 0) or 0),
                     "critical_tokens": int(state.get("critical_tokens", 0) or 0),
                     "critical_markets": int(state.get("critical_markets", 0) or 0),
+                    "crypto_live_tokens": int(state.get("crypto_live_tokens", 0) or 0),
                     "critical_poly_tokens": int(state.get("critical_poly_tokens", 0) or 0),
                     "critical_kalshi_tokens": int(state.get("critical_kalshi_tokens", 0) or 0),
                     "critical_poly_subscribed_tokens": int(
@@ -539,6 +616,9 @@ async def _run_loop() -> None:
                     ),
                     "critical_stale_tokens": int(state.get("critical_stale_tokens", 0) or 0),
                     "critical_stale_markets": int(state.get("critical_stale_markets", 0) or 0),
+                    "crypto_ws_batches_emitted": int(crypto_ws_batches_emitted),
+                    "crypto_ws_tokens_emitted": int(crypto_ws_tokens_emitted),
+                    "crypto_ws_pending_tokens": int(len(crypto_ws_changed_tokens)),
                 },
             )
 
@@ -560,7 +640,9 @@ async def _run_loop() -> None:
         nonlocal desired_tokens
 
         catalog_poly_tokens, catalog_kalshi_tokens = _split_token_universe(catalog_tokens)
-        critical_poly_tokens, critical_kalshi_tokens = _split_token_universe(critical_tokens)
+        critical_token_universe = set(critical_tokens)
+        critical_token_universe.update(crypto_live_tokens)
+        critical_poly_tokens, critical_kalshi_tokens = _split_token_universe(critical_token_universe)
 
         desired_poly_tokens, dropped_background_poly_tokens = _select_with_priority(
             critical_items=set(critical_poly_tokens),
@@ -696,6 +778,9 @@ async def _run_loop() -> None:
             feed_manager.set_http_fallback(_http_fallback_order_book)
             if not feed_manager._started:
                 await feed_manager.start()
+            if not ws_update_callback_registered:
+                feed_manager.cache.add_on_update_callback(_on_ws_price_update)
+                ws_update_callback_registered = True
             state["ws_started"] = True
             state["activity"] = "Market data feeds connected; syncing catalog subscriptions."
         else:
@@ -762,6 +847,8 @@ async def _run_loop() -> None:
                 state["evaluation_signals"] = int(critical_universe.get("evaluation_signals_count") or 0)
                 state["catalog_markets"] = int(metadata.get("market_count") or len(markets) or 0)
                 state["catalog_tokens"] = len(catalog_tokens)
+                crypto_live_tokens = await _collect_crypto_live_tokens()
+                state["crypto_live_tokens"] = len(crypto_live_tokens)
 
                 state["phase"] = "subscription_sync"
                 state["progress"] = 0.45
@@ -792,6 +879,14 @@ async def _run_loop() -> None:
 
             await _sleep_until_next_cycle(float(interval_seconds))
     finally:
+        if crypto_ws_emit_task is not None and not crypto_ws_emit_task.done():
+            crypto_ws_emit_task.cancel()
+            try:
+                await crypto_ws_emit_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
         heartbeat_stop_event.set()
         heartbeat_task.cancel()
         try:

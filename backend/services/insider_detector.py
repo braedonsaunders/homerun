@@ -109,7 +109,7 @@ class InsiderDetectorService:
             }
 
             query = (
-                select(DiscoveredWallet)
+                select(DiscoveredWallet.address)
                 .where(DiscoveredWallet.total_trades >= MIN_TOTAL_TRADES)
                 .where(
                     or_(
@@ -122,46 +122,60 @@ class InsiderDetectorService:
             if max_wallets:
                 query = query.limit(max(1, max_wallets))
 
-            wallets = list((await session.execute(query)).scalars().all())
-            if not wallets:
-                return {
-                    "scored_wallets": 0,
-                    "flagged_insiders": 0,
-                    "watch_insiders": 0,
-                }
+            wallet_addresses = [
+                str(address).lower()
+                for address in (await session.execute(query)).scalars().all()
+                if address
+            ]
 
-            flagged = 0
-            watch = 0
+        if not wallet_addresses:
+            return {
+                "scored_wallets": 0,
+                "flagged_insiders": 0,
+                "watch_insiders": 0,
+            }
 
-            for wallet in wallets:
-                score_result = await self._score_wallet(
-                    session=session,
-                    wallet=wallet,
-                    cluster_sizes=cluster_sizes,
-                    now=now,
-                )
-                wallet.insider_score = score_result["insider_score"]
-                wallet.insider_confidence = score_result["insider_confidence"]
-                wallet.insider_sample_size = score_result["sample_size"]
-                wallet.insider_last_scored_at = now
-                wallet.insider_metrics_json = score_result["metrics"]
-                wallet.insider_reasons_json = score_result["reasons"]
+        flagged = 0
+        watch = 0
+        scored = 0
 
+        for wallet_address in wallet_addresses:
+            try:
+                async with AsyncSessionLocal() as session:
+                    wallet = await session.get(DiscoveredWallet, wallet_address)
+                    if wallet is None:
+                        continue
+
+                    score_result = await self._score_wallet(
+                        session=session,
+                        wallet=wallet,
+                        cluster_sizes=cluster_sizes,
+                        now=now,
+                    )
+                    wallet.insider_score = score_result["insider_score"]
+                    wallet.insider_confidence = score_result["insider_confidence"]
+                    wallet.insider_sample_size = score_result["sample_size"]
+                    wallet.insider_last_scored_at = now
+                    wallet.insider_metrics_json = score_result["metrics"]
+                    wallet.insider_reasons_json = score_result["reasons"]
+                    await session.commit()
+
+                scored += 1
                 if score_result["classification"] == "flagged_insider":
                     flagged += 1
                 elif score_result["classification"] == "watch_insider":
                     watch += 1
-
-            await session.commit()
+            except Exception as exc:
+                logger.warning("Insider wallet rescore failed for %s: %s", wallet_address, exc)
 
         logger.info(
             "Insider wallet rescoring complete",
-            scored_wallets=len(wallets),
+            scored_wallets=scored,
             flagged_insiders=flagged,
             watch_insiders=watch,
         )
         return {
-            "scored_wallets": len(wallets),
+            "scored_wallets": scored,
             "flagged_insiders": flagged,
             "watch_insiders": watch,
         }

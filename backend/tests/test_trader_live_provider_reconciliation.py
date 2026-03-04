@@ -194,7 +194,7 @@ async def test_live_cleanup_requires_provider_cancel(tmp_path):
 @pytest.mark.asyncio
 async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
-    trader_id = "paper-cleanup-filters"
+    trader_id = "shadow-cleanup-filters"
     try:
         async with session_factory() as session:
             await _seed_trader(session, trader_id)
@@ -207,7 +207,7 @@ async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path)
                         source="crypto",
                         market_id="market-1",
                         direction="buy_yes",
-                        mode="paper",
+                        mode="shadow",
                         status="open",
                         notional_usd=0.0,
                         entry_price=0.5,
@@ -222,12 +222,12 @@ async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path)
                         source="crypto",
                         market_id="market-2",
                         direction="buy_yes",
-                        mode="paper",
+                        mode="shadow",
                         status="open",
                         notional_usd=30.0,
                         entry_price=0.5,
                         effective_price=0.5,
-                        payload_json={},
+                        payload_json={"filled_notional_usd": 30.0},
                         created_at=now - timedelta(seconds=45),
                         updated_at=now - timedelta(seconds=45),
                     ),
@@ -237,7 +237,7 @@ async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path)
                         source="weather",
                         market_id="market-3",
                         direction="buy_yes",
-                        mode="paper",
+                        mode="shadow",
                         status="open",
                         notional_usd=0.0,
                         entry_price=0.5,
@@ -252,7 +252,7 @@ async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path)
                         source="crypto",
                         market_id="market-4",
                         direction="buy_yes",
-                        mode="paper",
+                        mode="shadow",
                         status="open",
                         notional_usd=0.0,
                         entry_price=0.5,
@@ -268,7 +268,7 @@ async def test_cleanup_filters_by_source_age_seconds_and_unfilled_only(tmp_path)
             result = await cleanup_trader_open_orders(
                 session,
                 trader_id=trader_id,
-                scope="paper",
+                scope="shadow",
                 max_age_seconds=20.0,
                 source="crypto",
                 require_unfilled=True,

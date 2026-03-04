@@ -306,6 +306,9 @@ async def _load_crypto_markets(
     ):
         return markets
 
+    session_close = getattr(session, "close", None)
+    if callable(session_close):
+        await session_close()
     live = await _build_live_markets_from_source(markets)
     if live:
         return live

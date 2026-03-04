@@ -15,6 +15,7 @@ from config import settings
 from models.database import MarketCatalog, ScannerSnapshot, get_db_session
 from services.live_price_snapshot import normalize_binary_price_history
 from services.pause_state import global_pause_state
+from services.traders_copy_trade_signal_service import traders_copy_trade_signal_service
 from services.strategy_tune_agent import run_strategy_tune_agent
 from services.trader_orchestrator.position_lifecycle import (
     reconcile_live_positions,
@@ -29,6 +30,7 @@ from services.trader_orchestrator_state import (
     create_trader_event,
     create_trader_from_template,
     delete_trader,
+    get_trader_copy_analytics,
     get_trader,
     get_trader_decision_detail,
     get_open_order_summary_for_trader,
@@ -49,10 +51,12 @@ from services.trader_orchestrator_state import (
 )
 from utils.converters import normalize_market_id, to_iso
 from utils.market_urls import infer_market_platform
+from utils.logger import get_logger
 
 router = APIRouter(prefix="/traders", tags=["Traders"])
 _LOSS_STREAK_RESET_AT_KEY = "loss_streak_reset_at"
 _LOSS_STREAK_RESET_REASON_KEY = "loss_streak_reset_reason"
+logger = get_logger(__name__)
 
 
 class TraderSourceConfigRequest(BaseModel):
@@ -139,6 +143,29 @@ class TraderTuneAgentRequest(BaseModel):
     model: Optional[str] = Field(default=None, max_length=200)
     max_iterations: int = Field(default=12, ge=1, le=24)
     monitor_job_id: Optional[str] = Field(default=None, max_length=120)
+
+
+class TraderStartRequest(BaseModel):
+    copy_existing_positions: bool | None = None
+    requested_by: Optional[str] = None
+
+
+class TraderActivationRequest(BaseModel):
+    requested_by: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class TraderStopLifecycleMode(str, Enum):
+    keep_positions = "keep_positions"
+    close_shadow_positions = "close_shadow_positions"
+    close_all_positions = "close_all_positions"
+
+
+class TraderStopRequest(BaseModel):
+    stop_lifecycle: TraderStopLifecycleMode = TraderStopLifecycleMode.keep_positions
+    confirm_live: bool = False
+    requested_by: Optional[str] = None
+    reason: Optional[str] = None
 
 
 def _collect_market_aliases(raw_market: Any) -> list[str]:
@@ -716,6 +743,33 @@ async def adopt_trader_live_wallet_position(
     return result
 
 
+@router.get("/{trader_id}/copy-analytics")
+async def get_trader_copy_analytics_route(
+    trader_id: str,
+    mode: Optional[str] = Query(default=None),
+    limit: int = Query(default=2000, ge=1, le=10000),
+    leader_limit: int = Query(default=20, ge=1, le=500),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    mode_key = str(mode or "").strip().lower()
+    if mode_key == "paper":
+        mode_key = "shadow"
+    if mode_key and mode_key not in {"shadow", "live"}:
+        raise HTTPException(status_code=422, detail="mode must be 'shadow' or 'live'")
+
+    return await get_trader_copy_analytics(
+        session,
+        trader_id=trader_id,
+        mode=mode_key or None,
+        limit=limit,
+        leader_limit=leader_limit,
+    )
+
+
 @router.get("/{trader_id}")
 async def get_trader_route(trader_id: str, session: AsyncSession = Depends(get_db_session)):
     trader = await get_trader(session, trader_id)
@@ -916,11 +970,25 @@ async def delete_trader_route(
 
 
 @router.post("/{trader_id}/start")
-async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_session)):
+async def start_trader(
+    trader_id: str,
+    request: TraderStartRequest = TraderStartRequest(),
+    session: AsyncSession = Depends(get_db_session),
+):
     _assert_not_globally_paused()
     before = await get_trader(session, trader_id)
     if before is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    if not bool(before.get("is_enabled", True)):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "trader_inactive",
+                "message": "Trader is inactive. Activate the trader before starting.",
+                "trader_id": trader_id,
+            },
+        )
+    was_running = bool(before.get("is_enabled", True)) and not bool(before.get("is_paused", False))
     metadata, loss_streak_reset_at = _apply_loss_streak_reset_metadata(
         dict(before.get("metadata") or {}),
         reason="operator_start",
@@ -929,7 +997,6 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
         session,
         trader_id,
         {
-            "is_enabled": True,
             "is_paused": False,
             "metadata": metadata,
         },
@@ -970,28 +1037,221 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
             payload={"open_shadow_positions": open_shadow},
         )
 
+    copy_bootstrap_summary: dict[str, Any] | None = None
+    if not was_running:
+        session_close = getattr(session, "close", None)
+        if callable(session_close):
+            await session_close()
+        try:
+            copy_bootstrap_summary = await traders_copy_trade_signal_service.copy_existing_open_positions_for_trader(
+                trader_id=trader_id,
+                copy_existing_positions=request.copy_existing_positions,
+            )
+        except Exception as exc:
+            logger.warning("Copy-trade start bootstrap failed", trader_id=trader_id, exc_info=exc)
+            copy_bootstrap_summary = {
+                "trader_id": trader_id,
+                "status": "failed",
+                "reason": "bootstrap_exception",
+                "error": str(exc),
+            }
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="trader_copy_bootstrap",
+            severity="warn" if str(copy_bootstrap_summary.get("status") or "").strip().lower() == "failed" else "info",
+            source="operator",
+            operator=request.requested_by,
+            message="Copy bootstrap evaluated on trader start",
+            payload=copy_bootstrap_summary,
+        )
+
+    started_payload: dict[str, Any] = {}
+    if loss_streak_reset_at:
+        started_payload[_LOSS_STREAK_RESET_AT_KEY] = loss_streak_reset_at
+    if copy_bootstrap_summary is not None:
+        started_payload["copy_bootstrap"] = copy_bootstrap_summary
     await create_trader_event(
         session,
         trader_id=trader_id,
         event_type="trader_started",
         source="operator",
+        operator=request.requested_by,
         message="Trader resumed",
-        payload={_LOSS_STREAK_RESET_AT_KEY: loss_streak_reset_at} if loss_streak_reset_at else {},
+        payload=started_payload,
+    )
+    if copy_bootstrap_summary is None:
+        return trader
+    response = dict(trader)
+    response["copy_bootstrap"] = copy_bootstrap_summary
+    return response
+
+
+@router.post("/{trader_id}/stop")
+async def stop_trader(
+    trader_id: str,
+    request: TraderStopRequest = TraderStopRequest(),
+    session: AsyncSession = Depends(get_db_session),
+):
+    before = await get_trader(session, trader_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    stop_lifecycle = request.stop_lifecycle
+    if stop_lifecycle == TraderStopLifecycleMode.close_all_positions and not bool(request.confirm_live):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "confirm_live_required",
+                "message": "close_all_positions requires confirm_live=true.",
+                "stop_lifecycle": stop_lifecycle.value,
+            },
+        )
+
+    trader = await set_trader_paused(session, trader_id, True)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    lifecycle_summary: dict[str, Any] = {
+        "mode": stop_lifecycle.value,
+        "cleanup": {},
+    }
+    cleanup_reason = str(request.reason or "manual_stop_lifecycle_cleanup")
+    cleanup_scope = "shadow"
+    if stop_lifecycle == TraderStopLifecycleMode.close_all_positions:
+        cleanup_scope = "all"
+
+    if stop_lifecycle in {
+        TraderStopLifecycleMode.close_shadow_positions,
+        TraderStopLifecycleMode.close_all_positions,
+    }:
+        try:
+            cancel_result = await cleanup_trader_open_orders(
+                session,
+                trader_id=trader_id,
+                scope=cleanup_scope,
+                max_age_hours=None,
+                dry_run=False,
+                target_status="cancelled",
+                reason=cleanup_reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        lifecycle_summary["cleanup"]["orders"] = cancel_result
+
+        shadow_cleanup = await reconcile_shadow_positions(
+            session,
+            trader_id=trader_id,
+            trader_params={},
+            dry_run=False,
+            force_mark_to_market=True,
+            max_age_hours=None,
+            reason=cleanup_reason,
+        )
+        lifecycle_summary["cleanup"]["shadow"] = {
+            "matched": int(shadow_cleanup.get("matched", 0)),
+            "closed": int(shadow_cleanup.get("closed", 0)),
+            "held": int(shadow_cleanup.get("held", 0)),
+            "skipped": int(shadow_cleanup.get("skipped", 0)),
+            "total_realized_pnl": float(shadow_cleanup.get("total_realized_pnl", 0.0)),
+        }
+        await sync_trader_position_inventory(session, trader_id=trader_id, mode="shadow")
+
+        if stop_lifecycle == TraderStopLifecycleMode.close_all_positions:
+            live_cleanup = await reconcile_live_positions(
+                session,
+                trader_id=trader_id,
+                trader_params={},
+                dry_run=False,
+                force_mark_to_market=True,
+                max_age_hours=None,
+                reason=cleanup_reason,
+            )
+            lifecycle_summary["cleanup"]["live"] = {
+                "matched": int(live_cleanup.get("matched", 0)),
+                "closed": int(live_cleanup.get("closed", 0)),
+                "held": int(live_cleanup.get("held", 0)),
+                "skipped": int(live_cleanup.get("skipped", 0)),
+                "total_realized_pnl": float(live_cleanup.get("total_realized_pnl", 0.0)),
+            }
+            await sync_trader_position_inventory(session, trader_id=trader_id, mode="live")
+
+    await create_trader_event(
+        session,
+        trader_id=trader_id,
+        event_type="trader_stopped",
+        severity="warn" if stop_lifecycle != TraderStopLifecycleMode.keep_positions else "info",
+        source="operator",
+        operator=request.requested_by,
+        message="Trader stopped",
+        payload=lifecycle_summary,
+    )
+    response = dict(trader)
+    response["stop_lifecycle"] = lifecycle_summary
+    return response
+
+
+@router.post("/{trader_id}/activate")
+async def activate_trader(
+    trader_id: str,
+    request: TraderActivationRequest = TraderActivationRequest(),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await update_trader(
+        session,
+        trader_id,
+        {
+            "is_enabled": True,
+        },
+    )
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    payload: dict[str, Any] = {}
+    if request.reason:
+        payload["reason"] = request.reason
+    await create_trader_event(
+        session,
+        trader_id=trader_id,
+        event_type="trader_activated",
+        source="operator",
+        operator=request.requested_by,
+        message="Trader activated",
+        payload=payload or None,
     )
     return trader
 
 
-@router.post("/{trader_id}/pause")
-async def pause_trader(trader_id: str, session: AsyncSession = Depends(get_db_session)):
-    trader = await set_trader_paused(session, trader_id, True)
+@router.post("/{trader_id}/deactivate")
+async def deactivate_trader(
+    trader_id: str,
+    request: TraderActivationRequest = TraderActivationRequest(),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await update_trader(
+        session,
+        trader_id,
+        {
+            "is_enabled": False,
+            "is_paused": True,
+        },
+    )
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+
+    payload: dict[str, Any] = {}
+    if request.reason:
+        payload["reason"] = request.reason
     await create_trader_event(
         session,
         trader_id=trader_id,
-        event_type="trader_paused",
+        event_type="trader_deactivated",
+        severity="warn",
         source="operator",
-        message="Trader paused",
+        operator=request.requested_by,
+        message="Trader set inactive",
+        payload=payload or None,
     )
     return trader
 

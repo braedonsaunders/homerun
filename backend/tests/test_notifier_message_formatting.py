@@ -88,7 +88,7 @@ async def test_position_close_alert_has_compact_layout_and_usd_totals(monkeypatc
     )
 
     assert len(captured) == 1
-    plain = captured[0].replace("\\", "")
+    plain = captured[0].replace("\\", "").replace("*", "")
     assert "Won: $15.50" in plain
     assert "Lost: $4.25" in plain
     assert "Net: +$11.25" in plain
@@ -122,7 +122,7 @@ async def test_timeline_summary_has_compact_realized_won_lost_net():
         title="Autotrader Performance (24h)",
     )
 
-    plain = summary.replace("\\", "")
+    plain = summary.replace("\\", "").replace("*", "")
     assert "Won: $35.00" in plain
     assert "Lost: $12.50" in plain
     assert "Net: +$22.50" in plain
@@ -178,7 +178,7 @@ async def test_status_message_has_daily_and_realized_usd_breakdown(monkeypatch):
     )
 
     message = await notifier._telegram_status_message()
-    plain = message.replace("\\", "")
+    plain = message.replace("\\", "").replace("*", "")
 
     assert "Daily: -$12.30" in plain
     assert "24h Won: $20.00" in plain

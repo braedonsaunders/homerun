@@ -103,6 +103,9 @@ DEFAULT_LIVE_MARKET_CONTEXT = {
     "history_fidelity_seconds": 300,
     "max_history_points": 120,
     "timeout_seconds": 4.0,
+    "strict_ws_pricing_only": True,
+    "allow_redis_strict_prices": True,
+    "max_market_data_age_ms": 100,
 }
 DEFAULT_LIVE_PROVIDER_HEALTH = {
     "window_seconds": 180,
@@ -291,6 +294,19 @@ def _normalize_live_market_context(value: Any) -> dict[str, Any]:
             1.0,
             min(12.0, safe_float(source.get("timeout_seconds"), DEFAULT_LIVE_MARKET_CONTEXT["timeout_seconds"]) or 4.0),
         ),
+        "strict_ws_pricing_only": bool(
+            source.get("strict_ws_pricing_only", DEFAULT_LIVE_MARKET_CONTEXT["strict_ws_pricing_only"])
+        ),
+        "allow_redis_strict_prices": bool(
+            source.get("allow_redis_strict_prices", DEFAULT_LIVE_MARKET_CONTEXT["allow_redis_strict_prices"])
+        ),
+        "max_market_data_age_ms": max(
+            25,
+            min(
+                10_000,
+                safe_int(source.get("max_market_data_age_ms"), DEFAULT_LIVE_MARKET_CONTEXT["max_market_data_age_ms"]),
+            ),
+        ),
     }
 
 
@@ -416,6 +432,67 @@ def _extract_order_token_id(row: TraderOrder) -> str:
             token_id = str(snapshot.get("asset_id") or snapshot.get("asset") or snapshot.get("token_id") or "").strip()
             if token_id:
                 return token_id
+    return ""
+
+
+def _extract_copy_source_wallet_from_payload(payload: Any) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    copy_attribution = data.get("copy_attribution")
+    copy_attribution = copy_attribution if isinstance(copy_attribution, dict) else {}
+    source_trade = data.get("source_trade")
+    source_trade = source_trade if isinstance(source_trade, dict) else {}
+    strategy_context = data.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    copy_event = strategy_context.get("copy_event")
+    copy_event = copy_event if isinstance(copy_event, dict) else {}
+    execution_plan = data.get("execution_plan")
+    execution_plan = execution_plan if isinstance(execution_plan, dict) else {}
+    legs = execution_plan.get("legs")
+    legs = legs if isinstance(legs, list) else []
+
+    for raw_wallet in (
+        copy_attribution.get("source_wallet"),
+        copy_event.get("wallet_address"),
+        copy_event.get("source_wallet"),
+        source_trade.get("wallet_address"),
+        source_trade.get("source_wallet"),
+        data.get("wallet_address"),
+        data.get("source_wallet"),
+    ):
+        normalized = StrategySDK.normalize_trader_wallet(raw_wallet)
+        if normalized:
+            return normalized
+
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        metadata = leg.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        normalized = StrategySDK.normalize_trader_wallet(metadata.get("source_wallet"))
+        if normalized:
+            return normalized
+    return ""
+
+
+def _extract_copy_side_from_payload(payload: Any) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    copy_attribution = data.get("copy_attribution")
+    copy_attribution = copy_attribution if isinstance(copy_attribution, dict) else {}
+    source_trade = data.get("source_trade")
+    source_trade = source_trade if isinstance(source_trade, dict) else {}
+    strategy_context = data.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    copy_event = strategy_context.get("copy_event")
+    copy_event = copy_event if isinstance(copy_event, dict) else {}
+    raw_side = (
+        copy_attribution.get("side")
+        or copy_event.get("side")
+        or source_trade.get("side")
+        or data.get("side")
+    )
+    side = str(raw_side or "").strip().upper()
+    if side in {"BUY", "SELL"}:
+        return side
     return ""
 
 
@@ -1985,6 +2062,89 @@ def _serialize_order(
         market_id=row.market_id,
     )
 
+    source_trade_payload = serialized_payload.get("source_trade")
+    source_trade_payload = source_trade_payload if isinstance(source_trade_payload, dict) else {}
+    strategy_context_payload = serialized_payload.get("strategy_context")
+    strategy_context_payload = strategy_context_payload if isinstance(strategy_context_payload, dict) else {}
+    copy_event_payload = strategy_context_payload.get("copy_event")
+    copy_event_payload = copy_event_payload if isinstance(copy_event_payload, dict) else {}
+    copy_attribution = serialized_payload.get("copy_attribution")
+    copy_attribution = dict(copy_attribution) if isinstance(copy_attribution, dict) else {}
+    source_wallet = _extract_copy_source_wallet_from_payload(serialized_payload)
+    if source_wallet and not str(copy_attribution.get("source_wallet") or "").strip():
+        copy_attribution["source_wallet"] = source_wallet
+
+    source_price = safe_float(
+        copy_attribution.get("source_price"),
+        safe_float(source_trade_payload.get("price"), safe_float(copy_event_payload.get("price"), None)),
+    )
+    follower_effective_price = safe_float(
+        copy_attribution.get("follower_effective_price"),
+        average_fill_price if average_fill_price is not None and average_fill_price > 0 else safe_float(row.effective_price),
+    )
+    if source_price is not None and source_price > 0.0:
+        copy_attribution["source_price"] = float(source_price)
+    if follower_effective_price is not None and follower_effective_price > 0.0:
+        copy_attribution["follower_effective_price"] = float(follower_effective_price)
+
+    side = _extract_copy_side_from_payload(serialized_payload)
+    if side and not str(copy_attribution.get("side") or "").strip():
+        copy_attribution["side"] = side
+    if (
+        source_price is not None
+        and source_price > 0.0
+        and follower_effective_price is not None
+        and follower_effective_price > 0.0
+    ):
+        slippage_bps = ((follower_effective_price - source_price) / source_price) * 10_000.0
+        adverse_slippage_bps = slippage_bps
+        if side == "BUY":
+            adverse_slippage_bps = max(0.0, slippage_bps)
+        elif side == "SELL":
+            adverse_slippage_bps = max(0.0, -slippage_bps)
+        copy_attribution["slippage_bps"] = float(slippage_bps)
+        copy_attribution["adverse_slippage_bps"] = float(adverse_slippage_bps)
+
+    if not str(copy_attribution.get("source_tx_hash") or "").strip():
+        source_tx_hash = str(copy_event_payload.get("tx_hash") or source_trade_payload.get("tx_hash") or "").strip()
+        if source_tx_hash:
+            copy_attribution["source_tx_hash"] = source_tx_hash
+    if "source_size" not in copy_attribution:
+        source_size = safe_float(source_trade_payload.get("size"), safe_float(copy_event_payload.get("size"), None))
+        if source_size is not None and source_size > 0.0:
+            copy_attribution["source_size"] = float(source_size)
+    if "source_notional_usd" not in copy_attribution:
+        source_notional = safe_float(source_trade_payload.get("source_notional_usd"), None)
+        if source_notional is not None and source_notional > 0.0:
+            copy_attribution["source_notional_usd"] = float(source_notional)
+    if "source_detection_latency_ms" not in copy_attribution:
+        source_detection_latency_ms = safe_float(copy_event_payload.get("latency_ms"), None)
+        if source_detection_latency_ms is not None and source_detection_latency_ms >= 0.0:
+            copy_attribution["source_detection_latency_ms"] = float(source_detection_latency_ms)
+    detected_at_text = str(
+        copy_attribution.get("detected_at")
+        or copy_event_payload.get("detected_at")
+        or copy_event_payload.get("timestamp")
+        or source_trade_payload.get("detected_at")
+        or ""
+    ).strip()
+    if detected_at_text and "detected_at" not in copy_attribution:
+        copy_attribution["detected_at"] = detected_at_text
+    if detected_at_text and "copy_latency_ms" not in copy_attribution and row.created_at is not None:
+        try:
+            parsed_detected_at = datetime.fromisoformat(detected_at_text.replace("Z", "+00:00"))
+        except Exception:
+            parsed_detected_at = None
+        if parsed_detected_at is not None:
+            if parsed_detected_at.tzinfo is None:
+                parsed_detected_at = parsed_detected_at.replace(tzinfo=timezone.utc)
+            created_at_utc = row.created_at if row.created_at.tzinfo is not None else row.created_at.replace(tzinfo=timezone.utc)
+            copy_latency_ms = max(0.0, (created_at_utc.astimezone(timezone.utc) - parsed_detected_at.astimezone(timezone.utc)).total_seconds() * 1000.0)
+            copy_attribution["copy_latency_ms"] = float(copy_latency_ms)
+
+    if copy_attribution:
+        serialized_payload["copy_attribution"] = copy_attribution
+
     return {
         "id": row.id,
         "trader_id": row.trader_id,
@@ -2024,6 +2184,7 @@ def _serialize_order(
         "close_trigger": close_trigger or None,
         "close_reason": close_reason or None,
         "payload": serialized_payload,
+        "copy_attribution": copy_attribution,
         "error_message": row.error_message,
         "event_id": row.event_id,
         "trace_id": row.trace_id,
@@ -2671,16 +2832,20 @@ async def create_trader_event(
         created_at=_now(),
     )
     session.add(row)
+    serialized_row = _serialize_event(row)
+    if not commit:
+        try:
+            await event_bus.publish("trader_event", serialized_row)
+        except Exception:
+            pass
     if commit:
         await _commit_with_retry(session)
+        try:
+            await event_bus.publish("trader_event", serialized_row)
+        except Exception:
+            pass
     else:
         await session.flush()
-
-    # Publish trader event.
-    try:
-        await event_bus.publish("trader_event", _serialize_event(row))
-    except Exception:
-        pass  # fire-and-forget
 
     return row
 
@@ -2882,17 +3047,21 @@ async def create_trader_decision(
         created_at=_now(),
     )
     session.add(row)
+    serialized_row = _serialize_decision(row)
+    if not commit:
+        try:
+            await event_bus.publish("trader_decision", serialized_row)
+        except Exception:
+            pass
     if commit:
         await _commit_with_retry(session)
         await session.refresh(row)
+        try:
+            await event_bus.publish("trader_decision", serialized_row)
+        except Exception:
+            pass
     else:
         await session.flush()
-
-    # Publish trader decision event.
-    try:
-        await event_bus.publish("trader_decision", _serialize_decision(row))
-    except Exception:
-        pass  # fire-and-forget
 
     return row
 
@@ -2919,16 +3088,21 @@ async def update_trader_decision(
         merged_payload.update(payload_patch)
         row.payload_json = merged_payload
 
+    serialized_row = _serialize_decision(row)
+    if not commit:
+        try:
+            await event_bus.publish("trader_decision", serialized_row)
+        except Exception:
+            pass
     if commit:
         await _commit_with_retry(session)
         await session.refresh(row)
+        try:
+            await event_bus.publish("trader_decision", serialized_row)
+        except Exception:
+            pass
     else:
         await session.flush()
-
-    try:
-        await event_bus.publish("trader_decision", _serialize_decision(row))
-    except Exception:
-        pass
 
     return row
 
@@ -2986,6 +3160,117 @@ async def create_trader_order(
         status=status,
         now=now,
     )
+    signal_payload = signal.payload_json if isinstance(getattr(signal, "payload_json", None), dict) else {}
+    source_trade_payload = signal_payload.get("source_trade")
+    source_trade_payload = source_trade_payload if isinstance(source_trade_payload, dict) else {}
+    strategy_context_payload = signal_payload.get("strategy_context")
+    strategy_context_payload = strategy_context_payload if isinstance(strategy_context_payload, dict) else {}
+    copy_event_payload = strategy_context_payload.get("copy_event")
+    copy_event_payload = copy_event_payload if isinstance(copy_event_payload, dict) else {}
+
+    if source_trade_payload and not isinstance(order_payload.get("source_trade"), dict):
+        order_payload["source_trade"] = dict(source_trade_payload)
+
+    strategy_context_order_payload = (
+        dict(order_payload.get("strategy_context"))
+        if isinstance(order_payload.get("strategy_context"), dict)
+        else {}
+    )
+    if strategy_context_payload and not strategy_context_order_payload:
+        strategy_context_order_payload = dict(strategy_context_payload)
+    elif copy_event_payload and not isinstance(strategy_context_order_payload.get("copy_event"), dict):
+        strategy_context_order_payload["copy_event"] = dict(copy_event_payload)
+    if strategy_context_order_payload:
+        order_payload["strategy_context"] = strategy_context_order_payload
+
+    signal_source_key = str(getattr(signal, "source", "") or "").strip().lower()
+    strategy_key_normalized = str(strategy_key or "").strip().lower()
+    has_copy_payload = bool(source_trade_payload) or bool(copy_event_payload)
+    if signal_source_key == "traders" and (strategy_key_normalized == "traders_copy_trade" or has_copy_payload):
+        copy_attribution = dict(order_payload.get("copy_attribution") or {})
+        source_wallet = _extract_copy_source_wallet_from_payload(order_payload)
+        if source_wallet and not str(copy_attribution.get("source_wallet") or "").strip():
+            copy_attribution["source_wallet"] = source_wallet
+        if "side" not in copy_attribution:
+            copy_side = _extract_copy_side_from_payload(order_payload)
+            if copy_side:
+                copy_attribution["side"] = copy_side
+
+        source_price = safe_float(
+            copy_attribution.get("source_price"),
+            safe_float(source_trade_payload.get("price"), safe_float(copy_event_payload.get("price"), None)),
+        )
+        if source_price is not None and source_price > 0.0:
+            copy_attribution["source_price"] = float(source_price)
+
+        source_size = safe_float(
+            source_trade_payload.get("size"),
+            safe_float(copy_event_payload.get("size"), None),
+        )
+        if source_size is not None and source_size > 0.0 and "source_size" not in copy_attribution:
+            copy_attribution["source_size"] = float(source_size)
+        source_notional_usd = safe_float(source_trade_payload.get("source_notional_usd"), None)
+        if source_notional_usd is not None and source_notional_usd > 0.0 and "source_notional_usd" not in copy_attribution:
+            copy_attribution["source_notional_usd"] = float(source_notional_usd)
+
+        source_tx_hash = str(copy_event_payload.get("tx_hash") or source_trade_payload.get("tx_hash") or "").strip()
+        if source_tx_hash and not str(copy_attribution.get("source_tx_hash") or "").strip():
+            copy_attribution["source_tx_hash"] = source_tx_hash
+        source_order_hash = str(copy_event_payload.get("order_hash") or source_trade_payload.get("order_hash") or "").strip()
+        if source_order_hash and not str(copy_attribution.get("source_order_hash") or "").strip():
+            copy_attribution["source_order_hash"] = source_order_hash
+
+        source_detection_latency_ms = safe_float(copy_event_payload.get("latency_ms"), None)
+        if source_detection_latency_ms is not None and source_detection_latency_ms >= 0.0:
+            copy_attribution["source_detection_latency_ms"] = float(source_detection_latency_ms)
+
+        detected_at_text = str(
+            copy_event_payload.get("detected_at")
+            or source_trade_payload.get("detected_at")
+            or copy_event_payload.get("timestamp")
+            or ""
+        ).strip()
+        if detected_at_text and "detected_at" not in copy_attribution:
+            copy_attribution["detected_at"] = detected_at_text
+        if detected_at_text and "copy_latency_ms" not in copy_attribution:
+            try:
+                parsed_detected_at = datetime.fromisoformat(detected_at_text.replace("Z", "+00:00"))
+            except Exception:
+                parsed_detected_at = None
+            if parsed_detected_at is not None:
+                if parsed_detected_at.tzinfo is None:
+                    parsed_detected_at = parsed_detected_at.replace(tzinfo=timezone.utc)
+                copy_latency_ms = max(
+                    0.0,
+                    (now.astimezone(timezone.utc) - parsed_detected_at.astimezone(timezone.utc)).total_seconds()
+                    * 1000.0,
+                )
+                copy_attribution["copy_latency_ms"] = float(copy_latency_ms)
+
+        follower_effective_price = safe_float(
+            effective_price,
+            safe_float(getattr(signal, "effective_price", None), safe_float(getattr(signal, "entry_price", None), None)),
+        )
+        if follower_effective_price is not None and follower_effective_price > 0.0:
+            copy_attribution["follower_effective_price"] = float(follower_effective_price)
+        if (
+            source_price is not None
+            and source_price > 0.0
+            and follower_effective_price is not None
+            and follower_effective_price > 0.0
+        ):
+            slippage_bps = ((follower_effective_price - source_price) / source_price) * 10_000.0
+            side = str(copy_attribution.get("side") or "").strip().upper()
+            adverse_slippage_bps = slippage_bps
+            if side == "BUY":
+                adverse_slippage_bps = max(0.0, slippage_bps)
+            elif side == "SELL":
+                adverse_slippage_bps = max(0.0, -slippage_bps)
+            copy_attribution["slippage_bps"] = float(slippage_bps)
+            copy_attribution["adverse_slippage_bps"] = float(adverse_slippage_bps)
+
+        order_payload["copy_attribution"] = copy_attribution
+
     row = TraderOrder(
         id=_new_id(),
         trader_id=trader_id,
@@ -3013,6 +3298,12 @@ async def create_trader_order(
         updated_at=now,
     )
     session.add(row)
+    serialized_row = _serialize_order(row)
+    if not commit:
+        try:
+            await event_bus.publish("trader_order", serialized_row)
+        except Exception:
+            pass
     await session.flush()
     if _is_active_order_status(mode, status):
         await sync_trader_position_inventory(
@@ -3024,12 +3315,10 @@ async def create_trader_order(
     if commit:
         await _commit_with_retry(session)
         await session.refresh(row)
-
-    # Publish trader order event.
-    try:
-        await event_bus.publish("trader_order", _serialize_order(row))
-    except Exception:
-        pass  # fire-and-forget
+        try:
+            await event_bus.publish("trader_order", serialized_row)
+        except Exception:
+            pass
 
     return row
 
@@ -3483,8 +3772,6 @@ async def record_signal_consumption(
         existing.consumed_at = consumed_at
         if commit:
             await _commit_with_retry(session)
-        else:
-            await session.flush()
         return
 
     session.add(
@@ -3501,8 +3788,6 @@ async def record_signal_consumption(
     )
     if commit:
         await _commit_with_retry(session)
-    else:
-        await session.flush()
 
 
 async def list_unconsumed_trade_signals(
@@ -3641,8 +3926,6 @@ async def upsert_trader_signal_cursor(
 
     if commit:
         await _commit_with_retry(session)
-    else:
-        await session.flush()
 
 
 async def reconcile_live_provider_orders(
@@ -3790,18 +4073,19 @@ async def reconcile_live_provider_orders(
     leg_state_updates: dict[str, dict[str, Any]] = {}
 
     for order in active_rows:
-        await session.refresh(
-            order,
-            attribute_names=[
-                "status",
-                "payload_json",
-                "notional_usd",
-                "effective_price",
-                "entry_price",
-                "updated_at",
-                "executed_at",
-            ],
-        )
+        with session.no_autoflush:
+            await session.refresh(
+                order,
+                attribute_names=[
+                    "status",
+                    "payload_json",
+                    "notional_usd",
+                    "effective_price",
+                    "entry_price",
+                    "updated_at",
+                    "executed_at",
+                ],
+            )
         if _normalize_status_key(order.status) not in LIVE_ACTIVE_ORDER_STATUSES:
             continue
 
@@ -3980,6 +4264,7 @@ async def reconcile_live_provider_orders(
             touched_session_ids.add(str(session_order_row.session_id))
 
     if leg_state_updates:
+        await session.flush()
         leg_rows = list(
             (
                 await session.execute(
@@ -4017,6 +4302,8 @@ async def reconcile_live_provider_orders(
             updated_legs += 1
             touched_session_ids.add(str(leg_row.session_id))
 
+    if touched_session_ids:
+        await session.flush()
     for session_id in touched_session_ids:
         session_row = await _refresh_execution_session_rollups(session, session_id=session_id)
         if session_row is None:
@@ -5393,6 +5680,220 @@ async def get_trader_source_exposure(
     return float(sum(_active_order_notional_for_metrics(row) for row in rows))
 
 
+async def get_trader_copy_leader_exposure(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    source_wallet: str,
+    mode: Optional[str] = None,
+) -> float:
+    normalized_wallet = StrategySDK.normalize_trader_wallet(source_wallet)
+    if not normalized_wallet:
+        return 0.0
+
+    query = select(TraderOrder).where(
+        TraderOrder.trader_id == trader_id,
+        func.lower(func.coalesce(TraderOrder.source, "")) == "traders",
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = list((await session.execute(query)).scalars().all())
+    exposure = 0.0
+    for row in rows:
+        row_payload = dict(row.payload_json or {})
+        row_source_wallet = _extract_copy_source_wallet_from_payload(row_payload)
+        if row_source_wallet != normalized_wallet:
+            continue
+        exposure += _active_order_notional_for_metrics(row)
+    return float(exposure)
+
+
+async def get_trader_copy_analytics(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str] = None,
+    limit: int = 2000,
+    leader_limit: int = 20,
+) -> dict[str, Any]:
+    capped_limit = max(1, min(int(limit or 2000), 10_000))
+    query = (
+        select(TraderOrder)
+        .where(TraderOrder.trader_id == trader_id)
+        .order_by(desc(TraderOrder.created_at), desc(TraderOrder.id))
+        .limit(capped_limit)
+    )
+    mode_key: str | None = None
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = list((await session.execute(query)).scalars().all())
+    filtered_rows: list[tuple[TraderOrder, dict[str, Any], str]] = []
+    for row in rows:
+        if str(row.source or "").strip().lower() != "traders":
+            continue
+        row_payload = dict(row.payload_json or {})
+        source_wallet = _extract_copy_source_wallet_from_payload(row_payload)
+        strategy_key = str(row.strategy_key or "").strip().lower()
+        if not source_wallet and strategy_key != "traders_copy_trade":
+            continue
+        filtered_rows.append((row, row_payload, source_wallet or "unknown"))
+
+    total_orders = len(filtered_rows)
+    total_notional_usd = 0.0
+    open_exposure_usd = 0.0
+    realized_orders = 0
+    realized_pnl_usd = 0.0
+    slippage_sum = 0.0
+    slippage_count = 0
+    adverse_slippage_sum = 0.0
+    adverse_slippage_count = 0
+    latency_sum = 0.0
+    latency_count = 0
+
+    per_leader: dict[str, dict[str, Any]] = {}
+    for row, row_payload, leader_wallet in filtered_rows:
+        status_key = _normalize_status_key(row.status)
+        row_mode = _normalize_mode_key(row.mode)
+        row_notional_usd = abs(safe_float(row.notional_usd, 0.0))
+        row_active_exposure = _active_order_notional_for_metrics(row)
+        total_notional_usd += row_notional_usd
+        open_exposure_usd += row_active_exposure
+
+        if status_key in REALIZED_ORDER_STATUSES:
+            realized_orders += 1
+            realized_pnl_usd += safe_float(row.actual_profit, 0.0)
+
+        copy_attribution = row_payload.get("copy_attribution")
+        copy_attribution = copy_attribution if isinstance(copy_attribution, dict) else {}
+        row_slippage_bps = safe_float(copy_attribution.get("slippage_bps"), None)
+        row_adverse_slippage_bps = safe_float(copy_attribution.get("adverse_slippage_bps"), None)
+        row_copy_latency_ms = safe_float(copy_attribution.get("copy_latency_ms"), None)
+
+        if row_slippage_bps is not None:
+            slippage_sum += row_slippage_bps
+            slippage_count += 1
+        if row_adverse_slippage_bps is not None:
+            adverse_slippage_sum += row_adverse_slippage_bps
+            adverse_slippage_count += 1
+        if row_copy_latency_ms is not None:
+            latency_sum += row_copy_latency_ms
+            latency_count += 1
+
+        leader = per_leader.get(leader_wallet)
+        if leader is None:
+            leader = {
+                "source_wallet": leader_wallet,
+                "orders": 0,
+                "active_orders": 0,
+                "realized_orders": 0,
+                "realized_pnl_usd": 0.0,
+                "gross_notional_usd": 0.0,
+                "open_exposure_usd": 0.0,
+                "slippage_sum": 0.0,
+                "slippage_count": 0,
+                "adverse_slippage_sum": 0.0,
+                "adverse_slippage_count": 0,
+                "latency_sum": 0.0,
+                "latency_count": 0,
+            }
+            per_leader[leader_wallet] = leader
+
+        leader["orders"] += 1
+        leader["gross_notional_usd"] += row_notional_usd
+        leader["open_exposure_usd"] += row_active_exposure
+        if _is_active_order_status(row_mode, row.status):
+            leader["active_orders"] += 1
+        if status_key in REALIZED_ORDER_STATUSES:
+            leader["realized_orders"] += 1
+            leader["realized_pnl_usd"] += safe_float(row.actual_profit, 0.0)
+        if row_slippage_bps is not None:
+            leader["slippage_sum"] += row_slippage_bps
+            leader["slippage_count"] += 1
+        if row_adverse_slippage_bps is not None:
+            leader["adverse_slippage_sum"] += row_adverse_slippage_bps
+            leader["adverse_slippage_count"] += 1
+        if row_copy_latency_ms is not None:
+            leader["latency_sum"] += row_copy_latency_ms
+            leader["latency_count"] += 1
+
+    resolved_orders = sum(1 for row, _, _ in filtered_rows if _normalize_status_key(row.status) in REALIZED_ORDER_STATUSES)
+    win_orders = sum(1 for row, _, _ in filtered_rows if _normalize_status_key(row.status) in REALIZED_WIN_ORDER_STATUSES)
+    loss_orders = sum(1 for row, _, _ in filtered_rows if _normalize_status_key(row.status) in REALIZED_LOSS_ORDER_STATUSES)
+    win_rate_pct = (win_orders / resolved_orders * 100.0) if resolved_orders > 0 else None
+
+    sorted_leaders = sorted(
+        per_leader.values(),
+        key=lambda item: (
+            -float(item.get("gross_notional_usd") or 0.0),
+            -int(item.get("orders") or 0),
+            str(item.get("source_wallet") or ""),
+        ),
+    )
+    leader_rows: list[dict[str, Any]] = []
+    for leader in sorted_leaders[: max(1, min(int(leader_limit or 20), 500))]:
+        leader_rows.append(
+            {
+                "source_wallet": leader["source_wallet"],
+                "orders": int(leader["orders"]),
+                "active_orders": int(leader["active_orders"]),
+                "realized_orders": int(leader["realized_orders"]),
+                "realized_pnl_usd": float(leader["realized_pnl_usd"]),
+                "gross_notional_usd": float(leader["gross_notional_usd"]),
+                "open_exposure_usd": float(leader["open_exposure_usd"]),
+                "avg_slippage_bps": (
+                    float(leader["slippage_sum"] / leader["slippage_count"])
+                    if int(leader["slippage_count"] or 0) > 0
+                    else None
+                ),
+                "avg_adverse_slippage_bps": (
+                    float(leader["adverse_slippage_sum"] / leader["adverse_slippage_count"])
+                    if int(leader["adverse_slippage_count"] or 0) > 0
+                    else None
+                ),
+                "avg_copy_latency_ms": (
+                    float(leader["latency_sum"] / leader["latency_count"])
+                    if int(leader["latency_count"] or 0) > 0
+                    else None
+                ),
+            }
+        )
+
+    return {
+        "trader_id": trader_id,
+        "mode": mode_key or "all",
+        "as_of": to_iso(_now()),
+        "sample_size": total_orders,
+        "scanned_orders": len(rows),
+        "summary": {
+            "total_orders": total_orders,
+            "resolved_orders": resolved_orders,
+            "win_orders": win_orders,
+            "loss_orders": loss_orders,
+            "win_rate_pct": win_rate_pct,
+            "realized_pnl_usd": float(realized_pnl_usd),
+            "gross_notional_usd": float(total_notional_usd),
+            "open_exposure_usd": float(open_exposure_usd),
+            "avg_slippage_bps": (float(slippage_sum / slippage_count) if slippage_count > 0 else None),
+            "avg_adverse_slippage_bps": (
+                float(adverse_slippage_sum / adverse_slippage_count) if adverse_slippage_count > 0 else None
+            ),
+            "avg_copy_latency_ms": (float(latency_sum / latency_count) if latency_count > 0 else None),
+            "distinct_leaders": len(per_leader),
+        },
+        "leaders": leader_rows,
+    }
+
+
 async def get_gross_exposure(session: AsyncSession, mode: Optional[str] = None) -> float:
     query = select(TraderOrder)
     if mode is not None:
@@ -5709,6 +6210,25 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
                 "history_fidelity_seconds": int(live_market_context.get("history_fidelity_seconds", 300) or 300),
                 "max_history_points": int(live_market_context.get("max_history_points", 120) or 120),
                 "timeout_seconds": float(live_market_context.get("timeout_seconds", 4.0) or 4.0),
+                "strict_ws_pricing_only": bool(
+                    live_market_context.get(
+                        "strict_ws_pricing_only",
+                        DEFAULT_LIVE_MARKET_CONTEXT["strict_ws_pricing_only"],
+                    )
+                ),
+                "allow_redis_strict_prices": bool(
+                    live_market_context.get(
+                        "allow_redis_strict_prices",
+                        DEFAULT_LIVE_MARKET_CONTEXT["allow_redis_strict_prices"],
+                    )
+                ),
+                "max_market_data_age_ms": int(
+                    live_market_context.get(
+                        "max_market_data_age_ms",
+                        DEFAULT_LIVE_MARKET_CONTEXT["max_market_data_age_ms"],
+                    )
+                    or DEFAULT_LIVE_MARKET_CONTEXT["max_market_data_age_ms"]
+                ),
             },
             "live_provider_health": {
                 "window_seconds": int(live_provider_health.get("window_seconds", 180) or 180),

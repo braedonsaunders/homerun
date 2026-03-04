@@ -1139,25 +1139,6 @@ async def _annotate_trader_signal_rows(
     return rows
 
 
-def _first_valid_trade_time(trade: dict) -> Optional[datetime]:
-    for field in ("timestamp_iso", "match_time", "timestamp", "time", "created_at"):
-        raw = trade.get(field)
-        if raw is None:
-            continue
-        try:
-            if isinstance(raw, (int, float)):
-                return datetime.fromtimestamp(raw)
-            text = str(raw).strip()
-            if not text:
-                continue
-            if "T" in text or "-" in text:
-                return datetime.fromisoformat(text.replace("Z", "+00:00").replace("+00:00", ""))
-            return datetime.fromtimestamp(float(text))
-        except Exception:
-            continue
-    return None
-
-
 async def _track_wallet_addresses(
     addresses: list[str],
     label: str,
@@ -2351,32 +2332,76 @@ async def get_traders_overview(
 ):
     """Broader traders view: tracked traders + discovery confluence + groups."""
     try:
-        tracked_wallets = await wallet_tracker.get_all_wallets()
         cutoff = utcnow() - timedelta(hours=hours)
+        tracked_wallet_rows = (
+            (
+                await session.execute(
+                    select(TrackedWallet.address, TrackedWallet.label).order_by(TrackedWallet.added_at.asc())
+                )
+            )
+            .all()
+        )
+        tracked_addresses = [str(address or "").strip().lower() for address, _ in tracked_wallet_rows if address]
+
+        discovered_by_address: dict[str, DiscoveredWallet] = {}
+        activity_by_address: dict[str, dict[str, Any]] = {}
+        if tracked_addresses:
+            discovered_rows = (
+                (
+                    await session.execute(
+                        select(DiscoveredWallet).where(func.lower(DiscoveredWallet.address).in_(tracked_addresses))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            discovered_by_address = {
+                str(row.address or "").strip().lower(): row for row in discovered_rows if str(row.address or "").strip()
+            }
+            activity_rows = (
+                await session.execute(
+                    select(
+                        func.lower(WalletActivityRollup.wallet_address).label("wallet_address"),
+                        func.count(WalletActivityRollup.id).label("recent_trade_count"),
+                        func.max(WalletActivityRollup.traded_at).label("latest_trade_at"),
+                    )
+                    .where(
+                        func.lower(WalletActivityRollup.wallet_address).in_(tracked_addresses),
+                        WalletActivityRollup.traded_at >= cutoff,
+                    )
+                    .group_by(func.lower(WalletActivityRollup.wallet_address))
+                )
+            ).all()
+            activity_by_address = {
+                str(row.wallet_address or "").strip().lower(): {
+                    "recent_trade_count": int(row.recent_trade_count or 0),
+                    "latest_trade_at": row.latest_trade_at.isoformat() if row.latest_trade_at else None,
+                }
+                for row in activity_rows
+                if str(row.wallet_address or "").strip()
+            }
 
         tracked_rows: list[dict] = []
         total_recent_trades = 0
-        for wallet in tracked_wallets:
-            trades = wallet.get("recent_trades") or []
-            latest_dt: Optional[datetime] = None
-            recent_trades = 0
-            for trade in trades:
-                trade_dt = _first_valid_trade_time(trade)
-                if trade_dt:
-                    if latest_dt is None or trade_dt > latest_dt:
-                        latest_dt = trade_dt
-                    if trade_dt >= cutoff:
-                        recent_trades += 1
-
+        for address, label in tracked_wallet_rows:
+            normalized_address = str(address or "").strip().lower()
+            if not normalized_address:
+                continue
+            discovered_profile = discovered_by_address.get(normalized_address)
+            activity = activity_by_address.get(
+                normalized_address,
+                {"recent_trade_count": 0, "latest_trade_at": None},
+            )
+            recent_trades = int(activity.get("recent_trade_count") or 0)
             total_recent_trades += recent_trades
             tracked_rows.append(
                 {
-                    "address": wallet.get("address"),
-                    "label": wallet.get("label"),
-                    "username": wallet.get("username"),
+                    "address": normalized_address,
+                    "label": str(label or "").strip() or None,
+                    "username": discovered_profile.username if discovered_profile else None,
                     "recent_trade_count": recent_trades,
-                    "latest_trade_at": latest_dt.isoformat() if latest_dt else None,
-                    "open_positions": len(wallet.get("positions") or []),
+                    "latest_trade_at": activity.get("latest_trade_at"),
+                    "open_positions": int(discovered_profile.open_positions or 0) if discovered_profile else 0,
                 }
             )
 

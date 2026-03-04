@@ -392,6 +392,70 @@ async def test_build_live_signal_contexts_rejects_relaxed_ws_prices(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_build_live_signal_contexts_strict_ws_only_disables_http_price_fallback(monkeypatch):
+    market_id = "0x" + ("8" * 64)
+    yes_token = "777777777777777777"
+    no_token = "888888888888888888"
+
+    class _Cache:
+        def get_mid_price(self, token_id: str):
+            return 0.42 if token_id == yes_token else 0.58
+
+        def staleness(self, token_id: str):
+            del token_id
+            return 4.0
+
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.get_feed_manager",
+        lambda: SimpleNamespace(_started=True, cache=_Cache()),
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.redis_price_cache.read_prices",
+        AsyncMock(return_value={}),
+    )
+
+    async def _fake_market_lookup(_market_id: str):
+        return {
+            "condition_id": market_id,
+            "question": "BTC 5m",
+            "token_ids": [yes_token, no_token],
+            "outcomes": ["Yes", "No"],
+        }
+
+    async def _fake_prices_batch(token_ids: list[str]):
+        assert set(token_ids) == {yes_token, no_token}
+        return {
+            yes_token: {"mid": 0.47},
+            no_token: {"mid": 0.53},
+        }
+
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_market_by_condition_id",
+        _fake_market_lookup,
+    )
+    monkeypatch.setattr(
+        "services.trader_orchestrator.live_market_context.polymarket_client.get_prices_batch",
+        _fake_prices_batch,
+    )
+
+    signal = SimpleNamespace(
+        id="sig_strict_ws_only",
+        market_id=market_id,
+        market_question="BTC 5m",
+        source="crypto",
+        direction="buy_yes",
+        entry_price=0.45,
+        edge_percent=4.0,
+        payload_json={},
+    )
+    contexts = await build_live_signal_contexts([signal], strict_ws_only=True)
+    ctx = contexts["sig_strict_ws_only"]
+    assert ctx["available"] is False
+    assert ctx["market_data_source"] is None
+    assert ctx["live_selected_price"] is None
+
+
+@pytest.mark.asyncio
 async def test_build_live_signal_contexts_keeps_unknown_age_for_snapshot_without_timestamp(
     monkeypatch,
 ):

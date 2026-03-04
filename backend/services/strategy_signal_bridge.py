@@ -7,11 +7,13 @@ pattern shared by all signal sources.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.database import AsyncSessionLocal
 from models.opportunity import Opportunity
 from services.event_bus import event_bus
 from services.signal_bus import (
@@ -27,6 +29,9 @@ from utils.logger import get_logger
 from utils.utcnow import utcnow
 
 logger = get_logger(__name__)
+_snapshot_refresh_task: asyncio.Task[None] | None = None
+_snapshot_refresh_last_started_mono = 0.0
+_SNAPSHOT_REFRESH_MIN_INTERVAL_SECONDS = 0.25
 
 
 def _parse_datetime_utc(value: Any) -> datetime | None:
@@ -63,11 +68,39 @@ def _to_iso_utc(value: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+async def _refresh_trade_signal_snapshots_background() -> None:
+    try:
+        async with AsyncSessionLocal() as refresh_session:
+            await refresh_trade_signal_snapshots(refresh_session)
+    except Exception as exc:
+        logger.warning("Deferred trade signal snapshot refresh failed", exc_info=exc)
+
+
+def _schedule_trade_signal_snapshot_refresh() -> None:
+    global _snapshot_refresh_task
+    global _snapshot_refresh_last_started_mono
+    if _snapshot_refresh_task is not None and not _snapshot_refresh_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    now_mono = loop.time()
+    if (now_mono - _snapshot_refresh_last_started_mono) < _SNAPSHOT_REFRESH_MIN_INTERVAL_SECONDS:
+        return
+    _snapshot_refresh_last_started_mono = now_mono
+    _snapshot_refresh_task = loop.create_task(
+        _refresh_trade_signal_snapshots_background(),
+        name="trade-signal-snapshot-refresh",
+    )
+
+
 async def bridge_opportunities_to_signals(
     session: AsyncSession,
     opportunities: list[Opportunity],
     source: str,
     *,
+    signal_type_override: str | None = None,
     default_ttl_minutes: int = 120,
     quality_filter_pipeline: Optional[Any] = None,
     quality_reports: Optional[dict] = None,
@@ -95,6 +128,9 @@ async def bridge_opportunities_to_signals(
     Returns the number of signals upserted.
     """
     now = utcnow()
+    signal_type = str(signal_type_override or "").strip().lower()
+    if not signal_type:
+        signal_type = f"{source}_opportunity"
     if opportunities and refresh_prices:
         try:
             from services.scanner import scanner as market_scanner
@@ -193,7 +229,7 @@ async def bridge_opportunities_to_signals(
             session,
             source=source,
             source_item_id=opp.stable_id,
-            signal_type=f"{source}_opportunity",
+            signal_type=signal_type,
             strategy_type=opp.strategy,
             market_id=market_id,
             market_question=market_question,
@@ -218,11 +254,11 @@ async def bridge_opportunities_to_signals(
             session,
             source=source,
             keep_dedupe_keys=keep_dedupe_keys,
-            signal_types=[f"{source}_opportunity"],
+            signal_types=[signal_type],
             commit=False,
         )
     await _commit_with_retry(session)
-    await refresh_trade_signal_snapshots(session)
+    _schedule_trade_signal_snapshot_refresh()
     if signal_ids:
         emitted_at_iso = now.isoformat()
         try:

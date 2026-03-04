@@ -52,10 +52,12 @@ class Settings(BaseSettings):
     WS_FEED_ENABLED: bool = True  # Enable real-time WebSocket price feeds
     WS_RECONNECT_MAX_DELAY: float = 60.0  # Max reconnect backoff seconds
     WS_PRICE_STALE_SECONDS: float = 30.0  # UI/discovery staleness budget for cached prices
-    WS_EXECUTION_PRICE_STALE_SECONDS: float = 1.0  # Trader execution staleness budget for cached prices
-    EXECUTION_MARKET_DATA_MAX_AGE_MS: int = 1200  # Hard freshness gate before trader decisions
+    WS_EXECUTION_PRICE_STALE_SECONDS: float = 0.1  # Trader execution staleness budget for cached prices
+    EXECUTION_MARKET_DATA_MAX_AGE_MS: int = 100  # Hard freshness gate before trader decisions
     WS_HEARTBEAT_INTERVAL: float = 15.0  # Ping interval to keep connection alive
-    WS_REDIS_FLUSH_INTERVAL_SECONDS: float = 0.1  # Redis hot-cache flush cadence for live prices
+    WS_REDIS_FLUSH_INTERVAL_SECONDS: float = 0.025  # Redis hot-cache flush cadence for live prices
+    WS_STRICT_CONTEXT_WARMUP_SECONDS: float = 0.75  # Strict context WS subscribe warmup before evaluation
+    SCANNER_STRICT_WS_MAX_AGE_MS: int = 30000  # WS-only max age for scanner-source strict execution
 
     # Scanner Settings
     SCAN_WATCHDOG_SECONDS: int = 600  # Max seconds before a scan cycle is killed
@@ -156,7 +158,7 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: Optional[str] = None
     REDIS_CONNECT_TIMEOUT_SECONDS: float = 1.0
     REDIS_SOCKET_TIMEOUT_SECONDS: float = 1.0
-    REDIS_STREAM_BLOCK_MS: int = 100
+    REDIS_STREAM_BLOCK_MS: int = 20
     REDIS_STREAM_READ_COUNT: int = 200
     EVENT_BUS_STREAM_KEY: str = "homerun:event_bus"
     DATA_EVENT_STREAM_KEY: str = "homerun:data_events"
@@ -164,11 +166,20 @@ class Settings(BaseSettings):
     TRADE_SIGNAL_STREAM_KEY: str = "homerun:trade_signals"
     TRADE_SIGNAL_STREAM_GROUP: str = "trader_orchestrator"
     TRADE_SIGNAL_STREAM_MAXLEN: int = 200000
-    TRADE_SIGNAL_STREAM_BLOCK_MS: int = 100
+    TRADE_SIGNAL_STREAM_BLOCK_MS: int = 20
     TRADE_SIGNAL_STREAM_READ_COUNT: int = 500
     TRADE_SIGNAL_STREAM_CLAIM_IDLE_MS: int = 2000
     TRADE_SIGNAL_STREAM_CLAIM_READ_COUNT: int = 500
     TRADE_SIGNAL_STREAM_CLAIM_INTERVAL_SECONDS: float = 1.0
+    CRYPTO_WS_UPDATE_STREAM_KEY: str = "homerun:crypto_ws_updates"
+    CRYPTO_WS_UPDATE_STREAM_GROUP: str = "crypto_worker"
+    CRYPTO_WS_UPDATE_STREAM_MAXLEN: int = 200000
+    CRYPTO_WS_UPDATE_STREAM_BLOCK_MS: int = 10
+    CRYPTO_WS_UPDATE_STREAM_READ_COUNT: int = 1000
+    CRYPTO_WS_UPDATE_STREAM_CLAIM_IDLE_MS: int = 1000
+    CRYPTO_WS_UPDATE_STREAM_CLAIM_READ_COUNT: int = 1000
+    CRYPTO_WS_UPDATE_STREAM_CLAIM_INTERVAL_SECONDS: float = 0.5
+    ORCHESTRATOR_MAINTENANCE_INTERVAL_SECONDS: float = 5.0
     EVENT_HANDLER_TIMEOUT_SECONDS: float = 60.0
 
     CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS: float = 0.05

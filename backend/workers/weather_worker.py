@@ -230,6 +230,7 @@ async def _run_loop() -> None:
                     deduped_dispatched_opportunities,
                     source="weather",
                     sweep_missing=True,
+                    refresh_prices=False,
                 )
             try:
                 async with AsyncSessionLocal() as session:

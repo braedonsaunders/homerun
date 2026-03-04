@@ -229,13 +229,17 @@ export function useRealtimeInvalidation(
             ? old.metrics
             : {}
 
-        const nextEnabled = typeof snapshot.enabled === 'boolean'
-          ? snapshot.enabled
-          : previousControl.is_enabled
+        const snapshotControl =
+          snapshot.control && typeof snapshot.control === 'object'
+            ? snapshot.control
+            : {}
+        const nextEnabled = typeof snapshot.is_enabled === 'boolean'
+          ? snapshot.is_enabled
+          : (typeof snapshotControl.is_enabled === 'boolean' ? snapshotControl.is_enabled : previousControl.is_enabled)
         const nextPaused = typeof snapshot.is_paused === 'boolean'
           ? snapshot.is_paused
-          : (typeof nextEnabled === 'boolean' ? !nextEnabled : previousControl.is_paused)
-        const snapshotMode = String(snapshot.mode || '').trim().toLowerCase()
+          : (typeof snapshotControl.is_paused === 'boolean' ? snapshotControl.is_paused : previousControl.is_paused)
+        const snapshotMode = String(snapshot.mode || snapshotControl.mode || '').trim().toLowerCase()
         const nextMode = snapshotMode === 'shadow' || snapshotMode === 'live'
           ? snapshotMode
           : previousControl.mode

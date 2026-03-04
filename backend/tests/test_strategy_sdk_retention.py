@@ -70,6 +70,9 @@ def test_traders_copy_trade_defaults_and_validation_delegate_to_strategy_module(
     assert defaults["min_confidence"] == 0.45
     assert defaults["max_signal_age_seconds"] == 5
     assert defaults["copy_buys"] is True
+    assert defaults["default_leader_weight"] == 1.0
+    assert defaults["copy_existing_positions_on_start"] is False
+    assert defaults["require_inventory_for_sells"] is True
 
     validated = validate_traders_copy_trade_config(
         {
@@ -242,8 +245,8 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["opening_directional_buy_yes_block_elapsed_pct_4h"] == 0.05
     assert defaults["entry_executable_exit_ratio_floor"] == 0.28
     assert defaults["rapid_take_profit_pct"] == 10.0
-    assert defaults["rapid_take_profit_pct_5m"] == 10.0
-    assert defaults["rapid_take_profit_pct_15m"] == 10.0
+    assert defaults["rapid_take_profit_pct_5m"] == 85.0
+    assert defaults["rapid_take_profit_pct_15m"] == 70.0
     assert defaults["rapid_take_profit_pct_1h"] == 12.0
     assert defaults["rapid_take_profit_pct_4h"] == 15.0
     assert defaults["rapid_exit_window_minutes"] == 2.0

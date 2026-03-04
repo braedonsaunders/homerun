@@ -42,6 +42,7 @@ async def emit_weather_intent_signals(session: AsyncSession, opportunities: list
         session,
         opportunities,
         source="weather",
+        refresh_prices=False,
     )
 
 

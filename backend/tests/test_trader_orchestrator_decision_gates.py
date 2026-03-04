@@ -669,6 +669,95 @@ def test_live_market_revalidation_keeps_explicit_zero_age_without_fallback():
     )
 
 
+def test_strict_ws_pricing_blocks_non_ws_market_source():
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    runtime_signal = SimpleNamespace(
+        id="signal-strict-ws-blocked",
+        market_id="market-1",
+        direction="buy_yes",
+        source="crypto",
+        payload_json={
+            "strategy_context": {"timeframe": "5m"},
+            "live_market": {
+                "live_selected_price": 0.52,
+                "fetched_at": now_iso,
+                "market_data_source": "http_batch",
+                "market_data_age_ms": 5,
+            },
+        },
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=runtime_signal,
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={
+            "require_strict_ws_pricing": True,
+            "strict_ws_price_sources": ["ws_strict", "redis_strict"],
+            "max_market_data_age_ms": 1000,
+        },
+    )
+
+    assert result["final_decision"] == "blocked"
+    assert "strict ws pricing required" in result["final_reason"].lower()
+    assert any(g["gate"] == "strict_ws_pricing" and g["status"] == "blocked" for g in result["platform_gates"])
+
+
+def test_strict_ws_pricing_allows_ws_source_with_fresh_age():
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    runtime_signal = SimpleNamespace(
+        id="signal-strict-ws-passed",
+        market_id="market-1",
+        direction="buy_yes",
+        source="crypto",
+        payload_json={
+            "strategy_context": {"timeframe": "5m"},
+            "live_market": {
+                "live_selected_price": 0.52,
+                "fetched_at": now_iso,
+                "market_data_source": "ws_strict",
+                "market_data_age_ms": 12,
+            },
+        },
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=runtime_signal,
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={
+            "require_strict_ws_pricing": True,
+            "strict_ws_price_sources": ["ws_strict", "redis_strict"],
+            "max_market_data_age_ms": 1000,
+        },
+    )
+
+    assert result["final_decision"] == "selected"
+    assert any(g["gate"] == "strict_ws_pricing" and g["status"] == "passed" for g in result["platform_gates"])
+
+
 def test_max_risk_score_guard_blocks_high_risk_signal():
     result = apply_platform_decision_gates(
         decision_obj=_decision(25.0),

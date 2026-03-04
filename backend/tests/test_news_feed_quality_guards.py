@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -85,13 +85,14 @@ async def test_fetch_all_handles_mixed_timezone_article_timestamps(monkeypatch):
     service = NewsFeedService()
 
     article_id = "mixed-timezone-id"
+    now_utc = datetime.now(timezone.utc).replace(microsecond=0)
     service._articles[article_id] = NewsArticle(
         article_id=article_id,
         title="Existing article with enough alphanumeric content for quality checks to pass reliably",
         url="https://example.com/existing",
         source="existing",
         summary="Existing summary content that easily exceeds the minimum text quality threshold requirements.",
-        fetched_at=datetime(2026, 2, 21, 0, 0, 0, tzinfo=timezone.utc),
+        fetched_at=now_utc - timedelta(minutes=1),
     )
 
     incoming = NewsArticle(
@@ -100,7 +101,7 @@ async def test_fetch_all_handles_mixed_timezone_article_timestamps(monkeypatch):
         url="https://example.com/incoming",
         source="incoming",
         summary="Incoming summary content that also exceeds the text quality threshold by a wide margin.",
-        fetched_at=datetime(2026, 2, 21, 0, 1, 0),
+        fetched_at=now_utc.replace(tzinfo=None),
     )
 
     async def _fake_load_sources():
@@ -115,5 +116,5 @@ async def test_fetch_all_handles_mixed_timezone_article_timestamps(monkeypatch):
     new_articles = await service.fetch_all()
     assert new_articles == []
     assert service._articles[article_id].source == "incoming"
-    assert service._articles[article_id].fetched_at == datetime(2026, 2, 21, 0, 1, 0)
+    assert service._articles[article_id].fetched_at == now_utc.replace(tzinfo=None)
     assert service._articles[article_id].fetched_at.tzinfo is None

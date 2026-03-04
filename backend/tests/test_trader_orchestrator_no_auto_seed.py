@@ -242,18 +242,18 @@ async def test_create_trader_scopes_by_mode_and_list_filter(postgres_session_fac
         shadow_rows = await list_traders(session, mode="shadow")
         live_rows = await list_traders(session, mode="live")
 
-    assert paper["mode"] == "paper"
+    assert paper["mode"] == "shadow"
     assert shadow["mode"] == "shadow"
     assert live["mode"] == "live"
-    assert {row["id"] for row in paper_rows} == {paper["id"]}
-    assert {row["id"] for row in shadow_rows} == {shadow["id"]}
+    assert {row["id"] for row in paper_rows} == {paper["id"], shadow["id"]}
+    assert {row["id"] for row in shadow_rows} == {paper["id"], shadow["id"]}
     assert {row["id"] for row in live_rows} == {live["id"]}
 
 
 @pytest.mark.asyncio
 async def test_create_trader_rejects_invalid_mode(postgres_session_factory):
     async with postgres_session_factory() as session:
-        with pytest.raises(ValueError, match="mode must be 'paper', 'shadow', or 'live'"):
+        with pytest.raises(ValueError, match="mode must be 'shadow' or 'live'"):
             await create_trader(
                 session,
                 {
@@ -327,7 +327,7 @@ async def test_startup_enforces_manual_orchestrator_start(postgres_session_facto
 
     assert control["is_enabled"] is False
     assert control["is_paused"] is True
-    assert control["mode"] == "paper"
+    assert control["mode"] == "shadow"
     assert control["requested_run_at"] is None
     assert snapshot["running"] is False
     assert snapshot["enabled"] is False

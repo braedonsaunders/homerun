@@ -8,7 +8,7 @@ import os
 import time
 from typing import Any
 
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm.exc import StaleDataError
 
 from models.database import AsyncSessionLocal, init_database, recover_pool
@@ -44,6 +44,9 @@ _CONTROL_REFRESH_SECONDS = 1.0
 _ACTIVE_POSITION_TICK_SECONDS = 0.25
 _EVENT_QUEUE_MAXSIZE = 4096
 _WALLET_MONITOR_REFRESH_SECONDS = 15.0
+_TRADER_RECONCILE_ATTEMPTS = 3
+_TRADER_RECONCILE_RETRY_BASE_DELAY_SECONDS = 0.05
+_TRADER_RECONCILE_RETRY_MAX_DELAY_SECONDS = 0.3
 _RECONCILE_TRIGGER_EVENTS = frozenset(
     {
         "trader_order",
@@ -59,6 +62,13 @@ _RECONCILE_TRIGGER_EVENTS = frozenset(
         "signals_update",
     }
 )
+
+
+def _reconcile_retry_delay_seconds(attempt: int) -> float:
+    return min(
+        _TRADER_RECONCILE_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+        _TRADER_RECONCILE_RETRY_MAX_DELAY_SECONDS,
+    )
 
 
 def _default_strategy_params(trader: dict[str, Any]) -> dict[str, Any]:
@@ -167,8 +177,8 @@ async def _reconcile_live_state_for_trader(
     active_seen = int(provider_result.get("active_seen", 0) or 0)
     lifecycle_result: dict[str, Any] = {"would_close": 0, "closed": 0}
     trader_params = _default_strategy_params(trader)
-    async with AsyncSessionLocal() as session:
-        if (not provider_pass) or active_seen > 0:
+    if (not provider_pass) or active_seen > 0:
+        async with AsyncSessionLocal() as session:
             lifecycle_result = await reconcile_live_positions(
                 session,
                 trader_id=trader_id,
@@ -176,6 +186,7 @@ async def _reconcile_live_state_for_trader(
                 dry_run=False,
                 reason="reconciliation_worker",
             )
+    async with AsyncSessionLocal() as session:
         inventory_result = await sync_trader_position_inventory(
             session,
             trader_id=trader_id,
@@ -206,25 +217,54 @@ async def _run_reconciliation_cycle(
         if not trader_id:
             continue
         result: dict[str, Any] | None = None
-        for attempt in range(2):
+        for attempt in range(_TRADER_RECONCILE_ATTEMPTS):
             try:
                 result = await _reconcile_live_state_for_trader(trader, provider_pass=provider_pass)
                 break
             except StaleDataError as exc:
-                if attempt == 0:
+                if attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
                     logger.warning(
-                        "Live reconciliation stale-row conflict for trader=%s reason=%s; retrying once",
+                        "Live reconciliation stale-row conflict for trader=%s reason=%s attempt=%d/%d; retrying",
                         trader_id,
                         reason,
+                        attempt + 1,
+                        _TRADER_RECONCILE_ATTEMPTS,
                         exc_info=exc,
                     )
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
                     continue
                 summary["failures"] = int(summary["failures"]) + 1
-                logger.warning("Live reconciliation failed for trader=%s reason=%s", trader_id, reason, exc_info=exc)
+                logger.warning(
+                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
+                    trader_id,
+                    reason,
+                    type(exc).__name__,
+                    False,
+                    exc_info=exc,
+                )
             except Exception as exc:
+                retryable_db = _is_retryable_db_error(exc)
+                if retryable_db and attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
+                    logger.warning(
+                        "Live reconciliation retrying trader=%s reason=%s attempt=%d/%d due retryable DB error (%s)",
+                        trader_id,
+                        reason,
+                        attempt + 1,
+                        _TRADER_RECONCILE_ATTEMPTS,
+                        type(exc).__name__,
+                        exc_info=exc,
+                    )
+                    await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
+                    continue
                 summary["failures"] = int(summary["failures"]) + 1
-                logger.warning("Live reconciliation failed for trader=%s reason=%s", trader_id, reason, exc_info=exc)
+                logger.warning(
+                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
+                    trader_id,
+                    reason,
+                    type(exc).__name__,
+                    retryable_db,
+                    exc_info=exc,
+                )
             break
         if result is None:
             continue
@@ -463,7 +503,7 @@ async def run_worker_loop() -> None:
                             **_wallet_monitor_snapshot_stats(),
                         },
                     )
-            except OperationalError as exc:
+            except DBAPIError as exc:
                 if not _is_retryable_db_error(exc):
                     raise
                 consecutive_db_failures += 1

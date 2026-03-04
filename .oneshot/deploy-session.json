@@ -1,0 +1,21 @@
+{
+  "id": "deploy-aee75cd70d0879",
+  "directory": "/Users/braedonsaunders/Documents/Code/homerun",
+  "status": "idle",
+  "title": "Deploy Agent Session",
+  "createdAt": 1772589998884,
+  "updatedAt": 1772599786868,
+  "messages": [
+    {
+      "id": "message-d0bb2a17",
+      "role": "system",
+      "text": "Deploy session initialized. The deploy agent can run terminal, browser, HTTP, file, docker, DB, iOS, Android, desktop, and artifact tools.",
+      "createdAt": 1772589998887,
+      "invocationIds": []
+    }
+  ],
+  "invocations": [],
+  "artifacts": [],
+  "detectedProjectTypes": [],
+  "appStatus": "unknown"
+}

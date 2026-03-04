@@ -19,10 +19,17 @@ from utils.utcnow import utcnow
 from config import settings
 from models.database import AsyncSessionLocal, Trader
 from services.chainlink_feed import get_chainlink_feed
+from services.crypto_ws_stream import (
+    ack_crypto_ws_update_batches,
+    auto_claim_crypto_ws_update_batches,
+    ensure_crypto_ws_update_group,
+    read_crypto_ws_update_batches,
+)
 from services.crypto_service import get_crypto_service
 from services.data_events import DataEvent
 from services.event_dispatcher import event_dispatcher
 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
+from services.redis_price_cache import redis_price_cache
 from services.strategy_signal_bridge import bridge_opportunities_to_signals
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.event_bus import event_bus
@@ -60,6 +67,7 @@ _WS_TRADE_VOLUME_LOOKBACK_BY_TIMEFRAME_SECONDS = {
 _CHAINLINK_STALE_RESTART_AGE_SECONDS = 45.0
 _CHAINLINK_STALE_RESTART_COOLDOWN_SECONDS = 20.0
 _CHAINLINK_WARMUP_SECONDS = 20.0
+_STREAM_FORCE_FULL_SCAN_INTERVAL_SECONDS = 2.0
 
 # ---------------------------------------------------------------------------
 # Market boundary prefetch
@@ -183,6 +191,35 @@ def _collect_ws_prices_for_markets(feed_manager, markets: list) -> dict[str, flo
                 continue
             ws_prices[token] = min(1.0, max(0.0, parsed))
     return ws_prices
+
+
+async def _collect_execution_prices_for_markets(feed_manager, markets: list) -> dict[str, float]:
+    ws_prices = _collect_ws_prices_for_markets(feed_manager, markets)
+    if ws_prices:
+        return ws_prices
+    token_ids: list[str] = []
+    seen_tokens: set[str] = set()
+    for market in markets:
+        for token_id in getattr(market, "clob_token_ids", None) or []:
+            token = str(token_id or "").strip()
+            if not token or len(token) <= 20 or token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            token_ids.append(token)
+    if not token_ids:
+        return {}
+    strict_stale_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
+    redis_rows = await redis_price_cache.read_prices(token_ids, stale_seconds=strict_stale_seconds)
+    out: dict[str, float] = {}
+    for token in token_ids:
+        payload = redis_rows.get(token)
+        if not isinstance(payload, dict):
+            continue
+        mid = _to_float(payload.get("mid"))
+        if mid is None or not (0.0 <= mid <= 1.01):
+            continue
+        out[token] = min(1.0, max(0.0, mid))
+    return out
 
 
 def _market_leg_tokens(market) -> tuple[str | None, str | None]:
@@ -419,6 +456,7 @@ async def _dispatch_crypto_opportunities(
                     opportunities,
                     source="crypto",
                     sweep_missing=full_source_sweep,
+                    refresh_prices=False,
                 )
             try:
                 await event_bus.publish("crypto_markets_update", {"markets": markets_payload, "trigger": trigger})
@@ -665,6 +703,15 @@ async def _run_loop() -> None:
     ws_reactive_enabled = True
     ws_reactive_callback_registered = False
     emit_lock = asyncio.Lock()
+    stream_consumer_name = f"crypto-{os.getpid()}-{utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    stream_claim_cursor = "0-0"
+    stream_last_claim_run_at: datetime | None = None
+    stream_batches_consumed = 0
+    stream_tokens_consumed = 0
+    stream_dispatches = 0
+    last_full_scan_monotonic = 0.0
+    startup_markets = startup_stats.get("markets")
+    last_full_markets_payload: list[dict] = list(startup_markets) if isinstance(startup_markets, list) else []
 
     async def _ensure_chainlink_feed_healthy() -> dict[str, object]:
         nonlocal chainlink_feed_started_mono
@@ -832,7 +879,7 @@ async def _run_loop() -> None:
             if not selected_markets:
                 continue
 
-            ws_prices = _collect_ws_prices_for_markets(feed_manager, selected_markets)
+            ws_prices = await _collect_execution_prices_for_markets(feed_manager, selected_markets)
             payload = _build_crypto_market_payload(
                 selected_markets,
                 ws_prices=ws_prices,
@@ -845,7 +892,59 @@ async def _run_loop() -> None:
                 emit_lock=emit_lock,
             )
 
+    async def _read_ws_stream_tokens(timeout_ms: int) -> tuple[set[str], list[str]]:
+        nonlocal stream_claim_cursor
+        nonlocal stream_last_claim_run_at
+        if not bool(getattr(settings, "MARKET_DATA_WORKER_OWNS_WS", True)):
+            return set(), []
+        normalized_timeout = max(1, int(timeout_ms))
+        entry_ids: list[str] = []
+        token_ids: set[str] = set()
+        claim_interval_seconds = max(
+            0.1,
+            float(getattr(settings, "CRYPTO_WS_UPDATE_STREAM_CLAIM_INTERVAL_SECONDS", 0.5) or 0.5),
+        )
+        now_claim = utcnow()
+        claim_due = (
+            stream_last_claim_run_at is None
+            or (now_claim - stream_last_claim_run_at).total_seconds() >= claim_interval_seconds
+        )
+        if claim_due:
+            stream_claim_cursor, claimed_rows = await auto_claim_crypto_ws_update_batches(
+                consumer=stream_consumer_name,
+                min_idle_ms=int(getattr(settings, "CRYPTO_WS_UPDATE_STREAM_CLAIM_IDLE_MS", 1000)),
+                start_id=stream_claim_cursor,
+                count=int(getattr(settings, "CRYPTO_WS_UPDATE_STREAM_CLAIM_READ_COUNT", 1000)),
+            )
+            stream_last_claim_run_at = now_claim
+            for entry_id, payload in claimed_rows:
+                entry_ids.append(str(entry_id))
+                for token in payload.get("token_ids") or []:
+                    token_id = str(token or "").strip()
+                    if token_id:
+                        token_ids.add(token_id)
+            if token_ids:
+                return token_ids, entry_ids
+        rows = await read_crypto_ws_update_batches(
+            consumer=stream_consumer_name,
+            block_ms=normalized_timeout,
+            count=int(getattr(settings, "CRYPTO_WS_UPDATE_STREAM_READ_COUNT", 1000)),
+            include_pending=False,
+        )
+        for entry_id, payload in rows:
+            entry_ids.append(str(entry_id))
+            for token in payload.get("token_ids") or []:
+                token_id = str(token or "").strip()
+                if token_id:
+                    token_ids.add(token_id)
+        return token_ids, entry_ids
+
     await _ensure_ws_feeds_running()
+    if bool(getattr(settings, "MARKET_DATA_WORKER_OWNS_WS", True)):
+        if not await ensure_crypto_ws_update_group():
+            logger.warning(
+                "Crypto WS update stream group ensure failed; worker will continue with periodic polling fallback"
+            )
 
     while True:
         async with AsyncSessionLocal() as session:
@@ -883,6 +982,9 @@ async def _run_loop() -> None:
                     stats={
                         "market_count": 0,
                         "signals_emitted_last_run": 0,
+                        "ws_stream_batches_consumed": int(stream_batches_consumed),
+                        "ws_stream_tokens_consumed": int(stream_tokens_consumed),
+                        "ws_stream_dispatches": int(stream_dispatches),
                         "markets": [],
                         "ws_feeds": _snapshot_ws_feed_status(),
                         "chainlink_feed": chainlink_feed_status,
@@ -912,51 +1014,108 @@ async def _run_loop() -> None:
         err_text = None
         started_at = time.monotonic()
         ws_prices: dict[str, float] = {}
+        dispatch_trigger = "periodic_scan"
+        stream_entry_ids: list[str] = []
+        reactive_stream_triggered = False
+        boundary_force = False
 
         try:
+            if fast_mode and bool(getattr(settings, "MARKET_DATA_WORKER_OWNS_WS", True)):
+                stream_tokens, stream_entry_ids = await _read_ws_stream_tokens(
+                    int(getattr(settings, "CRYPTO_WS_UPDATE_STREAM_BLOCK_MS", 10))
+                )
+                if stream_entry_ids:
+                    stream_batches_consumed += len(stream_entry_ids)
+                    stream_tokens_consumed += len(stream_tokens)
+            else:
+                stream_tokens = set()
+
             svc = get_crypto_service()
-            # Force-refresh near market time boundaries so new market IDs are
-            # discovered within a single poll cycle instead of waiting for TTL.
-            boundary_force = False
-            if fast_mode and _near_market_boundary():
-                global _last_boundary_force_mono
-                now_mono = time.monotonic()
-                # Rate-limit force-refreshes to at most once per 2 seconds
-                if (now_mono - _last_boundary_force_mono) >= 2.0:
-                    boundary_force = True
-                    _last_boundary_force_mono = now_mono
-            markets = await asyncio.to_thread(svc.get_live_markets, boundary_force)
-            if markets is None:
-                markets = []
-            if ws_feeds_running and feed_manager is not None:
-                subscribed_tokens = await _sync_ws_subscriptions(feed_manager, markets, subscribed_tokens)
-            current_markets = markets
-            token_to_market_indices = _index_market_token_positions(markets)
-            ws_prices = _collect_ws_prices_for_markets(feed_manager, markets)
-            markets_payload = _build_crypto_market_payload(
-                markets,
-                ws_prices=ws_prices,
-                feed_manager=feed_manager,
+            full_scan_required = True
+            force_full_scan_interval_seconds = max(
+                _STREAM_FORCE_FULL_SCAN_INTERVAL_SECONDS,
+                float(configured_interval),
             )
-
-            # Log when boundary prefetch discovers new markets.
-            if boundary_force and markets_payload:
-                prev_slugs = {str(m.get("slug") or "") for m in (startup_stats.get("markets") or []) if isinstance(m, dict)}
-                new_slugs = {str(m.get("slug") or "") for m in markets_payload if isinstance(m, dict)} - prev_slugs
-                if new_slugs:
-                    logger.info(
-                        "Boundary prefetch discovered %d new market(s): %s",
-                        len(new_slugs),
-                        ", ".join(sorted(new_slugs)[:6]),
+            force_full_scan_due = (time.monotonic() - last_full_scan_monotonic) >= force_full_scan_interval_seconds
+            if stream_tokens and current_markets:
+                selected_markets = _markets_for_updated_tokens(current_markets, token_to_market_indices, stream_tokens)
+                if selected_markets:
+                    ws_prices = await _collect_execution_prices_for_markets(feed_manager, selected_markets)
+                    markets_payload = _build_crypto_market_payload(
+                        selected_markets,
+                        ws_prices=ws_prices,
+                        feed_manager=feed_manager,
                     )
+                    dispatch_trigger = "crypto_ws_stream"
+                    emitted, dispatch_elapsed = await _dispatch_crypto_opportunities(
+                        markets_payload,
+                        trigger=dispatch_trigger,
+                        run_at=run_at,
+                        emit_lock=emit_lock,
+                    )
+                    elapsed = max(round(time.monotonic() - started_at, 3), dispatch_elapsed)
+                    full_scan_required = False
+                    reactive_stream_triggered = True
+                    stream_dispatches += 1
+            if not full_scan_required and force_full_scan_due:
+                full_scan_required = True
 
-            emitted, dispatch_elapsed = await _dispatch_crypto_opportunities(
-                markets_payload,
-                trigger="boundary_prefetch" if boundary_force else "periodic_scan",
-                run_at=run_at,
-                emit_lock=emit_lock,
-            )
-            elapsed = max(round(time.monotonic() - started_at, 3), dispatch_elapsed)
+            if full_scan_required:
+                # Force-refresh near market time boundaries so new market IDs are
+                # discovered within a single poll cycle instead of waiting for TTL.
+                if fast_mode and _near_market_boundary():
+                    global _last_boundary_force_mono
+                    now_mono = time.monotonic()
+                    # Rate-limit force-refreshes to at most once per 2 seconds
+                    if (now_mono - _last_boundary_force_mono) >= 2.0:
+                        boundary_force = True
+                        _last_boundary_force_mono = now_mono
+                markets = await asyncio.to_thread(svc.get_live_markets, boundary_force)
+                if markets is None:
+                    markets = []
+                if ws_feeds_running and feed_manager is not None:
+                    subscribed_tokens = await _sync_ws_subscriptions(feed_manager, markets, subscribed_tokens)
+                current_markets = markets
+                token_to_market_indices = _index_market_token_positions(markets)
+                ws_prices = await _collect_execution_prices_for_markets(feed_manager, markets)
+                markets_payload = _build_crypto_market_payload(
+                    markets,
+                    ws_prices=ws_prices,
+                    feed_manager=feed_manager,
+                )
+
+                # Log when boundary prefetch discovers new markets.
+                if boundary_force and markets_payload:
+                    prev_slugs = {
+                        str(m.get("slug") or "") for m in (startup_stats.get("markets") or []) if isinstance(m, dict)
+                    }
+                    new_slugs = {str(m.get("slug") or "") for m in markets_payload if isinstance(m, dict)} - prev_slugs
+                    if new_slugs:
+                        logger.info(
+                            "Boundary prefetch discovered %d new market(s): %s",
+                            len(new_slugs),
+                            ", ".join(sorted(new_slugs)[:6]),
+                        )
+
+                dispatch_trigger = "boundary_prefetch" if boundary_force else "periodic_scan"
+                emitted, dispatch_elapsed = await _dispatch_crypto_opportunities(
+                    markets_payload,
+                    trigger=dispatch_trigger,
+                    run_at=run_at,
+                    emit_lock=emit_lock,
+                )
+                elapsed = max(round(time.monotonic() - started_at, 3), dispatch_elapsed)
+                last_full_scan_monotonic = time.monotonic()
+                last_full_markets_payload = list(markets_payload)
+
+            if stream_entry_ids:
+                acknowledged = await ack_crypto_ws_update_batches(stream_entry_ids)
+                if acknowledged < len(stream_entry_ids):
+                    logger.warning(
+                        "Crypto WS update stream ack partial requested=%d acknowledged=%d",
+                        len(stream_entry_ids),
+                        int(acknowledged),
+                    )
 
             # Record ML training snapshots if enabled.
             try:
@@ -972,6 +1131,12 @@ async def _run_loop() -> None:
                     pass
                 _ml_last_prune_mono = time.monotonic()
 
+            snapshot_markets = (
+                last_full_markets_payload
+                if dispatch_trigger == "crypto_ws_stream" and last_full_markets_payload
+                else markets_payload
+            )
+
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
                     session,
@@ -983,14 +1148,20 @@ async def _run_loop() -> None:
                     last_run_at=run_at,
                     last_error=None,
                     stats={
-                        "market_count": len(markets_payload),
+                        "market_count": len(snapshot_markets),
+                        "active_dispatch_market_count": len(markets_payload),
                         "signals_emitted_last_run": int(emitted),
                         "run_duration_seconds": elapsed,
+                        "trigger": dispatch_trigger,
                         "fast_mode": fast_mode,
                         "boundary_force_refresh": boundary_force,
+                        "reactive_stream_triggered": reactive_stream_triggered,
+                        "ws_stream_batches_consumed": int(stream_batches_consumed),
+                        "ws_stream_tokens_consumed": int(stream_tokens_consumed),
+                        "ws_stream_dispatches": int(stream_dispatches),
                         "ws_prices_used": int(bool(ws_prices)),
                         "ws_token_prices": len(ws_prices),
-                        "markets": markets_payload,
+                        "markets": snapshot_markets,
                         "ws_feeds": _snapshot_ws_feed_status(),
                         "chainlink_feed": chainlink_feed_status,
                         "binance_feed": binance_feed_status,
@@ -998,7 +1169,8 @@ async def _run_loop() -> None:
                 )
 
             logger.info(
-                "Crypto cycle complete: markets=%s signals=%s duration=%.3fs fast_mode=%s sleep=%ss",
+                "Crypto cycle complete: trigger=%s markets=%s signals=%s duration=%.3fs fast_mode=%s sleep=%ss",
+                dispatch_trigger,
                 len(markets_payload),
                 emitted,
                 elapsed,
@@ -1025,7 +1197,12 @@ async def _run_loop() -> None:
                         "market_count": len(markets_payload),
                         "signals_emitted_last_run": int(emitted),
                         "run_duration_seconds": elapsed,
+                        "trigger": dispatch_trigger,
                         "fast_mode": fast_mode,
+                        "reactive_stream_triggered": reactive_stream_triggered,
+                        "ws_stream_batches_consumed": int(stream_batches_consumed),
+                        "ws_stream_tokens_consumed": int(stream_tokens_consumed),
+                        "ws_stream_dispatches": int(stream_dispatches),
                         "ws_prices_used": int(bool(ws_prices)),
                         "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
@@ -1037,6 +1214,8 @@ async def _run_loop() -> None:
 
         if err_text:
             sleep_for = 0.5
+        elif fast_mode and reactive_stream_triggered:
+            sleep_for = _MIN_LOOP_SLEEP_SECONDS
         elif fast_mode and boundary_force:
             # Near a market boundary — poll as fast as possible to pick up new IDs.
             sleep_for = 0.2

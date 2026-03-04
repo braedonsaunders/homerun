@@ -26,7 +26,8 @@ from datetime import datetime, timedelta
 from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
 
-from sqlalchemy import delete, select, func, update, desc, asc, cast, String, or_
+from sqlalchemy import delete, select, func, desc, asc, cast, String, or_, text
+from sqlalchemy.exc import DBAPIError
 
 from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
@@ -89,6 +90,40 @@ DISCOVERY_LEADERBOARD_SORTS = ("PNL", "VOL")
 POOL_FLAG_MANUAL_INCLUDE = "pool_manual_include"
 POOL_FLAG_MANUAL_EXCLUDE = "pool_manual_exclude"
 POOL_FLAG_BLACKLISTED = "pool_blacklisted"
+
+_DB_RETRY_ATTEMPTS = 3
+_DB_RETRY_BASE_DELAY_SECONDS = 0.05
+_DB_RETRY_MAX_DELAY_SECONDS = 0.3
+
+
+def _is_retryable_db_error(exc: Exception) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(
+        marker in message
+        for marker in (
+            "deadlock detected",
+            "serialization failure",
+            "could not serialize access",
+            "lock not available",
+            "too many clients already",
+            "sorry, too many clients already",
+            "remaining connection slots are reserved",
+            "cannot connect now",
+            "connection is closed",
+            "underlying connection is closed",
+            "connection has been closed",
+            "closed the connection unexpectedly",
+            "terminating connection",
+            "connection reset by peer",
+            "broken pipe",
+            "timeouterror",
+            "timeout",
+        )
+    )
+
+
+def _db_retry_delay(attempt: int) -> float:
+    return min(_DB_RETRY_BASE_DELAY_SECONDS * (2**attempt), _DB_RETRY_MAX_DELAY_SECONDS)
 
 
 class WalletDiscoveryEngine:
@@ -1102,11 +1137,7 @@ class WalletDiscoveryEngine:
                 self.client.get_closed_positions_paginated(address, max_positions=1500),
             )
         except Exception as e:
-            logger.error(
-                "Failed to fetch data for wallet",
-                address=address,
-                error=str(e),
-            )
+            logger.error("Failed to fetch data for wallet %s: %s", address, e)
             return None
 
         if len(trades) < MIN_TRADES_FOR_ANALYSIS and not positions and len(closed_positions) < MIN_TRADES_FOR_ANALYSIS:
@@ -1358,7 +1389,7 @@ class WalletDiscoveryEngine:
                 active=True,
             )
         except Exception as e:
-            logger.warning("Recent market fetch failed during discovery", error=str(e))
+            logger.warning("Recent market fetch failed during discovery: %s", e)
 
         recent_cap = max(10, min(80, max_markets // 3))
         selected_recent = recent_markets[:recent_cap]
@@ -1427,11 +1458,8 @@ class WalletDiscoveryEngine:
                     break
 
         except Exception as e:
-            logger.warning(
-                "Failed to fetch trades for market",
-                market=getattr(market, "question", "?")[:60],
-                error=str(e),
-            )
+            market_label = str(getattr(market, "question", "?") or "?")[:60]
+            logger.warning("Failed to fetch trades for market '%s': %s", market_label, e)
 
         return discovered
 
@@ -1484,11 +1512,11 @@ class WalletDiscoveryEngine:
                     )
             except Exception as e:
                 logger.warning(
-                    "Leaderboard scan failed",
-                    order_by=order_by,
-                    time_period=time_period,
-                    category=category,
-                    error=str(e),
+                    "Leaderboard scan failed (order_by=%s, time_period=%s, category=%s): %s",
+                    order_by,
+                    time_period,
+                    category,
+                    e,
                 )
                 self._leaderboard_offsets[combo_key] = 0
                 continue
@@ -1578,35 +1606,38 @@ class WalletDiscoveryEngine:
 
         now = utcnow()
         normalized_list = sorted(normalized)
+        maintenance_batch = self._coerce_int(
+            self._discovery_setting("maintenance_batch", 900),
+            DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+            minimum=10,
+        )
+
+        existing: set[str] = set()
         async with AsyncSessionLocal() as session:
-            existing: set[str] = set()
-            maintenance_batch = self._coerce_int(
-                self._discovery_setting("maintenance_batch", 900),
-                DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
-                minimum=10,
-            )
             for chunk in self._chunked(normalized_list, maintenance_batch):
                 rows = await session.execute(
                     select(DiscoveredWallet.address).where(DiscoveredWallet.address.in_(chunk))
                 )
                 existing.update({str(row.address).lower() for row in rows.all() if row.address})
 
-            created = 0
-            for address in normalized_list:
-                if address in existing:
-                    continue
-                session.add(
-                    DiscoveredWallet(
-                        address=address,
-                        discovered_at=now,
-                        discovery_source=discovery_source,
-                    )
-                )
-                created += 1
+        to_create = [address for address in normalized_list if address not in existing]
+        if not to_create:
+            return 0
 
-            if created:
+        created = 0
+        async with AsyncSessionLocal() as session:
+            for chunk in self._chunked(to_create, maintenance_batch):
+                for address in chunk:
+                    session.add(
+                        DiscoveredWallet(
+                            address=address,
+                            discovered_at=now,
+                            discovery_source=discovery_source,
+                        )
+                    )
                 await session.commit()
-            return created
+                created += len(chunk)
+        return created
 
     async def _cleanup_discovered_wallet_catalog(self, now: datetime | None = None) -> int:
         """
@@ -1625,105 +1656,105 @@ class WalletDiscoveryEngine:
             return 0
 
         now = now or utcnow()
+        maintenance_batch = self._coerce_int(
+            self._discovery_setting("maintenance_batch", 900),
+            DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+            minimum=10,
+        )
+        cutoff_trade = now - timedelta(
+            days=max(
+                1,
+                self._coerce_int(
+                    self._discovery_setting("keep_recent_trade_days", 7),
+                    DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS,
+                    minimum=1,
+                ),
+            )
+        )
+        cutoff_discovered = now - timedelta(
+            days=max(
+                1,
+                self._coerce_int(
+                    self._discovery_setting("keep_new_discoveries_days", 30),
+                    DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS,
+                    minimum=1,
+                ),
+            )
+        )
+
+        wallets: list[DiscoveredWallet] = []
         async with AsyncSessionLocal() as session:
             total_result = await session.execute(select(func.count(DiscoveredWallet.address)))
             total_wallets = int(total_result.scalar() or 0)
             if total_wallets <= max_discovered_wallets:
                 return 0
 
-            cutoff_trade = now - timedelta(
-                days=max(
-                    1,
-                    self._coerce_int(
-                        self._discovery_setting("keep_recent_trade_days", 7),
-                        DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS,
-                        minimum=1,
-                    ),
-                )
-            )
-            cutoff_discovered = now - timedelta(
-                days=max(
-                    1,
-                    self._coerce_int(
-                        self._discovery_setting("keep_new_discoveries_days", 30),
-                        DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS,
-                        minimum=1,
-                    ),
-                )
-            )
-
             rows = await session.execute(select(DiscoveredWallet))
             wallets = list(rows.scalars().all())
 
-            candidates: list[DiscoveredWallet] = []
-            non_protected: list[DiscoveredWallet] = []
+        candidates: list[DiscoveredWallet] = []
+        non_protected: list[DiscoveredWallet] = []
 
-            for wallet in wallets:
-                if self._is_wallet_discovery_protected(wallet):
-                    continue
-                non_protected.append(wallet)
-                if wallet.last_trade_at is not None and wallet.last_trade_at >= cutoff_trade:
-                    continue
-                if wallet.discovered_at is not None and wallet.discovered_at >= cutoff_discovered:
-                    continue
-                candidates.append(wallet)
+        for wallet in wallets:
+            if self._is_wallet_discovery_protected(wallet):
+                continue
+            non_protected.append(wallet)
+            if wallet.last_trade_at is not None and wallet.last_trade_at >= cutoff_trade:
+                continue
+            if wallet.discovered_at is not None and wallet.discovered_at >= cutoff_discovered:
+                continue
+            candidates.append(wallet)
 
-            # Prefer removing non-recent/non-essential rows first.
-            removable = candidates if candidates else non_protected
+        removable = candidates if candidates else non_protected
+        removable.sort(key=lambda wallet: self._discovery_curation_score(wallet, now))
+        remove_count = total_wallets - max_discovered_wallets
+        if remove_count <= 0:
+            return 0
+        if len(removable) < remove_count:
+            removable = non_protected
+        if not removable:
+            return 0
 
-            removable.sort(key=lambda wallet: self._discovery_curation_score(wallet, now))
-            remove_count = total_wallets - max_discovered_wallets
-            if remove_count <= 0:
-                return 0
-
-            # If recent/preserved rows prevent hitting the target size, fall back
-            # to all non-protected rows.
-            if len(removable) < remove_count:
-                removable = non_protected
-
-            if not removable:
-                return 0
-
-            to_remove = [wallet.address for wallet in removable[:remove_count]]
-            removed = 0
-            maintenance_batch = self._coerce_int(
-                self._discovery_setting("maintenance_batch", 900),
-                DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
-                minimum=10,
-            )
+        to_remove = [wallet.address for wallet in removable[:remove_count]]
+        removed = 0
+        async with AsyncSessionLocal() as session:
             for chunk in self._chunked(to_remove, maintenance_batch):
                 result = await session.execute(delete(DiscoveredWallet).where(DiscoveredWallet.address.in_(chunk)))
                 removed += int(result.rowcount or 0)
-
             await session.commit()
-            return removed
+        return removed
 
     async def _upsert_wallet(self, data: dict):
         """Insert or update a DiscoveredWallet record."""
         address = data["address"]
 
-        async with AsyncSessionLocal() as session:
-            wallet = await session.get(DiscoveredWallet, address)
+        for attempt in range(_DB_RETRY_ATTEMPTS):
+            async with AsyncSessionLocal() as session:
+                try:
+                    wallet = await session.get(DiscoveredWallet, address)
 
-            if wallet is None:
-                wallet = DiscoveredWallet(
-                    address=address,
-                    discovered_at=utcnow(),
-                )
-                session.add(wallet)
+                    if wallet is None:
+                        wallet = DiscoveredWallet(
+                            address=address,
+                            discovered_at=utcnow(),
+                        )
+                        session.add(wallet)
 
-            # Update all fields from analysis data
-            for key, value in data.items():
-                if key == "address":
-                    continue
-                # Handle float('inf') and float('nan') values that cannot
-                # be serialized to JSON or stored in the database.
-                if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
-                    value = None
-                if hasattr(wallet, key):
-                    setattr(wallet, key, value)
+                    for key, value in data.items():
+                        if key == "address":
+                            continue
+                        if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+                            value = None
+                        if hasattr(wallet, key):
+                            setattr(wallet, key, value)
 
-            await session.commit()
+                    await session.commit()
+                    return
+                except DBAPIError as exc:
+                    await session.rollback()
+                    if not _is_retryable_db_error(exc) or attempt >= _DB_RETRY_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(_db_retry_delay(attempt))
 
     async def _is_stale(self, address: str) -> bool:
         """Check if a wallet's analysis is stale or missing."""
@@ -1751,25 +1782,28 @@ class WalletDiscoveryEngine:
         on rank_score descending.
         """
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(DiscoveredWallet.address, DiscoveredWallet.rank_score).order_by(
-                    desc(DiscoveredWallet.rank_score)
+            total_wallets = int((await session.execute(select(func.count(DiscoveredWallet.address)))).scalar() or 0)
+            await session.execute(
+                text(
+                    """
+                    WITH ranked AS (
+                        SELECT
+                            address,
+                            ROW_NUMBER() OVER (ORDER BY rank_score DESC NULLS LAST, address ASC) AS next_rank
+                        FROM discovered_wallets
+                    )
+                    UPDATE discovered_wallets AS d
+                    SET rank_position = ranked.next_rank
+                    FROM ranked
+                    WHERE d.address = ranked.address
+                    """
                 )
             )
-            rows = result.all()
-
-            for position, row in enumerate(rows, start=1):
-                await session.execute(
-                    update(DiscoveredWallet)
-                    .where(DiscoveredWallet.address == row.address)
-                    .values(rank_position=position)
-                )
-
             await session.commit()
 
         logger.info(
             "Leaderboard refreshed",
-            total_wallets=len(rows),
+            total_wallets=total_wallets,
         )
 
     @staticmethod
@@ -2118,9 +2152,11 @@ class WalletDiscoveryEngine:
                         await asyncio.sleep(delay_between_wallets)
                     except Exception as e:
                         logger.warning(
-                            "Wallet analysis failed",
-                            address=addr,
-                            error=str(e),
+                            "Wallet analysis failed for %s: %s (error_type=%s, retryable_db=%s)",
+                            addr,
+                            e,
+                            type(e).__name__,
+                            _is_retryable_db_error(e),
                         )
 
             # Process in batches to avoid overwhelming the API.
@@ -2148,10 +2184,7 @@ class WalletDiscoveryEngine:
             try:
                 await smart_wallet_pool.recompute_pool()
             except Exception as e:
-                logger.warning(
-                    "Smart pool recompute after discovery failed",
-                    error=str(e),
-                )
+                logger.warning("Smart pool recompute after discovery failed: %s", e)
 
             # --- Record run metadata ---
             self._last_run_at = utcnow()

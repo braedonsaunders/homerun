@@ -80,7 +80,7 @@ async def test_force_delete_cleans_up_active_orders_before_delete(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_delete_allows_paper_exposure_without_force(tmp_path):
+async def test_delete_blocks_shadow_exposure_without_force(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     trader_id = "trader-paper-delete"
     try:
@@ -107,7 +107,7 @@ async def test_delete_allows_paper_exposure_without_force(tmp_path):
                     source="crypto",
                     market_id="market-paper-delete",
                     direction="buy_yes",
-                    mode="paper",
+                    mode="shadow",
                     status="executed",
                     notional_usd=20.0,
                     entry_price=0.44,
@@ -121,9 +121,9 @@ async def test_delete_allows_paper_exposure_without_force(tmp_path):
             await session.commit()
             await sync_trader_position_inventory(session, trader_id=trader_id)
 
-            deleted = await delete_trader(session, trader_id, force=False)
-            assert deleted is True
-            assert await session.get(Trader, trader_id) is None
+            with pytest.raises(ValueError, match="active exposure"):
+                await delete_trader(session, trader_id, force=False)
+            assert await session.get(Trader, trader_id) is not None
             order_row = await session.get(TraderOrder, "order-paper-delete")
             assert order_row is not None
             assert order_row.trader_id == trader_id
@@ -173,7 +173,7 @@ async def test_delete_blocks_live_exposure_without_force(tmp_path):
             await session.commit()
             await sync_trader_position_inventory(session, trader_id=trader_id)
 
-            with pytest.raises(ValueError, match="non-paper exposure"):
+            with pytest.raises(ValueError, match="active exposure"):
                 await delete_trader(session, trader_id, force=False)
             assert await session.get(Trader, trader_id) is not None
     finally:

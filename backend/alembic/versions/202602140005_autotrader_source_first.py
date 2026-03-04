@@ -134,6 +134,16 @@ def _build_source_configs(old_strategy_key: Any, raw_sources: Any, raw_params: A
 
 
 def _backfill_traders_source_configs() -> None:
+    trader_columns = column_names("traders")
+    required_legacy_columns = {
+        "strategy_key",
+        "sources_json",
+        "params_json",
+        "source_configs_json",
+    }
+    if not required_legacy_columns.issubset(trader_columns):
+        return
+
     bind = op.get_bind()
     trader_table = sa.table(
         "traders",

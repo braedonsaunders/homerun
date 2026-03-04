@@ -1090,8 +1090,74 @@ export interface WalletPnL {
   error?: string
 }
 
+function toDiscoveryTimePeriod(value?: TimePeriod): string | undefined {
+  switch (value) {
+    case 'DAY':
+      return '24h'
+    case 'WEEK':
+      return '7d'
+    case 'MONTH':
+      return '30d'
+    case 'ALL':
+      return 'all'
+    default:
+      return undefined
+  }
+}
+
+function toDiscoveryCategory(value?: Category): string | undefined {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized || normalized === 'overall') return undefined
+  return normalized
+}
+
+function normalizeRateValue(value: unknown): number | undefined {
+  if (value == null) return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return undefined
+  return parsed <= 1 ? parsed * 100 : parsed
+}
+
+function toDiscoveredTraderRows(rows: unknown[]): DiscoveredTrader[] {
+  const payloadRows = Array.isArray(rows) ? rows : []
+  return payloadRows
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+    .map((row) => {
+      const totalTrades = Number(row.total_trades ?? row.trade_count ?? 0)
+      const totalReturned = Number(row.total_returned ?? row.total_invested ?? 0)
+      const winRate = normalizeRateValue(row.win_rate)
+      const wins = Number(row.wins ?? 0)
+      const losses = Number(row.losses ?? 0)
+      const rank = Number(row.rank_position ?? row.rank ?? 0)
+      return {
+        address: String(row.address || ''),
+        username: row.username ? String(row.username) : undefined,
+        trades: Number.isFinite(totalTrades) ? totalTrades : 0,
+        volume: Number.isFinite(totalReturned) ? totalReturned : 0,
+        pnl: Number(row.total_pnl ?? 0),
+        rank: Number.isFinite(rank) && rank > 0 ? rank : undefined,
+        buys: 0,
+        sells: 0,
+        win_rate: winRate,
+        wins: Number.isFinite(wins) ? wins : undefined,
+        losses: Number.isFinite(losses) ? losses : undefined,
+        total_markets: Number(row.unique_markets ?? 0) || undefined,
+        trade_count: Number.isFinite(totalTrades) ? totalTrades : undefined,
+      }
+    })
+    .filter((row) => row.address.length > 0)
+}
+
 export const getLeaderboard = async (filters?: LeaderboardFilters) => {
-  const { data } = await api.get('/discover/leaderboard', { params: filters })
+  const params = {
+    limit: filters?.limit,
+    min_trades: 0,
+    sort_by: filters?.order_by === 'VOL' ? 'total_returned' : 'total_pnl',
+    sort_dir: 'desc',
+    time_period: toDiscoveryTimePeriod(filters?.time_period),
+    market_category: toDiscoveryCategory(filters?.category),
+  }
+  const { data } = await api.get('/discovery/leaderboard', { params })
   return unwrapApiData(data)
 }
 
@@ -1100,19 +1166,47 @@ export const discoverTopTraders = async (
   minTrades = 10,
   filters?: Omit<LeaderboardFilters, 'limit'>
 ): Promise<DiscoveredTrader[]> => {
-  const { data } = await api.get('/discover/top-traders', {
+  const { data } = await api.get('/discovery/leaderboard', {
     params: {
       limit,
       min_trades: minTrades,
-      ...filters
+      sort_by: filters?.order_by === 'VOL' ? 'total_returned' : 'total_pnl',
+      sort_dir: 'desc',
+      time_period: toDiscoveryTimePeriod(filters?.time_period),
+      market_category: toDiscoveryCategory(filters?.category),
     }
   })
-  return unwrapApiData(data)
+  const rows = unwrapApiData(data)?.wallets || []
+  return toDiscoveredTraderRows(rows)
 }
 
 export const discoverByWinRate = async (filters?: WinRateFilters): Promise<DiscoveredTrader[]> => {
-  const { data } = await api.get('/discover/by-win-rate', { params: filters })
-  return unwrapApiData(data)
+  const limit = Math.max(1, Math.min(500, Number(filters?.scan_count || filters?.limit || 200)))
+  const { data } = await api.get('/discovery/leaderboard', {
+    params: {
+      limit,
+      min_trades: filters?.min_trades ?? 0,
+      sort_by: 'win_rate',
+      sort_dir: 'desc',
+      time_period: toDiscoveryTimePeriod(filters?.time_period),
+      market_category: toDiscoveryCategory(filters?.category),
+    },
+  })
+  const rows = toDiscoveredTraderRows(unwrapApiData(data)?.wallets || [])
+  const minWinRate = Number(filters?.min_win_rate ?? 0)
+  const minVolume = Number(filters?.min_volume ?? 0)
+  const maxVolume = Number(filters?.max_volume ?? 0)
+  const requestedLimit = Math.max(1, Number(filters?.limit || 50))
+
+  const filtered = rows.filter((row) => {
+    const rowWinRate = Number(row.win_rate ?? 0)
+    const rowVolume = Number(row.volume ?? 0)
+    if (minWinRate > 0 && rowWinRate < minWinRate) return false
+    if (minVolume > 0 && rowVolume < minVolume) return false
+    if (maxVolume > 0 && rowVolume > maxVolume) return false
+    return true
+  })
+  return filtered.slice(0, requestedLimit)
 }
 
 export const getWalletWinRate = async (address: string, timePeriod?: TimePeriod): Promise<WalletWinRate> => {
@@ -1880,6 +1974,21 @@ export interface TraderOrder {
   close_trigger?: string | null
   close_reason?: string | null
   payload: Record<string, any>
+  copy_attribution?: {
+    source_wallet?: string
+    source_tx_hash?: string
+    source_order_hash?: string
+    side?: string
+    source_price?: number
+    follower_effective_price?: number
+    source_size?: number
+    source_notional_usd?: number
+    copy_latency_ms?: number
+    source_detection_latency_ms?: number
+    slippage_bps?: number
+    adverse_slippage_bps?: number
+    detected_at?: string
+  } | null
   error_message: string | null
   event_id: string | null
   trace_id: string | null
@@ -1976,6 +2085,42 @@ export interface TraderDecisionDetail {
   decision: TraderDecision
   checks: TraderDecisionCheck[]
   orders: TraderOrder[]
+}
+
+export interface TraderCopyAnalyticsLeader {
+  source_wallet: string
+  orders: number
+  active_orders: number
+  realized_orders: number
+  realized_pnl_usd: number
+  gross_notional_usd: number
+  open_exposure_usd: number
+  avg_slippage_bps: number | null
+  avg_adverse_slippage_bps: number | null
+  avg_copy_latency_ms: number | null
+}
+
+export interface TraderCopyAnalytics {
+  trader_id: string
+  mode: string
+  as_of: string | null
+  sample_size: number
+  scanned_orders: number
+  summary: {
+    total_orders: number
+    resolved_orders: number
+    win_orders: number
+    loss_orders: number
+    win_rate_pct: number | null
+    realized_pnl_usd: number
+    gross_notional_usd: number
+    open_exposure_usd: number
+    avg_slippage_bps: number | null
+    avg_adverse_slippage_bps: number | null
+    avg_copy_latency_ms: number | null
+    distinct_leaders: number
+  }
+  leaders: TraderCopyAnalyticsLeader[]
 }
 
 export interface TraderSource {
@@ -2130,6 +2275,40 @@ export const updateTrader = async (traderId: string, payload: Record<string, any
   return normalizeTraderFields(data)
 }
 
+export interface TraderStartPayload {
+  copy_existing_positions?: boolean | null
+  requested_by?: string
+}
+
+export type TraderStopLifecycleMode = 'keep_positions' | 'close_shadow_positions' | 'close_all_positions'
+
+export interface TraderStopPayload {
+  stop_lifecycle?: TraderStopLifecycleMode
+  confirm_live?: boolean
+  requested_by?: string
+  reason?: string
+}
+
+export const startTrader = async (traderId: string, payload?: TraderStartPayload): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/start`, payload || {})
+  return normalizeTraderFields(data)
+}
+
+export const stopTrader = async (traderId: string, payload?: TraderStopPayload): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/stop`, payload || {})
+  return normalizeTraderFields(data)
+}
+
+export const activateTrader = async (traderId: string, payload?: { requested_by?: string; reason?: string }): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/activate`, payload || {})
+  return normalizeTraderFields(data)
+}
+
+export const deactivateTrader = async (traderId: string, payload?: { requested_by?: string; reason?: string }): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/deactivate`, payload || {})
+  return normalizeTraderFields(data)
+}
+
 export type TraderDeleteAction = 'block' | 'disable' | 'force_delete'
 
 export const deleteTrader = async (
@@ -2205,6 +2384,14 @@ export const getTraderOrders = async (
 ): Promise<TraderOrder[]> => {
   const { data } = await api.get(`/traders/${traderId}/orders`, { params })
   return data.orders || []
+}
+
+export const getTraderCopyAnalytics = async (
+  traderId: string,
+  params?: { mode?: 'shadow' | 'live'; limit?: number; leader_limit?: number }
+): Promise<TraderCopyAnalytics> => {
+  const { data } = await api.get(`/traders/${traderId}/copy-analytics`, { params })
+  return unwrapApiData(data)
 }
 
 export const getTraderLiveWalletPositions = async (
@@ -2796,6 +2983,50 @@ export interface UpdateSettingsRequest {
   search_filters?: Partial<SearchFilterSettings>
 }
 
+export type SettingsTransferCategory =
+  | 'bot_traders'
+  | 'strategies'
+  | 'data_sources'
+  | 'market_credentials'
+  | 'vpn_configuration'
+  | 'llm_configuration'
+  | 'telegram_configuration'
+
+export interface SettingsExportBundle {
+  schema_version: number
+  exported_at: string
+  categories: SettingsTransferCategory[]
+  bot_traders?: Array<Record<string, unknown>>
+  strategies?: Array<Record<string, unknown>>
+  data_sources?: Array<Record<string, unknown>>
+  market_credentials?: Record<string, unknown>
+  vpn_configuration?: Record<string, unknown>
+  llm_configuration?: Record<string, unknown>
+  telegram_configuration?: Record<string, unknown>
+}
+
+export interface ExportSettingsRequest {
+  include_categories?: SettingsTransferCategory[]
+}
+
+export interface ExportSettingsResponse {
+  status: string
+  bundle: SettingsExportBundle
+  counts: Record<string, number>
+}
+
+export interface ImportSettingsRequest {
+  bundle: Record<string, unknown>
+  include_categories?: SettingsTransferCategory[]
+}
+
+export interface ImportSettingsResponse {
+  status: string
+  imported_categories: SettingsTransferCategory[]
+  results: Record<string, Record<string, number>>
+  imported_at: string
+}
+
 export const getSettings = async (): Promise<AllSettings> => {
   const { data } = await api.get('/settings')
   return unwrapApiData(data)
@@ -2803,6 +3034,16 @@ export const getSettings = async (): Promise<AllSettings> => {
 
 export const updateSettings = async (settings: UpdateSettingsRequest): Promise<{ status: string; message: string; updated_at: string }> => {
   const { data } = await api.put('/settings', settings)
+  return unwrapApiData(data)
+}
+
+export const exportSettingsBundle = async (request: ExportSettingsRequest): Promise<ExportSettingsResponse> => {
+  const { data } = await api.post('/settings/export', request)
+  return unwrapApiData(data)
+}
+
+export const importSettingsBundle = async (request: ImportSettingsRequest): Promise<ImportSettingsResponse> => {
+  const { data } = await api.post('/settings/import', request)
   return unwrapApiData(data)
 }
 

@@ -77,6 +77,8 @@ class WalletTradeEvent:
     size: float
     price: float
     tx_hash: str
+    order_hash: str
+    log_index: int
     block_number: int
     timestamp: datetime
     detected_at: datetime  # When we detected it
@@ -98,6 +100,8 @@ class WalletMonitorEvent(Base):
     size = Column(Float, nullable=True)
     price = Column(Float, nullable=True)
     tx_hash = Column(String, nullable=True)
+    order_hash = Column(String, nullable=True)
+    log_index = Column(Integer, nullable=True)
     block_number = Column(Integer, nullable=True)
     detection_latency_ms = Column(Float, nullable=True)
     detected_at = Column(DateTime, default=utcnow)
@@ -105,6 +109,9 @@ class WalletMonitorEvent(Base):
     __table_args__ = (
         Index("idx_wme_wallet", "wallet_address"),
         Index("idx_wme_block", "block_number"),
+        Index("idx_wme_tx_hash", "tx_hash"),
+        Index("idx_wme_order_hash", "order_hash"),
+        Index("idx_wme_tx_log", "tx_hash", "log_index"),
     )
 
 
@@ -993,6 +1000,15 @@ class WalletWebSocketMonitor:
             return
 
         tx_hash = log.get("transactionHash", "")
+        raw_log_index = log.get("logIndex")
+        log_index = 0
+        if isinstance(raw_log_index, str):
+            try:
+                log_index = int(raw_log_index, 16)
+            except Exception:
+                log_index = 0
+        elif isinstance(raw_log_index, int):
+            log_index = raw_log_index
 
         # Calculate block timestamp as datetime
         if block_timestamp > 0:
@@ -1010,6 +1026,8 @@ class WalletWebSocketMonitor:
             size=size,
             price=price,
             tx_hash=tx_hash,
+            order_hash=str(parsed.get("order_hash") or ""),
+            log_index=int(log_index),
             block_number=block_number,
             timestamp=block_dt,
             detected_at=detected_at,
@@ -1055,6 +1073,8 @@ class WalletWebSocketMonitor:
                     size=event.size,
                     price=event.price,
                     tx_hash=event.tx_hash,
+                    order_hash=event.order_hash,
+                    log_index=event.log_index,
                     block_number=event.block_number,
                     detection_latency_ms=event.latency_ms,
                     detected_at=event.detected_at,
