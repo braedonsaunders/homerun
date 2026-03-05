@@ -1093,6 +1093,28 @@ function Start-PostgresDocker {
         }
     }
 
+    if (Test-Path $script:dockerComposeFilePath) {
+        $composeRetry = Invoke-DockerComposeCommand `
+            -Arguments @("up", "-d", "postgres") `
+            -EnvironmentOverrides @{
+                "POSTGRES_HOST" = $PgHost
+                "POSTGRES_PORT" = "$Port"
+                "POSTGRES_DB" = $Db
+                "POSTGRES_USER" = $User
+                "POSTGRES_PASSWORD" = $Password
+                "POSTGRES_IMAGE" = $Image
+                "POSTGRES_CONTAINER_NAME" = $ContainerName
+            }
+        if ($composeRetry.ExitCode -eq 0) {
+            $script:lastPostgresContainerEngine = "docker-compose"
+            $script:postgresDockerCreatedByScript = $true
+            return $true
+        }
+        if ($composeRetry.Output) {
+            $script:lastPostgresDockerError = $composeRetry.Output
+        }
+    }
+
     $imageInspect = Invoke-DockerCommand -Arguments @("image", "inspect", $Image)
     if ($imageInspect.ExitCode -ne 0) {
         Write-Host "Docker image '$Image' not present locally. Pulling..." -ForegroundColor Yellow
