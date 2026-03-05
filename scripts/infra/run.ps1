@@ -1009,6 +1009,28 @@ function Start-PostgresDocker {
         return $false
     }
 
+    if (Test-Path $script:dockerComposeFilePath) {
+        $composeResult = Invoke-DockerComposeCommand `
+            -Arguments @("up", "-d", "postgres") `
+            -EnvironmentOverrides @{
+                "POSTGRES_HOST" = $PgHost
+                "POSTGRES_PORT" = "$Port"
+                "POSTGRES_DB" = $Db
+                "POSTGRES_USER" = $User
+                "POSTGRES_PASSWORD" = $Password
+                "POSTGRES_IMAGE" = $Image
+                "POSTGRES_CONTAINER_NAME" = $ContainerName
+            }
+        if ($composeResult.ExitCode -eq 0) {
+            $script:lastPostgresContainerEngine = "docker-compose"
+            $script:postgresDockerCreatedByScript = $true
+            return $true
+        }
+        if ($composeResult.Output) {
+            $script:lastPostgresDockerError = $composeResult.Output
+        }
+    }
+
     $containerExists = $false
     $containerRunning = $false
     $containerHostPort = $null
@@ -1068,28 +1090,6 @@ function Start-PostgresDocker {
                 $script:lastPostgresDockerError = "Failed to remove existing container '$ContainerName' (exit code $($removeResult.ExitCode))."
             }
             return $false
-        }
-    }
-
-    if (Test-Path $script:dockerComposeFilePath) {
-        $composeResult = Invoke-DockerComposeCommand `
-            -Arguments @("up", "-d", "postgres") `
-            -EnvironmentOverrides @{
-                "POSTGRES_HOST" = $PgHost
-                "POSTGRES_PORT" = "$Port"
-                "POSTGRES_DB" = $Db
-                "POSTGRES_USER" = $User
-                "POSTGRES_PASSWORD" = $Password
-                "POSTGRES_IMAGE" = $Image
-                "POSTGRES_CONTAINER_NAME" = $ContainerName
-            }
-        if ($composeResult.ExitCode -eq 0) {
-            $script:lastPostgresContainerEngine = "docker-compose"
-            $script:postgresDockerCreatedByScript = $true
-            return $true
-        }
-        if ($composeResult.Output) {
-            $script:lastPostgresDockerError = $composeResult.Output
         }
     }
 
