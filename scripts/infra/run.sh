@@ -598,6 +598,67 @@ cleanup_started_services() {
     cleanup_local_redis_if_owned
 }
 
+auto_update_repository() {
+    if ! command -v git >/dev/null 2>&1; then
+        echo -e "${YELLOW}Git is not installed; skipping repository auto-update.${NC}"
+        return 0
+    fi
+
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local branch
+    branch="$(git branch --show-current 2>/dev/null || true)"
+    if [ -z "$branch" ]; then
+        echo -e "${YELLOW}Detached HEAD detected; skipping repository auto-update.${NC}"
+        return 0
+    fi
+
+    local dirty
+    dirty="$(git status --porcelain --untracked-files=no 2>/dev/null || true)"
+    if [ -n "$dirty" ]; then
+        echo -e "${YELLOW}Local tracked changes detected; skipping repository auto-update.${NC}"
+        return 0
+    fi
+
+    local remote_name
+    local remote_branch
+    remote_name="origin"
+    remote_branch="$branch"
+
+    local upstream
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [ -n "$upstream" ] && [[ "$upstream" == */* ]]; then
+        remote_name="${upstream%%/*}"
+        remote_branch="${upstream#*/}"
+    else
+        if ! git show-ref --verify --quiet "refs/remotes/${remote_name}/${remote_branch}"; then
+            echo -e "${YELLOW}No upstream branch configured for '${branch}'; skipping repository auto-update.${NC}"
+            return 0
+        fi
+    fi
+
+    echo -e "${CYAN}Checking for code updates from ${remote_name}/${remote_branch}...${NC}"
+    if ! git -c credential.interactive=never fetch --quiet "$remote_name" "$remote_branch" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Unable to fetch updates; continuing with local copy.${NC}"
+        return 0
+    fi
+
+    local pull_output
+    if pull_output="$(git -c credential.interactive=never pull --ff-only --no-rebase "$remote_name" "$remote_branch" 2>&1)"; then
+        if echo "$pull_output" | grep -Eq "Already up[ -]to date\\."; then
+            echo -e "${GREEN}Code is up to date.${NC}"
+        else
+            echo -e "${GREEN}Code updated from ${remote_name}/${remote_branch}.${NC}"
+        fi
+        return 0
+    fi
+
+    echo -e "${YELLOW}Auto-update skipped (non fast-forward or local commits). Continuing with local copy.${NC}"
+    return 0
+}
+
 needs_setup() {
     if [ ! -d "backend/venv" ]; then
         return 0
@@ -668,6 +729,8 @@ for key, value in current.items():
 sys.exit(1)
 PY
 }
+
+auto_update_repository
 
 if needs_setup; then
     echo -e "${YELLOW}Setup missing or stale. Running setup...${NC}"

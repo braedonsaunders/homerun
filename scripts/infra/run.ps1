@@ -1807,6 +1807,113 @@ function Cleanup-LocalRedisIfOwned {
     }
 }
 
+function Invoke-GitCommand {
+    param([string[]]$Arguments)
+
+    $result = [ordered]@{
+        ExitCode = 1
+        Output = ""
+    }
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $result.Output = "Git CLI unavailable in current shell."
+        return [pscustomobject]$result
+    }
+
+    $nativePrefExists = $false
+    $previousNativePref = $null
+    try {
+        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $nativePrefExists = $true
+            $previousNativePref = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+    } catch {
+    }
+
+    try {
+        $output = (& git @Arguments 2>&1 | Out-String).Trim()
+        $result.ExitCode = $LASTEXITCODE
+        $result.Output = $output
+    } catch {
+        $result.ExitCode = if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+        $result.Output = $_.Exception.Message
+    } finally {
+        if ($nativePrefExists) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePref
+        }
+    }
+
+    return [pscustomobject]$result
+}
+
+function Invoke-AutoUpdateRepository {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "Git is not installed; skipping repository auto-update." -ForegroundColor Yellow
+        return
+    }
+
+    $repoCheck = Invoke-GitCommand -Arguments @("rev-parse", "--is-inside-work-tree")
+    $repoCheckValue = ($repoCheck.Output | Out-String).Trim().ToLowerInvariant()
+    if ($repoCheck.ExitCode -ne 0 -or $repoCheckValue -ne "true") {
+        return
+    }
+
+    $branchResult = Invoke-GitCommand -Arguments @("branch", "--show-current")
+    $branch = ($branchResult.Output | Out-String).Trim()
+    if ($branchResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($branch)) {
+        Write-Host "Detached HEAD detected; skipping repository auto-update." -ForegroundColor Yellow
+        return
+    }
+
+    $dirtyResult = Invoke-GitCommand -Arguments @("status", "--porcelain", "--untracked-files=no")
+    if ($dirtyResult.ExitCode -ne 0) {
+        Write-Host "Could not read git working tree status; skipping repository auto-update." -ForegroundColor Yellow
+        return
+    }
+    if (-not [string]::IsNullOrWhiteSpace($dirtyResult.Output)) {
+        Write-Host "Local tracked changes detected; skipping repository auto-update." -ForegroundColor Yellow
+        return
+    }
+
+    $remoteName = "origin"
+    $remoteBranch = $branch
+    $upstreamResult = Invoke-GitCommand -Arguments @("rev-parse", "--abbrev-ref", "--symbolic-full-name", '@{u}')
+    $upstreamRef = ($upstreamResult.Output | Out-String).Trim()
+    if ($upstreamResult.ExitCode -eq 0 -and $upstreamRef.Contains("/")) {
+        $splitIndex = $upstreamRef.IndexOf("/")
+        if ($splitIndex -gt 0 -and $splitIndex -lt ($upstreamRef.Length - 1)) {
+            $remoteName = $upstreamRef.Substring(0, $splitIndex)
+            $remoteBranch = $upstreamRef.Substring($splitIndex + 1)
+        }
+    } else {
+        $remoteRefCheck = Invoke-GitCommand -Arguments @("show-ref", "--verify", "--quiet", "refs/remotes/origin/$branch")
+        if ($remoteRefCheck.ExitCode -ne 0) {
+            Write-Host "No upstream branch configured for '$branch'; skipping repository auto-update." -ForegroundColor Yellow
+            return
+        }
+    }
+
+    Write-Host "Checking for code updates from ${remoteName}/${remoteBranch}..." -ForegroundColor Cyan
+    $fetchResult = Invoke-GitCommand -Arguments @("-c", "credential.interactive=never", "fetch", "--quiet", $remoteName, $remoteBranch)
+    if ($fetchResult.ExitCode -ne 0) {
+        Write-Host "Unable to fetch updates; continuing with local copy." -ForegroundColor Yellow
+        return
+    }
+
+    $pullResult = Invoke-GitCommand -Arguments @("-c", "credential.interactive=never", "pull", "--ff-only", "--no-rebase", $remoteName, $remoteBranch)
+    if ($pullResult.ExitCode -eq 0) {
+        if (($pullResult.Output | Out-String) -match "Already up[\s-]to date\.") {
+            Write-Host "Code is up to date." -ForegroundColor Green
+        } else {
+            Write-Host "Code updated from ${remoteName}/${remoteBranch}." -ForegroundColor Green
+        }
+        return
+    }
+
+    Write-Host "Auto-update skipped (non fast-forward or local commits). Continuing with local copy." -ForegroundColor Yellow
+}
+
 function Test-NeedsSetup {
     if (-not (Test-Path "backend\venv")) { return $true }
     if (-not (Test-Path "backend\venv\Scripts\python.exe")) { return $true }
@@ -1850,6 +1957,8 @@ function Test-NeedsSetup {
 
     return $false
 }
+
+Invoke-AutoUpdateRepository
 
 if (Test-NeedsSetup) {
     Write-Host "Setup missing or stale. Running setup..." -ForegroundColor Yellow
