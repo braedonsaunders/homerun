@@ -342,17 +342,49 @@ function Ensure-DockerCommand {
     }
 }
 
-function Test-DockerRuntimeAvailable {
+function Invoke-DockerCommand {
+    param([string[]]$Arguments)
+
+    $result = [ordered]@{
+        ExitCode = 1
+        Output = ""
+    }
+
     if (-not (Ensure-DockerCommand)) {
-        return $false
+        $result.Output = "Docker CLI unavailable in current shell."
+        return [pscustomobject]$result
+    }
+
+    $nativePrefExists = $false
+    $previousNativePref = $null
+    try {
+        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $nativePrefExists = $true
+            $previousNativePref = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+    } catch {
     }
 
     try {
-        docker info *> $null
-        return ($LASTEXITCODE -eq 0)
+        $output = (& docker @Arguments 2>&1 | Out-String).Trim()
+        $result.ExitCode = $LASTEXITCODE
+        $result.Output = $output
     } catch {
-        return $false
+        $result.ExitCode = if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+        $result.Output = $_.Exception.Message
+    } finally {
+        if ($nativePrefExists) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePref
+        }
     }
+
+    return [pscustomobject]$result
+}
+
+function Test-DockerRuntimeAvailable {
+    $dockerInfo = Invoke-DockerCommand -Arguments @("info")
+    return ($dockerInfo.ExitCode -eq 0)
 }
 
 function Get-DockerDesktopExePath {
@@ -546,32 +578,38 @@ function Start-RedisDocker {
         [string]$Image
     )
 
-    if (-not (Ensure-DockerCommand)) {
-        return $false
-    }
-    try {
-        docker info *> $null
-        if ($LASTEXITCODE -ne 0) { return $false }
-    } catch {
+    $dockerInfo = Invoke-DockerCommand -Arguments @("info")
+    if ($dockerInfo.ExitCode -ne 0) {
         return $false
     }
 
-    try {
-        docker container inspect $ContainerName *> $null
-        if ($LASTEXITCODE -eq 0) {
-            docker start $ContainerName *> $null
-            return ($LASTEXITCODE -eq 0)
-        }
-    } catch {
+    $inspectResult = Invoke-DockerCommand -Arguments @("container", "inspect", $ContainerName)
+    if ($inspectResult.ExitCode -eq 0) {
+        $startResult = Invoke-DockerCommand -Arguments @("start", $ContainerName)
+        return ($startResult.ExitCode -eq 0)
     }
 
-    try {
-        docker run --name $ContainerName --detach --publish "${RedisHost}:${RedisPort}:6379" $Image redis-server --save "" --appendonly no *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $script:redisDockerCreatedByScript = $true
-            return $true
+    $imageInspect = Invoke-DockerCommand -Arguments @("image", "inspect", $Image)
+    if ($imageInspect.ExitCode -ne 0) {
+        $pullResult = Invoke-DockerCommand -Arguments @("pull", $Image)
+        if ($pullResult.ExitCode -ne 0) {
+            return $false
         }
-    } catch {
+    }
+
+    $runResult = Invoke-DockerCommand -Arguments @(
+        "run",
+        "--name", $ContainerName,
+        "--detach",
+        "--publish", "${RedisHost}:${RedisPort}:6379",
+        $Image,
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no"
+    )
+    if ($runResult.ExitCode -eq 0) {
+        $script:redisDockerCreatedByScript = $true
+        return $true
     }
 
     return $false
@@ -841,31 +879,22 @@ function Show-PostgresDockerDiagnostics {
         return
     }
 
-    try {
-        $status = (docker inspect -f "{{.State.Status}}" $ContainerName 2>$null | Out-String).Trim()
-        if ($status) {
-            Write-Host "Postgres container status: $status" -ForegroundColor Yellow
-        }
-    } catch {
+    $statusResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Status}}", $ContainerName)
+    if ($statusResult.ExitCode -eq 0 -and $statusResult.Output) {
+        Write-Host "Postgres container status: $($statusResult.Output)" -ForegroundColor Yellow
     }
 
-    try {
-        $hostPort = (docker inspect -f "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}" $ContainerName 2>$null | Out-String).Trim()
-        if ($hostPort) {
-            Write-Host "Postgres container published port: $hostPort" -ForegroundColor Yellow
-        }
-    } catch {
+    $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}", $ContainerName)
+    if ($hostPortResult.ExitCode -eq 0 -and $hostPortResult.Output) {
+        Write-Host "Postgres container published port: $($hostPortResult.Output)" -ForegroundColor Yellow
     }
 
-    try {
-        $logs = (docker logs --tail 40 $ContainerName 2>&1 | Out-String).Trim()
-        if ($logs) {
-            Write-Host "Postgres container logs (tail):" -ForegroundColor Yellow
-            $logs -split "`r?`n" | ForEach-Object {
-                Write-Host "  $_" -ForegroundColor DarkYellow
-            }
+    $logsResult = Invoke-DockerCommand -Arguments @("logs", "--tail", "40", $ContainerName)
+    if ($logsResult.Output) {
+        Write-Host "Postgres container logs (tail):" -ForegroundColor Yellow
+        $logsResult.Output -split "`r?`n" | ForEach-Object {
+            Write-Host "  $_" -ForegroundColor DarkYellow
         }
-    } catch {
     }
 }
 
@@ -888,41 +917,34 @@ function Start-PostgresDocker {
         return $false
     }
 
-    try {
-        docker info *> $null
-        if ($LASTEXITCODE -ne 0) {
-            $script:lastPostgresDockerError = "docker info returned exit code $LASTEXITCODE."
-            return $false
-        }
-    } catch {
-        $script:lastPostgresDockerError = "docker info failed: $($_.Exception.Message)"
+    $dockerInfo = Invoke-DockerCommand -Arguments @("info")
+    if ($dockerInfo.ExitCode -ne 0) {
+        $script:lastPostgresDockerError = if ($dockerInfo.Output) { $dockerInfo.Output } else { "docker info returned exit code $($dockerInfo.ExitCode)." }
         return $false
     }
 
     $containerExists = $false
     $containerRunning = $false
     $containerHostPort = $null
-    try {
-        docker container inspect $ContainerName *> $null
-        $containerExists = ($LASTEXITCODE -eq 0)
-    } catch {
-        $containerExists = $false
-    }
+    $inspectResult = Invoke-DockerCommand -Arguments @("container", "inspect", $ContainerName)
+    $containerExists = ($inspectResult.ExitCode -eq 0)
 
     if ($containerExists) {
-        try {
-            $runningText = (docker inspect -f "{{.State.Running}}" $ContainerName 2>$null | Out-String).Trim().ToLowerInvariant()
+        $runningResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Running}}", $ContainerName)
+        if ($runningResult.ExitCode -eq 0) {
+            $runningText = ($runningResult.Output | Out-String).Trim().ToLowerInvariant()
             $containerRunning = ($runningText -eq "true")
-        } catch {
+        } else {
             $containerRunning = $false
         }
 
-        try {
-            $containerHostPort = (docker inspect -f "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}" $ContainerName 2>$null | Out-String).Trim()
+        $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}", $ContainerName)
+        if ($hostPortResult.ExitCode -eq 0) {
+            $containerHostPort = ($hostPortResult.Output | Out-String).Trim()
             if ([string]::IsNullOrWhiteSpace($containerHostPort)) {
                 $containerHostPort = $null
             }
-        } catch {
+        } else {
             $containerHostPort = $null
         }
 
@@ -931,14 +953,14 @@ function Start-PostgresDocker {
                 return $true
             }
 
-            try {
-                docker start $ContainerName *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    return $true
-                }
-                $script:lastPostgresDockerError = "Failed to start existing container '$ContainerName' (exit code $LASTEXITCODE)."
-            } catch {
-                $script:lastPostgresDockerError = "Failed to start existing container '$ContainerName': $($_.Exception.Message)"
+            $startResult = Invoke-DockerCommand -Arguments @("start", $ContainerName)
+            if ($startResult.ExitCode -eq 0) {
+                return $true
+            }
+            if ($startResult.Output) {
+                $script:lastPostgresDockerError = $startResult.Output
+            } else {
+                $script:lastPostgresDockerError = "Failed to start existing container '$ContainerName' (exit code $($startResult.ExitCode))."
             }
         } else {
             if ($containerHostPort) {
@@ -949,40 +971,61 @@ function Start-PostgresDocker {
         }
 
         if ($containerRunning) {
-            try {
-                docker stop $ContainerName *> $null
-            } catch {
-            }
+            $null = Invoke-DockerCommand -Arguments @("stop", $ContainerName)
         }
 
-        try {
-            docker rm $ContainerName *> $null
-            if ($LASTEXITCODE -ne 0) {
-                $script:lastPostgresDockerError = "Failed to remove existing container '$ContainerName' (exit code $LASTEXITCODE)."
-                return $false
+        $removeResult = Invoke-DockerCommand -Arguments @("rm", $ContainerName)
+        if ($removeResult.ExitCode -ne 0) {
+            if ($removeResult.Output) {
+                $script:lastPostgresDockerError = $removeResult.Output
+            } else {
+                $script:lastPostgresDockerError = "Failed to remove existing container '$ContainerName' (exit code $($removeResult.ExitCode))."
             }
-        } catch {
-            $script:lastPostgresDockerError = "Failed to remove existing container '$ContainerName': $($_.Exception.Message)"
+            return $false
+        }
+    }
+
+    $imageInspect = Invoke-DockerCommand -Arguments @("image", "inspect", $Image)
+    if ($imageInspect.ExitCode -ne 0) {
+        Write-Host "Docker image '$Image' not present locally. Pulling..." -ForegroundColor Yellow
+        $pullResult = Invoke-DockerCommand -Arguments @("pull", $Image)
+        if ($pullResult.ExitCode -ne 0) {
+            if ($pullResult.Output) {
+                $script:lastPostgresDockerError = $pullResult.Output
+            } else {
+                $script:lastPostgresDockerError = "Failed to pull Docker image '$Image' (exit code $($pullResult.ExitCode))."
+            }
             return $false
         }
     }
 
     try {
         New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
-        $runOutput = (docker run --name $ContainerName --detach --publish "${PgHost}:${Port}:5432" --env "POSTGRES_DB=$Db" --env "POSTGRES_USER=$User" --env "POSTGRES_PASSWORD=$Password" --volume "${DataDir}:/var/lib/postgresql/data" $Image 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -eq 0) {
-            $script:postgresDockerCreatedByScript = $true
-            return $true
-        }
-        if ($runOutput) {
-            $script:lastPostgresDockerError = $runOutput
-        } else {
-            $script:lastPostgresDockerError = "docker run failed with exit code $LASTEXITCODE."
-        }
     } catch {
-        $script:lastPostgresDockerError = "docker run exception: $($_.Exception.Message)"
+        $script:lastPostgresDockerError = "Failed to create Postgres data directory '$DataDir': $($_.Exception.Message)"
+        return $false
     }
 
+    $runResult = Invoke-DockerCommand -Arguments @(
+        "run",
+        "--name", $ContainerName,
+        "--detach",
+        "--publish", "${PgHost}:${Port}:5432",
+        "--env", "POSTGRES_DB=$Db",
+        "--env", "POSTGRES_USER=$User",
+        "--env", "POSTGRES_PASSWORD=$Password",
+        "--volume", "${DataDir}:/var/lib/postgresql/data",
+        $Image
+    )
+    if ($runResult.ExitCode -eq 0) {
+        $script:postgresDockerCreatedByScript = $true
+        return $true
+    }
+    if ($runResult.Output) {
+        $script:lastPostgresDockerError = $runResult.Output
+    } else {
+        $script:lastPostgresDockerError = "docker run failed with exit code $($runResult.ExitCode)."
+    }
     return $false
 }
 
