@@ -33,6 +33,7 @@ import {
   deleteTrader,
   getAllTraderDecisions,
   getAllTraderOrders,
+  getSettings,
   getTraderMarketHistory,
   getCryptoMarkets,
   type CryptoMarket,
@@ -63,6 +64,7 @@ import {
   type TraderSourceConfig,
   type TraderSource,
   type TraderTuneAgentResponse,
+  updateSettings,
   updateTrader,
   type TraderOrchestratorConfig,
   updateTraderOrchestratorSettings,
@@ -304,6 +306,10 @@ type GlobalSettingsDraft = {
   maxGrossExposureUsd: string
   maxDailyLossUsd: string
   maxOrdersPerCycle: string
+  maxTradeSizeUsd: string
+  maxDailyTradeVolumeUsd: string
+  maxOpenPositions: string
+  maxSlippagePercent: string
   pendingExitMaxAllowed: string
   pendingExitIdentityGuardEnabled: boolean
   pendingExitTerminalStatuses: string
@@ -330,6 +336,12 @@ const DEFAULT_ORCHESTRATOR_GLOBAL_RISK = {
   max_gross_exposure_usd: 5000,
   max_daily_loss_usd: 500,
   max_orders_per_cycle: 50,
+} as const
+const DEFAULT_LIVE_EXECUTION_LIMITS = {
+  max_trade_size_usd: 100,
+  max_daily_trade_volume: 1000,
+  max_open_positions: 10,
+  max_slippage_percent: 2,
 } as const
 const DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME = {
   pending_live_exit_guard: {
@@ -518,7 +530,15 @@ function normalizePendingExitTerminalStatusesCsv(value: string): string[] {
     : [...DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.terminal_statuses]
 }
 
-function buildGlobalSettingsDraft(config: TraderOrchestratorConfig | null | undefined): GlobalSettingsDraft {
+function buildGlobalSettingsDraft(
+  config: TraderOrchestratorConfig | null | undefined,
+  liveExecutionSettings: {
+    max_trade_size_usd?: number | null
+    max_daily_trade_volume?: number | null
+    max_open_positions?: number | null
+    max_slippage_percent?: number | null
+  } | null | undefined,
+): GlobalSettingsDraft {
   const globalRisk = config?.global_risk || DEFAULT_ORCHESTRATOR_GLOBAL_RISK
   const runtime = config?.global_runtime || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME
   const pending = runtime.pending_live_exit_guard || DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard
@@ -531,6 +551,14 @@ function buildGlobalSettingsDraft(config: TraderOrchestratorConfig | null | unde
     maxGrossExposureUsd: String(globalRisk.max_gross_exposure_usd ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_gross_exposure_usd),
     maxDailyLossUsd: String(globalRisk.max_daily_loss_usd ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_daily_loss_usd),
     maxOrdersPerCycle: String(globalRisk.max_orders_per_cycle ?? DEFAULT_ORCHESTRATOR_GLOBAL_RISK.max_orders_per_cycle),
+    maxTradeSizeUsd: String(liveExecutionSettings?.max_trade_size_usd ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_trade_size_usd),
+    maxDailyTradeVolumeUsd: String(
+      liveExecutionSettings?.max_daily_trade_volume ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_daily_trade_volume
+    ),
+    maxOpenPositions: String(liveExecutionSettings?.max_open_positions ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_open_positions),
+    maxSlippagePercent: String(
+      liveExecutionSettings?.max_slippage_percent ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_slippage_percent
+    ),
     pendingExitMaxAllowed: String(pending.max_pending_exits ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.max_pending_exits),
     pendingExitIdentityGuardEnabled: Boolean(
       pending.identity_guard_enabled ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.pending_live_exit_guard.identity_guard_enabled
@@ -3912,7 +3940,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [globalSettingsFlyoutOpen, setGlobalSettingsFlyoutOpen] = useState(false)
   const [globalSettingsSaveError, setGlobalSettingsSaveError] = useState<string | null>(null)
   const [controlActionError, setControlActionError] = useState<string | null>(null)
-  const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null))
+  const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null, null))
   const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'tune' | 'decisions' | 'performance'>('trades')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
   const [allBotsTradeStatusFilter, setAllBotsTradeStatusFilter] = useState<TradeStatusFilter>('all')
@@ -3968,6 +3996,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryFn: getTraderOrchestratorOverview,
     refetchInterval: 4000,
   })
+
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: getSettings,
+    refetchInterval: 5000,
+  })
+  const liveExecutionSettings = settingsQuery.data?.live_execution ?? null
 
   const tradersQuery = useQuery({
     queryKey: ['traders-list', selectedAccountMode],
@@ -4718,6 +4753,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryClient.invalidateQueries({ queryKey: ['trader-sources'] })
     queryClient.invalidateQueries({ queryKey: ['unified-strategies'] })
     queryClient.invalidateQueries({ queryKey: ['unified-strategy-versions'] })
+    queryClient.invalidateQueries({ queryKey: ['settings'] })
   }
 
   const upsertTraderInCache = (trader: Trader) => {
@@ -5299,7 +5335,34 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const traderCycleTimeoutSeconds = traderCycleTimeoutRaw
         ? clampNumber(toNumber(traderCycleTimeoutRaw), 3, 120, 0)
         : null
-      return updateTraderOrchestratorSettings({
+      const maxTradeSizeUsd = clampNumber(
+        toNumber(globalSettingsDraft.maxTradeSizeUsd),
+        1,
+        100_000,
+        DEFAULT_LIVE_EXECUTION_LIMITS.max_trade_size_usd,
+      )
+      const maxDailyTradeVolume = clampNumber(
+        toNumber(globalSettingsDraft.maxDailyTradeVolumeUsd),
+        10,
+        10_000_000,
+        DEFAULT_LIVE_EXECUTION_LIMITS.max_daily_trade_volume,
+      )
+      const maxOpenPositions = Math.trunc(
+        clampNumber(
+          toNumber(globalSettingsDraft.maxOpenPositions),
+          1,
+          100,
+          DEFAULT_LIVE_EXECUTION_LIMITS.max_open_positions,
+        )
+      )
+      const maxSlippagePercent = clampNumber(
+        toNumber(globalSettingsDraft.maxSlippagePercent),
+        0.1,
+        10,
+        DEFAULT_LIVE_EXECUTION_LIMITS.max_slippage_percent,
+      )
+
+      const orchestratorPayload = {
         run_interval_seconds: runIntervalSeconds,
         global_risk: {
           max_gross_exposure_usd: maxGrossExposureUsd,
@@ -5336,7 +5399,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           },
           trader_cycle_timeout_seconds: traderCycleTimeoutSeconds,
         },
-      })
+      }
+
+      await Promise.all([
+        updateTraderOrchestratorSettings(orchestratorPayload),
+        updateSettings({
+          live_execution: {
+            max_trade_size_usd: maxTradeSizeUsd,
+            max_daily_trade_volume: maxDailyTradeVolume,
+            max_open_positions: maxOpenPositions,
+            max_slippage_percent: maxSlippagePercent,
+          },
+        }),
+      ])
+
+      return { status: 'ok' }
     },
     onSuccess: () => {
       setGlobalSettingsSaveError(null)
@@ -5814,8 +5891,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
   useEffect(() => {
     if (globalSettingsFlyoutOpen) return
-    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
-  }, [globalSettingsFlyoutOpen, orchestratorConfig])
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig, liveExecutionSettings))
+  }, [globalSettingsFlyoutOpen, orchestratorConfig, liveExecutionSettings])
 
   const traderNameById = useMemo(
     () => Object.fromEntries(traders.map((trader) => [trader.id, trader.name])) as Record<string, string>,
@@ -7393,13 +7470,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   }
 
   const openGlobalSettingsFlyout = () => {
-    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig, liveExecutionSettings))
     setGlobalSettingsSaveError(null)
     setGlobalSettingsFlyoutOpen(true)
   }
 
   const resetGlobalSettingsDraft = () => {
-    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig))
+    setGlobalSettingsDraft(buildGlobalSettingsDraft(orchestratorConfig, liveExecutionSettings))
     setGlobalSettingsSaveError(null)
   }
 
@@ -10129,6 +10206,55 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         min={1}
                         value={globalSettingsDraft.maxOrdersPerCycle}
                         onChange={(event) => setGlobalSettingsField('maxOrdersPerCycle', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Execution Limits</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <Label>Max Trade Size (USD)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={globalSettingsDraft.maxTradeSizeUsd}
+                        onChange={(event) => setGlobalSettingsField('maxTradeSizeUsd', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Daily Trade Volume (USD)</Label>
+                      <Input
+                        type="number"
+                        min={10}
+                        value={globalSettingsDraft.maxDailyTradeVolumeUsd}
+                        onChange={(event) => setGlobalSettingsField('maxDailyTradeVolumeUsd', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Open Positions</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={globalSettingsDraft.maxOpenPositions}
+                        onChange={(event) => setGlobalSettingsField('maxOpenPositions', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Slippage (%)</Label>
+                      <Input
+                        type="number"
+                        min={0.1}
+                        max={10}
+                        step={0.1}
+                        value={globalSettingsDraft.maxSlippagePercent}
+                        onChange={(event) => setGlobalSettingsField('maxSlippagePercent', event.target.value)}
                         className="mt-1"
                       />
                     </div>
