@@ -50,7 +50,15 @@ import {
   type SettingsExportBundle,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'scanner' | 'notifications' | 'security' | 'vpn' | 'discovery' | 'maintenance' | 'transfer'
+type SettingsSection =
+  | 'llm'
+  | 'scanner'
+  | 'notifications'
+  | 'security'
+  | 'vpn'
+  | 'discovery'
+  | 'maintenance'
+  | 'transfer'
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   max_discovered_wallets: 20_000,
