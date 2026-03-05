@@ -2144,14 +2144,12 @@ class ArbitrageScanner:
         try:
             async with AsyncSessionLocal() as session:
                 await ensure_system_opportunity_strategies_seeded(session)
-                result = await strategy_loader.refresh_all_from_db(
+                await strategy_loader.refresh_all_from_db(
                     session=session,
                     source_keys=source_keys,
                     prune_unlisted=bool(source_keys),
                 )
 
-            loaded_count = len(result.get("loaded", []))
-            error_count = len(result.get("errors", {}))
             self._plugins_loaded = True
         except Exception as e:
             print(f"Error loading strategies: {e}")

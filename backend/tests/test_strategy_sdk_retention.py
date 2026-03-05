@@ -279,7 +279,7 @@ def test_crypto_highfreq_scope_defaults_include_stop_loss_policy():
     assert defaults["hard_stop_loss_pct_4h"] == 25.0
     assert defaults["immediate_stop_loss_requires_time_pressure"] is False
     assert defaults["stop_loss_activation_seconds_5m"] == 0
-    assert defaults["min_edge_percent"] == 0.3
+    assert defaults["min_edge_percent"] == 3.0
     assert defaults["min_confidence"] == 0.42
     assert defaults["directional_max_entry_price_ceiling"] == 0.80
     assert defaults["maker_max_entry_price_ceiling"] == 0.80

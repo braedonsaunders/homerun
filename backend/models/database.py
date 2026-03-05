@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Index,
     UniqueConstraint,
+    event as _sa_event,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -16,8 +17,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
 from datetime import datetime, timezone
 from pathlib import Path
+import logging as _logging
 import enum
 import asyncio
+import time as _time
 
 from config import settings
 from models.types import PreciseFloat as Float
@@ -3282,14 +3285,6 @@ _engine_kw["connect_args"] = {
 }
 
 async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
-
-# ---------------------------------------------------------------------------
-# Pool event listeners – detect connections checked out for too long and
-# log them as warnings so we can find the source of leaks.
-# ---------------------------------------------------------------------------
-import logging as _logging
-import time as _time
-from sqlalchemy import event as _sa_event
 
 _db_logger = _logging.getLogger("homerun.db.pool")
 

@@ -55,7 +55,7 @@ async def test_export_settings_bundle_returns_status_counts_and_bundle(monkeypat
 async def test_import_settings_bundle_uses_bundle_categories_when_not_overridden(monkeypatch):
     fake_session = _FakeSession()
     monkeypatch.setattr(routes_settings, "AsyncSessionLocal", lambda: _FakeSessionContext(fake_session))
-    import_traders_mock = AsyncMock(return_value={"created": 2, "updated": 1})
+    import_traders_mock = AsyncMock(return_value={"created": 2, "updated": 1, "orchestrator_updated": 0})
     monkeypatch.setattr(routes_settings, "_import_traders", import_traders_mock)
 
     response = await routes_settings.import_settings_bundle(
@@ -76,6 +76,7 @@ async def test_import_settings_bundle_uses_bundle_categories_when_not_overridden
     assert response["imported_categories"] == [routes_settings.SettingsTransferCategory.BOT_TRADERS.value]
     assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["created"] == 2
     assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["updated"] == 1
+    assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["orchestrator_updated"] == 0
     assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["orders_imported"] == 0
     assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["positions_synced"] == 0
     assert response["results"][routes_settings.SettingsTransferCategory.BOT_TRADERS.value]["open_positions"] == 0

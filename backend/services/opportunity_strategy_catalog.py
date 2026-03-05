@@ -543,6 +543,11 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 },
                 {"key": "min_days_to_resolution", "label": "Min Days To Resolution", "type": "number", "min": 0},
                 {"key": "max_days_to_resolution", "label": "Max Days To Resolution", "type": "number", "min": 0},
+                {
+                    "key": "exclude_market_keywords",
+                    "label": "Exclude Market Name Contains",
+                    "type": "list",
+                },
                 {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
                 {"key": "max_spread", "label": "Max Spread", "type": "number", "min": 0.005, "max": 0.2},
                 {

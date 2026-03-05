@@ -1,10 +1,9 @@
 from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from pytest import fixture, mark
 
 from backend.services.strategies.crypto_micro_sniper import CryptoMicroSniperStrategy
-from backend.services.strategies.base import StrategyDecision
 from models import Market
 from utils.converters import to_float
 
@@ -132,11 +131,6 @@ def test_sniper_execution_intent_setting(
 
         # Must re-run setup from _build_opportunity start up to context_flags creation
         direction = str(signal["direction"])
-        outcome = str(signal["outcome"])
-        selected_price = float(signal["selected_price"])
-        token_ids = list(typed_market.clob_token_ids or [])
-        token_idx = 0 if direction == "buy_yes" else 1
-        token_id = token_ids[token_idx] if len(token_ids) > token_idx else None
 
         timeframe = str(signal["timeframe"] or "5min").lower()
 
