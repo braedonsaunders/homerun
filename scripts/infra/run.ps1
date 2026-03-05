@@ -687,6 +687,12 @@ function Start-RedisDocker {
             return $true
         }
 
+        if (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort) {
+            $script:lastRedisContainerEngine = "docker-compose"
+            $script:redisDockerCreatedByScript = $true
+            return $true
+        }
+
         if (Test-ContainerNameConflict -Output $composeResult.Output -ContainerName $ContainerName) {
             if (Remove-ContainerIfExists -ContainerName $ContainerName) {
                 $composeRetry = Invoke-DockerComposeCommand `
@@ -698,6 +704,11 @@ function Start-RedisDocker {
                         "REDIS_CONTAINER_NAME" = $ContainerName
                     }
                 if ($composeRetry.ExitCode -eq 0) {
+                    $script:lastRedisContainerEngine = "docker-compose"
+                    $script:redisDockerCreatedByScript = $true
+                    return $true
+                }
+                if (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort) {
                     $script:lastRedisContainerEngine = "docker-compose"
                     $script:redisDockerCreatedByScript = $true
                     return $true
@@ -1081,6 +1092,12 @@ function Start-PostgresDocker {
             return $true
         }
 
+        if (Test-PostgresDockerListenerOwned -ContainerName $ContainerName -Port $Port) {
+            $script:lastPostgresContainerEngine = "docker-compose"
+            $script:postgresDockerCreatedByScript = $true
+            return $true
+        }
+
         if (Test-ContainerNameConflict -Output $composeResult.Output -ContainerName $ContainerName) {
             if (Remove-ContainerIfExists -ContainerName $ContainerName) {
                 $composeRetry = Invoke-DockerComposeCommand `
@@ -1095,6 +1112,11 @@ function Start-PostgresDocker {
                         "POSTGRES_CONTAINER_NAME" = $ContainerName
                     }
                 if ($composeRetry.ExitCode -eq 0) {
+                    $script:lastPostgresContainerEngine = "docker-compose"
+                    $script:postgresDockerCreatedByScript = $true
+                    return $true
+                }
+                if (Test-PostgresDockerListenerOwned -ContainerName $ContainerName -Port $Port) {
                     $script:lastPostgresContainerEngine = "docker-compose"
                     $script:postgresDockerCreatedByScript = $true
                     return $true
@@ -1310,6 +1332,36 @@ function Ensure-PostgresFirewallRule {
     }
 }
 
+function Test-RedisDockerListenerOwned {
+    param(
+        [string]$ContainerName,
+        [int]$Port
+    )
+
+    if (-not (Ensure-DockerCommand)) {
+        return $false
+    }
+
+    $inspectResult = Invoke-DockerCommand -Arguments @("container", "inspect", $ContainerName)
+    if ($inspectResult.ExitCode -ne 0) {
+        return $false
+    }
+
+    $runningResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Running}}", $ContainerName)
+    if ($runningResult.ExitCode -ne 0) {
+        return $false
+    }
+    if ((($runningResult.Output | Out-String).Trim().ToLowerInvariant()) -ne "true") {
+        return $false
+    }
+
+    $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", '{{with index .NetworkSettings.Ports "6379/tcp"}}{{(index . 0).HostPort}}{{end}}', $ContainerName)
+    if ($hostPortResult.ExitCode -ne 0) {
+        return $false
+    }
+    return ((($hostPortResult.Output | Out-String).Trim()) -eq "$Port")
+}
+
 function Test-PostgresDockerListenerOwned {
     param(
         [string]$ContainerName,
@@ -1320,23 +1372,24 @@ function Test-PostgresDockerListenerOwned {
         return $false
     }
 
-    try {
-        docker container inspect $ContainerName *> $null
-        if ($LASTEXITCODE -ne 0) { return $false }
-    } catch {
+    $inspectResult = Invoke-DockerCommand -Arguments @("container", "inspect", $ContainerName)
+    if ($inspectResult.ExitCode -ne 0) {
         return $false
     }
 
-    try {
-        $running = docker inspect -f "{{.State.Running}}" $ContainerName 2>$null
-        if (($running | Out-String).Trim().ToLowerInvariant() -ne "true") {
-            return $false
-        }
-        $hostPort = docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{(index . 0).HostPort}}{{end}}' $ContainerName 2>$null
-        return ((($hostPort | Out-String).Trim()) -eq "$Port")
-    } catch {
+    $runningResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Running}}", $ContainerName)
+    if ($runningResult.ExitCode -ne 0) {
         return $false
     }
+    if ((($runningResult.Output | Out-String).Trim().ToLowerInvariant()) -ne "true") {
+        return $false
+    }
+
+    $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", '{{with index .NetworkSettings.Ports "5432/tcp"}}{{(index . 0).HostPort}}{{end}}', $ContainerName)
+    if ($hostPortResult.ExitCode -ne 0) {
+        return $false
+    }
+    return ((($hostPortResult.Output | Out-String).Trim()) -eq "$Port")
 }
 
 function Test-LocalPostgresListenerOwned {
@@ -1512,7 +1565,8 @@ function Ensure-Postgres {
     Show-PostgresDockerDiagnostics -ContainerName $ContainerName
 
     Write-Host "Failed to start Postgres automatically." -ForegroundColor Red
-    Write-Host "Docker runtime is required. Ensure Docker Desktop can start, then rerun." -ForegroundColor Yellow
+    Write-Host "Launcher could not confirm Postgres is reachable on ${PgHost}:${Port}." -ForegroundColor Yellow
+    Write-Host "Resolve the connectivity issue shown above, then rerun Homerun.bat." -ForegroundColor Yellow
     exit 1
 }
 
