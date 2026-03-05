@@ -884,7 +884,7 @@ function Show-PostgresDockerDiagnostics {
         Write-Host "Postgres container status: $($statusResult.Output)" -ForegroundColor Yellow
     }
 
-    $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}", $ContainerName)
+    $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", '{{with index .NetworkSettings.Ports "5432/tcp"}}{{(index . 0).HostPort}}{{end}}', $ContainerName)
     if ($hostPortResult.ExitCode -eq 0 -and $hostPortResult.Output) {
         Write-Host "Postgres container published port: $($hostPortResult.Output)" -ForegroundColor Yellow
     }
@@ -938,7 +938,7 @@ function Start-PostgresDocker {
             $containerRunning = $false
         }
 
-        $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}", $ContainerName)
+        $hostPortResult = Invoke-DockerCommand -Arguments @("inspect", "-f", '{{with index .NetworkSettings.Ports "5432/tcp"}}{{(index . 0).HostPort}}{{end}}', $ContainerName)
         if ($hostPortResult.ExitCode -eq 0) {
             $containerHostPort = ($hostPortResult.Output | Out-String).Trim()
             if ([string]::IsNullOrWhiteSpace($containerHostPort)) {
@@ -1207,7 +1207,7 @@ function Test-PostgresDockerListenerOwned {
         if (($running | Out-String).Trim().ToLowerInvariant() -ne "true") {
             return $false
         }
-        $hostPort = docker inspect -f "{{with index .NetworkSettings.Ports \"5432/tcp\"}}{{(index . 0).HostPort}}{{end}}" $ContainerName 2>$null
+        $hostPort = docker inspect -f '{{with index .NetworkSettings.Ports "5432/tcp"}}{{(index . 0).HostPort}}{{end}}' $ContainerName 2>$null
         return ((($hostPort | Out-String).Trim()) -eq "$Port")
     } catch {
         return $false
