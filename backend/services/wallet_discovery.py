@@ -1937,8 +1937,8 @@ class WalletDiscoveryEngine:
                         """
                         UPDATE discovered_wallets AS d
                         SET rank_position = v.new_rank
-                        FROM (SELECT unnest(:addrs::text[]) AS address,
-                                     unnest(:ranks::integer[]) AS new_rank) AS v
+                        FROM (SELECT unnest(CAST(:addrs AS text[])) AS address,
+                                     unnest(CAST(:ranks AS integer[])) AS new_rank) AS v
                         WHERE d.address = v.address
                         """
                     ),

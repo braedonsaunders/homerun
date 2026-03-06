@@ -3831,31 +3831,37 @@ class ArbitrageScanner:
             return
 
         try:
-            from sqlalchemy import func
+            from sqlalchemy import text as sa_text
+
+            # Collect the stable_ids we need judgments for.
+            stable_ids = {opp.stable_id for opp in opportunities if opp.stable_id}
+            if not stable_ids:
+                return
+
+            # Build match patterns: exact stable_id OR stable_id_<timestamp> suffix.
+            patterns = sorted(stable_ids) + [f"{sid}_%" for sid in sorted(stable_ids)]
 
             async with AsyncSessionLocal() as session:
-                # Get the most recent judgment per opportunity_id.
-                subq = (
-                    select(
-                        OpportunityJudgment.opportunity_id,
-                        func.max(OpportunityJudgment.judged_at).label("latest"),
-                    )
-                    .group_by(OpportunityJudgment.opportunity_id)
-                    .subquery()
-                )
+                # Use DISTINCT ON to get the latest judgment per opportunity_id
+                # in a single pass (no self-join). Filter to only opportunity_ids
+                # that match one of the requested stable_ids.
                 rows = (
-                    (
-                        await session.execute(
-                            select(OpportunityJudgment).join(
-                                subq,
-                                (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
-                                & (OpportunityJudgment.judged_at == subq.c.latest),
-                            )
-                        )
+                    await session.execute(
+                        sa_text(
+                            """
+                            SELECT DISTINCT ON (opportunity_id)
+                                opportunity_id, overall_score, profit_viability,
+                                resolution_safety, execution_feasibility,
+                                market_efficiency, recommendation, reasoning,
+                                risk_factors, judged_at
+                            FROM opportunity_judgments
+                            WHERE opportunity_id LIKE ANY(CAST(:patterns AS text[]))
+                            ORDER BY opportunity_id, judged_at DESC
+                            """
+                        ),
+                        {"patterns": patterns},
                     )
-                    .scalars()
-                    .all()
-                )
+                ).all()
 
             # Build stable_id -> AIAnalysis lookup
             judgment_map: dict[str, AIAnalysis] = {}
@@ -3887,9 +3893,6 @@ class ArbitrageScanner:
                 if analysis:
                     opp.ai_analysis = analysis
                     attached += 1
-
-            if attached:
-                print(f"  Attached {attached} existing AI judgments from DB")
 
         except Exception as e:
             print(f"  Error loading AI judgments from DB: {e}")
