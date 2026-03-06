@@ -324,6 +324,8 @@ async def _run_scan_loop() -> None:
     pending_heavy_targeted_ids: list[str] | None = None
     stale_scan_streak = 0
     last_forced_degrade_log: tuple[str, str] | None = None
+    last_backlog_pending: int | None = None
+    queue_backlogged = False
 
     # Publish startup status through the aggregation plane.
     try:
@@ -416,6 +418,7 @@ async def _run_scan_loop() -> None:
             if requested:
                 pending_heavy_targeted_ids = list(targeted_ids)
 
+            queue_backlogged = False
             scan_error: Exception | None = None
             heartbeat_state["run_id"] = uuid.uuid4().hex[:16]
             heartbeat_state["phase"] = "fast_scan"
@@ -503,16 +506,22 @@ async def _run_scan_loop() -> None:
                         pending_for_heavy = await count_pending_scanner_batches(session)
                     if pending_for_heavy >= heavy_backlog_threshold:
                         run_heavy_now = False
+                        queue_backlogged = True
                         heartbeat_state["phase"] = "degraded"
                         heartbeat_state["progress"] = 0.6
-                        logger.warning(
-                            "Skipping heavy scan due queue backlog (pending=%d threshold=%d)",
-                            pending_for_heavy,
-                            heavy_backlog_threshold,
-                        )
+                        if last_backlog_pending != pending_for_heavy:
+                            logger.warning(
+                                "Skipping heavy scan due queue backlog (pending=%d threshold=%d)",
+                                pending_for_heavy,
+                                heavy_backlog_threshold,
+                            )
+                            last_backlog_pending = pending_for_heavy
                         scanner._current_activity = (
                             f"Heavy lane degraded: queue backlog {pending_for_heavy} >= {heavy_backlog_threshold}."
                         )
+                    else:
+                        queue_backlogged = False
+                        last_backlog_pending = None
                 if run_heavy_now:
                     pending_heavy_targeted_ids = None
                     heavy_scan_task = asyncio.create_task(
@@ -572,45 +581,51 @@ async def _run_scan_loop() -> None:
                     activity = f"Last scan error: {scan_error}"
                 status["current_activity"] = activity
 
-            batch_kind = "scan_error" if scan_error is not None else "scan_cycle"
-            try:
-                heartbeat_state["phase"] = "enqueue_batch"
-                heartbeat_state["progress"] = 0.85
-                batch_id, pending, dropped = await _enqueue_detection_batch(
-                    opportunities,
-                    status,
-                    batch_kind=batch_kind,
-                )
-                heartbeat_state["queue_pending"] = pending
-                heartbeat_state["dropped_batches"] = int(heartbeat_state.get("dropped_batches", 0) or 0) + dropped
-                heartbeat_state["last_batch_id"] = batch_id
-                heartbeat_state["last_run_at"] = utcnow()
-                if dropped > 0:
-                    logger.warning("Scanner enqueued batch after dropping %d stale pending batches", dropped)
+            if queue_backlogged:
                 heartbeat_state["phase"] = "idle"
                 heartbeat_state["progress"] = 1.0
-            except Exception as exc:
-                heartbeat_state["last_error"] = str(exc)
-                heartbeat_state["phase"] = "error"
-                heartbeat_state["progress"] = 1.0
-                logger.exception("Failed enqueueing scanner detection batch: %s", exc)
+                heartbeat_state["last_run_at"] = utcnow()
+            else:
+                batch_kind = "scan_error" if scan_error is not None else "scan_cycle"
+                try:
+                    heartbeat_state["phase"] = "enqueue_batch"
+                    heartbeat_state["progress"] = 0.85
+                    batch_id, pending, dropped = await _enqueue_detection_batch(
+                        opportunities,
+                        status,
+                        batch_kind=batch_kind,
+                    )
+                    heartbeat_state["queue_pending"] = pending
+                    heartbeat_state["dropped_batches"] = int(heartbeat_state.get("dropped_batches", 0) or 0) + dropped
+                    heartbeat_state["last_batch_id"] = batch_id
+                    heartbeat_state["last_run_at"] = utcnow()
+                    if dropped > 0:
+                        logger.warning("Scanner enqueued batch after dropping %d stale pending batches", dropped)
+                    heartbeat_state["phase"] = "idle"
+                    heartbeat_state["progress"] = 1.0
+                except Exception as exc:
+                    heartbeat_state["last_error"] = str(exc)
+                    heartbeat_state["phase"] = "error"
+                    heartbeat_state["progress"] = 1.0
+                    logger.exception("Failed enqueueing scanner detection batch: %s", exc)
 
             sleep_seconds = (
                 settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED and not requested else interval
             )
-            sleep_seconds = max(1, int(sleep_seconds))
+            sleep_seconds = max(3, int(sleep_seconds))
+            min_loop_seconds = 3
 
             if settings.TIERED_SCANNING_ENABLED and not requested:
                 try:
                     scanner._register_reactive_scanning()
-                    if scanner._pending_reactive_tokens:
-                        scanner._reactive_trigger.set()
-                    else:
-                        scanner._reactive_trigger.clear()
+                    scanner._reactive_trigger.clear()
                     await asyncio.wait_for(
                         scanner._reactive_trigger.wait(),
                         timeout=sleep_seconds,
                     )
+                    # Reactive trigger fired early — enforce minimum sleep floor
+                    # to prevent tight-looping when the WS price feed fires continuously.
+                    await asyncio.sleep(min_loop_seconds)
                 except asyncio.TimeoutError:
                     pass
                 except Exception:
