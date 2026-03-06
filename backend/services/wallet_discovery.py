@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 from sqlalchemy import delete, select, func, desc, asc, cast, String, or_, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import load_only
 
 from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
@@ -1768,7 +1769,24 @@ class WalletDiscoveryEngine:
             if total_wallets <= max_discovered_wallets:
                 return 0
 
-            rows = await session.execute(select(DiscoveredWallet))
+            rows = await session.execute(
+                select(DiscoveredWallet).options(
+                    load_only(
+                        DiscoveredWallet.address,
+                        DiscoveredWallet.in_top_pool,
+                        DiscoveredWallet.discovery_source,
+                        DiscoveredWallet.source_flags,
+                        DiscoveredWallet.rank_score,
+                        DiscoveredWallet.total_trades,
+                        DiscoveredWallet.last_analyzed_at,
+                        DiscoveredWallet.last_trade_at,
+                        DiscoveredWallet.discovered_at,
+                        DiscoveredWallet.total_pnl,
+                        DiscoveredWallet.recommendation,
+                        DiscoveredWallet.is_profitable,
+                    )
+                )
+            )
             wallets = list(rows.scalars().all())
 
         candidates: list[DiscoveredWallet] = []

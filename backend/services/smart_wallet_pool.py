@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select, func, or_, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import load_only
 
 from models.database import (
     AsyncSessionLocal,
@@ -1524,7 +1525,41 @@ class SmartWalletPoolService:
                 for row in twenty_four
             }
 
-            wallets_result = await session.execute(select(DiscoveredWallet))
+            wallets_result = await session.execute(
+                select(DiscoveredWallet).options(
+                    load_only(
+                        DiscoveredWallet.address,
+                        DiscoveredWallet.in_top_pool,
+                        DiscoveredWallet.discovery_source,
+                        DiscoveredWallet.source_flags,
+                        DiscoveredWallet.rank_score,
+                        DiscoveredWallet.win_rate,
+                        DiscoveredWallet.sharpe_ratio,
+                        DiscoveredWallet.profit_factor,
+                        DiscoveredWallet.total_pnl,
+                        DiscoveredWallet.total_trades,
+                        DiscoveredWallet.recommendation,
+                        DiscoveredWallet.anomaly_score,
+                        DiscoveredWallet.max_drawdown,
+                        DiscoveredWallet.roi_std,
+                        DiscoveredWallet.cluster_id,
+                        DiscoveredWallet.is_profitable,
+                        DiscoveredWallet.last_analyzed_at,
+                        DiscoveredWallet.last_trade_at,
+                        DiscoveredWallet.metrics_source_version,
+                        DiscoveredWallet.insider_score,
+                        DiscoveredWallet.trades_1h,
+                        DiscoveredWallet.trades_24h,
+                        DiscoveredWallet.unique_markets_24h,
+                        DiscoveredWallet.quality_score,
+                        DiscoveredWallet.activity_score,
+                        DiscoveredWallet.stability_score,
+                        DiscoveredWallet.composite_score,
+                        DiscoveredWallet.pool_tier,
+                        DiscoveredWallet.pool_membership_reason,
+                    )
+                )
+            )
             wallets = list(wallets_result.scalars().all())
             # Detach wallet ORM objects so the read session can close while
             # we run the (potentially slow) Python scoring computation.
@@ -1922,7 +1957,24 @@ class SmartWalletPoolService:
             batch = dirty_wallets[i : i + MERGE_BATCH_SIZE]
             async with AsyncSessionLocal() as session:
                 for wallet in batch:
-                    await session.merge(wallet)
+                    await session.execute(
+                        sa_update(DiscoveredWallet)
+                        .where(DiscoveredWallet.address == wallet.address)
+                        .values(
+                            trades_1h=wallet.trades_1h,
+                            trades_24h=wallet.trades_24h,
+                            unique_markets_24h=wallet.unique_markets_24h,
+                            last_trade_at=wallet.last_trade_at,
+                            quality_score=wallet.quality_score,
+                            activity_score=wallet.activity_score,
+                            stability_score=wallet.stability_score,
+                            composite_score=wallet.composite_score,
+                            in_top_pool=wallet.in_top_pool,
+                            pool_tier=wallet.pool_tier,
+                            pool_membership_reason=wallet.pool_membership_reason,
+                            source_flags=wallet.source_flags,
+                        )
+                    )
                 await session.commit()
 
         if len(dirty_wallets) < len(wallets):
