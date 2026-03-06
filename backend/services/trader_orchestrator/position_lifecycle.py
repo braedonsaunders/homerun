@@ -114,6 +114,11 @@ def _is_allowance_error(error: Any) -> bool:
     return "not enough balance / allowance" in error_text or "allowance" in error_text
 
 
+def _is_zero_balance_error(error: Any) -> bool:
+    error_text = str(error or "").strip().lower()
+    return "available_shares=0" in error_text or "balance_shares=0" in error_text
+
+
 def _bump_allowance_error_counter(pending_exit: dict[str, Any], error: Any) -> None:
     if _is_allowance_error(error):
         pending_exit["allowance_error_count"] = int(pending_exit.get("allowance_error_count", 0) or 0) + 1
@@ -2800,11 +2805,13 @@ async def reconcile_live_positions(
             pending_close_trigger = str(pending_exit.get("close_trigger") or "").strip().lower()
             pending_exit_kind = str(pending_exit.get("kind") or "").strip().lower()
             allowance_error_count = int(pending_exit.get("allowance_error_count", 0) or 0)
+            last_error_text = str(pending_exit.get("last_error") or "")
             allow_unbounded_retry = (
                 bool(token_id)
                 and wallet_position_size > _WALLET_SIZE_EPSILON
                 and pending_winning_idx is None
                 and wallet_settlement_price is None
+                and not _is_zero_balance_error(last_error_text)
             )
             if allow_unbounded_retry and retry_count >= _FAILED_EXIT_MAX_RETRIES:
                 retry_count = _FAILED_EXIT_MAX_RETRIES - 1
