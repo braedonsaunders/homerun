@@ -2738,6 +2738,15 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
                 if existing_reason
                 else "cleanup:force_delete_override"
             )
+            import services.trader_hot_state as _hs
+            _hs.record_order_cancelled(
+                trader_id=str(active_row.trader_id or ""),
+                mode=str(active_row.mode or ""),
+                order_id=str(active_row.id or ""),
+                market_id=str(active_row.market_id or ""),
+                source=str(active_row.source or ""),
+                copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+            )
         await _commit_with_retry(session)
         await sync_trader_position_inventory(session, trader_id=trader_id)
     elif force and open_total_positions > 0:
@@ -4206,6 +4215,16 @@ async def reconcile_live_provider_orders(
             provider_snapshot_status=snapshot_status,
             mapped_status=mapped_status,
         )
+        if order_status_to_persist in {"cancelled", "failed"}:
+            import services.trader_hot_state as _hs
+            _hs.record_order_cancelled(
+                trader_id=trader_id,
+                mode=str(order.mode or ""),
+                order_id=str(order.id or ""),
+                market_id=str(order.market_id or ""),
+                source=str(order.source or ""),
+                copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+            )
         updated_orders += 1
         updated_order_rows[str(order.id)] = order
         if previous_status != _normalize_status_key(order_status_to_persist):
@@ -5486,6 +5505,16 @@ async def cleanup_trader_open_orders(
                         rescue_status = _normalize_status_key(rescue.get("status"))
                         row.status = "open" if rescue_status in {"executed", "open", "submitted"} else "failed"
                         row.updated_at = now
+                        if row.status == "failed":
+                            import services.trader_hot_state as _hs
+                            _hs.record_order_cancelled(
+                                trader_id=str(row.trader_id or ""),
+                                mode=str(row.mode or ""),
+                                order_id=str(row.id or ""),
+                                market_id=str(row.market_id or ""),
+                                source=str(row.source or ""),
+                                copy_source_wallet=_extract_copy_source_wallet_from_payload(existing_payload),
+                            )
                         existing_payload["cleanup"] = {
                             "previous_status": previous_status,
                             "target_status": row.status,
@@ -5548,6 +5577,15 @@ async def cleanup_trader_open_orders(
                     row.reason = f"{row.reason} | cleanup:{note_reason}"
                 else:
                     row.reason = f"cleanup:{note_reason}"
+            import services.trader_hot_state as _hs
+            _hs.record_order_cancelled(
+                trader_id=str(row.trader_id or ""),
+                mode=str(row.mode or ""),
+                order_id=str(row.id or ""),
+                market_id=str(row.market_id or ""),
+                source=str(row.source or ""),
+                copy_source_wallet=_extract_copy_source_wallet_from_payload(existing_payload),
+            )
 
             if execution_order is not None and not _is_active_order_status(mode_key, target_status):
                 execution_order.status = str(target_status)

@@ -1025,6 +1025,7 @@ class AppSettings(Base):
     max_daily_trade_volume = Column(Float, default=1000.0)
     max_open_positions = Column(Integer, default=10)
     max_slippage_percent = Column(Float, default=2.0)
+    min_account_balance_usd = Column(Float, default=0.0)
 
     # Opportunity Search Filters (hard rejection thresholds)
     min_liquidity_hard = Column(Float, default=1000.0)
@@ -3611,6 +3612,42 @@ def stop_pool_watchdog() -> None:
 # session is open.
 
 from contextlib import asynccontextmanager as _asynccontextmanager
+
+
+@_asynccontextmanager
+async def release_conn(session):
+    """Temporarily return the session's DB connection to the pool.
+
+    Use this around external HTTP calls that do not need the database so
+    that the connection is not held hostage while waiting on network I/O::
+
+        async with release_conn(session):
+            result = await some_http_call()   # no DB conn held
+
+    On entry the session is flushed, the underlying connection is returned
+    to the pool, and the session is reset.  On exit the next DB operation
+    on the session transparently checks out a fresh connection.
+
+    Any unflushed ORM state is lost (flush is called first to persist it).
+    Callers should commit before entering if they need durability.
+    """
+    if not session.is_active:
+        yield
+        return
+    try:
+        if session.dirty or session.new:
+            await session.flush()
+    except Exception:
+        pass
+    try:
+        await session.reset()
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        # No action needed — the session lazily reconnects on next use.
+        pass
 
 
 @_asynccontextmanager

@@ -2288,6 +2288,22 @@ export interface TraderStopPayload {
   reason?: string
 }
 
+export interface TraderManualSellOrderResponse {
+  status: string
+  trader_id: string
+  order_id: string
+  mode: string
+  result: {
+    order_id: string
+    mode: string
+    matched: number
+    closed: number
+    state_updates: number
+    would_close: number
+    details: Array<Record<string, any>>
+  }
+}
+
 export const startTrader = async (traderId: string, payload?: TraderStartPayload): Promise<Trader> => {
   const { data } = await api.post(`/traders/${traderId}/start`, payload || {})
   return normalizeTraderFields(data)
@@ -2296,6 +2312,15 @@ export const startTrader = async (traderId: string, payload?: TraderStartPayload
 export const stopTrader = async (traderId: string, payload?: TraderStopPayload): Promise<Trader> => {
   const { data } = await api.post(`/traders/${traderId}/stop`, payload || {})
   return normalizeTraderFields(data)
+}
+
+export const sellTraderOrderNow = async (
+  traderId: string,
+  orderId: string,
+  payload?: { requested_by?: string; reason?: string }
+): Promise<TraderManualSellOrderResponse> => {
+  const { data } = await api.post(`/traders/${traderId}/orders/${orderId}/sell`, payload || {})
+  return unwrapApiData(data)
 }
 
 export const activateTrader = async (traderId: string, payload?: { requested_by?: string; reason?: string }): Promise<Trader> => {
@@ -2892,6 +2917,7 @@ export interface LiveExecutionSettingsConfig {
   max_trade_size_usd: number
   max_daily_trade_volume: number
   max_slippage_percent: number
+  min_account_balance_usd: number
 }
 
 export interface MaintenanceSettings {

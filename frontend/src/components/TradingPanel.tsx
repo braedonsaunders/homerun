@@ -55,6 +55,7 @@ import {
   stopTraderOrchestrator,
   stopTraderOrchestratorLive,
   runTraderTuneIteration,
+  sellTraderOrderNow,
   type Trader,
   type TraderConfigSchema,
   type TraderEvent,
@@ -71,7 +72,7 @@ import {
 } from '../services/api'
 import { discoveryApi } from '../services/discoveryApi'
 import { cn } from '../lib/utils'
-import { getOpportunityPlatformLinks, getTraderOrderPlatformLinks } from '../lib/marketUrls'
+import { getTraderOrderPlatformLinks } from '../lib/marketUrls'
 import { selectedAccountIdAtom, themeAtom } from '../store/atoms'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -308,6 +309,7 @@ type GlobalSettingsDraft = {
   maxOrdersPerCycle: string
   maxTradeSizeUsd: string
   maxDailyTradeVolumeUsd: string
+  minAccountBalanceUsd: string
   maxOpenPositions: string
   maxSlippagePercent: string
   pendingExitMaxAllowed: string
@@ -340,6 +342,7 @@ const DEFAULT_LIVE_EXECUTION_LIMITS = {
   max_trade_size_usd: 100,
   max_daily_trade_volume: 1000,
   max_slippage_percent: 2,
+  min_account_balance_usd: 0,
 } as const
 const DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME = {
   pending_live_exit_guard: {
@@ -534,6 +537,7 @@ function buildGlobalSettingsDraft(
     max_trade_size_usd?: number | null
     max_daily_trade_volume?: number | null
     max_slippage_percent?: number | null
+    min_account_balance_usd?: number | null
   } | null | undefined,
 ): GlobalSettingsDraft {
   const globalRisk = config?.global_risk || DEFAULT_ORCHESTRATOR_GLOBAL_RISK
@@ -559,6 +563,9 @@ function buildGlobalSettingsDraft(
     maxTradeSizeUsd: String(liveExecutionSettings?.max_trade_size_usd ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_trade_size_usd),
     maxDailyTradeVolumeUsd: String(
       liveExecutionSettings?.max_daily_trade_volume ?? DEFAULT_LIVE_EXECUTION_LIMITS.max_daily_trade_volume
+    ),
+    minAccountBalanceUsd: String(
+      liveExecutionSettings?.min_account_balance_usd ?? DEFAULT_LIVE_EXECUTION_LIMITS.min_account_balance_usd
     ),
     maxOpenPositions: String(maxOpenPositions),
     maxSlippagePercent: String(
@@ -1205,39 +1212,6 @@ function buildOrderMarketLinks(
   payload: Record<string, unknown>,
   signalPayload: Record<string, unknown> | null = null
 ): { polymarket: string | null; kalshi: string | null } {
-  if (signalPayload) {
-    const rawMarkets = Array.isArray(signalPayload.markets) ? signalPayload.markets : []
-    const signalMarkets = rawMarkets.filter((market): market is Record<string, unknown> => isRecord(market))
-    const marketId = String(order.market_id || '').trim()
-    const normalizedMarketId = marketId.toLowerCase()
-    const matchedMarkets = marketId
-      ? signalMarkets.filter((market) => {
-          const candidates = [
-            cleanText(market.id),
-            cleanText(market.market_id),
-            cleanText(market.slug),
-            cleanText(market.market_slug),
-            cleanText(market.ticker),
-            cleanText(market.condition_id),
-            cleanText(market.conditionId),
-          ]
-            .filter((value): value is string => Boolean(value))
-            .map((value) => value.toLowerCase())
-          return candidates.includes(normalizedMarketId)
-        })
-      : []
-    const opportunityLinks = getOpportunityPlatformLinks({
-      ...signalPayload,
-      markets: matchedMarkets.length > 0 ? matchedMarkets : signalMarkets,
-    } as any)
-    if (opportunityLinks.polymarketUrl || opportunityLinks.kalshiUrl) {
-      return {
-        polymarket: opportunityLinks.polymarketUrl,
-        kalshi: opportunityLinks.kalshiUrl,
-      }
-    }
-  }
-
   const mergedPayload = signalPayload ? { ...signalPayload, ...payload } : payload
   const links = getTraderOrderPlatformLinks({
     source: order.source,
@@ -1408,15 +1382,24 @@ function resolveOrderMarketUpdateTimestamp(
   return latestTimestampValue(
     cleanText(order.mark_updated_at),
     cleanText(positionState.last_marked_at),
-    cleanText(providerReconciliation.reconciled_at),
-    cleanText(providerReconciliation.snapshot_updated_at),
     cleanText(providerSnapshot.updated_at),
     cleanText(providerSnapshot.updatedAt),
     cleanText(liveMarket.live_market_fetched_at),
-    cleanText(liveMarket.fetched_at),
-    cleanText(order.updated_at),
-    cleanText(order.executed_at),
-    cleanText(order.created_at)
+    cleanText(liveMarket.fetched_at)
+  )
+}
+
+function resolveOrderExitEvaluationTimestamp(
+  order: TraderOrder,
+  payloadInput?: Record<string, unknown>,
+): string {
+  const payload = payloadInput ?? (isRecord(order.payload) ? order.payload : {})
+  const positionState = isRecord(payload.position_state) ? payload.position_state : {}
+  const pendingExit = isRecord(payload.pending_live_exit) ? payload.pending_live_exit : {}
+  return latestTimestampValue(
+    cleanText(positionState.last_exit_evaluated_at),
+    cleanText(pendingExit.last_attempt_at),
+    cleanText(pendingExit.triggered_at)
   )
 }
 
@@ -3033,16 +3016,26 @@ function positionMetaLine(row: PositionBookRow): string {
 function BotTradePositionModal({
   market,
   sharedHistory,
+  sharedHistoryLoading,
   scope,
   orders,
   themeMode,
+  onSell,
+  sellPendingOrderId,
+  sellError,
+  sellSuccess,
   onClose,
 }: {
   market: CryptoMarket | null
   sharedHistory: unknown[]
+  sharedHistoryLoading: boolean
   scope: BotMarketModalScope
   orders: TraderOrder[]
   themeMode: 'dark' | 'light'
+  onSell: (order: TraderOrder) => void
+  sellPendingOrderId: string | null
+  sellError: string | null
+  sellSuccess: string | null
   onClose: () => void
 }) {
   const scopeMarketIds = useMemo(
@@ -3091,6 +3084,17 @@ function BotTradePositionModal({
   }, [relatedOrders, scope.anchorOrderId])
 
   const scopedOrders = scope.kind === 'trade' && anchorOrder ? [anchorOrder] : relatedOrders
+  const anchorSnapshot = useMemo(
+    () => (anchorOrder ? resolveOrderModalSnapshot(anchorOrder) : null),
+    [anchorOrder]
+  )
+  const canSellAnchorOrder = Boolean(
+    scope.kind === 'trade'
+    && anchorOrder
+    && scope.traderId
+    && anchorSnapshot
+    && OPEN_ORDER_STATUSES.has(anchorSnapshot.status)
+  )
 
   const metrics = useMemo(() => {
     const snapshots = scopedOrders.map((order) => resolveOrderModalSnapshot(order))
@@ -3278,7 +3282,7 @@ function BotTradePositionModal({
     if (deduped.length < 2) return []
     return deduped.length <= 600 ? deduped : deduped.slice(deduped.length - 600)
   }, [market?.oracle_history, market?.oracle_price, market?.oracle_updated_at_ms])
-  const useOracleSeries = oracleHistoryData.length >= 2
+  const useOracleSeries = livelineResult.primary.length < 2 && oracleHistoryData.length >= 2
   const livelineData = useOracleSeries ? oracleHistoryData : livelineResult.primary
   const oracleValue = toFiniteNumber(market?.oracle_price)
   const livelineValue = useOracleSeries
@@ -3458,6 +3462,19 @@ function BotTradePositionModal({
             </p>
           </div>
           <div className="flex items-center gap-1">
+            {canSellAnchorOrder && anchorOrder ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => onSell(anchorOrder)}
+                disabled={sellPendingOrderId === String(anchorOrder.id || '')}
+              >
+                {sellPendingOrderId === String(anchorOrder.id || '') ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Sell Now
+              </Button>
+            ) : null}
             {scope.links.polymarket && (
               <a
                 href={scope.links.polymarket}
@@ -3527,6 +3544,16 @@ function BotTradePositionModal({
             ? 'border-slate-700/40 bg-gradient-to-b from-slate-900/75 via-slate-950/80 to-black/90'
             : 'border-slate-200/90 bg-gradient-to-b from-white via-slate-50 to-slate-100/70',
         )}>
+          {sellError ? (
+            <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-700 dark:text-red-100">
+              {sellError}
+            </div>
+          ) : null}
+          {sellSuccess ? (
+            <div className="border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-100">
+              {sellSuccess}
+            </div>
+          ) : null}
           {livelineData.length >= 2 ? (
             <Liveline
               data={livelineData}
@@ -3551,7 +3578,7 @@ function BotTradePositionModal({
             />
           ) : (
             <div className="h-[280px] flex items-center justify-center text-xs text-muted-foreground">
-              Waiting for live price history...
+              {sharedHistoryLoading ? 'Hydrating shared price history backfill...' : 'Waiting for live price history...'}
             </div>
           )}
         </div>
@@ -4159,6 +4186,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     }
   }
   const [marketModalState, setMarketModalState] = useState<BotMarketModalState | null>(null)
+  const [marketModalSellError, setMarketModalSellError] = useState<string | null>(null)
+  const [marketModalSellSuccess, setMarketModalSellSuccess] = useState<string | null>(null)
   const marketModalMarket = marketModalState ? marketModalState.market : null
   const themeMode = useAtomValue(themeAtom)
 
@@ -4248,13 +4277,45 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const marketModalMarketIdsKey = marketModalMarketIds.join('|')
   const marketHistoryQuery = useQuery({
     queryKey: ['trader-market-history', marketModalMarketIdsKey],
-    enabled: marketModalMarketIds.length > 0,
+    enabled: Boolean(marketModalState) && marketModalMarketIds.length > 0,
     refetchInterval: marketModalState ? 1000 : false,
     staleTime: 0,
     refetchOnMount: 'always',
     queryFn: async () => {
       if (marketModalMarketIds.length === 0) return {}
       return getTraderMarketHistory(marketModalMarketIds, 600)
+    },
+  })
+  useEffect(() => {
+    if (!marketModalState || marketModalMarketIds.length === 0) return
+    void marketHistoryQuery.refetch()
+  }, [marketModalState, marketModalMarketIdsKey])
+
+  const sellTradeNowMutation = useMutation({
+    mutationFn: async (params: { traderId: string; orderId: string }) => {
+      return sellTraderOrderNow(params.traderId, params.orderId, {
+        requested_by: 'trading_panel_modal',
+        reason: 'manual_trade_sell_modal',
+      })
+    },
+    onMutate: () => {
+      setMarketModalSellError(null)
+      setMarketModalSellSuccess(null)
+    },
+    onSuccess: async (result) => {
+      setMarketModalSellSuccess(
+        result.mode === 'live'
+          ? 'Sell request submitted. Exit execution is now in-flight.'
+          : 'Trade sold and marked to market.'
+      )
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['trader-orders-all'] }),
+        queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] }),
+      ])
+      void marketHistoryQuery.refetch()
+    },
+    onError: (error: unknown) => {
+      setMarketModalSellError(errorMessage(error, 'Failed to sell trade immediately'))
     },
   })
   const modalSharedHistory = useMemo(
@@ -5346,6 +5407,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         10_000_000,
         DEFAULT_LIVE_EXECUTION_LIMITS.max_daily_trade_volume,
       )
+      const minAccountBalanceUsd = clampNumber(
+        toNumber(globalSettingsDraft.minAccountBalanceUsd),
+        0,
+        1_000_000,
+        DEFAULT_LIVE_EXECUTION_LIMITS.min_account_balance_usd,
+      )
       const maxOpenPositions = Math.trunc(
         clampNumber(
           toNumber(globalSettingsDraft.maxOpenPositions),
@@ -5407,6 +5474,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
             max_trade_size_usd: maxTradeSizeUsd,
             max_daily_trade_volume: maxDailyTradeVolume,
             max_slippage_percent: maxSlippagePercent,
+            min_account_balance_usd: minAccountBalanceUsd,
           },
         }),
       ])
@@ -5896,7 +5964,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => Object.fromEntries(traders.map((trader) => [trader.id, trader.name])) as Record<string, string>,
     [traders]
   )
-  const closeMarketModal = () => setMarketModalState(null)
+  const closeMarketModal = () => {
+    setMarketModalState(null)
+    setMarketModalSellError(null)
+    setMarketModalSellSuccess(null)
+  }
 
   const openTradeMarketModal = (params: {
     market: CryptoMarket | null
@@ -5913,6 +5985,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       kalshi: string | null
     }
   }) => {
+    setMarketModalSellError(null)
+    setMarketModalSellSuccess(null)
     const {
       market,
       order,
@@ -5963,6 +6037,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     traderId?: string | null
     traderName?: string
   }) => {
+    setMarketModalSellError(null)
+    setMarketModalSellSuccess(null)
     const { market, row } = params
     const marketAliases = row.marketAliases.length > 0 ? row.marketAliases : [normalizeMarketAlias(row.marketId)]
     const resolvedMarket = market || resolveCryptoMarketFromAliases([row.marketId, ...marketAliases])
@@ -5989,6 +6065,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         outcomeSummary: null,
         links: row.links,
       },
+    })
+  }
+
+  const handleSellModalOrder = (order: TraderOrder) => {
+    if (!marketModalState?.scope.traderId) {
+      setMarketModalSellError('This trade is not attached to a specific bot and cannot be sold from this view.')
+      return
+    }
+    const orderId = String(order.id || '').trim()
+    if (!orderId) {
+      setMarketModalSellError('Trade is missing an order id and cannot be sold.')
+      return
+    }
+    sellTradeNowMutation.mutate({
+      traderId: marketModalState.scope.traderId,
+      orderId,
     })
   }
 
@@ -6463,11 +6555,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         filledNotional,
       })
       const exitProgressPercent = computePendingExitProgressPercent(pendingExit as Record<string, unknown>)
-      const updatedAt = latestTimestampValue(
+      const markUpdatedAt = latestTimestampValue(
         realtimeCrypto.updatedAt,
         resolveOrderMarketUpdateTimestamp(order, orderPayload),
       )
-      const markUpdatedAtRaw = updatedAt
+      const exitEvaluatedAt = resolveOrderExitEvaluationTimestamp(order, orderPayload)
+      const markUpdatedAtRaw = markUpdatedAt
       const markUpdatedTs = toTs(markUpdatedAtRaw)
       const markFresh = markUpdatedTs > 0 && (Date.now() - markUpdatedTs) <= 15_000
       const providerSnapshotStatus = normalizeStatus(
@@ -6500,7 +6593,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         fillProgressPercent,
         dynamicEdgePercent,
         exitProgressPercent,
-        updatedAt,
+        markUpdatedAt,
+        exitEvaluatedAt,
         providerSnapshotStatus,
         pendingExitStatus,
         closeTrigger,
@@ -8278,7 +8372,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
                                   <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
                                   <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                                  <TableHead className="w-[5%] text-[10px]">Age</TableHead>
+                                  <TableHead className="w-[5%] text-[10px]">Mark Age</TableHead>
+                                  <TableHead className="w-[5%] text-[10px]">Eval Age</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -8362,10 +8457,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     : null
                                   const links = buildOrderMarketLinks(order, orderPayload, signalPayload)
                                   const primaryMarketLink = links.polymarket || links.kalshi
-                                  const updatedAt = latestTimestampValue(
+                                  const markUpdatedAt = latestTimestampValue(
                                     realtimeCrypto.updatedAt,
                                     resolveOrderMarketUpdateTimestamp(order, orderPayload),
                                   )
+                                  const exitEvaluatedAt = resolveOrderExitEvaluationTimestamp(order, orderPayload)
                                   const positionClose = orderPayload.position_close && typeof orderPayload.position_close === 'object'
                                     ? orderPayload.position_close
                                     : {}
@@ -8488,14 +8584,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         <TableCell className="text-right font-mono py-0.5 text-[10px]">
                                           {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
                                         </TableCell>
-                                        <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                                          <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
-                                            {formatRelativeAge(updatedAt)}
-                                          </span>
-                                        </TableCell>
+                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                        <span title={`${String(order.mode || '').toUpperCase()} • mark:${formatTimestamp(markUpdatedAt)} • created:${formatTimestamp(order.created_at)}`}>
+                                          {formatRelativeAge(markUpdatedAt)}
+                                        </span>
+                                      </TableCell>
+                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                        <span title={`${String(order.mode || '').toUpperCase()} • exit eval:${formatTimestamp(exitEvaluatedAt)} • updated:${formatTimestamp(order.updated_at)}`}>
+                                          {formatRelativeAge(exitEvaluatedAt)}
+                                        </span>
+                                      </TableCell>
                                       </TableRow>
                                       <TableRow className="cursor-pointer bg-muted/[0.08] hover:bg-muted/[0.16]" onClick={openModal}>
-                                        <TableCell colSpan={12} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
+                                        <TableCell colSpan={13} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
                                           {renderTradeLifecycleFlow({
                                             status,
                                             outcomeHeadline: outcome.headline,
@@ -9037,7 +9138,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
                                 <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
                                 <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                                <TableHead className="w-[5%] text-[10px]">Age</TableHead>
+                                <TableHead className="w-[5%] text-[10px]">Mark Age</TableHead>
+                                <TableHead className="w-[5%] text-[10px]">Eval Age</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -9053,7 +9155,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   fillProgressPercent,
                                   dynamicEdgePercent,
                                   exitProgressPercent,
-                                  updatedAt,
+                                  markUpdatedAt,
+                                  exitEvaluatedAt,
                                   providerSnapshotStatus,
                                   pendingExitStatus,
                                   closeTrigger,
@@ -9203,13 +9306,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         {exitProgressPercent !== null ? formatPercent(exitProgressPercent, 0) : '\u2014'}
                                       </TableCell>
                                       <TableCell className="py-0.5 text-[9px] text-muted-foreground">
-                                        <span title={`${String(order.mode || '').toUpperCase()} • created:${formatTimestamp(order.created_at)} • updated:${formatTimestamp(updatedAt)}`}>
-                                          {formatRelativeAge(updatedAt)}
+                                        <span title={`${String(order.mode || '').toUpperCase()} • mark:${formatTimestamp(markUpdatedAt)} • created:${formatTimestamp(order.created_at)}`}>
+                                          {formatRelativeAge(markUpdatedAt)}
+                                        </span>
+                                      </TableCell>
+                                      <TableCell className="py-0.5 text-[9px] text-muted-foreground">
+                                        <span title={`${String(order.mode || '').toUpperCase()} • exit eval:${formatTimestamp(exitEvaluatedAt)} • updated:${formatTimestamp(order.updated_at)}`}>
+                                          {formatRelativeAge(exitEvaluatedAt)}
                                         </span>
                                       </TableCell>
                                     </TableRow>
                                     <TableRow className="cursor-pointer bg-muted/[0.08] hover:bg-muted/[0.16]" onClick={openModal}>
-                                      <TableCell colSpan={12} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
+                                      <TableCell colSpan={13} className="border-b-2 border-l border-r border-border/80 px-0 py-0.5">
                                         {renderTradeLifecycleFlow({
                                           status,
                                           outcomeHeadline,
@@ -9953,9 +10061,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 	                <BotTradePositionModal
 	                  market={marketModalMarket}
 	                  sharedHistory={modalSharedHistory}
+	                  sharedHistoryLoading={marketHistoryQuery.isFetching}
 	                  scope={marketModalState.scope}
 	                  orders={allOrders}
 	                  themeMode={themeMode}
+	                  onSell={handleSellModalOrder}
+	                  sellPendingOrderId={sellTradeNowMutation.isPending ? String(sellTradeNowMutation.variables?.orderId || '') : null}
+	                  sellError={marketModalSellError}
+	                  sellSuccess={marketModalSellSuccess}
 	                  onClose={closeMarketModal}
 	                />
 	              </motion.div>
@@ -10222,6 +10335,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         min={10}
                         value={globalSettingsDraft.maxDailyTradeVolumeUsd}
                         onChange={(event) => setGlobalSettingsField('maxDailyTradeVolumeUsd', event.target.value)}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Minimum Account Balance (USD)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={globalSettingsDraft.minAccountBalanceUsd}
+                        onChange={(event) => setGlobalSettingsField('minAccountBalanceUsd', event.target.value)}
                         className="mt-1"
                       />
                     </div>

@@ -177,6 +177,11 @@ class LiveExecutionSettings(BaseModel):
     max_trade_size_usd: float = Field(default=100.0, ge=1, description="Maximum single trade size")
     max_daily_trade_volume: float = Field(default=1000.0, ge=10, description="Maximum daily trading volume")
     max_slippage_percent: float = Field(default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %")
+    min_account_balance_usd: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Minimum USDC balance to keep in Polymarket account after buy orders",
+    )
 
 
 class DiscoverySettings(BaseModel):

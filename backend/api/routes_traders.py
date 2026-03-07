@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models.database import MarketCatalog, ScannerSnapshot, get_db_session
+from models.database import MarketCatalog, ScannerSnapshot, TraderOrder, get_db_session
 from services.live_price_snapshot import normalize_binary_price_history
 from services.pause_state import global_pause_state
 from services.traders_copy_trade_signal_service import traders_copy_trade_signal_service
@@ -143,6 +143,11 @@ class TraderTuneAgentRequest(BaseModel):
     model: Optional[str] = Field(default=None, max_length=200)
     max_iterations: int = Field(default=12, ge=1, le=24)
     monitor_job_id: Optional[str] = Field(default=None, max_length=120)
+
+
+class TraderOrderManualCloseRequest(BaseModel):
+    requested_by: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class TraderStartRequest(BaseModel):
@@ -1357,6 +1362,98 @@ async def cleanup_trader_positions(
         payload=result,
     )
     return result
+
+
+@router.post("/{trader_id}/orders/{order_id}/sell")
+async def sell_trader_order_now(
+    trader_id: str,
+    order_id: str,
+    request: TraderOrderManualCloseRequest = TraderOrderManualCloseRequest(),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    order = (
+        await session.execute(
+            select(TraderOrder).where(
+                TraderOrder.id == order_id,
+                TraderOrder.trader_id == trader_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    mode_key = str(order.mode or "").strip().lower()
+    if mode_key == "paper":
+        mode_key = "shadow"
+
+    status_key = str(order.status or "").strip().lower()
+    if status_key not in {"submitted", "executed", "open"}:
+        raise HTTPException(status_code=409, detail="Order is not active")
+
+    close_reason = str(request.reason or "manual_trade_sell").strip() or "manual_trade_sell"
+    if mode_key == "shadow":
+        lifecycle_result = await reconcile_shadow_positions(
+            session,
+            trader_id=trader_id,
+            trader_params={},
+            dry_run=False,
+            force_mark_to_market=True,
+            max_age_hours=None,
+            order_ids=[order_id],
+            reason=close_reason,
+        )
+        await sync_trader_position_inventory(session, trader_id=trader_id, mode="shadow")
+    elif mode_key == "live":
+        lifecycle_result = await reconcile_live_positions(
+            session,
+            trader_id=trader_id,
+            trader_params={},
+            dry_run=False,
+            force_mark_to_market=True,
+            max_age_hours=None,
+            order_ids=[order_id],
+            reason=close_reason,
+        )
+        await sync_trader_position_inventory(session, trader_id=trader_id, mode="live")
+    else:
+        raise HTTPException(status_code=422, detail=f"Unsupported order mode: {mode_key or 'unknown'}")
+
+    matched = int(lifecycle_result.get("matched", 0))
+    closed = int(lifecycle_result.get("closed", 0))
+    state_updates = int(lifecycle_result.get("state_updates", 0))
+    if matched <= 0 and closed <= 0 and state_updates <= 0:
+        raise HTTPException(status_code=409, detail="No active position could be sold for this order")
+
+    payload = {
+        "order_id": order_id,
+        "mode": mode_key,
+        "matched": matched,
+        "closed": closed,
+        "state_updates": state_updates,
+        "would_close": int(lifecycle_result.get("would_close", 0)),
+        "details": lifecycle_result.get("details", []),
+    }
+    await create_trader_event(
+        session,
+        trader_id=trader_id,
+        event_type="trader_order_manual_sell",
+        severity="warn" if mode_key == "live" else "info",
+        source="operator",
+        operator=request.requested_by,
+        message="Manual sell requested for trader order",
+        payload=payload,
+    )
+    return {
+        "status": "submitted",
+        "trader_id": trader_id,
+        "order_id": order_id,
+        "mode": mode_key,
+        "result": payload,
+    }
 
 
 @router.post("/{trader_id}/run-once")

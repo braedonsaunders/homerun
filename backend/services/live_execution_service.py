@@ -799,6 +799,8 @@ class LiveExecutionService:
     ) -> tuple[bool, Optional[str]]:
         token_key = str(token_id or "").strip()
         required_usdc = max(ZERO, required_notional_usd)
+        min_account_balance_usd = max(ZERO, _to_decimal(settings.MIN_ACCOUNT_BALANCE_USD))
+        required_total_usdc = required_usdc + min_account_balance_usd
         if required_usdc <= ZERO:
             return False, "BUY pre-submit gate failed: required notional must be greater than zero."
 
@@ -829,10 +831,10 @@ class LiveExecutionService:
 
         available = max(ZERO, _to_decimal(available_raw))
         collateral_balance = max(ZERO, _to_decimal(balance_raw))
-        if available >= required_usdc:
+        if available >= required_total_usdc:
             return True, None
 
-        if collateral_balance >= required_usdc and available < required_usdc:
+        if collateral_balance >= required_total_usdc and available < required_total_usdc:
             await self.refresh_collateral_balance_allowance()
             refreshed_balance = await self.get_balance()
             refreshed_available_raw = safe_float(refreshed_balance.get("available")) if isinstance(refreshed_balance, dict) else None
@@ -841,7 +843,7 @@ class LiveExecutionService:
                 available = max(ZERO, _to_decimal(refreshed_available_raw))
             if refreshed_balance_raw is not None:
                 collateral_balance = max(ZERO, _to_decimal(refreshed_balance_raw))
-            if available >= required_usdc:
+            if available >= required_total_usdc:
                 return True, None
 
         signature_value_raw = balance.get("signature_type")
@@ -851,11 +853,14 @@ class LiveExecutionService:
         funder_wallet = str(
             self._funder_for_signature_type(signature_value) or self._execution_wallet_address() or ""
         ).strip()
-        shortfall = max(ZERO, required_usdc - available)
+        shortfall = max(ZERO, required_total_usdc - available)
+        post_trade_available = max(ZERO, available - required_usdc)
         error_message = (
             "BUY pre-submit gate failed: not enough collateral balance/allowance. "
             f"token_id={token_key} "
-            f"required_usdc={required_usdc} available_usdc={available} shortfall_usdc={shortfall} "
+            f"required_usdc={required_usdc} required_total_usdc={required_total_usdc} "
+            f"minimum_account_balance_usd={min_account_balance_usd} "
+            f"available_usdc={available} post_trade_available_usdc={post_trade_available} shortfall_usdc={shortfall} "
             f"balance_usdc={collateral_balance} "
             f"signature_type={signature_value} funder_wallet={funder_wallet or 'unknown'}. "
             "Collateral may be held under a different funder/signature wallet or reserved by open orders."
@@ -864,7 +869,10 @@ class LiveExecutionService:
             "Buy pre-submit balance gate blocked order",
             token_id=token_key,
             required_usdc=str(required_usdc),
+            required_total_usdc=str(required_total_usdc),
+            minimum_account_balance_usd=str(min_account_balance_usd),
             available_usdc=str(available),
+            post_trade_available_usdc=str(post_trade_available),
             balance_usdc=str(collateral_balance),
             signature_type=signature_value,
             funder_wallet=funder_wallet or "unknown",

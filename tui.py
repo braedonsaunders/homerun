@@ -820,6 +820,10 @@ TabPane {
     padding: 0;
 }
 
+#home {
+    overflow-y: auto;
+}
+
 /* ---- Light mode ---- */
 Screen.light-mode {
     background: #f0f2f5;
@@ -1281,6 +1285,7 @@ class HomerunApp(App):
         self._update_worker_filter_display()
         self._update_log_header()
         self._start_services()
+        self._apply_responsive_layout()
         self._poll_health()
         self._update_uptime()
         # Flush log buffer periodically (batched writes for performance)
@@ -1313,53 +1318,87 @@ class HomerunApp(App):
         try:
             from textual.geometry import Size as TextualSize
 
-            kernel32 = ctypes.windll.kernel32
+            width: int | None = None
+            height: int | None = None
+            try:
+                kernel32 = ctypes.windll.kernel32
 
-            class COORD(ctypes.Structure):
-                _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+                class COORD(ctypes.Structure):
+                    _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
 
-            class SMALL_RECT(ctypes.Structure):
-                _fields_ = [
-                    ("Left", ctypes.c_short),
-                    ("Top", ctypes.c_short),
-                    ("Right", ctypes.c_short),
-                    ("Bottom", ctypes.c_short),
-                ]
+                class SMALL_RECT(ctypes.Structure):
+                    _fields_ = [
+                        ("Left", ctypes.c_short),
+                        ("Top", ctypes.c_short),
+                        ("Right", ctypes.c_short),
+                        ("Bottom", ctypes.c_short),
+                    ]
 
-            class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
-                _fields_ = [
-                    ("dwSize", COORD),
-                    ("dwCursorPosition", COORD),
-                    ("wAttributes", ctypes.c_ushort),
-                    ("srWindow", SMALL_RECT),
-                    ("dwMaximumWindowSize", COORD),
-                ]
+                class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+                    _fields_ = [
+                        ("dwSize", COORD),
+                        ("dwCursorPosition", COORD),
+                        ("wAttributes", ctypes.c_ushort),
+                        ("srWindow", SMALL_RECT),
+                        ("dwMaximumWindowSize", COORD),
+                    ]
 
-            kernel32.GetStdHandle.restype = ctypes.wintypes.HANDLE
-            kernel32.GetStdHandle.argtypes = [ctypes.wintypes.DWORD]
-            hOut = kernel32.GetStdHandle(-11 & 0xFFFFFFFF)  # STD_OUTPUT_HANDLE
+                kernel32.GetStdHandle.restype = ctypes.wintypes.HANDLE
+                kernel32.GetStdHandle.argtypes = [ctypes.wintypes.DWORD]
+                h_out = kernel32.GetStdHandle(-11 & 0xFFFFFFFF)  # STD_OUTPUT_HANDLE
 
-            csbi = CONSOLE_SCREEN_BUFFER_INFO()
-            if not kernel32.GetConsoleScreenBufferInfo(hOut, ctypes.byref(csbi)):
-                return
+                csbi = CONSOLE_SCREEN_BUFFER_INFO()
+                if kernel32.GetConsoleScreenBufferInfo(h_out, ctypes.byref(csbi)):
+                    width = csbi.srWindow.Right - csbi.srWindow.Left + 1
+                    height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
+            except Exception:
+                width = None
+                height = None
 
-            width = csbi.srWindow.Right - csbi.srWindow.Left + 1
-            height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
+            if not isinstance(width, int) or not isinstance(height, int) or width < 10 or height < 5:
+                fallback = shutil.get_terminal_size(fallback=(120, 40))
+                width = int(fallback.columns)
+                height = int(fallback.lines)
 
             if width < 10 or height < 5:
                 return
 
             size = TextualSize(width, height)
-            if self._size == size:
-                return
-
-            self._size = size
-            self.screen._screen_resized(size)
+            if self._size != size:
+                self._size = size
+                self.screen._screen_resized(size)
+            self._apply_responsive_layout(width)
             self.refresh(layout=True)
         except Exception:
             pass
 
+    def _apply_responsive_layout(self, viewport_width: int | None = None) -> None:
+        try:
+            width = int(viewport_width) if isinstance(viewport_width, int) and viewport_width > 0 else int(self.size.width)
+        except Exception:
+            return
+
+        if width >= 180:
+            grid_cols = 4
+        elif width >= 140:
+            grid_cols = 3
+        elif width >= 104:
+            grid_cols = 2
+        else:
+            grid_cols = 1
+
+        try:
+            workers_grid = self.query_one("#workers-grid", Container)
+            workers_grid.styles.grid_size_columns = grid_cols
+        except Exception:
+            pass
+
     def on_resize(self, event: Resize) -> None:
+        viewport_width = getattr(event, "width", None)
+        if not isinstance(viewport_width, int) or viewport_width <= 0:
+            maybe_size = getattr(event, "size", None)
+            viewport_width = getattr(maybe_size, "width", None)
+        self._apply_responsive_layout(viewport_width if isinstance(viewport_width, int) else None)
         self.refresh(layout=True)
 
     def action_show_tab(self, tab: str) -> None:

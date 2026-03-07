@@ -15,8 +15,10 @@ from services.signal_bus import make_dedupe_key, refresh_trade_signal_snapshots,
 from services.simulation import simulation_service
 from services.strategy_sdk import StrategySDK
 from services.live_execution_service import live_execution_service
+from services.trader_orchestrator_state import _extract_copy_source_wallet_from_payload
 from utils.utcnow import utcnow
 from utils.converters import safe_float
+import services.trader_hot_state as hot_state
 
 logger = logging.getLogger("position_lifecycle")
 
@@ -1233,6 +1235,7 @@ async def reconcile_paper_positions(
     dry_run: bool = False,
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
+    order_ids: Optional[list[str]] = None,
     reason: str = "paper_position_lifecycle",
     position_mode: str = "paper",
     param_prefix: str = "paper",
@@ -1282,6 +1285,13 @@ async def reconcile_paper_positions(
         .scalars()
         .all()
     )
+
+    if order_ids:
+        requested_order_ids = {str(value or "").strip() for value in order_ids if str(value or "").strip()}
+        if requested_order_ids:
+            candidates = [row for row in candidates if str(row.id or "") in requested_order_ids]
+        else:
+            candidates = []
 
     if max_age_hours is not None:
         cutoff = utcnow() - timedelta(hours=max(1, int(max_age_hours)))
@@ -1372,6 +1382,7 @@ async def reconcile_paper_positions(
         prev_low = safe_float(position_state.get("lowest_price"))
         prev_last_mark = safe_float(position_state.get("last_mark_price"))
         prev_mark_source = str(position_state.get("last_mark_source") or "")
+        prev_marked_at = _parse_iso_utc_naive(position_state.get("last_marked_at"))
         highest_price = prev_high
         lowest_price = prev_low
         if current_price is not None:
@@ -1384,12 +1395,30 @@ async def reconcile_paper_positions(
             else:
                 lowest_price = min(lowest_price, current_price)
 
+        mark_changed = bool(
+            current_price is not None
+            and (
+                prev_last_mark is None
+                or abs(prev_last_mark - current_price) > 1e-9
+                or prev_mark_source != str(current_price_source or "")
+            )
+        )
+        mark_updated_at_value = (
+            _iso_utc(now)
+            if (current_price is not None and (mark_changed or prev_marked_at is None))
+            else (
+                _iso_utc(prev_marked_at.replace(tzinfo=timezone.utc))
+                if prev_marked_at is not None
+                else ""
+            )
+        )
         next_state = {
             "highest_price": _state_price_floor(highest_price),
             "lowest_price": _state_price_floor(lowest_price),
-            "last_mark_price": current_price,
-            "last_mark_source": current_price_source,
-            "last_marked_at": _iso_utc(now),
+            "last_mark_price": current_price if current_price is not None else _state_price_floor(prev_last_mark),
+            "last_mark_source": str(current_price_source or prev_mark_source),
+            "last_marked_at": mark_updated_at_value,
+            "last_exit_evaluated_at": _iso_utc(now),
         }
 
         if winning_idx is not None:
@@ -1695,6 +1724,18 @@ async def reconcile_paper_positions(
                 row.reason = f"{row.reason} | {reason}:{close_trigger}"
             else:
                 row.reason = f"{reason}:{close_trigger}"
+        hot_state.record_order_resolved(
+            trader_id=trader_id,
+            mode=str(row.mode or ""),
+            order_id=str(row.id or ""),
+            market_id=str(row.market_id or ""),
+            direction=str(row.direction or ""),
+            source=str(row.source or ""),
+            status=next_status,
+            actual_profit=pnl,
+            payload=payload,
+            copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+        )
         closed += 1
 
     if not dry_run and (closed > 0 or state_updates > 0):
@@ -1730,6 +1771,7 @@ async def reconcile_shadow_positions(
     dry_run: bool = False,
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
+    order_ids: Optional[list[str]] = None,
     reason: str = "shadow_position_lifecycle",
 ) -> dict[str, Any]:
     return await reconcile_paper_positions(
@@ -1739,6 +1781,7 @@ async def reconcile_shadow_positions(
         dry_run=dry_run,
         force_mark_to_market=force_mark_to_market,
         max_age_hours=max_age_hours,
+        order_ids=order_ids,
         reason=reason,
         position_mode="shadow",
         param_prefix="shadow",
@@ -1754,6 +1797,7 @@ async def reconcile_live_positions(
     dry_run: bool = False,
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
+    order_ids: Optional[list[str]] = None,
     reason: str = "live_position_lifecycle",
 ) -> dict[str, Any]:
     """Lifecycle management for live positions.
@@ -1791,6 +1835,13 @@ async def reconcile_live_positions(
         .scalars()
         .all()
     )
+
+    if order_ids:
+        requested_order_ids = {str(value or "").strip() for value in order_ids if str(value or "").strip()}
+        if requested_order_ids:
+            candidates = [row for row in candidates if str(row.id or "") in requested_order_ids]
+        else:
+            candidates = []
 
     if max_age_hours is not None:
         cutoff = utcnow() - timedelta(hours=max(1, int(max_age_hours)))
@@ -2088,12 +2139,37 @@ async def reconcile_live_positions(
                 pending_lowest_price = pending_current_price
             else:
                 pending_lowest_price = min(pending_lowest_price, pending_current_price)
+        pending_mark_changed = bool(
+            pending_current_price is not None
+            and (
+                pending_prev_last_mark is None
+                or abs(pending_prev_last_mark - pending_current_price) > 1e-9
+                or pending_prev_mark_source != str(pending_current_price_source or "")
+            )
+        )
+        pending_mark_updated_at_value = (
+            _iso_utc(now)
+            if (
+                pending_current_price is not None
+                and (pending_mark_changed or pending_prev_marked_at is None)
+            )
+            else (
+                _iso_utc(pending_prev_marked_at.replace(tzinfo=timezone.utc))
+                if pending_prev_marked_at is not None
+                else ""
+            )
+        )
         pending_next_state = {
             "highest_price": _state_price_floor(pending_highest_price),
             "lowest_price": _state_price_floor(pending_lowest_price),
-            "last_mark_price": pending_current_price,
-            "last_mark_source": pending_current_price_source,
-            "last_marked_at": _iso_utc(now),
+            "last_mark_price": (
+                pending_current_price
+                if pending_current_price is not None
+                else _state_price_floor(pending_prev_last_mark)
+            ),
+            "last_mark_source": str(pending_current_price_source or pending_prev_mark_source),
+            "last_marked_at": pending_mark_updated_at_value,
+            "last_exit_evaluated_at": _iso_utc(now),
         }
         pending_state_changed = False
         if pending_current_price is not None:
@@ -2196,6 +2272,18 @@ async def reconcile_live_positions(
                         if reverse_signal_id and reverse_source:
                             reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
                         row.payload_json = payload
+                        hot_state.record_order_resolved(
+                            trader_id=trader_id,
+                            mode=str(row.mode or ""),
+                            order_id=str(row.id or ""),
+                            market_id=str(row.market_id or ""),
+                            direction=str(row.direction or ""),
+                            source=str(row.source or ""),
+                            status=next_status,
+                            actual_profit=pnl,
+                            payload=payload,
+                            copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                        )
                         closed += 1
                     continue
 
@@ -2242,6 +2330,18 @@ async def reconcile_live_positions(
                         "reason": reason,
                     }
                     row.payload_json = payload
+                    hot_state.record_order_resolved(
+                        trader_id=trader_id,
+                        mode=str(row.mode or ""),
+                        order_id=str(row.id or ""),
+                        market_id=str(row.market_id or ""),
+                        direction=str(row.direction or ""),
+                        source=str(row.source or ""),
+                        status=ns,
+                        actual_profit=_pnl,
+                        payload=payload,
+                        copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                    )
                     closed += 1
                 total_realized_pnl += _pnl
                 by_status[ns] = int(by_status.get(ns, 0)) + 1
@@ -2284,6 +2384,18 @@ async def reconcile_live_positions(
                         "reason": reason,
                     }
                     row.payload_json = payload
+                    hot_state.record_order_resolved(
+                        trader_id=trader_id,
+                        mode=str(row.mode or ""),
+                        order_id=str(row.id or ""),
+                        market_id=str(row.market_id or ""),
+                        direction=str(row.direction or ""),
+                        source=str(row.source or ""),
+                        status=ns,
+                        actual_profit=_pnl,
+                        payload=payload,
+                        copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                    )
                     closed += 1
                 total_realized_pnl += _pnl
                 by_status[ns] = int(by_status.get(ns, 0)) + 1
@@ -2430,6 +2542,18 @@ async def reconcile_live_positions(
                     if reverse_signal_id and reverse_source:
                         reverse_signal_ids_by_source.setdefault(reverse_source, []).append(reverse_signal_id)
                     row.payload_json = payload
+                    hot_state.record_order_resolved(
+                        trader_id=trader_id,
+                        mode=str(row.mode or ""),
+                        order_id=str(row.id or ""),
+                        market_id=str(row.market_id or ""),
+                        direction=str(row.direction or ""),
+                        source=str(row.source or ""),
+                        status=ns,
+                        actual_profit=_pnl,
+                        payload=payload,
+                        copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                    )
                     closed += 1
                 total_realized_pnl += _pnl
                 by_status[ns] = int(by_status.get(ns, 0)) + 1
@@ -2739,6 +2863,18 @@ async def reconcile_live_positions(
                         "reason": reason,
                     }
                     row.payload_json = payload
+                    hot_state.record_order_resolved(
+                        trader_id=trader_id,
+                        mode=str(row.mode or ""),
+                        order_id=str(row.id or ""),
+                        market_id=str(row.market_id or ""),
+                        direction=str(row.direction or ""),
+                        source=str(row.source or ""),
+                        status=ns,
+                        actual_profit=_pnl,
+                        payload=payload,
+                        copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                    )
                     closed += 1
                 total_realized_pnl += _pnl
                 by_status[ns] = int(by_status.get(ns, 0)) + 1
@@ -2781,6 +2917,18 @@ async def reconcile_live_positions(
                         "reason": reason,
                     }
                     row.payload_json = payload
+                    hot_state.record_order_resolved(
+                        trader_id=trader_id,
+                        mode=str(row.mode or ""),
+                        order_id=str(row.id or ""),
+                        market_id=str(row.market_id or ""),
+                        direction=str(row.direction or ""),
+                        source=str(row.source or ""),
+                        status=ns,
+                        actual_profit=_pnl,
+                        payload=payload,
+                        copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                    )
                     closed += 1
                 total_realized_pnl += _pnl
                 by_status[ns] = int(by_status.get(ns, 0)) + 1
@@ -3143,12 +3291,30 @@ async def reconcile_live_positions(
             else:
                 lowest_price = min(lowest_price, current_price)
 
+        mark_changed = bool(
+            current_price is not None
+            and (
+                prev_last_mark is None
+                or abs(prev_last_mark - current_price) > 1e-9
+                or prev_mark_source != str(current_price_source or "")
+            )
+        )
+        mark_updated_at_value = (
+            _iso_utc(now)
+            if (current_price is not None and (mark_changed or prev_marked_at is None))
+            else (
+                _iso_utc(prev_marked_at.replace(tzinfo=timezone.utc))
+                if prev_marked_at is not None
+                else ""
+            )
+        )
         next_state = {
             "highest_price": _state_price_floor(highest_price),
             "lowest_price": _state_price_floor(lowest_price),
-            "last_mark_price": current_price,
-            "last_mark_source": current_price_source,
-            "last_marked_at": _iso_utc(now),
+            "last_mark_price": current_price if current_price is not None else _state_price_floor(prev_last_mark),
+            "last_mark_source": str(current_price_source or prev_mark_source),
+            "last_marked_at": mark_updated_at_value,
+            "last_exit_evaluated_at": _iso_utc(now),
         }
         prev_mark_age_seconds = (
             max(0.0, (now_naive - prev_marked_at).total_seconds()) if prev_marked_at is not None else None
@@ -3624,6 +3790,18 @@ async def reconcile_live_positions(
                 row.reason = f"{row.reason} | {reason}:{close_trigger}"
             else:
                 row.reason = f"{reason}:{close_trigger}"
+        hot_state.record_order_resolved(
+            trader_id=trader_id,
+            mode=str(row.mode or ""),
+            order_id=str(row.id or ""),
+            market_id=str(row.market_id or ""),
+            direction=str(row.direction or ""),
+            source=str(row.source or ""),
+            status=next_status,
+            actual_profit=pnl,
+            payload=payload,
+            copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+        )
         closed += 1
 
     if not dry_run and (closed > 0 or state_updates > 0):

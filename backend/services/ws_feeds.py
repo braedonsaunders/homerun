@@ -360,6 +360,26 @@ class PriceCache:
             return 0.0
         return (vol["buy_volume"] - vol["sell_volume"]) / total
 
+    def evict_stale_ids(self, max_age_seconds: float = 600.0) -> list[str]:
+        """Remove entries not updated within *max_age_seconds*.
+
+        Returns the list of evicted token_ids.  Intended to be called
+        periodically (e.g. every 60 s) to prevent unbounded growth when
+        markets are subscribed but later expire without an explicit
+        ``remove()`` call.
+        """
+        cutoff = time.monotonic() - max_age_seconds
+        to_remove: list[str] = []
+        with self._lock:
+            for token_id, entry in self._entries.items():
+                if entry.updated_at < cutoff:
+                    to_remove.append(token_id)
+            for token_id in to_remove:
+                self._entries.pop(token_id, None)
+                self._history.pop(token_id, None)
+                self._trades.pop(token_id, None)
+        return to_remove
+
     def clear(self) -> None:
         """Drop everything."""
         with self._lock:
@@ -1315,6 +1335,7 @@ class FeedManager:
         self._redis_flush_task: Optional[asyncio.Task] = None
         self._redis_flush_interval_seconds: float = max(0.01, float(settings.WS_REDIS_FLUSH_INTERVAL_SECONDS))
         self._dispatch_tasks: set[asyncio.Task] = set()
+        self._eviction_task: Optional[asyncio.Task] = None
         self._cache.add_on_change_callback(self._on_price_change)
         self._cache.add_on_trade_callback(self._on_trade)
         self._cache.add_on_update_callback(self._on_price_update)
@@ -1365,6 +1386,8 @@ class FeedManager:
         await self._polymarket_feed.start()
         await self._kalshi_feed.start()
         self._started = True
+        loop = asyncio.get_running_loop()
+        self._eviction_task = loop.create_task(self._cache_eviction_loop())
         logger.info(
             "FeedManager started",
             polymarket_ws=True,
@@ -1377,6 +1400,8 @@ class FeedManager:
             self._debounce_task.cancel()
         if self._redis_flush_task and not self._redis_flush_task.done():
             self._redis_flush_task.cancel()
+        if self._eviction_task and not self._eviction_task.done():
+            self._eviction_task.cancel()
         await self._polymarket_feed.stop()
         await self._kalshi_feed.stop()
         async with self._redis_update_lock:
@@ -1515,6 +1540,26 @@ class FeedManager:
                         error=str(exc),
                         token_count=len(updates),
                     )
+        except asyncio.CancelledError:
+            return
+
+    async def _cache_eviction_loop(self) -> None:
+        """Periodically evict stale entries from the price cache and prune
+        feed subscriptions for tokens that were evicted."""
+        try:
+            while True:
+                await asyncio.sleep(60.0)
+                try:
+                    stale_ids = self._cache.evict_stale_ids(max_age_seconds=600.0)
+                    if stale_ids:
+                        # Prune feed subscription sets so they don't grow
+                        # unbounded and the reconnect re-subscribe message
+                        # stays lean.
+                        async with self._polymarket_feed._sub_lock:
+                            self._polymarket_feed._subscribed_assets.difference_update(stale_ids)
+                        logger.info("PriceCache evicted stale entries", evicted=len(stale_ids))
+                except Exception as exc:
+                    logger.warning("PriceCache eviction failed", exc_info=exc)
         except asyncio.CancelledError:
             return
 

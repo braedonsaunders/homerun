@@ -596,6 +596,7 @@ def _build_crypto_market_payload(
 
         payload.append(row)
 
+    market_regime_classifier.prune({m.slug for m in markets})
     return payload
 
 

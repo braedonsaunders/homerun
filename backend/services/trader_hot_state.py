@@ -195,7 +195,32 @@ _audit_buffer: list[_AuditEntry] = []
 _audit_lock = asyncio.Lock()
 _audit_task: asyncio.Task | None = None
 _AUDIT_FLUSH_INTERVAL = 0.5
-_AUDIT_FLUSH_BATCH_SIZE = 200
+_AUDIT_FLUSH_BATCH_SIZE = 1000
+_AUDIT_BUFFER_MAX_SIZE = 50_000
+
+_AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
+
+
+def _audit_buffer_append(entry: _AuditEntry) -> None:
+    """Append *entry* to audit buffer.  Caller must hold ``_audit_lock``.
+
+    Drops the oldest entries when the buffer exceeds the cap to prevent
+    unbounded memory growth during sustained DB failures.
+    """
+    global _AUDIT_OVERFLOW_LOGGED_AT
+    _audit_buffer.append(entry)
+    overflow = len(_audit_buffer) - _AUDIT_BUFFER_MAX_SIZE
+    if overflow > 0:
+        del _audit_buffer[:overflow]
+        now = time.monotonic()
+        if now - _AUDIT_OVERFLOW_LOGGED_AT > 30.0:
+            _AUDIT_OVERFLOW_LOGGED_AT = now
+            logger.warning(
+                "Audit buffer at cap, dropped oldest entries",
+                dropped=overflow,
+                cap=_AUDIT_BUFFER_MAX_SIZE,
+            )
+
 
 _RESEED_INTERVAL_SECONDS = 120.0
 _last_seed_at: float = 0.0
@@ -761,7 +786,7 @@ async def buffer_decision(
         },
     )
     async with _audit_lock:
-        _audit_buffer.append(entry)
+        _audit_buffer_append(entry)
     try:
         await event_bus.publish(
             "trader_decision",
@@ -789,7 +814,7 @@ async def buffer_decision_checks(*, decision_id: str, checks: list[dict[str, Any
         payload={"decision_id": decision_id, "checks": checks},
     )
     async with _audit_lock:
-        _audit_buffer.append(entry)
+        _audit_buffer_append(entry)
 
 
 async def buffer_signal_consumption(
@@ -814,7 +839,7 @@ async def buffer_signal_consumption(
         },
     )
     async with _audit_lock:
-        _audit_buffer.append(entry)
+        _audit_buffer_append(entry)
 
 
 async def buffer_signal_cursor(
@@ -832,7 +857,7 @@ async def buffer_signal_cursor(
         },
     )
     async with _audit_lock:
-        _audit_buffer.append(entry)
+        _audit_buffer_append(entry)
 
 
 async def buffer_signal_status(*, signal_id: str, status: str) -> None:
@@ -841,7 +866,7 @@ async def buffer_signal_status(*, signal_id: str, status: str) -> None:
         payload={"signal_id": signal_id, "status": status},
     )
     async with _audit_lock:
-        _audit_buffer.append(entry)
+        _audit_buffer_append(entry)
 
 
 # ── Flush logic ────────────────────────────────────────────────────
@@ -891,9 +916,23 @@ async def flush_audit_buffer() -> int:
                     logger.warning("Audit entry flush failed", kind=entry.kind, exc_info=exc)
             await session.commit()
     except Exception as exc:
-        logger.warning("Audit batch commit failed, re-queuing", count=len(batch), exc_info=exc)
         async with _audit_lock:
-            _audit_buffer.extend(batch)
+            headroom = _AUDIT_BUFFER_MAX_SIZE - len(_audit_buffer)
+            if headroom > 0:
+                _audit_buffer.extend(batch[:headroom])
+                dropped = len(batch) - headroom
+            else:
+                dropped = len(batch)
+        if dropped > 0:
+            logger.warning(
+                "Audit batch commit failed; buffer at cap, dropped entries",
+                count=len(batch),
+                dropped=dropped,
+                buffer_size=len(_audit_buffer),
+                exc_info=exc,
+            )
+        else:
+            logger.warning("Audit batch commit failed, re-queuing", count=len(batch), exc_info=exc)
         return 0
     return flushed
 

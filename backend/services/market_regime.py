@@ -82,5 +82,10 @@ class MarketRegimeClassifier:
     def clear(self, market_id: str) -> None:
         self._prices.pop(market_id, None)
 
+    def prune(self, active_market_ids: set[str]) -> None:
+        for market_id in list(self._prices):
+            if market_id not in active_market_ids:
+                del self._prices[market_id]
+
 
 market_regime_classifier = MarketRegimeClassifier()

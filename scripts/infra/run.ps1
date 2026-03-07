@@ -50,7 +50,11 @@ function Ensure-ConsoleViewport {
         [int]$MinCols = 140,
         [int]$MinRows = 45,
         [int]$MinBufferRows = 5000
-    )
+)
+
+    if ($env:WT_SESSION) {
+        return
+    }
 
     try {
         $rawUi = $Host.UI.RawUI
@@ -155,6 +159,138 @@ function Wait-ForService {
         Start-Sleep -Milliseconds 250
     }
     return $false
+}
+
+function Get-ListeningProcessId {
+    param(
+        [string]$TargetHost,
+        [int]$Port
+    )
+
+    try {
+        $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    } catch {
+        return $null
+    }
+
+    if (-not $listeners) {
+        return $null
+    }
+
+    foreach ($listener in $listeners) {
+        $localAddress = ($listener.LocalAddress | Out-String).Trim()
+        if ($TargetHost -and $TargetHost -ne "0.0.0.0") {
+            if ($localAddress -ne $TargetHost -and $localAddress -ne "0.0.0.0" -and $localAddress -ne "::" -and $localAddress -ne "::0" -and $localAddress -ne "::1") {
+                continue
+            }
+        }
+        if ($listener.OwningProcess) {
+            return [int]$listener.OwningProcess
+        }
+    }
+
+    return $null
+}
+
+function Wait-ForPortToClose {
+    param(
+        [string]$TargetHost,
+        [int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $listenerPid = Get-ListeningProcessId -TargetHost $TargetHost -Port $Port
+        if (-not $listenerPid) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    return $false
+}
+
+function Test-PortBindConflictError {
+    param(
+        [string]$Output,
+        [int]$Port
+    )
+
+    if (-not $Output) {
+        return $false
+    }
+
+    return (($Output -match "(?i)ports are not available") -and ($Output -match "(?i):$Port\b"))
+}
+
+function Stop-ConflictingRedisListener {
+    param(
+        [string]$RedisHost,
+        [int]$RedisPort,
+        [string]$ContainerName
+    )
+
+    if (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort) {
+        return $true
+    }
+
+    foreach ($svcName in @("Redis", "Memurai")) {
+        try {
+            $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq "Running") {
+                Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+        }
+    }
+
+    if (Test-RedisPing -RedisHost $RedisHost -RedisPort $RedisPort) {
+        Send-RedisShutdown -RedisHost $RedisHost -RedisPort $RedisPort
+    }
+
+    if (Wait-ForPortToClose -TargetHost $RedisHost -Port $RedisPort -TimeoutSeconds 6) {
+        return $true
+    }
+
+    $listenerPid = Get-ListeningProcessId -TargetHost $RedisHost -Port $RedisPort
+    if (-not $listenerPid) {
+        return $true
+    }
+
+    $proc = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        return (Wait-ForPortToClose -TargetHost $RedisHost -Port $RedisPort -TimeoutSeconds 2)
+    }
+
+    $processName = ($proc.ProcessName | Out-String).Trim().ToLowerInvariant()
+    $cmdLine = ""
+    try {
+        $procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction SilentlyContinue
+        if ($procInfo -and $procInfo.CommandLine) {
+            $cmdLine = ($procInfo.CommandLine | Out-String).Trim().ToLowerInvariant()
+        }
+    } catch {
+    }
+
+    $isRedisProcess = $false
+    if ($processName -match "redis|memurai") {
+        $isRedisProcess = $true
+    } elseif ($cmdLine -match "redis|memurai") {
+        $isRedisProcess = $true
+    }
+
+    if (-not $isRedisProcess) {
+        return $false
+    }
+
+    try {
+        Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue
+    } catch {
+        return $false
+    }
+
+    return (Wait-ForPortToClose -TargetHost $RedisHost -Port $RedisPort -TimeoutSeconds 4)
 }
 
 function Get-ProjectRedisRuntimeDir {
@@ -769,6 +905,24 @@ function Start-RedisDocker {
             return $true
         }
 
+        if (Test-PortBindConflictError -Output $composeResult.Output -Port $RedisPort) {
+            if (Stop-ConflictingRedisListener -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName) {
+                $composeAfterPortCleanup = Invoke-DockerComposeCommand `
+                    -Arguments @("up", "-d", "redis") `
+                    -EnvironmentOverrides @{
+                        "REDIS_HOST" = $RedisHost
+                        "REDIS_PORT" = "$RedisPort"
+                        "REDIS_IMAGE" = $Image
+                        "REDIS_CONTAINER_NAME" = $ContainerName
+                    }
+                if ($composeAfterPortCleanup.ExitCode -eq 0) {
+                    $script:lastRedisContainerEngine = "docker-compose"
+                    $script:redisDockerCreatedByScript = $true
+                    return $true
+                }
+            }
+        }
+
         if (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort) {
             $script:lastRedisContainerEngine = "docker-compose"
             $script:redisDockerCreatedByScript = $true
@@ -929,7 +1083,18 @@ function Ensure-Redis {
         [int]$RedisPort,
         [string]$ContainerName,
         [string]$Image
-    )
+)
+
+    if (Test-DockerRuntimeAvailable) {
+        $existingListenerPid = Get-ListeningProcessId -TargetHost $RedisHost -Port $RedisPort
+        if ($existingListenerPid -and (-not (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort))) {
+            Write-Host "Redis port ${RedisPort} is occupied by a non-Docker listener. Reclaiming port for launcher-managed Docker Redis..." -ForegroundColor Yellow
+            if (-not (Stop-ConflictingRedisListener -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName)) {
+                Write-Host "Failed to reclaim Redis port ${RedisPort}. Stop the process on ${RedisHost}:${RedisPort} and rerun." -ForegroundColor Red
+                exit 1
+            }
+        }
+    }
 
     if (Test-RedisPing -RedisHost $RedisHost -RedisPort $RedisPort) {
         $versionOk = Test-RedisVersionOk -RedisHost $RedisHost -RedisPort $RedisPort
@@ -1530,6 +1695,69 @@ function Test-LocalPostgresListenerOwned {
     }
 }
 
+function Stop-ConflictingPostgresListener {
+    param(
+        [string]$PgHost,
+        [int]$Port,
+        [string]$ContainerName,
+        [string]$DataDir
+    )
+
+    if (Test-PostgresDockerListenerOwned -ContainerName $ContainerName -Port $Port) {
+        return $true
+    }
+
+    try {
+        $postgresServices = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue
+        foreach ($svc in $postgresServices) {
+            if ($svc -and $svc.Status -eq "Running") {
+                Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+    }
+
+    if (Test-LocalPostgresListenerOwned -DataDir $DataDir -Port $Port) {
+        $binDir = Find-PostgresBinDir
+        if ($binDir) {
+            $pgctlPath = Join-Path $binDir "pg_ctl.exe"
+            if (Test-Path $pgctlPath) {
+                try {
+                    & $pgctlPath -D $DataDir -m fast -w stop *> $null
+                } catch {
+                }
+            }
+        }
+    }
+
+    if (Wait-ForPortToClose -TargetHost $PgHost -Port $Port -TimeoutSeconds 6) {
+        return $true
+    }
+
+    $listenerPid = Get-ListeningProcessId -TargetHost $PgHost -Port $Port
+    if (-not $listenerPid) {
+        return $true
+    }
+
+    $proc = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        return (Wait-ForPortToClose -TargetHost $PgHost -Port $Port -TimeoutSeconds 2)
+    }
+
+    $processName = ($proc.ProcessName | Out-String).Trim().ToLowerInvariant()
+    if ($processName -notmatch "postgres") {
+        return $false
+    }
+
+    try {
+        Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue
+    } catch {
+        return $false
+    }
+
+    return (Wait-ForPortToClose -TargetHost $PgHost -Port $Port -TimeoutSeconds 4)
+}
+
 function Test-LauncherPostgresListenerOwned {
     param(
         [string]$ContainerName,
@@ -1617,16 +1845,25 @@ function Ensure-Postgres {
             return
         }
 
-        $alternatePort = Get-AvailablePostgresPort -PgHost $PgHost -StartPort ($Port + 1)
-        if (-not $alternatePort) {
-            Write-Host "Port ${Port} is occupied by a non-launcher service and no alternate Postgres port is available." -ForegroundColor Red
-            Write-Host "Set DATABASE_URL manually or free a local port, then rerun." -ForegroundColor Yellow
-            exit 1
+        Write-Host "Postgres port ${Port} is occupied by a non-launcher listener. Attempting to reclaim it..." -ForegroundColor Yellow
+        if (Stop-ConflictingPostgresListener -PgHost $PgHost -Port $Port -ContainerName $ContainerName -DataDir $DataDir) {
+            if (-not (Test-TcpPort -TargetHost $PgHost -Port $Port)) {
+                Write-Host "Reclaimed Postgres port ${Port}." -ForegroundColor Green
+            }
         }
 
-        Write-Host "Port ${Port} is in use by a non-launcher service. Launching project Postgres on ${alternatePort} instead." -ForegroundColor Yellow
-        $Port = [int]$alternatePort
-        $script:postgresPort = [int]$alternatePort
+        if (Test-TcpPort -TargetHost $PgHost -Port $Port) {
+            $alternatePort = Get-AvailablePostgresPort -PgHost $PgHost -StartPort ($Port + 1)
+            if (-not $alternatePort) {
+                Write-Host "Port ${Port} is occupied and no alternate Postgres port is available." -ForegroundColor Red
+                Write-Host "Set DATABASE_URL manually or free a local port, then rerun." -ForegroundColor Yellow
+                exit 1
+            }
+
+            Write-Host "Port ${Port} is still in use. Launching project Postgres on ${alternatePort} instead." -ForegroundColor Yellow
+            $Port = [int]$alternatePort
+            $script:postgresPort = [int]$alternatePort
+        }
     }
 
     if (-not (Ensure-PostgresRuntime)) {
@@ -1723,6 +1960,63 @@ function Cleanup-StartedPostgres {
                 try { & $pgctlPath -D $postgresDataDir -m fast -w stop *> $null } catch {}
             }
         }
+    }
+}
+
+function Test-DockerContainerRunningByName {
+    param([string]$ContainerName)
+
+    if (-not (Ensure-DockerCommand)) {
+        return $false
+    }
+
+    $runningResult = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Running}}", $ContainerName)
+    if ($runningResult.ExitCode -ne 0) {
+        return $false
+    }
+
+    return (((($runningResult.Output | Out-String).Trim()).ToLowerInvariant()) -eq "true")
+}
+
+function Cleanup-AdoptedDockerPostgres {
+    if ($script:postgresStartedByScript) {
+        return
+    }
+
+    if (-not (Test-DockerContainerRunningByName -ContainerName $postgresContainerName)) {
+        return
+    }
+
+    $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "postgres") -EnvironmentOverrides @{
+        "POSTGRES_CONTAINER_NAME" = $postgresContainerName
+    }
+    if ($composeStop.ExitCode -eq 0) {
+        return
+    }
+
+    if (Ensure-DockerCommand) {
+        try { docker stop $postgresContainerName *> $null } catch {}
+    }
+}
+
+function Cleanup-AdoptedDockerRedis {
+    if ($script:redisStartedByScript) {
+        return
+    }
+
+    if (-not (Test-DockerContainerRunningByName -ContainerName $redisContainerName)) {
+        return
+    }
+
+    $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "redis") -EnvironmentOverrides @{
+        "REDIS_CONTAINER_NAME" = $redisContainerName
+    }
+    if ($composeStop.ExitCode -eq 0) {
+        return
+    }
+
+    if (Ensure-DockerCommand) {
+        try { docker stop $redisContainerName *> $null } catch {}
     }
 }
 
@@ -1976,6 +2270,13 @@ if (Test-NeedsSetup) {
 # Stale processes hold Postgres/Redis connections that can block startup.
 Cleanup-StaleHomerunProcesses
 
+# If the previous run was terminated abruptly (window close/taskkill),
+# launcher-named Docker services can remain running.
+if (-not $script:databaseUrlWasProvided) {
+    Cleanup-AdoptedDockerPostgres
+}
+Cleanup-AdoptedDockerRedis
+
 # The Npcap Loopback Adapter (Wireshark/Nmap) can silently break loopback
 # TCP connections, causing Postgres to appear to listen but drop all traffic.
 Test-NpcapLoopbackInterference
@@ -2025,6 +2326,13 @@ try {
     # Stop launcher-managed services
     Cleanup-StartedPostgres
     Cleanup-StartedRedis
+
+    # Stop adopted launcher-named Docker services as well. This handles
+    # runs where services were already up from a previous session.
+    if (-not $script:databaseUrlWasProvided) {
+        Cleanup-AdoptedDockerPostgres
+    }
+    Cleanup-AdoptedDockerRedis
 
     # Also stop services the launcher adopted (already running when we started)
     if (-not $script:databaseUrlWasProvided) {

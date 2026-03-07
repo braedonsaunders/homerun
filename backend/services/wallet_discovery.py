@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import math
 import statistics
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
@@ -527,7 +528,10 @@ class WalletDiscoveryEngine:
         integer_digits = max(1, prec - max(0, scl))
         if integer_digits > 18:
             return 1_000_000_000_000_000_000.0
-        return float((10**integer_digits) - (10 ** (-max(0, scl))))
+        raw_limit = (Decimal(10) ** integer_digits) - (Decimal(10) ** (-max(0, scl)))
+        if raw_limit >= Decimal("1e6"):
+            raw_limit *= Decimal("0.999999999")
+        return float(raw_limit)
 
     async def _load_discovered_wallet_numeric_bounds(self, session) -> dict[str, float]:
         if self._discovered_wallet_numeric_bounds is not None:
@@ -563,16 +567,48 @@ class WalletDiscoveryEngine:
     def _clamp_numeric_value(value: Any, abs_limit: float) -> Any:
         if isinstance(value, bool):
             return value
-        if not isinstance(value, (int, float)):
+        if isinstance(value, (int, float, Decimal)):
+            try:
+                numeric = Decimal(str(value))
+            except Exception:
+                return value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return value
+            try:
+                numeric = Decimal(text)
+            except (TypeError, ValueError, InvalidOperation):
+                return value
+        else:
             return value
-        numeric = float(value)
-        if not math.isfinite(numeric):
+        if not numeric.is_finite():
             return None
-        if numeric > abs_limit:
-            return abs_limit
-        if numeric < -abs_limit:
-            return -abs_limit
-        return numeric
+        try:
+            limit = Decimal(str(abs_limit))
+        except Exception:
+            limit = Decimal(str(_NUMERIC_DEFAULT_ABS_MAX))
+        if numeric > limit:
+            numeric = limit
+        elif numeric < -limit:
+            numeric = -limit
+        return float(numeric)
+
+    def _sanitize_numeric_payload(self, value: Any, abs_limit: float) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._sanitize_numeric_payload(item, abs_limit)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._sanitize_numeric_payload(item, abs_limit) for item in value]
+        if isinstance(value, tuple):
+            return [self._sanitize_numeric_payload(item, abs_limit) for item in value]
+
+        clamped = self._clamp_numeric_value(value, abs_limit)
+        if isinstance(clamped, float) and (math.isinf(clamped) or math.isnan(clamped)):
+            return None
+        return clamped
 
     def _summarize_closed_positions(self, closed_positions: list[dict]) -> dict:
         wins = 0
@@ -1864,8 +1900,8 @@ class WalletDiscoveryEngine:
                             )
                         elif key in numeric_bounds and value is not None:
                             value = self._clamp_numeric_value(value, numeric_bounds[key])
-                        elif isinstance(value, (int, float)) and not isinstance(value, bool) and value is not None:
-                            value = self._clamp_numeric_value(value, _NUMERIC_DEFAULT_ABS_MAX)
+                        else:
+                            value = self._sanitize_numeric_payload(value, _NUMERIC_DEFAULT_ABS_MAX)
                         if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
                             value = None
                         if hasattr(wallet, key):

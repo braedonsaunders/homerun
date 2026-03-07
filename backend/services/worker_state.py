@@ -22,6 +22,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import WorkerControl, WorkerSnapshot
 from services.event_bus import event_bus
 from utils.converters import to_iso
+from utils.retry import is_retryable_db_error as _is_retryable_db_error
+
+
+_COMMIT_RETRYABLE_MARKERS = (
+    "deadlock detected",
+    "serialization failure",
+    "could not serialize access",
+    "lock not available",
+)
+
+
+def _is_retryable_commit_error(exc: Exception) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    if any(marker in message for marker in _COMMIT_RETRYABLE_MARKERS):
+        return True
+
+    sqlstate = str(
+        getattr(getattr(exc, "orig", None), "sqlstate", "")
+        or getattr(exc, "sqlstate", "")
+        or ""
+    ).strip()
+    return sqlstate in {"40P01", "40001", "55P03"}
 
 
 DEFAULT_WORKER_INTERVALS: dict[str, int] = {
@@ -45,7 +67,6 @@ DB_RETRY_BASE_DELAY_SECONDS = 0.05
 DB_RETRY_MAX_DELAY_SECONDS = 0.3
 
 
-from utils.retry import is_retryable_db_error as _is_retryable_db_error  # noqa: E402
 from utils.retry import db_retry_delay as _db_retry_delay  # noqa: E402
 
 
@@ -139,7 +160,7 @@ async def _commit_with_retry(
         except DBAPIError as exc:
             if hasattr(session, "rollback"):
                 await session.rollback()
-            is_locked = _is_retryable_db_error(exc)
+            is_locked = _is_retryable_commit_error(exc)
             is_last = attempt >= attempts - 1
             if not is_locked or is_last:
                 raise

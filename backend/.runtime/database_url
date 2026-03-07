@@ -1,1 +1,0 @@
-postgresql+asyncpg://homerun:homerun@127.0.0.1:5433/homerun

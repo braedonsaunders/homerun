@@ -2,7 +2,7 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-mode con cols=140 lines=45 >nul 2>nul
+if not defined WT_SESSION mode con cols=140 lines=45 >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%..\infra\run.ps1" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 

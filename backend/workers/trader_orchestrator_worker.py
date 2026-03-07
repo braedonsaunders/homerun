@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 
 from config import settings
@@ -24,6 +25,7 @@ from models.database import (
     Trader,
     TraderGroupMember,
     init_database,
+    release_conn,
 )
 from services.trader_orchestrator.live_market_context import (
     RuntimeTradeSignalView,
@@ -141,24 +143,28 @@ async def create_trader_decision(session, *, trader_id, signal, strategy_key, st
         decision=decision, reason=reason, score=score, trace_id=trace_id,
         checks_summary=checks_summary, risk_snapshot=risk_snapshot, payload=payload,
     )
-    # Write the decision row into the DB session so that any execution_sessions
-    # INSERT in the same transaction can satisfy the FK on decision_id.
-    session.add(TraderDecision(
-        id=row_id,
-        trader_id=trader_id,
-        signal_id=str(signal.id),
-        source=str(getattr(signal, "source", "")),
-        strategy_key=str(strategy_key),
-        strategy_version=int(strategy_version) if strategy_version is not None else None,
-        decision=str(decision),
-        reason=reason,
-        score=score,
-        trace_id=trace_id,
-        checks_summary_json=checks_summary or {},
-        risk_snapshot_json=risk_snapshot or {},
-        payload_json=payload or {},
-        created_at=utcnow(),
-    ))
+    # Write an idempotent decision row so execution_sessions in this transaction
+    # can satisfy decision_id FKs without crashing on duplicate commit replays.
+    await session.execute(
+        pg_insert(TraderDecision)
+        .values(
+            id=row_id,
+            trader_id=trader_id,
+            signal_id=str(signal.id),
+            source=str(getattr(signal, "source", "")),
+            strategy_key=str(strategy_key),
+            strategy_version=int(strategy_version) if strategy_version is not None else None,
+            decision=str(decision),
+            reason=reason,
+            score=score,
+            trace_id=trace_id,
+            checks_summary_json=checks_summary or {},
+            risk_snapshot_json=risk_snapshot or {},
+            payload_json=payload or {},
+            created_at=utcnow(),
+        )
+        .on_conflict_do_nothing(index_elements=[TraderDecision.id])
+    )
     return _DecisionStub(row_id)
 
 
@@ -273,6 +279,55 @@ _live_provider_entry_blocked_until: dict[str, datetime] = {}
 _live_provider_block_event_cooldown_until: dict[str, datetime] = {}
 _live_risk_clamp_event_cooldown_until: dict[str, datetime] = {}
 _live_provider_reconcile_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
+
+
+def _prune_module_caches(active_trader_ids: set[str]) -> None:
+    """Remove entries from module-level dicts for traders no longer active.
+
+    Called once per orchestrator cycle after the trader list is loaded.
+    Without this, the dicts grow per-trader/per-order across the lifetime
+    of the process and never shrink — a slow memory leak.
+    """
+    for trader_id in list(_trader_idle_maintenance_last_run):
+        if trader_id not in active_trader_ids:
+            _trader_idle_maintenance_last_run.pop(trader_id, None)
+
+    for trader_id in list(_trader_cycle_heartbeat_last_emitted):
+        if trader_id not in active_trader_ids:
+            _trader_cycle_heartbeat_last_emitted.pop(trader_id, None)
+
+    for trader_id in list(_live_provider_entry_blocked_until):
+        if trader_id not in active_trader_ids:
+            _live_provider_entry_blocked_until.pop(trader_id, None)
+
+    for trader_id in list(_live_provider_block_event_cooldown_until):
+        if trader_id not in active_trader_ids:
+            _live_provider_block_event_cooldown_until.pop(trader_id, None)
+
+    for trader_id in list(_live_risk_clamp_event_cooldown_until):
+        if trader_id not in active_trader_ids:
+            _live_risk_clamp_event_cooldown_until.pop(trader_id, None)
+
+    for trader_id in list(_live_provider_reconcile_cache):
+        if trader_id not in active_trader_ids:
+            _live_provider_reconcile_cache.pop(trader_id, None)
+
+    # _open_order_timeout_cleanup_failure_cooldown_until is keyed by
+    # "trader_id:mode:source" — prune entries whose trader_id prefix is gone.
+    for key in list(_open_order_timeout_cleanup_failure_cooldown_until):
+        prefix = key.split(":", 1)[0]
+        if prefix not in active_trader_ids:
+            _open_order_timeout_cleanup_failure_cooldown_until.pop(key, None)
+
+    # _terminal_stale_order_alert_last_emitted is keyed by order_id.
+    # It already has a 24h expiry in the stale-order check path, but if the
+    # check never runs (no stale orders), old entries accumulate.  Cap size.
+    if len(_terminal_stale_order_alert_last_emitted) > 5000:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        for order_id, emitted_at in list(_terminal_stale_order_alert_last_emitted.items()):
+            if emitted_at < cutoff:
+                _terminal_stale_order_alert_last_emitted.pop(order_id, None)
+
 
 _LIVE_PROVIDER_INFRA_ERROR_MARKERS = (
     "connection refused",
@@ -3338,20 +3393,21 @@ async def _run_trader_once(
                     except Exception as exc:
                         logger.warning("Failed to request market_data worker run: %s", exc)
                 try:
-                    live_contexts = await asyncio.wait_for(
-                        build_live_signal_contexts(
-                            context_candidates,
-                            history_window_seconds=history_window_seconds,
-                            history_fidelity_seconds=history_fidelity_seconds,
-                            max_history_points=max_history_points,
-                            market_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
-                            prices_batch_timeout_seconds=live_market_context_request_timeout_seconds,
-                            history_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
-                            strict_ws_only=strict_ws_pricing_enforced,
-                            allow_redis_strict=allow_redis_strict_prices,
-                        ),
-                        timeout=live_market_context_timeout_seconds,
-                    )
+                    async with release_conn(session):
+                        live_contexts = await asyncio.wait_for(
+                            build_live_signal_contexts(
+                                context_candidates,
+                                history_window_seconds=history_window_seconds,
+                                history_fidelity_seconds=history_fidelity_seconds,
+                                max_history_points=max_history_points,
+                                market_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
+                                prices_batch_timeout_seconds=live_market_context_request_timeout_seconds,
+                                history_fetch_timeout_seconds=live_market_context_request_timeout_seconds,
+                                strict_ws_only=strict_ws_pricing_enforced,
+                                allow_redis_strict=allow_redis_strict_prices,
+                            ),
+                            timeout=live_market_context_timeout_seconds,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -4034,25 +4090,26 @@ async def _run_trader_once(
                             copy_inventory_context_for_signal = copy_inventory_context
 
                     loop = asyncio.get_running_loop()
-                    decision_obj = await loop.run_in_executor(
-                        None,
-                        strategy.evaluate,
-                        runtime_signal,
-                        {
-                            "params": strategy_params,
-                            "trader": trader,
-                            "mode": control.get("mode", "shadow"),
-                            "live_market": live_context,
-                            "source_config": source_config,
-                            "traders_scope_context": (
-                                traders_scope_context if signal_source == "traders" else None
-                            ),
-                            "edge_calibration": edge_calibration_profile,
-                            "copy_risk_context": copy_risk_context,
-                            "copy_allocation_context": copy_allocation_context,
-                            "copy_inventory_context": copy_inventory_context_for_signal,
-                        },
-                    )
+                    async with release_conn(session):
+                        decision_obj = await loop.run_in_executor(
+                            None,
+                            strategy.evaluate,
+                            runtime_signal,
+                            {
+                                "params": strategy_params,
+                                "trader": trader,
+                                "mode": control.get("mode", "shadow"),
+                                "live_market": live_context,
+                                "source_config": source_config,
+                                "traders_scope_context": (
+                                    traders_scope_context if signal_source == "traders" else None
+                                ),
+                                "edge_calibration": edge_calibration_profile,
+                                "copy_risk_context": copy_risk_context,
+                                "copy_allocation_context": copy_allocation_context,
+                                "copy_inventory_context": copy_inventory_context_for_signal,
+                            },
+                        )
                     checks_payload = _checks_to_payload(decision_obj.checks)
 
                     if live_context:
@@ -4407,19 +4464,21 @@ async def _run_trader_once(
 
                     order_status = None
                     if final_decision == "selected":
-                        submit_result = await submit_order(
-                            session_engine=session_engine,
-                            trader_id=trader_id,
-                            signal=runtime_signal,
-                            decision_id=decision_row.id,
-                            strategy_key=resolved_strategy_key,
-                            strategy_version=resolved_strategy_version,
-                            strategy_params=strategy_params,
-                            risk_limits=effective_risk_limits,
-                            mode=str(control.get("mode", "shadow")),
-                            size_usd=size_usd,
-                            reason=final_reason,
-                        )
+                        await _commit_with_retry(session)
+                        async with release_conn(session):
+                            submit_result = await submit_order(
+                                session_engine=session_engine,
+                                trader_id=trader_id,
+                                signal=runtime_signal,
+                                decision_id=decision_row.id,
+                                strategy_key=resolved_strategy_key,
+                                strategy_version=resolved_strategy_version,
+                                strategy_params=strategy_params,
+                                risk_limits=effective_risk_limits,
+                                mode=str(control.get("mode", "shadow")),
+                                size_usd=size_usd,
+                                reason=final_reason,
+                            )
                         if isinstance(submit_result, tuple):
                             normalized_order_status = str(submit_result[0] or "").strip().lower()
                             order_status = normalized_order_status
@@ -5209,6 +5268,8 @@ async def run_worker_loop() -> None:
                     total_decisions += decisions
                     total_orders += orders
                     total_processed_signals += processed_signals
+
+                _prune_module_caches({str(t.get("id") or "") for t in traders})
 
                 async with AsyncSessionLocal() as session:
                     if manual_force_cycle and not manage_only_cycle:

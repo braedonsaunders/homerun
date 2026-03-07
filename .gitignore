@@ -46,6 +46,10 @@ Thumbs.db
 data/*.stale*
 data/postgres/
 data/runtime/
+backend/.runtime/
+
+# Local exports
+homerun-settings-*.json
 
 # Logs
 *.log

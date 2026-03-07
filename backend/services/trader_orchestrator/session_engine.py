@@ -29,6 +29,7 @@ from services.trader_orchestrator.order_manager import (
     submit_execution_wave,
 )
 from services.trader_orchestrator_state import (
+    _extract_copy_source_wallet_from_payload,
     _extract_live_fill_metrics,
     _serialize_order,
     _sync_order_runtime_payload,
@@ -44,6 +45,7 @@ from services.trader_orchestrator_state import (
 )
 from utils.converters import safe_float, safe_int
 from utils.utcnow import utcnow
+import services.trader_hot_state as hot_state
 
 
 def _iso_utc(value: datetime) -> str:
@@ -1217,6 +1219,15 @@ class ExecutionSessionEngine:
                     trader_order.reason = f"{trader_order.reason} | session:{terminal_key}:{reason}"
                 else:
                     trader_order.reason = f"session:{terminal_key}:{reason}"
+            if next_status == "cancelled":
+                hot_state.record_order_cancelled(
+                    trader_id=str(trader_order.trader_id or ""),
+                    mode=str(trader_order.mode or ""),
+                    order_id=str(trader_order.id or ""),
+                    market_id=str(trader_order.market_id or ""),
+                    source=str(trader_order.source or ""),
+                    copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+                )
             updated_trader_orders.append(trader_order)
 
         any_filled = total_orders_filled > 0

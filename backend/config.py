@@ -145,8 +145,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = _default_database_url()
     DATABASE_POOL_SIZE: int = 12
     DATABASE_MAX_OVERFLOW: int = 8
-    DATABASE_WORKER_POOL_SIZE: int = 4
-    DATABASE_WORKER_MAX_OVERFLOW: int = 4
+    DATABASE_WORKER_POOL_SIZE: int = 6
+    DATABASE_WORKER_MAX_OVERFLOW: int = 6
     DATABASE_POOL_TIMEOUT_SECONDS: int = 30
     DATABASE_POOL_RECYCLE_SECONDS: int = 300
     DATABASE_CONNECT_TIMEOUT_SECONDS: float = 8.0
@@ -223,6 +223,7 @@ class Settings(BaseSettings):
     # Trading Safety Limits
     MAX_TRADE_SIZE_USD: float = 100.0  # Maximum single trade size
     MAX_DAILY_TRADE_VOLUME: float = 1000.0  # Maximum daily trading volume
+    MIN_ACCOUNT_BALANCE_USD: float = 0.0  # Keep this balance untouched for buys
     MIN_ORDER_SIZE_USD: float = 1.0  # Minimum order size
 
     # Order Settings
@@ -795,6 +796,7 @@ async def apply_search_filters():
         ("MAX_TRADE_SIZE_USD", "max_trade_size_usd", 100.0),
         ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),
         ("MAX_SLIPPAGE_PERCENT", "max_slippage_percent", 2.0),
+        ("MIN_ACCOUNT_BALANCE_USD", "min_account_balance_usd", 0.0),
     ]
 
     for config_attr, db_attr, default in _apply:
