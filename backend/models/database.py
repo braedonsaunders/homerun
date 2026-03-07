@@ -3629,16 +3629,20 @@ async def release_conn(session):
     Any unflushed ORM state is lost (flush is called first to persist it).
     Callers should commit before entering if they need durability.
     """
-    if not session.is_active:
+    if not getattr(session, "is_active", True):
         yield
         return
     try:
-        if session.dirty or session.new:
+        dirty = getattr(session, "dirty", None)
+        new = getattr(session, "new", None)
+        if dirty or new:
             await session.flush()
     except Exception:
         pass
     try:
-        await session.reset()
+        reset = getattr(session, "reset", None)
+        if callable(reset):
+            await reset()
     except Exception:
         pass
     try:

@@ -729,7 +729,8 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         if getattr(trade, "max_open_positions", None) is not None:
             settings.max_open_positions = trade.max_open_positions
         settings.max_slippage_percent = trade.max_slippage_percent
-        settings.min_account_balance_usd = trade.min_account_balance_usd
+        if getattr(trade, "min_account_balance_usd", None) is not None:
+            settings.min_account_balance_usd = trade.min_account_balance_usd
 
     if maintenance:
         maint = maintenance
