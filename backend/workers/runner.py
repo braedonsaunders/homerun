@@ -37,7 +37,7 @@ async def _run_worker(module_name: str) -> None:
 
     # Import lazily so the logger and DB pool are configured by the time we use them.
     from utils.logger import get_logger
-    from models.database import start_pool_watchdog, stop_pool_watchdog
+    from models.database import start_pool_watchdog
     logger = get_logger(f"worker.runner.{module_name.split('.')[-1]}")
 
     # Start the pool watchdog in this worker subprocess too.

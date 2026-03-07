@@ -590,7 +590,6 @@ async def _run_scan_loop() -> None:
                 heartbeat_state["last_run_at"] = utcnow()
             else:
                 batch_kind = "scan_error" if scan_error is not None else "scan_cycle"
-                enqueue_succeeded = False
                 for enqueue_attempt in range(DB_RETRY_ATTEMPTS):
                     try:
                         heartbeat_state["phase"] = "enqueue_batch"
@@ -610,7 +609,6 @@ async def _run_scan_loop() -> None:
                             logger.warning("Scanner enqueued batch after dropping %d stale pending batches", dropped)
                         heartbeat_state["phase"] = "idle"
                         heartbeat_state["progress"] = 1.0
-                        enqueue_succeeded = True
                         break
                     except (DBAPIError, asyncio.TimeoutError) as exc:
                         if enqueue_attempt < DB_RETRY_ATTEMPTS - 1 and (

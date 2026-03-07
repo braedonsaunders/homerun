@@ -36,7 +36,6 @@ from services.trader_orchestrator_state import (
     REALIZED_LOSS_ORDER_STATUSES,
     REALIZED_ORDER_STATUSES,
     REALIZED_WIN_ORDER_STATUSES,
-    _active_order_notional_for_metrics,
     _extract_live_fill_metrics,
     _is_active_order_status,
     _live_active_notional,
@@ -295,7 +294,6 @@ async def _seed_from_db(session: AsyncSession) -> None:
         if _is_active_order_status(mode, order.status):
             snap.open_order_count += 1
             market_id = str(order.market_id or "").strip()
-            direction = str(order.direction or "").strip().lower()
             if market_id:
                 snap.open_market_ids.add(market_id)
             for scope in ("market_direction",):

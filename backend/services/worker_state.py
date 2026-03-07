@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import WorkerControl, WorkerSnapshot
 from services.event_bus import event_bus
 from utils.converters import to_iso
-from utils.retry import is_retryable_db_error as _is_retryable_db_error
 
 
 _COMMIT_RETRYABLE_MARKERS = (
@@ -65,9 +64,6 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
 DB_RETRY_ATTEMPTS = 3
 DB_RETRY_BASE_DELAY_SECONDS = 0.05
 DB_RETRY_MAX_DELAY_SECONDS = 0.3
-
-
-from utils.retry import db_retry_delay as _db_retry_delay  # noqa: E402
 
 
 def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:

@@ -17,6 +17,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import asynccontextmanager as _asynccontextmanager
 import logging as _logging
 import enum
 import asyncio
@@ -3610,9 +3611,6 @@ def stop_pool_watchdog() -> None:
 # This prevents any single database operation from holding a connection
 # indefinitely, even if the work involves awaiting external I/O while a
 # session is open.
-
-from contextlib import asynccontextmanager as _asynccontextmanager
-
 
 @_asynccontextmanager
 async def release_conn(session):

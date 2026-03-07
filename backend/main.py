@@ -364,7 +364,7 @@ async def lifespan(app: FastAPI):
 
         # Start pool watchdog — reaps connections held too long and
         # recovers the pool when near-exhaustion is detected.
-        from models.database import start_pool_watchdog, stop_pool_watchdog
+        from models.database import start_pool_watchdog
         pool_watchdog_task = start_pool_watchdog()
         tasks.append(pool_watchdog_task)
 
