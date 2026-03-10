@@ -16,7 +16,6 @@ from typing import Any
 
 from config import apply_runtime_settings_overrides, settings
 from models.database import AsyncSessionLocal, recover_pool
-from services.redis_price_cache import redis_price_cache
 from services.scanner import scanner
 from services.shared_state import read_market_catalog, read_scanner_status
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
@@ -38,35 +37,13 @@ _MAX_CONSECUTIVE_DB_FAILURES = 3
 
 async def _read_catalog_stats() -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
-        _, markets, metadata = await read_market_catalog(
+        _, _, metadata = await read_market_catalog(
             session,
             include_events=False,
+            include_markets=False,
             validate=False,
         )
         scanner_status = await read_scanner_status(session, include_opportunity_count=False)
-
-    token_ids: list[str] = []
-    market_token_pairs: list[tuple[str, str]] = []
-    for market in markets:
-        if isinstance(market, dict):
-            raw_tokens = list(market.get("clob_token_ids") or [])
-        else:
-            raw_tokens = list(getattr(market, "clob_token_ids", None) or [])
-        clean_tokens = [str(token_id or "").strip() for token_id in raw_tokens if str(token_id or "").strip()]
-        if len(clean_tokens) < 2:
-            continue
-        yes_token = clean_tokens[0]
-        no_token = clean_tokens[1]
-        market_token_pairs.append((yes_token, no_token))
-        token_ids.extend((yes_token, no_token))
-
-    deduped_tokens = sorted({token for token in token_ids if token})
-    fresh_prices = await redis_price_cache.read_prices(deduped_tokens) if deduped_tokens else {}
-    fresh_tokens = set(fresh_prices.keys())
-    stale_markets = 0
-    for yes_token, no_token in market_token_pairs:
-        if yes_token not in fresh_tokens or no_token not in fresh_tokens:
-            stale_markets += 1
 
     tiered = scanner_status.get("tiered_scanning") or {}
     scanned_markets = int(
@@ -84,7 +61,7 @@ async def _read_catalog_stats() -> dict[str, Any]:
         "event_count": int(metadata.get("event_count") or 0),
         "market_count": int(metadata.get("market_count") or 0),
         "scanned_markets": scanned_markets,
-        "stale_markets": stale_markets,
+        "stale_markets": None,
         "coverage_ratio": coverage_ratio,
         "fetch_duration_seconds": (
             float(metadata.get("fetch_duration_seconds"))

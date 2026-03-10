@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import ExecutionSessionLeg, TraderOrder
+from models.database import ExecutionSessionLeg, TraderOrder, release_conn
 from services.event_bus import event_bus
 from services.live_execution_adapter import execute_live_order
 from services.live_execution_service import live_execution_service
@@ -422,11 +422,12 @@ class ExecutionSessionEngine:
 
         for wave_index, wave in enumerate(waves):
             wave_with_notionals = [(leg, safe_float(leg.get("requested_notional_usd"), 0.0)) for leg in wave]
-            wave_results = await submit_execution_wave(
-                mode=mode,
-                signal=signal,
-                legs_with_notionals=wave_with_notionals,
-            )
+            async with release_conn(self.db):
+                wave_results = await submit_execution_wave(
+                    mode=mode,
+                    signal=signal,
+                    legs_with_notionals=wave_with_notionals,
+                )
 
             for result in wave_results:
                 leg_id = str(result.leg_id)
@@ -468,15 +469,16 @@ class ExecutionSessionEngine:
                     )
                     if reprice_price is not None:
                         leg_payload["limit_price"] = reprice_price
-                        retry_result = (
-                            await submit_execution_wave(
-                                mode=mode,
-                                signal=signal,
-                                legs_with_notionals=[
-                                    (leg_payload, safe_float(leg_payload.get("requested_notional_usd"), 0.0))
-                                ],
-                            )
-                        )[0]
+                        async with release_conn(self.db):
+                            retry_result = (
+                                await submit_execution_wave(
+                                    mode=mode,
+                                    signal=signal,
+                                    legs_with_notionals=[
+                                        (leg_payload, safe_float(leg_payload.get("requested_notional_usd"), 0.0))
+                                    ],
+                                )
+                            )[0]
                         normalized_retry = str(retry_result.status or "").strip().lower()
                         if normalized_retry in {"executed", "open", "submitted"}:
                             result = retry_result
@@ -666,7 +668,9 @@ class ExecutionSessionEngine:
                         if not candidate_id or candidate_id in cancel_attempted_ids:
                             continue
                         cancel_attempted_ids.add(candidate_id)
-                        if await cancel_live_provider_order(candidate_id):
+                        async with release_conn(self.db):
+                            cancelled_via_provider = await cancel_live_provider_order(candidate_id)
+                        if cancelled_via_provider:
                             cancelled = True
                             cancelled_provider_orders.append(candidate_id)
                             break
@@ -787,23 +791,24 @@ class ExecutionSessionEngine:
                     and exit_size > 0.0
                 ):
                     target_price = min(0.999, max(0.001, entry_fill_price * (1.0 + (take_profit_pct / 100.0))))
-                    try:
-                        await live_execution_service.prepare_sell_balance_allowance(token_id)
-                    except Exception:
-                        pass
-                    tp_submit = await execute_live_order(
-                        token_id=token_id,
-                        side="SELL",
-                        size=float(exit_size),
-                        fallback_price=target_price,
-                        market_question=str(
-                            leg_payload.get("market_question") or getattr(signal, "market_question", "") or ""
-                        ),
-                        opportunity_id=str(getattr(signal, "id", "") or ""),
-                        time_in_force="GTC",
-                        post_only=True,
-                        resolve_live_price=False,
-                    )
+                    async with release_conn(self.db):
+                        try:
+                            await live_execution_service.prepare_sell_balance_allowance(token_id)
+                        except Exception:
+                            pass
+                        tp_submit = await execute_live_order(
+                            token_id=token_id,
+                            side="SELL",
+                            size=float(exit_size),
+                            fallback_price=target_price,
+                            market_question=str(
+                                leg_payload.get("market_question") or getattr(signal, "market_question", "") or ""
+                            ),
+                            opportunity_id=str(getattr(signal, "id", "") or ""),
+                            time_in_force="GTC",
+                            post_only=True,
+                            resolve_live_price=False,
+                        )
                     bracket_timestamp = _iso_utc(utcnow())
                     pending_exit: dict[str, Any] = {
                         "kind": "take_profit_limit",
@@ -1112,12 +1117,13 @@ class ExecutionSessionEngine:
                 clob_ids_to_fetch.add(clob_id)
         provider_snapshots: dict[str, dict[str, Any]] = {}
         if clob_ids_to_fetch:
-            try:
-                provider_snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(
-                    sorted(clob_ids_to_fetch)
-                )
-            except Exception:
-                provider_snapshots = {}
+            async with release_conn(self.db):
+                try:
+                    provider_snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(
+                        sorted(clob_ids_to_fetch)
+                    )
+                except Exception:
+                    provider_snapshots = {}
 
         updated_trader_orders: list[TraderOrder] = []
         filled_leg_ids: set[str] = set()
@@ -1143,7 +1149,9 @@ class ExecutionSessionEngine:
                 cancel_targets.append(provider_order_id)
             cancel_success = False
             for target in cancel_targets:
-                if await cancel_live_provider_order(target):
+                async with release_conn(self.db):
+                    cancel_success = await cancel_live_provider_order(target)
+                if cancel_success:
                     cancel_success = True
                     break
 

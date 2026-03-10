@@ -2880,6 +2880,7 @@ class TraderOrder(Base):
         Index("idx_trader_orders_created", "created_at"),
         Index("idx_trader_orders_status", "status"),
         Index("idx_trader_orders_trader_created", "trader_id", "created_at"),
+        Index("idx_trader_orders_trader_mode_status", "trader_id", "mode", "status"),
     )
 
 
@@ -3087,6 +3088,7 @@ class TraderPosition(Base):
         ),
         Index("idx_trader_positions_status", "status"),
         Index("idx_trader_positions_trader_status", "trader_id", "status"),
+        Index("idx_trader_positions_trader_mode_status", "trader_id", "mode", "status"),
     )
 
 
@@ -3311,13 +3313,14 @@ _database_url = str(settings.DATABASE_URL or "").strip().lower()
 if not _database_url.startswith("postgresql"):
     raise ValueError(f"DATABASE_URL must use PostgreSQL; got {settings.DATABASE_URL!r}")
 
-# Worker subprocesses need much smaller pools.  The main backend handles
-# API requests, WebSockets, and in-process services that benefit from a
-# larger pool.  Each of the 14 worker processes only runs one loop and
-# rarely needs more than 1-2 concurrent connections.  Using the full
-# pool_size=20 per worker would demand 15×50=750 connections against
-# Postgres (default max_connections=100), causing connection refusals
-# that crash the entire system.
+# Worker subprocesses need smaller pools than the main API process but
+# must have enough headroom for concurrent DB consumers (event dispatcher
+# stream listener, fire-and-forget reactive tasks, demand polling, etc.).
+# Postgres max_connections is set to 200 by run.ps1/run.sh.  With 14
+# workers at pool_size=8 + max_overflow=4 each (168 max) plus the main
+# process at 12+8 (20 max), the theoretical ceiling is 188 — within the
+# 200-connection budget, and in practice much lower because max_overflow
+# connections are short-lived.
 _is_worker = _os.environ.get("HOMERUN_PROCESS_ROLE") == "worker"
 if _is_worker:
     _pool_size = max(1, int(settings.DATABASE_WORKER_POOL_SIZE))
@@ -3604,14 +3607,6 @@ def stop_pool_watchdog() -> None:
     _reaper_task = None
 
 
-# ==================== BOUNDED SESSION CONTEXT MANAGER ====================
-#
-# Wraps AsyncSessionLocal with an overall timeout.  If the timeout fires,
-# the session is rolled back and closed, and asyncio.TimeoutError is raised.
-# This prevents any single database operation from holding a connection
-# indefinitely, even if the work involves awaiting external I/O while a
-# session is open.
-
 @_asynccontextmanager
 async def release_conn(session):
     """Temporarily return the session's DB connection to the pool.
@@ -3650,45 +3645,6 @@ async def release_conn(session):
     finally:
         # No action needed — the session lazily reconnects on next use.
         pass
-
-
-@_asynccontextmanager
-async def bounded_session(timeout_seconds: float = 30.0):
-    """Acquire a database session with a hard overall time limit.
-
-    Usage::
-
-        async with bounded_session(timeout_seconds=15.0) as session:
-            result = await session.execute(...)
-            await session.commit()
-
-    If the block takes longer than *timeout_seconds*, the session is
-    rolled back and closed, and ``asyncio.TimeoutError`` is raised.
-    """
-    session = AsyncSessionLocal()
-    deadline = _time.monotonic() + timeout_seconds
-    try:
-        yield session
-    except asyncio.TimeoutError:
-        try:
-            await session.rollback()
-        except Exception:
-            pass
-        raise
-    except Exception:
-        try:
-            await session.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        remaining = deadline - _time.monotonic()
-        if remaining <= 0:
-            _db_logger.warning(
-                "bounded_session exceeded %.1fs deadline, forcing close",
-                timeout_seconds,
-            )
-        await session.close()
 
 
 def _run_alembic_upgrade(connection) -> None:

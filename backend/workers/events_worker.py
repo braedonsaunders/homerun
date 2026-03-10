@@ -13,13 +13,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import select
 
 from config import settings
 from models.database import (
     AsyncSessionLocal,
     DataSource,
-    DataSourceRecord,
     EventsSignal,
     EventsSnapshot,
     recover_pool,
@@ -121,7 +120,7 @@ def _stable_signal_id(
     return f"events_{digest}"
 
 
-def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
+def _record_to_signal(record: Any) -> dict[str, Any]:
     """Pure mechanical mapper — all business logic lives in the user's source code.
 
     The user's fetch_async() sets category, source, title, summary, lat, lon,
@@ -129,8 +128,36 @@ def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
     EventsSignal shape without interpretation.  The full payload dict becomes
     metadata_json so every field the source sets is available to the API layer.
     """
-    payload = dict(record.payload_json or {}) if isinstance(record.payload_json, dict) else {}
-    transformed = dict(record.transformed_json or {}) if isinstance(record.transformed_json, dict) else {}
+    if isinstance(record, dict):
+        payload = dict(record.get("payload_json") or {}) if isinstance(record.get("payload_json"), dict) else {}
+        transformed = (
+            dict(record.get("transformed_json") or {}) if isinstance(record.get("transformed_json"), dict) else {}
+        )
+        category = record.get("category")
+        source = record.get("source")
+        source_slug = record.get("source_slug")
+        title_value = record.get("title")
+        summary_value = record.get("summary")
+        observed_at_value = record.get("observed_at") or record.get("ingested_at")
+        country_iso3 = record.get("country_iso3")
+        url = record.get("url")
+        external_id = record.get("external_id")
+        latitude = record.get("latitude")
+        longitude = record.get("longitude")
+    else:
+        payload = dict(record.payload_json or {}) if isinstance(record.payload_json, dict) else {}
+        transformed = dict(record.transformed_json or {}) if isinstance(record.transformed_json, dict) else {}
+        category = record.category
+        source = record.source
+        source_slug = record.source_slug
+        title_value = record.title
+        summary_value = record.summary
+        observed_at_value = record.observed_at or record.ingested_at
+        country_iso3 = record.country_iso3
+        url = record.url
+        external_id = record.external_id
+        latitude = record.latitude
+        longitude = record.longitude
     merged: dict[str, Any] = {}
     merged.update(payload)
     merged.update(transformed)
@@ -143,21 +170,21 @@ def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
         for k, v in inner_payload.items():
             merged.setdefault(k, v)
 
-    signal_type = str(record.category or "world").strip().lower() or "world"
-    source = str(record.source or record.source_slug or "events").strip().lower() or "events"
-    title = str(record.title or "Events signal").strip() or "Events signal"
-    summary = str(record.summary or "").strip()
+    signal_type = str(category or "world").strip().lower() or "world"
+    source = str(source or source_slug or "events").strip().lower() or "events"
+    title = str(title_value or "Events signal").strip() or "Events signal"
+    summary = str(summary_value or "").strip()
     severity = _clamp(_as_float(merged.get("severity"), 0.0), 0.0, 1.0)
 
-    observed_at = _to_aware(record.observed_at or record.ingested_at)
-    raw_country = str(record.country_iso3 or merged.get("country") or "").strip().upper() or None
+    observed_at = _to_aware(observed_at_value)
+    raw_country = str(country_iso3 or merged.get("country") or "").strip().upper() or None
     country_iso3 = _as_iso3(raw_country)
 
     metadata = dict(merged)
-    metadata["source_slug"] = str(record.source_slug or "")
-    metadata["external_id"] = str(record.external_id or "") or None
-    if record.url:
-        metadata["url"] = record.url
+    metadata["source_slug"] = str(source_slug or "")
+    metadata["external_id"] = str(external_id or "") or None
+    if url:
+        metadata["url"] = url
 
     related_market_ids = []
     for item in _as_list(merged.get("related_market_ids")):
@@ -170,9 +197,9 @@ def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
         market_relevance_score = _as_float(market_relevance_score, 0.0)
 
     signal_id = _stable_signal_id(
-        str(record.source_slug or "events"),
-        str(record.external_id or "") or None,
-        str(record.url or "") or None,
+        str(source_slug or "events"),
+        str(external_id or "") or None,
+        str(url or "") or None,
         title,
         observed_at,
     )
@@ -182,8 +209,8 @@ def _record_to_signal(record: DataSourceRecord) -> dict[str, Any]:
         "signal_type": signal_type,
         "severity": severity,
         "country": raw_country or country_iso3,
-        "latitude": record.latitude,
-        "longitude": record.longitude,
+        "latitude": latitude,
+        "longitude": longitude,
         "title": title,
         "description": summary,
         "source": source,
@@ -253,6 +280,7 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
         try:
             persisted = 0
             async with AsyncSessionLocal() as session:
+                rows = []
                 for signal in signals:
                     signal_id = str(signal.get("signal_id") or "").strip()
                     if not signal_id:
@@ -267,53 +295,51 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
                         if str(item or "").strip()
                     ]
                     metadata = signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {}
-                    stmt = (
-                        pg_insert(EventsSignal)
-                        .values(
-                            id=signal_id,
-                            signal_type=signal_type,
-                            severity=_clamp(_as_float(signal.get("severity"), 0.0), 0.0, 1.0),
-                            country=raw_country or country_iso3,
-                            iso3=country_iso3,
-                            latitude=signal.get("latitude"),
-                            longitude=signal.get("longitude"),
-                            title=str(signal.get("title") or "Events signal").strip() or "Events signal",
-                            description=str(signal.get("description") or "").strip(),
-                            source=str(signal.get("source") or "events").strip().lower() or "events",
-                            detected_at=detected_at,
-                            metadata_json=metadata,
-                            related_market_ids=related_market_ids,
-                            market_relevance_score=(
+                    rows.append(
+                        {
+                            "id": signal_id,
+                            "signal_type": signal_type,
+                            "severity": _clamp(_as_float(signal.get("severity"), 0.0), 0.0, 1.0),
+                            "country": raw_country or country_iso3,
+                            "iso3": country_iso3,
+                            "latitude": signal.get("latitude"),
+                            "longitude": signal.get("longitude"),
+                            "title": str(signal.get("title") or "Events signal").strip() or "Events signal",
+                            "description": str(signal.get("description") or "").strip(),
+                            "source": str(signal.get("source") or "events").strip().lower() or "events",
+                            "detected_at": detected_at,
+                            "metadata_json": metadata,
+                            "related_market_ids": related_market_ids,
+                            "market_relevance_score": (
                                 _as_float(signal.get("market_relevance_score"), 0.0)
                                 if signal.get("market_relevance_score") is not None
                                 else None
                             ),
-                        )
-                        .on_conflict_do_update(
-                            index_elements=["id"],
-                            set_={
-                                "signal_type": signal_type,
-                                "severity": _clamp(_as_float(signal.get("severity"), 0.0), 0.0, 1.0),
-                                "country": raw_country or country_iso3,
-                                "iso3": country_iso3,
-                                "latitude": signal.get("latitude"),
-                                "longitude": signal.get("longitude"),
-                                "title": str(signal.get("title") or "Events signal").strip() or "Events signal",
-                                "description": str(signal.get("description") or "").strip(),
-                                "source": str(signal.get("source") or "events").strip().lower() or "events",
-                                "detected_at": detected_at,
-                                "metadata_json": metadata,
-                                "related_market_ids": related_market_ids,
-                                "market_relevance_score": (
-                                    _as_float(signal.get("market_relevance_score"), 0.0)
-                                    if signal.get("market_relevance_score") is not None
-                                    else None
-                                ),
-                            },
-                        )
+                        }
                     )
-                    await session.execute(stmt)
                     persisted += 1
+                if not rows:
+                    return 0
+                insert_stmt = pg_insert(EventsSignal).values(rows)
+                stmt = insert_stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "signal_type": insert_stmt.excluded.signal_type,
+                        "severity": insert_stmt.excluded.severity,
+                        "country": insert_stmt.excluded.country,
+                        "iso3": insert_stmt.excluded.iso3,
+                        "latitude": insert_stmt.excluded.latitude,
+                        "longitude": insert_stmt.excluded.longitude,
+                        "title": insert_stmt.excluded.title,
+                        "description": insert_stmt.excluded.description,
+                        "source": insert_stmt.excluded.source,
+                        "detected_at": insert_stmt.excluded.detected_at,
+                        "metadata_json": insert_stmt.excluded.metadata_json,
+                        "related_market_ids": insert_stmt.excluded.related_market_ids,
+                        "market_relevance_score": insert_stmt.excluded.market_relevance_score,
+                    },
+                )
+                await session.execute(stmt)
                 await session.commit()
             return persisted
         except Exception as exc:
@@ -476,26 +502,19 @@ async def _run_event_data_sources_once() -> tuple[
                 row = await session.get(DataSource, source_info["id"])
                 if row is None or not bool(row.enabled):
                     continue
-                run_result = await run_data_source(session, row, max_records=max_records, commit=True)
+                run_result = await run_data_source(session, row, max_records=max_records, commit=True, return_records=True)
             if str(run_result.get("status") or "").strip().lower() == "success":
-                async with AsyncSessionLocal() as session:
-                    records = (
-                        (
-                            await session.execute(
-                                select(DataSourceRecord)
-                                .where(DataSourceRecord.source_slug == slug)
-                                .where(DataSourceRecord.ingested_at >= run_start)
-                                .order_by(
-                                    desc(DataSourceRecord.observed_at),
-                                    desc(DataSourceRecord.ingested_at),
-                                )
-                                .limit(max_records)
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-                    source_signals = [_record_to_signal(record) for record in records]
+                source_records = []
+                for record in run_result.get("records") or []:
+                    observed_at = record.get("observed_at") or record.get("ingested_at")
+                    if isinstance(observed_at, datetime):
+                        observed_dt = observed_at if observed_at.tzinfo is not None else observed_at.replace(tzinfo=timezone.utc)
+                    else:
+                        observed_dt = None
+                    if observed_dt is not None and observed_dt < run_start.replace(tzinfo=timezone.utc):
+                        continue
+                    source_records.append(record)
+                source_signals = [_record_to_signal(record) for record in source_records[:max_records]]
         except Exception as exc:
             run_result = {
                 "status": "error",

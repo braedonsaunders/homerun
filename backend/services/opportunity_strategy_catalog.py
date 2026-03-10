@@ -622,6 +622,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "min": 0.1,
                     "max": 1.0,
                 },
+                {"key": "block_spread_markets", "label": "Block Spread Markets", "type": "boolean"},
                 {"key": "skip_live_games", "label": "Skip Live Games", "type": "boolean"},
                 {
                     "key": "live_game_buffer_minutes",

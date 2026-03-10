@@ -318,9 +318,11 @@ class WorkflowOrchestrator:
 
     @staticmethod
     async def _release_session_connection(session: AsyncSession) -> None:
+        from models.database import release_conn
+
         try:
-            if session.in_transaction():
-                await session.rollback()
+            async with release_conn(session):
+                pass
         except Exception:
             pass
 
@@ -349,7 +351,7 @@ class WorkflowOrchestrator:
             try:
                 fetched = await news_feed_service.fetch_all()
                 if fetched:
-                    await news_feed_service.persist_to_db()
+                    await news_feed_service.persist_to_db(fetched)
                     await news_feed_service.prune_db()
             except Exception as exc:
                 logger.warning("News fetch sync failed (continuing with cache): %s", exc)

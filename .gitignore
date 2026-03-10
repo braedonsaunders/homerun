@@ -66,6 +66,9 @@ output/
 # Claude Code local settings
 .claude/settings.local.json
 
+# Windows reserved-name artifact
+/nul
+
 # Secrets
 .env
 .env.local

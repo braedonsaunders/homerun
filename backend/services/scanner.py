@@ -2686,26 +2686,41 @@ class ArbitrageScanner:
         Populates _cached_events, _cached_markets, and derived caches so
         that scan_fast() can run immediately without waiting for the first
         HTTP catalog refresh.  Returns the number of markets loaded.
+
+        The catalog JSON can be tens of megabytes, so queries are split to
+        avoid statement timeouts: metadata is checked first (lightweight),
+        then markets and events are loaded in separate queries.
         """
         try:
             from models.database import AsyncSessionLocal
             from services.shared_state import read_market_catalog
 
             async with AsyncSessionLocal() as session:
-                events, markets, metadata = await read_market_catalog(session)
+                _, _, meta_check = await read_market_catalog(
+                    session, include_events=False, include_markets=False,
+                )
+            catalog_age = meta_check.get("updated_at")
+
+            if only_if_newer and self._cached_markets:
+                if catalog_age is None:
+                    return 0
+                if self._last_catalog_refresh is not None and catalog_age <= self._last_catalog_refresh:
+                    return 0
+
+            async with AsyncSessionLocal() as session:
+                _, markets, metadata = await read_market_catalog(
+                    session, include_events=False, include_markets=True,
+                )
+            async with AsyncSessionLocal() as session:
+                events, _, _ = await read_market_catalog(
+                    session, include_events=True, include_markets=False,
+                )
         except Exception as e:
             print(f"  Catalog hydration from DB failed: {e}")
             return 0
 
         if not markets:
             return 0
-
-        catalog_age = metadata.get("updated_at")
-        if only_if_newer and self._cached_markets:
-            if catalog_age is None:
-                return 0
-            if self._last_catalog_refresh is not None and catalog_age <= self._last_catalog_refresh:
-                return 0
 
         now = datetime.now(timezone.utc)
 
@@ -3322,6 +3337,14 @@ class ArbitrageScanner:
             # Step 1: Fetch articles (free — RSS/GDELT)
             await news_feed_service.fetch_all()
             all_articles = news_feed_service.get_articles(max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS)
+            all_articles.sort(
+                key=lambda article: (
+                    (getattr(article, "published", None) or getattr(article, "fetched_at", None) or utcnow()).timestamp(),
+                    getattr(article, "article_id", ""),
+                ),
+                reverse=True,
+            )
+            all_articles = all_articles[: settings.NEWS_MAX_ARTICLES_PER_SCAN]
 
             if not all_articles:
                 return

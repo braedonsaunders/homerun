@@ -959,7 +959,7 @@ export default function WalletTracker({
                 type="text"
                 value={newAddress}
                 onChange={(e) => setNewAddress(e.target.value)}
-                placeholder="Wallet address (0x...)"
+                placeholder="Wallet address, @handle, or profile URL"
                 className="flex-1 bg-muted rounded-lg"
               />
               <Input

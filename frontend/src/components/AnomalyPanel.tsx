@@ -68,7 +68,7 @@ export default function AnomalyPanel() {
             value={searchAddress}
             onChange={(e) => setSearchAddress(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="Enter wallet address (0x...)"
+            placeholder="Enter wallet address, @handle, or profile URL"
             className="flex-1 bg-muted border border-border rounded-lg px-4 py-2 font-mono text-sm"
           />
           <button

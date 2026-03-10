@@ -49,7 +49,7 @@ function Ensure-ConsoleViewport {
     param(
         [int]$MinCols = 140,
         [int]$MinRows = 45,
-        [int]$MinBufferRows = 5000
+        [int]$MinBufferRows = 60
 )
 
     if ($env:WT_SESSION) {
@@ -67,7 +67,10 @@ function Ensure-ConsoleViewport {
         $targetRows = [Math]::Min([Math]::Max($rawUi.WindowSize.Height, $MinRows), $maxWindow.Height)
 
         $targetBufferCols = [Math]::Max($rawUi.BufferSize.Width, $targetCols)
-        $targetBufferRows = [Math]::Max($rawUi.BufferSize.Height, [Math]::Max($MinBufferRows, $targetRows))
+        $targetBufferRows = [Math]::Max([Math]::Max($rawUi.BufferSize.Height, $targetRows), $MinBufferRows)
+        if ($targetBufferRows -gt ($targetRows + 200)) {
+            $targetBufferRows = $targetRows + 200
+        }
 
         $rawUi.BufferSize = New-Object System.Management.Automation.Host.Size($targetBufferCols, $targetBufferRows)
         $rawUi.WindowSize = New-Object System.Management.Automation.Host.Size($targetCols, $targetRows)
@@ -159,6 +162,27 @@ function Wait-ForService {
         Start-Sleep -Milliseconds 250
     }
     return $false
+}
+
+$inWindowsTerminal = [bool]$env:WT_SESSION
+$allowWindowsTerminal = @("1", "true", "yes", "on") -contains (($env:HOMERUN_TUI_ALLOW_WT | Out-String).Trim().ToLowerInvariant())
+$alreadyRelaunched = @("1", "true", "yes", "on") -contains (($env:HOMERUN_CONHOST_RELAUNCHED | Out-String).Trim().ToLowerInvariant())
+
+if ($inWindowsTerminal -and -not $allowWindowsTerminal -and -not $alreadyRelaunched) {
+    [Environment]::SetEnvironmentVariable("HOMERUN_CONHOST_RELAUNCHED", "1", "Process")
+    $relaunchArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $MyInvocation.MyCommand.Path
+    ) + $args
+    Start-Process -FilePath "powershell.exe" -WorkingDirectory (Get-Location).Path -ArgumentList $relaunchArgs | Out-Null
+    exit 0
+}
+
+if ($inWindowsTerminal -and -not $allowWindowsTerminal) {
+    [Environment]::SetEnvironmentVariable("HOMERUN_TUI_SAFE_CONSOLE", "1", "Process")
 }
 
 function Get-ListeningProcessId {
@@ -1085,17 +1109,6 @@ function Ensure-Redis {
         [string]$Image
 )
 
-    if (Test-DockerRuntimeAvailable) {
-        $existingListenerPid = Get-ListeningProcessId -TargetHost $RedisHost -Port $RedisPort
-        if ($existingListenerPid -and (-not (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort))) {
-            Write-Host "Redis port ${RedisPort} is occupied by a non-Docker listener. Reclaiming port for launcher-managed Docker Redis..." -ForegroundColor Yellow
-            if (-not (Stop-ConflictingRedisListener -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName)) {
-                Write-Host "Failed to reclaim Redis port ${RedisPort}. Stop the process on ${RedisHost}:${RedisPort} and rerun." -ForegroundColor Red
-                exit 1
-            }
-        }
-    }
-
     if (Test-RedisPing -RedisHost $RedisHost -RedisPort $RedisPort) {
         $versionOk = Test-RedisVersionOk -RedisHost $RedisHost -RedisPort $RedisPort
         if ($versionOk -eq $false) {
@@ -1161,6 +1174,17 @@ function Ensure-Redis {
             exit 1
         }
         return
+    }
+
+    if (Test-DockerRuntimeAvailable) {
+        $existingListenerPid = Get-ListeningProcessId -TargetHost $RedisHost -Port $RedisPort
+        if ($existingListenerPid -and (-not (Test-RedisDockerListenerOwned -ContainerName $ContainerName -Port $RedisPort))) {
+            Write-Host "Redis port ${RedisPort} is occupied by a non-Docker listener. Reclaiming port for launcher-managed Docker Redis..." -ForegroundColor Yellow
+            if (-not (Stop-ConflictingRedisListener -RedisHost $RedisHost -RedisPort $RedisPort -ContainerName $ContainerName)) {
+                Write-Host "Failed to reclaim Redis port ${RedisPort}. Stop the process on ${RedisHost}:${RedisPort} and rerun." -ForegroundColor Red
+                exit 1
+            }
+        }
     }
 
     if (-not (Ensure-RedisRuntime)) {
@@ -2301,11 +2325,11 @@ try {
     # Activate venv
     & backend\venv\Scripts\Activate.ps1
 
-    # Ensure TUI dependencies are installed (0.x API; 1.0+ has breaking changes)
-    python -c "import textual; v=tuple(int(x) for x in textual.__version__.split('.')[:2]); exit(0 if v < (1,0) else 1)" *> $null
+    # Ensure TUI dependencies are installed (pinned to Textual 8.x line)
+    python -c "import textual; v=tuple(int(x) for x in textual.__version__.split('.')[:2]); exit(0 if v >= (8,0) and v < (9,0) else 1)" *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Installing TUI dependencies..." -ForegroundColor Cyan
-        python -m pip install -q "textual>=0.85.0,<1.0" "rich>=13.7.0"
+        python -m pip install -q "textual>=8.0.0,<9.0" "rich>=14.0.0,<15.0.0"
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install TUI dependencies"
         }

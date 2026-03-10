@@ -105,6 +105,14 @@ def _normalize_sub_strategy(value: Optional[str]) -> str:
     return text.replace("-", "_").replace(" ", "_")
 
 
+async def _resolve_wallet_address(wallet_identifier: str) -> str:
+    try:
+        resolved = await polymarket_client.resolve_wallet_identifier(wallet_identifier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return str(resolved.get("address") or "").lower()
+
+
 def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
     """Derive strategy-specific subtype from opportunity metadata/title."""
 
@@ -868,8 +876,12 @@ async def get_tracked_wallets():
 @router.post("/wallets")
 async def add_wallet(address: str, label: Optional[str] = None):
     """Add a wallet to track"""
-    await wallet_tracker.add_wallet(address, label)
-    return {"status": "success", "address": address, "label": label}
+    try:
+        resolved_address = await _resolve_wallet_address(address)
+        await wallet_tracker.add_wallet(resolved_address, label, fetch_initial=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "success", "address": resolved_address, "label": label}
 
 
 @router.delete("/wallets/{address}")
@@ -882,7 +894,8 @@ async def remove_wallet(address: str):
 @router.get("/wallets/{address}")
 async def get_wallet_info(address: str):
     """Get info for a specific wallet"""
-    info = await wallet_tracker.get_wallet_info(address)
+    resolved_address = await _resolve_wallet_address(address)
+    info = await wallet_tracker.get_wallet_info(resolved_address)
     if not info:
         raise HTTPException(status_code=404, detail="Wallet not found")
     return info
@@ -892,11 +905,14 @@ async def get_wallet_info(address: str):
 async def get_wallet_positions(address: str, include_prices: bool = True):
     """Get current positions for a wallet with optional current market prices"""
     try:
+        resolved_address = await _resolve_wallet_address(address)
         if include_prices:
-            positions = await polymarket_client.get_wallet_positions_with_prices(address)
+            positions = await polymarket_client.get_wallet_positions_with_prices(resolved_address)
         else:
-            positions = await polymarket_client.get_wallet_positions(address)
-        return {"address": address, "positions": positions}
+            positions = await polymarket_client.get_wallet_positions(resolved_address)
+        return {"address": resolved_address, "positions": positions}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -905,8 +921,12 @@ async def get_wallet_positions(address: str, include_prices: bool = True):
 async def get_wallet_profile(address: str):
     """Get profile information for a wallet (username, etc.)"""
     try:
-        profile = await polymarket_client.get_user_profile(address)
+        resolved_address = await _resolve_wallet_address(address)
+        profile = await polymarket_client.get_user_profile(resolved_address)
+        profile["address"] = resolved_address
         return profile
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -915,8 +935,11 @@ async def get_wallet_profile(address: str):
 async def get_wallet_trades(address: str, limit: int = 100):
     """Get recent trades for a wallet"""
     try:
-        trades = await polymarket_client.get_wallet_trades(address, limit)
-        return {"address": address, "trades": trades}
+        resolved_address = await _resolve_wallet_address(address)
+        trades = await polymarket_client.get_wallet_trades(resolved_address, limit)
+        return {"address": resolved_address, "trades": trades}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1338,7 +1361,8 @@ async def get_wallet_win_rate(
 ):
     """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
-        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        resolved_address = await _resolve_wallet_address(address)
+        profile = await wallet_discovery.get_wallet_profile(resolved_address)
         if profile:
             key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
             if key:
@@ -1356,7 +1380,7 @@ async def get_wallet_win_rate(
                 losses = max(int(trade_count) - wins, 0)
 
             return {
-                "address": address,
+                "address": resolved_address,
                 "win_rate": (win_rate or 0.0) * 100.0,
                 "wins": wins,
                 "losses": losses,
@@ -1366,10 +1390,10 @@ async def get_wallet_win_rate(
             }
 
         # Fallback for unknown wallets.
-        fast_result = await polymarket_client.calculate_win_rate_fast(address, min_positions=1)
+        fast_result = await polymarket_client.calculate_win_rate_fast(resolved_address, min_positions=1)
         if fast_result:
             return {
-                "address": address,
+                "address": resolved_address,
                 "win_rate": fast_result["win_rate"],
                 "wins": fast_result["wins"],
                 "losses": fast_result["losses"],
@@ -1378,7 +1402,7 @@ async def get_wallet_win_rate(
                 "deprecated": True,
             }
         return {
-            "address": address,
+            "address": resolved_address,
             "win_rate": 0.0,
             "wins": 0,
             "losses": 0,
@@ -1397,7 +1421,8 @@ async def analyze_wallet_pnl(
 ):
     """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
-        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        resolved_address = await _resolve_wallet_address(address)
+        profile = await wallet_discovery.get_wallet_profile(resolved_address)
         if profile:
             key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
             if key:
@@ -1410,7 +1435,7 @@ async def analyze_wallet_pnl(
             total_invested = float(profile.get("total_invested", 0.0) or 0.0)
             roi_percent = (pnl / total_invested * 100.0) if total_invested > 0 else 0.0
             return {
-                "address": address,
+                "address": resolved_address,
                 "total_trades": trade_count,
                 "open_positions": profile.get("open_positions", 0),
                 "total_invested": total_invested,
@@ -1424,9 +1449,11 @@ async def analyze_wallet_pnl(
             }
 
         # Fallback for non-discovered wallets.
-        pnl = await polymarket_client.get_wallet_pnl(address, time_period=time_period)
+        pnl = await polymarket_client.get_wallet_pnl(resolved_address, time_period=time_period)
         pnl["deprecated"] = True
         return pnl
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1443,15 +1470,16 @@ async def analyze_and_track_wallet(
     - Adds to tracked wallets
     """
     try:
+        resolved_address = await _resolve_wallet_address(address)
         analysis_upserted = False
-        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        profile = await wallet_discovery.get_wallet_profile(resolved_address)
         if profile is None:
-            analysis = await wallet_discovery.analyze_wallet(address.lower())
+            analysis = await wallet_discovery.analyze_wallet(resolved_address)
             if analysis is not None:
                 await wallet_discovery._upsert_wallet(analysis)
                 await wallet_discovery.refresh_leaderboard()
                 analysis_upserted = True
-                profile = await wallet_discovery.get_wallet_profile(address.lower())
+                profile = await wallet_discovery.get_wallet_profile(resolved_address)
 
         if analysis_upserted:
             try:
@@ -1459,13 +1487,13 @@ async def analyze_and_track_wallet(
             except Exception as recompute_exc:
                 logger.warning(
                     "Smart pool recompute after analyze-and-track failed",
-                    address=address.lower(),
+                    address=resolved_address,
                     error=str(recompute_exc),
                 )
 
         analysis_payload = (
             {
-                "address": address,
+                "address": resolved_address,
                 "total_trades": profile.get("total_trades", 0),
                 "open_positions": profile.get("open_positions", 0),
                 "total_invested": profile.get("total_invested", 0.0),
@@ -1481,16 +1509,16 @@ async def analyze_and_track_wallet(
                 ),
             }
             if profile
-            else await polymarket_client.get_wallet_pnl(address)
+            else await polymarket_client.get_wallet_pnl(resolved_address)
         )
 
         # Add to tracking
         wallet_label = label or f"Discovered ({analysis_payload.get('roi_percent', 0):.1f}% ROI)"
-        await wallet_tracker.add_wallet(address, wallet_label)
+        await wallet_tracker.add_wallet(resolved_address, wallet_label)
 
         result = {
             "status": "success",
-            "wallet": address,
+            "wallet": resolved_address,
             "label": wallet_label,
             "analysis": analysis_payload,
             "tracking": True,
@@ -1498,5 +1526,7 @@ async def analyze_and_track_wallet(
         }
 
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

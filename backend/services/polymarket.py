@@ -6,6 +6,7 @@ import re
 import time
 from typing import Optional
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from utils.utcnow import utcnow, utcfromtimestamp
 
 from config import settings
@@ -22,6 +23,7 @@ _MAX_DELAY = 30.0
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
+_ETH_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 class PolymarketClient:
@@ -1614,6 +1616,83 @@ class PolymarketClient:
             enriched.append(enriched_pos)
 
         return enriched
+
+    async def resolve_wallet_identifier(self, identifier: str) -> dict[str, str | None]:
+        raw_value = str(identifier or "").strip()
+        if not raw_value:
+            raise ValueError("Wallet identifier cannot be empty")
+
+        candidate = raw_value
+        if "polymarket.com" in candidate.lower():
+            url_match = re.search(r"polymarket\.com/(?:@|profile/)?([^/?#]+)", candidate, flags=re.IGNORECASE)
+            if url_match:
+                candidate = url_match.group(1).strip()
+
+        if candidate.startswith("@"):
+            candidate = candidate[1:].strip()
+
+        if not candidate:
+            raise ValueError("Wallet identifier cannot be empty")
+
+        if _ETH_ADDRESS_RE.match(candidate):
+            return {"address": candidate.lower(), "username": None}
+
+        target_username = candidate.lower()
+
+        for addr, uname in self._username_cache.items():
+            if str(uname or "").strip().lower() == target_username and _ETH_ADDRESS_RE.match(addr):
+                return {"address": addr.lower(), "username": uname}
+
+        cache = await self._get_persistent_cache()
+        if cache:
+            for addr, uname in cache._username_cache.items():
+                if str(uname or "").strip().lower() == target_username and _ETH_ADDRESS_RE.match(addr):
+                    self._username_cache[addr.lower()] = uname
+                    return {"address": addr.lower(), "username": uname}
+
+        profile_url = f"https://polymarket.com/@{quote(candidate)}"
+        try:
+            response = await self._rate_limited_get(
+                profile_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                follow_redirects=True,
+                timeout=20.0,
+            )
+            if response.status_code == 200:
+                html = response.text
+                address_match = re.search(
+                    r'(?:\\"|")proxyAddress(?:\\"|"):(?:\\"|")(0x[a-fA-F0-9]{40})(?:\\"|")',
+                    html,
+                )
+                if address_match:
+                    resolved_address = address_match.group(1).lower()
+                    self._username_cache[resolved_address] = candidate
+                    if cache:
+                        await cache.set_username(resolved_address, candidate)
+                    return {"address": resolved_address, "username": candidate}
+        except Exception:
+            pass
+
+        try:
+            for order_by in ("PNL", "VOL"):
+                for offset in range(0, 500, 50):
+                    leaderboard = await self.get_leaderboard(limit=50, order_by=order_by, offset=offset)
+                    if not leaderboard:
+                        break
+                    for entry in leaderboard:
+                        uname = str(entry.get("userName") or "").strip()
+                        address = str(entry.get("proxyWallet") or "").strip().lower()
+                        if not uname or not _ETH_ADDRESS_RE.match(address):
+                            continue
+                        self._username_cache[address] = uname
+                        if uname.lower() == target_username:
+                            if cache:
+                                await cache.set_username(address, uname)
+                            return {"address": address, "username": uname}
+        except Exception:
+            pass
+
+        raise ValueError(f"Could not resolve wallet identifier '{raw_value}' to an on-chain address")
 
     async def get_user_profile(self, address: str) -> dict:
         """

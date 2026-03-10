@@ -20,17 +20,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import desc, select
 from services.shared_state import _commit_with_retry
 
 from config import settings
-from models.database import AsyncSessionLocal, DataSource, DataSourceRecord
+from models.database import AsyncSessionLocal, DataSource
 from services.data_source_runner import run_data_source
 from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
-_MAX_SOURCE_FETCH_CONCURRENCY = 12
+_MAX_SOURCE_FETCH_CONCURRENCY = 4
+_MAX_IN_MEMORY_ARTICLES = 1000
 
 
 @dataclass
@@ -195,7 +197,7 @@ class NewsFeedService:
             try:
                 new_articles = await self.fetch_all()
                 if new_articles:
-                    await self.persist_to_db()
+                    await self.persist_to_db(new_articles)
                     await self.prune_db()
                     try:
                         from api.websocket import broadcast_news_update
@@ -254,51 +256,43 @@ class NewsFeedService:
         if not slug:
             return []
 
-        run_started_at = utcnow()
+        run_started_at = _to_naive_utc(utcnow()) or datetime.now(timezone.utc).replace(tzinfo=None)
 
         async with AsyncSessionLocal() as session:
             row = await session.get(DataSource, source.id)
             if row is None or not bool(row.enabled):
                 return []
 
-            run_result = await run_data_source(session, row, max_records=limit, commit=True)
+            run_result = await run_data_source(session, row, max_records=limit, commit=True, return_records=True)
             if str(run_result.get("status") or "").strip().lower() != "success":
                 return []
 
-        async with AsyncSessionLocal() as session:
-            records = (
-                (
-                    await session.execute(
-                        select(DataSourceRecord)
-                        .where(DataSourceRecord.source_slug == slug)
-                        .where(DataSourceRecord.ingested_at >= run_started_at)
-                        .order_by(desc(DataSourceRecord.observed_at), desc(DataSourceRecord.ingested_at))
-                        .limit(limit)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
         out: list[dict[str, Any]] = []
-        for record in records:
-            payload = dict(record.payload_json or {}) if isinstance(record.payload_json, dict) else {}
-            transformed = dict(record.transformed_json or {}) if isinstance(record.transformed_json, dict) else {}
+        for record in run_result.get("records") or []:
+            observed_at = _parse_datetime(record.get("observed_at"))
+            if observed_at is None or observed_at < run_started_at:
+                continue
+            payload = dict(record.get("payload_json") or {}) if isinstance(record.get("payload_json"), dict) else {}
+            transformed = (
+                dict(record.get("transformed_json") or {})
+                if isinstance(record.get("transformed_json"), dict)
+                else {}
+            )
             merged: dict[str, Any] = {}
             merged.update(payload)
             merged.update(transformed)
             out.append(
                 {
-                    "external_id": record.external_id,
-                    "title": record.title or merged.get("title"),
-                    "summary": record.summary or merged.get("summary"),
-                    "category": record.category or merged.get("category"),
-                    "source": record.source or merged.get("source"),
-                    "url": record.url or merged.get("url"),
-                    "observed_at": record.observed_at or record.ingested_at,
+                    "external_id": record.get("external_id"),
+                    "title": record.get("title") or merged.get("title"),
+                    "summary": record.get("summary") or merged.get("summary"),
+                    "category": record.get("category") or merged.get("category"),
+                    "source": record.get("source") or merged.get("source"),
+                    "url": record.get("url") or merged.get("url"),
+                    "observed_at": observed_at or _parse_datetime(record.get("ingested_at")),
                     "payload": payload,
                     "feed_source": merged.get("feed_source"),
-                    "tags": list(record.tags_json or []),
+                    "tags": list(record.get("tags_json") or []),
                 }
             )
         return out
@@ -359,45 +353,50 @@ class NewsFeedService:
             fetched_at=fetched_at,
         )
 
-    async def persist_to_db(self) -> int:
+    async def persist_to_db(self, articles: list[NewsArticle] | None = None) -> int:
         try:
             from models.database import AsyncSessionLocal, NewsArticleCache
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-            articles = list(self._articles.values())
+            articles = list(articles or [])
             if not articles:
                 return 0
 
-            persisted = 0
+            rows = [
+                {
+                    "article_id": a.article_id,
+                    "url": a.url,
+                    "title": a.title,
+                    "source": a.source,
+                    "feed_source": a.feed_source,
+                    "category": a.category,
+                    "summary": a.summary or "",
+                    "published": _to_naive_utc(a.published),
+                    "fetched_at": _to_naive_utc(a.fetched_at),
+                    "embedding": a.embedding,
+                }
+                for a in articles
+            ]
             async with AsyncSessionLocal() as session:
-                for a in articles:
-                    stmt = (
-                        pg_insert(NewsArticleCache)
-                        .values(
-                            article_id=a.article_id,
-                            url=a.url,
-                            title=a.title,
-                            source=a.source,
-                            feed_source=a.feed_source,
-                            category=a.category,
-                            summary=a.summary or "",
-                            published=_to_naive_utc(a.published),
-                            fetched_at=_to_naive_utc(a.fetched_at),
-                            embedding=a.embedding,
-                        )
-                        .on_conflict_do_update(
-                            index_elements=["article_id"],
-                            set_={
-                                "embedding": a.embedding,
-                            },
-                        )
-                    )
-                    await session.execute(stmt)
-                    persisted += 1
+                insert_stmt = pg_insert(NewsArticleCache).values(rows)
+                stmt = insert_stmt.on_conflict_do_update(
+                    index_elements=["article_id"],
+                    set_={
+                        "url": insert_stmt.excluded.url,
+                        "title": insert_stmt.excluded.title,
+                        "source": insert_stmt.excluded.source,
+                        "feed_source": insert_stmt.excluded.feed_source,
+                        "category": insert_stmt.excluded.category,
+                        "summary": insert_stmt.excluded.summary,
+                        "published": insert_stmt.excluded.published,
+                        "fetched_at": insert_stmt.excluded.fetched_at,
+                        "embedding": insert_stmt.excluded.embedding,
+                    },
+                )
+                await session.execute(stmt)
                 await _commit_with_retry(session)
 
-            logger.debug("Persisted %d articles to DB", persisted)
-            return persisted
+            logger.debug("Persisted %d articles to DB", len(rows))
+            return len(rows)
         except Exception as exc:
             logger.warning("Failed to persist articles to DB: %s", exc)
             return 0
@@ -410,7 +409,12 @@ class NewsFeedService:
             cutoff = utcnow() - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             loaded = 0
             async with AsyncSessionLocal() as session:
-                result = await session.execute(select(NewsArticleCache).where(NewsArticleCache.fetched_at >= cutoff))
+                result = await session.execute(
+                    select(NewsArticleCache)
+                    .where(NewsArticleCache.fetched_at >= cutoff)
+                    .order_by(desc(NewsArticleCache.fetched_at), desc(NewsArticleCache.article_id))
+                    .limit(_MAX_IN_MEMORY_ARTICLES)
+                )
                 rows = result.scalars().all()
                 for row in rows:
                     if row.article_id in self._articles:
@@ -430,6 +434,7 @@ class NewsFeedService:
                         embedding=row.embedding,
                     )
                     loaded += 1
+            self._prune_old_articles()
             logger.info("Loaded %d articles from DB", loaded)
             return loaded
         except Exception as exc:
@@ -497,6 +502,16 @@ class NewsFeedService:
         to_remove = [aid for aid, article in self._articles.items() if article.fetched_at.timestamp() < cutoff]
         for aid in to_remove:
             del self._articles[aid]
+        if len(self._articles) > _MAX_IN_MEMORY_ARTICLES:
+            kept = sorted(
+                self._articles.values(),
+                key=lambda article: (
+                    article.fetched_at.timestamp(),
+                    article.article_id,
+                ),
+                reverse=True,
+            )[:_MAX_IN_MEMORY_ARTICLES]
+            self._articles = {article.article_id: article for article in kept}
         if to_remove:
             logger.debug("Pruned %d old articles", len(to_remove))
 

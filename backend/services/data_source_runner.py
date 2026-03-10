@@ -276,48 +276,28 @@ async def _apply_retention_policy(
     max_age_days = retention_policy.get("max_age_days")
     if max_age_days is not None:
         cutoff = _utcnow_naive() - timedelta(days=int(max_age_days))
-        stale_ids = (
-            (
-                await session.execute(
-                    select(DataSourceRecord.id)
-                    .where(DataSourceRecord.data_source_id == source_id)
-                    .where(func.coalesce(DataSourceRecord.observed_at, DataSourceRecord.ingested_at) < cutoff)
-                )
-            )
-            .scalars()
-            .all()
+        delete_result = await session.execute(
+            delete(DataSourceRecord)
+            .where(DataSourceRecord.data_source_id == source_id)
+            .where(func.coalesce(DataSourceRecord.observed_at, DataSourceRecord.ingested_at) < cutoff)
         )
-        if stale_ids:
-            delete_result = await session.execute(
-                delete(DataSourceRecord).where(DataSourceRecord.id.in_(list(stale_ids)))
-            )
-            deleted = int(delete_result.rowcount or 0)
-            max_age_deleted = deleted if deleted > 0 else len(stale_ids)
+        max_age_deleted = int(delete_result.rowcount or 0)
 
     max_records = retention_policy.get("max_records")
     if max_records is not None:
         overflow_ids = (
-            (
-                await session.execute(
-                    select(DataSourceRecord.id)
-                    .where(DataSourceRecord.data_source_id == source_id)
-                    .order_by(
-                        desc(DataSourceRecord.observed_at),
-                        desc(DataSourceRecord.ingested_at),
-                        desc(DataSourceRecord.id),
-                    )
-                    .offset(int(max_records))
-                )
+            select(DataSourceRecord.id)
+            .where(DataSourceRecord.data_source_id == source_id)
+            .order_by(
+                desc(DataSourceRecord.observed_at),
+                desc(DataSourceRecord.ingested_at),
+                desc(DataSourceRecord.id),
             )
-            .scalars()
-            .all()
+            .offset(int(max_records))
+            .scalar_subquery()
         )
-        if overflow_ids:
-            delete_result = await session.execute(
-                delete(DataSourceRecord).where(DataSourceRecord.id.in_(list(overflow_ids)))
-            )
-            deleted = int(delete_result.rowcount or 0)
-            max_records_deleted = deleted if deleted > 0 else len(overflow_ids)
+        delete_result = await session.execute(delete(DataSourceRecord).where(DataSourceRecord.id.in_(overflow_ids)))
+        max_records_deleted = int(delete_result.rowcount or 0)
 
     return {
         "max_age_deleted": int(max_age_deleted),
@@ -398,6 +378,7 @@ async def run_data_source(
     *,
     max_records: int = 500,
     commit: bool = True,
+    return_records: bool = False,
     _retry_on_disconnect: bool = True,
 ) -> dict[str, Any]:
     """Run one source, normalize records, and upsert into data_source_records."""
@@ -434,6 +415,7 @@ async def run_data_source(
     )
     source.retention = dict(retention_policy)
     retention_pruned = {"max_age_deleted": 0, "max_records_deleted": 0}
+    recent_records: list[dict[str, Any]] = []
 
     try:
         if runtime is None:
@@ -482,6 +464,28 @@ async def run_data_source(
             normalized_rows.append(normalized)
 
         transformed_count = len(normalized_rows)
+        ingested_at = _utcnow_naive()
+        if return_records:
+            recent_records = [
+                {
+                    "external_id": normalized.get("external_id"),
+                    "title": normalized.get("title"),
+                    "summary": normalized.get("summary"),
+                    "category": normalized.get("category"),
+                    "source": normalized.get("source"),
+                    "url": normalized.get("url"),
+                    "observed_at": normalized.get("observed_at") or ingested_at,
+                    "ingested_at": ingested_at,
+                    "payload_json": normalized.get("payload_json") or {},
+                    "transformed_json": normalized.get("transformed_json") or {},
+                    "tags_json": normalized.get("tags_json") or [],
+                    "latitude": normalized.get("latitude"),
+                    "longitude": normalized.get("longitude"),
+                    "country_iso3": normalized.get("country_iso3"),
+                    "source_slug": source_slug,
+                }
+                for normalized in normalized_rows
+            ]
 
         external_ids = sorted({record["external_id"] for record in normalized_rows if record.get("external_id")})
 
@@ -504,7 +508,6 @@ async def run_data_source(
                 )
                 existing_by_external_id = {str(row.external_id): row for row in existing_rows if row.external_id}
 
-            ingested_at = _utcnow_naive()
             for normalized in normalized_rows:
                 external_id = normalized.get("external_id")
                 existing = existing_by_external_id.get(str(external_id)) if external_id else None
@@ -586,6 +589,7 @@ async def run_data_source(
                         retry_source,
                         max_records=max_records,
                         commit=commit,
+                        return_records=return_records,
                         _retry_on_disconnect=False,
                     )
             except Exception as retry_exc:
@@ -674,6 +678,7 @@ async def run_data_source(
             "error_message": error_message,
             "duration_ms": error_run_row.duration_ms,
             "retention_pruned_count": 0,
+            "records": [],
         }
 
     # Build and add run_row here — only after all the fetch/upsert work
@@ -750,6 +755,7 @@ async def run_data_source(
         "duration_ms": run_row.duration_ms,
         "retention_pruned_count": int(retention_pruned.get("max_age_deleted") or 0)
         + int(retention_pruned.get("max_records_deleted") or 0),
+        "records": recent_records if return_records else [],
     }
 
 
@@ -759,6 +765,7 @@ async def run_data_source_by_slug(
     source_slug: str,
     max_records: int = 500,
     commit: bool = True,
+    return_records: bool = False,
 ) -> dict[str, Any]:
     slug = str(source_slug or "").strip().lower()
     if not slug:
@@ -773,6 +780,7 @@ async def run_data_source_by_slug(
         row,
         max_records=max_records,
         commit=commit,
+        return_records=return_records,
     )
 
 

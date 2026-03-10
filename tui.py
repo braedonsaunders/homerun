@@ -6,6 +6,7 @@ import collections
 import ctypes
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -20,17 +21,15 @@ from typing import Optional
 # Auto-install TUI prerequisites on the host machine.
 # This runs every launch and is a no-op when packages are already present.
 # ---------------------------------------------------------------------------
-_TUI_PREREQS = ["textual>=0.85.0,<1.0", "rich>=13.7.0"]
+_TUI_PREREQS = ["textual>=8.0.0,<9.0", "rich>=14.0.0,<15.0.0"]
 
 def _ensure_prereqs() -> None:
     needs_install = False
     try:
         import textual
         import rich  # noqa: F401
-        # textual 1.0+ / 8.x removed App.dark and broke CSS theming.
-        # Force downgrade to the compatible 0.x line.
         _tv = tuple(int(x) for x in textual.__version__.split(".")[:2])
-        if _tv >= (1, 0):
+        if _tv < (8, 0) or _tv >= (9, 0):
             needs_install = True
     except ImportError:
         needs_install = True
@@ -57,11 +56,10 @@ from textual.widgets import (
     Footer,
     Header,
     Input,
-    Label,
+    Log,
     Static,
     TabbedContent,
     TabPane,
-    TextArea,
 )
 
 # ---------------------------------------------------------------------------
@@ -377,6 +375,48 @@ def _resize_windows_terminal_window_to_quarter_screen() -> bool:
         return False
 
 
+def _nudge_windows_terminal_window() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            hwnd = kernel32.GetConsoleWindow()
+        if not hwnd or user32.IsZoomed(hwnd):
+            return False
+
+        rect = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+
+        left = int(rect.left)
+        top = int(rect.top)
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if width < 32 or height < 16:
+            return False
+
+        if not user32.MoveWindow(hwnd, left, top, width + 1, height, True):
+            return False
+        time.sleep(0.03)
+        return bool(user32.MoveWindow(hwnd, left, top, width, height, True))
+    except Exception:
+        return False
+
+
 def _target_terminal_size() -> tuple[int, int]:
     try:
         current = shutil.get_terminal_size(fallback=(80, 24))
@@ -421,20 +461,9 @@ def _ensure_startup_terminal_size() -> None:
     if sys.platform == "darwin" and _resize_macos_terminal_window_to_quarter_screen():
         return
     if sys.platform == "win32":
-        if os.environ.get("WT_SESSION"):
-            # Windows Terminal manages its own window size; do nothing.
-            # Running ``mode con:`` here would resize the console buffer
-            # *before* Textual opens its alt screen, which can desync
-            # the buffer dimensions from the actual viewport and cause
-            # the initial render to use wrong sizes.  The post-mount
-            # _force_windows_resize cascade handles correct sizing.
-            return
-        # Classic cmd.exe / PowerShell console host: MoveWindow positions the
-        # physical window; mode-con resizes both buffer and window.
-        _resize_windows_terminal_window_to_quarter_screen()
-        time.sleep(0.3)
         cols, lines = _target_terminal_size()
         _resize_windows_console(cols, lines)
+        _nudge_windows_terminal_window()
         return
     cols, lines = _target_terminal_size()
     _resize_posix_terminal(cols, lines)
@@ -466,6 +495,8 @@ HEALTH_OFFLINE_GRACE_SECONDS = 10.0
 
 # Log level ordering for filter comparison
 LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 WORKER_STATUS_ORDER: list[tuple[str, str]] = [
     ("scanner", "SCANNER"),
@@ -555,9 +586,10 @@ WORKER_FILTER_LABELS: dict[str, str] = {
 }
 
 WORKER_MINI_LOG_LINES = 2
-WORKER_MINI_LOG_WIDTH = 84
-MIN_TERMINAL_COLUMNS = 180
-MIN_TERMINAL_LINES = 52
+WORKER_PANEL_HORIZONTAL_CHROME = 6
+WORKER_PANEL_FALLBACK_CONTENT_WIDTH = 24
+MIN_TERMINAL_COLUMNS = 80
+MIN_TERMINAL_LINES = 24
 
 LOGO = r"""
  _   _  ___  __  __ _____ ____  _   _ _   _
@@ -692,6 +724,8 @@ Screen {
     color: #d2e8f7;
     text-style: bold;
     height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 .worker-panel-status {
@@ -702,12 +736,16 @@ Screen {
 .worker-panel-meta {
     color: #89acc3;
     height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 .worker-panel-logs {
     color: #9ab4c6;
     height: 3;
     padding: 0 0 0 0;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 .status-on {
@@ -819,6 +857,7 @@ TabbedContent {
 TabPane {
     padding: 0;
 }
+
 
 #home {
     overflow-y: auto;
@@ -1028,52 +1067,59 @@ class WorkerPanel(Static):
     """Compact worker telemetry panel with mini logs."""
 
     def __init__(self, worker_name: str, label: str) -> None:
-        super().__init__(id=f"worker-{worker_name}", classes="worker-panel")
+        super().__init__("", id=f"worker-{worker_name}", classes="worker-panel")
         self.worker_name = worker_name
         self._label = label
+        self.border_title = label
+        self._status = "OFFLINE"
+        self._status_class = "status-off"
+        self._meta = "No telemetry yet"
+        self._logs = ["waiting for worker events", "--"]
+        self._refresh_content()
 
-    def compose(self) -> ComposeResult:
-        yield Label(self._label, classes="worker-panel-title")
-        yield Label("OFFLINE", id=f"{self.id}-status", classes="worker-panel-status status-off")
-        yield Label("No telemetry yet", id=f"{self.id}-meta", classes="worker-panel-meta")
-        yield Static(
-            "  waiting for worker events\n  --",
-            id=f"{self.id}-logs",
-            classes="worker-panel-logs",
+    def _status_markup(self) -> str:
+        color = {
+            "status-on": "#55f0b8",
+            "status-off": "#ff6b6b",
+            "status-warn": "#ffbf69",
+            "status-idle": "#8aa7ba",
+        }.get(self._status_class, "#d2e8f7")
+        return f"[{color} bold]{self._status}[/]"
+
+    def _refresh_content(self) -> None:
+        log_lines = self._logs[-WORKER_MINI_LOG_LINES:]
+        while len(log_lines) < WORKER_MINI_LOG_LINES:
+            log_lines.append("--")
+        body = "\n".join(
+            [
+                self._status_markup(),
+                f"[#89acc3]{self._meta}[/]",
+                f"[#9ab4c6]  {log_lines[0]}[/]",
+                f"[#9ab4c6]  {log_lines[1]}[/]",
+            ]
         )
+        self.update(body)
 
     def update_state(self, status: str, status_class: str, meta: str) -> None:
-        try:
-            status_label = self.query_one(f"#{self.id}-status", Label)
-            status_label.update(status)
-            status_label.remove_class("status-on")
-            status_label.remove_class("status-off")
-            status_label.remove_class("status-warn")
-            status_label.remove_class("status-idle")
-            status_label.add_class(status_class)
-            self.query_one(f"#{self.id}-meta", Label).update(meta)
-        except Exception:
-            pass
+        self._status = status
+        self._status_class = status_class
+        self._meta = meta
+        self._refresh_content()
 
     def update_logs(self, lines: list[str]) -> None:
-        if lines:
-            body = "\n".join(f"  {line}" for line in lines[-WORKER_MINI_LOG_LINES:])
-        else:
-            body = "  waiting for worker events\n  --"
-        try:
-            self.query_one(f"#{self.id}-logs", Static).update(body)
-        except Exception:
-            pass
+        self._logs = lines[-WORKER_MINI_LOG_LINES:] if lines else ["waiting for worker events", "--"]
+        self._refresh_content()
 
 
 # ---------------------------------------------------------------------------
-# Plain-text log formatter (no Rich markup -- TextArea is plain text)
+# Plain-text log formatter (no Rich markup)
 # ---------------------------------------------------------------------------
 def format_log_line(line: str, tag: str) -> tuple[str, str]:
     """Format a raw log line into readable plain text for the log viewer.
 
     Returns (formatted_text, level).
     """
+    line = CONTROL_CHAR_RE.sub("", ANSI_ESCAPE_RE.sub("", line))
     prefix = f"[{tag}]"
 
     # Try to parse structured JSON log lines from backend
@@ -1141,11 +1187,15 @@ class HomerunApp(App):
     health_data: dict = {}
     health_poll_count: int = 0
     _is_light_mode: bool = False
+    _startup_layout_settle_deadline: float = 0.0
+    _last_known_viewport_size: tuple[int, int] = (0, 0)
+    _startup_layout_timer = None
+    _startup_services_started: bool = False
 
     def __init__(self) -> None:
         super().__init__()
         # Thread-safe log line buffer: worker threads append here,
-        # a periodic timer flushes into the TextArea on the main thread.
+        # a periodic timer flushes into the log view on the main thread.
         self._log_buf: collections.deque[tuple[str, str, str, str]] = collections.deque(
             maxlen=2000
         )
@@ -1266,111 +1316,30 @@ class HomerunApp(App):
                     yield Button("Clear", id="log-clear-btn", variant="warning")
                     yield Button("Copy", id="log-copy-btn", variant="success")
                     yield Button("↓ Bottom", id="log-bottom-btn", variant="primary")
-            yield TextArea(
-                "",
-                id="log-output",
-                read_only=True,
-                show_line_numbers=True,
-                language=None,
-                soft_wrap=True,
-            )
+            yield Log(id="log-output", highlight=False, max_lines=LOG_MAX_LINES, auto_scroll=True)
 
     # ---- Lifecycle ----
     def on_mount(self) -> None:
         self.start_time = time.time()
+        self._startup_layout_settle_deadline = time.monotonic() + 3.0
+        self._last_known_viewport_size = (int(self.size.width), int(self.size.height))
         # Remove "active" press animation delay so UI clicks feel immediate.
         for button in self.query(Button):
             button.active_effect_duration = 0.0
         self._sync_filter_button_variants()
         self._update_worker_filter_display()
         self._update_log_header()
-        self._start_services()
         self._apply_responsive_layout()
+        self.set_timer(0.0, self._finalize_initial_layout)
+        self.set_timer(0.2, self._finalize_initial_layout)
+        self.set_timer(0.5, self._start_services_after_initial_paint)
+        self._startup_layout_timer = self.set_interval(0.1, self._settle_startup_layout)
         self._poll_health()
         self._update_uptime()
         # Flush log buffer periodically (batched writes for performance)
         self.set_interval(LOG_FLUSH_MS / 1000.0, self._flush_log_buffer)
         # Check scroll state less frequently (not on_idle which fires constantly)
         self.set_interval(0.5, self._check_scroll_follow)
-        # Windows: Textual's Windows driver never sends an initial Resize event
-        # (the Linux driver does via send_size_event()).  The first render uses
-        # dimensions from Rich's Console.size fallback which can be wrong
-        # (reports buffer height, not viewport height).  Fire a cascade of
-        # forced resizes to ensure the layout converges on the real viewport
-        # size once the widget tree is fully composed.
-        if sys.platform == "win32":
-            for delay in (0.1, 0.3, 0.8):
-                self.set_timer(delay, self._force_windows_resize)
-
-    def _force_windows_resize(self) -> None:
-        """Read the real console viewport size and force a layout refresh.
-
-        Textual's Windows driver never sends an initial Resize event
-        (unlike the Linux driver which calls send_size_event() at start).
-        The first render falls back to Rich's Console.size which can
-        return the screen *buffer* height instead of the visible *viewport*
-        height, causing a wildly wrong layout.
-
-        This reads the actual viewport rectangle via
-        GetConsoleScreenBufferInfo.srWindow, sets App._size directly,
-        and triggers a full layout refresh.
-        """
-        try:
-            from textual.geometry import Size as TextualSize
-
-            width: int | None = None
-            height: int | None = None
-            try:
-                kernel32 = ctypes.windll.kernel32
-
-                class COORD(ctypes.Structure):
-                    _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
-
-                class SMALL_RECT(ctypes.Structure):
-                    _fields_ = [
-                        ("Left", ctypes.c_short),
-                        ("Top", ctypes.c_short),
-                        ("Right", ctypes.c_short),
-                        ("Bottom", ctypes.c_short),
-                    ]
-
-                class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
-                    _fields_ = [
-                        ("dwSize", COORD),
-                        ("dwCursorPosition", COORD),
-                        ("wAttributes", ctypes.c_ushort),
-                        ("srWindow", SMALL_RECT),
-                        ("dwMaximumWindowSize", COORD),
-                    ]
-
-                kernel32.GetStdHandle.restype = ctypes.wintypes.HANDLE
-                kernel32.GetStdHandle.argtypes = [ctypes.wintypes.DWORD]
-                h_out = kernel32.GetStdHandle(-11 & 0xFFFFFFFF)  # STD_OUTPUT_HANDLE
-
-                csbi = CONSOLE_SCREEN_BUFFER_INFO()
-                if kernel32.GetConsoleScreenBufferInfo(h_out, ctypes.byref(csbi)):
-                    width = csbi.srWindow.Right - csbi.srWindow.Left + 1
-                    height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
-            except Exception:
-                width = None
-                height = None
-
-            if not isinstance(width, int) or not isinstance(height, int) or width < 10 or height < 5:
-                fallback = shutil.get_terminal_size(fallback=(120, 40))
-                width = int(fallback.columns)
-                height = int(fallback.lines)
-
-            if width < 10 or height < 5:
-                return
-
-            size = TextualSize(width, height)
-            if self._size != size:
-                self._size = size
-                self.screen._screen_resized(size)
-            self._apply_responsive_layout(width)
-            self.refresh(layout=True)
-        except Exception:
-            pass
 
     def _apply_responsive_layout(self, viewport_width: int | None = None) -> None:
         try:
@@ -1392,6 +1361,48 @@ class HomerunApp(App):
             workers_grid.styles.grid_size_columns = grid_cols
         except Exception:
             pass
+        self._rerender_all_worker_panels()
+
+    def _finalize_initial_layout(self) -> None:
+        try:
+            self.screen.clear_cached_dimensions()
+        except Exception:
+            pass
+        self._apply_responsive_layout()
+        self.refresh(repaint=True, layout=True)
+        try:
+            self.screen.refresh(repaint=True, layout=True)
+        except Exception:
+            pass
+
+    def _start_services_after_initial_paint(self) -> None:
+        if self._startup_services_started:
+            return
+        self._startup_services_started = True
+        self._start_services()
+
+    def _settle_startup_layout(self) -> None:
+        if time.monotonic() >= self._startup_layout_settle_deadline:
+            try:
+                if self._startup_layout_timer is not None:
+                    self._startup_layout_timer.stop()
+            except Exception:
+                pass
+            self._startup_layout_timer = None
+            return
+        current_size = (int(self.size.width), int(self.size.height))
+        if current_size != self._last_known_viewport_size:
+            self._last_known_viewport_size = current_size
+            self._finalize_initial_layout()
+            return
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            if self._get_worker_content_width(worker_name) <= 0:
+                self._finalize_initial_layout()
+                return
+
+    def _rerender_all_worker_panels(self) -> None:
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            self._render_worker_panel(worker_name)
 
     def on_resize(self, event: Resize) -> None:
         viewport_width = getattr(event, "width", None)
@@ -1399,7 +1410,11 @@ class HomerunApp(App):
             maybe_size = getattr(event, "size", None)
             viewport_width = getattr(maybe_size, "width", None)
         self._apply_responsive_layout(viewport_width if isinstance(viewport_width, int) else None)
-        self.refresh(layout=True)
+        try:
+            self.screen.clear_cached_dimensions()
+        except Exception:
+            pass
+        self.refresh(repaint=True, layout=True)
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
@@ -1439,10 +1454,8 @@ class HomerunApp(App):
     def _do_copy(self) -> None:
         """Copy selected text (or all text) from the log viewer to system clipboard."""
         try:
-            ta = self.query_one("#log-output", TextArea)
-            text = ta.selected_text
-            if not text:
-                text = ta.text
+            log = self.query_one("#log-output", Log)
+            text = "\n".join(log.lines)
             if not text:
                 return
             # Use system clipboard via subprocess (reliable across terminals)
@@ -1568,9 +1581,9 @@ class HomerunApp(App):
                 pass
 
     def _rebuild_log_view(self) -> None:
-        """Rebuild the TextArea content from master entries based on current filters."""
+        """Rebuild the log content from master entries based on current filters."""
         try:
-            ta = self.query_one("#log-output", TextArea)
+            log = self.query_one("#log-output", Log)
         except Exception:
             return
 
@@ -1580,19 +1593,15 @@ class HomerunApp(App):
             if self._matches_filter(text, source, level, worker_name)
         ]
 
-        # Clear the TextArea
-        end = ta.document.end
-        if end != (0, 0):
-            ta.delete((0, 0), end)
+        log.clear()
 
-        # Insert filtered content
         if matching:
-            content = "\n".join(matching)
-            ta.insert(content, location=(0, 0))
+            log.auto_scroll = bool(self._log_follow)
+            log.write_lines(matching)
 
-        self._log_line_count = len(matching)
-        self._log_follow = True
-        ta.scroll_end(animate=False)
+        self._log_line_count = len(log.lines)
+        if self._log_follow:
+            log.scroll_end(animate=False)
         self._update_log_header()
 
     # ---- Log buffer: thread-safe batched writes ----
@@ -1606,7 +1615,7 @@ class HomerunApp(App):
 
     def _flush_log_buffer(self) -> None:
         """Called on the main thread by a periodic timer. Flushes pending lines
-        into the TextArea in one batch for performance."""
+        into the log view in one batch for performance."""
         with self._log_lock:
             if not self._log_buf:
                 return
@@ -1632,47 +1641,21 @@ class HomerunApp(App):
             return
 
         try:
-            ta = self.query_one("#log-output", TextArea)
+            log = self.query_one("#log-output", Log)
         except Exception:
             self._flush_worker_event_buffer()
             return
 
-        # Snapshot scroll state and selection BEFORE any mutation.
         at_bottom = self._log_follow
-        saved_scroll_y = ta.scroll_y
-        saved_selection = ta.selection
-
-        # Build the chunk to insert
-        chunk = "\n".join(matching)
-        if self._log_line_count > 0:
-            chunk = "\n" + chunk
-
-        # Insert at the end of the document
-        end = ta.document.end
-        ta.insert(chunk, location=end)
-        self._log_line_count += len(matching)
-
-        # Restore selection after insert -- insert at end moved cursor
-        # but didn't change line numbers for existing text.
-        ta.selection = saved_selection
-
-        # Trim from the top if we've exceeded the cap
-        trimmed = 0
-        if self._log_line_count > LOG_MAX_LINES:
-            trim = self._log_line_count - (LOG_MAX_LINES - LOG_TRIM_BATCH)
-            actual_lines = ta.document.line_count
-            trim = min(trim, actual_lines - 1)
-            if trim > 0:
-                ta.delete((0, 0), (trim, 0), maintain_selection_offset=True)
-                trimmed = trim
-                self._log_line_count = ta.document.line_count
+        saved_scroll_y = log.scroll_y
+        log.auto_scroll = bool(self._log_follow)
+        log.write_lines(matching)
+        self._log_line_count = len(log.lines)
 
         if at_bottom:
-            ta.scroll_end(animate=False)
+            log.scroll_end(animate=False)
         else:
-            # Force-restore the viewport to where the user was reading.
-            restored = max(0, saved_scroll_y - trimmed)
-            ta.scroll_to(y=restored, animate=False)
+            log.scroll_to(y=max(0, saved_scroll_y), animate=False)
 
         # Update header with line count & follow state
         self._update_log_header()
@@ -1733,10 +1716,10 @@ class HomerunApp(App):
     def _check_scroll_follow(self) -> None:
         """Periodic check: detect when the user scrolls to/from the bottom."""
         try:
-            ta = self.query_one("#log-output", TextArea)
-            if ta.max_scroll_y <= 0:
+            log = self.query_one("#log-output", Log)
+            if log.max_scroll_y <= 0:
                 return
-            at_bottom = ta.scroll_y >= (ta.max_scroll_y - 2)
+            at_bottom = log.scroll_y >= (log.max_scroll_y - 2)
             if at_bottom != self._log_follow:
                 self._log_follow = at_bottom
                 self._update_log_header()
@@ -1769,14 +1752,33 @@ class HomerunApp(App):
         if update:
             self._render_worker_panel(worker_name)
 
-    def _normalize_worker_log_line(self, text: str) -> str:
+    def _truncate_worker_text(self, text: str, max_width: int) -> str:
+        cleaned = " ".join(text.strip().split())
+        if not cleaned:
+            return ""
+        if max_width <= 0:
+            max_width = WORKER_PANEL_FALLBACK_CONTENT_WIDTH
+        if len(cleaned) <= max_width:
+            return cleaned
+        if max_width <= 3:
+            return cleaned[:max_width]
+        return cleaned[: max_width - 3].rstrip() + "..."
+
+    def _get_worker_content_width(self, worker_name: str, panel: WorkerPanel | None = None) -> int:
+        try:
+            target = panel or self.query_one(f"#worker-{worker_name}", WorkerPanel)
+            width = int(target.size.width)
+        except Exception:
+            width = 0
+        if width <= WORKER_PANEL_HORIZONTAL_CHROME:
+            return WORKER_PANEL_FALLBACK_CONTENT_WIDTH
+        return width - WORKER_PANEL_HORIZONTAL_CHROME
+
+    def _normalize_worker_log_line(self, text: str, max_width: int | None = None) -> str:
         line = text.strip()
         if line.startswith("[") and "] " in line:
             line = line.split("] ", 1)[1]
-        line = " ".join(line.split())
-        if len(line) > WORKER_MINI_LOG_WIDTH:
-            line = line[: WORKER_MINI_LOG_WIDTH - 3].rstrip() + "..."
-        return line
+        return self._truncate_worker_text(line, max_width or 0)
 
     # ---- Button handlers ----
     def _handle_button_action(self, btn_id: Optional[str]) -> None:
@@ -1810,10 +1812,7 @@ class HomerunApp(App):
         if btn_id == "log-clear-btn":
             self._log_entries.clear()
             try:
-                ta = self.query_one("#log-output", TextArea)
-                end = ta.document.end
-                if end != (0, 0):
-                    ta.delete((0, 0), end)
+                self.query_one("#log-output", Log).clear()
             except Exception:
                 pass
             self._log_line_count = 0
@@ -1830,7 +1829,9 @@ class HomerunApp(App):
             self._log_follow = not self._log_follow
             if self._log_follow:
                 try:
-                    self.query_one("#log-output", TextArea).scroll_end(animate=False)
+                    log = self.query_one("#log-output", Log)
+                    log.auto_scroll = True
+                    log.scroll_end(animate=False)
                 except Exception:
                     pass
             self._update_log_header()
@@ -1838,8 +1839,9 @@ class HomerunApp(App):
 
         if btn_id == "log-bottom-btn":
             try:
-                ta = self.query_one("#log-output", TextArea)
-                ta.scroll_end(animate=False)
+                log = self.query_one("#log-output", Log)
+                log.auto_scroll = True
+                log.scroll_end(animate=False)
                 self._log_follow = True
                 self._update_log_header()
             except Exception:
@@ -2196,7 +2198,10 @@ class HomerunApp(App):
     def _stream_output(self, proc: subprocess.Popen, tag: str) -> None:
         """Read process stdout line-by-line and enqueue for batched display."""
         try:
-            for raw_line in iter(proc.stdout.readline, b""):
+            stdout = proc.stdout
+            if stdout is None:
+                return
+            for raw_line in iter(stdout.readline, b""):
                 if self._shutting_down:
                     break
                 if proc.poll() is not None and not raw_line:
@@ -2452,10 +2457,15 @@ class HomerunApp(App):
     def _render_worker_panel(self, worker_name: str) -> None:
         snapshot = self._worker_state_cache.get(worker_name, {})
         status, status_class = self._resolve_worker_state(snapshot)
-        meta = self._format_worker_meta(snapshot)
-        lines = list(self._worker_logs.get(worker_name, []))
         try:
             panel = self.query_one(f"#worker-{worker_name}", WorkerPanel)
+            content_width = self._get_worker_content_width(worker_name, panel)
+            meta = self._truncate_worker_text(self._format_worker_meta(snapshot), content_width)
+            lines = [
+                self._normalize_worker_log_line(line, content_width)
+                for line in self._worker_logs.get(worker_name, [])
+            ]
+            lines = [line for line in lines if line]
             panel.update_state(status, status_class, meta)
             panel.update_logs(lines)
         except Exception:
@@ -2632,7 +2642,7 @@ class HomerunApp(App):
         self._shutting_down = True
         self._kill_children()
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self._shutting_down = True
         self.notify("Shutting down...", severity="warning", timeout=10)
         self._kill_children()
@@ -2741,13 +2751,6 @@ class HomerunApp(App):
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    # On Windows Python 3.10+ the default ProactorEventLoop can crash during
-    # asyncio runner shutdown.  SelectorEventLoop avoids this and is all the
-    # TUI needs (no subprocess pipes managed via IOCP).
-    if sys.platform == "win32":
-        import asyncio
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
     # Verify venv exists
     venv_dir = BACKEND_DIR / "venv"
     if not venv_dir.exists():
@@ -2765,90 +2768,19 @@ def main() -> None:
 
     _ensure_startup_terminal_size()
 
-    # ------------------------------------------------------------------
-    # Monkey-patch Textual's win32 driver to restore ENABLE_WINDOW_INPUT.
-    #
-    # Textual's enable_application_mode() (win32.py line 179) sets the
-    # stdin console mode to ENABLE_VIRTUAL_TERMINAL_INPUT *only*, which
-    # strips ENABLE_WINDOW_INPUT (0x0008).  Without that flag, Windows
-    # never delivers WINDOW_BUFFER_SIZE_EVENT records, so Textual's
-    # EventMonitor thread never sees terminal resizes — the TUI renders
-    # at the initial size until the user manually resizes the window.
-    #
-    # We wrap the original function to re-add ENABLE_WINDOW_INPUT after
-    # Textual sets its mode.
-    # ------------------------------------------------------------------
-    if sys.platform == "win32":
-        import textual.drivers.win32 as _tw32
-
-        _original_enable_application_mode = _tw32.enable_application_mode
-
-        def _patched_enable_application_mode() -> "Callable[[], None]":
-            restore = _original_enable_application_mode()
-            current_mode = _tw32.get_console_mode(sys.__stdin__)
-            _tw32.set_console_mode(
-                sys.__stdin__, current_mode | _tw32.ENABLE_WINDOW_INPUT
-            )
-            return restore
-
-        _tw32.enable_application_mode = _patched_enable_application_mode
-
-        # ------------------------------------------------------------------
-        # Monkey-patch EventMonitor.on_size_change to read the viewport
-        # dimensions from GetConsoleScreenBufferInfo.srWindow instead of
-        # trusting WINDOW_BUFFER_SIZE_RECORD.dwSize.  The dwSize field
-        # reports the *buffer* dimensions which can differ from the visible
-        # viewport (e.g., when a scrollback buffer is taller than the window).
-        # ------------------------------------------------------------------
-        _OriginalEventMonitor = _tw32.EventMonitor
-
-        class _PatchedEventMonitor(_OriginalEventMonitor):
-            def on_size_change(self, width: int, height: int) -> None:
-                try:
-                    import ctypes as _ct
-                    import ctypes.wintypes as _wt
-
-                    class _COORD(_ct.Structure):
-                        _fields_ = [("X", _ct.c_short), ("Y", _ct.c_short)]
-
-                    class _SMALL_RECT(_ct.Structure):
-                        _fields_ = [
-                            ("Left", _ct.c_short), ("Top", _ct.c_short),
-                            ("Right", _ct.c_short), ("Bottom", _ct.c_short),
-                        ]
-
-                    class _CSBI(_ct.Structure):
-                        _fields_ = [
-                            ("dwSize", _COORD), ("dwCursorPosition", _COORD),
-                            ("wAttributes", _ct.c_ushort), ("srWindow", _SMALL_RECT),
-                            ("dwMaximumWindowSize", _COORD),
-                        ]
-
-                    k32 = _ct.windll.kernel32
-                    k32.GetStdHandle.restype = _wt.HANDLE
-                    k32.GetStdHandle.argtypes = [_wt.DWORD]
-                    h = k32.GetStdHandle(0xFFFFFFF5)  # STD_OUTPUT_HANDLE
-                    csbi = _CSBI()
-                    if k32.GetConsoleScreenBufferInfo(h, _ct.byref(csbi)):
-                        width = csbi.srWindow.Right - csbi.srWindow.Left + 1
-                        height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1
-                except Exception:
-                    pass
-                super().on_size_change(width, height)
-
-        _tw32.EventMonitor = _PatchedEventMonitor
-
     app = HomerunApp()
-    app.run()
 
-    # Kill any remaining child process trees, then close the Job Object handle
-    # (triggers KILL_ON_JOB_CLOSE as a safety net).
-    _sigbreak_kill_children()
+    try:
+        app.run()
+    finally:
+        # Kill any remaining child process trees, then close the Job Object handle
+        # (triggers KILL_ON_JOB_CLOSE as a safety net).
+        _sigbreak_kill_children()
 
-    # Force-exit to avoid hanging on background thread joins.
-    # Textual worker threads (subprocess readers) may still be blocked
-    # on I/O; Python's atexit handler would wait for them indefinitely.
-    os._exit(0)
+        # Force-exit to avoid hanging on background thread joins.
+        # Textual worker threads (subprocess readers) may still be blocked
+        # on I/O; Python's atexit handler would wait for them indefinitely.
+        os._exit(0)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,14 @@ from utils.validation import validate_eth_address
 anomaly_router = APIRouter()
 
 
+async def _resolve_wallet_address(wallet_identifier: str) -> str:
+    try:
+        resolved = await polymarket_client.resolve_wallet_identifier(wallet_identifier)
+        return validate_eth_address(str(resolved.get("address") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _normalize_timestamp(trade: dict) -> str:
     """Normalize trade timestamps to ISO format, handling Unix seconds, ms, and strings."""
     ts = (
@@ -96,10 +104,7 @@ async def analyze_wallet(request: AnalyzeWalletRequest):
 @anomaly_router.get("/analyze/{wallet_address}")
 async def analyze_wallet_get(wallet_address: str):
     """Analyze a wallet (GET method for convenience)"""
-    try:
-        address = validate_eth_address(wallet_address)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    address = await _resolve_wallet_address(wallet_address)
 
     analysis = await anomaly_detector.analyze_wallet(address)
 
@@ -223,10 +228,7 @@ async def quick_check_wallet(wallet_address: str):
     Returns a simple pass/fail with basic stats.
     Use /analyze for full analysis.
     """
-    try:
-        address = validate_eth_address(wallet_address)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    address = await _resolve_wallet_address(wallet_address)
 
     analysis = await anomaly_detector.analyze_wallet(address)
 
@@ -255,10 +257,7 @@ async def get_wallet_trades(wallet_address: str, limit: int = Query(default=100,
 
     Returns raw trade data with calculated cost per trade.
     """
-    try:
-        address = validate_eth_address(wallet_address)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    address = await _resolve_wallet_address(wallet_address)
 
     trades = await polymarket_client.get_wallet_trades(address, limit=limit)
 
@@ -304,10 +303,7 @@ async def get_wallet_positions(wallet_address: str):
     """
     Get current open positions for a wallet with real-time market prices.
     """
-    try:
-        address = validate_eth_address(wallet_address)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    address = await _resolve_wallet_address(wallet_address)
 
     # Use enriched positions with current market prices from CLOB API
     positions = await polymarket_client.get_wallet_positions_with_prices(address)
@@ -408,10 +404,7 @@ async def get_wallet_summary(wallet_address: str):
     """
     Get a comprehensive summary of a wallet including trades, positions, and analysis.
     """
-    try:
-        address = validate_eth_address(wallet_address)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    address = await _resolve_wallet_address(wallet_address)
 
     # Fetch all data in parallel - use enriched positions with current prices
     trades = await polymarket_client.get_wallet_trades(address, limit=500)

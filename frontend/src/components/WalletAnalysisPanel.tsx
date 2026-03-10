@@ -868,6 +868,8 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
   const [passedUsername, setPassedUsername] = useState<string | null>(null)
+  const [inputError, setInputError] = useState<string | null>(null)
+  const [isResolvingInput, setIsResolvingInput] = useState(false)
   const [activeTab, setActiveTab] = useState<AnalysisTab>('overview')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
 
@@ -959,12 +961,26 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
     setAnomaliesPage((current) => Math.min(current, Math.max(1, Math.ceil(anomalies.length / anomaliesPageSize))))
   }, [anomalies.length, anomaliesPageSize])
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     const value = searchAddress.trim()
     if (!value) return
-    setActiveWallet(value)
-    setPassedUsername(null)
-    setActiveTab('overview')
+    setInputError(null)
+    setIsResolvingInput(true)
+    try {
+      const profile = await getWalletProfile(value)
+      const resolvedAddress = String(profile.address || '').trim().toLowerCase()
+      if (!resolvedAddress) {
+        throw new Error('Unable to resolve wallet handle to an on-chain address')
+      }
+      setActiveWallet(resolvedAddress)
+      setSearchAddress(resolvedAddress)
+      setPassedUsername(profile.username || null)
+      setActiveTab('overview')
+    } catch (error) {
+      setInputError(readErrorMessage(error))
+    } finally {
+      setIsResolvingInput(false)
+    }
   }
 
   const handleRefresh = () => {
@@ -1031,19 +1047,23 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                   value={searchAddress}
                   onChange={(event) => setSearchAddress(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') handleAnalyze()
+                    if (event.key === 'Enter') {
+                      void handleAnalyze()
+                    }
                   }}
-                  placeholder="Enter wallet address (0x...)"
+                  placeholder="Enter wallet address, @handle, or profile URL"
                   className="h-9 border-border bg-background/80 pl-10 font-mono text-xs"
                 />
               </div>
 
               <Button
-                onClick={handleAnalyze}
-                disabled={!searchAddress.trim()}
+                onClick={() => {
+                  void handleAnalyze()
+                }}
+                disabled={!searchAddress.trim() || isResolvingInput}
                 className="h-9 bg-cyan-500 text-slate-950 hover:bg-cyan-400"
               >
-                <Search className="mr-1.5 h-3.5 w-3.5" />
+                <Search className={cn('mr-1.5 h-3.5 w-3.5', isResolvingInput && 'animate-spin')} />
                 Analyze
               </Button>
 
@@ -1092,6 +1112,12 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               {readErrorMessage(firstError)}
             </div>
           )}
+
+          {inputError && (
+            <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {inputError}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1101,7 +1127,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
             <Wallet className="mb-4 h-12 w-12 text-muted-foreground/35" />
             <p className="text-sm text-foreground">No wallet selected</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Enter a wallet address to unlock a full trader profile with paginated trade and position tables.
+              Enter a wallet address, @handle, or Polymarket profile URL to unlock a full trader profile with paginated trade and position tables.
             </p>
           </CardContent>
         </Card>

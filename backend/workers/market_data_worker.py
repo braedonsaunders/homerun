@@ -267,22 +267,51 @@ def _add_market_tokens(
         token_ids.add(no_token)
 
 
-async def _collect_trader_critical_universe(
-    session: AsyncSession,
-    *,
-    market_tokens: dict[str, tuple[str, str]],
-) -> dict[str, Any]:
+async def _collect_trader_critical_universe(*, market_tokens: dict[str, tuple[str, str]]) -> dict[str, Any]:
     held_market_ids: set[str] = set()
     evaluation_market_ids: set[str] = set()
     critical_tokens: set[str] = set()
 
-    open_position_rows = (
-        await session.execute(
-            select(TraderPosition.market_id, TraderPosition.payload_json).where(
-                func.lower(func.coalesce(TraderPosition.status, "")) == "open"
+    async with AsyncSessionLocal() as session:
+        open_position_rows = (
+            await session.execute(
+                select(TraderPosition.market_id, TraderPosition.payload_json).where(
+                    func.lower(func.coalesce(TraderPosition.status, "")) == "open"
+                )
             )
-        )
-    ).all()
+        ).all()
+        open_order_rows = (
+            await session.execute(
+                select(
+                    TraderOrder.market_id,
+                    TraderOrder.payload_json,
+                ).where(func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(OPEN_ORDER_STATUSES)))
+            )
+        ).all()
+        active_execution_leg_rows = (
+            await session.execute(
+                select(
+                    ExecutionSessionLeg.market_id,
+                    ExecutionSessionLeg.token_id,
+                )
+                .join(ExecutionSession, ExecutionSession.id == ExecutionSessionLeg.session_id)
+                .where(func.lower(func.coalesce(ExecutionSession.status, "")).in_(tuple(ACTIVE_EXECUTION_SESSION_STATUSES)))
+            )
+        ).all()
+        enabled_traders = (
+            await session.execute(
+                select(
+                    Trader.id,
+                    Trader.source_configs_json,
+                ).where(
+                    and_(
+                        Trader.is_enabled == True,  # noqa: E712
+                        Trader.is_paused == False,  # noqa: E712
+                    )
+                )
+            )
+        ).all()
+
     for row in open_position_rows:
         market_id = _normalize_market_id(row.market_id)
         if market_id:
@@ -290,14 +319,6 @@ async def _collect_trader_critical_universe(
             _add_market_tokens(critical_tokens, market_id=market_id, market_tokens=market_tokens)
         critical_tokens.update(_collect_tokens_from_payload(row.payload_json))
 
-    open_order_rows = (
-        await session.execute(
-            select(
-                TraderOrder.market_id,
-                TraderOrder.payload_json,
-            ).where(func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(OPEN_ORDER_STATUSES)))
-        )
-    ).all()
     for row in open_order_rows:
         market_id = _normalize_market_id(row.market_id)
         if market_id:
@@ -305,16 +326,6 @@ async def _collect_trader_critical_universe(
             _add_market_tokens(critical_tokens, market_id=market_id, market_tokens=market_tokens)
         critical_tokens.update(_collect_tokens_from_payload(row.payload_json))
 
-    active_execution_leg_rows = (
-        await session.execute(
-            select(
-                ExecutionSessionLeg.market_id,
-                ExecutionSessionLeg.token_id,
-            )
-            .join(ExecutionSession, ExecutionSession.id == ExecutionSessionLeg.session_id)
-            .where(func.lower(func.coalesce(ExecutionSession.status, "")).in_(tuple(ACTIVE_EXECUTION_SESSION_STATUSES)))
-        )
-    ).all()
     for row in active_execution_leg_rows:
         market_id = _normalize_market_id(row.market_id)
         if market_id:
@@ -324,19 +335,6 @@ async def _collect_trader_critical_universe(
         if token_id:
             critical_tokens.add(token_id)
 
-    enabled_traders = (
-        await session.execute(
-            select(
-                Trader.id,
-                Trader.source_configs_json,
-            ).where(
-                and_(
-                    Trader.is_enabled == True,  # noqa: E712
-                    Trader.is_paused == False,  # noqa: E712
-                )
-            )
-        )
-    ).all()
     evaluation_signals_count = 0
     for trader_row in enabled_traders:
         trader_id = str(trader_row.id or "").strip()
@@ -352,13 +350,14 @@ async def _collect_trader_critical_universe(
                 sources.append(source_key)
         if not sources:
             continue
-        signals = await list_unconsumed_trade_signals(
-            session,
-            trader_id=trader_id,
-            sources=sorted(set(sources)),
-            statuses=["pending", "selected"],
-            limit=_MAX_EVALUATION_SIGNALS_PER_TRADER,
-        )
+        async with AsyncSessionLocal() as session:
+            signals = await list_unconsumed_trade_signals(
+                session,
+                trader_id=trader_id,
+                sources=sorted(set(sources)),
+                statuses=["pending", "selected"],
+                limit=_MAX_EVALUATION_SIGNALS_PER_TRADER,
+            )
         evaluation_signals_count += len(signals)
         for signal in signals:
             market_id = _normalize_market_id(getattr(signal, "market_id", ""))
@@ -869,11 +868,7 @@ async def _run_loop() -> None:
                     if metadata_market_count > 0:
                         catalog_market_count = metadata_market_count
 
-                async with AsyncSessionLocal() as session:
-                    critical_universe = await _collect_trader_critical_universe(
-                        session,
-                        market_tokens=market_tokens,
-                    )
+                critical_universe = await _collect_trader_critical_universe(market_tokens=market_tokens)
 
                 async with AsyncSessionLocal() as session:
                     await clear_worker_run_request(session, worker_name)

@@ -32,6 +32,7 @@ from models.database import (
     TraderOrchestratorSnapshot,
     TraderSignalCursor,
     TraderSignalConsumption,
+    release_conn,
 )
 from utils.logger import get_logger
 from services.event_bus import event_bus
@@ -3944,20 +3945,22 @@ async def reconcile_live_provider_orders(
     commit: bool = True,
     broadcast: bool = True,
 ) -> dict[str, Any]:
-    active_rows = list(
-        (
+    active_order_ids = [
+        str(order_id)
+        for order_id in (
             await session.execute(
-                select(TraderOrder).where(
+                select(TraderOrder.id).where(
                     TraderOrder.trader_id == trader_id,
-                    func.lower(func.coalesce(TraderOrder.mode, "")) == "live",
-                    func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(LIVE_ACTIVE_ORDER_STATUSES)),
+                    TraderOrder.mode == "live",
+                    TraderOrder.status.in_(tuple(LIVE_ACTIVE_ORDER_STATUSES)),
                 )
             )
         )
         .scalars()
         .all()
-    )
-    if not active_rows:
+        if str(order_id).strip()
+    ]
+    if not active_order_ids:
         return {
             "trader_id": trader_id,
             "provider_ready": True,
@@ -3972,20 +3975,23 @@ async def reconcile_live_provider_orders(
             "price_updates": 0,
         }
 
-    order_ids = [str(row.id) for row in active_rows]
+    # Release the DB connection while initializing the external trading provider.
+    if commit:
+        await session.commit()
     provider_ready = False
-    try:
-        provider_ready = bool(await live_execution_service.ensure_initialized())
-    except Exception as exc:
-        logger.warning(
-            "Live provider reconciliation failed to initialize trading service", trader_id=trader_id, exc_info=exc
-        )
-        provider_ready = False
+    async with release_conn(session):
+        try:
+            provider_ready = bool(await live_execution_service.ensure_initialized())
+        except Exception as exc:
+            logger.warning(
+                "Live provider reconciliation failed to initialize trading service", trader_id=trader_id, exc_info=exc
+            )
+            provider_ready = False
     if not provider_ready:
         return {
             "trader_id": trader_id,
             "provider_ready": False,
-            "active_seen": len(active_rows),
+            "active_seen": len(active_order_ids),
             "provider_tagged": 0,
             "snapshots_found": 0,
             "updated_orders": 0,
@@ -3996,11 +4002,22 @@ async def reconcile_live_provider_orders(
             "price_updates": 0,
         }
 
+    order_reconciliation_targets: dict[str, dict[str, Any]] = {}
+    provider_clob_ids: set[str] = set()
+    provider_tagged = 0
+    tagged_payload_updates = 0
+    active_order_rows = list(
+        (
+            await session.execute(select(TraderOrder).where(TraderOrder.id.in_(active_order_ids)))
+        )
+        .scalars()
+        .all()
+    )
     session_order_rows = list(
         (
             await session.execute(
                 select(ExecutionSessionOrder)
-                .where(ExecutionSessionOrder.trader_order_id.in_(order_ids))
+                .where(ExecutionSessionOrder.trader_order_id.in_(active_order_ids))
                 .order_by(desc(ExecutionSessionOrder.created_at))
             )
         )
@@ -4008,6 +4025,82 @@ async def reconcile_live_provider_orders(
         .all()
     )
     session_orders_by_order: dict[str, list[ExecutionSessionOrder]] = {}
+    for row in session_order_rows:
+        key = str(row.trader_order_id or "").strip()
+        if key:
+            session_orders_by_order.setdefault(key, []).append(row)
+
+    for order in active_order_rows:
+        order_id = str(order.id)
+        payload = dict(order.payload_json or {})
+        previous_provider_order_id = str(payload.get("provider_order_id") or "").strip()
+        previous_provider_clob_order_id = str(payload.get("provider_clob_order_id") or "").strip()
+        session_orders = session_orders_by_order.get(order_id, [])
+        session_order = session_orders[0] if session_orders else None
+        provider_order_id, provider_clob_order_id = _resolve_provider_order_ids(
+            order_payload=payload,
+            session_order=session_order,
+        )
+        if provider_order_id:
+            payload.setdefault("provider_order_id", provider_order_id)
+        if provider_clob_order_id:
+            payload.setdefault("provider_clob_order_id", provider_clob_order_id)
+            provider_clob_ids.add(provider_clob_order_id)
+            provider_tagged += 1
+        if (
+            str(payload.get("provider_order_id") or "").strip() != previous_provider_order_id
+            or str(payload.get("provider_clob_order_id") or "").strip() != previous_provider_clob_order_id
+        ):
+            tagged_payload_updates += 1
+        order_reconciliation_targets[order_id] = {
+            "provider_order_id": provider_order_id,
+            "provider_clob_order_id": provider_clob_order_id,
+        }
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    if provider_clob_ids:
+        async with release_conn(session):
+            try:
+                snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(sorted(provider_clob_ids))
+            except Exception as exc:
+                logger.warning("Live provider reconciliation failed to fetch snapshots", trader_id=trader_id, exc_info=exc)
+                snapshots = {}
+
+    now = _now()
+    updated_orders = 0
+    updated_session_orders = 0
+    updated_legs = 0
+    updated_sessions = 0
+    terminal_session_cancels = 0
+    status_changes = 0
+    session_status_changes = 0
+    notional_updates = 0
+    price_updates = 0
+    updated_order_rows: dict[str, TraderOrder] = {}
+    updated_execution_order_rows: dict[str, ExecutionSessionOrder] = {}
+    updated_execution_session_rows: dict[str, ExecutionSession] = {}
+    touched_session_ids: set[str] = set()
+    leg_state_updates: dict[str, dict[str, Any]] = {}
+
+    active_rows = list(
+        (
+            await session.execute(select(TraderOrder).where(TraderOrder.id.in_(active_order_ids)))
+        )
+        .scalars()
+        .all()
+    )
+    session_order_rows = list(
+        (
+            await session.execute(
+                select(ExecutionSessionOrder)
+                .where(ExecutionSessionOrder.trader_order_id.in_(active_order_ids))
+                .order_by(desc(ExecutionSessionOrder.created_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    session_orders_by_order = {}
     linked_session_ids: set[str] = set()
     for row in session_order_rows:
         key = str(row.trader_order_id or "").strip()
@@ -4032,55 +4125,6 @@ async def reconcile_live_provider_orders(
         for linked_session in linked_sessions:
             session_status_by_id[str(linked_session.id)] = str(linked_session.status or "")
 
-    provider_clob_ids: set[str] = set()
-    provider_tagged = 0
-    tagged_payload_updates = 0
-    for order in active_rows:
-        payload = dict(order.payload_json or {})
-        previous_provider_order_id = str(payload.get("provider_order_id") or "").strip()
-        previous_provider_clob_order_id = str(payload.get("provider_clob_order_id") or "").strip()
-        session_orders = session_orders_by_order.get(str(order.id), [])
-        session_order = session_orders[0] if session_orders else None
-        provider_order_id, provider_clob_order_id = _resolve_provider_order_ids(
-            order_payload=payload,
-            session_order=session_order,
-        )
-        if provider_order_id:
-            payload.setdefault("provider_order_id", provider_order_id)
-        if provider_clob_order_id:
-            payload.setdefault("provider_clob_order_id", provider_clob_order_id)
-            provider_clob_ids.add(provider_clob_order_id)
-            provider_tagged += 1
-        if (
-            str(payload.get("provider_order_id") or "").strip() != previous_provider_order_id
-            or str(payload.get("provider_clob_order_id") or "").strip() != previous_provider_clob_order_id
-        ):
-            tagged_payload_updates += 1
-
-    snapshots: dict[str, dict[str, Any]] = {}
-    if provider_clob_ids:
-        try:
-            snapshots = await live_execution_service.get_order_snapshots_by_clob_ids(sorted(provider_clob_ids))
-        except Exception as exc:
-            logger.warning("Live provider reconciliation failed to fetch snapshots", trader_id=trader_id, exc_info=exc)
-            snapshots = {}
-
-    now = _now()
-    updated_orders = 0
-    updated_session_orders = 0
-    updated_legs = 0
-    updated_sessions = 0
-    terminal_session_cancels = 0
-    status_changes = 0
-    session_status_changes = 0
-    notional_updates = 0
-    price_updates = 0
-    updated_order_rows: dict[str, TraderOrder] = {}
-    updated_execution_order_rows: dict[str, ExecutionSessionOrder] = {}
-    updated_execution_session_rows: dict[str, ExecutionSession] = {}
-    touched_session_ids: set[str] = set()
-    leg_state_updates: dict[str, dict[str, Any]] = {}
-
     for order in active_rows:
         with session.no_autoflush:
             await session.refresh(
@@ -4099,12 +4143,24 @@ async def reconcile_live_provider_orders(
             continue
 
         payload = dict(order.payload_json or {})
+        order_target = order_reconciliation_targets.get(str(order.id), {})
         session_orders = session_orders_by_order.get(str(order.id), [])
         session_order = session_orders[0] if session_orders else None
-        provider_order_id, provider_clob_order_id = _resolve_provider_order_ids(
-            order_payload=payload,
-            session_order=session_order,
-        )
+        provider_order_id = str(order_target.get("provider_order_id") or "").strip()
+        provider_clob_order_id = str(order_target.get("provider_clob_order_id") or "").strip()
+        if not provider_order_id and session_order is not None:
+            provider_order_id = str(session_order.provider_order_id or "").strip()
+        if not provider_clob_order_id and session_order is not None:
+            provider_clob_order_id = str(session_order.provider_clob_order_id or "").strip()
+        if not provider_order_id or not provider_clob_order_id:
+            resolved_provider_order_id, resolved_provider_clob_order_id = _resolve_provider_order_ids(
+                order_payload=payload,
+                session_order=session_order,
+            )
+            if not provider_order_id:
+                provider_order_id = resolved_provider_order_id
+            if not provider_clob_order_id:
+                provider_clob_order_id = resolved_provider_clob_order_id
         if not provider_clob_order_id:
             continue
         snapshot = snapshots.get(provider_clob_order_id)
@@ -4151,6 +4207,9 @@ async def reconcile_live_provider_orders(
             cancel_success = False
             for cancel_target in cancel_targets:
                 try:
+                    if commit:
+                        # Release the connection before provider cancellation I/O.
+                        await session.commit()
                     if await live_execution_service.cancel_order(cancel_target):
                         cancel_success = True
                         break
@@ -4428,7 +4487,7 @@ async def reconcile_live_provider_orders(
     return {
         "trader_id": trader_id,
         "provider_ready": True,
-        "active_seen": len(active_rows),
+        "active_seen": len(active_order_ids),
         "provider_tagged": provider_tagged,
         "payload_tag_updates": tagged_payload_updates,
         "snapshots_found": len(snapshots),
@@ -4470,10 +4529,11 @@ async def list_live_wallet_positions_for_trader(
             },
         }
 
-    try:
-        wallet_positions_raw = await polymarket_client.get_wallet_positions_with_prices(wallet_address)
-    except Exception as exc:
-        raise ValueError(f"Failed to fetch execution wallet positions: {exc}") from exc
+    async with release_conn(session):
+        try:
+            wallet_positions_raw = await polymarket_client.get_wallet_positions_with_prices(wallet_address)
+        except Exception as exc:
+            raise ValueError(f"Failed to fetch execution wallet positions: {exc}") from exc
     if not isinstance(wallet_positions_raw, list):
         wallet_positions_raw = []
 
@@ -4516,16 +4576,17 @@ async def list_live_wallet_positions_for_trader(
 
     markets_by_condition: dict[str, dict[str, Any]] = {}
     markets_by_token: dict[str, dict[str, Any]] = {}
-    if condition_lookups:
-        condition_results = await asyncio.gather(*condition_lookups.values(), return_exceptions=True)
-        for condition_id, result in zip(condition_lookups.keys(), condition_results):
-            if isinstance(result, dict):
-                markets_by_condition[condition_id] = result
-    if token_lookups:
-        token_results = await asyncio.gather(*token_lookups.values(), return_exceptions=True)
-        for token_key, result in zip(token_lookups.keys(), token_results):
-            if isinstance(result, dict):
-                markets_by_token[token_key] = result
+    async with release_conn(session):
+        if condition_lookups:
+            condition_results = await asyncio.gather(*condition_lookups.values(), return_exceptions=True)
+            for condition_id, result in zip(condition_lookups.keys(), condition_results):
+                if isinstance(result, dict):
+                    markets_by_condition[condition_id] = result
+        if token_lookups:
+            token_results = await asyncio.gather(*token_lookups.values(), return_exceptions=True)
+            for token_key, result in zip(token_lookups.keys(), token_results):
+                if isinstance(result, dict):
+                    markets_by_token[token_key] = result
 
     total_positions = 0
     managed_positions = 0
@@ -4806,13 +4867,16 @@ async def sync_trader_position_inventory(
     mode: Optional[str] = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
+    query = select(TraderOrder).where(
+        TraderOrder.trader_id == trader_id,
+        TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
+    )
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")).not_in(list(_TRADER_MODES)))
+            query = query.where(TraderOrder.mode.not_in(list(_TRADER_MODES)))
         else:
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+            query = query.where(TraderOrder.mode == mode_key)
 
     order_rows = list((await session.execute(query)).scalars().all())
 
@@ -4890,11 +4954,9 @@ async def sync_trader_position_inventory(
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
-            existing_query = existing_query.where(
-                func.lower(func.coalesce(TraderPosition.mode, "")).not_in(list(_TRADER_MODES))
-            )
+            existing_query = existing_query.where(TraderPosition.mode.not_in(list(_TRADER_MODES)))
         else:
-            existing_query = existing_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
+            existing_query = existing_query.where(TraderPosition.mode == mode_key)
     existing_rows = list((await session.execute(existing_query)).scalars().all())
     existing_by_identity = {
         _position_identity_key(row.mode, row.market_id, row.direction): row for row in existing_rows
@@ -5449,25 +5511,26 @@ async def cleanup_trader_open_orders(
                 provider_cancel_success = False
                 last_target = ""
                 cancel_failure_reason = ""
-                for target in cancel_targets:
-                    last_target = target
-                    try:
-                        cancelled = await asyncio.wait_for(
-                            live_execution_service.cancel_order(target),
-                            timeout=LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        cancelled = False
-                        cancel_failure_reason = f"timeout after {LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS:.1f}s"
-                    except Exception as exc:
-                        cancelled = False
-                        cancel_failure_reason = f"error: {exc}"
-                    if cancelled:
-                        provider_cancel_success = True
-                        cancel_failure_reason = ""
-                        break
-                    if not cancel_failure_reason:
-                        cancel_failure_reason = "provider returned unsuccessful cancellation"
+                async with release_conn(session):
+                    for target in cancel_targets:
+                        last_target = target
+                        try:
+                            cancelled = await asyncio.wait_for(
+                                live_execution_service.cancel_order(target),
+                                timeout=LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            cancelled = False
+                            cancel_failure_reason = f"timeout after {LIVE_PROVIDER_CANCEL_TIMEOUT_SECONDS:.1f}s"
+                        except Exception as exc:
+                            cancelled = False
+                            cancel_failure_reason = f"error: {exc}"
+                        if cancelled:
+                            provider_cancel_success = True
+                            cancel_failure_reason = ""
+                            break
+                        if not cancel_failure_reason:
+                            cancel_failure_reason = "provider returned unsuccessful cancellation"
 
                 existing_payload["provider_cancel"] = {
                     "attempted_at": to_iso(now),

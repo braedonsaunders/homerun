@@ -2108,16 +2108,37 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
     modes = {
         str(mode or "").strip().lower() for mode in (normalized_scope.get("modes") or []) if str(mode or "").strip()
     }
+
+    async def _normalize_scope_wallets(values: list[Any]) -> set[str]:
+        normalized: set[str] = set()
+        for value in values:
+            wallet = _normalize_wallet(value)
+            if not wallet:
+                continue
+            if wallet.startswith("0x") and len(wallet) == 42:
+                normalized.add(wallet)
+                continue
+            try:
+                resolved = await polymarket_client.resolve_wallet_identifier(wallet)
+            except ValueError:
+                continue
+            resolved_wallet = _normalize_wallet(resolved.get("address"))
+            if resolved_wallet:
+                normalized.add(resolved_wallet)
+        return normalized
+
     tracked_wallets: set[str] = set()
     pool_wallets: set[str] = set()
     group_wallets: set[str] = set()
+    tracked_rows: list[Any] = []
+    pool_rows: list[Any] = []
+    group_rows: list[Any] = []
 
     if "tracked" in modes:
-        tracked_rows = (await session.execute(select(TrackedWallet.address))).scalars().all()
-        tracked_wallets = {_normalize_wallet(address) for address in tracked_rows if _normalize_wallet(address)}
+        tracked_rows = list((await session.execute(select(TrackedWallet.address))).scalars().all())
 
     if "pool" in modes:
-        pool_rows = (
+        pool_rows = list(
             (
                 await session.execute(
                     select(DiscoveredWallet.address).where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
@@ -2126,10 +2147,9 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
             .scalars()
             .all()
         )
-        pool_wallets = {_normalize_wallet(address) for address in pool_rows if _normalize_wallet(address)}
 
     if "group" in modes and list(normalized_scope.get("group_ids") or []):
-        group_rows = (
+        group_rows = list(
             (
                 await session.execute(
                     select(TraderGroupMember.wallet_address).where(
@@ -2140,7 +2160,14 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
             .scalars()
             .all()
         )
-        group_wallets = {_normalize_wallet(address) for address in group_rows if _normalize_wallet(address)}
+
+    async with release_conn(session):
+        if tracked_rows:
+            tracked_wallets = await _normalize_scope_wallets(tracked_rows)
+        if pool_rows:
+            pool_wallets = await _normalize_scope_wallets(pool_rows)
+        if group_rows:
+            group_wallets = await _normalize_scope_wallets(group_rows)
 
     return StrategySDK.build_trader_scope_runtime_context(
         normalized_scope,

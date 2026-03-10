@@ -147,8 +147,8 @@ class TailEndCarryStrategy(BaseStrategy):
         "min_edge_percent": 1.0,
         "min_confidence": 0.35,
         "max_risk_score": 0.78,
-        "base_size_usd": 14.0,
-        "max_size_usd": 90.0,
+        "base_size_usd": 5.0,
+        "max_size_usd": 5.0,
     }
 
     # Composable evaluate pipeline: score = edge*0.55 + conf*28 + entry*6 - risk*9 + time_bonus
@@ -171,12 +171,15 @@ class TailEndCarryStrategy(BaseStrategy):
         "min_repricing_buffer": 0.015,
         "repricing_weight": 0.45,
         "max_opportunities": 120,
-        # --- Fix #6: expanded keyword exclusions for esports ---
         "exclude_market_keywords": [
-            "bitcoin", "ethereum", "lol:", "win on", "counter-strike",
+            "bitcoin", "ethereum", "lol:", "counter-strike",
             "tweets", "league of legends", "esports", "rift legends",
             "dota", "valorant", "cs2", "cs:", "esl pro",
         ],
+        # Spread market gate — sports spreads swing violently mid-game
+        # and the trailing stop locks in losses on temporary adverse scores.
+        # Block them entirely; moneyline / O-U totals are safer tail-carry targets.
+        "block_spread_markets": True,
         "panic_drop_threshold": 0.08,
         "panic_window_points": 6,
         "panic_recovery_ratio_max": 0.20,
@@ -184,28 +187,26 @@ class TailEndCarryStrategy(BaseStrategy):
         "smart_take_profit_enabled": True,
         "smart_take_profit_min_pnl_pct": 10.0,
         "smart_take_profit_max_price_headroom": 0.03,
-        # --- Fix #1/#2: category-aware exit config ---
         "inversion_stop_enabled": True,
         "inversion_price_threshold": 0.50,
-        # Trailing stop from high water mark (Fix #2)
         "trailing_stop_enabled": True,
-        "trailing_stop_pct": 25.0,
-        # Sports-specific: disable fixed inversion during live games,
-        # use wider trailing stop instead (Fix #1)
+        "trailing_stop_pct": 12.0,
         "sports_inversion_stop_enabled": False,
-        "sports_trailing_stop_pct": 45.0,
-        "sports_sizing_multiplier": 0.55,
-        # --- Fix #3: skip live games ---
+        "sports_trailing_stop_pct": 20.0,
+        "sports_sizing_multiplier": 0.45,
         "skip_live_games": True,
         "live_game_buffer_minutes": 15.0,
-        # --- Fix #5: session timeout ---
         "session_timeout_seconds": 180,
-        # --- Fix #7: resolution proximity hold ---
         "resolution_hold_enabled": True,
-        "resolution_hold_minutes": 120.0,
+        "resolution_hold_minutes": 360.0,
         "max_hold_minutes": 1440.0,
         "price_policy": "taker_limit",
         "time_in_force": "IOC",
+        "immediate_break_even_stop_enabled": True,
+        "immediate_break_even_stop_buffer_pct": 0.5,
+        "max_market_data_age_ms": 15000,
+        "require_strict_ws_pricing": True,
+        "strict_ws_price_sources": ["ws_strict", "redis_strict"],
     }
 
     def __init__(self) -> None:
@@ -390,18 +391,44 @@ class TailEndCarryStrategy(BaseStrategy):
         return _classify_market(" | ".join(text_parts), sports_type)
 
     @classmethod
-    def _classify_from_exit_config(cls, config: dict) -> str:
+    def _classify_from_exit_config(cls, config: dict, strategy_context: Optional[dict[str, Any]] = None) -> str:
         """Classify from the strategy_exit_config stored on the order."""
-        cached = config.get("_market_category")
+        cached = config.get("_market_category") or config.get("market_category")
         if cached and isinstance(cached, str):
             return cached
+
+        context = strategy_context if isinstance(strategy_context, dict) else {}
+        context_cached = context.get("market_category")
+        if isinstance(context_cached, str) and context_cached.strip():
+            return context_cached.strip().lower()
+
         text_parts: list[str] = []
         cls._append_text(text_parts, config.get("_market_question"))
+        cls._append_text(text_parts, config.get("market_question"))
         cls._append_text(text_parts, config.get("_market_slug"))
+        cls._append_text(text_parts, config.get("market_slug"))
         cls._append_text(text_parts, config.get("_event_title"))
+        cls._append_text(text_parts, config.get("event_title"))
         cls._append_text(text_parts, config.get("_category"))
-        sports_type = config.get("_sports_market_type")
+        cls._append_text(text_parts, context.get("market_question"))
+        cls._append_text(text_parts, context.get("event_title"))
+        sports_type = config.get("_sports_market_type") or config.get("sports_market_type")
+        if not sports_type:
+            sports_type = context.get("sports_market_type")
         return _classify_market(" | ".join(text_parts), sports_type)
+
+    # ------------------------------------------------------------------
+    # Spread market detection
+    # ------------------------------------------------------------------
+
+    _SPREAD_PATTERNS = re.compile(
+        r"(?:^|\b)spread\s*:", re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_spread_market(cls, text: str) -> bool:
+        """Detect spread-type sports markets (e.g. 'Spread: Team X (-1.5)')."""
+        return cls._SPREAD_PATTERNS.search(text) is not None
 
     # ------------------------------------------------------------------
     # Live game detection (Fix #3)
@@ -457,6 +484,7 @@ class TailEndCarryStrategy(BaseStrategy):
         panic_window_points = max(3, int(safe_float(cfg.get("panic_window_points"), 6)))
         panic_recovery_ratio_max = clamp(safe_float(cfg.get("panic_recovery_ratio_max"), 0.20), 0.0, 0.9)
         excluded_keywords = self._normalize_excluded_keywords(cfg.get("exclude_market_keywords"))
+        block_spread_markets = _is_bool_true(cfg.get("block_spread_markets", True))
         skip_live_games = _is_bool_true(cfg.get("skip_live_games", True))
         live_game_buffer_minutes = max(0.0, safe_float(cfg.get("live_game_buffer_minutes"), 15.0))
 
@@ -476,6 +504,12 @@ class TailEndCarryStrategy(BaseStrategy):
             if excluded_keywords:
                 market_text = self._market_text(market, event_for_market)
                 if self._first_blocked_keyword(market_text, excluded_keywords) is not None:
+                    continue
+            if block_spread_markets:
+                sports_type = getattr(market, "sports_market_type", None)
+                if sports_type == "spreads":
+                    continue
+                if self._is_spread_market(market_text if excluded_keywords else self._market_text(market, event_for_market)):
                     continue
             if safe_float(getattr(market, "liquidity", 0.0)) < min_liquidity:
                 continue
@@ -634,10 +668,21 @@ class TailEndCarryStrategy(BaseStrategy):
         )
         keyword_ok = True
         blocked_keyword: str | None = None
+        signal_text = self._signal_market_text(signal, payload)
         if excluded_keywords:
-            signal_text = self._signal_market_text(signal, payload)
             blocked_keyword = self._first_blocked_keyword(signal_text, excluded_keywords)
             keyword_ok = blocked_keyword is None
+
+        block_spread_markets = _is_bool_true(params.get("block_spread_markets", True))
+        is_spread = False
+        if block_spread_markets:
+            markets_list = payload.get("markets")
+            if isinstance(markets_list, list) and markets_list:
+                m0 = markets_list[0] if isinstance(markets_list[0], dict) else {}
+                if m0.get("sports_market_type") == "spreads":
+                    is_spread = True
+            if not is_spread:
+                is_spread = self._is_spread_market(signal_text)
 
         source = str(getattr(signal, "source", "") or "").strip().lower()
         strategy_type = (
@@ -687,6 +732,12 @@ class TailEndCarryStrategy(BaseStrategy):
                 "Market keyword exclusion",
                 keyword_ok,
                 detail=f"blocked by '{blocked_keyword}'" if blocked_keyword else "no excluded keywords matched",
+            ),
+            DecisionCheck(
+                "spread_market",
+                "Not a spread market",
+                not is_spread,
+                detail="Spread markets blocked (volatile mid-game swings)" if is_spread else "ok",
             ),
             DecisionCheck(
                 "entry",
@@ -887,8 +938,10 @@ class TailEndCarryStrategy(BaseStrategy):
         age_minutes = safe_float(getattr(position, "age_minutes", None), None)
         seconds_left = safe_float(market_state.get("seconds_left"), None)
 
+        strategy_context = getattr(position, "strategy_context", None)
+
         # Fix #1: determine market category
-        category = self._classify_from_exit_config(config)
+        category = self._classify_from_exit_config(config, strategy_context)
 
         is_sports = category in (CATEGORY_SPORTS, CATEGORY_ESPORTS)
 

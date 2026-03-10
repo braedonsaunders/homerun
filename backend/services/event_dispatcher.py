@@ -191,10 +191,15 @@ class EventDispatcher:
             await asyncio.sleep(10)
             if not task.done():
                 task.cancel()
+                try:
+                    await asyncio.wait({task}, timeout=self._handler_cancel_grace_seconds)
+                except Exception:
+                    pass
                 logger.warning(
                     "Force-cancelled runaway handler task",
                     strategy=strategy,
                     event_type=event_type,
+                    finished=task.done(),
                 )
 
         kill_task = asyncio.create_task(_force_kill(), name=f"force-kill-{strategy}")

@@ -1874,6 +1874,15 @@ class WalletDiscoveryEngine:
             "unique_markets_24h",
             "insider_sample_size",
         }
+        str_fields = {
+            "username",
+            "discovery_source",
+            "recommendation",
+            "metrics_source_version",
+            "pool_tier",
+            "pool_membership_reason",
+            "cluster_id",
+        }
 
         for attempt in range(_DB_RETRY_ATTEMPTS):
             async with AsyncSessionLocal() as session:
@@ -1898,6 +1907,9 @@ class WalletDiscoveryEngine:
                                 minimum=0,
                                 maximum=_PG_INT4_MAX,
                             )
+                        elif key in str_fields:
+                            if value is not None:
+                                value = str(value)
                         elif key in numeric_bounds and value is not None:
                             value = self._clamp_numeric_value(value, numeric_bounds[key])
                         else:

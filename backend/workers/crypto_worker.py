@@ -523,9 +523,9 @@ async def _sleep_with_demand_wake(worker_name: str, sleep_seconds: float) -> Non
         if remaining <= 0:
             return
 
-        await asyncio.sleep(min(1.0, remaining))
+        await asyncio.sleep(min(3.0, remaining))
 
-        # Cheap demand probe so active viewers/trader mode don't wait for full idle sleep.
+        # Demand probe so active viewers/trader mode don't wait for full idle sleep.
         try:
             async with AsyncSessionLocal() as session:
                 control = await read_worker_control(session, worker_name, default_interval=2)

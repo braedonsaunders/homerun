@@ -1,11 +1,15 @@
 import asyncio
+import re
 from utils.utcnow import utcnow
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from services.polymarket import polymarket_client
 from services.pause_state import global_pause_state
-from models.database import TrackedWallet, AsyncSessionLocal
+from models.database import TrackedWallet, WalletTrade, AsyncSessionLocal, release_conn
+
+
+_ETH_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 class WalletTracker:
@@ -28,19 +32,65 @@ class WalletTracker:
         if self._initialized:
             return
 
+        pending_updates: list[tuple[str, str, str | None, str | None, str | None]] = []
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedWallet))
             db_wallets = result.scalars().all()
 
-            for wallet in db_wallets:
-                self.tracked_wallets[wallet.address.lower()] = {
-                    "address": wallet.address,
-                    "label": wallet.label or wallet.address[:10] + "...",
-                    "username": None,
+            async with release_conn(session):
+                for wallet in db_wallets:
+                    stored_address = str(wallet.address or "").strip().lower()
+                    resolved_address = stored_address
+                    resolved_username = None
+
+                    if stored_address and not _ETH_ADDRESS_RE.match(stored_address):
+                        try:
+                            resolved = await self.client.resolve_wallet_identifier(stored_address)
+                            resolved_address = str(resolved.get("address") or "").strip().lower()
+                            resolved_username = str(resolved.get("username") or "").strip() or None
+                        except Exception:
+                            resolved_address = stored_address
+
+                    pending_updates.append(
+                        (
+                            str(wallet.address or "").strip().lower(),
+                            resolved_address,
+                            resolved_username,
+                            str(wallet.label or "").strip() or None,
+                            wallet.added_at.isoformat() if wallet.added_at else None,
+                        )
+                    )
+
+            for stored_address, resolved_address, resolved_username, wallet_label, added_at_iso in pending_updates:
+                if resolved_address and resolved_address != stored_address and _ETH_ADDRESS_RE.match(resolved_address):
+                    existing_resolved = await session.get(TrackedWallet, resolved_address)
+                    if existing_resolved is None:
+                        session.add(
+                            TrackedWallet(
+                                address=resolved_address,
+                                label=wallet_label or resolved_address[:10] + "...",
+                            )
+                        )
+                    await session.execute(
+                        update(WalletTrade)
+                        .where(WalletTrade.wallet_address == stored_address)
+                        .values(wallet_address=resolved_address)
+                    )
+                    original_wallet = await session.get(TrackedWallet, stored_address)
+                    if original_wallet is not None:
+                        await session.delete(original_wallet)
+                    await session.commit()
+
+                cache_key = resolved_address or stored_address
+                display_address = resolved_address or stored_address
+                self.tracked_wallets[cache_key] = {
+                    "address": display_address,
+                    "label": wallet_label or display_address[:10] + "...",
+                    "username": resolved_username,
                     "last_trade_id": None,
                     "positions": [],
                     "recent_trades": [],
-                    "added_at": wallet.added_at.isoformat() if wallet.added_at else None,
+                    "added_at": added_at_iso,
                 }
 
         self._initialized = True
@@ -65,7 +115,7 @@ class WalletTracker:
     async def add_wallet(
         self,
         address: str,
-        label: str = None,
+        label: Optional[str] = None,
         *,
         fetch_initial: bool = True,
     ):
@@ -83,24 +133,38 @@ class WalletTracker:
             N-wallet bootstrap calls in a single request.
         """
         await self._ensure_initialized()
-        address_lower = address.lower()
+        raw_address = str(address or "").strip()
+        resolved_username = None
+        if _ETH_ADDRESS_RE.match(raw_address):
+            resolved_address = raw_address.lower()
+        else:
+            resolved = await self.client.resolve_wallet_identifier(raw_address)
+            resolved_address = str(resolved.get("address") or "").strip().lower()
+            resolved_username = str(resolved.get("username") or "").strip() or None
+
+        if not _ETH_ADDRESS_RE.match(resolved_address):
+            raise ValueError(f"Could not resolve wallet identifier '{address}' to an on-chain address")
+
+        address_lower = resolved_address
 
         # Add to database
         async with AsyncSessionLocal() as session:
             existing = await session.get(TrackedWallet, address_lower)
             if not existing:
-                wallet = TrackedWallet(address=address_lower, label=label or address[:10] + "...")
+                wallet = TrackedWallet(address=address_lower, label=label or resolved_address[:10] + "...")
                 session.add(wallet)
                 await session.commit()
 
-        username = None
+        username = resolved_username
         if fetch_initial:
-            username = await self._lookup_username(address)
+            looked_up = await self._lookup_username(resolved_address)
+            if looked_up:
+                username = looked_up
 
         # Add to in-memory cache
         self.tracked_wallets[address_lower] = {
-            "address": address,
-            "label": label or address[:10] + "...",
+            "address": resolved_address,
+            "label": label or resolved_address[:10] + "...",
             "username": username,
             "last_trade_id": None,
             "positions": [],
@@ -109,7 +173,7 @@ class WalletTracker:
 
         # Fetch initial state only when requested.
         if fetch_initial:
-            await self._update_wallet(address)
+            await self._update_wallet(resolved_address)
 
     async def remove_wallet(self, address: str):
         """Remove a wallet from tracking"""
