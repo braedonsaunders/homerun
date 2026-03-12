@@ -5091,6 +5091,7 @@ async def get_open_position_count_for_trader(
         if key is not None:
             active_position_keys.add(key)
 
+    order_status_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
     order_query = select(
         TraderOrder.mode,
         TraderOrder.status,
@@ -5098,7 +5099,7 @@ async def get_open_position_count_for_trader(
         TraderOrder.direction,
         TraderOrder.notional_usd,
         TraderOrder.payload_json,
-    ).where(TraderOrder.trader_id == trader_id)
+     ).where(TraderOrder.trader_id == trader_id).where(order_status_expr.in_(tuple(OPEN_ORDER_STATUSES)))
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
@@ -5156,11 +5157,12 @@ async def get_open_market_ids_for_trader(
         if market_id:
             open_market_ids.add(market_id)
 
+    order_status_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
     order_query = select(
         TraderOrder.mode,
         TraderOrder.status,
         TraderOrder.market_id,
-    ).where(TraderOrder.trader_id == trader_id)
+     ).where(TraderOrder.trader_id == trader_id).where(order_status_expr.in_(tuple(OPEN_ORDER_STATUSES)))
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
@@ -5211,6 +5213,7 @@ async def get_open_order_count_for_trader(
     trader_id: str,
     mode: Optional[str] = None,
 ) -> int:
+    status_key_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
     query = (
         select(
             TraderOrder.mode,
@@ -5218,6 +5221,7 @@ async def get_open_order_count_for_trader(
             func.count(TraderOrder.id).label("count"),
         )
         .where(TraderOrder.trader_id == trader_id)
+        .where(status_key_expr.in_(tuple(OPEN_ORDER_STATUSES)))
         .group_by(TraderOrder.mode, TraderOrder.status)
     )
     if mode is not None:
