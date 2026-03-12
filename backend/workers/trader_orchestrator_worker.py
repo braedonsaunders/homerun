@@ -285,6 +285,7 @@ _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
 _LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
 _CRYPTO_OPEN_ORDER_TIMEOUT_FLOOR_SECONDS = 20.0
 _LIVE_PROVIDER_RECONCILE_MIN_INTERVAL_SECONDS = 5.0
+_LIVE_PROVIDER_FAILURE_SNAPSHOT_CACHE_TTL_SECONDS = 2.0
 _EDGE_CALIBRATION_LOOKBACK_DAYS_DEFAULT = 14
 _EDGE_CALIBRATION_MAX_ROWS_DEFAULT = 500
 _EDGE_CALIBRATION_MIN_SAMPLES = 24
@@ -313,6 +314,7 @@ _live_provider_entry_blocked_until: dict[str, datetime] = {}
 _live_provider_block_event_cooldown_until: dict[str, datetime] = {}
 _live_risk_clamp_event_cooldown_until: dict[str, datetime] = {}
 _live_provider_reconcile_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_live_provider_failure_snapshot_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _trader_maintenance_last_run: dict[str, datetime] = {}
 _TRADERS_SCOPE_CONTEXT_CACHE_TTL_SECONDS = 5.0
 _traders_scope_context_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
@@ -356,6 +358,11 @@ def _prune_module_caches(active_trader_ids: set[str]) -> None:
     for trader_id in list(_live_provider_reconcile_cache):
         if trader_id not in active_trader_ids:
             _live_provider_reconcile_cache.pop(trader_id, None)
+
+    for key in list(_live_provider_failure_snapshot_cache):
+        prefix = key.split(":", 1)[0]
+        if prefix not in active_trader_ids:
+            _live_provider_failure_snapshot_cache.pop(key, None)
 
     # _open_order_timeout_cleanup_failure_cooldown_until is keyed by
     # "trader_id:mode:source" — prune entries whose trader_id prefix is gone.
@@ -2285,29 +2292,57 @@ async def _live_provider_failure_snapshot(
     trader_id: str,
     window_seconds: int,
 ) -> dict[str, Any]:
+    normalized_window_seconds = int(max(30, int(window_seconds)))
     if not hasattr(session, "execute"):
-        return {"count": 0, "window_seconds": window_seconds, "errors": []}
+        return {"count": 0, "window_seconds": normalized_window_seconds, "errors": []}
 
     now = utcnow()
-    cutoff = now - timedelta(seconds=max(30, int(window_seconds)))
+    cutoff = now - timedelta(seconds=normalized_window_seconds)
+    cache_key = f"{trader_id}:{normalized_window_seconds}"
+    for key, (cached_at, _cached_payload) in list(_live_provider_failure_snapshot_cache.items()):
+        if (now - cached_at).total_seconds() > _LIVE_PROVIDER_FAILURE_SNAPSHOT_CACHE_TTL_SECONDS:
+            _live_provider_failure_snapshot_cache.pop(key, None)
+
+    cached = _live_provider_failure_snapshot_cache.get(cache_key)
+    if cached is not None:
+        cached_at, cached_payload = cached
+        if (now - cached_at).total_seconds() <= _LIVE_PROVIDER_FAILURE_SNAPSHOT_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached_payload)
+
     mode_key_expr = func.lower(func.coalesce(TraderOrder.mode, ""))
-    rows = (
-        await session.execute(
-            select(
-                TraderOrder.id,
-                TraderOrder.status,
-                TraderOrder.error_message,
-                TraderOrder.payload_json,
-                TraderOrder.updated_at,
+    try:
+        rows = (
+            await session.execute(
+                select(
+                    TraderOrder.id,
+                    TraderOrder.status,
+                    TraderOrder.error_message,
+                    TraderOrder.payload_json,
+                    TraderOrder.updated_at,
+                )
+                .where(TraderOrder.trader_id == trader_id)
+                .where(mode_key_expr == "live")
+                .where(TraderOrder.updated_at.is_not(None))
+                .where(TraderOrder.updated_at >= cutoff)
+                .order_by(TraderOrder.updated_at.desc())
+                .limit(200)
             )
-            .where(TraderOrder.trader_id == trader_id)
-            .where(mode_key_expr == "live")
-            .where(TraderOrder.updated_at.is_not(None))
-            .where(TraderOrder.updated_at >= cutoff)
-            .order_by(TraderOrder.updated_at.desc())
-            .limit(200)
-        )
-    ).all()
+        ).all()
+    except Exception as exc:
+        if cached is not None:
+            logger.warning(
+                "Using cached live provider failure snapshot after refresh failure",
+                trader_id=trader_id,
+                exc_info=exc,
+            )
+            return copy.deepcopy(cached[1])
+        if isinstance(exc, OperationalError) and _is_retryable_db_error(exc):
+            logger.warning(
+                "Live provider failure snapshot skipped due transient DB error",
+                trader_id=trader_id,
+            )
+            return {"count": 0, "window_seconds": normalized_window_seconds, "errors": []}
+        raise
 
     failures: list[dict[str, Any]] = []
     for row in rows:
@@ -2335,12 +2370,13 @@ async def _live_provider_failure_snapshot(
             }
         )
 
-    return {
+    payload = {
         "count": len(failures),
-        "window_seconds": int(max(30, int(window_seconds))),
+        "window_seconds": normalized_window_seconds,
         "errors": failures[:8],
     }
-
+    _live_provider_failure_snapshot_cache[cache_key] = (now, copy.deepcopy(payload))
+    return payload
 
 def _apply_live_risk_clamps(
     effective_risk_limits: dict[str, Any],
@@ -6012,3 +6048,4 @@ async def main(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True, writ
 
 if __name__ == "__main__":
     asyncio.run(main())
+
