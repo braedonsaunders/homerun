@@ -400,40 +400,78 @@ async def _seed_from_db(session: AsyncSession) -> None:
         market_id = str(row.market_id or "").strip()
         if market_id:
             snap.open_market_ids.add(market_id)
-
-    # ── Loss streaks ──────────────────────────────────────────────
-    # Compute per-trader consecutive loss count from resolved orders
-    trader_ids = {tid for (tid, _) in _snapshots.keys()}
-    for trader_id in trader_ids:
-        loss_rows = (
-            await session.execute(
-                select(TraderOrder.status, TraderOrder.updated_at)
-                .where(TraderOrder.trader_id == trader_id)
-                .where(TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)))
-                .order_by(TraderOrder.updated_at.desc(), TraderOrder.id.desc())
-                .limit(100)
-            )
-        ).all()
-        losses = 0
-        last_loss: Optional[datetime] = None
-        for row in loss_rows:
-            sk = _normalize_status_key(row.status)
-            if sk in REALIZED_LOSS_ORDER_STATUSES:
-                losses += 1
-                if last_loss is None:
-                    last_loss = row.updated_at
-            elif sk in REALIZED_WIN_ORDER_STATUSES:
-                break
-        # Apply to all mode snapshots for this trader
-        for (tid, mode), snap in _snapshots.items():
-            if tid == trader_id:
-                snap.consecutive_losses = losses
-                snap.last_loss_at = last_loss
-
-    # ── Signal cursors ────────────────────────────────────────────
+    # Snapshot index by trader
     snapshots_by_trader: dict[str, list[_TraderSnapshot]] = {}
     for (tid, _), snap in _snapshots.items():
         snapshots_by_trader.setdefault(tid, []).append(snap)
+    trader_ids = set(snapshots_by_trader.keys())
+
+    # Compute per-trader consecutive loss count from latest resolved outcomes.
+    if trader_ids:
+        ranked_realized = (
+            select(
+                TraderOrder.trader_id.label("trader_id"),
+                TraderOrder.status.label("status"),
+                TraderOrder.updated_at.label("updated_at"),
+                func.row_number()
+                .over(
+                    partition_by=TraderOrder.trader_id,
+                    order_by=(TraderOrder.updated_at.desc(), TraderOrder.id.desc()),
+                )
+                .label("rn"),
+            )
+            .where(TraderOrder.trader_id.in_(tuple(trader_ids)))
+            .where(TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)))
+            .subquery()
+        )
+        loss_rows = (
+            await session.execute(
+                select(
+                    ranked_realized.c.trader_id,
+                    ranked_realized.c.status,
+                    ranked_realized.c.updated_at,
+                )
+                .where(ranked_realized.c.rn <= 100)
+                .order_by(ranked_realized.c.trader_id.asc(), ranked_realized.c.rn.asc())
+            )
+        ).all()
+
+        losses_by_trader: dict[str, tuple[int, Optional[datetime]]] = {}
+        current_trader_id: str | None = None
+        current_losses = 0
+        current_last_loss: Optional[datetime] = None
+        current_locked = False
+
+        for row in loss_rows:
+            trader_id = str(row.trader_id or "")
+            if not trader_id:
+                continue
+            if trader_id != current_trader_id:
+                if current_trader_id is not None:
+                    losses_by_trader[current_trader_id] = (current_losses, current_last_loss)
+                current_trader_id = trader_id
+                current_losses = 0
+                current_last_loss = None
+                current_locked = False
+            if current_locked:
+                continue
+            status_key = _normalize_status_key(row.status)
+            if status_key in REALIZED_LOSS_ORDER_STATUSES:
+                current_losses += 1
+                if current_last_loss is None:
+                    current_last_loss = row.updated_at
+            elif status_key in REALIZED_WIN_ORDER_STATUSES:
+                current_locked = True
+
+        if current_trader_id is not None:
+            losses_by_trader[current_trader_id] = (current_losses, current_last_loss)
+
+        for trader_id, trader_snapshots in snapshots_by_trader.items():
+            losses, last_loss = losses_by_trader.get(trader_id, (0, None))
+            for snap in trader_snapshots:
+                snap.consecutive_losses = losses
+                snap.last_loss_at = last_loss
+
 
     cursor_rows = (
         await session.execute(
