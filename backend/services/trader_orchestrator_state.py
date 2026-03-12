@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings
-from sqlalchemy import and_, desc, func, or_, select, update as sa_update
+from sqlalchemy import and_, case, desc, func, or_, select, update as sa_update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -3542,6 +3542,52 @@ async def list_active_execution_sessions(
     query = query.order_by(ExecutionSession.created_at.asc()).limit(max(1, min(limit, 2000)))
     return list((await session.execute(query)).scalars().all())
 
+
+async def get_execution_session_leg_rollups(
+    session: AsyncSession,
+    session_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_session_id in session_ids:
+        session_id = str(raw_session_id or "").strip()
+        if not session_id or session_id in seen:
+            continue
+        seen.add(session_id)
+        ordered_ids.append(session_id)
+    if not ordered_ids:
+        return {}
+
+    status_key = func.lower(func.coalesce(ExecutionSessionLeg.status, ""))
+    failed_statuses = ("failed", "cancelled", "expired")
+    open_statuses = ("open", "submitted", "placing", "working", "partial", "hedging", "pending")
+    query = (
+        select(
+            ExecutionSessionLeg.session_id.label("session_id"),
+            func.count(ExecutionSessionLeg.id).label("legs_total"),
+            func.sum(case((status_key == "completed", 1), else_=0)).label("legs_completed"),
+            func.sum(case((status_key.in_(failed_statuses), 1), else_=0)).label("legs_failed"),
+            func.sum(case((status_key.in_(open_statuses), 1), else_=0)).label("legs_open"),
+        )
+        .where(ExecutionSessionLeg.session_id.in_(ordered_ids))
+        .group_by(ExecutionSessionLeg.session_id)
+    )
+    rows = (await session.execute(query)).all()
+    out: dict[str, dict[str, int]] = {
+        session_id: {"legs_total": 0, "legs_completed": 0, "legs_failed": 0, "legs_open": 0}
+        for session_id in ordered_ids
+    }
+    for row in rows:
+        session_id = str(row.session_id or "").strip()
+        if not session_id:
+            continue
+        out[session_id] = {
+            "legs_total": int(row.legs_total or 0),
+            "legs_completed": int(row.legs_completed or 0),
+            "legs_failed": int(row.legs_failed or 0),
+            "legs_open": int(row.legs_open or 0),
+        }
+    return out
 
 async def get_execution_session_detail(
     session: AsyncSession,

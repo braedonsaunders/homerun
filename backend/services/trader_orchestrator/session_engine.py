@@ -38,6 +38,7 @@ from services.trader_orchestrator_state import (
     create_execution_session_order,
     create_trader_order,
     get_execution_session_detail,
+    get_execution_session_leg_rollups,
     list_active_execution_sessions,
     sync_trader_position_inventory,
     update_execution_leg,
@@ -1007,6 +1008,7 @@ class ExecutionSessionEngine:
         expired = 0
         completed = 0
         cancelled = 0
+        leg_rollups = await get_execution_session_leg_rollups(self.db, [row.id for row in sessions])
         for row in sessions:
             status_key = str(row.status or "").strip().lower()
             if status_key == "paused":
@@ -1056,12 +1058,11 @@ class ExecutionSessionEngine:
                     cancelled += 1
                     continue
 
-            detail = await get_execution_session_detail(self.db, row.id)
-            session_view = detail["session"] if detail else {}
-            legs_total = safe_int(session_view.get("legs_total"), 0)
-            legs_completed = safe_int(session_view.get("legs_completed"), 0)
-            legs_failed = safe_int(session_view.get("legs_failed"), 0)
-            legs_open = safe_int(session_view.get("legs_open"), 0)
+            leg_rollup = leg_rollups.get(row.id, {})
+            legs_total = safe_int(leg_rollup.get("legs_total"), 0)
+            legs_completed = safe_int(leg_rollup.get("legs_completed"), 0)
+            legs_failed = safe_int(leg_rollup.get("legs_failed"), 0)
+            legs_open = safe_int(leg_rollup.get("legs_open"), 0)
             if legs_total > 0 and legs_completed >= legs_total:
                 await update_execution_session_status(
                     self.db,
@@ -1363,3 +1364,4 @@ class ExecutionSessionEngine:
         )
         await self.db.commit()
         return True
+

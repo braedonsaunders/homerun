@@ -374,10 +374,10 @@ async def test_reconcile_active_sessions_escalates_hedging_timeout(monkeypatch):
     monkeypatch.setattr(session_engine_module, "create_execution_session_event", create_event_mock)
     cancel_session_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(engine, "cancel_session", cancel_session_mock)
-    detail_mock = AsyncMock(
-        return_value={"session": {"legs_total": 0, "legs_completed": 0, "legs_failed": 0, "legs_open": 0}}
+    leg_rollups_mock = AsyncMock(
+        return_value={"sess-timeout": {"legs_total": 0, "legs_completed": 0, "legs_failed": 0, "legs_open": 0}}
     )
-    monkeypatch.setattr(session_engine_module, "get_execution_session_detail", detail_mock)
+    monkeypatch.setattr(session_engine_module, "get_execution_session_leg_rollups", leg_rollups_mock)
 
     result = await engine.reconcile_active_sessions(mode="live", trader_id="trader-1")
 
@@ -448,3 +448,4 @@ async def test_cancel_session_skips_already_terminal_trader_orders(monkeypatch):
     assert update_status_mock.await_count == 1
     assert set_signal_status_mock.await_count == 1
     assert create_event_mock.await_count == 1
+
