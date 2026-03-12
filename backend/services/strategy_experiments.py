@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import Strategy, StrategyExperiment, StrategyExperimentAssignment, StrategyVersion, Trader
@@ -415,61 +416,117 @@ async def upsert_strategy_experiment_assignment(
     normalized_experiment_id = str(experiment_id or "").strip()
     normalized_trader_id = str(trader_id or "").strip() or None
     normalized_signal_id = str(signal_id or "").strip() or None
-    existing = (
-        (
-            await session.execute(
-                select(StrategyExperimentAssignment)
-                .where(
-                    and_(
-                        StrategyExperimentAssignment.experiment_id == normalized_experiment_id,
-                        StrategyExperimentAssignment.trader_id == normalized_trader_id,
-                        StrategyExperimentAssignment.signal_id == normalized_signal_id,
-                    )
-                )
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
-
     now = utcnow()
-    if existing is not None:
-        existing.source_key = _normalize_source_key(source_key)
-        existing.strategy_key = _normalize_strategy_key(strategy_key)
-        existing.strategy_version = int(strategy_version)
-        existing.assignment_group = str(assignment_group or "control").strip().lower() or "control"
-        existing.decision_id = str(decision_id or "").strip() or existing.decision_id
-        existing.order_id = str(order_id or "").strip() or existing.order_id
-        if payload:
-            merged = dict(existing.payload_json or {})
-            merged.update(dict(payload))
-            existing.payload_json = merged
-        existing.updated_at = now
+    normalized_source = _normalize_source_key(source_key)
+    normalized_strategy = _normalize_strategy_key(strategy_key)
+    normalized_assignment_group = str(assignment_group or "control").strip().lower() or "control"
+    normalized_decision_id = str(decision_id or "").strip() or None
+    normalized_order_id = str(order_id or "").strip() or None
+    normalized_payload = dict(payload or {})
+
+    # Nullable unique-key fields do not participate in PostgreSQL ON CONFLICT matching.
+    # Preserve prior semantics for nullable-key callers.
+    if normalized_trader_id is None or normalized_signal_id is None:
+        existing = (
+            (
+                await session.execute(
+                    select(StrategyExperimentAssignment)
+                    .where(
+                        and_(
+                            StrategyExperimentAssignment.experiment_id == normalized_experiment_id,
+                            StrategyExperimentAssignment.trader_id == normalized_trader_id,
+                            StrategyExperimentAssignment.signal_id == normalized_signal_id,
+                        )
+                    )
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            existing.source_key = normalized_source
+            existing.strategy_key = normalized_strategy
+            existing.strategy_version = int(strategy_version)
+            existing.assignment_group = normalized_assignment_group
+            existing.decision_id = normalized_decision_id or existing.decision_id
+            existing.order_id = normalized_order_id or existing.order_id
+            if normalized_payload:
+                merged = dict(existing.payload_json or {})
+                merged.update(normalized_payload)
+                existing.payload_json = merged
+            existing.updated_at = now
+            await session.flush()
+            if commit:
+                await session.commit()
+                await session.refresh(existing)
+            return existing
+
+        row = StrategyExperimentAssignment(
+            id=uuid.uuid4().hex,
+            experiment_id=normalized_experiment_id,
+            trader_id=normalized_trader_id,
+            signal_id=normalized_signal_id,
+            decision_id=normalized_decision_id,
+            order_id=normalized_order_id,
+            source_key=normalized_source,
+            strategy_key=normalized_strategy,
+            strategy_version=int(strategy_version),
+            assignment_group=normalized_assignment_group,
+            payload_json=normalized_payload,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
         await session.flush()
         if commit:
             await session.commit()
-            await session.refresh(existing)
-        return existing
+            await session.refresh(row)
+        return row
 
-    row = StrategyExperimentAssignment(
+    insert_stmt = pg_insert(StrategyExperimentAssignment).values(
         id=uuid.uuid4().hex,
         experiment_id=normalized_experiment_id,
         trader_id=normalized_trader_id,
         signal_id=normalized_signal_id,
-        decision_id=str(decision_id or "").strip() or None,
-        order_id=str(order_id or "").strip() or None,
-        source_key=_normalize_source_key(source_key),
-        strategy_key=_normalize_strategy_key(strategy_key),
+        decision_id=normalized_decision_id,
+        order_id=normalized_order_id,
+        source_key=normalized_source,
+        strategy_key=normalized_strategy,
         strategy_version=int(strategy_version),
-        assignment_group=str(assignment_group or "control").strip().lower() or "control",
-        payload_json=dict(payload or {}),
+        assignment_group=normalized_assignment_group,
+        payload_json=normalized_payload,
         created_at=now,
         updated_at=now,
     )
-    session.add(row)
-    await session.flush()
+    set_values: dict[str, Any] = {
+        "source_key": insert_stmt.excluded.source_key,
+        "strategy_key": insert_stmt.excluded.strategy_key,
+        "strategy_version": insert_stmt.excluded.strategy_version,
+        "assignment_group": insert_stmt.excluded.assignment_group,
+        "decision_id": func.coalesce(insert_stmt.excluded.decision_id, StrategyExperimentAssignment.decision_id),
+        "order_id": func.coalesce(insert_stmt.excluded.order_id, StrategyExperimentAssignment.order_id),
+        "updated_at": now,
+    }
+    if normalized_payload:
+        set_values["payload_json"] = insert_stmt.excluded.payload_json
+    else:
+        set_values["payload_json"] = StrategyExperimentAssignment.payload_json
+
+    row = (
+        await session.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    StrategyExperimentAssignment.experiment_id,
+                    StrategyExperimentAssignment.trader_id,
+                    StrategyExperimentAssignment.signal_id,
+                ],
+                set_=set_values,
+            ).returning(StrategyExperimentAssignment)
+        )
+    ).scalar_one()
     if commit:
         await session.commit()
         await session.refresh(row)
     return row
+
