@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -280,6 +280,9 @@ async def _seed_from_db(session: AsyncSession) -> None:
     today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     # ── Orders (single pass) ───────────────────────────────────────
+    order_status_key = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
+    seed_active_statuses = tuple(_normalize_status_key(status) for status in ("submitted", "executed", "open"))
+    seed_realized_statuses = tuple(_normalize_status_key(status) for status in REALIZED_ORDER_STATUSES)
     order_rows = await session.stream(
         select(
             TraderOrder.id,
@@ -295,6 +298,14 @@ async def _seed_from_db(session: AsyncSession) -> None:
             TraderOrder.entry_price,
             TraderOrder.updated_at,
             TraderOrder.actual_profit,
+        ).where(
+            or_(
+                order_status_key.in_(seed_active_statuses),
+                and_(
+                    order_status_key.in_(seed_realized_statuses),
+                    TraderOrder.updated_at >= today_start,
+                ),
+            )
         )
     )
     async for order in order_rows:
