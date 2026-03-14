@@ -1389,7 +1389,8 @@ function Cleanup-StaleHomerunProcesses {
 
         # Only kill homerun-related processes (workers, uvicorn backend, tui)
         $isHomerun = $false
-        if ($cmdLine -match "workers\.runner") { $isHomerun = $true }
+        if ($cmdLine -match "workers\.host") { $isHomerun = $true }
+        elseif ($cmdLine -match "workers\.runner") { $isHomerun = $true }
         elseif ($cmdLine -match "workers\.\w+_worker") { $isHomerun = $true }
         elseif (($cmdLine -match "uvicorn") -and ($cmdLine -match "main:app")) { $isHomerun = $true }
         elseif ($cmdLine -match "tui\.py") { $isHomerun = $true }

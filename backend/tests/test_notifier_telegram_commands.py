@@ -86,7 +86,7 @@ async def test_handle_telegram_command_autotrader_requires_valid_action():
         chat_id="12345",
     )
 
-    assert response == "Usage: `/autotrader on [shadow|live]` or `/autotrader off`\\."
+    assert response == "Usage: <code>/autotrader on [shadow|live]</code> or <code>/autotrader off</code>"
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_telegram_start_autotrader_live_mode_uses_live_flow(monkeypatch):
         operator="telegram:test",
     )
 
-    assert response == "✅ Autotrader start queued\\.\nMode: LIVE"
+    assert response == "✅ Autotrader start queued.\nMode: LIVE"
     preflight_mock.assert_awaited_once_with(
         ANY,
         requested_mode="live",
@@ -196,7 +196,7 @@ async def test_telegram_start_autotrader_without_mode_uses_live_when_control_mod
         operator="telegram:test",
     )
 
-    assert response == "✅ Autotrader start queued\\.\nMode: LIVE"
+    assert response == "✅ Autotrader start queued.\nMode: LIVE"
     preflight_mock.assert_awaited_once()
     arm_mock.assert_awaited_once()
     consume_mock.assert_awaited_once()

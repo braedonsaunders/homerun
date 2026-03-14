@@ -71,6 +71,7 @@ async def execute_live_order(
     resolve_live_price: bool = True,
     prefer_cached_price: bool = True,
     enforce_fallback_bound: bool = False,
+    skip_buy_pre_submit_gate: bool = False,
 ) -> LiveOrderExecution:
     normalized_token_id = str(token_id or "").strip()
     normalized_side = _normalize_side(side)
@@ -237,6 +238,7 @@ async def execute_live_order(
             min_order_size_usd=min_order_size,
             market_question=market_question,
             opportunity_id=opportunity_id,
+            skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
         )
 
         order_status = _map_trading_status(getattr(order, "status", None))
@@ -258,6 +260,7 @@ async def execute_live_order(
                     min_order_size_usd=min_order_size,
                     market_question=market_question,
                     opportunity_id=opportunity_id,
+                    skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
                 )
                 retry_status = _map_trading_status(getattr(retry_order, "status", None))
                 if retry_status != "failed":

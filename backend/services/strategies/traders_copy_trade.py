@@ -8,7 +8,7 @@ from typing import Any
 from models import Event, Market, Opportunity
 from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, StrategyDecision
 from services.strategy_sdk import StrategySDK
-from utils.converters import safe_float, to_confidence
+from utils.converters import coerce_bool as _coerce_bool, safe_float, to_confidence
 
 _MAX_LIVE_COPY_SIGNAL_AGE_SECONDS = 5.0
 
@@ -110,19 +110,6 @@ def traders_copy_trade_defaults() -> dict[str, Any]:
 
 def traders_copy_trade_config_schema() -> dict[str, Any]:
     return dict(TRADERS_COPY_TRADE_CONFIG_SCHEMA)
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:

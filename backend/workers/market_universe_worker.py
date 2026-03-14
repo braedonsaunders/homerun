@@ -304,9 +304,21 @@ async def _run_loop() -> None:
                     next_scheduled_run_at = now + timedelta(seconds=interval_seconds)
                     await asyncio.sleep(0.1)
                     continue
-                except Exception:
+                except Exception as exc:
                     if force_full:
                         raise
+                    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                        state["last_error"] = "market_universe_sync timed out"
+                        state["phase"] = "incremental_timeout"
+                        state["progress"] = 1.0
+                        state["sync_mode"] = "full"
+                        state["activity"] = "Incremental market-universe sync timed out; full reconcile scheduled next cycle."
+                        logger.warning("Market universe incremental sync timed out; scheduling full reconcile next cycle")
+                        next_full_reconcile_at = now
+                        state["next_full_reconcile_at"] = now.isoformat()
+                        next_scheduled_run_at = now + timedelta(seconds=min(15, interval_seconds))
+                        await asyncio.sleep(0.1)
+                        continue
                     logger.warning("Market universe incremental sync failed, retrying full reconcile", exc_info=True)
                     sync_result = await _run_with_timeout_budget(
                         scanner.refresh_catalog_incremental(force_full=True),
@@ -361,7 +373,10 @@ async def _run_loop() -> None:
                 state["phase"] = "error"
                 state["progress"] = 1.0
                 state["activity"] = f"Market universe refresh error: {exc}"
-                logger.exception("Market universe refresh cycle failed: %s", exc)
+                if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                    logger.warning("Market universe refresh cycle timed out: %s", exc)
+                else:
+                    logger.exception("Market universe refresh cycle failed: %s", exc)
 
                 if is_db_disconnect and consecutive_db_failures >= _MAX_CONSECUTIVE_DB_FAILURES:
                     logger.warning(

@@ -211,6 +211,16 @@ _audit_task: asyncio.Task | None = None
 _AUDIT_FLUSH_INTERVAL = 0.5
 _AUDIT_FLUSH_BATCH_SIZE = 1000
 _AUDIT_BUFFER_MAX_SIZE = 50_000
+_AUDIT_KIND_PRIORITY = {
+    "decision": 0,
+    "decision_checks": 1,
+    "consumption": 2,
+    "cursor": 3,
+    "signal_status": 4,
+    "trader_event": 5,
+    "experiment_assignment": 6,
+    "execution_outcome": 7,
+}
 
 _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
 
@@ -565,6 +575,13 @@ def get_open_market_ids(trader_id: str, mode: str) -> set[str]:
 
 def get_gross_exposure(mode: str) -> float:
     return _global_gross.get(_normalize_mode_key(mode), 0.0)
+
+
+def get_trader_gross_exposure(trader_id: str, mode: str) -> float:
+    snap = _snapshots.get((trader_id, _normalize_mode_key(mode)))
+    if snap is None:
+        return 0.0
+    return float(snap.gross_notional or 0.0)
 
 
 def get_market_exposure(market_id: str, mode: str) -> float:
@@ -1260,32 +1277,33 @@ async def flush_audit_buffer() -> int:
             return 0
         batch = _audit_buffer[:_AUDIT_FLUSH_BATCH_SIZE]
         del _audit_buffer[:len(batch)]
+    batch.sort(key=lambda entry: (_AUDIT_KIND_PRIORITY.get(entry.kind, 99), entry.created_at))
 
-    flushed = 0
     try:
         async with AsyncSessionLocal() as session:
-            for entry in batch:
-                try:
-                    if entry.kind == "decision":
-                        await _flush_decision(session, entry.payload)
-                    elif entry.kind == "decision_checks":
-                        _flush_decision_checks(session, entry.payload)
-                    elif entry.kind == "consumption":
-                        await _flush_consumption(session, entry.payload)
-                    elif entry.kind == "cursor":
-                        await _flush_cursor(session, entry.payload)
-                    elif entry.kind == "signal_status":
-                        await _flush_signal_status(session, entry.payload)
-                    elif entry.kind == "trader_event":
-                        _flush_trader_event(session, entry.payload)
-                    elif entry.kind == "experiment_assignment":
-                        await _flush_experiment_assignment(session, entry.payload)
-                    elif entry.kind == "execution_outcome":
-                        await _flush_execution_outcome(session, entry.payload)
-                    flushed += 1
-                except Exception as exc:
-                    logger.warning("Audit entry flush failed", kind=entry.kind, exc_info=exc)
-            await session.commit()
+            try:
+                with session.no_autoflush:
+                    for entry in batch:
+                        if entry.kind == "decision":
+                            await _flush_decision(session, entry.payload)
+                        elif entry.kind == "decision_checks":
+                            _flush_decision_checks(session, entry.payload)
+                        elif entry.kind == "consumption":
+                            await _flush_consumption(session, entry.payload)
+                        elif entry.kind == "cursor":
+                            await _flush_cursor(session, entry.payload)
+                        elif entry.kind == "signal_status":
+                            await _flush_signal_status(session, entry.payload)
+                        elif entry.kind == "trader_event":
+                            _flush_trader_event(session, entry.payload)
+                        elif entry.kind == "experiment_assignment":
+                            await _flush_experiment_assignment(session, entry.payload)
+                        elif entry.kind == "execution_outcome":
+                            await _flush_execution_outcome(session, entry.payload)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
     except Exception as exc:
         async with _audit_lock:
             headroom = _AUDIT_BUFFER_MAX_SIZE - len(_audit_buffer)
@@ -1305,7 +1323,7 @@ async def flush_audit_buffer() -> int:
         else:
             logger.warning("Audit batch commit failed, re-queuing", count=len(batch), exc_info=exc)
         return 0
-    return flushed
+    return len(batch)
 
 
 async def _flush_decision(session: AsyncSession, p: dict[str, Any]) -> None:

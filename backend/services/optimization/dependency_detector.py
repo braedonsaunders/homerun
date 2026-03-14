@@ -23,6 +23,8 @@ import re
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
+from utils.logger import get_logger
+
 try:
     import httpx
 
@@ -37,6 +39,42 @@ try:
 
 except ImportError:
     HTTPX_AVAILABLE = False
+
+
+logger = get_logger(__name__)
+
+
+def _openai_response_content(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    return None
+
+
+def _anthropic_response_content(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    first_block = content[0]
+    if not isinstance(first_block, dict):
+        return None
+    text = first_block.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
+    return None
 
 from .constraint_solver import Dependency, DependencyType
 
@@ -360,7 +398,11 @@ Return valid JSON only:
                 },
             )
             if response.status_code == 200:
-                return response.json()["choices"][0]["message"]["content"]
+                content = _openai_response_content(response.json())
+                if content is not None:
+                    return content
+                logger.warning("Dependency detector received malformed OpenAI response payload")
+                return "{}"
 
         elif self.backend == "anthropic":
             response = await client.post(
@@ -377,7 +419,11 @@ Return valid JSON only:
                 },
             )
             if response.status_code == 200:
-                return response.json()["content"][0]["text"]
+                content = _anthropic_response_content(response.json())
+                if content is not None:
+                    return content
+                logger.warning("Dependency detector received malformed Anthropic response payload")
+                return "{}"
 
         return "{}"
 

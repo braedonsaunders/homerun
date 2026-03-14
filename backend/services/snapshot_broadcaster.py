@@ -28,12 +28,10 @@ from models.database import (
 )
 from services import shared_state
 from services.event_bus import event_bus
-from services.intent_runtime import get_intent_runtime
-from services.market_runtime import get_market_runtime
 from services.news import shared_state as news_shared_state
-from services.runtime_status import runtime_status
+from services.signal_bus import read_trade_signal_source_stats
 from services.trader_orchestrator_state import read_orchestrator_snapshot
-from services.worker_state import list_worker_snapshots
+from services.worker_state import list_worker_snapshots, summarize_worker_stats
 from services.weather import shared_state as weather_shared_state
 from utils.logger import get_logger
 from utils.market_urls import serialize_opportunity_with_links
@@ -377,8 +375,16 @@ class SnapshotBroadcaster:
                     weather_status = await weather_shared_state.get_weather_status_from_db(session)
                     weather_status["opportunities_count"] = len(weather_opps)
                     news_status = await news_shared_state.get_news_status_from_db(session)
-                    worker_statuses = await list_worker_snapshots(session, include_stats=False)
+                    worker_statuses = await list_worker_snapshots(
+                        session,
+                        include_stats=True,
+                        stats_mode="summary",
+                    )
                     orchestrator_status = await read_orchestrator_snapshot(session)
+                    if isinstance(orchestrator_status, dict):
+                        orchestrator_status = dict(orchestrator_status)
+                        orchestrator_status["stats"] = summarize_worker_stats(orchestrator_status.get("stats"))
+                    signal_sources = await read_trade_signal_source_stats(session)
                     world_snapshot = (
                         (await session.execute(select(EventsSnapshot).where(EventsSnapshot.id == "latest")))
                         .scalars()
@@ -577,11 +583,16 @@ class SnapshotBroadcaster:
                     self._last_worker_status_sig = worker_sig
                     await manager.broadcast({"type": "worker_status_update", "data": {"workers": worker_statuses}})
 
-                crypto_row = runtime_status.get_crypto()
-                crypto_stats = crypto_row.get("stats") if isinstance(crypto_row.get("stats"), dict) else {}
-                crypto_markets = crypto_stats.get("markets")
+                crypto_markets: list[dict[str, Any]] | None = None
+                for worker in worker_statuses:
+                    if worker.get("worker_name") != "crypto":
+                        continue
+                    stats = worker.get("stats") if isinstance(worker.get("stats"), dict) else {}
+                    if isinstance(stats.get("markets"), list):
+                        crypto_markets = list(stats.get("markets") or [])
+                    break
                 if not isinstance(crypto_markets, list):
-                    crypto_markets = get_market_runtime().get_crypto_markets()
+                    crypto_markets = []
 
                 crypto_sig = self._compute_dedup_sig("crypto_markets_update", {"markets": crypto_markets})
                 if crypto_sig != self._last_crypto_markets_sig:
@@ -593,7 +604,6 @@ class SnapshotBroadcaster:
                         }
                     )
 
-                signal_sources = get_intent_runtime().get_signal_snapshot_rows()
                 signals_sig = tuple(
                     (
                         row["source"],

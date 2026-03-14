@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAtomValue } from 'jotai'
@@ -78,7 +78,8 @@ const OPEN_LIVE_MANAGED_ORDER_STATUSES = new Set([
 ])
 const POSITIONS_TABLE_PAGE_SIZE = 100
 const LIVE_MARK_FRESH_MS = 15_000
-const MODAL_MARKET_HISTORY_LIMIT = 5000
+const MODAL_MARKET_HISTORY_LIMIT = 960
+const MODAL_MARKET_HISTORY_REFRESH_MS = 10_000
 const LIVELINE_WINDOW_PRESETS: WindowOption[] = [
   { label: 'All', secs: 60 * 60 * 24 * 365 * 10 },
   { label: '7d', secs: 60 * 60 * 24 * 7 },
@@ -327,6 +328,44 @@ function toUnixSeconds(value: number): number {
   return Math.trunc(value)
 }
 
+function readHistoryPoint(point: unknown): { time: number; yes: number | null; no: number | null } | null {
+  if (Array.isArray(point)) {
+    const rawTime = readFinite(point[0])
+    if (rawTime === null || rawTime <= 0) return null
+    let yes = readFinite(point[1])
+    let no = readFinite(point[2])
+    if (yes === null && no !== null) yes = 1 - no
+    if (no === null && yes !== null) no = 1 - yes
+    return {
+      time: Math.max(1, toUnixSeconds(rawTime)),
+      yes,
+      no,
+    }
+  }
+
+  if (!point || typeof point !== 'object') return null
+  const row = point as Record<string, unknown>
+  const rawTime = readFinite(row.t, row.ts, row.time, row.timestamp)
+  if (rawTime === null || rawTime <= 0) return null
+
+  const outcomePrices = Array.isArray(row.outcome_prices)
+    ? row.outcome_prices
+    : Array.isArray(row.outcomePrices)
+      ? row.outcomePrices
+      : null
+
+  let yes = readFinite(row.yes, row.idx_0, outcomePrices?.[0])
+  let no = readFinite(row.no, row.idx_1, outcomePrices?.[1])
+  if (yes === null && no !== null) yes = 1 - no
+  if (no === null && yes !== null) no = 1 - yes
+
+  return {
+    time: Math.max(1, toUnixSeconds(rawTime)),
+    yes,
+    no,
+  }
+}
+
 export default function PositionsPanel() {
   const queryClient = useQueryClient()
   const globalSelectedAccountId = useAtomValue(selectedAccountIdAtom)
@@ -345,6 +384,7 @@ export default function PositionsPanel() {
   })
 
   const [searchQuery, setSearchQuery] = useState('')
+  const deferredSearchQuery = useDeferredValue(searchQuery)
   const [sideFilter, setSideFilter] = useState<SideFilter>('all')
   const [markFilter, setMarkFilter] = useState<MarkFilter>('all')
   const [accountFilter, setAccountFilter] = useState<string>('all')
@@ -660,8 +700,8 @@ export default function PositionsPanel() {
   const modalRowHistoryQuery = useQuery({
     queryKey: ['positions-panel', 'modal-market-history', modalRowMarketIdsKey],
     enabled: modalRowMarketIds.length > 0,
-    refetchInterval: modalRow ? 2000 : false,
-    staleTime: 0,
+    refetchInterval: modalRow ? MODAL_MARKET_HISTORY_REFRESH_MS : false,
+    staleTime: 5000,
     refetchOnMount: 'always',
     queryFn: async () => {
       if (modalRowMarketIds.length === 0) return {}
@@ -692,16 +732,12 @@ export default function PositionsPanel() {
     const normalized: Array<{ time: number; value: number }> = []
 
     rawHistory.forEach((point) => {
-      if (!point || typeof point !== 'object') return
-      const row = point as unknown as Record<string, unknown>
-      const rawTime = readFinite(row.t)
-      if (rawTime === null || rawTime <= 0) return
-      const value = useNoSeries
-        ? readFinite(row.no, row.idx_1)
-        : readFinite(row.yes, row.idx_0)
+      const parsedPoint = readHistoryPoint(point)
+      if (!parsedPoint) return
+      const value = useNoSeries ? parsedPoint.no : parsedPoint.yes
       if (value === null || value < 0) return
       normalized.push({
-        time: Math.max(1, toUnixSeconds(rawTime)),
+        time: parsedPoint.time,
         value,
       })
     })
@@ -1015,7 +1051,7 @@ export default function PositionsPanel() {
   const effectiveAccountFilter = accountOptions.includes(accountFilter) ? accountFilter : 'all'
 
   const filteredRows = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase()
+    const query = deferredSearchQuery.trim().toLowerCase()
     const minExposure = exposureFloorValue(exposureFloor)
 
     return baseRows.filter((row) => {
@@ -1033,7 +1069,7 @@ export default function PositionsPanel() {
 
       return true
     })
-  }, [baseRows, searchQuery, sideFilter, markFilter, effectiveAccountFilter, exposureFloor])
+  }, [baseRows, deferredSearchQuery, sideFilter, markFilter, effectiveAccountFilter, exposureFloor])
 
   const sortedRows = useMemo(() => {
     const rows = [...filteredRows]
@@ -1172,6 +1208,11 @@ export default function PositionsPanel() {
     || (shouldShowLive && traderOrdersLoading)
     || (shouldFetchPolymarketLive && polymarketLiveLoading)
     || (shouldFetchKalshiLive && (kalshiStatusLoading || (Boolean(kalshiStatus?.authenticated) && kalshiLiveLoading)))
+  )
+  const showLoadingSkeleton = isLoading && baseRows.length === 0
+  const showModalHistorySkeleton = (
+    modalRowHistoryQuery.isPending
+    || (modalRowHistoryQuery.isFetching && modalRowHistorySeries.length === 0)
   )
 
   const handleRefresh = () => {
@@ -1351,7 +1392,9 @@ export default function PositionsPanel() {
       </div>
 
       {/* Metric Strip */}
-      {!isLoading && sortedRows.length > 0 && (
+      {showLoadingSkeleton ? (
+        <PositionsMetricSkeleton />
+      ) : !isLoading && sortedRows.length > 0 ? (
         <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
           <MetricChip icon={<Layers className="w-3.5 h-3.5 text-blue-300" />} label="Risk" value={sortedRows.length.toString()} />
           <MetricChip icon={<CircleDollarSign className="w-3.5 h-3.5 text-blue-300" />} label="Exposure" value={formatCompactUsd(metrics.totalMarketValue)} detail={formatUsd(metrics.totalMarketValue)} />
@@ -1388,14 +1431,12 @@ export default function PositionsPanel() {
             detail={metrics.largestPosition?.marketQuestion}
           />
         </div>
-      )}
+      ) : null}
 
       {/* Main content — fills remaining space */}
       <div className="flex-1 min-h-0">
-        {isLoading ? (
-          <div className="flex h-full items-center justify-center">
-            <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-          </div>
+        {showLoadingSkeleton ? (
+          <PositionsLoadingSkeleton />
         ) : sortedRows.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center">
             <Briefcase className="w-10 h-10 text-muted-foreground/50 mb-3" />
@@ -1770,16 +1811,11 @@ export default function PositionsPanel() {
                       referenceLine={modalRow.entryPrice !== null ? { value: modalRow.entryPrice, label: 'Entry' } : undefined}
                       style={{ height: 260 }}
                     />
+                  ) : showModalHistorySkeleton ? (
+                    <ModalHistorySkeleton />
                   ) : (
                     <div className="h-[260px] flex items-center justify-center text-xs text-muted-foreground">
-                      {modalRowHistoryQuery.isFetching ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Loading market history...
-                        </>
-                      ) : (
-                        'No market history available yet.'
-                      )}
+                      No market history available yet.
                     </div>
                   )}
                 </div>
@@ -1892,6 +1928,107 @@ function MetricChip({
       {icon}
       <span className="text-muted-foreground">{label}</span>
       <span className={cn('font-mono font-semibold', valueClassName)}>{value}</span>
+    </div>
+  )
+}
+
+function PositionsMetricSkeleton() {
+  return (
+    <div className="shrink-0 flex flex-wrap items-center gap-3 border-y border-border/50 py-1.5 px-0.5 animate-pulse">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div key={`positions-metric-skeleton-${index}`} className="flex items-center gap-2 text-xs">
+          <div className="h-3.5 w-3.5 rounded-full bg-muted/55" />
+          <div className="h-2.5 w-12 rounded bg-muted/45" />
+          <div className="h-3 w-14 rounded bg-muted/60" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PositionsLoadingSkeleton() {
+  return (
+    <div className="h-full grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px] animate-pulse">
+      <div className="flex min-h-0 flex-col gap-1.5">
+        <div className="shrink-0 flex items-center justify-between px-1">
+          <div className="h-2.5 w-28 rounded bg-muted/45" />
+          <div className="h-5 w-24 rounded bg-muted/35" />
+        </div>
+        <div className="flex-1 min-h-0 rounded-md border border-border/60 bg-card/60 p-3">
+          <div className="space-y-2">
+            {Array.from({ length: 11 }).map((_, index) => (
+              <div key={`positions-table-skeleton-${index}`} className="grid grid-cols-[2.8fr_0.4fr_0.8fr_1fr_0.9fr_0.9fr_1fr_0.9fr_0.7fr_0.7fr_0.7fr_1.2fr_0.9fr] gap-3 rounded border border-border/35 bg-background/25 px-3 py-2">
+                <div className="h-2.5 rounded bg-muted/45" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/40" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/40" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/30" />
+                <div className="h-2.5 rounded bg-muted/30" />
+                <div className="h-2.5 rounded bg-muted/30" />
+                <div className="h-2.5 rounded bg-muted/35" />
+                <div className="h-2.5 rounded bg-muted/35" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="hidden xl:flex flex-col gap-2 min-h-0">
+        <div className="h-full rounded-md border border-border/60 bg-card/60 p-3">
+          <div className="space-y-3">
+            <div>
+              <div className="h-3 w-28 rounded bg-muted/55" />
+              <div className="mt-3 space-y-2">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <div key={`positions-sidebar-book-${index}`} className="rounded-lg border border-border/75 bg-muted/20 px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="h-2.5 w-20 rounded bg-muted/45" />
+                      <div className="h-2.5 w-14 rounded bg-muted/55" />
+                    </div>
+                    <div className="mt-2 h-1.5 rounded-full bg-muted/35" />
+                    <div className="mt-2 h-2 w-12 rounded bg-muted/40" />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-t border-border/50 pt-3">
+              <div className="h-3 w-24 rounded bg-muted/55" />
+              <div className="mt-3 space-y-2">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div key={`positions-sidebar-pressure-${index}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="h-2.5 w-10 rounded bg-muted/40" />
+                      <div className="h-2.5 w-14 rounded bg-muted/50" />
+                    </div>
+                    <div className="mt-1 h-2 rounded-full bg-muted/35" />
+                    <div className="mt-1.5 h-2 w-12 rounded bg-muted/40" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ModalHistorySkeleton() {
+  return (
+    <div className="h-[260px] px-4 py-3 animate-pulse">
+      <div className="flex items-center justify-between gap-2">
+        <div className="h-3 w-28 rounded bg-muted/45" />
+        <div className="h-6 w-16 rounded-full bg-muted/35" />
+      </div>
+      <div className="mt-4 h-[170px] rounded-md bg-muted/20" />
+      <div className="mt-4 flex items-center gap-2">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div key={`modal-history-window-skeleton-${index}`} className="h-6 w-10 rounded-full bg-muted/35" />
+        ))}
+      </div>
     </div>
   )
 }

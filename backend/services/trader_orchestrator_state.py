@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 import asyncio
 import copy
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -36,7 +37,6 @@ from models.database import (
 )
 from utils.logger import get_logger
 from services.event_bus import event_bus
-from services.execution_latency_metrics import execution_latency_metrics
 from services.market_cache import CachedMarket
 from services.runtime_status import runtime_status
 from services.worker_state import (
@@ -45,6 +45,7 @@ from services.worker_state import (
     _is_retryable_db_error,
     _db_retry_delay,
     read_worker_snapshot,
+    summarize_worker_stats,
 )
 from services.live_execution_adapter import execute_live_order
 from services.live_execution_service import live_execution_service
@@ -388,6 +389,40 @@ def _normalize_control_settings(value: Any) -> dict[str, Any]:
         if key in normalized_keys or key in removed_keys:
             continue
         normalized[key] = raw_value
+    return normalized
+
+
+async def _list_enabled_strategy_keys(session: AsyncSession) -> list[str]:
+    rows = (
+        (
+            await session.execute(
+                select(Strategy.slug)
+                .where(Strategy.enabled == True)  # noqa: E712
+                .order_by(Strategy.slug.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    enabled: list[str] = []
+    seen: set[str] = set()
+    for raw_slug in rows:
+        slug = str(raw_slug or "").strip().lower()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        enabled.append(slug)
+    if enabled:
+        return enabled
+    return list_system_strategy_keys()
+
+
+async def _normalize_control_settings_for_session(
+    session: AsyncSession,
+    value: Any,
+) -> dict[str, Any]:
+    normalized = _normalize_control_settings(value)
+    normalized["enabled_strategies"] = await _list_enabled_strategy_keys(session)
     return normalized
 
 
@@ -2330,14 +2365,14 @@ async def ensure_orchestrator_control(session: AsyncSession) -> TraderOrchestrat
         await _commit_with_retry(session)
         await session.refresh(row)
     else:
-        normalized_settings = _normalize_control_settings(row.settings_json)
+        normalized_settings = await _normalize_control_settings_for_session(session, row.settings_json)
         if row.settings_json != normalized_settings:
             row.settings_json = normalized_settings
             row.updated_at = _now()
             await _commit_with_retry(session)
             await session.refresh(row)
     if not isinstance(row.settings_json, dict):
-        row.settings_json = _default_control_settings()
+        row.settings_json = await _normalize_control_settings_for_session(session, {})
         row.updated_at = _now()
         await _commit_with_retry(session)
         await session.refresh(row)
@@ -2368,7 +2403,7 @@ async def read_orchestrator_control(session: AsyncSession) -> dict[str, Any]:
 
 async def read_orchestrator_snapshot(session: AsyncSession) -> dict[str, Any]:
     runtime_snapshot = runtime_status.get_orchestrator()
-    if runtime_snapshot.get("updated_at") is not None:
+    if os.environ.get("HOMERUN_PROCESS_ROLE") == "worker" and runtime_snapshot.get("updated_at") is not None:
         stats = dict(runtime_snapshot.get("stats") or {})
         return {
             "id": ORCHESTRATOR_SNAPSHOT_ID,
@@ -2422,9 +2457,9 @@ async def update_orchestrator_control(session: AsyncSession, **updates: Any) -> 
         payload["requested_run_at"] = updates["requested_run_at"]
 
     if isinstance(updates.get("settings_json"), dict):
-        merged = dict(_normalize_control_settings(row.settings_json))
+        merged = dict(await _normalize_control_settings_for_session(session, row.settings_json))
         merged.update(updates["settings_json"])
-        payload["settings_json"] = _normalize_control_settings(merged)
+        payload["settings_json"] = await _normalize_control_settings_for_session(session, merged)
 
     payload["updated_at"] = _now()
 
@@ -2462,6 +2497,7 @@ async def write_orchestrator_snapshot(
     last_error: Optional[str] = None,
     stats: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    persisted_stats = summarize_worker_stats(stats) if isinstance(stats, dict) else None
     runtime_status.update_orchestrator(
         running=running,
         enabled=enabled,
@@ -2482,7 +2518,7 @@ async def write_orchestrator_snapshot(
         row.last_run_at = last_run_at
     row.last_error = last_error
     if isinstance(stats, dict):
-        row.stats_json = stats
+        row.stats_json = persisted_stats or {}
         row.traders_total = int(stats.get("traders_total", row.traders_total or 0) or 0)
         row.traders_running = int(stats.get("traders_running", row.traders_running or 0) or 0)
         row.decisions_count = int(stats.get("decisions_count", row.decisions_count or 0) or 0)
@@ -6444,8 +6480,13 @@ async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
 
 
 
-async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str, Any]:
-    control = await read_orchestrator_control(session)
+async def compose_trader_orchestrator_config(
+    session: AsyncSession,
+    *,
+    control: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if control is None:
+        control = await read_orchestrator_control(session)
     settings_json = _normalize_control_settings(control.get("settings") or {})
     global_risk = dict(settings_json.get("global_risk") or _normalize_global_risk({}))
     global_runtime = dict(settings_json.get("global_runtime") or _normalize_global_runtime_settings({}))
@@ -6523,12 +6564,26 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
 
 
 async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
+    control = await read_orchestrator_control(session)
+    worker = await read_orchestrator_snapshot(session)
+    if isinstance(worker, dict):
+        worker = dict(worker)
+        worker["stats"] = summarize_worker_stats(worker.get("stats"))
+    metrics = dict(worker.get("stats") or {}) if isinstance(worker, dict) else {}
+    if isinstance(worker, dict):
+        metrics.setdefault("traders_total", int(worker.get("traders_total", 0) or 0))
+        metrics.setdefault("traders_running", int(worker.get("traders_running", 0) or 0))
+        metrics.setdefault("decisions_count", int(worker.get("decisions_count", 0) or 0))
+        metrics.setdefault("orders_count", int(worker.get("orders_count", 0) or 0))
+        metrics.setdefault("open_orders", int(worker.get("open_orders", 0) or 0))
+        metrics.setdefault("gross_exposure_usd", float(worker.get("gross_exposure_usd", 0.0) or 0.0))
+        metrics.setdefault("daily_pnl", float(worker.get("daily_pnl", 0.0) or 0.0))
     return {
-        "control": await read_orchestrator_control(session),
-        "worker": await read_orchestrator_snapshot(session),
+        "control": control,
+        "worker": worker,
         "reconciliation_worker": await read_worker_snapshot(session, "trader_reconciliation"),
-        "config": await compose_trader_orchestrator_config(session),
-        "metrics": await compute_orchestrator_metrics(session),
+        "config": await compose_trader_orchestrator_config(session, control=control),
+        "metrics": metrics,
     }
 
 

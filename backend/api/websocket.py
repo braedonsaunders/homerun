@@ -10,17 +10,15 @@ from config import settings
 from models.database import AsyncSessionLocal, EventsSnapshot
 from sqlalchemy import select
 from services import shared_state
-from services.intent_runtime import get_intent_runtime
-from services.market_runtime import get_market_runtime
 from services.news import shared_state as news_shared_state
-from services.runtime_status import runtime_status
+from services.signal_bus import read_trade_signal_source_stats
 from services.trader_orchestrator_state import (
     list_serialized_execution_sessions,
     list_traders,
     read_orchestrator_snapshot,
 )
 from services.wallet_tracker import wallet_tracker
-from services.worker_state import list_worker_snapshots
+from services.worker_state import list_worker_snapshots, summarize_worker_stats
 from services.ui_lock import UI_LOCK_SESSION_COOKIE, ui_lock_service
 from services.weather import shared_state as weather_shared_state
 from services.ws_feeds import get_feed_manager
@@ -395,7 +393,7 @@ async def handle_websocket(websocket: WebSocket):
         weather_opportunities = await weather_shared_state.get_weather_opportunities_from_db(session)
         weather_status = await weather_shared_state.get_weather_status_from_db(session)
         news_workflow_status = await news_shared_state.get_news_status_from_db(session)
-        worker_statuses = await list_worker_snapshots(session, include_stats=False)
+        worker_statuses = await list_worker_snapshots(session, include_stats=True, stats_mode="summary")
         orchestrator_status = await read_orchestrator_snapshot(session)
         traders = await list_traders(session)
         execution_sessions = await list_serialized_execution_sessions(
@@ -404,6 +402,7 @@ async def handle_websocket(websocket: WebSocket):
             status=None,
             limit=100,
         )
+        signal_sources = await read_trade_signal_source_stats(session)
         world_snapshot = (
             (await session.execute(select(EventsSnapshot).where(EventsSnapshot.id == "latest"))).scalars().one_or_none()
         )
@@ -414,13 +413,22 @@ async def handle_websocket(websocket: WebSocket):
                 world_snapshot.updated_at.isoformat() if world_snapshot and world_snapshot.updated_at else None
             ),
         }
-    crypto_snapshot = runtime_status.get_crypto()
-    crypto_markets = get_market_runtime().get_crypto_markets()
+    crypto_markets: list[dict[str, Any]] = []
+    for worker in worker_statuses:
+        if worker.get("worker_name") != "crypto":
+            continue
+        stats = worker.get("stats") if isinstance(worker.get("stats"), dict) else {}
+        if isinstance(stats.get("markets"), list):
+            crypto_markets = list(stats.get("markets") or [])
+        break
     if crypto_markets:
         for worker in worker_statuses:
             if worker.get("worker_name") == "crypto":
                 worker["stats"] = {"markets": crypto_markets}
                 break
+    if isinstance(orchestrator_status, dict):
+        orchestrator_status = dict(orchestrator_status)
+        orchestrator_status["stats"] = summarize_worker_stats(orchestrator_status.get("stats"))
     await manager.send_personal(
         websocket,
         {
@@ -441,7 +449,7 @@ async def handle_websocket(websocket: WebSocket):
                 "news_workflow_status": news_workflow_status,
                 "workers_status": worker_statuses,
                 "trader_orchestrator_status": orchestrator_status,
-                "signals_status": {"sources": get_intent_runtime().get_signal_snapshot_rows()},
+                "signals_status": {"sources": signal_sources},
                 "traders": traders,
                 "execution_sessions": execution_sessions,
                 "events_status": events_status,

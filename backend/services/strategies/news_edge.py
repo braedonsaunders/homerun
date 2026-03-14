@@ -45,7 +45,7 @@ from services.strategies.base import (
 from services.data_events import DataEvent
 from services.quality_filter import QualityFilterOverrides
 from services.strategy_sdk import StrategySDK
-from utils.converters import to_float, to_confidence
+from utils.converters import coerce_bool as _coerce_bool, to_float, to_confidence
 from utils.signal_helpers import signal_payload
 
 logger = logging.getLogger(__name__)
@@ -86,19 +86,6 @@ def news_edge_defaults() -> dict[str, Any]:
 
 def news_edge_config_schema() -> dict[str, Any]:
     return dict(NEWS_EDGE_CONFIG_SCHEMA)
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:

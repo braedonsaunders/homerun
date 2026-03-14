@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Optional
+from utils.converters import coerce_bool as _coerce_bool
 
 logger = logging.getLogger(__name__)
 
@@ -480,19 +481,6 @@ class StrategySDK:
             return False
 
     @staticmethod
-    def _coerce_bool(value: Any, default: bool) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return default
-        normalized = str(value).strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-        return default
-
-    @staticmethod
     def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:
         try:
             parsed = float(value)
@@ -665,7 +653,7 @@ class StrategySDK:
         cfg = dict(value or {}) if isinstance(value, dict) else {}
         if not cfg:
             return None
-        if not StrategySDK._coerce_bool(cfg.get("enabled"), True):
+        if not _coerce_bool(cfg.get("enabled"), True):
             return None
 
         direction = str(cfg.get("direction") or "").strip().lower()
@@ -1190,7 +1178,7 @@ class StrategySDK:
             if "live_preplace_take_profit_exit" in cfg
             else cfg.get("preplace_take_profit_exit")
         )
-        return StrategySDK._coerce_bool(raw, default_enabled)
+        return _coerce_bool(raw, default_enabled)
 
     @staticmethod
     def resolve_open_order_timeout_seconds(
@@ -1376,19 +1364,19 @@ class StrategySDK:
             0.01,
             10_000_000.0,
         )
-        cfg["firehose_require_active_signal"] = StrategySDK._coerce_bool(
+        cfg["firehose_require_active_signal"] = _coerce_bool(
             cfg.get("firehose_require_active_signal"),
             True,
         )
-        cfg["firehose_require_tradable_market"] = StrategySDK._coerce_bool(
+        cfg["firehose_require_tradable_market"] = _coerce_bool(
             cfg.get("firehose_require_tradable_market"),
             False,
         )
-        cfg["firehose_exclude_crypto_markets"] = StrategySDK._coerce_bool(
+        cfg["firehose_exclude_crypto_markets"] = _coerce_bool(
             cfg.get("firehose_exclude_crypto_markets"),
             False,
         )
-        cfg["firehose_require_qualified_source"] = StrategySDK._coerce_bool(
+        cfg["firehose_require_qualified_source"] = _coerce_bool(
             cfg.get("firehose_require_qualified_source"),
             True,
         )
@@ -1458,7 +1446,7 @@ class StrategySDK:
 
         trading_schedule = cfg.get("trading_schedule_utc")
         schedule = trading_schedule if isinstance(trading_schedule, dict) else {}
-        schedule_enabled = StrategySDK._coerce_bool(schedule.get("enabled"), False)
+        schedule_enabled = _coerce_bool(schedule.get("enabled"), False)
         schedule_days = StrategySDK._normalize_schedule_days(schedule.get("days"))
         schedule_start_time = StrategySDK._coerce_hhmm(schedule.get("start_time"), "00:00")
         schedule_end_time = StrategySDK._coerce_hhmm(schedule.get("end_time"), "23:59")
@@ -1518,9 +1506,9 @@ class StrategySDK:
         cfg["max_spread_bps"] = StrategySDK._coerce_float(cfg.get("max_spread_bps"), 75.0, 0.0, 10_000.0)
         cfg["retry_limit"] = StrategySDK._coerce_int(cfg.get("retry_limit"), 2, 0, 50)
         cfg["retry_backoff_ms"] = StrategySDK._coerce_int(cfg.get("retry_backoff_ms"), 250, 0, 60_000)
-        cfg["allow_averaging"] = StrategySDK._coerce_bool(cfg.get("allow_averaging"), False)
-        cfg["use_dynamic_sizing"] = StrategySDK._coerce_bool(cfg.get("use_dynamic_sizing"), True)
-        cfg["halt_on_consecutive_losses"] = StrategySDK._coerce_bool(cfg.get("halt_on_consecutive_losses"), True)
+        cfg["allow_averaging"] = _coerce_bool(cfg.get("allow_averaging"), False)
+        cfg["use_dynamic_sizing"] = _coerce_bool(cfg.get("use_dynamic_sizing"), True)
+        cfg["halt_on_consecutive_losses"] = _coerce_bool(cfg.get("halt_on_consecutive_losses"), True)
         cfg["max_consecutive_losses"] = StrategySDK._coerce_int(cfg.get("max_consecutive_losses"), 4, 0, 1000)
         cfg["circuit_breaker_drawdown_pct"] = StrategySDK._coerce_float(
             cfg.get("circuit_breaker_drawdown_pct"), 12.0, 0.0, 100.0
@@ -1531,7 +1519,7 @@ class StrategySDK:
         if isinstance(raw_portfolio, dict):
             portfolio_cfg.update({str(k): v for k, v in raw_portfolio.items() if str(k)})
         cfg["portfolio"] = {
-            "enabled": StrategySDK._coerce_bool(portfolio_cfg.get("enabled"), False),
+            "enabled": _coerce_bool(portfolio_cfg.get("enabled"), False),
             "target_utilization_pct": StrategySDK._coerce_float(
                 portfolio_cfg.get("target_utilization_pct"),
                 100.0,

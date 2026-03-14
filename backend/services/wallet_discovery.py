@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from utils.utcnow import as_utc_naive, utcnow, utcfromtimestamp
 from typing import Any, Optional
 
-from sqlalchemy import delete, select, func, desc, asc, cast, String, or_, text
+from sqlalchemy import Float, String, asc, case, cast, delete, desc, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import load_only
@@ -36,6 +36,7 @@ from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
 from services.smart_wallet_pool import smart_wallet_pool
 from services.pause_state import global_pause_state
+from utils.converters import coerce_bool as _coerce_bool
 from utils.fifo_pnl import compute_fifo_pnl_multi_market
 from utils.logger import get_logger
 
@@ -101,6 +102,14 @@ _DB_RETRY_BASE_DELAY_SECONDS = 0.05
 _DB_RETRY_MAX_DELAY_SECONDS = 0.3
 _PG_INT4_MAX = 2_147_483_647
 _NUMERIC_DEFAULT_ABS_MAX = 1_000_000_000.0
+_JSON_NUMERIC_PATTERN = r"^-?\d+(?:\.\d+)?$"
+_WIN_RATE_PRIOR_POSITIONS = 20.0
+_WIN_RATE_PRIOR_MEAN = 0.5
+_LEADERBOARD_STALE_ANALYSIS_HOURS = 24
+_TRADE_GAP_REANALYSIS_MIN_TOTAL_TRADES = 100
+_TRADE_GAP_REANALYSIS_MAX_RESOLVED_POSITIONS = 20
+_TRADE_GAP_REANALYSIS_MIN_RATIO = 10
+_TRADE_GAP_REANALYSIS_INTERVAL_HOURS = 4
 
 
 def _is_retryable_db_error(exc: Exception) -> bool:
@@ -185,12 +194,6 @@ class WalletDiscoveryEngine:
         return value_float
 
     @staticmethod
-    def _coerce_bool(value: Any, default: bool) -> bool:
-        if value is None:
-            return default
-        return bool(value)
-
-    @staticmethod
     def _discovery_settings_defaults() -> dict[str, Any]:
         return {
             "max_discovered_wallets": DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
@@ -223,7 +226,7 @@ class WalletDiscoveryEngine:
                     DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
                     minimum=10,
                 )
-                settings["maintenance_enabled"] = self._coerce_bool(
+                settings["maintenance_enabled"] = _coerce_bool(
                     row.discovery_maintenance_enabled,
                     DISCOVERY_DEFAULT_MAINTENANCE_ENABLED,
                 )
@@ -434,7 +437,10 @@ class WalletDiscoveryEngine:
             "total_trades": 0,
             "wins": 0,
             "losses": 0,
+            "resolved_positions": 0,
             "win_rate": 0.0,
+            "win_rate_score": 0.5,
+            "win_rate_confidence": 0.0,
             "total_pnl": 0.0,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
@@ -496,6 +502,7 @@ class WalletDiscoveryEngine:
             stats["wins"] = total_winning
             stats["losses"] = total_losing
             closed_total = total_winning + total_losing
+            stats["resolved_positions"] = closed_total
             stats["win_rate"] = total_winning / closed_total if closed_total > 0 else 0.0
             stats["avg_hold_time_hours"] = (total_hold_seconds / total_closed_lots) / 3600.0
             stats["_market_pnls"] = fifo_market_pnls
@@ -512,6 +519,42 @@ class WalletDiscoveryEngine:
         stats["fifo_accuracy"] = total_winning / total_closed_lots if total_closed_lots > 0 else 0.0
 
         return stats
+
+    @staticmethod
+    def _resolved_positions_count(*, wins: Any, losses: Any) -> int:
+        try:
+            total = int(wins or 0) + int(losses or 0)
+        except Exception:
+            return 0
+        return max(0, total)
+
+    @staticmethod
+    def _win_rate_confidence(resolved_positions: int) -> float:
+        if resolved_positions <= 0:
+            return 0.0
+        return max(0.0, min(float(resolved_positions) / _WIN_RATE_PRIOR_POSITIONS, 1.0))
+
+    @staticmethod
+    def _confidence_adjusted_win_rate(*, wins: Any, losses: Any) -> float:
+        try:
+            wins_value = max(0.0, float(wins or 0))
+        except Exception:
+            wins_value = 0.0
+        try:
+            losses_value = max(0.0, float(losses or 0))
+        except Exception:
+            losses_value = 0.0
+        total = wins_value + losses_value
+        if total <= 0:
+            return _WIN_RATE_PRIOR_MEAN
+        return max(
+            0.0,
+            min(
+                (wins_value + (_WIN_RATE_PRIOR_MEAN * _WIN_RATE_PRIOR_POSITIONS))
+                / (total + _WIN_RATE_PRIOR_POSITIONS),
+                1.0,
+            ),
+        )
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
@@ -707,6 +750,13 @@ class WalletDiscoveryEngine:
             stats["wins"] = wins
             stats["losses"] = losses
             stats["win_rate"] = wins / closed_total
+        resolved_positions = self._resolved_positions_count(wins=stats.get("wins"), losses=stats.get("losses"))
+        stats["resolved_positions"] = resolved_positions
+        stats["win_rate_confidence"] = self._win_rate_confidence(resolved_positions)
+        stats["win_rate_score"] = self._confidence_adjusted_win_rate(
+            wins=stats.get("wins", 0),
+            losses=stats.get("losses", 0),
+        )
 
         market_rois = list(closed_summary["market_rois"])
         market_pnls = list(closed_summary["market_pnls"])
@@ -939,7 +989,7 @@ class WalletDiscoveryEngine:
         else:
             pf_norm = max(0.0, min(pf / 10.0, 1.0))
 
-        win_rate = metrics.get("win_rate", 0.0)
+        win_rate = metrics.get("win_rate_score", metrics.get("win_rate", 0.0))
         wr_norm = max(0.0, min(win_rate, 1.0))
 
         total_pnl = metrics.get("total_pnl", 0.0)
@@ -1174,6 +1224,16 @@ class WalletDiscoveryEngine:
         anomaly_score = 0.0
 
         win_rate = stats.get("win_rate", 0.0)
+        resolved_positions = self._coerce_int(
+            stats.get("resolved_positions", self._resolved_positions_count(wins=stats.get("wins"), losses=stats.get("losses"))),
+            0,
+            minimum=0,
+            maximum=_PG_INT4_MAX,
+        )
+        adjusted_win_rate = self._confidence_adjusted_win_rate(
+            wins=stats.get("wins", 0),
+            losses=stats.get("losses", 0),
+        )
         total_pnl = stats.get("total_pnl", 0.0)
         total_trades = stats.get("total_trades", 0)
         trades_per_day = stats.get("trades_per_day", 0.0)
@@ -1194,7 +1254,7 @@ class WalletDiscoveryEngine:
         is_profitable = total_pnl > 0 and win_rate > 0.5
 
         # -- Performance tags --
-        if win_rate >= 0.7 and total_trades >= 20:
+        if adjusted_win_rate >= 0.7 and resolved_positions >= 20:
             tags.append("high_win_rate")
         if total_pnl >= 10000:
             tags.append("whale")
@@ -1204,22 +1264,22 @@ class WalletDiscoveryEngine:
             tags.append("risk_adjusted_alpha")
         if profit_factor is not None and math.isfinite(profit_factor) and profit_factor >= 3.0:
             tags.append("strong_edge")
-        if win_rate >= 0.55 and total_pnl > 0 and total_trades >= 50:
+        if adjusted_win_rate >= 0.55 and total_pnl > 0 and resolved_positions >= 50:
             tags.append("consistent")
 
         # -- Anomaly score (light version) --
-        if win_rate >= 0.95 and total_trades >= 20:
+        if adjusted_win_rate >= 0.95 and resolved_positions >= 20:
             anomaly_score = max(anomaly_score, 0.8)
             tags.append("suspicious_win_rate")
-        if win_rate >= 0.85 and total_trades >= 50:
+        if adjusted_win_rate >= 0.85 and resolved_positions >= 50:
             anomaly_score = max(anomaly_score, 0.5)
 
         # -- Recommendation --
         if anomaly_score >= 0.7:
             recommendation = "avoid"
-        elif is_profitable and win_rate >= 0.6 and total_trades >= 20:
+        elif is_profitable and adjusted_win_rate >= 0.6 and resolved_positions >= 20:
             recommendation = "copy_candidate"
-        elif is_profitable and total_trades >= 10:
+        elif is_profitable and resolved_positions >= 10:
             recommendation = "monitor"
         elif total_trades < MIN_TRADES_FOR_ANALYSIS:
             recommendation = "unanalyzed"
@@ -1298,6 +1358,7 @@ class WalletDiscoveryEngine:
                 "sharpe_ratio": risk_metrics["sharpe_ratio"],
                 "profit_factor": risk_metrics["profit_factor"],
                 "win_rate": stats["win_rate"],
+                "win_rate_score": stats["win_rate_score"],
                 "total_pnl": stats["total_pnl"],
                 "max_drawdown": risk_metrics["max_drawdown"],
                 "timing_skill_composite": timing_skill["timing_skill_composite"],
@@ -1347,6 +1408,7 @@ class WalletDiscoveryEngine:
             "total_trades": stats["total_trades"],
             "wins": stats["wins"],
             "losses": stats["losses"],
+            "resolved_positions": stats["resolved_positions"],
             "win_rate": stats["win_rate"],
             "total_pnl": stats["total_pnl"],
             "realized_pnl": stats["realized_pnl"],
@@ -1393,6 +1455,11 @@ class WalletDiscoveryEngine:
                     "closed_lots": stats.get("fifo_closed_lots", 0),
                     "open_lots": stats.get("fifo_open_lots", 0),
                     "accuracy": stats.get("fifo_accuracy", 0.0),
+                },
+                "confidence": {
+                    "win_rate_score": stats.get("win_rate_score", 0.5),
+                    "win_rate_confidence": stats.get("win_rate_confidence", 0.0),
+                    "resolved_positions": stats.get("resolved_positions", 0),
                 },
             },
         }
@@ -1774,7 +1841,7 @@ class WalletDiscoveryEngine:
             DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
             minimum=10,
         )
-        maintenance_enabled = self._coerce_bool(
+        maintenance_enabled = _coerce_bool(
             self._discovery_setting("maintenance_enabled", True),
             DISCOVERY_DEFAULT_MAINTENANCE_ENABLED,
         )
@@ -2072,7 +2139,10 @@ class WalletDiscoveryEngine:
                     )
                 )
                 .order_by(
+                    desc(func.coalesce(DiscoveredWallet.trades_24h, 0)),
+                    desc(func.coalesce(DiscoveredWallet.trades_1h, 0)),
                     asc(DiscoveredWallet.last_analyzed_at),
+                    desc(DiscoveredWallet.last_trade_at),
                     asc(DiscoveredWallet.discovered_at),
                 )
                 .limit(refresh_limit)
@@ -2094,6 +2164,9 @@ class WalletDiscoveryEngine:
         backfill_limit = max(100, min(priority_limit, default_limit))
 
         async with AsyncSessionLocal() as session:
+            resolved_positions_expr = func.coalesce(DiscoveredWallet.wins, 0) + func.coalesce(DiscoveredWallet.losses, 0)
+            gap_reanalysis_cutoff = utcnow() - timedelta(hours=_TRADE_GAP_REANALYSIS_INTERVAL_HOURS)
+
             top_pool_rows = await session.execute(
                 select(DiscoveredWallet.address)
                 .where(
@@ -2131,6 +2204,26 @@ class WalletDiscoveryEngine:
             smart_pool_rows = await session.execute(smart_pool_query)
             smart_pool = [str(row.address).lower() for row in smart_pool_rows.all() if row.address]
 
+            gap_refresh_rows = await session.execute(
+                select(DiscoveredWallet.address)
+                .where(
+                    DiscoveredWallet.last_analyzed_at.is_not(None),
+                    DiscoveredWallet.last_analyzed_at < gap_reanalysis_cutoff,
+                    DiscoveredWallet.total_trades >= _TRADE_GAP_REANALYSIS_MIN_TOTAL_TRADES,
+                    resolved_positions_expr <= _TRADE_GAP_REANALYSIS_MAX_RESOLVED_POSITIONS,
+                    resolved_positions_expr * _TRADE_GAP_REANALYSIS_MIN_RATIO < DiscoveredWallet.total_trades,
+                )
+                .order_by(
+                    desc(func.coalesce(DiscoveredWallet.trades_24h, 0)),
+                    desc(func.coalesce(DiscoveredWallet.trades_1h, 0)),
+                    asc(DiscoveredWallet.last_analyzed_at),
+                    desc(DiscoveredWallet.total_trades),
+                    desc(DiscoveredWallet.last_trade_at),
+                )
+                .limit(priority_limit)
+            )
+            gap_refresh = [str(row.address).lower() for row in gap_refresh_rows.all() if row.address]
+
             backfill_rows = await session.execute(
                 select(DiscoveredWallet.address)
                 .where(
@@ -2149,10 +2242,11 @@ class WalletDiscoveryEngine:
             )
             backfill = [str(row.address).lower() for row in backfill_rows.all() if row.address]
 
-        ordered = self._merge_unique_addresses(top_pool, smart_pool, backfill)
+        ordered = self._merge_unique_addresses(top_pool, smart_pool, gap_refresh, backfill)
         counts = {
             "top_pool_unanalyzed": len(top_pool),
             "smart_pool_unanalyzed": len(smart_pool),
+            "trade_gap_reanalysis": len(gap_refresh),
             "metrics_backfill": len(backfill),
             "priority_total": len(ordered),
         }
@@ -2358,6 +2452,7 @@ class WalletDiscoveryEngine:
                 priority_total=priority_counts.get("priority_total", 0),
                 priority_top_pool_unanalyzed=priority_counts.get("top_pool_unanalyzed", 0),
                 priority_smart_pool_unanalyzed=priority_counts.get("smart_pool_unanalyzed", 0),
+                priority_trade_gap_reanalysis=priority_counts.get("trade_gap_reanalysis", 0),
                 priority_metrics_backfill=priority_counts.get("metrics_backfill", 0),
                 stale_discovered=len(stale_addresses),
                 maintenance_refresh=len(maintenance_addresses),
@@ -2480,6 +2575,7 @@ class WalletDiscoveryEngine:
         limit: int = 100,
         offset: int = 0,
         min_trades: int = 0,
+        min_resolved_positions: int = 0,
         min_pnl: float | None = None,
         insider_only: bool = False,
         min_insider_score: float | None = None,
@@ -2503,6 +2599,7 @@ class WalletDiscoveryEngine:
             limit: Max results to return.
             offset: Pagination offset.
             min_trades: Minimum trade count filter.
+            min_resolved_positions: Minimum resolved-position count filter.
             min_pnl: Minimum total PnL filter.
             sort_by: Column to sort by (rank_score, total_pnl, win_rate, sharpe_ratio, etc.).
             sort_dir: "asc" or "desc".
@@ -2518,10 +2615,69 @@ class WalletDiscoveryEngine:
             Dict with 'wallets' list, 'total' count, and 'window_key' if set.
         """
         async with AsyncSessionLocal() as session:
+            resolved_positions_expr = func.coalesce(DiscoveredWallet.wins, 0) + func.coalesce(DiscoveredWallet.losses, 0)
+            leaderboard_load_columns = [
+                DiscoveredWallet.address,
+                DiscoveredWallet.username,
+                DiscoveredWallet.last_analyzed_at,
+                DiscoveredWallet.total_trades,
+                DiscoveredWallet.wins,
+                DiscoveredWallet.losses,
+                DiscoveredWallet.win_rate,
+                DiscoveredWallet.total_pnl,
+                DiscoveredWallet.avg_roi,
+                DiscoveredWallet.unique_markets,
+                DiscoveredWallet.days_active,
+                DiscoveredWallet.trades_per_day,
+                DiscoveredWallet.sharpe_ratio,
+                DiscoveredWallet.sortino_ratio,
+                DiscoveredWallet.max_drawdown,
+                DiscoveredWallet.profit_factor,
+                DiscoveredWallet.calmar_ratio,
+                DiscoveredWallet.anomaly_score,
+                DiscoveredWallet.is_bot,
+                DiscoveredWallet.is_profitable,
+                DiscoveredWallet.recommendation,
+                DiscoveredWallet.strategies_detected,
+                DiscoveredWallet.tags,
+                DiscoveredWallet.rank_score,
+                DiscoveredWallet.rank_position,
+                DiscoveredWallet.quality_score,
+                DiscoveredWallet.activity_score,
+                DiscoveredWallet.stability_score,
+                DiscoveredWallet.composite_score,
+                DiscoveredWallet.last_trade_at,
+                DiscoveredWallet.trades_1h,
+                DiscoveredWallet.trades_24h,
+                DiscoveredWallet.unique_markets_24h,
+                DiscoveredWallet.in_top_pool,
+                DiscoveredWallet.pool_tier,
+                DiscoveredWallet.pool_membership_reason,
+                DiscoveredWallet.source_flags,
+                DiscoveredWallet.cluster_id,
+                DiscoveredWallet.insider_score,
+                DiscoveredWallet.insider_confidence,
+                DiscoveredWallet.insider_sample_size,
+            ]
+            if window_key:
+                leaderboard_load_columns.extend(
+                    [
+                        DiscoveredWallet.rolling_pnl,
+                        DiscoveredWallet.rolling_roi,
+                        DiscoveredWallet.rolling_win_rate,
+                        DiscoveredWallet.rolling_trade_count,
+                        DiscoveredWallet.rolling_sharpe,
+                    ]
+                )
             normalized_tags = [t.strip().lower() for t in (tags or []) if isinstance(t, str) and t.strip()]
             base_filter = [
                 DiscoveredWallet.total_trades >= min_trades,
             ]
+            effective_min_resolved_positions = int(max(0, min_resolved_positions))
+            if not window_key and sort_by == "win_rate" and effective_min_resolved_positions <= 0 and min_trades > 0:
+                effective_min_resolved_positions = int(max(0, min_trades))
+            if effective_min_resolved_positions > 0:
+                base_filter.append(resolved_positions_expr >= effective_min_resolved_positions)
             if min_pnl is not None:
                 base_filter.append(DiscoveredWallet.total_pnl >= min_pnl)
             if insider_only:
@@ -2570,14 +2726,21 @@ class WalletDiscoveryEngine:
 
             # When a rolling window is active, filter to wallets with trades in that window
             if window_key:
-                trade_count_expr = func.coalesce(
-                    DiscoveredWallet.rolling_trade_count[window_key].as_integer(),
-                    0,
+                trade_count_text = func.coalesce(
+                    DiscoveredWallet.rolling_trade_count[window_key].as_string(),
+                    "",
+                )
+                trade_count_expr = case(
+                    (
+                        trade_count_text.op("~")(_JSON_NUMERIC_PATTERN),
+                        cast(trade_count_text, Float),
+                    ),
+                    else_=0.0,
                 )
                 base_filter.append(trade_count_expr > 0)
 
             # Build main query
-            query = select(DiscoveredWallet).where(*base_filter)
+            query = select(DiscoveredWallet).options(load_only(*leaderboard_load_columns)).where(*base_filter)
 
             # Determine sort expression
             if window_key and sort_by in self.SORT_FIELD_TO_ROLLING_COLUMN:
@@ -2586,7 +2749,14 @@ class WalletDiscoveryEngine:
                 rolling_col = getattr(DiscoveredWallet, rolling_col_name, None)
                 if rolling_col is not None:
                     if sort_by == "total_trades":
-                        sort_expr = func.coalesce(rolling_col[window_key].as_integer(), 0)
+                        rolling_trade_count_text = func.coalesce(rolling_col[window_key].as_string(), "")
+                        sort_expr = case(
+                            (
+                                rolling_trade_count_text.op("~")(_JSON_NUMERIC_PATTERN),
+                                cast(rolling_trade_count_text, Float),
+                            ),
+                            else_=0.0,
+                        )
                     else:
                         sort_expr = func.coalesce(rolling_col[window_key].as_float(), 0.0)
                 else:
@@ -2597,10 +2767,18 @@ class WalletDiscoveryEngine:
                 if sort_expr is None:
                     sort_expr = DiscoveredWallet.rank_score
 
-            if sort_dir.lower() == "asc":
+            sort_is_asc = sort_dir.lower() == "asc"
+            if sort_is_asc:
                 query = query.order_by(asc(sort_expr))
             else:
                 query = query.order_by(desc(sort_expr))
+
+            if not window_key and sort_by == "win_rate":
+                query = query.order_by(
+                    desc(resolved_positions_expr),
+                    desc(DiscoveredWallet.total_pnl),
+                    desc(DiscoveredWallet.last_analyzed_at),
+                )
 
             if unique_entities_only:
                 result = await session.execute(query)
@@ -2628,7 +2806,7 @@ class WalletDiscoveryEngine:
 
             rows = []
             for w in wallets:
-                row = self._wallet_to_dict(w)
+                row = self._wallet_to_leaderboard_dict(w)
 
                 # Inject period-specific metrics when a rolling window is active
                 if window_key:
@@ -2733,7 +2911,12 @@ class WalletDiscoveryEngine:
             "total_trades": w.total_trades,
             "wins": w.wins,
             "losses": w.losses,
+            "resolved_positions": WalletDiscoveryEngine._resolved_positions_count(wins=w.wins, losses=w.losses),
             "win_rate": w.win_rate,
+            "win_rate_score": WalletDiscoveryEngine._confidence_adjusted_win_rate(wins=w.wins, losses=w.losses),
+            "win_rate_confidence": WalletDiscoveryEngine._win_rate_confidence(
+                WalletDiscoveryEngine._resolved_positions_count(wins=w.wins, losses=w.losses)
+            ),
             "total_pnl": w.total_pnl,
             "realized_pnl": w.realized_pnl,
             "unrealized_pnl": w.unrealized_pnl,
@@ -2795,6 +2978,67 @@ class WalletDiscoveryEngine:
             "insider_reasons": w.insider_reasons_json or [],
             # Extended metrics
             "metrics": w.metrics_json,
+        }
+
+    @staticmethod
+    def _wallet_to_leaderboard_dict(w: DiscoveredWallet) -> dict:
+        source_flags = w.source_flags or {}
+        if not isinstance(source_flags, dict):
+            source_flags = {}
+        market_categories = [
+            key.replace("leaderboard_category_", "")
+            for key, enabled in source_flags.items()
+            if key.startswith("leaderboard_category_") and bool(enabled)
+        ]
+
+        return {
+            "address": w.address,
+            "username": w.username,
+            "last_analyzed_at": w.last_analyzed_at.isoformat() if w.last_analyzed_at else None,
+            "total_trades": w.total_trades,
+            "wins": w.wins,
+            "losses": w.losses,
+            "resolved_positions": WalletDiscoveryEngine._resolved_positions_count(wins=w.wins, losses=w.losses),
+            "win_rate": w.win_rate,
+            "win_rate_score": WalletDiscoveryEngine._confidence_adjusted_win_rate(wins=w.wins, losses=w.losses),
+            "win_rate_confidence": WalletDiscoveryEngine._win_rate_confidence(
+                WalletDiscoveryEngine._resolved_positions_count(wins=w.wins, losses=w.losses)
+            ),
+            "total_pnl": w.total_pnl,
+            "avg_roi": w.avg_roi,
+            "unique_markets": w.unique_markets,
+            "days_active": w.days_active,
+            "trades_per_day": w.trades_per_day,
+            "sharpe_ratio": w.sharpe_ratio,
+            "sortino_ratio": w.sortino_ratio,
+            "max_drawdown": w.max_drawdown,
+            "profit_factor": w.profit_factor,
+            "calmar_ratio": w.calmar_ratio,
+            "anomaly_score": w.anomaly_score,
+            "is_bot": w.is_bot,
+            "is_profitable": w.is_profitable,
+            "recommendation": w.recommendation,
+            "strategies_detected": w.strategies_detected or [],
+            "tags": w.tags or [],
+            "rank_score": w.rank_score,
+            "rank_position": w.rank_position,
+            "quality_score": w.quality_score,
+            "activity_score": w.activity_score,
+            "stability_score": w.stability_score,
+            "composite_score": w.composite_score,
+            "last_trade_at": w.last_trade_at.isoformat() if w.last_trade_at else None,
+            "trades_1h": w.trades_1h,
+            "trades_24h": w.trades_24h,
+            "unique_markets_24h": w.unique_markets_24h,
+            "in_top_pool": w.in_top_pool,
+            "pool_tier": w.pool_tier,
+            "pool_membership_reason": w.pool_membership_reason,
+            "source_flags": source_flags,
+            "market_categories": sorted(set(market_categories)),
+            "cluster_id": w.cluster_id,
+            "insider_score": w.insider_score or 0.0,
+            "insider_confidence": w.insider_confidence or 0.0,
+            "insider_sample_size": w.insider_sample_size or 0,
         }
 
     @staticmethod

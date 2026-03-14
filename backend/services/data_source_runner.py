@@ -389,6 +389,12 @@ async def run_data_source(
         raise ValueError("source.slug is required")
     if not bool(source.enabled):
         raise ValueError(f"Source '{source_slug}' is disabled")
+    source_code = str(source.source_code or "")
+    source_config = dict(source.config or {})
+    source_class_name = source.class_name
+    source_retention = source.retention
+    source_source_key = source.source_key
+    source_source_kind = source.source_kind
 
     safe_max_records = max(1, min(5000, int(max_records)))
     started_at = _utcnow_naive()
@@ -408,22 +414,23 @@ async def run_data_source(
     upserted_count = 0
     skipped_count = 0
     retention_policy = _resolve_retention_policy(
-        source.retention,
+        source_retention,
         slug=source_slug,
-        source_key=source.source_key,
-        source_kind=source.source_kind,
+        source_key=source_source_key,
+        source_kind=source_source_kind,
     )
-    source.retention = dict(retention_policy)
     retention_pruned = {"max_age_deleted": 0, "max_records_deleted": 0}
     recent_records: list[dict[str, Any]] = []
 
     try:
+        if session.in_transaction():
+            await session.rollback()
         if runtime is None:
             runtime = data_source_loader.load(
                 slug=source_slug,
-                source_code=str(source.source_code or ""),
-                config=dict(source.config or {}),
-                class_name=source.class_name,
+                source_code=source_code,
+                config=source_config,
+                class_name=source_class_name,
             )
         instance = runtime.instance
 
@@ -490,6 +497,12 @@ async def run_data_source(
         external_ids = sorted({record["external_id"] for record in normalized_rows if record.get("external_id")})
 
         existing_by_external_id: dict[str, DataSourceRecord] = {}
+        source = await session.get(DataSource, source_id)
+        if source is None:
+            raise RuntimeError(f"Data source '{source_slug}' missing during writeback")
+        if not bool(source.enabled):
+            raise ValueError(f"Source '{source_slug}' is disabled")
+        source.retention = dict(retention_policy)
         # Use no_autoflush for all reads and writes in this block so SQLAlchemy
         # never tries to flush pending objects on a potentially-dead connection
         # mid-operation. We flush explicitly at commit time.

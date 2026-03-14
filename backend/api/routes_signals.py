@@ -2,17 +2,60 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import TradeSignal, get_db_session
-from services.intent_runtime import get_intent_runtime
-from services.signal_bus import list_trade_signals
+from models.database import AsyncSessionLocal, TradeSignal, get_db_session
+from services.signal_bus import list_trade_signals, read_trade_signal_source_stats
+from utils.retry import is_retryable_db_error
 
 router = APIRouter(prefix="/signals", tags=["Signals"])
+
+_SIGNALS_STATS_CACHE_TTL_SECONDS = 5.0
+_signals_stats_cache: dict | None = None
+_signals_stats_cache_updated_at: float = 0.0
+_signals_stats_refresh_task: asyncio.Task | None = None
+
+
+async def _build_signal_stats_payload(session: AsyncSession) -> dict:
+    snapshots = await read_trade_signal_source_stats(session)
+
+    totals = {
+        "pending": 0,
+        "selected": 0,
+        "submitted": 0,
+        "executed": 0,
+        "skipped": 0,
+        "expired": 0,
+        "failed": 0,
+    }
+    for row in snapshots:
+        totals["pending"] += int(row.get("pending_count", 0) or 0)
+        totals["selected"] += int(row.get("selected_count", 0) or 0)
+        totals["submitted"] += int(row.get("submitted_count", 0) or 0)
+        totals["executed"] += int(row.get("executed_count", 0) or 0)
+        totals["skipped"] += int(row.get("skipped_count", 0) or 0)
+        totals["expired"] += int(row.get("expired_count", 0) or 0)
+        totals["failed"] += int(row.get("failed_count", 0) or 0)
+
+    return {
+        "totals": totals,
+        "sources": snapshots,
+    }
+
+
+async def _refresh_signal_stats_cache() -> None:
+    global _signals_stats_cache
+    global _signals_stats_cache_updated_at
+    async with AsyncSessionLocal() as session:
+        payload = await _build_signal_stats_payload(session)
+    _signals_stats_cache = payload
+    _signals_stats_cache_updated_at = time.monotonic()
 
 
 @router.get("")
@@ -70,29 +113,33 @@ async def get_signals(
 
 
 @router.get("/stats")
-async def get_signal_stats(session: AsyncSession = Depends(get_db_session)):
-    del session
-    snapshots = get_intent_runtime().get_signal_snapshot_rows()
+async def get_signal_stats():
+    global _signals_stats_cache
+    global _signals_stats_cache_updated_at
+    global _signals_stats_refresh_task
 
-    totals = {
-        "pending": 0,
-        "selected": 0,
-        "submitted": 0,
-        "executed": 0,
-        "skipped": 0,
-        "expired": 0,
-        "failed": 0,
-    }
-    for row in snapshots:
-        totals["pending"] += int(row.get("pending_count", 0) or 0)
-        totals["selected"] += int(row.get("selected_count", 0) or 0)
-        totals["submitted"] += int(row.get("submitted_count", 0) or 0)
-        totals["executed"] += int(row.get("executed_count", 0) or 0)
-        totals["skipped"] += int(row.get("skipped_count", 0) or 0)
-        totals["expired"] += int(row.get("expired_count", 0) or 0)
-        totals["failed"] += int(row.get("failed_count", 0) or 0)
+    now = time.monotonic()
+    cache_fresh = (
+        _signals_stats_cache is not None
+        and (now - _signals_stats_cache_updated_at) < _SIGNALS_STATS_CACHE_TTL_SECONDS
+    )
+    if cache_fresh:
+        return _signals_stats_cache
 
-    return {
-        "totals": totals,
-        "sources": snapshots,
-    }
+    if _signals_stats_refresh_task is not None and not _signals_stats_refresh_task.done():
+        if _signals_stats_cache is not None:
+            return _signals_stats_cache
+        await _signals_stats_refresh_task
+        return _signals_stats_cache or {"totals": {}, "sources": []}
+
+    try:
+        async with AsyncSessionLocal() as session:
+            payload = await _build_signal_stats_payload(session)
+        _signals_stats_cache = payload
+        _signals_stats_cache_updated_at = now
+        return payload
+    except Exception as exc:
+        if not is_retryable_db_error(exc) or _signals_stats_cache is None:
+            raise
+        _signals_stats_refresh_task = asyncio.create_task(_refresh_signal_stats_cache())
+        return _signals_stats_cache

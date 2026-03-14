@@ -426,9 +426,37 @@ def _merge_normalized_binary_history(
     return merged[-limit:]
 
 
+def _ensure_normalized_market_history(
+    normalized_history: dict[str, list[dict[str, float]]],
+    raw_history_lookup: dict[str, Any],
+    market_ids: list[str],
+    limit: int,
+    *,
+    now_ms: int,
+    window_seconds: int,
+    max_points: int,
+) -> None:
+    for market_id in market_ids:
+        normalized_market_id = normalize_market_id(market_id)
+        if not normalized_market_id or normalized_market_id in normalized_history:
+            continue
+        raw_points = raw_history_lookup.get(normalized_market_id)
+        if raw_points is None:
+            continue
+        normalized_points = normalize_binary_price_history(
+            raw_points,
+            now_ms=now_ms,
+            window_seconds=window_seconds,
+            max_points=max_points,
+        )
+        if len(normalized_points) >= 2:
+            normalized_history[normalized_market_id] = normalized_points[-limit:]
+
+
 def _bind_market_payload_history(
     raw_market: Any,
     normalized_history: dict[str, list[dict[str, float]]],
+    raw_history_lookup: dict[str, Any],
     alias_to_history_key: dict[str, str],
     limit: int,
     *,
@@ -443,6 +471,17 @@ def _bind_market_payload_history(
     aliases = _collect_market_aliases(raw_market)
     if not aliases:
         return
+
+    if now_ms is not None and window_seconds is not None and max_points is not None:
+        _ensure_normalized_market_history(
+            normalized_history,
+            raw_history_lookup,
+            aliases,
+            limit,
+            now_ms=int(now_ms),
+            window_seconds=max(60, int(window_seconds)),
+            max_points=max(2, int(max_points)),
+        )
 
     history_key = next((alias for alias in aliases if alias in normalized_history), None)
     normalize_kwargs: dict[str, Any] = {}
@@ -673,23 +712,24 @@ async def get_trader_market_history(
     if not isinstance(market_catalog, list):
         market_catalog = []
 
-    normalized_history: dict[str, list[dict[str, float]]] = {}
+    raw_history_lookup: dict[str, Any] = {}
     for raw_market_id, raw_points in history_map.items():
         normalized_market_id = normalize_market_id(raw_market_id)
         if not normalized_market_id:
             continue
-        normalized_points = normalize_binary_price_history(
-            raw_points,
-            now_ms=now_ms,
-            window_seconds=scanner_window_seconds,
-            max_points=normalize_max_points,
-        )
-        if len(normalized_points) >= 2:
-            normalized_history[normalized_market_id] = _merge_normalized_binary_history(
-                normalized_history.get(normalized_market_id, []),
-                normalized_points,
-                limit,
-            )
+        if normalized_market_id not in raw_history_lookup:
+            raw_history_lookup[normalized_market_id] = raw_points
+
+    normalized_history: dict[str, list[dict[str, float]]] = {}
+    _ensure_normalized_market_history(
+        normalized_history,
+        raw_history_lookup,
+        requested_ids,
+        limit,
+        now_ms=now_ms,
+        window_seconds=scanner_window_seconds,
+        max_points=normalize_max_points,
+    )
 
     alias_to_history_key: dict[str, str] = {}
     catalog_by_alias: dict[str, dict[str, Any]] = {}
@@ -703,6 +743,7 @@ async def get_trader_market_history(
             _bind_market_payload_history(
                 raw_market,
                 normalized_history,
+                raw_history_lookup,
                 alias_to_history_key,
                 limit,
                 now_ms=now_ms,
@@ -716,6 +757,7 @@ async def get_trader_market_history(
         _bind_market_payload_history(
             raw_market,
             normalized_history,
+            raw_history_lookup,
             alias_to_history_key,
             limit,
             keep_existing_aliases=True,
@@ -752,6 +794,7 @@ async def get_trader_market_history(
                 _bind_market_payload_history(
                     resolved_market,
                     normalized_history,
+                    raw_history_lookup,
                     alias_to_history_key,
                     limit,
                     keep_existing_aliases=True,
@@ -843,6 +886,7 @@ async def get_trader_market_history(
                             _bind_market_payload_history(
                                 raw_market,
                                 normalized_history,
+                                raw_history_lookup,
                                 alias_to_history_key,
                                 limit,
                                 now_ms=now_ms,

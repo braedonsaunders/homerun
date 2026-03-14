@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
-import subprocess
 import sys
 from copy import deepcopy
 from datetime import datetime
 
 from utils.utcnow import utcnow
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import delete as sa_delete
@@ -65,6 +65,7 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
 DB_RETRY_ATTEMPTS = 3
 DB_RETRY_BASE_DELAY_SECONDS = 0.05
 DB_RETRY_MAX_DELAY_SECONDS = 0.3
+_SCALAR_STATUS_TYPES = (str, int, float, bool, type(None))
 
 
 def _is_retryable_db_error(exc: Exception) -> bool:
@@ -78,6 +79,75 @@ def _db_retry_delay(
     max_delay: float = DB_RETRY_MAX_DELAY_SECONDS,
 ) -> float:
     return float(_shared_db_retry_delay(attempt, base_delay=base_delay, max_delay=max_delay))
+
+
+def _is_status_scalar(value: Any) -> bool:
+    return isinstance(value, _SCALAR_STATUS_TYPES)
+
+
+def _summarize_execution_latency(payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in ("internal_sla_definition", "internal_sla_target_ms", "rolling_window_seconds", "sample_count"):
+        value = payload.get(key)
+        if _is_status_scalar(value):
+            summary[key] = value
+    overall = payload.get("overall")
+    if isinstance(overall, dict):
+        overall_summary: dict[str, Any] = {}
+        for stage_key, stage_value in overall.items():
+            if _is_status_scalar(stage_value):
+                overall_summary[stage_key] = stage_value
+                continue
+            if not isinstance(stage_value, dict):
+                continue
+            metric_summary: dict[str, Any] = {}
+            for metric_key in ("count", "p50", "p95", "p99"):
+                metric_value = stage_value.get(metric_key)
+                if _is_status_scalar(metric_value):
+                    metric_summary[metric_key] = metric_value
+            if metric_summary:
+                overall_summary[stage_key] = metric_summary
+        if overall_summary:
+            summary["overall"] = overall_summary
+    for key in ("by_source", "by_strategy", "by_trader"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            summary[f"{key}_count"] = len(value)
+    return summary
+
+
+def summarize_worker_stats(stats: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(stats, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key, value in stats.items():
+        if key == "execution_latency" and isinstance(value, dict):
+            latency_summary = _summarize_execution_latency(value)
+            if latency_summary:
+                summary[key] = latency_summary
+            continue
+        if _is_status_scalar(value):
+            summary[key] = value
+            continue
+        if isinstance(value, list):
+            summary[f"{key}_count"] = len(value)
+            continue
+        if isinstance(value, dict):
+            scalar_children = {
+                child_key: child_value
+                for child_key, child_value in value.items()
+                if _is_status_scalar(child_value)
+            }
+            if scalar_children:
+                summary[key] = scalar_children
+            summary[f"{key}_count"] = len(value)
+    return summary
+
+
+def summarize_worker_snapshot(snapshot: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = dict(snapshot or {})
+    payload["stats"] = summarize_worker_stats(payload.get("stats"))
+    return payload
 
 
 def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:
@@ -192,36 +262,59 @@ def _default_interval(worker_name: str) -> int:
 def _read_process_rss_bytes(pid: int) -> Optional[int]:
     if pid <= 0:
         return None
+    if sys.platform == "win32":
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        try:
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+        except Exception:
+            return None
+
+        class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivateUsage", ctypes.c_size_t),
+            ]
+
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return None
+        try:
+            counters = PROCESS_MEMORY_COUNTERS_EX()
+            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return None
+            rss_bytes = int(counters.WorkingSetSize or 0)
+            return rss_bytes if rss_bytes > 0 else None
+        finally:
+            kernel32.CloseHandle(handle)
+
+    statm_path = f"/proc/{int(pid)}/statm"
     try:
-        proc = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=0.25,
-        )
+        with open(statm_path, "r", encoding="utf-8") as handle:
+            fields = handle.read().strip().split()
     except Exception:
         return None
-
-    if proc.returncode != 0:
+    if len(fields) < 2:
         return None
-
-    output = str(proc.stdout or "").strip()
-    if not output:
-        return None
-
-    line = output.splitlines()[-1].strip()
-    if not line:
-        return None
-
     try:
-        rss_kib = int(line.split()[0])
+        resident_pages = int(fields[1])
     except (TypeError, ValueError):
         return None
-
-    if rss_kib <= 0:
+    if resident_pages <= 0:
         return None
-    return rss_kib * 1024
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    rss_bytes = resident_pages * int(page_size)
+    return rss_bytes if rss_bytes > 0 else None
 
 
 def _read_peak_rss_bytes() -> Optional[int]:
@@ -466,9 +559,30 @@ async def list_worker_snapshots(
     session: AsyncSession,
     *,
     include_stats: bool = True,
+    stats_mode: str = "full",
+    worker_names: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
-    result = await session.execute(select(WorkerSnapshot).order_by(WorkerSnapshot.worker_name.asc()))
-    rows = list(result.scalars().all())
+    normalized_stats_mode = str(stats_mode or "full").strip().lower()
+    include_stats = bool(include_stats and normalized_stats_mode != "none")
+    normalized_worker_names = {
+        str(worker_name or "").strip().lower()
+        for worker_name in (worker_names or ())
+        if str(worker_name or "").strip()
+    }
+    worker_filter = normalized_worker_names or None
+    db_worker_names = sorted(
+        worker_name
+        for worker_name in (worker_filter or DEFAULT_WORKER_INTERVALS.keys())
+        if worker_name not in {"crypto", "trader_orchestrator"}
+    )
+    rows: list[WorkerSnapshot] = []
+    if db_worker_names:
+        result = await session.execute(
+            select(WorkerSnapshot)
+            .where(WorkerSnapshot.worker_name.in_(db_worker_names))
+            .order_by(WorkerSnapshot.worker_name.asc())
+        )
+        rows = list(result.scalars().all())
 
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -476,10 +590,14 @@ async def list_worker_snapshots(
         worker_name = str(runtime_row.get("worker_name") or "").strip().lower()
         if not worker_name or runtime_row.get("updated_at") is None:
             continue
+        if worker_filter is not None and worker_name not in worker_filter:
+            continue
         seen.add(worker_name)
         payload = dict(runtime_row)
         if not include_stats:
             payload.pop("stats", None)
+        elif normalized_stats_mode == "summary":
+            payload["stats"] = summarize_worker_stats(payload.get("stats"))
         out.append(payload)
     for row in rows:
         if row.worker_name in {"crypto", "trader_orchestrator"}:
@@ -497,10 +615,15 @@ async def list_worker_snapshots(
             "updated_at": to_iso(row.updated_at),
         }
         if include_stats:
-            snapshot["stats"] = row.stats_json or {}
+            stats_payload = row.stats_json or {}
+            snapshot["stats"] = (
+                summarize_worker_stats(stats_payload)
+                if normalized_stats_mode == "summary"
+                else stats_payload
+            )
         out.append(snapshot)
 
-    for worker_name in DEFAULT_WORKER_INTERVALS:
+    for worker_name in sorted(worker_filter or DEFAULT_WORKER_INTERVALS.keys()):
         if worker_name in seen:
             continue
         out.append(await read_worker_snapshot(session, worker_name))

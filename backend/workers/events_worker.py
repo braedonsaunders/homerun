@@ -581,7 +581,10 @@ async def _run_loop() -> None:
                     source_keys=["events"],
                 )
             except Exception as exc:
-                logger.warning("Events worker strategy refresh check failed: %s", exc)
+                if _is_retryable_db_error(exc):
+                    logger.debug("Events worker strategy refresh deferred due to transient DB contention")
+                else:
+                    logger.warning("Events worker strategy refresh check failed: %s", exc)
 
             interval = int(
                 max(

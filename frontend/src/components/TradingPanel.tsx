@@ -105,6 +105,16 @@ type BotRosterSort = 'name_asc' | 'name_desc' | 'pnl_desc' | 'pnl_asc' | 'open_d
 type BotRosterGroupBy = 'none' | 'status' | 'source'
 type TerminalDensity = 'compact' | 'expanded'
 type TraderToggleAction = 'start' | 'stop' | 'activate' | 'deactivate'
+type ExecutionLatencyStageKey =
+  | 'armed_to_ws_release_ms'
+  | 'emit_to_queue_wake_ms'
+  | 'ws_release_to_decision_ms'
+  | 'ws_release_to_submit_start_ms'
+  | 'wake_to_context_ready_ms'
+  | 'context_ready_to_decision_ms'
+  | 'decision_to_submit_start_ms'
+  | 'submit_start_to_provider_ack_ms'
+  | 'emit_to_submit_start_ms'
 
 const TRADE_STATUS_FILTER_OPTIONS: Array<{ value: TradeStatusFilter; label: string }> = [
   { value: 'all', label: 'all' },
@@ -229,6 +239,76 @@ type PerformanceBucketRow = {
   fullLosses: number
 }
 
+type PerformanceSubview = 'latency' | 'configuration'
+
+type PerformanceSection = {
+  sectionKey: string
+  sectionLabel: string
+  sourceKey: string
+  sourceLabel: string
+  strategyKey: string
+  strategyLabel: string
+  strategyVersion: number | null
+  strategyVersionLabel: string
+  groups: StrategyParamGroup[]
+  fieldKeys: string[]
+  paramFields: Array<Record<string, unknown>>
+  values: Record<string, unknown>
+}
+
+type PerformanceOrderSnapshot = {
+  order: TraderOrder
+  sourceKey: string
+  sourceLabel: string
+  strategyKey: string
+  strategyLabel: string
+  strategyVersion: number | null
+  strategyVersionLabel: string
+  sectionKey: string
+  sectionLabel: string
+  params: Record<string, unknown>
+  usedCurrentConfigFallback: boolean
+}
+
+type PerformanceConfigurationRow = PerformanceBucketRow & {
+  sectionKey: string
+  sectionLabel: string
+  sourceLabel: string
+  strategyLabel: string
+  strategyVersionLabel: string
+}
+
+type PerformanceParamSummaryRow = {
+  key: string
+  label: string
+  currentValueLabel: string
+  observedValueCount: number
+  currentResolved: number
+  currentPnl: number
+  currentRoiPercent: number
+  hasVariation: boolean
+}
+
+type PerformanceParamValueRow = PerformanceBucketRow & {
+  valueLabel: string
+  isCurrent: boolean
+  isMissing: boolean
+}
+
+type LatencyStageRow = {
+  key: ExecutionLatencyStageKey
+  label: string
+  traderLatencyLabel: string
+  overallLatencyLabel: string
+}
+
+type LatencyGroupRow = {
+  key: string
+  label: string
+  count: number
+  latencyLabel: string
+}
+
 type StrategyParamGroupKey = 'scope' | 'timing' | 'entry' | 'sizing' | 'exit' | 'risk' | 'advanced'
 
 type StrategyParamGroup = {
@@ -262,6 +342,17 @@ const CRYPTO_STRATEGY_OPTIONS = [
   { key: 'btc_eth_highfreq', label: 'Crypto High Frequency' },
   { key: 'crypto_spike_reversion', label: 'Crypto Spike Reversion' },
 ] as const
+const LATENCY_STAGE_OPTIONS: Array<{ key: ExecutionLatencyStageKey; label: string }> = [
+  { key: 'armed_to_ws_release_ms', label: 'Armed -> WS Release' },
+  { key: 'emit_to_queue_wake_ms', label: 'Emit -> Queue Wake' },
+  { key: 'wake_to_context_ready_ms', label: 'Wake -> Context Ready' },
+  { key: 'context_ready_to_decision_ms', label: 'Context Ready -> Decision' },
+  { key: 'ws_release_to_decision_ms', label: 'WS Release -> Decision' },
+  { key: 'decision_to_submit_start_ms', label: 'Decision -> Submit Start' },
+  { key: 'submit_start_to_provider_ack_ms', label: 'Submit Start -> Provider Ack' },
+  { key: 'ws_release_to_submit_start_ms', label: 'WS Release -> Submit Start' },
+  { key: 'emit_to_submit_start_ms', label: 'Emit -> Submit Start' },
+]
 const PERFORMANCE_TIMEFRAME_ORDER: Record<string, number> = { '5m': 0, '15m': 1, '1h': 2, '4h': 3 }
 const PERFORMANCE_MODE_ORDER: Record<string, number> = {
   auto: 0,
@@ -2292,7 +2383,7 @@ function eventLatencyDetail(event: TraderEvent): string | null {
 
 function latencyStagePercentiles(
   bucket: unknown,
-  stageKey: 'emit_to_submit_start_ms'
+  stageKey: ExecutionLatencyStageKey
 ): { p95: number | null; p99: number | null } {
   const stage = isRecord(bucket) && isRecord(bucket[stageKey]) ? bucket[stageKey] : null
   return {
@@ -2301,7 +2392,7 @@ function latencyStagePercentiles(
   }
 }
 
-function formatLatencyPercentilePair(bucket: unknown, stageKey: 'emit_to_submit_start_ms'): string {
+function formatLatencyPercentilePair(bucket: unknown, stageKey: ExecutionLatencyStageKey): string {
   const { p95, p99 } = latencyStagePercentiles(bucket, stageKey)
   const p95Label = formatLatencyMs(p95)
   const p99Label = formatLatencyMs(p99)
@@ -2311,9 +2402,18 @@ function formatLatencyPercentilePair(bucket: unknown, stageKey: 'emit_to_submit_
   return `${p95Label}/${p99Label}`
 }
 
+function formatLatencyWindow(seconds: number | null | undefined): string {
+  const value = toNumber(seconds)
+  if (value === null || value <= 0) return '—'
+  if (value % 3600 === 0) return `${value / 3600}h`
+  if (value % 60 === 0) return `${value / 60}m`
+  return `${value}s`
+}
+
 function worstLatencyGroup(
   summary: ExecutionLatencySummary | null | undefined,
-  groupKey: 'by_source' | 'by_strategy' | 'by_trader'
+  groupKey: 'by_source' | 'by_strategy' | 'by_trader',
+  stageKey: ExecutionLatencyStageKey
 ): { label: string | null; p95: number | null; p99: number | null } {
   const groups = summary?.[groupKey]
   if (!groups || typeof groups !== 'object') {
@@ -2324,13 +2424,64 @@ function worstLatencyGroup(
   let bestP95: number | null = null
   let bestP99: number | null = null
   for (const [label, bucket] of Object.entries(groups)) {
-    const { p95, p99 } = latencyStagePercentiles(bucket, 'emit_to_submit_start_ms')
+    const { p95, p99 } = latencyStagePercentiles(bucket, stageKey)
     if (p95 === null || (bestP95 !== null && p95 <= bestP95)) continue
     bestLabel = label
     bestP95 = p95
     bestP99 = p99
   }
   return { label: bestLabel, p95: bestP95, p99: bestP99 }
+}
+
+function formatStrategyVersionLabel(value: number | null): string {
+  return value === null ? 'Latest' : `v${value}`
+}
+
+function buildPerformanceSectionKey(
+  sourceKey: string,
+  strategyKey: string,
+  strategyVersion: number | null,
+): string {
+  return `${normalizeSourceKey(sourceKey)}:${normalizeStrategyKey(strategyKey)}:${strategyVersion === null ? 'latest' : `v${strategyVersion}`}`
+}
+
+function buildPerformanceSectionLabel(
+  sourceLabel: string,
+  strategyLabel: string,
+  strategyVersionLabel: string,
+): string {
+  return `${sourceLabel} · ${strategyLabel} · ${strategyVersionLabel}`
+}
+
+function buildLatencyGroupRows(
+  summary: ExecutionLatencySummary | null | undefined,
+  groupKey: 'by_source' | 'by_strategy',
+  stageKey: ExecutionLatencyStageKey,
+  sourceCatalog: TraderSource[],
+): LatencyGroupRow[] {
+  const groups = summary?.[groupKey]
+  if (!groups || typeof groups !== 'object') return []
+
+  return Object.entries(groups)
+    .map(([key, bucket]) => {
+      const { p95 } = latencyStagePercentiles(bucket, stageKey)
+      const sourceLabel = sourceCatalog.find((item) => normalizeSourceKey(item.key) === normalizeSourceKey(key))?.label
+      return {
+        key,
+        label: groupKey === 'by_strategy'
+          ? strategyLabelForKey(key, sourceCatalog)
+          : sourceLabel || key.toUpperCase(),
+        count: Math.max(0, Math.trunc(toNumber(isRecord(bucket) ? bucket.count : 0))),
+        latencyLabel: formatLatencyPercentilePair(bucket, stageKey),
+        p95: p95 ?? -1,
+      }
+    })
+    .sort((left, right) => {
+      if (left.p95 !== right.p95) return right.p95 - left.p95
+      if (left.count !== right.count) return right.count - left.count
+      return left.label.localeCompare(right.label)
+    })
+    .map(({ p95: _p95, ...row }) => row)
 }
 
 function parseJsonObject(text: string): { value: Record<string, unknown> | null; error: string | null } {
@@ -3700,6 +3851,180 @@ function normalizePerformanceMode(value: unknown): string | null {
   return text
 }
 
+function humanizeStrategyParamLabel(key: string): string {
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map((part) => (part.length <= 3 ? part.toUpperCase() : `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`))
+    .join(' ')
+}
+
+function inferStrategyParamField(key: string, value: unknown): Record<string, unknown> | null {
+  const cleanKey = String(key || '').trim()
+  if (!cleanKey || cleanKey === '_schema') return null
+
+  let type = 'string'
+  if (typeof value === 'boolean') {
+    type = 'boolean'
+  } else if (typeof value === 'number') {
+    type = Number.isInteger(value) ? 'integer' : 'number'
+  } else if (Array.isArray(value)) {
+    type = 'list'
+  } else if (isRecord(value)) {
+    type = 'json'
+  }
+
+  return {
+    key: cleanKey,
+    label: humanizeStrategyParamLabel(cleanKey),
+    type,
+  }
+}
+
+function dedupeStrategyParamFields(fields: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  const seen = new Set<string>()
+  for (const field of fields) {
+    if (!isRecord(field)) continue
+    const key = String(field.key || '').trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(field)
+  }
+  return out
+}
+
+function stableSerializePerformanceValue(value: unknown): string {
+  if (value === undefined) return 'undefined'
+  if (value === null) return 'null'
+  if (typeof value === 'string') return JSON.stringify(value.trim())
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'nan'
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerializePerformanceValue(item)).join(',')}]`
+  }
+  if (isRecord(value)) {
+    const parts = Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => `${JSON.stringify(key)}:${stableSerializePerformanceValue(value[key])}`)
+    return `{${parts.join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function formatPerformanceParamValue(value: unknown): string {
+  if (value === undefined || value === null) return 'Not recorded'
+  if (typeof value === 'boolean') return value ? 'Enabled' : 'Disabled'
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 'Not recorded'
+    if (Math.abs(value) >= 1000) {
+      return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    }
+    const rounded = value.toFixed(Math.abs(value) >= 1 ? 2 : 4)
+    return rounded.includes('.') ? rounded.replace(/\.?0+$/, '') : rounded
+  }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    return text || 'Blank'
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]'
+    const preview = value.slice(0, 3).map((item) => formatPerformanceParamValue(item)).join(', ')
+    return value.length > 3 ? `${preview} +${value.length - 3}` : preview
+  }
+  if (isRecord(value)) {
+    const keys = Object.keys(value)
+    if (keys.length === 0) return '{}'
+    const preview = keys
+      .slice(0, 2)
+      .map((key) => `${key}=${formatPerformanceParamValue(value[key])}`)
+      .join(', ')
+    return keys.length > 2 ? `${preview} +${keys.length - 2}` : preview
+  }
+  return String(value)
+}
+
+function performanceParamBucketMeta(value: unknown): { key: string; label: string; isMissing: boolean } {
+  if (value === undefined || value === null) {
+    return {
+      key: 'not_recorded',
+      label: 'Not recorded',
+      isMissing: true,
+    }
+  }
+  return {
+    key: stableSerializePerformanceValue(value),
+    label: formatPerformanceParamValue(value),
+    isMissing: false,
+  }
+}
+
+function mergePerformanceParamRecord(
+  target: Record<string, unknown>,
+  value: unknown,
+): boolean {
+  if (!isRecord(value)) return false
+  let merged = false
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = String(rawKey || '').trim()
+    if (!key || key === '_schema') continue
+    target[key] = rawValue
+    merged = true
+  }
+  return merged
+}
+
+function mergePerformanceParamChildren(
+  target: Record<string, unknown>,
+  value: unknown,
+): boolean {
+  if (!isRecord(value)) return false
+  let merged = false
+  for (const nestedKey of ['strategy_params', 'sub_strategy_params', 'params', 'parameters', 'config', 'effective_strategy_params']) {
+    merged = mergePerformanceParamRecord(target, value[nestedKey]) || merged
+  }
+  return merged
+}
+
+function extractOrderPerformanceParams(
+  order: TraderOrder,
+  decision: Record<string, unknown> | null,
+  fallbackParams: Record<string, unknown> | null,
+): { params: Record<string, unknown>; usedCurrentConfigFallback: boolean } {
+  const params: Record<string, unknown> = {}
+  let recorded = false
+  const payload = isRecord(order.payload) ? order.payload : null
+
+  if (payload) {
+    recorded = mergePerformanceParamRecord(params, payload.strategy_params) || recorded
+    recorded = mergePerformanceParamRecord(params, payload.strategy_exit_config) || recorded
+    recorded = mergePerformanceParamChildren(params, payload.strategy_context) || recorded
+    recorded = mergePerformanceParamChildren(params, payload.signal_strategy_context) || recorded
+    recorded = mergePerformanceParamChildren(params, payload.signal_payload) || recorded
+    recorded = mergePerformanceParamChildren(params, payload.position_state) || recorded
+    recorded = mergePerformanceParamChildren(params, payload.position_close) || recorded
+  }
+
+  if (decision) {
+    recorded = mergePerformanceParamRecord(params, decision.strategy_params) || recorded
+    recorded = mergePerformanceParamChildren(params, decision.payload) || recorded
+    recorded = mergePerformanceParamChildren(params, decision.signal_strategy_context) || recorded
+    recorded = mergePerformanceParamChildren(params, decision.signal_payload) || recorded
+  }
+
+  if (!recorded && fallbackParams && Object.keys(fallbackParams).length > 0) {
+    return {
+      params: { ...fallbackParams },
+      usedCurrentConfigFallback: true,
+    }
+  }
+
+  return {
+    params,
+    usedCurrentConfigFallback: false,
+  }
+}
+
 function _pushRecord(
   target: Array<Record<string, unknown>>,
   value: unknown,
@@ -3722,7 +4047,18 @@ function orderPerformanceContexts(
     _pushRecord(contexts, payload.live_market)
     _pushRecord(contexts, payload.position_state)
     _pushRecord(contexts, payload.strategy_params)
+    _pushRecord(contexts, payload.strategy_exit_config)
     _pushRecord(contexts, payload.position_close)
+    if (isRecord(payload.strategy_context)) {
+      _pushRecord(contexts, payload.strategy_context.sub_strategy_params)
+      _pushRecord(contexts, payload.strategy_context.params)
+      _pushRecord(contexts, payload.strategy_context.parameters)
+    }
+    if (isRecord(payload.signal_strategy_context)) {
+      _pushRecord(contexts, payload.signal_strategy_context.sub_strategy_params)
+      _pushRecord(contexts, payload.signal_strategy_context.params)
+      _pushRecord(contexts, payload.signal_strategy_context.parameters)
+    }
   }
 
   if (decision) {
@@ -3730,6 +4066,14 @@ function orderPerformanceContexts(
     _pushRecord(contexts, decision.signal_payload)
     _pushRecord(contexts, decision.signal_strategy_context)
     _pushRecord(contexts, decision.payload)
+    if (isRecord(decision.signal_strategy_context)) {
+      _pushRecord(contexts, decision.signal_strategy_context.sub_strategy_params)
+      _pushRecord(contexts, decision.signal_strategy_context.params)
+      _pushRecord(contexts, decision.signal_strategy_context.parameters)
+    }
+    if (isRecord(decision.payload)) {
+      _pushRecord(contexts, decision.payload.strategy_params)
+    }
   }
 
   return contexts
@@ -4042,6 +4386,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [controlActionError, setControlActionError] = useState<string | null>(null)
   const [globalSettingsDraft, setGlobalSettingsDraft] = useState<GlobalSettingsDraft>(() => buildGlobalSettingsDraft(null, null))
   const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'tune' | 'decisions' | 'performance'>('trades')
+  const [performanceSubview, setPerformanceSubview] = useState<PerformanceSubview>('latency')
+  const [performanceSectionKey, setPerformanceSectionKey] = useState('')
+  const [performanceParamKey, setPerformanceParamKey] = useState('')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
   const [allBotsTradeStatusFilter, setAllBotsTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [allBotsTradeSearch, setAllBotsTradeSearch] = useState('')
@@ -4094,26 +4441,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const overviewQuery = useQuery({
     queryKey: ['trader-orchestrator-overview'],
     queryFn: getTraderOrchestratorOverview,
-    refetchInterval: isConnected ? 4000 : 15000,
+    refetchInterval: isConnected ? 10000 : 20000,
   })
 
   const settingsQuery = useQuery({
     queryKey: ['settings'],
     queryFn: getSettings,
-    refetchInterval: isConnected ? 5000 : 20000,
+    refetchInterval: isConnected ? 15000 : 30000,
   })
   const liveExecutionSettings = settingsQuery.data?.live_execution ?? null
 
   const tradersQuery = useQuery({
     queryKey: ['traders-list', selectedAccountMode],
     queryFn: () => getTraders({ mode: selectedAccountMode }),
-    refetchInterval: isConnected ? 5000 : 20000,
+    refetchInterval: isConnected ? 15000 : 30000,
   })
 
   const allTradersQuery = useQuery({
     queryKey: ['traders-list', 'all'],
     queryFn: () => getTraders(),
-    refetchInterval: isConnected ? 5000 : 20000,
+    refetchInterval: isConnected ? 15000 : 30000,
   })
 
   const traderSourcesQuery = useQuery({
@@ -6018,38 +6365,48 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const orchestratorConfig = overviewQuery.data?.config || null
   const metrics = overviewQuery.data?.metrics
   const executionLatency = metrics?.execution_latency || null
+  const executionLatencyWindowLabel = formatLatencyWindow(executionLatency?.rolling_window_seconds)
+  const executionLatencySampleCount = toNumber(executionLatency?.sample_count)
   const executionLatencyOverall = executionLatency?.overall || null
   const executionLatencyOverallLabel = formatLatencyPercentilePair(
     executionLatencyOverall,
-    'emit_to_submit_start_ms'
+    'ws_release_to_submit_start_ms'
   )
   const executionLatencyTargetMs = toNumber(executionLatency?.internal_sla_target_ms)
   const executionLatencyOverallP95 = latencyStagePercentiles(
     executionLatencyOverall,
-    'emit_to_submit_start_ms'
+    'ws_release_to_submit_start_ms'
   ).p95
   const executionLatencySlaBreached = Boolean(
     executionLatencyTargetMs !== null &&
     executionLatencyOverallP95 !== null &&
     executionLatencyOverallP95 > executionLatencyTargetMs
   )
-  const worstLatencySource = worstLatencyGroup(executionLatency, 'by_source')
-  const worstLatencyStrategy = worstLatencyGroup(executionLatency, 'by_strategy')
+  const worstLatencySource = worstLatencyGroup(executionLatency, 'by_source', 'ws_release_to_submit_start_ms')
+  const worstLatencyStrategy = worstLatencyGroup(executionLatency, 'by_strategy', 'ws_release_to_submit_start_ms')
   const worstLatencySourceLabel = worstLatencySource.label
-    ? `${worstLatencySource.label} ${formatLatencyPercentilePair({ emit_to_submit_start_ms: worstLatencySource }, 'emit_to_submit_start_ms')}`
+    ? `${worstLatencySource.label} ${formatLatencyPercentilePair({ ws_release_to_submit_start_ms: worstLatencySource }, 'ws_release_to_submit_start_ms')}`
     : '—'
   const worstLatencyStrategyLabel = worstLatencyStrategy.label
-    ? `${worstLatencyStrategy.label} ${formatLatencyPercentilePair({ emit_to_submit_start_ms: worstLatencyStrategy }, 'emit_to_submit_start_ms')}`
+    ? `${worstLatencyStrategy.label} ${formatLatencyPercentilePair({ ws_release_to_submit_start_ms: worstLatencyStrategy }, 'ws_release_to_submit_start_ms')}`
     : '—'
   const selectedTraderLatencyBucket = selectedTrader ? executionLatency?.by_trader?.[selectedTrader.id] || null : null
   const selectedTraderLatencyLabel = formatLatencyPercentilePair(
     selectedTraderLatencyBucket,
-    'emit_to_submit_start_ms'
+    'ws_release_to_submit_start_ms'
   )
   const selectedTraderLatencyP95 = latencyStagePercentiles(
     selectedTraderLatencyBucket,
-    'emit_to_submit_start_ms'
+    'ws_release_to_submit_start_ms'
   ).p95
+  const selectedTraderArmedToReleaseLabel = formatLatencyPercentilePair(
+    selectedTraderLatencyBucket,
+    'armed_to_ws_release_ms'
+  )
+  const selectedTraderReleaseToDecisionLabel = formatLatencyPercentilePair(
+    selectedTraderLatencyBucket,
+    'ws_release_to_decision_ms'
+  )
   const selectedTraderLatencySlaBreached = Boolean(
     executionLatencyTargetMs !== null &&
     selectedTraderLatencyP95 !== null &&
@@ -6503,6 +6860,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       }
     }).sort(performanceBucketSort)
 
+    const sourceRows = buildPerformanceBuckets(selectedOrders, (order) => {
+      const sourceKey = normalizeSourceKey(String(order.source || '')) || 'unknown'
+      const sourceLabel = sourceCatalog.find((item) => normalizeSourceKey(item.key) === sourceKey)?.label || sourceKey.toUpperCase()
+      return {
+        key: sourceKey,
+        label: sourceLabel,
+      }
+    }).sort(performanceBucketSort)
+
     let resolvedPnl = 0
     let resolvedNotional = 0
     let resolved = 0
@@ -6551,6 +6917,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       modeRows,
       subStrategyRows,
       timeframeModeRows,
+      sourceRows,
       strategyRows,
       resolved,
       wins,
@@ -6564,6 +6931,353 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       gasErrorCount,
     }
   }, [selectedDecisionById, selectedOrders, sourceCatalog])
+
+  const selectedPerformanceConfig = useMemo(() => {
+    type MutablePerformanceSection = PerformanceSection & { sortIndex: number }
+
+    const sourceLabelByKey = new Map<string, string>()
+    for (const source of sourceCards) {
+      sourceLabelByKey.set(normalizeSourceKey(source.key), source.label)
+    }
+
+    const currentConfigs = selectedTraderSourceConfigs.map((sourceConfig, index) => {
+      const sourceKey = normalizeSourceKey(String(sourceConfig.source_key || ''))
+      const strategyKey = normalizeStrategyKeyForSource(sourceKey, sourceConfig.strategy_key)
+      const strategyVersion = normalizeStrategyVersion(sourceConfig.strategy_version)
+      const detail = sourceStrategyDetailsLookup[sourceKey]?.[strategyKey] || null
+      const sourceLabel = sourceLabelByKey.get(sourceKey) || sourceKey.toUpperCase() || 'UNKNOWN'
+      const strategyLabel = detail?.label || strategyLabelForKey(strategyKey, sourceCards)
+      const strategyVersionLabel = formatStrategyVersionLabel(strategyVersion)
+      const defaultParams = isRecord(detail?.defaultParams) ? detail.defaultParams : {}
+      const currentValues = {
+        ...defaultParams,
+        ...(isRecord(sourceConfig.strategy_params) ? sourceConfig.strategy_params : {}),
+      }
+      const observedFieldCandidates = Object.entries(currentValues)
+        .map(([key, value]) => inferStrategyParamField(key, value))
+        .filter((field): field is Record<string, unknown> => Boolean(field))
+      const paramFields = dedupeStrategyParamFields([
+        ...(Array.isArray(detail?.paramFields) ? detail.paramFields : []),
+        ...observedFieldCandidates,
+      ])
+
+      return {
+        sortIndex: index,
+        sourceKey,
+        sourceLabel,
+        strategyKey,
+        strategyLabel,
+        strategyVersion,
+        strategyVersionLabel,
+        sectionKey: buildPerformanceSectionKey(sourceKey, strategyKey, strategyVersion),
+        sectionLabel: buildPerformanceSectionLabel(sourceLabel, strategyLabel, strategyVersionLabel),
+        paramFields,
+        values: currentValues,
+      }
+    })
+
+    const sectionsByKey = new Map<string, MutablePerformanceSection>()
+    const upsertSection = (payload: {
+      sortIndex: number
+      sectionKey: string
+      sectionLabel: string
+      sourceKey: string
+      sourceLabel: string
+      strategyKey: string
+      strategyLabel: string
+      strategyVersion: number | null
+      strategyVersionLabel: string
+      values: Record<string, unknown>
+      paramFields: Array<Record<string, unknown>>
+    }) => {
+      const existing = sectionsByKey.get(payload.sectionKey)
+      const mergedFields = dedupeStrategyParamFields([
+        ...(existing?.paramFields || []),
+        ...payload.paramFields,
+      ])
+      const mergedValues = existing
+        ? { ...existing.values, ...payload.values }
+        : { ...payload.values }
+      sectionsByKey.set(payload.sectionKey, {
+        sectionKey: payload.sectionKey,
+        sectionLabel: payload.sectionLabel,
+        sourceKey: payload.sourceKey,
+        sourceLabel: payload.sourceLabel,
+        strategyKey: payload.strategyKey,
+        strategyLabel: payload.strategyLabel,
+        strategyVersion: payload.strategyVersion,
+        strategyVersionLabel: payload.strategyVersionLabel,
+        paramFields: mergedFields,
+        groups: groupStrategyParamFields(mergedFields),
+        fieldKeys: mergedFields
+          .map((field) => String(field.key || '').trim())
+          .filter(Boolean),
+        values: mergedValues,
+        sortIndex: existing ? Math.min(existing.sortIndex, payload.sortIndex) : payload.sortIndex,
+      })
+    }
+
+    for (const config of currentConfigs) {
+      upsertSection(config)
+    }
+
+    let fallbackOrderCount = 0
+    const snapshots: PerformanceOrderSnapshot[] = []
+
+    for (const order of selectedOrders) {
+      const decisionId = cleanText(order.decision_id)
+      const decision = decisionId ? selectedDecisionById.get(decisionId) || null : null
+      const sourceKey = normalizeSourceKey(String(order.source || ''))
+      const dimensionMeta = extractOrderPerformanceDimensions(order, decision)
+      const strategyKey = normalizeStrategyKeyForSource(
+        sourceKey,
+        cleanText(order.strategy_key) || cleanText(decision?.strategy_key) || dimensionMeta.strategyKey,
+      )
+      const explicitVersion = normalizeStrategyVersion(order.strategy_version)
+      const matchingCurrent =
+        currentConfigs.find((config) =>
+          config.sourceKey === sourceKey
+          && config.strategyKey === strategyKey
+          && config.strategyVersion === explicitVersion
+        )
+        || (explicitVersion === null
+          ? currentConfigs.find((config) => config.sourceKey === sourceKey && config.strategyKey === strategyKey)
+          : currentConfigs.find((config) =>
+            config.sourceKey === sourceKey
+            && config.strategyKey === strategyKey
+            && config.strategyVersion === null
+          ))
+        || null
+      const strategyVersion = explicitVersion ?? matchingCurrent?.strategyVersion ?? null
+      const detail = sourceStrategyDetailsLookup[sourceKey]?.[strategyKey] || null
+      const sourceLabel = sourceLabelByKey.get(sourceKey) || sourceKey.toUpperCase() || 'UNKNOWN'
+      const strategyLabel = detail?.label || matchingCurrent?.strategyLabel || strategyLabelForKey(strategyKey, sourceCards)
+      const strategyVersionLabel = formatStrategyVersionLabel(strategyVersion)
+      const sectionKey = buildPerformanceSectionKey(sourceKey, strategyKey, strategyVersion)
+      const sectionLabel = buildPerformanceSectionLabel(sourceLabel, strategyLabel, strategyVersionLabel)
+      const extracted = extractOrderPerformanceParams(
+        order,
+        decision,
+        matchingCurrent?.values || null,
+      )
+      if (extracted.usedCurrentConfigFallback) {
+        fallbackOrderCount += 1
+      }
+
+      const inferredFields = Object.entries(extracted.params)
+        .map(([key, value]) => inferStrategyParamField(key, value))
+        .filter((field): field is Record<string, unknown> => Boolean(field))
+      upsertSection({
+        sortIndex: matchingCurrent?.sortIndex ?? 10_000 + snapshots.length,
+        sectionKey,
+        sectionLabel,
+        sourceKey,
+        sourceLabel,
+        strategyKey,
+        strategyLabel,
+        strategyVersion,
+        strategyVersionLabel,
+        values: matchingCurrent?.values || {},
+        paramFields: [
+          ...(Array.isArray(detail?.paramFields) ? detail.paramFields : []),
+          ...inferredFields,
+        ],
+      })
+
+      snapshots.push({
+        order,
+        sourceKey,
+        sourceLabel,
+        strategyKey,
+        strategyLabel,
+        strategyVersion,
+        strategyVersionLabel,
+        sectionKey,
+        sectionLabel,
+        params: extracted.params,
+        usedCurrentConfigFallback: extracted.usedCurrentConfigFallback,
+      })
+    }
+
+    const sections = Array.from(sectionsByKey.values())
+      .sort((left, right) => {
+        if (left.sortIndex !== right.sortIndex) return left.sortIndex - right.sortIndex
+        return left.sectionLabel.localeCompare(right.sectionLabel)
+      })
+      .map(({ sortIndex: _sortIndex, ...section }) => section)
+
+    const configurationBuckets = buildPerformanceBuckets(
+      snapshots.map((snapshot) => snapshot.order),
+      (_order, index) => ({
+        key: snapshots[index]?.sectionKey || 'unknown',
+        label: snapshots[index]?.sectionLabel || 'Unknown configuration',
+      }),
+    )
+    const configurationBucketByKey = new Map(configurationBuckets.map((row) => [row.key, row]))
+    const configurationRows: PerformanceConfigurationRow[] = sections
+      .map((section) => {
+        const bucket = configurationBucketByKey.get(section.sectionKey)
+        return {
+          sectionKey: section.sectionKey,
+          sectionLabel: section.sectionLabel,
+          sourceLabel: section.sourceLabel,
+          strategyLabel: section.strategyLabel,
+          strategyVersionLabel: section.strategyVersionLabel,
+          key: section.sectionKey,
+          label: section.sectionLabel,
+          orders: bucket?.orders || 0,
+          open: bucket?.open || 0,
+          resolved: bucket?.resolved || 0,
+          wins: bucket?.wins || 0,
+          losses: bucket?.losses || 0,
+          failed: bucket?.failed || 0,
+          resolvedNotional: bucket?.resolvedNotional || 0,
+          pnl: bucket?.pnl || 0,
+          roiPercent: bucket?.roiPercent || 0,
+          fullLosses: bucket?.fullLosses || 0,
+        }
+      })
+      .sort((left, right) => {
+        if (Math.abs(left.pnl) !== Math.abs(right.pnl)) return Math.abs(right.pnl) - Math.abs(left.pnl)
+        if (left.orders !== right.orders) return right.orders - left.orders
+        return left.sectionLabel.localeCompare(right.sectionLabel)
+      })
+
+    const paramSummaryBySection: Record<string, PerformanceParamSummaryRow[]> = {}
+    const paramBucketsBySection: Record<string, Record<string, PerformanceParamValueRow[]>> = {}
+
+    for (const section of sections) {
+      const sectionSnapshots = snapshots.filter((snapshot) => snapshot.sectionKey === section.sectionKey)
+      const summaryRows: PerformanceParamSummaryRow[] = []
+      const bucketsForSection: Record<string, PerformanceParamValueRow[]> = {}
+
+      for (const fieldKey of section.fieldKeys) {
+        const currentValueMeta = performanceParamBucketMeta(section.values[fieldKey])
+        const bucketRows = buildPerformanceBuckets(
+          sectionSnapshots.map((snapshot) => snapshot.order),
+          (_order, index) => {
+            const bucketMeta = performanceParamBucketMeta(sectionSnapshots[index]?.params[fieldKey])
+            return { key: bucketMeta.key, label: bucketMeta.label }
+          },
+        )
+          .map((row) => ({
+            ...row,
+            valueLabel: row.label,
+            isCurrent: row.key === currentValueMeta.key,
+            isMissing: row.key === 'not_recorded',
+          }))
+          .sort((left, right) => {
+            if (left.isCurrent !== right.isCurrent) return left.isCurrent ? -1 : 1
+            return performanceBucketSort(left, right)
+          })
+
+        const currentBucket = bucketRows.find((row) => row.isCurrent) || null
+        const matchingField = section.paramFields.find((field) => String(field.key || '').trim() === fieldKey) || null
+        summaryRows.push({
+          key: fieldKey,
+          label: String(matchingField?.label || humanizeStrategyParamLabel(fieldKey)),
+          currentValueLabel: currentValueMeta.label,
+          observedValueCount: bucketRows.length,
+          currentResolved: currentBucket?.resolved || 0,
+          currentPnl: currentBucket?.pnl || 0,
+          currentRoiPercent: currentBucket?.roiPercent || 0,
+          hasVariation: bucketRows.length > 1,
+        })
+        bucketsForSection[fieldKey] = bucketRows
+      }
+
+      summaryRows.sort((left, right) => {
+        if (left.hasVariation !== right.hasVariation) return left.hasVariation ? -1 : 1
+        if (left.observedValueCount !== right.observedValueCount) return right.observedValueCount - left.observedValueCount
+        return left.label.localeCompare(right.label)
+      })
+      paramSummaryBySection[section.sectionKey] = summaryRows
+      paramBucketsBySection[section.sectionKey] = bucketsForSection
+    }
+
+    return {
+      sections,
+      snapshots,
+      configurationRows,
+      fallbackOrderCount,
+      paramSummaryBySection,
+      paramBucketsBySection,
+    }
+  }, [
+    selectedDecisionById,
+    selectedOrders,
+    selectedTraderSourceConfigs,
+    sourceCards,
+    sourceStrategyDetailsLookup,
+  ])
+
+  const latencyStageRows = useMemo<LatencyStageRow[]>(() => {
+    return LATENCY_STAGE_OPTIONS.map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      traderLatencyLabel: formatLatencyPercentilePair(selectedTraderLatencyBucket, stage.key),
+      overallLatencyLabel: formatLatencyPercentilePair(executionLatencyOverall, stage.key),
+    }))
+  }, [executionLatencyOverall, selectedTraderLatencyBucket])
+
+  const latencySourceRows = useMemo(
+    () => buildLatencyGroupRows(executionLatency, 'by_source', 'ws_release_to_submit_start_ms', sourceCards).slice(0, 10),
+    [executionLatency, sourceCards]
+  )
+  const latencyStrategyRows = useMemo(
+    () => buildLatencyGroupRows(executionLatency, 'by_strategy', 'ws_release_to_submit_start_ms', sourceCards).slice(0, 10),
+    [executionLatency, sourceCards]
+  )
+
+  const activePerformanceSection = useMemo(
+    () => selectedPerformanceConfig.sections.find((section) => section.sectionKey === performanceSectionKey) || selectedPerformanceConfig.sections[0] || null,
+    [performanceSectionKey, selectedPerformanceConfig.sections]
+  )
+  const activePerformanceParamSummaryRows = useMemo(
+    () => activePerformanceSection ? (selectedPerformanceConfig.paramSummaryBySection[activePerformanceSection.sectionKey] || []) : [],
+    [activePerformanceSection, selectedPerformanceConfig.paramSummaryBySection]
+  )
+  const activePerformanceParamRows = useMemo(
+    () => {
+      if (!activePerformanceSection || !performanceParamKey) return []
+      return selectedPerformanceConfig.paramBucketsBySection[activePerformanceSection.sectionKey]?.[performanceParamKey] || []
+    },
+    [activePerformanceSection, performanceParamKey, selectedPerformanceConfig.paramBucketsBySection]
+  )
+  const activePerformanceParamSummaryByKey = useMemo(() => {
+    const out = new Map<string, PerformanceParamSummaryRow>()
+    for (const row of activePerformanceParamSummaryRows) {
+      out.set(row.key, row)
+    }
+    return out
+  }, [activePerformanceParamSummaryRows])
+
+  useEffect(() => {
+    if (selectedPerformanceConfig.sections.length === 0) {
+      setPerformanceSectionKey('')
+      return
+    }
+    setPerformanceSectionKey((current) => {
+      if (current && selectedPerformanceConfig.sections.some((section) => section.sectionKey === current)) {
+        return current
+      }
+      return selectedPerformanceConfig.sections[0].sectionKey
+    })
+  }, [selectedPerformanceConfig.sections])
+
+  useEffect(() => {
+    if (!activePerformanceSection) {
+      setPerformanceParamKey('')
+      return
+    }
+    const summaryRows = selectedPerformanceConfig.paramSummaryBySection[activePerformanceSection.sectionKey] || []
+    setPerformanceParamKey((current) => {
+      if (current && summaryRows.some((row) => row.key === current)) {
+        return current
+      }
+      return summaryRows.find((row) => row.hasVariation)?.key || summaryRows[0]?.key || ''
+    })
+  }, [activePerformanceSection, selectedPerformanceConfig.paramSummaryBySection])
 
   const filteredDecisions = useMemo(() => {
     const q = decisionSearch.trim().toLowerCase()
@@ -9975,37 +10689,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                 {workTab === 'performance' && (
                   <div className="h-full min-h-0 flex flex-col gap-2 px-1">
-                    {executionLatency ? (
-                      <div className="shrink-0 grid gap-1 sm:grid-cols-2 xl:grid-cols-5">
-                        <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Internal SLA</p>
-                          <p className="text-xs font-mono">
-                            {formatLatencyMs(executionLatencyTargetMs) || '—'}
-                          </p>
-                        </div>
-                        <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Trader SLA</p>
-                          <p className={cn('text-xs font-mono', selectedTraderLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
-                            {selectedTraderLatencyLabel}
-                          </p>
-                        </div>
-                        <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Overall SLA</p>
-                          <p className={cn('text-xs font-mono', executionLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
-                            {executionLatencyOverallLabel}
-                          </p>
-                        </div>
-                        <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Worst Source</p>
-                          <p className="text-xs font-mono">{worstLatencySourceLabel}</p>
-                        </div>
-                        <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Worst Strategy</p>
-                          <p className="text-xs font-mono">{worstLatencyStrategyLabel}</p>
-                        </div>
-                      </div>
-                    ) : null}
-
                     <div className="shrink-0 grid gap-1 sm:grid-cols-2 lg:grid-cols-6">
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
                         <p className="text-[9px] uppercase text-muted-foreground">Realized P&amp;L</p>
@@ -10036,167 +10719,443 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         <p className="text-xs font-mono">{selectedPerformance.failed}</p>
                       </div>
                     </div>
-
-                    {selectedPerformance.allowanceErrorCount > 0 ? (
-                      <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100">
-                        Found {selectedPerformance.allowanceErrorCount} orders with `not enough balance / allowance` in execution payloads.
-                      </div>
-                    ) : null}
-                    {selectedPerformance.gasErrorCount > 0 ? (
-                      <div className="shrink-0 rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-700 dark:text-orange-100">
-                        Found {selectedPerformance.gasErrorCount} orders with `not enough gas` / native-token gas funding errors.
-                      </div>
-                    ) : null}
-
-                    <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-2">
-                      <div className="min-h-0 rounded-md border border-border/60 bg-card/60">
-                        <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe Performance</div>
-                        <div className="h-[32%] min-h-[150px] overflow-auto">
-                          <Table>
-                            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                              <TableRow>
-                                <TableHead className="text-[10px]">Timeframe</TableHead>
-                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                <TableHead className="text-[10px] text-right">ROI</TableHead>
-                                <TableHead className="text-[10px] text-right">W/L</TableHead>
-                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {selectedPerformance.timeframeRows.map((row) => (
-                                <TableRow key={`tf-${row.key}`} className="text-xs">
-                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
-                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.wins}/{row.losses}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
-                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Mode Performance</div>
-                        <div className="h-[32%] min-h-[150px] overflow-auto">
-                          <Table>
-                            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                              <TableRow>
-                                <TableHead className="text-[10px]">Mode</TableHead>
-                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                <TableHead className="text-[10px] text-right">ROI</TableHead>
-                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
-                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {selectedPerformance.modeRows.map((row) => (
-                                <TableRow key={`mode-${row.key}`} className="text-xs">
-                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
-                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
-                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Mode + Timeframe</div>
-                        <div className="h-[32%] min-h-[150px] overflow-auto">
-                          <Table>
-                            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                              <TableRow>
-                                <TableHead className="text-[10px]">Bucket</TableHead>
-                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                <TableHead className="text-[10px] text-right">ROI</TableHead>
-                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {selectedPerformance.timeframeModeRows.slice(0, 24).map((row) => (
-                                <TableRow key={`combo-${row.key}`} className="text-xs">
-                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
-                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
+                    <Tabs
+                      value={performanceSubview}
+                      onValueChange={(value) => setPerformanceSubview(value as PerformanceSubview)}
+                      className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                    >
+                      <div className="shrink-0 flex items-center justify-between gap-2 overflow-x-auto pb-1">
+                        <TabsList className="h-auto justify-start gap-1 rounded-lg border border-border/60 bg-card/70 p-1">
+                          <TabsTrigger value="latency" className="h-7 px-2.5 text-[11px]">Latency</TabsTrigger>
+                          <TabsTrigger value="configuration" className="h-7 px-2.5 text-[11px]">Configuration</TabsTrigger>
+                        </TabsList>
+                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <span className="rounded border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono">
+                            {selectedPerformanceConfig.sections.length} configs
+                          </span>
+                          <span className="rounded border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono">
+                            {selectedPerformanceConfig.snapshots.length} orders
+                          </span>
                         </div>
                       </div>
 
-                      <div className="min-h-0 rounded-md border border-border/60 bg-card/60">
-                        <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Performance</div>
-                        <div className="h-[49%] min-h-[220px] overflow-auto">
-                          <Table>
-                            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                              <TableRow>
-                                <TableHead className="text-[10px]">Strategy</TableHead>
-                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                <TableHead className="text-[10px] text-right">ROI</TableHead>
-                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
-                                <TableHead className="text-[10px] text-right">W/L</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {selectedPerformance.strategyRows.map((row) => (
-                                <TableRow key={`strategy-${row.key}`} className="text-xs">
-                                  <TableCell className="py-1">
-                                    <div className="font-medium">{row.label}</div>
-                                    <div className="text-[9px] font-mono text-muted-foreground">{row.key}</div>
-                                  </TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
-                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.wins}/{row.losses}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
+                      {performanceSubview === 'latency' ? (
+                        <TabsContent value="latency" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                        {executionLatency ? (
+                          <div className="shrink-0 grid gap-1 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Internal SLA</p>
+                              <p className="text-xs font-mono">{formatLatencyMs(executionLatencyTargetMs) || '—'}</p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Rolling Window</p>
+                              <p className="text-xs font-mono">
+                                {executionLatencyWindowLabel}{executionLatencySampleCount !== null ? ` · n=${executionLatencySampleCount}` : ''}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Trader Release to Submit</p>
+                              <p className={cn('text-xs font-mono', selectedTraderLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
+                                {selectedTraderLatencyLabel}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Overall Release to Submit</p>
+                              <p className={cn('text-xs font-mono', executionLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
+                                {executionLatencyOverallLabel}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Trader Armed to Release</p>
+                              <p className="text-xs font-mono">{selectedTraderArmedToReleaseLabel}</p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Trader Release to Decision</p>
+                              <p className="text-xs font-mono">{selectedTraderReleaseToDecisionLabel}</p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Worst Source</p>
+                              <p className="text-xs font-mono">{worstLatencySourceLabel}</p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Worst Strategy</p>
+                              <p className="text-xs font-mono">{worstLatencyStrategyLabel}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="shrink-0 rounded-md border border-border/60 bg-background/70 px-3 py-2 text-[11px] text-muted-foreground">
+                            No execution latency samples are available yet for the current rolling window.
+                          </div>
+                        )}
+
+                        {selectedPerformance.allowanceErrorCount > 0 ? (
+                          <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100">
+                            Found {selectedPerformance.allowanceErrorCount} orders with `not enough balance / allowance` in execution payloads.
+                          </div>
+                        ) : null}
+                        {selectedPerformance.gasErrorCount > 0 ? (
+                          <div className="shrink-0 rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-700 dark:text-orange-100">
+                            Found {selectedPerformance.gasErrorCount} orders with `not enough gas` / native-token gas funding errors.
+                          </div>
+                        ) : null}
+
+                        <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                          <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Stage Breakdown</div>
+                            <div className="flex-1 min-h-0 overflow-auto">
+                              <Table>
+                                <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+                                  <TableRow>
+                                    <TableHead className="text-[10px]">Stage</TableHead>
+                                    <TableHead className="text-[10px] text-right">Trader</TableHead>
+                                    <TableHead className="text-[10px] text-right">Overall</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {latencyStageRows.map((row) => (
+                                    <TableRow key={`latency-stage-${row.key}`} className="text-xs">
+                                      <TableCell className="py-1">{row.label}</TableCell>
+                                      <TableCell className="text-right font-mono py-1">{row.traderLatencyLabel}</TableCell>
+                                      <TableCell className="text-right font-mono py-1">{row.overallLatencyLabel}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+
+                          <div className="min-h-0 grid gap-2 xl:grid-rows-2">
+                            <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Slowest Sources</div>
+                              <div className="flex-1 min-h-0 overflow-auto">
+                                <Table>
+                                  <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+                                    <TableRow>
+                                      <TableHead className="text-[10px]">Source</TableHead>
+                                      <TableHead className="text-[10px] text-right">Release to Submit</TableHead>
+                                      <TableHead className="text-[10px] text-right">Samples</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {latencySourceRows.length === 0 ? (
+                                      <TableRow>
+                                        <TableCell colSpan={3} className="py-6 text-center text-[11px] text-muted-foreground">
+                                          No per-source latency samples yet.
+                                        </TableCell>
+                                      </TableRow>
+                                    ) : (
+                                      latencySourceRows.map((row) => (
+                                        <TableRow key={`latency-source-${row.key}`} className="text-xs">
+                                          <TableCell className="py-1">{row.label}</TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.latencyLabel}</TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.count}</TableCell>
+                                        </TableRow>
+                                      ))
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+
+                            <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Slowest Strategies</div>
+                              <div className="flex-1 min-h-0 overflow-auto">
+                                <Table>
+                                  <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+                                    <TableRow>
+                                      <TableHead className="text-[10px]">Strategy</TableHead>
+                                      <TableHead className="text-[10px] text-right">Release to Submit</TableHead>
+                                      <TableHead className="text-[10px] text-right">Samples</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {latencyStrategyRows.length === 0 ? (
+                                      <TableRow>
+                                        <TableCell colSpan={3} className="py-6 text-center text-[11px] text-muted-foreground">
+                                          No per-strategy latency samples yet.
+                                        </TableCell>
+                                      </TableRow>
+                                    ) : (
+                                      latencyStrategyRows.map((row) => (
+                                        <TableRow key={`latency-strategy-${row.key}`} className="text-xs">
+                                          <TableCell className="py-1">{row.label}</TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.latencyLabel}</TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.count}</TableCell>
+                                        </TableRow>
+                                      ))
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Sub-Strategy Performance</div>
-                        <div className="h-[49%] min-h-[220px] overflow-auto">
-                          <Table>
-                            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                              <TableRow>
-                                <TableHead className="text-[10px]">Sub-Strategy</TableHead>
-                                <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                <TableHead className="text-[10px] text-right">ROI</TableHead>
-                                <TableHead className="text-[10px] text-right">Resolved</TableHead>
-                                <TableHead className="text-[10px] text-right">Full-Loss</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {selectedPerformance.subStrategyRows.slice(0, 24).map((row) => (
-                                <TableRow key={`sub-${row.key}`} className="text-xs">
-                                  <TableCell className="font-mono py-1">{row.label}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
-                                    {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
-                                  <TableCell className={cn('text-right font-mono py-1', row.fullLosses > 0 && 'text-red-500')}>
-                                    {row.fullLosses > 0 ? `${row.fullLosses}/${row.resolved}` : '—'}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
+                        </TabsContent>
+                      ) : (
+                        <TabsContent value="configuration" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                        <div className="shrink-0 flex flex-wrap items-end gap-2">
+                          <div className="min-w-[220px] max-w-[320px] flex-1">
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Section</Label>
+                            {selectedPerformanceConfig.sections.length > 1 ? (
+                              <Select value={activePerformanceSection?.sectionKey || ''} onValueChange={setPerformanceSectionKey}>
+                                <SelectTrigger className="mt-1 h-8 text-[11px]">
+                                  <SelectValue placeholder="Select configuration" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {selectedPerformanceConfig.sections.map((section) => (
+                                    <SelectItem key={section.sectionKey} value={section.sectionKey}>
+                                      {section.sectionLabel}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <div className="mt-1 rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px]">
+                                {activePerformanceSection?.sectionLabel || 'No configured strategy sections'}
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-[220px] max-w-[320px] flex-1">
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Parameter</Label>
+                            {activePerformanceParamSummaryRows.length > 0 ? (
+                              <Select value={performanceParamKey} onValueChange={setPerformanceParamKey}>
+                                <SelectTrigger className="mt-1 h-8 text-[11px]">
+                                  <SelectValue placeholder="Select parameter" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {activePerformanceParamSummaryRows.map((row) => (
+                                    <SelectItem key={row.key} value={row.key}>
+                                      {row.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <div className="mt-1 rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground">
+                                No parameter fields recorded for this strategy.
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </div>
+
+                        {selectedPerformanceConfig.fallbackOrderCount > 0 ? (
+                          <div className="shrink-0 rounded-md border border-blue-500/25 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-700 dark:text-blue-100">
+                            {selectedPerformanceConfig.fallbackOrderCount} historical orders are using the trader&apos;s current config as a fallback because those order rows did not persist `strategy_params`.
+                          </div>
+                        ) : null}
+
+                        <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                          <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Observed Configurations</div>
+                            <div className="flex-1 min-h-0 overflow-auto">
+                              <Table>
+                                <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+                                  <TableRow>
+                                    <TableHead className="text-[10px]">Config</TableHead>
+                                    <TableHead className="text-[10px] text-right">Orders</TableHead>
+                                    <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                    <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                    <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {selectedPerformanceConfig.configurationRows.length === 0 ? (
+                                    <TableRow>
+                                      <TableCell colSpan={5} className="py-6 text-center text-[11px] text-muted-foreground">
+                                        No configuration-linked orders yet.
+                                      </TableCell>
+                                    </TableRow>
+                                  ) : (
+                                    selectedPerformanceConfig.configurationRows.map((row) => (
+                                      <TableRow
+                                        key={`config-row-${row.sectionKey}`}
+                                        onClick={() => setPerformanceSectionKey(row.sectionKey)}
+                                        className={cn(
+                                          'text-xs cursor-pointer',
+                                          activePerformanceSection?.sectionKey === row.sectionKey
+                                            ? 'bg-cyan-500/5'
+                                            : 'hover:bg-muted/30'
+                                        )}
+                                      >
+                                        <TableCell className="py-1">
+                                          <div className="font-medium">{row.strategyLabel}</div>
+                                          <div className="text-[9px] text-muted-foreground">{row.sourceLabel} · {row.strategyVersionLabel}</div>
+                                        </TableCell>
+                                        <TableCell className="text-right font-mono py-1">{row.orders}</TableCell>
+                                        <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                        <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>
+                                          {formatCurrency(row.pnl)}
+                                        </TableCell>
+                                        <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                          {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                        </TableCell>
+                                      </TableRow>
+                                    ))
+                                  )}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+
+                          <div className="min-h-0 flex flex-col gap-2">
+                            <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Parameter Performance</div>
+                              <div className="shrink-0 grid gap-1 border-b border-border/40 px-2 py-1 sm:grid-cols-3">
+                                <div>
+                                  <p className="text-[9px] uppercase text-muted-foreground">Current Value</p>
+                                  <p className="text-[11px] font-mono">
+                                    {activePerformanceParamSummaryByKey.get(performanceParamKey)?.currentValueLabel || '—'}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[9px] uppercase text-muted-foreground">Observed Buckets</p>
+                                  <p className="text-[11px] font-mono">
+                                    {activePerformanceParamSummaryByKey.get(performanceParamKey)?.observedValueCount || 0}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[9px] uppercase text-muted-foreground">Resolved At Current</p>
+                                  <p className="text-[11px] font-mono">
+                                    {activePerformanceParamSummaryByKey.get(performanceParamKey)?.currentResolved || 0}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex-1 min-h-[170px] overflow-auto">
+                                <Table>
+                                  <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+                                    <TableRow>
+                                      <TableHead className="text-[10px]">Value</TableHead>
+                                      <TableHead className="text-[10px] text-right">Orders</TableHead>
+                                      <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                      <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
+                                      <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                      <TableHead className="text-[10px] text-right">W/L</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {activePerformanceParamRows.length === 0 ? (
+                                      <TableRow>
+                                        <TableCell colSpan={6} className="py-6 text-center text-[11px] text-muted-foreground">
+                                          Select a parameter with recorded values to compare its buckets.
+                                        </TableCell>
+                                      </TableRow>
+                                    ) : (
+                                      activePerformanceParamRows.map((row) => (
+                                        <TableRow key={`param-row-${performanceParamKey}-${row.key}`} className={cn('text-xs', row.isCurrent && 'bg-cyan-500/5')}>
+                                          <TableCell className="py-1">
+                                            <div className="font-medium">{row.valueLabel}</div>
+                                            <div className="text-[9px] text-muted-foreground">{row.isCurrent ? 'current value' : row.isMissing ? 'missing from snapshot' : 'historical bucket'}</div>
+                                          </TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.orders}</TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>
+                                            {formatCurrency(row.pnl)}
+                                          </TableCell>
+                                          <TableCell className={cn('text-right font-mono py-1', row.roiPercent > 0 ? 'text-emerald-500' : row.roiPercent < 0 ? 'text-red-500' : '')}>
+                                            {row.roiPercent > 0 ? '+' : ''}{formatPercent(row.roiPercent, 2)}
+                                          </TableCell>
+                                          <TableCell className="text-right font-mono py-1">{row.wins}/{row.losses}</TableCell>
+                                        </TableRow>
+                                      ))
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                              <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Observed Runtime Context</div>
+                              <div className="flex-1 min-h-0 grid gap-2 p-2 xl:grid-cols-2">
+                                <div className="min-h-0 rounded-md border border-border/50 bg-background/50 flex flex-col">
+                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe / Mode</div>
+                                  <div className="flex-1 min-h-0 overflow-auto">
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.timeframeRows.map((row) => (
+                                          <TableRow key={`tf-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Mode</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.modeRows.map((row) => (
+                                          <TableRow key={`mode-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Mode + Timeframe</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.timeframeModeRows.slice(0, 16).map((row) => (
+                                          <TableRow key={`combo-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                </div>
+
+                                <div className="min-h-0 rounded-md border border-border/50 bg-background/50 flex flex-col">
+                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">Source / Strategy / Variant</div>
+                                  <div className="flex-1 min-h-0 overflow-auto">
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Source</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.sourceRows.map((row) => (
+                                          <TableRow key={`source-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="py-1">{row.label}</TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Strategy</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.strategyRows.map((row) => (
+                                          <TableRow key={`strategy-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="py-1">
+                                              <div className="font-medium">{row.label}</div>
+                                              <div className="text-[9px] font-mono text-muted-foreground">{row.key}</div>
+                                            </TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Sub-Strategy</div>
+                                    <Table>
+                                      <TableBody>
+                                        {selectedPerformance.subStrategyRows.slice(0, 16).map((row) => (
+                                          <TableRow key={`sub-runtime-${row.key}`} className="text-xs">
+                                            <TableCell className="font-mono py-1">{row.label}</TableCell>
+                                            <TableCell className={cn('text-right font-mono py-1', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : '')}>{formatCurrency(row.pnl)}</TableCell>
+                                            <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        </TabsContent>
+                      )}
+                    </Tabs>
                   </div>
                 )}
 

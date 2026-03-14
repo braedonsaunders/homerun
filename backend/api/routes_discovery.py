@@ -5,11 +5,12 @@ from utils.utcnow import utcnow
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, delete
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from functools import partial
+from sqlalchemy.orm import load_only
 from utils.converters import normalize_market_id, safe_float
 
 from models.database import (
@@ -1298,6 +1299,7 @@ async def get_leaderboard(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     min_trades: int = Query(default=0, ge=0),
+    min_resolved_positions: int = Query(default=0, ge=0),
     min_pnl: Optional[float] = Query(default=None),
     insider_only: bool = Query(default=False),
     min_insider_score: Optional[float] = Query(default=None, ge=0.0, le=1.0),
@@ -1429,6 +1431,7 @@ async def get_leaderboard(
             limit=limit,
             offset=offset,
             min_trades=min_trades,
+            min_resolved_positions=min_resolved_positions,
             min_pnl=min_pnl,
             insider_only=insider_only,
             min_insider_score=min_insider_score,
@@ -1761,11 +1764,86 @@ async def get_pool_members(
             raise HTTPException(status_code=400, detail="sort_dir must be asc or desc")
 
         min_win_rate_ratio = _normalize_win_rate_ratio(_resolve_query_default(min_win_rate))
+        tracked_rows = []
+        tracked_addresses: set[str] = set()
+        tracked_labels: dict[str, str] = {}
+        if tracked_only:
+            tracked_result = await session.execute(select(TrackedWallet.address, TrackedWallet.label))
+            tracked_rows = list(tracked_result.all())
+            tracked_addresses = {str(row[0]).lower() for row in tracked_rows}
+            tracked_labels = {
+                str(row[0]).lower(): str(row[1]).strip()
+                for row in tracked_rows
+                if row[1] is not None and str(row[1]).strip()
+            }
+            if not tracked_addresses:
+                return {
+                    "total": 0,
+                    "offset": offset,
+                    "limit": limit,
+                    "members": [],
+                    "stats": {
+                        "pool_members": 0,
+                        "blacklisted": 0,
+                        "manual_included": 0,
+                        "manual_excluded": 0,
+                        "tracked_in_pool": 0,
+                        "tracked_total": 0,
+                    },
+                }
 
-        wallets_result = await session.execute(select(DiscoveredWallet))
+        normalized_win_rate_expr = case(
+            (
+                func.coalesce(DiscoveredWallet.win_rate, 0.0) > 1.0,
+                func.coalesce(DiscoveredWallet.win_rate, 0.0) / 100.0,
+            ),
+            else_=func.coalesce(DiscoveredWallet.win_rate, 0.0),
+        )
+        wallet_query = select(DiscoveredWallet).options(
+            load_only(
+                DiscoveredWallet.address,
+                DiscoveredWallet.username,
+                DiscoveredWallet.last_analyzed_at,
+                DiscoveredWallet.win_rate,
+                DiscoveredWallet.wins,
+                DiscoveredWallet.losses,
+                DiscoveredWallet.total_pnl,
+                DiscoveredWallet.total_trades,
+                DiscoveredWallet.rank_score,
+                DiscoveredWallet.quality_score,
+                DiscoveredWallet.activity_score,
+                DiscoveredWallet.stability_score,
+                DiscoveredWallet.composite_score,
+                DiscoveredWallet.last_trade_at,
+                DiscoveredWallet.trades_1h,
+                DiscoveredWallet.trades_24h,
+                DiscoveredWallet.in_top_pool,
+                DiscoveredWallet.pool_tier,
+                DiscoveredWallet.pool_membership_reason,
+                DiscoveredWallet.source_flags,
+                DiscoveredWallet.tags,
+                DiscoveredWallet.strategies_detected,
+                DiscoveredWallet.cluster_id,
+            )
+        )
+        if pool_only:
+            wallet_query = wallet_query.where(DiscoveredWallet.in_top_pool == True)  # noqa: E712
+        if tracked_only:
+            wallet_query = wallet_query.where(DiscoveredWallet.address.in_(sorted(tracked_addresses)))
+        if tier:
+            wallet_query = wallet_query.where(func.lower(func.coalesce(DiscoveredWallet.pool_tier, "")) == str(tier).lower())
+        if min_win_rate_ratio > 0.0:
+            wallet_query = wallet_query.where(normalized_win_rate_expr >= min_win_rate_ratio)
+        if not include_blacklisted:
+            wallet_query = wallet_query.where(
+                func.coalesce(DiscoveredWallet.source_flags[POOL_FLAG_BLACKLISTED].as_boolean(), False) == False  # noqa: E712
+            )
+
+        wallets_result = await session.execute(wallet_query)
         wallets = list(wallets_result.scalars().all())
-        tracked_result = await session.execute(select(TrackedWallet.address, TrackedWallet.label))
-        tracked_rows = list(tracked_result.all())
+        if not tracked_only:
+            tracked_result = await session.execute(select(TrackedWallet.address, TrackedWallet.label))
+            tracked_rows = list(tracked_result.all())
         tracked_addresses = {str(row[0]).lower() for row in tracked_rows}
         tracked_labels = {
             str(row[0]).lower(): str(row[1]).strip()
@@ -1926,6 +2004,7 @@ async def get_pool_members(
             normalized_win_rate = _normalize_win_rate_ratio(wallet.win_rate)
             if normalized_win_rate < min_win_rate_ratio:
                 continue
+            resolved_positions = max(int(wallet.wins or 0) + int(wallet.losses or 0), 0)
 
             tag_text = " ".join(wallet.tags or [])
             strategy_text = " ".join(wallet.strategies_detected or [])
@@ -1974,9 +2053,17 @@ async def get_pool_members(
                 "trades_1h": wallet.trades_1h or 0,
                 "trades_24h": wallet.trades_24h or 0,
                 "last_trade_at": wallet.last_trade_at.isoformat() if wallet.last_trade_at else None,
+                "wins": wallet.wins or 0,
+                "losses": wallet.losses or 0,
+                "resolved_positions": resolved_positions,
                 "total_trades": wallet.total_trades or 0,
                 "total_pnl": wallet.total_pnl or 0.0,
                 "win_rate": normalized_win_rate,
+                "win_rate_score": wallet_discovery._confidence_adjusted_win_rate(
+                    wins=wallet.wins,
+                    losses=wallet.losses,
+                ),
+                "win_rate_confidence": wallet_discovery._win_rate_confidence(resolved_positions),
                 "tags": wallet.tags or [],
                 "strategies_detected": wallet.strategies_detected or [],
                 "market_categories": categories,
@@ -1992,10 +2079,20 @@ async def get_pool_members(
                 if is_tracked:
                     tracked_in_pool_count += 1
 
-        rows.sort(
-            key=valid_sort_fields[sort_by],
-            reverse=(sort_dir != "asc"),
-        )
+        if sort_by == "win_rate":
+            rows.sort(
+                key=lambda row: (
+                    float(row.get("win_rate") or 0.0),
+                    int(row.get("resolved_positions") or 0),
+                    float(row.get("total_pnl") or 0.0),
+                ),
+                reverse=(sort_dir != "asc"),
+            )
+        else:
+            rows.sort(
+                key=valid_sort_fields[sort_by],
+                reverse=(sort_dir != "asc"),
+            )
 
         total = len(rows)
         page = rows[offset : offset + limit]

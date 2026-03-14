@@ -1,6 +1,5 @@
 import os
 import asyncio
-import importlib
 import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -52,13 +51,9 @@ from api.routes_ml import router as ml_router
 from api.routes_data_sources import router as data_sources_router
 from api.routes_traders import router as traders_router
 from services.wallet_tracker import wallet_tracker
-from services.traders_copy_trade_signal_service import traders_copy_trade_signal_service
 from services.live_execution_service import live_execution_service
 from services.wallet_discovery import wallet_discovery
-from services.position_monitor import position_monitor
-from services.intent_runtime import get_intent_runtime
 from services.maintenance import maintenance_service
-from services.market_runtime import get_market_runtime
 from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from services.market_prioritizer import market_prioritizer
@@ -75,7 +70,7 @@ from services.trader_orchestrator_state import (
     read_orchestrator_snapshot,
 )
 from services.weather import shared_state as weather_shared_state
-from services.worker_state import list_worker_snapshots, read_worker_control
+from services.worker_state import list_worker_snapshots, read_worker_control, summarize_worker_stats
 from services.ui_lock import UI_LOCK_SESSION_COOKIE, ui_lock_service
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter, TokenBucket
@@ -164,8 +159,6 @@ async def lifespan(app: FastAPI):
     # Create a shared thread pool executor for CPU-bound work so that
     # heavy background tasks (strategy detection, ML embedding, wallet
     # analysis) never block the async event loop that serves API requests.
-    import os
-
     cpu_count = os.cpu_count() or 4
     cpu_executor = ThreadPoolExecutor(
         max_workers=max(cpu_count * 2 + 8, 16),
@@ -188,257 +181,7 @@ async def lifespan(app: FastAPI):
         "Thread pool executor configured",
         max_workers=max(cpu_count * 2 + 8, 16),
     )
-    worker_tasks: dict[str, asyncio.Task] = {}
-    worker_monitor_tasks: list[asyncio.Task] = []
-    runtime_tasks: dict[str, asyncio.Task] = {}
-    runtime_monitor_tasks: list[asyncio.Task] = []
     tasks: list[asyncio.Task] = []
-    workers_shutting_down = False
-
-    def _worker_name_from_module(module_name: str) -> str:
-        return module_name.split(".")[-1].replace("_worker", "")
-
-    def _parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
-        if not value:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(text)
-        except Exception:
-            return None
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-
-    async def _spawn_worker_task(module_name: str) -> asyncio.Task:
-        module = importlib.import_module(module_name)
-        start_loop = getattr(module, "start_loop", None)
-        if start_loop is None:
-            raise RuntimeError(f"{module_name} does not define start_loop()")
-        task = asyncio.create_task(start_loop(), name=f"worker-{module_name.split('.')[-1]}")
-        logger.info(
-            "Worker task started",
-            worker=module_name.split(".")[-1],
-        )
-        return task
-
-    async def _cancel_worker_task(module_name: str, task: asyncio.Task) -> None:
-        if task.done():
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.warning(
-                "Worker task shutdown raised",
-                worker=_worker_name_from_module(module_name),
-                exc_info=exc,
-            )
-
-    async def _restart_worker_task(module_name: str, *, reason: str) -> None:
-        if workers_shutting_down:
-            return
-
-        current = worker_tasks.get(module_name)
-        if current is not None:
-            await _cancel_worker_task(module_name, current)
-
-        replacement = await _spawn_worker_task(module_name)
-        worker_tasks[module_name] = replacement
-        logger.warning(
-            "Worker task restarted",
-            worker=_worker_name_from_module(module_name),
-            reason=reason,
-        )
-
-    async def _monitor_worker_task(module_name: str) -> None:
-        while not workers_shutting_down:
-            task = worker_tasks.get(module_name)
-            if task is None:
-                await asyncio.sleep(1.0)
-                continue
-
-            try:
-                await task
-                if workers_shutting_down:
-                    return
-                if worker_tasks.get(module_name) is not task:
-                    continue
-                logger.error(
-                    "Worker task exited unexpectedly",
-                    worker=_worker_name_from_module(module_name),
-                )
-                await asyncio.sleep(1.0)
-                await _restart_worker_task(module_name, reason="unexpected_exit")
-            except asyncio.CancelledError:
-                if workers_shutting_down:
-                    return
-                if worker_tasks.get(module_name) is not task:
-                    continue
-                await asyncio.sleep(1.0)
-                await _restart_worker_task(module_name, reason="unexpected_cancel")
-            except Exception as exc:
-                if workers_shutting_down:
-                    return
-                if worker_tasks.get(module_name) is not task:
-                    continue
-                logger.error(
-                    "Worker task crashed",
-                    worker=_worker_name_from_module(module_name),
-                    exc_info=exc,
-                )
-                await asyncio.sleep(1.0)
-                await _restart_worker_task(module_name, reason=f"unexpected_error:{type(exc).__name__}")
-
-    async def _spawn_runtime_task(runtime_name: str) -> asyncio.Task:
-        if runtime_name == "trader_orchestrator":
-            from workers import trader_orchestrator_worker as orchestrator_runtime
-
-            task = asyncio.create_task(
-                orchestrator_runtime.start_loop(
-                    lane="general",
-                    notifier_enabled=True,
-                    write_snapshot=True,
-                ),
-                name="runtime-trader-orchestrator",
-            )
-        elif runtime_name == "trader_orchestrator_crypto":
-            from workers import trader_orchestrator_worker as orchestrator_runtime
-
-            task = asyncio.create_task(
-                orchestrator_runtime.start_loop(
-                    lane="crypto",
-                    notifier_enabled=False,
-                    write_snapshot=False,
-                ),
-                name="runtime-trader-orchestrator-crypto",
-            )
-        else:
-            raise RuntimeError(f"Unsupported runtime task '{runtime_name}'")
-        logger.info("Runtime task started", runtime=runtime_name)
-        return task
-
-    async def _cancel_runtime_task(runtime_name: str, task: asyncio.Task) -> None:
-        if task.done():
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.warning(
-                "Runtime task shutdown raised",
-                runtime=runtime_name,
-                exc_info=exc,
-            )
-
-    async def _restart_runtime_task(runtime_name: str, *, reason: str) -> None:
-        if workers_shutting_down:
-            return
-        current = runtime_tasks.get(runtime_name)
-        if current is not None:
-            await _cancel_runtime_task(runtime_name, current)
-        replacement = await _spawn_runtime_task(runtime_name)
-        runtime_tasks[runtime_name] = replacement
-        logger.warning("Runtime task restarted", runtime=runtime_name, reason=reason)
-
-    async def _monitor_runtime_task(runtime_name: str) -> None:
-        while not workers_shutting_down:
-            task = runtime_tasks.get(runtime_name)
-            if task is None:
-                await asyncio.sleep(1.0)
-                continue
-            try:
-                await task
-                if workers_shutting_down:
-                    return
-                if runtime_tasks.get(runtime_name) is not task:
-                    continue
-                logger.error("Runtime task exited unexpectedly", runtime=runtime_name)
-                await asyncio.sleep(1.0)
-                await _restart_runtime_task(runtime_name, reason="unexpected_exit")
-            except asyncio.CancelledError:
-                if workers_shutting_down:
-                    return
-                if runtime_tasks.get(runtime_name) is not task:
-                    continue
-                await asyncio.sleep(1.0)
-                await _restart_runtime_task(runtime_name, reason="unexpected_cancel")
-            except Exception as exc:
-                if workers_shutting_down:
-                    return
-                if runtime_tasks.get(runtime_name) is not task:
-                    continue
-                logger.error("Runtime task crashed", runtime=runtime_name, exc_info=exc)
-                await asyncio.sleep(1.0)
-                await _restart_runtime_task(runtime_name, reason=f"unexpected_error:{type(exc).__name__}")
-
-    async def _monitor_worker_freshness() -> None:
-        while not workers_shutting_down:
-            await asyncio.sleep(30.0)
-            if workers_shutting_down:
-                return
-            try:
-                async with AsyncSessionLocal() as session:
-                    snapshots = await list_worker_snapshots(session, include_stats=False)
-            except Exception as e:
-                logger.warning("Worker freshness check failed", exc_info=e)
-                continue
-
-            snapshot_by_name = {
-                str(item.get("worker_name") or ""): item for item in snapshots if isinstance(item, dict)
-            }
-
-            now = utcnow()
-            for module_name, task in list(worker_tasks.items()):
-                if task.done():
-                    continue
-                worker_name = _worker_name_from_module(module_name)
-                snapshot = snapshot_by_name.get(worker_name)
-                if not snapshot:
-                    continue
-
-                updated_at = _parse_iso_utc(snapshot.get("updated_at"))
-                if updated_at is None:
-                    continue
-
-                interval_seconds = max(1, int(snapshot.get("interval_seconds") or 60))
-                stale_after_seconds = max(180, interval_seconds * 6)
-                if worker_name == "scanner":
-                    stale_after_seconds = max(stale_after_seconds, 360)
-                elif worker_name == "tracked_traders":
-                    stale_after_seconds = max(stale_after_seconds, 900)
-                age_seconds = (now - updated_at).total_seconds()
-                if age_seconds <= stale_after_seconds:
-                    continue
-
-                logger.error(
-                    "Worker heartbeat stale; restarting in-process task",
-                    worker=worker_name,
-                    age_seconds=round(age_seconds, 1),
-                    stale_after_seconds=stale_after_seconds,
-                    current_activity=snapshot.get("current_activity"),
-                )
-                await _restart_worker_task(module_name, reason="stale_heartbeat")
 
     try:
         # Initialize database
@@ -503,9 +246,6 @@ async def lifespan(app: FastAPI):
                 precedence=RUNTIME_SETTINGS_PRECEDENCE,
                 exc_info=exc,
             )
-
-        await get_intent_runtime().start()
-        await get_market_runtime().start()
 
         try:
             async with AsyncSessionLocal() as session:
@@ -611,8 +351,8 @@ async def lifespan(app: FastAPI):
         for wallet in settings.TRACKED_WALLETS:
             await wallet_tracker.add_wallet(wallet)
 
-        # Background tasks. Hot runtimes live in this process; slower discovery
-        # and workflow loops remain background tasks supervised here.
+        # API-owned background tasks. The worker plane runs in the dedicated
+        # workers.host process and writes durable snapshots back to the DB.
 
         # Broadcast scanner snapshot deltas from DB to connected WebSocket clients.
         await snapshot_broadcaster.start(interval_seconds=1.0)
@@ -620,22 +360,8 @@ async def lifespan(app: FastAPI):
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
-        await traders_copy_trade_signal_service.start()
-
-        # Start position monitor (spread trading exit strategies)
-        await position_monitor.start()
-
-        # Start fill monitor (read-only, zero risk)
-        try:
-            from services.fill_monitor import fill_monitor
-
-            await fill_monitor.start()
-        except Exception as e:
-            logger.warning(f"Fill monitor start failed (non-critical): {e}")
-
         # Initialize live execution service if credentials are configured
         trading_initialized = await live_execution_service.initialize()
-        await traders_copy_trade_signal_service.refresh_scope()
         if trading_initialized:
             logger.info("Live execution service initialized")
         else:
@@ -734,40 +460,6 @@ async def lifespan(app: FastAPI):
 
         logger.info("All services started successfully")
 
-        # Start background runtimes in-process under one supervisor.
-        _WORKER_MODULES = (
-            "workers.market_universe_worker",
-            "workers.scanner_worker",
-            "workers.scanner_slo_worker",
-            "workers.news_worker",
-            "workers.weather_worker",
-            "workers.tracked_traders_worker",
-            "workers.trader_reconciliation_worker",
-            "workers.redeemer_worker",
-            "workers.events_worker",
-            "workers.discovery_worker",
-        )
-        for mod_name in _WORKER_MODULES:
-            task = await _spawn_worker_task(mod_name)
-            worker_tasks[mod_name] = task
-            monitor_task = asyncio.create_task(
-                _monitor_worker_task(mod_name),
-                name=f"monitor-{mod_name.split('.')[-1]}",
-            )
-            worker_monitor_tasks.append(monitor_task)
-        worker_monitor_tasks.append(asyncio.create_task(_monitor_worker_freshness(), name="monitor-worker-freshness"))
-        logger.info("All %d worker tasks started", len(worker_tasks))
-
-        for runtime_name in ("trader_orchestrator", "trader_orchestrator_crypto"):
-            runtime_tasks[runtime_name] = await _spawn_runtime_task(runtime_name)
-            runtime_monitor_tasks.append(
-                asyncio.create_task(
-                    _monitor_runtime_task(runtime_name),
-                    name=f"monitor-{runtime_name}",
-                )
-            )
-        logger.info("All %d runtime tasks started", len(runtime_tasks))
-
         yield
 
     except Exception as e:
@@ -780,49 +472,15 @@ async def lifespan(app: FastAPI):
 
         await snapshot_broadcaster.stop()
         wallet_tracker.stop()
-        traders_copy_trade_signal_service.stop()
         wallet_discovery.stop()
-        position_monitor.stop()
         maintenance_service.stop()
-        try:
-            from services.fill_monitor import fill_monitor
-
-            fill_monitor.stop()
-        except Exception:
-            pass
         await validation_service.stop()
-        await get_market_runtime().stop()
-        await get_intent_runtime().stop()
         try:
             from services.news.feed_service import news_feed_service
 
             news_feed_service.stop()
         except Exception:
             pass
-
-        # Stop worker runtimes first.
-        workers_shutting_down = True
-        for runtime_name, task in list(runtime_tasks.items()):
-            await _cancel_runtime_task(runtime_name, task)
-        for task in runtime_monitor_tasks:
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        for mod_name, task in list(worker_tasks.items()):
-            await _cancel_worker_task(mod_name, task)
-        for task in worker_monitor_tasks:
-            task.cancel()
-        for task in worker_monitor_tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        logger.info("All worker tasks stopped")
 
         for task in tasks:
             task.cancel()
@@ -1033,25 +691,35 @@ async def readiness_check():
 
 _tui_health_cache: Optional[dict] = None
 _tui_health_refresh_task: Optional[asyncio.Task] = None
+_tui_health_cache_updated_at: datetime | None = None
+_TUI_HEALTH_CACHE_TTL_SECONDS = 5.0
+_TUI_HEALTH_WORKER_NAMES = (
+    "scanner",
+    "scanner_slo",
+    "discovery",
+    "weather",
+    "news",
+    "crypto",
+    "tracked_traders",
+    "trader_orchestrator",
+    "trader_reconciliation",
+    "redeemer",
+    "events",
+)
 
 
 async def _tui_health_db_queries() -> dict:
     """DB-dependent portion of the TUI health check."""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
-        discovery_status = await discovery_shared_state.get_discovery_status_from_db(session)
-        try:
-            from services.news import shared_state as news_shared_state
-
-            news_workflow_status = await news_shared_state.get_news_status_from_db(session)
-        except Exception:
-            news_workflow_status = {}
-        worker_status_rows = await list_worker_snapshots(session, include_stats=True)
+        worker_status_rows = await list_worker_snapshots(
+            session,
+            include_stats=False,
+            worker_names=_TUI_HEALTH_WORKER_NAMES,
+        )
         orchestrator_snapshot = await read_orchestrator_snapshot(session)
     return {
         "scanner_status": scanner_status,
-        "discovery_status": discovery_status,
-        "news_workflow_status": news_workflow_status,
         "worker_status_rows": worker_status_rows,
         "orchestrator_snapshot": orchestrator_snapshot,
         "database": True,
@@ -1060,14 +728,29 @@ async def _tui_health_db_queries() -> dict:
 
 def _build_tui_health_response(db: dict) -> dict:
     scanner_status = db.get("scanner_status", {})
-    discovery_status = db.get("discovery_status", {})
-    news_workflow_status = db.get("news_workflow_status", {})
     worker_status_rows = db.get("worker_status_rows", [])
     orchestrator_snapshot = db.get("orchestrator_snapshot", {})
-    worker_status = {row.get("worker_name"): row for row in worker_status_rows}
+    worker_status = {
+        str(row.get("worker_name") or ""): {
+            "worker_name": row.get("worker_name"),
+            "running": bool(row.get("running", False)),
+            "enabled": bool(row.get("enabled", False)),
+            "current_activity": row.get("current_activity"),
+            "interval_seconds": row.get("interval_seconds"),
+            "last_run_at": row.get("last_run_at"),
+            "lag_seconds": row.get("lag_seconds"),
+            "last_error": row.get("last_error"),
+            "updated_at": row.get("updated_at"),
+        }
+        for row in worker_status_rows
+        if isinstance(row, dict) and str(row.get("worker_name") or "")
+    }
+    news_worker = worker_status.get("news", {})
+    discovery_worker = worker_status.get("discovery", {})
     return {
         "status": "healthy",
         "timestamp": utcnow().isoformat(),
+        "workers": worker_status,
         "checks": {
             "database": db.get("database", False),
         },
@@ -1079,44 +762,34 @@ def _build_tui_health_response(db: dict) -> dict:
             },
             "trader_orchestrator": {
                 "running": bool(orchestrator_snapshot.get("running", False)),
-                "stats": orchestrator_snapshot,
+                "current_activity": orchestrator_snapshot.get("current_activity"),
+                "last_run_at": orchestrator_snapshot.get("last_run_at"),
+                "last_error": orchestrator_snapshot.get("last_error"),
             },
             "ws_feeds": _get_ws_feeds_status(scanner_status, worker_status),
             "signal_runtime": {
                 "queue_depth": _get_signal_runtime_status(),
             },
             "news_workflow": {
-                "running": bool(news_workflow_status.get("running", False)),
-                "enabled": bool(news_workflow_status.get("enabled", False)),
-                "paused": bool(news_workflow_status.get("paused", False)),
-                "last_scan": news_workflow_status.get("last_scan"),
-                "next_scan": news_workflow_status.get("next_scan"),
-                "current_activity": news_workflow_status.get("current_activity"),
-                "last_error": news_workflow_status.get("last_error"),
-                "degraded_mode": bool(news_workflow_status.get("degraded_mode", False)),
-                "pending_intents": int(news_workflow_status.get("pending_intents", 0)),
+                "running": bool(news_worker.get("running", False)),
+                "enabled": bool(news_worker.get("enabled", False)),
+                "paused": False,
+                "last_scan": news_worker.get("last_run_at"),
+                "next_scan": None,
+                "current_activity": news_worker.get("current_activity"),
+                "last_error": news_worker.get("last_error"),
+                "degraded_mode": False,
+                "pending_intents": 0,
             },
             "wallet_discovery": {
-                "running": bool(discovery_status.get("running", wallet_discovery._running)),
-                "last_run": discovery_status.get("last_run_at")
-                or (wallet_discovery._last_run_at.isoformat() if wallet_discovery._last_run_at else None),
-                "wallets_discovered": int(
-                    discovery_status.get(
-                        "wallets_discovered_last_run",
-                        wallet_discovery._wallets_discovered_last_run,
-                    )
-                ),
-                "wallets_analyzed": int(
-                    discovery_status.get(
-                        "wallets_analyzed_last_run",
-                        wallet_discovery._wallets_analyzed_last_run,
-                    )
-                ),
-                "current_activity": discovery_status.get("current_activity"),
-                "interval_minutes": discovery_status.get("run_interval_minutes"),
-                "paused": bool(discovery_status.get("paused", False)),
+                "running": bool(discovery_worker.get("running", False)),
+                "last_run": discovery_worker.get("last_run_at"),
+                "wallets_discovered": 0,
+                "wallets_analyzed": 0,
+                "current_activity": discovery_worker.get("current_activity"),
+                "interval_minutes": None,
+                "paused": False,
             },
-            "workers": worker_status,
             "api_rate_limit": inbound_api_rate_limiter.status(),
         },
     }
@@ -1130,19 +803,33 @@ async def tui_health_check():
     doesn't block the response and cause the TUI to flap OFFLINE/ONLINE.
     When the pool is busy the last successful result is served instead.
     """
-    global _tui_health_cache, _tui_health_refresh_task
+    global _tui_health_cache, _tui_health_cache_updated_at, _tui_health_refresh_task
     if _tui_health_refresh_task is not None and _tui_health_refresh_task.done():
         try:
             _tui_health_cache = _tui_health_refresh_task.result()
+            _tui_health_cache_updated_at = utcnow()
         except Exception:
             pass
         finally:
             _tui_health_refresh_task = None
+    cache_age_seconds = None
+    if _tui_health_cache_updated_at is not None:
+        cache_age_seconds = max(0.0, (utcnow() - _tui_health_cache_updated_at).total_seconds())
+    cache_is_fresh = bool(
+        _tui_health_cache is not None
+        and cache_age_seconds is not None
+        and cache_age_seconds <= _TUI_HEALTH_CACHE_TTL_SECONDS
+    )
+    if cache_is_fresh:
+        return _build_tui_health_response(_tui_health_cache or {"database": False})
     if _tui_health_refresh_task is None:
         _tui_health_refresh_task = asyncio.create_task(_tui_health_db_queries(), name="tui-health-db-queries")
+        if _tui_health_cache is not None:
+            return _build_tui_health_response(_tui_health_cache)
     try:
         db = await asyncio.wait_for(asyncio.shield(_tui_health_refresh_task), timeout=2.0)
         _tui_health_cache = db
+        _tui_health_cache_updated_at = utcnow()
     except asyncio.TimeoutError:
         db = _tui_health_cache or {"database": False}
     except Exception:
@@ -1247,8 +934,11 @@ async def detailed_health_check():
             news_workflow_status = await news_shared_state.get_news_status_from_db(session)
         except Exception:
             news_workflow_status = {}
-        worker_status_rows = await list_worker_snapshots(session, include_stats=True)
+        worker_status_rows = await list_worker_snapshots(session, include_stats=True, stats_mode="summary")
         orchestrator_snapshot = await read_orchestrator_snapshot(session)
+    if isinstance(orchestrator_snapshot, dict):
+        orchestrator_snapshot = dict(orchestrator_snapshot)
+        orchestrator_snapshot["stats"] = summarize_worker_stats(orchestrator_snapshot.get("stats"))
     worker_status = {row.get("worker_name"): row for row in worker_status_rows}
     maintenance_enabled = bool(settings.AUTO_CLEANUP_ENABLED)
     maintenance_interval = int(settings.CLEANUP_INTERVAL_HOURS)

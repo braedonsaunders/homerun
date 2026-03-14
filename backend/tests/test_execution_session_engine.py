@@ -136,6 +136,10 @@ async def test_execute_signal_aborts_before_order_writes_on_pair_lock_violation(
 async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
     db = SimpleNamespace()
     engine = session_engine_module.ExecutionSessionEngine(db)
+    strategy_params = {
+        "max_market_data_age_ms": 250,
+        "take_profit_pct": 4.5,
+    }
 
     plan = {"policy": "SEQUENTIAL_HEDGE", "plan_id": "plan-2"}
     legs = [
@@ -201,7 +205,7 @@ async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
         decision_id="decision-2",
         strategy_key="tail_end_carry",
         strategy_version=None,
-        strategy_params={},
+        strategy_params=strategy_params,
         risk_limits={},
         mode="paper",
         size_usd=160.0,
@@ -214,6 +218,7 @@ async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
     buffered = buffer_outcome_mock.await_args.kwargs
     assert buffered["session_row"].status == "hedging"
     assert len(buffered["trader_orders"]) == 2
+    assert buffered["trader_orders"][0].payload_json["strategy_params"] == strategy_params
     payload_patch = buffered["session_row"].payload_json
     assert payload_patch["hedge_timeout_seconds"] == 33
     assert payload_patch["hedging_escalation"] == "auto_fail_on_timeout"

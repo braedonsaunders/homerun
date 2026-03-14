@@ -9,6 +9,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any, Optional
 
 from sqlalchemy import func, or_, select, update
@@ -26,6 +27,8 @@ from models.database import (
 from models.opportunity import Opportunity, OpportunityFilter
 from services.event_bus import event_bus
 from services.market_tradability import get_market_tradability_map
+from utils.converters import format_iso_utc_z, parse_iso_datetime
+from utils.retry import commit_with_retry as _shared_commit_with_retry
 from utils.utcnow import utcnow
 
 SQL_IN_CLAUSE_CHUNK_SIZE = 900
@@ -46,60 +49,18 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_ID = "latest"
 TRADERS_SNAPSHOT_ID = "traders_latest"
 CONTROL_ID = "default"
-DB_RETRY_ATTEMPTS = 3
-DB_RETRY_BASE_DELAY_SECONDS = 0.05
-DB_RETRY_MAX_DELAY_SECONDS = 0.3
 
 # In-memory targeted condition IDs for the next scan request.
 # Set by the evaluate endpoint, consumed and cleared by the scanner worker.
 _pending_targeted_condition_ids: list[str] = []
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    """Parse ISO datetime strings defensively, including legacy malformed UTC suffixes."""
-    text = value.strip()
-
-    # Handle legacy malformed values like "...+00:00+00:00".
-    if text.endswith("+00:00+00:00"):
-        text = text[:-6]
-
-    # Normalize trailing Z to an explicit offset for fromisoformat().
-    if text.endswith("Z"):
-        text = text[:-1]
-
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
-    """Format datetimes as canonical UTC ISO strings with a trailing Z."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=None).isoformat() + "Z"
-
-
-from utils.retry import is_retryable_db_error as _is_retryable_db_error  # noqa: E402
-from utils.retry import db_retry_delay as _db_retry_delay  # noqa: E402
+_pending_targeted_condition_ids_lock = Lock()
 
 
 async def _commit_with_retry(session: AsyncSession) -> None:
-    for attempt in range(DB_RETRY_ATTEMPTS):
-        try:
-            await session.commit()
-            return
-        except DBAPIError as exc:
-            await session.rollback()
-            is_locked = _is_retryable_db_error(exc)
-            is_last = attempt >= DB_RETRY_ATTEMPTS - 1
-            if not is_locked or is_last:
-                raise
-            await asyncio.sleep(_db_retry_delay(attempt))
+    try:
+        await _shared_commit_with_retry(session)
+    except DBAPIError:
+        raise
 
 
 def _normalize_weather_edge_title(title: str) -> str:
@@ -132,7 +93,7 @@ async def write_scanner_snapshot(
     last_scan = status.get("last_scan")
     if isinstance(last_scan, str):
         try:
-            last_scan = _parse_iso_datetime(last_scan)
+            last_scan = parse_iso_datetime(last_scan, naive=True)
         except Exception as e:
             logger.warning("Invalid last_scan timestamp in snapshot status: %s", e)
             last_scan = utcnow()
@@ -154,6 +115,7 @@ async def write_scanner_snapshot(
     row.updated_at = utcnow()
     row.last_scan_at = last_scan
     row.opportunities_json = payload
+    row.opportunities_count = int(len(opportunities))
     row.running = status.get("running", True)
     row.enabled = status.get("enabled", True)
     row.current_activity = status.get("current_activity")
@@ -363,7 +325,7 @@ async def write_traders_snapshot(
     last_scan = status.get("last_scan")
     if isinstance(last_scan, str):
         try:
-            last_scan = _parse_iso_datetime(last_scan)
+            last_scan = parse_iso_datetime(last_scan, naive=True)
         except Exception:
             last_scan = utcnow()
     elif last_scan is None:
@@ -496,7 +458,7 @@ async def _persist_incremental_state(
         row = existing_by_id.get(stable_id)
         if row is None:
             incoming_item["revision"] = 1
-            incoming_item["last_updated_at"] = _format_iso_utc_z(completed_at)
+            incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
             row = OpportunityState(
                 stable_id=stable_id,
                 opportunity_json=incoming_item,
@@ -530,12 +492,12 @@ async def _persist_incremental_state(
 
         previous_last_updated = previous_payload.get("last_updated_at")
         if changed or not was_active:
-            incoming_item["last_updated_at"] = _format_iso_utc_z(completed_at)
+            incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
             row.last_updated_at = completed_at
         elif previous_last_updated:
             incoming_item["last_updated_at"] = previous_last_updated
         else:
-            incoming_item["last_updated_at"] = _format_iso_utc_z(completed_at)
+            incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
             row.last_updated_at = completed_at
 
         row.opportunity_json = incoming_item
@@ -654,10 +616,10 @@ async def read_scanner_snapshot(
         "running": row.running,
         "enabled": row.enabled,
         "interval_seconds": row.interval_seconds,
-        "last_scan": _format_iso_utc_z(row.last_scan_at),
+        "last_scan": format_iso_utc_z(row.last_scan_at),
         "last_fast_scan": tiered.get("last_fast_scan"),
         "last_heavy_scan": tiered.get("last_heavy_scan") or tiered.get("last_full_snapshot_strategy_scan"),
-        "opportunities_count": len(opportunities),
+        "opportunities_count": int(row.opportunities_count or len(opportunities)),
         "current_activity": row.current_activity,
         "lane_watchdogs": tiered.get("lane_watchdogs"),
         "strategies": row.strategies_json or [],
@@ -684,6 +646,7 @@ async def read_scanner_status(
             ScannerSnapshot.strategies_json,
             ScannerSnapshot.tiered_scanning_json,
             ScannerSnapshot.ws_feeds_json,
+            ScannerSnapshot.opportunities_count,
         ).where(ScannerSnapshot.id == SNAPSHOT_ID)
     )
     row = result.one_or_none()
@@ -692,21 +655,14 @@ async def read_scanner_status(
 
     opportunities_count = 0
     if include_opportunity_count:
-        opportunities_count = int(
-            (
-                await session.execute(
-                    select(func.count()).select_from(OpportunityState).where(OpportunityState.is_active == True)  # noqa: E712
-                )
-            ).scalar_one()
-            or 0
-        )
+        opportunities_count = int(row.opportunities_count or 0)
 
     tiered = row.tiered_scanning_json if isinstance(row.tiered_scanning_json, dict) else {}
     status = {
         "running": bool(row.running),
         "enabled": bool(row.enabled),
         "interval_seconds": int(row.interval_seconds or 60),
-        "last_scan": _format_iso_utc_z(row.last_scan_at),
+        "last_scan": format_iso_utc_z(row.last_scan_at),
         "last_fast_scan": tiered.get("last_fast_scan"),
         "last_heavy_scan": tiered.get("last_heavy_scan") or tiered.get("last_full_snapshot_strategy_scan"),
         "opportunities_count": opportunities_count,
@@ -740,7 +696,7 @@ async def read_scanner_status(
     raw_last_fast_scan = tiered.get("last_fast_scan")
     if isinstance(raw_last_fast_scan, str):
         try:
-            parsed = _parse_iso_datetime(raw_last_fast_scan)
+            parsed = parse_iso_datetime(raw_last_fast_scan, naive=True)
             last_fast_scan_at = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except Exception:
             last_fast_scan_at = None
@@ -767,7 +723,7 @@ async def read_scanner_status(
             if not raw:
                 continue
             try:
-                priced_at = _parse_iso_datetime(str(raw))
+                priced_at = parse_iso_datetime(str(raw), naive=True)
             except Exception:
                 priced_at = None
             if priced_at is not None:
@@ -783,7 +739,7 @@ async def read_scanner_status(
             if not raw:
                 continue
             try:
-                detected_at = _parse_iso_datetime(str(raw))
+                detected_at = parse_iso_datetime(str(raw), naive=True)
             except Exception:
                 detected_at = None
             if detected_at is not None:
@@ -849,7 +805,7 @@ async def read_traders_snapshot(
         "running": row.running,
         "enabled": row.enabled,
         "interval_seconds": row.interval_seconds,
-        "last_scan": _format_iso_utc_z(row.last_scan_at),
+        "last_scan": format_iso_utc_z(row.last_scan_at),
         "opportunities_count": len(opportunities),
         "current_activity": row.current_activity,
         "strategies": row.strategies_json or [],
@@ -1186,15 +1142,17 @@ async def request_one_scan(
     row = await ensure_scanner_control(session)
     row.requested_scan_at = utcnow()
     if condition_ids:
-        _pending_targeted_condition_ids = list(condition_ids)
+        with _pending_targeted_condition_ids_lock:
+            _pending_targeted_condition_ids = list(condition_ids)
     await _commit_with_retry(session)
 
 
 def pop_targeted_condition_ids() -> list[str]:
     """Return and clear any pending targeted condition IDs for the next scan."""
     global _pending_targeted_condition_ids
-    ids = _pending_targeted_condition_ids
-    _pending_targeted_condition_ids = []
+    with _pending_targeted_condition_ids_lock:
+        ids = list(_pending_targeted_condition_ids)
+        _pending_targeted_condition_ids = []
     return ids
 
 
@@ -1300,9 +1258,9 @@ async def list_open_scanner_slo_incidents(session: AsyncSession) -> list[dict[st
             "threshold_value": float(row.threshold_value) if row.threshold_value is not None else None,
             "observed_value": float(row.observed_value) if row.observed_value is not None else None,
             "details": dict(row.details_json or {}),
-            "opened_at": _format_iso_utc_z(row.opened_at),
-            "last_seen_at": _format_iso_utc_z(row.last_seen_at),
-            "resolved_at": _format_iso_utc_z(row.resolved_at),
+            "opened_at": format_iso_utc_z(row.opened_at),
+            "last_seen_at": format_iso_utc_z(row.last_seen_at),
+            "resolved_at": format_iso_utc_z(row.resolved_at),
         }
         for row in rows
     ]

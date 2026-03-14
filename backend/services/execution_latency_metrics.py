@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
+import time
 from typing import Any
 
 
 _STAGE_KEYS = (
+    "armed_to_ws_release_ms",
     "emit_to_queue_wake_ms",
+    "ws_release_to_decision_ms",
+    "ws_release_to_submit_start_ms",
     "wake_to_context_ready_ms",
     "context_ready_to_decision_ms",
     "decision_to_submit_start_ms",
@@ -16,6 +20,7 @@ _STAGE_KEYS = (
 )
 _MAX_SAMPLES = 5000
 _PER_GROUP_LIMIT = 25
+_ROLLING_WINDOW_SECONDS = 900
 
 
 @dataclass
@@ -23,6 +28,7 @@ class _LatencySample:
     trader_id: str
     source: str
     strategy_key: str
+    recorded_at_epoch: float
     payload: dict[str, Any]
 
 
@@ -60,7 +66,8 @@ class ExecutionLatencyMetrics:
         self._lock = asyncio.Lock()
         self._samples: deque[_LatencySample] = deque(maxlen=_MAX_SAMPLES)
         self._sla_target_ms = 200
-        self._sla_definition = "signal_emitted_at->submit_started_at"
+        self._sla_definition = "ws_release_at->submit_started_at"
+        self._rolling_window_seconds = _ROLLING_WINDOW_SECONDS
 
     async def record(
         self,
@@ -76,13 +83,17 @@ class ExecutionLatencyMetrics:
                     trader_id=str(trader_id or "").strip(),
                     source=str(source or "").strip().lower(),
                     strategy_key=str(strategy_key or "").strip().lower(),
+                    recorded_at_epoch=float(time.time()),
                     payload=dict(payload or {}),
                 )
             )
 
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
-            samples = list(self._samples)
+            now_epoch = float(time.time())
+            window_seconds = max(1, int(self._rolling_window_seconds))
+            cutoff_epoch = now_epoch - float(window_seconds)
+            samples = [sample for sample in self._samples if float(sample.recorded_at_epoch) >= cutoff_epoch]
 
         by_source: dict[str, list[_LatencySample]] = {}
         by_strategy: dict[str, list[_LatencySample]] = {}
@@ -102,6 +113,8 @@ class ExecutionLatencyMetrics:
         return {
             "internal_sla_definition": self._sla_definition,
             "internal_sla_target_ms": self._sla_target_ms,
+            "rolling_window_seconds": window_seconds,
+            "sample_count": len(samples),
             "overall": _stage_summary(samples),
             "by_source": _trim(by_source),
             "by_strategy": _trim(by_strategy),

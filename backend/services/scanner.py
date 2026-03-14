@@ -28,6 +28,7 @@ from services.data_events import DataEvent, EventType
 from services.event_dispatcher import event_dispatcher
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
+from utils.logger import get_logger
 
 # Persistent single-thread executor for news prefetch embedding work.
 # PyTorch/FAISS use thread-local state; a dedicated thread avoids segfaults.
@@ -35,6 +36,7 @@ _NEWS_PREFETCH_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="news_prefetch",
 )
+logger = get_logger(__name__)
 
 
 def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -207,8 +209,8 @@ class ArbitrageScanner:
         for cb in self._activity_callbacks:
             try:
                 await cb(activity)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Scanner activity callback failed", exc_info=exc)
 
     @staticmethod
     def _price_value(raw: Optional[dict]) -> Optional[float]:
@@ -719,8 +721,8 @@ class ArbitrageScanner:
                         "sequence": 0,
                         "is_fresh": True,
                     }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Scanner live price overlay failed", exc_info=exc)
 
         return prices
 
@@ -759,8 +761,8 @@ class ArbitrageScanner:
                     break
                 try:
                     token.price = market.outcome_prices[idx]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Scanner token price overlay failed", exc_info=exc)
             updated += 1
         return updated
 
@@ -1965,8 +1967,12 @@ class ArbitrageScanner:
         if needed_ids:
             try:
                 await self._hydrate_history_from_db(needed_ids)
-            except Exception:
-                pass  # non-fatal; backfill will attempt API fetch below
+            except Exception as exc:
+                logger.debug(
+                    "Scanner market-history hydration from DB failed before attach",
+                    market_count=len(needed_ids),
+                    exc_info=exc,
+                )
 
         should_block = bool(block_for_backfill or timeout_seconds is None)
         if should_block:
@@ -2416,8 +2422,8 @@ class ArbitrageScanner:
                     market_monitor.ingest_snapshot(events, markets),
                     timeout=optional_stage_timeout,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Scanner market monitor ingest failed during catalog refresh", exc_info=exc)
 
             # Phase 6 — Persist catalog to DB
             duration = _time.monotonic() - _t0
@@ -2462,8 +2468,8 @@ class ArbitrageScanner:
 
                 async with AsyncSessionLocal() as session:
                     await write_market_catalog(session, [], [], error=str(e))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to persist scanner catalog refresh error", exc_info=exc)
             print(f"[{utcnow().isoformat()}] Catalog refresh error: {e}")
             await self._set_activity(f"Catalog refresh error: {e}")
             raise
@@ -2706,8 +2712,8 @@ class ArbitrageScanner:
                 market_monitor.ingest_snapshot(merged_events, merged_markets),
                 timeout=optional_stage_timeout,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Scanner market monitor ingest failed during incremental refresh", exc_info=exc)
 
         duration = _time.monotonic() - _t0
         try:
@@ -3141,8 +3147,8 @@ class ArbitrageScanner:
                 if hasattr(value, "model_copy"):
                     try:
                         return value.model_copy(deep=True)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Scanner model_copy deep clone failed; falling back to deepcopy", exc_info=exc)
                 return copy.deepcopy(value)
 
             async with self._scan_lock:
@@ -4069,8 +4075,8 @@ class ArbitrageScanner:
                 # Re-raise only if *we* were cancelled (not just the child task).
                 if asyncio.current_task() and asyncio.current_task().cancelled():
                     raise
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Scanner AI scoring task raised during cancellation", exc_info=exc)
             print("  AI scoring task cancelled")
 
     async def set_interval(self, seconds: int):
@@ -4167,7 +4173,8 @@ class ArbitrageScanner:
             try:
                 feed_mgr = get_feed_manager()
                 status["ws_feeds"] = feed_mgr.health_check()
-            except Exception:
+            except Exception as exc:
+                logger.debug("Scanner WS health check failed", exc_info=exc)
                 status["ws_feeds"] = {"healthy": False, "started": False}
 
         # Add tiered scanning status

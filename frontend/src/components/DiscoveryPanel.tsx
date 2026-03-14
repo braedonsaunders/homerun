@@ -224,6 +224,20 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`
 }
 
+function getAnalysisAgeHours(dateStr: string | null): number | null {
+  if (!dateStr) return null
+  const diffMs = Date.now() - new Date(dateStr).getTime()
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 0
+  return diffMs / 3_600_000
+}
+
+function getResolvedPositionsCount(wallet: Pick<DiscoveredWallet, 'resolved_positions' | 'wins' | 'losses'>): number {
+  if (typeof wallet.resolved_positions === 'number' && Number.isFinite(wallet.resolved_positions)) {
+    return Math.max(0, wallet.resolved_positions)
+  }
+  return Math.max(0, Number(wallet.wins || 0) + Number(wallet.losses || 0))
+}
+
 function MetricPill({
   label,
   value,
@@ -716,6 +730,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   })
 
   const selectedTagString = selectedTags.join(',')
+  const useResolvedWinRateFilter = sortBy === 'win_rate' && timePeriod === 'all'
 
   const { data: leaderboardData, isLoading: leaderboardLoading, error: leaderboardError } = useQuery({
     queryKey: [
@@ -738,6 +753,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         limit: ITEMS_PER_PAGE,
         offset: currentPage * ITEMS_PER_PAGE,
         min_trades: minTrades,
+        min_resolved_positions: useResolvedWinRateFilter ? minTrades : undefined,
         min_pnl: minPnl || undefined,
         min_insider_score: minInsiderScore > 0 ? minInsiderScore : undefined,
         recommendation: recommendationFilter || undefined,
@@ -1284,6 +1300,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
                     ]
                     const hasSparkline = selectionSparkline.some((point) => point.value > 0)
+                    const resolvedPositions = Math.max(
+                      0,
+                      typeof member.resolved_positions === 'number'
+                        ? member.resolved_positions
+                        : Number(member.wins || 0) + Number(member.losses || 0)
+                    )
                     const primaryMarketCategory = String(member.primary_market_category || '').trim().toLowerCase()
                     const primaryMarketCategoryLabel = primaryMarketCategory ? `mkt:${primaryMarketCategory}` : null
                     const primaryMarketCategoryShare =
@@ -1357,6 +1379,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                 tone={scoreTone(normalizePercentRatio(member.win_rate || 0) / 100, 0.6, 0.45)}
                               />
                               <MetricPill label="T" value={formatNumber(member.total_trades || 0)} />
+                            </div>
+                            <div className="text-[9px] text-muted-foreground">
+                              {formatNumber(Number(member.wins || 0))}W/{formatNumber(Number(member.losses || 0))}L · {formatNumber(resolvedPositions)} resolved
                             </div>
                             <div className="flex flex-wrap items-center gap-1">
                               <MetricPill
@@ -1744,7 +1769,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </div>
 
                 <div className="flex w-[112px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Min trades</span>
+                  <span className={FILTER_LABEL_CLASS}>
+                    {useResolvedWinRateFilter ? 'Min resolved' : 'Min trades'}
+                  </span>
                   <Input
                     type="number"
                     value={minTrades}
@@ -1941,7 +1968,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="win_rate"
-                        label={isWindowActive ? 'Period WR' : 'Win Rate'}
+                        label={isWindowActive ? 'Period WR' : 'Resolved WR'}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -2174,6 +2201,10 @@ function LeaderboardRow({
   useWindowMetrics?: boolean
 }) {
   const rankDisplay = useWindowMetrics ? rank : wallet.rank_position || rank
+  const resolvedPositions = getResolvedPositionsCount(wallet)
+  const analysisAgeHours = getAnalysisAgeHours(wallet.last_analyzed_at || null)
+  const isAnalysisStale = analysisAgeHours != null && analysisAgeHours >= 24
+  const hasLowResolvedSample = !useWindowMetrics && resolvedPositions < 20
 
   const pnl =
     useWindowMetrics && wallet.period_pnl != null
@@ -2241,8 +2272,9 @@ function LeaderboardRow({
           onCopy={onCopyAddress}
         />
         <div className="mt-1 flex items-center justify-between gap-2">
-          {pills.length > 0 ? (
-            <div className="flex items-center gap-1 flex-wrap min-w-0">
+          <div className="flex items-center gap-1 flex-wrap min-w-0">
+            {pills.length > 0 ? (
+              <>
               {pills.map(tag => (
                 <span
                   key={tag}
@@ -2261,10 +2293,17 @@ function LeaderboardRow({
                   +{totalPillsCount - pills.length}
                 </span>
               )}
-            </div>
-          ) : (
-            <span className="text-[9px] text-muted-foreground/60">no tags</span>
-          )}
+              </>
+            ) : (
+              <span className="text-[9px] text-muted-foreground/60">no tags</span>
+            )}
+            {!useWindowMetrics && hasLowResolvedSample && (
+              <span className="text-[9px] text-amber-300">low sample</span>
+            )}
+            {isAnalysisStale && (
+              <span className="text-[9px] text-amber-300">stale {timeAgo(wallet.last_analyzed_at || null)}</span>
+            )}
+          </div>
           <ScoreSparkline points={metricSparkline} className="shrink-0" />
         </div>
       </TableCell>
@@ -2348,9 +2387,16 @@ function LeaderboardRow({
             className="min-w-[78px] justify-between"
           />
           {!useWindowMetrics && (
-            <span className="text-[9px] text-muted-foreground">
-              {wallet.wins}W/{wallet.losses}L
-            </span>
+            <>
+              <span className="text-[9px] text-muted-foreground">
+                {wallet.wins}W/{wallet.losses}L · {formatNumber(resolvedPositions)} resolved
+              </span>
+              {Number(wallet.total_trades ?? 0) > resolvedPositions && (
+                <span className="text-[9px] text-muted-foreground/70">
+                  {formatNumber(wallet.total_trades ?? 0)} total trades
+                </span>
+              )}
+            </>
           )}
         </div>
       </TableCell>

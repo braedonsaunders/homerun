@@ -2140,6 +2140,7 @@ class LiveTradingRuntimeState(Base):
     last_trade_at = Column(DateTime, nullable=True)
     daily_volume_reset_at = Column(DateTime, nullable=True)
     market_positions_json = Column(JSON, default=dict)
+    pending_reconciliation_json = Column(JSON, default=list)
     balance_signature_type = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
@@ -2314,6 +2315,7 @@ class ScannerSnapshot(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_scan_at = Column(DateTime, nullable=True)
     opportunities_json = Column(JSON, default=list)  # list of Opportunity dicts
+    opportunities_count = Column(Integer, default=0)
     # Status fields (denormalized for API)
     running = Column(Boolean, default=True)
     enabled = Column(Boolean, default=True)
@@ -3637,6 +3639,14 @@ async def get_db_session() -> AsyncSession:
                     pass
         raise
     finally:
+        if session.in_transaction():
+            try:
+                await session.rollback()
+            except Exception:
+                try:
+                    await session.invalidate()
+                except Exception:
+                    pass
         # close() is guaranteed to never raise (it handles
         # CancelledError and falls back to invalidate internally).
         await session.close()

@@ -79,18 +79,62 @@ def to_float(value: Any, default: float = 0.0) -> float:
 
 def to_bool(value: Any, default: bool = False) -> bool:
     """Parse any value to bool."""
+    parsed = coerce_bool(value, default)
+    return default if parsed is None else parsed
+
+
+def coerce_bool(value: Any, default: bool | None = False) -> bool | None:
+    """Parse any value to bool, optionally preserving ``None``."""
     if isinstance(value, bool):
         return value
     if value is None:
         return default
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return default
+        return bool(value)
     text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
+    if text in {"1", "true", "t", "yes", "y", "on"}:
         return True
-    if text in {"0", "false", "no", "n", "off"}:
+    if text in {"0", "false", "f", "no", "n", "off"}:
         return False
+    if text == "" and default is None:
+        return None
     return default
 
 
 def normalize_market_id(value: object) -> str:
     """Strip and lowercase a market identifier."""
     return str(value or "").strip().lower()
+
+
+def normalize_identifier(value: object) -> str:
+    """Strip and lowercase an identifier."""
+    return normalize_market_id(value)
+
+
+def parse_iso_datetime(value: Any, *, naive: bool = True) -> datetime | None:
+    """Parse ISO datetime input, normalizing to UTC when an offset is present."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("+00:00+00:00"):
+            text = text[:-6]
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        return parsed if naive else parsed.replace(tzinfo=timezone.utc)
+    normalized = parsed.astimezone(timezone.utc)
+    return normalized.replace(tzinfo=None) if naive else normalized
+
+
+def format_iso_utc_z(value: datetime | None) -> str | None:
+    """Serialize a datetime to a UTC ISO string ending in ``Z``."""
+    return to_iso(value)

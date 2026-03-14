@@ -17,7 +17,6 @@ from services.signal_bus import (
     build_signal_contract_from_opportunity,
     expire_source_signals_except,
     make_dedupe_key,
-    refresh_trade_signal_snapshots,
     set_trade_signal_status as project_trade_signal_status,
     upsert_trade_signal,
 )
@@ -354,6 +353,26 @@ class IntentRuntime:
         self._ws_callback_registered = False
         self._projection_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._projection_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+    def _track_task(self, task: asyncio.Task[Any], *, name: str) -> asyncio.Task[Any]:
+        self._background_tasks.add(task)
+
+        def _finalize(done_task: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error("Intent runtime background task failed", task_name=name, exc_info=exc)
+
+        task.add_done_callback(_finalize)
+        return task
+
+    def _start_task(self, coro: Any, *, name: str) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coro, name=name)
+        return self._track_task(task, name=name)
 
     @property
     def started(self) -> bool:
@@ -364,17 +383,29 @@ class IntentRuntime:
             return
         self._started = True
         self._loop = asyncio.get_running_loop()
-        self._projection_task = asyncio.create_task(self._run_projection_loop(), name="intent-runtime-projection")
+        self._projection_task = self._start_task(
+            self._run_projection_loop(),
+            name="intent-runtime-projection",
+        )
         self._register_ws_callback()
         await self.hydrate_from_db()
 
     async def stop(self) -> None:
+        background_tasks = [
+            task
+            for task in self._background_tasks
+            if task is not self._projection_task and not task.done()
+        ]
+        for task in background_tasks:
+            task.cancel()
         if self._projection_task is not None and not self._projection_task.done():
             self._projection_task.cancel()
             try:
                 await self._projection_task
             except asyncio.CancelledError:
                 pass
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         self._projection_task = None
         self._loop = None
         self._started = False
@@ -584,7 +615,7 @@ class IntentRuntime:
         except RuntimeError:
             running_loop = None
         if running_loop is loop:
-            loop.create_task(
+            self._start_task(
                 self._reactivate_deferred_signals_for_token(normalized_token),
                 name=f"intent-runtime-deferred-{normalized_token}",
             )
@@ -794,7 +825,7 @@ class IntentRuntime:
                 }
             )
         if tokens_to_subscribe:
-            asyncio.create_task(
+            self._start_task(
                 self._ensure_hot_subscriptions(sorted(tokens_to_subscribe)),
                 name="intent-runtime-hydrate-prewarm",
             )
@@ -1013,7 +1044,7 @@ class IntentRuntime:
                     existing["updated_at"] = _to_iso(now)
 
         if prewarm_token_ids:
-            asyncio.create_task(
+            self._start_task(
                 self._ensure_hot_subscriptions(sorted(prewarm_token_ids)),
                 name=f"intent-runtime-prewarm-{normalized_source or 'signals'}",
             )
@@ -1307,7 +1338,6 @@ class IntentRuntime:
                     commit=False,
                 )
             await session.commit()
-            await refresh_trade_signal_snapshots(session)
 
     async def _project_status(self, payload: dict[str, Any]) -> None:
         await self._project_status_batch([payload])
@@ -1340,7 +1370,6 @@ class IntentRuntime:
                 changed_any = changed_any or bool(changed)
             if changed_any:
                 await session.commit()
-                await refresh_trade_signal_snapshots(session)
 
 
 _intent_runtime: IntentRuntime | None = None

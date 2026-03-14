@@ -771,6 +771,8 @@ async def _run_loop() -> None:
                     "Tracked-traders worker cycle hit retryable DB error; will retry next cycle",
                     exc_info=exc,
                 )
+            elif isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                logger.warning("Tracked-traders worker cycle timed out: %s", exc)
             else:
                 logger.exception("Tracked-traders worker cycle failed: %s", exc)
             try:

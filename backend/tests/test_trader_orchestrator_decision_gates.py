@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -756,6 +756,54 @@ def test_strict_ws_pricing_allows_ws_source_with_fresh_age():
 
     assert result["final_decision"] == "selected"
     assert any(g["gate"] == "strict_ws_pricing" and g["status"] == "passed" for g in result["platform_gates"])
+
+
+def test_backtest_mode_skips_live_execution_freshness_gates():
+    runtime_signal = SimpleNamespace(
+        id="signal-backtest-freshness",
+        market_id="market-1",
+        direction="buy_yes",
+        source="scanner",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        payload_json={},
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=runtime_signal,
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={"max_trade_notional_usd": 1000.0},
+        allow_averaging=True,
+        open_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={
+            "require_strict_ws_pricing": True,
+            "require_live_market_revalidation": True,
+            "max_market_data_age_ms": 1000,
+        },
+        execution_mode="backtest",
+    )
+
+    assert result["final_decision"] == "selected"
+    assert any(g["gate"] == "strict_ws_pricing" and g["status"] == "skipped" for g in result["platform_gates"])
+    assert any(
+        g["gate"] == "live_market_revalidation" and g["status"] == "skipped"
+        for g in result["platform_gates"]
+    )
+    assert any(
+        g["gate"] == "market_data_freshness" and g["status"] == "skipped"
+        for g in result["platform_gates"]
+    )
+    strict_ws_check = next(check for check in result["checks_payload"] if check["check_key"] == "strict_ws_pricing")
+    assert strict_ws_check["passed"] is True
+    assert "Skipped in backtest mode" in str(strict_ws_check["detail"])
 
 
 def test_max_risk_score_guard_blocks_high_risk_signal():

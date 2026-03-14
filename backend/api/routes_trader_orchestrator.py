@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,9 +25,20 @@ from services.trader_orchestrator_state import (
     ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     update_orchestrator_control,
 )
+from services.worker_state import summarize_worker_stats
 from utils.utcnow import utcnow
 
 router = APIRouter(prefix="/trader-orchestrator", tags=["Trader Orchestrator"])
+_ORCHESTRATOR_OVERVIEW_CACHE_TTL_SECONDS = 5.0
+_orchestrator_overview_cache: dict | None = None
+_orchestrator_overview_cache_updated_at: datetime | None = None
+
+
+def _clear_orchestrator_caches() -> None:
+    global _orchestrator_overview_cache
+    global _orchestrator_overview_cache_updated_at
+    _orchestrator_overview_cache = None
+    _orchestrator_overview_cache_updated_at = None
 
 
 class StartRequest(BaseModel):
@@ -145,19 +157,38 @@ def _assert_not_globally_paused() -> None:
 
 @router.get("/overview")
 async def get_overview(session: AsyncSession = Depends(get_db_session)):
-    return await get_orchestrator_overview(session)
+    global _orchestrator_overview_cache, _orchestrator_overview_cache_updated_at
+    if (
+        _orchestrator_overview_cache is not None
+        and _orchestrator_overview_cache_updated_at is not None
+        and (utcnow() - _orchestrator_overview_cache_updated_at).total_seconds()
+        <= _ORCHESTRATOR_OVERVIEW_CACHE_TTL_SECONDS
+    ):
+        return _orchestrator_overview_cache
+    payload = await get_orchestrator_overview(session)
+    if session.in_transaction():
+        await session.rollback()
+    _orchestrator_overview_cache = payload
+    _orchestrator_overview_cache_updated_at = utcnow()
+    return payload
 
 
 @router.get("/status")
 async def get_status(session: AsyncSession = Depends(get_db_session)):
     control = await read_orchestrator_control(session)
     snapshot = await read_orchestrator_snapshot(session)
-    config = await compose_trader_orchestrator_config(session)
-    return {
+    if isinstance(snapshot, dict):
+        snapshot = dict(snapshot)
+        snapshot["stats"] = summarize_worker_stats(snapshot.get("stats"))
+    config = await compose_trader_orchestrator_config(session, control=control)
+    if session.in_transaction():
+        await session.rollback()
+    payload = {
         "control": control,
         "snapshot": snapshot,
         "config": config,
     }
+    return payload
 
 
 @router.put("/settings")
@@ -178,7 +209,7 @@ async def update_orchestrator_settings(
         update_kwargs["settings_json"] = settings_updates
 
     control = await update_orchestrator_control(session, **update_kwargs)
-    config = await compose_trader_orchestrator_config(session)
+    config = await compose_trader_orchestrator_config(session, control=control)
 
     if request.requested_by or update_kwargs:
         await create_trader_event(
@@ -195,6 +226,7 @@ async def update_orchestrator_settings(
             },
         )
 
+    _clear_orchestrator_caches()
     return {
         "status": "updated",
         "control": control,
@@ -245,6 +277,7 @@ async def start_orchestrator(
         message=f"Trader orchestrator started in {mode} mode",
         payload={"mode": mode},
     )
+    _clear_orchestrator_caches()
     return {"status": "started", "control": control}
 
 
@@ -271,6 +304,7 @@ async def stop_orchestrator(
         source="trader_orchestrator",
         message="Trader orchestrator stopped",
     )
+    _clear_orchestrator_caches()
     return {"status": "stopped", "control": control}
 
 
@@ -292,6 +326,7 @@ async def set_kill_switch(
         message="Kill switch updated",
         payload={"enabled": bool(request.enabled)},
     )
+    _clear_orchestrator_caches()
     return {
         "status": "updated",
         "kill_switch": bool(request.enabled),
@@ -309,6 +344,7 @@ async def run_live_preflight(
         requested_mode=request.mode,
         requested_by=request.requested_by,
     )
+    _clear_orchestrator_caches()
     return result
 
 
@@ -318,12 +354,14 @@ async def arm_live(
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
-        return await arm_live_start(
+        result = await arm_live_start(
             session,
             preflight_id=request.preflight_id,
             ttl_seconds=request.ttl_seconds,
             requested_by=request.requested_by,
         )
+        _clear_orchestrator_caches()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -370,6 +408,7 @@ async def start_live(
         message="Live trading started",
         payload={"mode": request.mode},
     )
+    _clear_orchestrator_caches()
     return {"status": "started", "control": control}
 
 
@@ -399,4 +438,5 @@ async def stop_live(
         operator=request.requested_by,
         message="Live trading stopped",
     )
+    _clear_orchestrator_caches()
     return {"status": "stopped", "control": control}

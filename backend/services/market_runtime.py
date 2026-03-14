@@ -17,8 +17,9 @@ from services.event_dispatcher import event_dispatcher
 from services.intent_runtime import get_intent_runtime
 from services.reference_runtime import get_reference_runtime
 from services.runtime_status import runtime_status
-from services.worker_state import read_worker_control
+from services.worker_state import read_worker_control, summarize_worker_stats, write_worker_snapshot
 from services.ws_feeds import get_feed_manager
+from utils.converters import normalize_identifier as _normalize_market_id
 from utils.logger import get_logger
 from utils.utcnow import utcnow
 
@@ -26,6 +27,8 @@ logger = get_logger(__name__)
 
 _WS_REACTIVE_DEBOUNCE_SECONDS = max(0.01, float(getattr(settings, "CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS", 0.05) or 0.05))
 _CATALOG_REFRESH_SECONDS = 5.0
+_CRYPTO_SNAPSHOT_PERSIST_INTERVAL_SECONDS = 5.0
+_CRYPTO_SNAPSHOT_MARKETS_LIMIT = 64
 _FULL_REFRESH_FLOOR_SECONDS = 0.5
 _BOUNDARY_INTERVALS_SECONDS = (300, 900, 3600, 14400)
 _BOUNDARY_PREFETCH_WINDOW_SECONDS = 15
@@ -38,11 +41,6 @@ def _to_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
-
-
-def _normalize_market_id(value: Any) -> str:
-    return str(value or "").strip().lower()
-
 
 def _copy_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
@@ -81,6 +79,7 @@ class MarketRuntime:
         self._current_activity = "Starting"
         self._last_error: str | None = None
         self._last_catalog_refresh_mono = 0.0
+        self._last_snapshot_persist_mono = 0.0
         self._pending_tokens: set[str] = set()
         self._pending_assets: set[str] = set()
         self._pending_reactive_lock = asyncio.Lock()
@@ -154,11 +153,70 @@ class MarketRuntime:
             "stats": {
                 "market_count": len(self._crypto_markets),
                 "markets": self.get_crypto_markets(),
+                "oracle_prices": self.get_oracle_prices(),
                 "trigger": self._last_crypto_trigger,
                 "ws_feeds": ws_status,
                 **self._reference_runtime.get_status(),
             },
         }
+
+    def _last_crypto_refresh_datetime(self) -> datetime | None:
+        raw_value = str(self._last_crypto_refresh_at or "").strip()
+        if not raw_value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    async def _persist_crypto_worker_snapshot(
+        self,
+        *,
+        control: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> None:
+        resolved_control = dict(control or await self._read_crypto_control())
+        status = self.get_crypto_status()
+        stats = status.get("stats") if isinstance(status.get("stats"), dict) else {}
+        persisted_stats = summarize_worker_stats(stats)
+        markets = stats.get("markets")
+        if isinstance(markets, list) and markets:
+            persisted_stats["markets"] = copy.deepcopy(markets[:_CRYPTO_SNAPSHOT_MARKETS_LIMIT])
+            persisted_stats["markets_count"] = len(markets)
+        oracle_prices = stats.get("oracle_prices")
+        if isinstance(oracle_prices, dict) and oracle_prices:
+            persisted_stats["oracle_prices"] = copy.deepcopy(oracle_prices)
+        enabled = bool(resolved_control.get("is_enabled", True))
+        paused = bool(resolved_control.get("is_paused", False))
+        runtime_status.update_crypto(
+            running=True,
+            enabled=enabled and not paused,
+            current_activity=str(status.get("current_activity") or self._current_activity or "Idle"),
+            interval_seconds=int(resolved_control.get("interval_seconds") or 1),
+            last_run_at=self._last_crypto_refresh_at,
+            last_error=self._last_error,
+            stats=stats,
+            control=resolved_control,
+        )
+        now_mono = time.monotonic()
+        if not force and (now_mono - self._last_snapshot_persist_mono) < _CRYPTO_SNAPSHOT_PERSIST_INTERVAL_SECONDS:
+            return
+        async with AsyncSessionLocal() as session:
+            await write_worker_snapshot(
+                session,
+                "crypto",
+                running=True,
+                enabled=enabled and not paused,
+                current_activity=str(status.get("current_activity") or self._current_activity or "Idle"),
+                interval_seconds=int(resolved_control.get("interval_seconds") or 1),
+                last_run_at=self._last_crypto_refresh_datetime(),
+                last_error=self._last_error,
+                stats=persisted_stats,
+            )
+        self._last_snapshot_persist_mono = now_mono
 
     def get_market_snapshot(self, market_id: str, *, hint: dict[str, Any] | None = None) -> dict[str, Any] | None:
         normalized = _normalize_market_id(market_id)
@@ -326,16 +384,10 @@ class MarketRuntime:
                     self._current_activity = "Live"
                 else:
                     self._current_activity = "Paused" if paused else "Disabled"
-                    runtime_status.update_crypto(
-                        running=True,
-                        enabled=enabled and not paused,
-                        current_activity=self._current_activity,
-                        interval_seconds=int(interval_seconds),
-                        last_run_at=self._last_crypto_refresh_at,
-                        last_error=self._last_error,
-                        stats=self.get_crypto_status()["stats"],
-                        control=control,
-                    )
+                    try:
+                        await self._persist_crypto_worker_snapshot(control=control, force=True)
+                    except Exception as snapshot_exc:
+                        logger.warning("Failed to persist crypto worker snapshot", exc_info=snapshot_exc)
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:
                 raise
@@ -343,14 +395,13 @@ class MarketRuntime:
                 self._last_error = str(exc)
                 self._current_activity = f"Error: {exc}"
                 logger.warning("Market runtime loop failed", exc_info=exc)
-                runtime_status.update_crypto(
-                    running=True,
-                    enabled=True,
-                    current_activity=self._current_activity,
-                    last_run_at=self._last_crypto_refresh_at,
-                    last_error=self._last_error,
-                    stats=self.get_crypto_status()["stats"],
-                )
+                try:
+                    await self._persist_crypto_worker_snapshot(
+                        control={"is_enabled": True, "is_paused": False, "interval_seconds": 1},
+                        force=True,
+                    )
+                except Exception as snapshot_exc:
+                    logger.warning("Failed to persist crypto worker snapshot after runtime error", exc_info=snapshot_exc)
                 await asyncio.sleep(1.0)
 
     async def _read_crypto_control(self) -> dict[str, Any]:
@@ -515,17 +566,11 @@ class MarketRuntime:
             await event_bus.publish("crypto_markets_update", {"markets": copy.deepcopy(payload), "trigger": str(trigger)})
         except Exception:
             pass
-        stats = self.get_crypto_status()["stats"]
-        runtime_status.update_crypto(
-            running=True,
-            enabled=True,
-            current_activity="Live",
-            interval_seconds=1,
-            last_run_at=self._last_crypto_refresh_at,
-            last_error=self._last_error,
-            stats=stats,
-            control=await self._read_crypto_control(),
-        )
+        self._last_error = None
+        try:
+            await self._persist_crypto_worker_snapshot()
+        except Exception as snapshot_exc:
+            logger.warning("Failed to persist crypto worker snapshot after refresh", exc_info=snapshot_exc)
 
     async def _queue_opportunity_dispatch(
         self,

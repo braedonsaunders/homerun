@@ -19,8 +19,12 @@ import {
 } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet'
+import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import { normalizeUtcTimestampsInPlace } from '../lib/timestamps'
 import axios from 'axios'
@@ -113,6 +117,23 @@ interface SummaryCard {
   subtitle: string
   tone: Tone
   icon: ComponentType<{ className?: string }>
+}
+
+interface BacktestRunSettings {
+  detect: {
+    useOhlcReplay: boolean
+    replayLookbackHours: string
+    replayTimeframe: string
+    replayMaxMarkets: string
+    replayMaxSteps: string
+    maxOpportunities: string
+  }
+  evaluate: {
+    maxSignals: string
+  }
+  exit: {
+    maxPositions: string
+  }
 }
 
 function toNumber(value: unknown): number {
@@ -680,9 +701,60 @@ const DETECT_REPLAY_OPTIONS = {
   replay_timeframe: '30m',
   replay_max_markets: 80,
   replay_max_steps: 72,
+  max_opportunities: 100,
 }
 
 const BACKTEST_MODES: BacktestMode[] = ['detect', 'evaluate', 'exit']
+const REPLAY_TIMEFRAME_OPTIONS = ['5m', '15m', '30m', '1h', '4h']
+
+function createDefaultBacktestSettings(): BacktestRunSettings {
+  return {
+    detect: {
+      useOhlcReplay: DETECT_REPLAY_OPTIONS.use_ohlc_replay,
+      replayLookbackHours: String(DETECT_REPLAY_OPTIONS.replay_lookback_hours),
+      replayTimeframe: DETECT_REPLAY_OPTIONS.replay_timeframe,
+      replayMaxMarkets: String(DETECT_REPLAY_OPTIONS.replay_max_markets),
+      replayMaxSteps: String(DETECT_REPLAY_OPTIONS.replay_max_steps),
+      maxOpportunities: String(DETECT_REPLAY_OPTIONS.max_opportunities),
+    },
+    evaluate: {
+      maxSignals: '50',
+    },
+    exit: {
+      maxPositions: '50',
+    },
+  }
+}
+
+function normalizeIntegerSetting(value: string, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(String(value || '').trim(), 10)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function buildBacktestPayload(
+  mode: BacktestMode,
+  sourceCode: string,
+  slug: string,
+  config: Record<string, any> | undefined,
+  settings: BacktestRunSettings
+): Record<string, any> {
+  return {
+    source_code: sourceCode,
+    slug,
+    config: config || {},
+    use_ohlc_replay: mode === 'detect' ? settings.detect.useOhlcReplay : false,
+    replay_lookback_hours: normalizeIntegerSetting(settings.detect.replayLookbackHours, 24, 1, 720),
+    replay_timeframe: settings.detect.replayTimeframe || DETECT_REPLAY_OPTIONS.replay_timeframe,
+    replay_max_markets: normalizeIntegerSetting(settings.detect.replayMaxMarkets, 80, 1, 300),
+    replay_max_steps: normalizeIntegerSetting(settings.detect.replayMaxSteps, 72, 1, 500),
+    max_opportunities: normalizeIntegerSetting(settings.detect.maxOpportunities, 100, 1, 500),
+    max_signals: normalizeIntegerSetting(settings.evaluate.maxSignals, 50, 1, 500),
+    max_positions: normalizeIntegerSetting(settings.exit.maxPositions, 50, 1, 500),
+  }
+}
 
 interface IntegratedBacktestScore {
   overall: number
@@ -801,6 +873,7 @@ export default function StrategyBacktestFlyout({
   const [phaseResults, setPhaseResults] = useState<Partial<Record<BacktestMode, BacktestResult>>>({})
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null)
   const [runningPhase, setRunningPhase] = useState<BacktestMode | null>(null)
+  const [runSettings, setRunSettings] = useState<BacktestRunSettings>(() => createDefaultBacktestSettings())
 
   const backtestMutation = useMutation({
     mutationFn: async () => {
@@ -812,12 +885,7 @@ export default function StrategyBacktestFlyout({
 
       for (const candidate of BACKTEST_MODES) {
         setRunningPhase(candidate)
-        const payload = {
-          source_code: sourceCode,
-          slug,
-          config: config || {},
-          ...(candidate === 'detect' ? DETECT_REPLAY_OPTIONS : { use_ohlc_replay: false }),
-        }
+        const payload = buildBacktestPayload(candidate, sourceCode, slug, config, runSettings)
         try {
           const { data } = await api.post(MODE_ENDPOINTS[candidate], payload)
           normalizeUtcTimestampsInPlace(data)
@@ -908,6 +976,271 @@ export default function StrategyBacktestFlyout({
                 Runs detect, evaluate, and exit as one required suite, shown as stacked sections below.
               </SheetDescription>
             </SheetHeader>
+
+            <div className="rounded-lg border border-border/40 bg-card/30 p-3 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-medium">Run Settings</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Tune replay depth and per-phase sample caps before launching the suite.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-[10px]"
+                  onClick={() => setRunSettings(createDefaultBacktestSettings())}
+                  disabled={backtestMutation.isPending}
+                >
+                  Reset defaults
+                </Button>
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-3">
+                <div className="rounded-md border border-border/40 bg-background/40 p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <BarChart3 className="w-3.5 h-3.5 text-cyan-400" />
+                    <div>
+                      <p className="text-[11px] font-medium">Detect</p>
+                      <p className="text-[10px] text-muted-foreground">Replay window and collection limits.</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border/30 bg-background/70 px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label htmlFor="backtest-use-ohlc-replay" className="text-[11px]">
+                          Use OHLC replay
+                        </Label>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Replays historical snapshots only when live detect returns nothing.
+                        </p>
+                      </div>
+                      <Switch
+                        id="backtest-use-ohlc-replay"
+                        checked={runSettings.detect.useOhlcReplay}
+                        onCheckedChange={(checked) =>
+                          setRunSettings((current) => ({
+                            ...current,
+                            detect: {
+                              ...current.detect,
+                              useOhlcReplay: checked,
+                            },
+                          }))
+                        }
+                        disabled={backtestMutation.isPending}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="backtest-replay-lookback" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Replay Hours
+                      </Label>
+                      <Input
+                        id="backtest-replay-lookback"
+                        type="number"
+                        min={1}
+                        max={720}
+                        step={1}
+                        className="h-8 text-xs font-mono"
+                        value={runSettings.detect.replayLookbackHours}
+                        onChange={(event) =>
+                          setRunSettings((current) => ({
+                            ...current,
+                            detect: {
+                              ...current.detect,
+                              replayLookbackHours: event.target.value,
+                            },
+                          }))
+                        }
+                        disabled={backtestMutation.isPending || !runSettings.detect.useOhlcReplay}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Replay Cadence</Label>
+                      <Select
+                        value={runSettings.detect.replayTimeframe}
+                        onValueChange={(value) =>
+                          setRunSettings((current) => ({
+                            ...current,
+                            detect: {
+                              ...current.detect,
+                              replayTimeframe: value,
+                            },
+                          }))
+                        }
+                        disabled={backtestMutation.isPending || !runSettings.detect.useOhlcReplay}
+                      >
+                        <SelectTrigger className="h-8 text-xs font-mono">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {REPLAY_TIMEFRAME_OPTIONS.map((timeframe) => (
+                            <SelectItem key={timeframe} value={timeframe}>
+                              {timeframe}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="backtest-replay-markets" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Replay Markets
+                      </Label>
+                      <Input
+                        id="backtest-replay-markets"
+                        type="number"
+                        min={1}
+                        max={300}
+                        step={1}
+                        className="h-8 text-xs font-mono"
+                        value={runSettings.detect.replayMaxMarkets}
+                        onChange={(event) =>
+                          setRunSettings((current) => ({
+                            ...current,
+                            detect: {
+                              ...current.detect,
+                              replayMaxMarkets: event.target.value,
+                            },
+                          }))
+                        }
+                        disabled={backtestMutation.isPending || !runSettings.detect.useOhlcReplay}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="backtest-replay-steps" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Replay Steps
+                      </Label>
+                      <Input
+                        id="backtest-replay-steps"
+                        type="number"
+                        min={1}
+                        max={500}
+                        step={1}
+                        className="h-8 text-xs font-mono"
+                        value={runSettings.detect.replayMaxSteps}
+                        onChange={(event) =>
+                          setRunSettings((current) => ({
+                            ...current,
+                            detect: {
+                              ...current.detect,
+                              replayMaxSteps: event.target.value,
+                            },
+                          }))
+                        }
+                        disabled={backtestMutation.isPending || !runSettings.detect.useOhlcReplay}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="backtest-max-opportunities" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Max Opportunities Returned
+                    </Label>
+                    <Input
+                      id="backtest-max-opportunities"
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      className="h-8 text-xs font-mono"
+                      value={runSettings.detect.maxOpportunities}
+                      onChange={(event) =>
+                        setRunSettings((current) => ({
+                          ...current,
+                          detect: {
+                            ...current.detect,
+                            maxOpportunities: event.target.value,
+                          },
+                        }))
+                      }
+                      disabled={backtestMutation.isPending}
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border/40 bg-background/40 p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <div>
+                      <p className="text-[11px] font-medium">Evaluate</p>
+                      <p className="text-[10px] text-muted-foreground">How many recent signals to score.</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="backtest-max-signals" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Max Signals
+                    </Label>
+                    <Input
+                      id="backtest-max-signals"
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      className="h-8 text-xs font-mono"
+                      value={runSettings.evaluate.maxSignals}
+                      onChange={(event) =>
+                        setRunSettings((current) => ({
+                          ...current,
+                          evaluate: {
+                            ...current.evaluate,
+                            maxSignals: event.target.value,
+                          },
+                        }))
+                      }
+                      disabled={backtestMutation.isPending}
+                    />
+                  </div>
+
+                  <p className="text-[10px] text-muted-foreground">
+                    The evaluator scores the newest qualifying signal emissions first, capped at this count.
+                  </p>
+                </div>
+
+                <div className="rounded-md border border-border/40 bg-background/40 p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-3.5 h-3.5 text-amber-400" />
+                    <div>
+                      <p className="text-[11px] font-medium">Exit</p>
+                      <p className="text-[10px] text-muted-foreground">How much open inventory to inspect.</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="backtest-max-positions" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Max Open Positions
+                    </Label>
+                    <Input
+                      id="backtest-max-positions"
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      className="h-8 text-xs font-mono"
+                      value={runSettings.exit.maxPositions}
+                      onChange={(event) =>
+                        setRunSettings((current) => ({
+                          ...current,
+                          exit: {
+                            ...current.exit,
+                            maxPositions: event.target.value,
+                          },
+                        }))
+                      }
+                      disabled={backtestMutation.isPending}
+                    />
+                  </div>
+
+                  <p className="text-[10px] text-muted-foreground">
+                    Exit backtests walk the most recent open positions first, up to this cap.
+                  </p>
+                </div>
+              </div>
+            </div>
 
             <div className="grid grid-cols-3 gap-1 rounded-md bg-muted/50 p-1">
               {BACKTEST_MODES.map((candidate) => (

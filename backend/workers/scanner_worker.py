@@ -418,7 +418,10 @@ async def _run_scan_loop() -> None:
                 try:
                     await clear_scanner_heavy_lane_degrade_if_expired(session)
                 except Exception as exc:
-                    logger.warning("Scanner heavy-lane degrade expiry check failed: %s", exc)
+                    if is_retryable_db_error(exc):
+                        logger.debug("Scanner heavy-lane degrade expiry check deferred due to transient DB contention")
+                    else:
+                        logger.warning("Scanner heavy-lane degrade expiry check failed: %s", exc)
                 control = await read_scanner_control(session)
 
             try:

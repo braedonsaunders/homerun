@@ -20,6 +20,7 @@ from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import and_, func, select
+from utils.converters import coerce_bool as _coerce_bool
 
 from models.database import (
     AppSettings,
@@ -138,21 +139,6 @@ def _clamp_float(value: Any, default: float, lo: float, hi: float) -> float:
     if parsed != parsed or parsed in (float("inf"), float("-inf")):
         parsed = default
     return max(lo, min(hi, parsed))
-
-
-def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return float(value) != 0.0
-    text = str(value).strip().lower()
-    if text in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "f", "no", "n", "off"}:
-        return False
-    return default
 
 
 def _repo_root() -> Path:

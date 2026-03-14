@@ -626,6 +626,7 @@ class ExecutionSessionEngine:
                     if isinstance(live_market_payload, dict):
                         order_payload["live_market"] = dict(live_market_payload)
                 params = dict(strategy_params or {})
+                order_payload["strategy_params"] = dict(params)
                 exit_config: dict[str, Any] = {}
                 for param_key, param_value in params.items():
                     key_text = str(param_key or "").strip()
@@ -1008,12 +1009,16 @@ class ExecutionSessionEngine:
             payload_patch=session_payload_patch,
         )
         event_type = "session_completed"
-        event_severity = "info" if final_status == "completed" else "warn"
+        event_severity = "info"
         event_message = f"Execution session ended with status={final_status}"
         if final_status in {"working", "hedging"}:
             event_type = "session_progress"
             event_severity = "info"
             event_message = f"Execution session remains {final_status}; awaiting leg completion"
+        elif final_status == "failed":
+            event_type = "session_failed"
+            event_severity = "error"
+            event_message = error_message or "Execution session failed."
         elif final_status == "skipped":
             event_type = "session_skipped"
             event_severity = "info"

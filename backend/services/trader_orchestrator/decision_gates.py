@@ -6,7 +6,7 @@ from typing import Any, Callable
 from config import settings
 from services.data_events import BlockReason
 from services.strategy_sdk import StrategySDK
-from utils.converters import safe_float
+from utils.converters import coerce_bool as _coerce_bool, safe_float
 
 
 def _parse_hhmm_utc(value: Any) -> tuple[int, int] | None:
@@ -61,19 +61,6 @@ def _parse_nonnegative_seconds(value: Any) -> float | None:
     if parsed < 0:
         return None
     return float(parsed)
-
-
-def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
 
 
 def _seconds_until_utc(end_time_value: Any) -> float | None:
@@ -501,11 +488,14 @@ def apply_platform_decision_gates(
     pending_live_exit_max_allowed: int = 0,
     pending_live_exit_identity_guard_enabled: bool = True,
     strategy_params: dict[str, Any] | None = None,
+    execution_mode: str = "live",
 ) -> dict[str, Any]:
     final_decision = str(getattr(decision_obj, "decision", "failed") or "failed")
     final_reason = str(getattr(decision_obj, "reason", "") or "")
     score = getattr(decision_obj, "score", None)
     params = dict(strategy_params or {})
+    execution_mode = str(execution_mode or "live").strip().lower() or "live"
+    live_execution_gates_enabled = execution_mode != "backtest"
     min_order_floor = StrategySDK.resolve_min_order_size_usd(params, fallback=0.01)
     size_usd = float(max(min_order_floor, safe_float(getattr(decision_obj, "size_usd", None), 10.0)))
     pending_exit_count = max(0, int(pending_live_exit_count or 0))
@@ -657,57 +647,113 @@ def apply_platform_decision_gates(
                 (datetime.now(timezone.utc) - live_fetched_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
             )
 
-        strict_ws_price_passed = (
-            not strict_ws_pricing_required
-            or (
-                live_selected_price is not None
-                and live_selected_price > 0.0
-                and market_data_source in set(strict_ws_price_sources)
-                and live_age_ms is not None
-                and live_age_ms <= max_age_ms
+        if not live_execution_gates_enabled:
+            checks_payload.append(
+                {
+                    "check_key": "strict_ws_pricing",
+                    "check_label": "Strict WS pricing source",
+                    "passed": True,
+                    "score": live_age_ms,
+                    "detail": "Skipped in backtest mode; strict WS pricing applies only to live execution",
+                    "payload": {
+                        "required": strict_ws_pricing_required,
+                        "market_data_source": market_data_source,
+                        "strict_ws_price_sources": strict_ws_price_sources,
+                        "live_selected_price": live_selected_price,
+                        "live_age_ms": live_age_ms,
+                        "execution_mode": execution_mode,
+                    },
+                }
             )
-        )
-        checks_payload.append(
-            {
-                "check_key": "strict_ws_pricing",
-                "check_label": "Strict WS pricing source",
-                "passed": strict_ws_price_passed,
-                "score": live_age_ms,
-                "detail": (
-                    (
-                        f"source={market_data_source} age_ms={live_age_ms:.0f} "
-                        f"max={max_age_ms} required_sources={','.join(strict_ws_price_sources)}"
-                        if live_age_ms is not None
-                        else (
-                            f"source={market_data_source} age_ms=unknown "
-                            f"required_sources={','.join(strict_ws_price_sources)}"
-                        )
-                    )
-                    if strict_ws_pricing_required
-                    else "Strict WS pricing disabled by strategy config"
-                ),
-                "payload": {
-                    "required": strict_ws_pricing_required,
-                    "market_data_source": market_data_source,
-                    "strict_ws_price_sources": strict_ws_price_sources,
-                    "live_selected_price": live_selected_price,
-                    "live_age_ms": live_age_ms,
-                },
-            }
-        )
-        if strict_ws_price_passed:
             platform_gates.append(
                 {
                     "gate": "strict_ws_pricing",
-                    "status": "passed" if strict_ws_pricing_required else "skipped",
+                    "status": "skipped",
+                    "detail": "Skipped in backtest mode; strict WS pricing applies only to live execution",
+                    "payload": {
+                        "required": strict_ws_pricing_required,
+                        "market_data_source": market_data_source,
+                        "strict_ws_price_sources": strict_ws_price_sources,
+                        "live_selected_price": live_selected_price,
+                        "live_age_ms": live_age_ms,
+                        "execution_mode": execution_mode,
+                    },
+                }
+            )
+            strict_ws_gate_recorded = True
+
+            checks_payload.append(
+                {
+                    "check_key": "live_market_revalidation",
+                    "check_label": "Execution-time live market revalidation",
+                    "passed": True,
+                    "score": live_age_ms,
+                    "detail": "Skipped in backtest mode; live revalidation applies only to live execution",
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "required_sources": live_revalidation_sources,
+                        "revalidation_required": False,
+                        "live_selected_price": live_selected_price,
+                        "live_market_fetched_at": (
+                            live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                        ),
+                        "live_observed_at": (
+                            live_observed_at.isoformat().replace("+00:00", "Z") if live_observed_at is not None else None
+                        ),
+                        "live_age_ms": live_age_ms,
+                        "max_age_ms": max_age_ms,
+                        "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
+                    },
+                }
+            )
+            platform_gates.append(
+                {
+                    "gate": "live_market_revalidation",
+                    "status": "skipped",
+                    "detail": "Skipped in backtest mode; live revalidation applies only to live execution",
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "required_sources": live_revalidation_sources,
+                        "live_selected_price": live_selected_price,
+                        "live_market_fetched_at": (
+                            live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                        ),
+                        "live_age_ms": live_age_ms,
+                        "max_age_ms": max_age_ms,
+                        "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
+                    },
+                }
+            )
+            live_revalidation_gate_recorded = True
+        else:
+            strict_ws_price_passed = (
+                not strict_ws_pricing_required
+                or (
+                    live_selected_price is not None
+                    and live_selected_price > 0.0
+                    and market_data_source in set(strict_ws_price_sources)
+                    and live_age_ms is not None
+                    and live_age_ms <= max_age_ms
+                )
+            )
+            checks_payload.append(
+                {
+                    "check_key": "strict_ws_pricing",
+                    "check_label": "Strict WS pricing source",
+                    "passed": strict_ws_price_passed,
+                    "score": live_age_ms,
                     "detail": (
                         (
-                            f"source={market_data_source} strict sources={','.join(strict_ws_price_sources)} "
-                            f"age_ms={live_age_ms:.0f} max={max_age_ms}"
+                            f"source={market_data_source} age_ms={live_age_ms:.0f} "
+                            f"max={max_age_ms} required_sources={','.join(strict_ws_price_sources)}"
                             if live_age_ms is not None
                             else (
-                                f"source={market_data_source} strict sources={','.join(strict_ws_price_sources)} "
-                                "age_ms=unknown"
+                                f"source={market_data_source} age_ms=unknown "
+                                f"required_sources={','.join(strict_ws_price_sources)}"
                             )
                         )
                         if strict_ws_pricing_required
@@ -719,146 +765,186 @@ def apply_platform_decision_gates(
                         "strict_ws_price_sources": strict_ws_price_sources,
                         "live_selected_price": live_selected_price,
                         "live_age_ms": live_age_ms,
+                        "execution_mode": execution_mode,
                     },
                 }
             )
-            strict_ws_gate_recorded = True
-        else:
-            final_decision = "blocked"
-            final_reason = (
-                "Strict WS pricing required before execution: "
-                f"source={market_data_source or 'unknown'} "
-                f"age_ms={live_age_ms if live_age_ms is not None else 'unknown'} "
-                f"max={max_age_ms} required={strict_ws_price_sources}"
-            )
-            platform_gates.append(
-                {
-                    "gate": "strict_ws_pricing",
-                    "status": "blocked",
-                    "detail": final_reason,
-                    "payload": {
-                        "required": strict_ws_pricing_required,
-                        "market_data_source": market_data_source,
-                        "strict_ws_price_sources": strict_ws_price_sources,
-                        "live_selected_price": live_selected_price,
-                        "live_age_ms": live_age_ms,
-                    },
-                }
-            )
-            strict_ws_gate_recorded = True
+            if strict_ws_price_passed:
+                platform_gates.append(
+                    {
+                        "gate": "strict_ws_pricing",
+                        "status": "passed" if strict_ws_pricing_required else "skipped",
+                        "detail": (
+                            (
+                                f"source={market_data_source} strict sources={','.join(strict_ws_price_sources)} "
+                                f"age_ms={live_age_ms:.0f} max={max_age_ms}"
+                                if live_age_ms is not None
+                                else (
+                                    f"source={market_data_source} strict sources={','.join(strict_ws_price_sources)} "
+                                    "age_ms=unknown"
+                                )
+                            )
+                            if strict_ws_pricing_required
+                            else "Strict WS pricing disabled by strategy config"
+                        ),
+                        "payload": {
+                            "required": strict_ws_pricing_required,
+                            "market_data_source": market_data_source,
+                            "strict_ws_price_sources": strict_ws_price_sources,
+                            "live_selected_price": live_selected_price,
+                            "live_age_ms": live_age_ms,
+                            "execution_mode": execution_mode,
+                        },
+                    }
+                )
+                strict_ws_gate_recorded = True
+            else:
+                final_decision = "blocked"
+                final_reason = (
+                    "Strict WS pricing required before execution: "
+                    f"source={market_data_source or 'unknown'} "
+                    f"age_ms={live_age_ms if live_age_ms is not None else 'unknown'} "
+                    f"max={max_age_ms} required={strict_ws_price_sources}"
+                )
+                platform_gates.append(
+                    {
+                        "gate": "strict_ws_pricing",
+                        "status": "blocked",
+                        "detail": final_reason,
+                        "payload": {
+                            "required": strict_ws_pricing_required,
+                            "market_data_source": market_data_source,
+                            "strict_ws_price_sources": strict_ws_price_sources,
+                            "live_selected_price": live_selected_price,
+                            "live_age_ms": live_age_ms,
+                            "execution_mode": execution_mode,
+                        },
+                    }
+                )
+                strict_ws_gate_recorded = True
 
-        live_revalidation_required = bool(
-            final_decision == "selected" and live_revalidation_enforced and source and source in set(live_revalidation_sources)
-        )
-        live_revalidation_passed = (
-            not live_revalidation_required
-            or (
-                live_selected_price is not None
-                and live_selected_price > 0.0
-                and live_fetched_at is not None
-                and live_age_ms is not None
-                and live_age_ms <= max_age_ms
+            live_revalidation_required = bool(
+                final_decision == "selected"
+                and live_revalidation_enforced
+                and source
+                and source in set(live_revalidation_sources)
             )
-        )
-        checks_payload.append(
-            {
-                "check_key": "live_market_revalidation",
-                "check_label": "Execution-time live market revalidation",
-                "passed": live_revalidation_passed,
-                "score": live_age_ms,
-                "detail": (
-                    f"live_age_ms={live_age_ms:.0f} max={max_age_ms} source={source or 'unknown'}"
-                    if live_revalidation_required and live_age_ms is not None
-                    else (
-                        "Live revalidation required but live market context unavailable"
-                        if live_revalidation_required
-                        else "Live revalidation optional for source"
-                    )
-                ),
-                "payload": {
-                    "source": source or None,
-                    "timeframe": timeframe or None,
-                    "required_sources": live_revalidation_sources,
-                    "revalidation_required": live_revalidation_required,
-                    "live_selected_price": live_selected_price,
-                    "live_market_fetched_at": (
-                        live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
-                    ),
-                    "live_observed_at": (
-                        live_observed_at.isoformat().replace("+00:00", "Z") if live_observed_at is not None else None
-                    ),
-                    "live_age_ms": live_age_ms,
-                    "max_age_ms": max_age_ms,
-                    "market_data_source": market_data_source,
-                },
-            }
-        )
-        if live_revalidation_passed:
-            platform_gates.append(
+            live_revalidation_passed = (
+                not live_revalidation_required
+                or (
+                    live_selected_price is not None
+                    and live_selected_price > 0.0
+                    and live_fetched_at is not None
+                    and live_age_ms is not None
+                    and live_age_ms <= max_age_ms
+                )
+            )
+            checks_payload.append(
                 {
-                    "gate": "live_market_revalidation",
-                    "status": "passed" if live_revalidation_required else "skipped",
+                    "check_key": "live_market_revalidation",
+                    "check_label": "Execution-time live market revalidation",
+                    "passed": live_revalidation_passed,
+                    "score": live_age_ms,
                     "detail": (
-                        f"live_age_ms={live_age_ms:.0f} max={max_age_ms}"
+                        f"live_age_ms={live_age_ms:.0f} max={max_age_ms} source={source or 'unknown'}"
                         if live_revalidation_required and live_age_ms is not None
-                        else "Live revalidation optional for this source"
+                        else (
+                            "Live revalidation required but live market context unavailable"
+                            if live_revalidation_required
+                            else "Live revalidation optional for source"
+                        )
                     ),
                     "payload": {
                         "source": source or None,
                         "timeframe": timeframe or None,
                         "required_sources": live_revalidation_sources,
+                        "revalidation_required": live_revalidation_required,
                         "live_selected_price": live_selected_price,
                         "live_market_fetched_at": (
                             live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
                         ),
-                        "live_age_ms": live_age_ms,
-                        "max_age_ms": max_age_ms,
-                        "market_data_source": market_data_source,
-                    },
-                }
-            )
-            live_revalidation_gate_recorded = True
-        else:
-            final_decision = "blocked"
-            final_reason = (
-                "Live market revalidation required before execution: "
-                f"source={source or 'unknown'} age_ms={live_age_ms if live_age_ms is not None else 'unknown'} "
-                f"max={max_age_ms}"
-            )
-            platform_gates.append(
-                {
-                    "gate": "live_market_revalidation",
-                    "status": "blocked",
-                    "detail": final_reason,
-                    "payload": {
-                        "source": source or None,
-                        "timeframe": timeframe or None,
-                        "required_sources": live_revalidation_sources,
-                        "live_selected_price": live_selected_price,
-                        "live_market_fetched_at": (
-                            live_fetched_at.isoformat().replace("+00:00", "Z") if live_fetched_at is not None else None
+                        "live_observed_at": (
+                            live_observed_at.isoformat().replace("+00:00", "Z") if live_observed_at is not None else None
                         ),
                         "live_age_ms": live_age_ms,
                         "max_age_ms": max_age_ms,
                         "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
                     },
                 }
             )
-            live_revalidation_gate_recorded = True
-            if invoke_hooks and strategy is not None:
-                if hasattr(strategy, "on_blocked"):
-                    strategy.on_blocked(
-                        runtime_signal,
-                        BlockReason.SIGNAL_EXPIRED,
-                        {
+            if live_revalidation_passed:
+                platform_gates.append(
+                    {
+                        "gate": "live_market_revalidation",
+                        "status": "passed" if live_revalidation_required else "skipped",
+                        "detail": (
+                            f"live_age_ms={live_age_ms:.0f} max={max_age_ms}"
+                            if live_revalidation_required and live_age_ms is not None
+                            else "Live revalidation optional for this source"
+                        ),
+                        "payload": {
                             "source": source or None,
                             "timeframe": timeframe or None,
                             "required_sources": live_revalidation_sources,
+                            "live_selected_price": live_selected_price,
+                            "live_market_fetched_at": (
+                                live_fetched_at.isoformat().replace("+00:00", "Z")
+                                if live_fetched_at is not None
+                                else None
+                            ),
                             "live_age_ms": live_age_ms,
                             "max_age_ms": max_age_ms,
                             "market_data_source": market_data_source,
+                            "execution_mode": execution_mode,
                         },
-                    )
+                    }
+                )
+                live_revalidation_gate_recorded = True
+            else:
+                final_decision = "blocked"
+                final_reason = (
+                    "Live market revalidation required before execution: "
+                    f"source={source or 'unknown'} age_ms={live_age_ms if live_age_ms is not None else 'unknown'} "
+                    f"max={max_age_ms}"
+                )
+                platform_gates.append(
+                    {
+                        "gate": "live_market_revalidation",
+                        "status": "blocked",
+                        "detail": final_reason,
+                        "payload": {
+                            "source": source or None,
+                            "timeframe": timeframe or None,
+                            "required_sources": live_revalidation_sources,
+                            "live_selected_price": live_selected_price,
+                            "live_market_fetched_at": (
+                                live_fetched_at.isoformat().replace("+00:00", "Z")
+                                if live_fetched_at is not None
+                                else None
+                            ),
+                            "live_age_ms": live_age_ms,
+                            "max_age_ms": max_age_ms,
+                            "market_data_source": market_data_source,
+                            "execution_mode": execution_mode,
+                        },
+                    }
+                )
+                live_revalidation_gate_recorded = True
+                if invoke_hooks and strategy is not None:
+                    if hasattr(strategy, "on_blocked"):
+                        strategy.on_blocked(
+                            runtime_signal,
+                            BlockReason.SIGNAL_EXPIRED,
+                            {
+                                "source": source or None,
+                                "timeframe": timeframe or None,
+                                "required_sources": live_revalidation_sources,
+                                "live_age_ms": live_age_ms,
+                                "max_age_ms": max_age_ms,
+                                "market_data_source": market_data_source,
+                            },
+                        )
 
     if final_decision == "selected":
         freshness_enforced = _coerce_bool(params.get("enforce_market_data_freshness"), True)
@@ -870,57 +956,66 @@ def apply_platform_decision_gates(
         max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe)
         age_required = bool(source and source in set(required_sources))
 
-        checks_payload.append(
-            {
-                "check_key": "market_data_freshness",
-                "check_label": "Market data freshness",
-                "passed": (
-                    not freshness_enforced
-                    or (age_ms is not None and age_ms <= max_age_ms)
-                    or (age_ms is None and not age_required)
-                ),
-                "score": age_ms,
-                "detail": (
-                    "Freshness gate disabled by strategy config"
-                    if not freshness_enforced
-                    else (
-                        f"age_ms={age_ms:.0f} max={max_age_ms} source={source or 'unknown'} "
-                        f"timeframe={timeframe or 'unknown'}"
-                        if age_ms is not None
-                        else (f"age unavailable; source={source or 'unknown'} required={age_required}")
-                    )
-                ),
-                "payload": {
-                    "source": source or None,
-                    "timeframe": timeframe or None,
-                    "age_ms": age_ms,
-                    "max_age_ms": max_age_ms,
-                    "observed_at": observed_at,
-                    "age_required": age_required,
-                    "required_sources": required_sources,
-                    "freshness_enforced": freshness_enforced,
-                    "market_data_source": market_data_source,
-                },
-            }
-        )
-
-        freshness_passed = (
-            (not freshness_enforced)
-            or (age_ms is not None and age_ms <= max_age_ms)
-            or (age_ms is None and not age_required)
-        )
-        if freshness_passed:
+        if not live_execution_gates_enabled:
+            checks_payload.append(
+                {
+                    "check_key": "market_data_freshness",
+                    "check_label": "Market data freshness",
+                    "passed": True,
+                    "score": age_ms,
+                    "detail": "Skipped in backtest mode; freshness is enforced only for live execution readiness",
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "age_ms": age_ms,
+                        "max_age_ms": max_age_ms,
+                        "observed_at": observed_at,
+                        "age_required": age_required,
+                        "required_sources": required_sources,
+                        "freshness_enforced": freshness_enforced,
+                        "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
+                    },
+                }
+            )
             platform_gates.append(
                 {
                     "gate": "market_data_freshness",
-                    "status": "passed" if freshness_enforced else "skipped",
+                    "status": "skipped",
+                    "detail": "Skipped in backtest mode; freshness is enforced only for live execution readiness",
+                    "payload": {
+                        "source": source or None,
+                        "timeframe": timeframe or None,
+                        "age_ms": age_ms,
+                        "max_age_ms": max_age_ms,
+                        "observed_at": observed_at,
+                        "age_required": age_required,
+                        "required_sources": required_sources,
+                        "freshness_enforced": freshness_enforced,
+                        "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
+                    },
+                }
+            )
+        else:
+            checks_payload.append(
+                {
+                    "check_key": "market_data_freshness",
+                    "check_label": "Market data freshness",
+                    "passed": (
+                        not freshness_enforced
+                        or (age_ms is not None and age_ms <= max_age_ms)
+                        or (age_ms is None and not age_required)
+                    ),
+                    "score": age_ms,
                     "detail": (
-                        f"age_ms={age_ms:.0f} max={max_age_ms}"
-                        if freshness_enforced and age_ms is not None
+                        "Freshness gate disabled by strategy config"
+                        if not freshness_enforced
                         else (
-                            "Freshness gate disabled by strategy config"
-                            if not freshness_enforced
-                            else "Age unavailable but optional for this source"
+                            f"age_ms={age_ms:.0f} max={max_age_ms} source={source or 'unknown'} "
+                            f"timeframe={timeframe or 'unknown'}"
+                            if age_ms is not None
+                            else (f"age unavailable; source={source or 'unknown'} required={age_required}")
                         )
                     ),
                     "payload": {
@@ -933,45 +1028,81 @@ def apply_platform_decision_gates(
                         "required_sources": required_sources,
                         "freshness_enforced": freshness_enforced,
                         "market_data_source": market_data_source,
+                        "execution_mode": execution_mode,
                     },
                 }
             )
-        else:
-            final_decision = "blocked"
-            final_reason = (
-                f"Market data freshness gate blocked: source={source or 'unknown'} "
-                f"age_ms={age_ms if age_ms is not None else 'unknown'} max={max_age_ms}"
+
+            freshness_passed = (
+                (not freshness_enforced)
+                or (age_ms is not None and age_ms <= max_age_ms)
+                or (age_ms is None and not age_required)
             )
-            platform_gates.append(
-                {
-                    "gate": "market_data_freshness",
-                    "status": "blocked",
-                    "detail": final_reason,
-                    "payload": {
-                        "source": source or None,
-                        "timeframe": timeframe or None,
-                        "age_ms": age_ms,
-                        "max_age_ms": max_age_ms,
-                        "observed_at": observed_at,
-                        "age_required": age_required,
-                        "required_sources": required_sources,
-                        "freshness_enforced": freshness_enforced,
-                        "market_data_source": market_data_source,
-                    },
-                }
-            )
-            if invoke_hooks and strategy is not None:
-                if hasattr(strategy, "on_blocked"):
-                    strategy.on_blocked(
-                        runtime_signal,
-                        BlockReason.SIGNAL_EXPIRED,
-                        {
-                            "market_data_context": market_data_context,
+            if freshness_passed:
+                platform_gates.append(
+                    {
+                        "gate": "market_data_freshness",
+                        "status": "passed" if freshness_enforced else "skipped",
+                        "detail": (
+                            f"age_ms={age_ms:.0f} max={max_age_ms}"
+                            if freshness_enforced and age_ms is not None
+                            else (
+                                "Freshness gate disabled by strategy config"
+                                if not freshness_enforced
+                                else "Age unavailable but optional for this source"
+                            )
+                        ),
+                        "payload": {
+                            "source": source or None,
+                            "timeframe": timeframe or None,
+                            "age_ms": age_ms,
                             "max_age_ms": max_age_ms,
+                            "observed_at": observed_at,
+                            "age_required": age_required,
                             "required_sources": required_sources,
+                            "freshness_enforced": freshness_enforced,
                             "market_data_source": market_data_source,
+                            "execution_mode": execution_mode,
                         },
-                    )
+                    }
+                )
+            else:
+                final_decision = "blocked"
+                final_reason = (
+                    f"Market data freshness gate blocked: source={source or 'unknown'} "
+                    f"age_ms={age_ms if age_ms is not None else 'unknown'} max={max_age_ms}"
+                )
+                platform_gates.append(
+                    {
+                        "gate": "market_data_freshness",
+                        "status": "blocked",
+                        "detail": final_reason,
+                        "payload": {
+                            "source": source or None,
+                            "timeframe": timeframe or None,
+                            "age_ms": age_ms,
+                            "max_age_ms": max_age_ms,
+                            "observed_at": observed_at,
+                            "age_required": age_required,
+                            "required_sources": required_sources,
+                            "freshness_enforced": freshness_enforced,
+                            "market_data_source": market_data_source,
+                            "execution_mode": execution_mode,
+                        },
+                    }
+                )
+                if invoke_hooks and strategy is not None:
+                    if hasattr(strategy, "on_blocked"):
+                        strategy.on_blocked(
+                            runtime_signal,
+                            BlockReason.SIGNAL_EXPIRED,
+                            {
+                                "market_data_context": market_data_context,
+                                "max_age_ms": max_age_ms,
+                                "required_sources": required_sources,
+                                "market_data_source": market_data_source,
+                            },
+                        )
     else:
         if not strict_ws_gate_recorded:
             platform_gates.append(

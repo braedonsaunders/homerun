@@ -1,4 +1,4 @@
-import { type ElementType, useEffect, useMemo, useState } from 'react'
+import { type ElementType, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -143,6 +143,20 @@ const TIME_BUCKETS: Array<{ key: string; label: string; startHour: number; endHo
   { key: 'h16_19', label: '16-19', startHour: 16, endHour: 20 },
   { key: 'h20_23', label: '20-23', startHour: 20, endHour: 24 },
 ]
+
+function getSimulationTradeFetchLimit(range: TimeRange): number {
+  if (range === '7d') return 150
+  if (range === '30d') return 250
+  if (range === '90d') return 400
+  return 500
+}
+
+function getLivePerformanceFetchLimit(range: TimeRange): number {
+  if (range === '7d') return 200
+  if (range === '30d') return 500
+  if (range === '90d') return 900
+  return 1500
+}
 
 function normalizeStatus(value: unknown): string {
   return String(value || 'unknown').trim().toLowerCase()
@@ -302,10 +316,14 @@ export default function PerformancePanel() {
   const [historySearch, setHistorySearch] = useState('')
   const [historySortKey, setHistorySortKey] = useState<HistorySortKey>('closedAt')
   const [historySortDirection, setHistorySortDirection] = useState<HistorySortDirection>('desc')
+  const deferredHistorySearch = useDeferredValue(historySearch)
+  const simulationTradeFetchLimit = useMemo(() => getSimulationTradeFetchLimit(timeRange), [timeRange])
+  const livePerformanceFetchLimit = useMemo(() => getLivePerformanceFetchLimit(timeRange), [timeRange])
 
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
+    enabled: viewMode === 'simulation',
   })
 
   const simulationAccountKey = useMemo(
@@ -324,17 +342,17 @@ export default function PerformancePanel() {
     isLoading: simulationTradesLoading,
     refetch: refetchSimulationTrades,
   } = useQuery<SimulationTradeWithAccount[]>({
-    queryKey: ['all-simulation-trades', selectedAccount, simulationAccountKey],
+    queryKey: ['all-simulation-trades', selectedAccount, simulationAccountKey, simulationTradeFetchLimit],
     queryFn: async () => {
       if (selectedAccount) {
-        const rows = await getAccountTrades(selectedAccount, 300)
+        const rows = await getAccountTrades(selectedAccount, simulationTradeFetchLimit)
         const accountName = accounts.find((account) => account.id === selectedAccount)?.name || 'Selected account'
         return rows.map((row) => ({ ...row, accountName }))
       }
 
       const responses = await Promise.all(
         accounts.map(async (account) => {
-          const rows = await getAccountTrades(account.id, 300)
+          const rows = await getAccountTrades(account.id, simulationTradeFetchLimit)
           return rows.map((row) => ({
             ...row,
             accountName: account.name,
@@ -354,11 +372,12 @@ export default function PerformancePanel() {
     isLoading: livePerformanceLoading,
     refetch: refetchLivePerformance,
   } = useQuery({
-    queryKey: ['live-wallet-performance'],
-    queryFn: () => getLiveWalletPerformance(1500),
+    queryKey: ['live-wallet-performance', livePerformanceFetchLimit],
+    queryFn: () => getLiveWalletPerformance(livePerformanceFetchLimit),
     enabled: viewMode === 'live',
     retry: false,
-    refetchInterval: 15000,
+    refetchInterval: 30000,
+    placeholderData: (previousData) => previousData,
   })
 
   const filteredSimulationTrades = useMemo(
@@ -460,7 +479,7 @@ export default function PerformancePanel() {
   }, [unifiedTrades])
 
   const filteredSortedHistoryTrades = useMemo(() => {
-    const query = historySearch.trim().toLowerCase()
+    const query = deferredHistorySearch.trim().toLowerCase()
 
     const filtered = unifiedTrades.filter((trade) => {
       const category = normalizeCategory(trade.category)
@@ -521,7 +540,7 @@ export default function PerformancePanel() {
   }, [
     historyCategoryFilter,
     historyOutcomeFilter,
-    historySearch,
+    deferredHistorySearch,
     historySortDirection,
     historySortKey,
     unifiedTrades,
@@ -846,6 +865,11 @@ export default function PerformancePanel() {
   }, [categoryRollup, resolvedRows, timeOfDayRollup, weekdayRollup])
 
   const isLoading = accountsLoading || simulationTradesLoading || livePerformanceLoading
+  const showLoadingSkeleton = (
+    viewMode === 'live'
+      ? livePerformanceLoading && !livePerformance
+      : simulationTradesLoading && simulationTrades.length === 0 && (accountsLoading || accounts.length > 0)
+  )
 
   const handleRefresh = () => {
     if (viewMode === 'simulation') {
@@ -938,54 +962,58 @@ export default function PerformancePanel() {
         </div>
       </div>
 
-      <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
-        <MetricChip
-          label="Realized P&L"
-          value={formatSignedCurrency(summary.totalPnl, true)}
-          detail={formatCurrency(summary.totalPnl)}
-          icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
-          valueClassName={summary.totalPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
-        />
-        <MetricChip
-          label="ROI"
-          value={formatSignedPercent(summary.roi)}
-          detail={`on ${formatCurrency(summary.totalCost, true)}`}
-          icon={Target}
-          valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
-        />
-        <MetricChip
-          label="Win Rate"
-          value={formatPercent(summary.winRate)}
-          detail={`${summary.wins}W / ${summary.losses}L`}
-          icon={Activity}
-          valueClassName={summary.winRate >= 50 ? 'text-emerald-300' : 'text-amber-300'}
-        />
-        <MetricChip
-          label="Open"
-          value={String(summary.openTrades)}
-          detail={viewMode === 'live' ? `${formatCurrency(summary.openLiveNotional, true)} inventory` : `${summary.resolvedTrades} closed`}
-          icon={Calendar}
-        />
-        <MetricChip
-          label="Expectancy"
-          value={formatSignedCurrency(advancedMetrics.expectancy, true)}
-          detail={`${formatSignedCurrency(advancedMetrics.avgWin, true)} avg win / ${formatSignedCurrency(advancedMetrics.avgLoss, true)} avg loss`}
-          icon={TrendingUp}
-          valueClassName={advancedMetrics.expectancy >= 0 ? 'text-emerald-300' : 'text-red-300'}
-        />
-        <MetricChip
-          label="Median Hold"
-          value={formatDurationMinutes(advancedMetrics.medianHold)}
-          icon={Clock3}
-        />
-        <MetricChip
-          label="Drawdown"
-          value={formatCurrency(maxDrawdown, true)}
-          detail={`PF ${summary.profitFactor >= 999 ? '∞' : summary.profitFactor.toFixed(2)}`}
-          icon={TrendingDown}
-          valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
-        />
-      </div>
+      {showLoadingSkeleton ? (
+        <PerformanceMetricSkeleton />
+      ) : (
+        <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
+          <MetricChip
+            label="Realized P&L"
+            value={formatSignedCurrency(summary.totalPnl, true)}
+            detail={formatCurrency(summary.totalPnl)}
+            icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
+            valueClassName={summary.totalPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
+          />
+          <MetricChip
+            label="ROI"
+            value={formatSignedPercent(summary.roi)}
+            detail={`on ${formatCurrency(summary.totalCost, true)}`}
+            icon={Target}
+            valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
+          />
+          <MetricChip
+            label="Win Rate"
+            value={formatPercent(summary.winRate)}
+            detail={`${summary.wins}W / ${summary.losses}L`}
+            icon={Activity}
+            valueClassName={summary.winRate >= 50 ? 'text-emerald-300' : 'text-amber-300'}
+          />
+          <MetricChip
+            label="Open"
+            value={String(summary.openTrades)}
+            detail={viewMode === 'live' ? `${formatCurrency(summary.openLiveNotional, true)} inventory` : `${summary.resolvedTrades} closed`}
+            icon={Calendar}
+          />
+          <MetricChip
+            label="Expectancy"
+            value={formatSignedCurrency(advancedMetrics.expectancy, true)}
+            detail={`${formatSignedCurrency(advancedMetrics.avgWin, true)} avg win / ${formatSignedCurrency(advancedMetrics.avgLoss, true)} avg loss`}
+            icon={TrendingUp}
+            valueClassName={advancedMetrics.expectancy >= 0 ? 'text-emerald-300' : 'text-red-300'}
+          />
+          <MetricChip
+            label="Median Hold"
+            value={formatDurationMinutes(advancedMetrics.medianHold)}
+            icon={Clock3}
+          />
+          <MetricChip
+            label="Drawdown"
+            value={formatCurrency(maxDrawdown, true)}
+            detail={`PF ${summary.profitFactor >= 999 ? '∞' : summary.profitFactor.toFixed(2)}`}
+            icon={TrendingDown}
+            valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
+          />
+        </div>
+      )}
 
       <Tabs
         value={detailTab}
@@ -999,63 +1027,70 @@ export default function PerformancePanel() {
         </TabsList>
 
         <TabsContent value="overview" className="mt-2 flex-1 min-h-0">
-          <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
-            <div className="lg:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
-              <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
-                <p className="text-xs font-semibold flex items-center gap-1.5">
-                  <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
-                  {modeLabel} Cumulative Realized P&L
-                </p>
-                {viewMode === 'live' && orchestratorStats?.last_trade_at && (
-                  <span className="text-[10px] text-muted-foreground">
-                    last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
-                  </span>
-                )}
+          {showLoadingSkeleton ? (
+            <PerformanceOverviewSkeleton />
+          ) : (
+            <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
+              <div className="lg:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+                <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
+                    {modeLabel} Cumulative Realized P&L
+                  </p>
+                  {viewMode === 'live' && orchestratorStats?.last_trade_at && (
+                    <span className="text-[10px] text-muted-foreground">
+                      last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 min-h-0">
+                  {cumulativePnlData.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                      No trade history in range.
+                    </div>
+                  ) : (
+                    <PerformancePnlChart data={cumulativePnlData} mode={viewMode} />
+                  )}
+                </div>
               </div>
-              <div className="flex-1 min-h-0">
-                {cumulativePnlData.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                    No trade history in range.
-                  </div>
-                ) : (
-                  <PerformancePnlChart data={cumulativePnlData} mode={viewMode} />
-                )}
-              </div>
-            </div>
 
-            <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
-              <p className="shrink-0 text-xs font-semibold mb-2">Quick Insights</p>
-              <div className="space-y-2 text-xs">
-                <InsightStat
-                  label="Best Trade"
-                  value={advancedMetrics.bestTrade ? formatSignedCurrency(advancedMetrics.bestTrade.pnl || 0, true) : '—'}
-                  hint={advancedMetrics.bestTrade ? advancedMetrics.bestTrade.marketQuestion : 'No closed trades'}
-                  positive={(advancedMetrics.bestTrade?.pnl || 0) >= 0}
-                />
-                <InsightStat
-                  label="Worst Trade"
-                  value={advancedMetrics.worstTrade ? formatSignedCurrency(advancedMetrics.worstTrade.pnl || 0, true) : '—'}
-                  hint={advancedMetrics.worstTrade ? advancedMetrics.worstTrade.marketQuestion : 'No closed trades'}
-                  positive={false}
-                />
-                <InsightStat
-                  label="Median ROI"
-                  value={formatSignedPercent(advancedMetrics.medianRoi)}
-                  hint="Robust against outliers"
-                  positive={advancedMetrics.medianRoi >= 0}
-                />
-                <InsightStat
-                  label="Gross Win/Loss"
-                  value={`${formatCurrency(summary.grossWins, true)} / ${formatCurrency(summary.grossLosses, true)}`}
-                  hint="Absolute dollars"
-                />
+              <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+                <p className="shrink-0 text-xs font-semibold mb-2">Quick Insights</p>
+                <div className="space-y-2 text-xs">
+                  <InsightStat
+                    label="Best Trade"
+                    value={advancedMetrics.bestTrade ? formatSignedCurrency(advancedMetrics.bestTrade.pnl || 0, true) : '—'}
+                    hint={advancedMetrics.bestTrade ? advancedMetrics.bestTrade.marketQuestion : 'No closed trades'}
+                    positive={(advancedMetrics.bestTrade?.pnl || 0) >= 0}
+                  />
+                  <InsightStat
+                    label="Worst Trade"
+                    value={advancedMetrics.worstTrade ? formatSignedCurrency(advancedMetrics.worstTrade.pnl || 0, true) : '—'}
+                    hint={advancedMetrics.worstTrade ? advancedMetrics.worstTrade.marketQuestion : 'No closed trades'}
+                    positive={false}
+                  />
+                  <InsightStat
+                    label="Median ROI"
+                    value={formatSignedPercent(advancedMetrics.medianRoi)}
+                    hint="Robust against outliers"
+                    positive={advancedMetrics.medianRoi >= 0}
+                  />
+                  <InsightStat
+                    label="Gross Win/Loss"
+                    value={`${formatCurrency(summary.grossWins, true)} / ${formatCurrency(summary.grossLosses, true)}`}
+                    hint="Absolute dollars"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </TabsContent>
 
         <TabsContent value="insights" className="mt-2 flex-1 min-h-0">
-          <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
+          {showLoadingSkeleton ? (
+            <PerformanceInsightsSkeleton />
+          ) : (
+            <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
             <div className="lg:col-span-5 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
               <p className="shrink-0 text-xs font-semibold mb-2">
                 {viewMode === 'live' ? 'Market Category Performance' : 'Strategy Performance'}
@@ -1174,11 +1209,15 @@ export default function PerformancePanel() {
                 </div>
               </ScrollArea>
             </div>
-          </div>
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="history" className="mt-2 flex-1 min-h-0">
-          <div className="h-full min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
+          {showLoadingSkeleton ? (
+            <PerformanceHistorySkeleton />
+          ) : (
+            <div className="h-full min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
             <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
               <p className="text-xs font-semibold">Trade History</p>
               <div className="flex items-center gap-1.5">
@@ -1335,7 +1374,8 @@ export default function PerformancePanel() {
                 </Table>
               </div>
             </ScrollArea>
-          </div>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </div>
@@ -1360,6 +1400,132 @@ function MetricChip({
       <Icon className="w-3.5 h-3.5 opacity-70" />
       <span className="text-muted-foreground">{label}</span>
       <span className={cn('font-mono font-semibold', valueClassName)}>{value}</span>
+    </div>
+  )
+}
+
+function PerformanceMetricSkeleton() {
+  return (
+    <div className="shrink-0 flex flex-wrap items-center gap-3 border-y border-border/50 py-1.5 px-0.5 animate-pulse">
+      {Array.from({ length: 7 }).map((_, index) => (
+        <div key={`performance-metric-skeleton-${index}`} className="flex items-center gap-2 text-xs">
+          <div className="h-3.5 w-3.5 rounded-full bg-muted/55" />
+          <div className="h-2.5 w-14 rounded bg-muted/50" />
+          <div className="h-3 w-16 rounded bg-muted/60" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PerformanceOverviewSkeleton() {
+  return (
+    <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12 animate-pulse">
+      <div className="lg:col-span-8 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="h-3 w-40 rounded bg-muted/55" />
+          <div className="h-2.5 w-28 rounded bg-muted/45" />
+        </div>
+        <div className="flex-1 rounded-md bg-muted/20" />
+      </div>
+      <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
+        <div className="h-3 w-24 rounded bg-muted/55" />
+        <div className="mt-3 space-y-2">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={`performance-overview-skeleton-${index}`} className="rounded border border-border/40 bg-background/35 px-2.5 py-2">
+              <div className="h-2.5 w-20 rounded bg-muted/50" />
+              <div className="mt-2 h-3.5 w-24 rounded bg-muted/60" />
+              <div className="mt-2 h-2.5 w-full rounded bg-muted/40" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PerformanceInsightsSkeleton() {
+  return (
+    <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12 animate-pulse">
+      <div className="lg:col-span-5 rounded-md border border-border/60 bg-card/80 p-3 min-h-0">
+        <div className="h-3 w-36 rounded bg-muted/55" />
+        <div className="mt-3 space-y-1.5">
+          {Array.from({ length: 7 }).map((_, index) => (
+            <div key={`performance-insight-left-${index}`} className="rounded border border-border/40 bg-background/30 px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="h-2.5 w-24 rounded bg-muted/45" />
+                <div className="h-2.5 w-16 rounded bg-muted/55" />
+              </div>
+              <div className="mt-2 h-2 w-20 rounded bg-muted/40" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 min-h-0">
+        <div className="h-3 w-24 rounded bg-muted/55" />
+        <div className="mt-3 space-y-3">
+          {Array.from({ length: 2 }).map((_, sectionIndex) => (
+            <div key={`performance-insight-mid-${sectionIndex}`}>
+              <div className="h-2 w-16 rounded bg-muted/40 mb-2" />
+              <div className="space-y-1">
+                {Array.from({ length: 4 }).map((_, rowIndex) => (
+                  <div key={`performance-insight-mid-row-${sectionIndex}-${rowIndex}`} className="flex items-center justify-between rounded border border-border/40 bg-background/20 px-2 py-1">
+                    <div className="h-2 w-10 rounded bg-muted/40" />
+                    <div className="h-2 w-24 rounded bg-muted/50" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="lg:col-span-3 rounded-md border border-border/60 bg-card/80 p-3 min-h-0">
+        <div className="h-3 w-24 rounded bg-muted/55" />
+        <div className="mt-3 space-y-2">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={`performance-insight-right-${index}`} className="rounded border border-border/40 bg-background/30 px-2.5 py-2">
+              <div className="h-2.5 w-20 rounded bg-muted/45" />
+              <div className="mt-2 h-3 w-28 rounded bg-muted/55" />
+              <div className="mt-2 h-2 w-full rounded bg-muted/40" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PerformanceHistorySkeleton() {
+  return (
+    <div className="h-full min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col animate-pulse">
+      <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
+        <div className="h-3 w-20 rounded bg-muted/55" />
+        <div className="h-2.5 w-32 rounded bg-muted/45" />
+      </div>
+      <div className="shrink-0 border-b border-border/40 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="h-7 min-w-[220px] flex-1 rounded-md bg-muted/35" />
+          <div className="h-7 w-32 rounded-md bg-muted/35" />
+          <div className="h-7 w-28 rounded-md bg-muted/35" />
+          <div className="h-7 w-28 rounded-md bg-muted/35" />
+          <div className="h-7 w-20 rounded-md bg-muted/35" />
+        </div>
+      </div>
+      <div className="flex-1 p-3">
+        <div className="rounded-md border border-border/40 bg-background/25">
+          {Array.from({ length: 10 }).map((_, index) => (
+            <div key={`performance-history-skeleton-${index}`} className="grid grid-cols-[3fr_repeat(5,minmax(0,1fr))_2fr] gap-3 border-b border-border/30 px-3 py-2 last:border-b-0">
+              <div className="h-2.5 rounded bg-muted/45" />
+              <div className="h-2.5 rounded bg-muted/35" />
+              <div className="h-2.5 rounded bg-muted/35" />
+              <div className="h-2.5 rounded bg-muted/35" />
+              <div className="h-2.5 rounded bg-muted/35" />
+              <div className="h-2.5 rounded bg-muted/35" />
+              <div className="h-2.5 rounded bg-muted/40" />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

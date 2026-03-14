@@ -327,7 +327,7 @@ cleanup_stale_homerun_processes() {
     local project_root
     project_root="$(pwd)"
     local pids
-    pids="$(ps -eo pid=,command= 2>/dev/null | grep -E 'workers\.runner|workers\.\w+_worker|uvicorn.*main:app|tui\.py' | grep -v grep | awk '{print $1}')" || true
+    pids="$(ps -eo pid=,command= 2>/dev/null | grep -E 'workers\.host|workers\.runner|workers\.\w+_worker|uvicorn.*main:app|tui\.py' | grep -v grep | awk '{print $1}')" || true
     if [ -z "$pids" ]; then
         return 0
     fi

@@ -1,4 +1,5 @@
 import sys
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,10 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from services.notifier import TelegramNotifier
 from services import notifier as notifier_module
+
+
+def _plain_text(value: str) -> str:
+    return re.sub(r"</?[^>]+>", "", value)
 
 
 class _FakeResult:
@@ -88,7 +93,7 @@ async def test_position_close_alert_has_compact_layout_and_usd_totals(monkeypatc
     )
 
     assert len(captured) == 1
-    plain = captured[0].replace("\\", "").replace("*", "")
+    plain = _plain_text(captured[0])
     assert "Won: $15.50" in plain
     assert "Lost: $4.25" in plain
     assert "Net: +$11.25" in plain
@@ -122,7 +127,7 @@ async def test_timeline_summary_has_compact_realized_won_lost_net():
         title="Autotrader Performance (24h)",
     )
 
-    plain = summary.replace("\\", "").replace("*", "")
+    plain = _plain_text(summary)
     assert "Won: $35.00" in plain
     assert "Lost: $12.50" in plain
     assert "Net: +$22.50" in plain
@@ -183,7 +188,7 @@ async def test_status_message_has_daily_and_realized_usd_breakdown(monkeypatch):
     )
 
     message = await notifier._telegram_status_message()
-    plain = message.replace("\\", "").replace("*", "")
+    plain = _plain_text(message)
 
     assert "-$12.30" in plain
     assert "$20.00" in plain

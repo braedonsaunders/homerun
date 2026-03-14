@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
 # Auto-install TUI prerequisites on the host machine.
@@ -510,6 +511,23 @@ def _restore_windows_console_mode() -> None:
 # ---------------------------------------------------------------------------
 BACKEND_PORT = 8000
 FRONTEND_PORT = 3000
+_WORKER_PLANES = (
+    ("WORKERS", "all"),
+)
+_WORKER_SOURCE_TAG_BY_PLANE = {plane_name: source_tag for source_tag, plane_name in _WORKER_PLANES}
+_WORKER_PLANE_BY_NAME: dict[str, str] = {
+    "scanner": "all",
+    "scanner_slo": "all",
+    "crypto": "all",
+    "trader_orchestrator": "all",
+    "tracked_traders": "all",
+    "discovery": "all",
+    "weather": "all",
+    "news": "all",
+    "events": "all",
+    "trader_reconciliation": "all",
+    "redeemer": "all",
+}
 # Use 127.0.0.1 instead of localhost; on Windows, localhost can resolve to
 # ::1 (IPv6) first while uvicorn only binds 0.0.0.0 (IPv4), causing timeouts.
 HEALTH_URL = f"http://127.0.0.1:{BACKEND_PORT}/health/tui"
@@ -1101,7 +1119,9 @@ def kill_legacy_worker_processes() -> None:
                 if backend_dir not in cmd and project_root not in cmd:
                     continue
                 is_homerun = False
-                if "workers.runner" in cmd or ("workers." in cmd and "_worker" in cmd):
+                if "workers.host" in cmd:
+                    is_homerun = True
+                elif "workers.runner" in cmd or ("workers." in cmd and "_worker" in cmd):
                     is_homerun = True
                 elif "uvicorn" in cmd and "main:app" in cmd:
                     is_homerun = True
@@ -1270,8 +1290,9 @@ class HomerunApp(App):
         Binding("ctrl+c", "copy_to_clip", "Copy", show=False, priority=True),
     ]
 
-    # Process handles (workers run in-process inside the API; only backend + frontend are subprocesses)
+    # Process handles.
     backend_proc: Optional[subprocess.Popen] = None
+    worker_procs: dict[str, subprocess.Popen] = {}
     frontend_proc: Optional[subprocess.Popen] = None
 
     # State
@@ -1289,6 +1310,7 @@ class HomerunApp(App):
 
     def __init__(self) -> None:
         super().__init__()
+        self.worker_procs = {}
         # Thread-safe log line buffer: worker threads append here,
         # a periodic timer flushes into the log view on the main thread.
         self._log_buf: collections.deque[tuple[str, str, str, str]] = collections.deque(
@@ -1324,6 +1346,8 @@ class HomerunApp(App):
         self._worker_last_error: dict[str, str] = {}
         self._health_poll_lock = threading.Lock()
         self._health_poll_inflight = False
+        self._worker_supervisor_lock = threading.Lock()
+        self._worker_supervisor_inflight = False
         self._health_last_success_monotonic = 0.0
         self._health_consecutive_failures = 0
         self._startup_debug_enabled = os.environ.get("HOMERUN_TUI_DEBUG_STARTUP") == "1"
@@ -1680,7 +1704,7 @@ class HomerunApp(App):
             return "frontend"
         if source_upper == "SYSTEM":
             return "system"
-        if source_upper in WORKER_TAG_TO_NAME:
+        if source_upper in WORKER_TAG_TO_NAME or source_upper.startswith("WORKER-"):
             return "workers"
         return "backend"
 
@@ -1904,10 +1928,12 @@ class HomerunApp(App):
 
     def _infer_worker_from_log(self, source: str, text: str) -> Optional[str]:
         source_upper = source.upper()
+        if source_upper.startswith("WORKER-"):
+            return None
         direct = WORKER_TAG_TO_NAME.get(source_upper)
         if direct:
             return direct
-        if source_upper != "BACKEND":
+        if source_upper not in {"BACKEND", "WORKERS"}:
             return None
         lowered = text.lower()
         for hint, worker_name in WORKER_BACKEND_HINTS:
@@ -2235,6 +2261,281 @@ class HomerunApp(App):
     def _frontend_alive(self) -> bool:
         return self.frontend_proc is not None and self.frontend_proc.poll() is None
 
+    def _venv_python_path(self) -> Path:
+        if sys.platform == "win32":
+            return BACKEND_DIR / "venv" / "Scripts" / "python.exe"
+        return BACKEND_DIR / "venv" / "bin" / "python"
+
+    def _build_runtime_env(self, *, process_role: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        if sys.platform == "win32":
+            venv_bin = str(BACKEND_DIR / "venv" / "Scripts")
+        else:
+            venv_bin = str(BACKEND_DIR / "venv" / "bin")
+        env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = str(BACKEND_DIR / "venv")
+        env["HOMERUN_PROCESS_ROLE"] = process_role
+        env.setdefault("LOG_LEVEL", "INFO")
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("OPENBLAS_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
+        env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+        env.setdefault("NUMEXPR_NUM_THREADS", "1")
+        env.setdefault("NEWS_FAISS_THREADS", "1")
+        env.setdefault("TOKENIZERS_PARALLELISM", "false")
+        env.setdefault("EMBEDDING_DEVICE", "cpu")
+        return env
+
+    def _runtime_database_url_path(self) -> Path:
+        return BACKEND_DIR / ".runtime" / "database_url"
+
+    def _resolve_runtime_database_url(self) -> str:
+        raw_value = str(os.environ.get("DATABASE_URL", "")).lstrip("\ufeff").strip().strip('"').strip("'")
+        if raw_value:
+            return raw_value.rstrip("/")
+        try:
+            raw_value = self._runtime_database_url_path().read_text(encoding="utf-8")
+        except OSError:
+            raw_value = ""
+        raw_value = str(raw_value).lstrip("\ufeff").strip().strip('"').strip("'")
+        if raw_value:
+            return raw_value.rstrip("/")
+        return "postgresql+asyncpg://homerun:homerun@127.0.0.1:5432/homerun"
+
+    def _write_runtime_database_url(self, database_url: str) -> None:
+        runtime_path = self._runtime_database_url_path()
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_path.write_text(database_url.rstrip("/") + "\n", encoding="utf-8")
+
+    def _database_target_from_url(self, database_url: str) -> dict[str, str | int]:
+        parsed = urlsplit(database_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 5432
+        database_name = parsed.path.lstrip("/") or "homerun"
+        username = parsed.username or "homerun"
+        password = parsed.password or "homerun"
+        return {
+            "host": host,
+            "port": port,
+            "database": database_name,
+            "username": username,
+            "password": password,
+        }
+
+    def _is_local_database_target(self, database_url: str) -> bool:
+        host = str(self._database_target_from_url(database_url)["host"]).lower()
+        return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+    def _probe_database_ready(
+        self,
+        venv_python: Path,
+        database_url: str,
+        *,
+        retries: int,
+        retry_delay_seconds: float,
+    ) -> tuple[bool, str]:
+        probe_env = self._build_runtime_env(process_role="api")
+        probe_env["DATABASE_URL"] = database_url
+        result = subprocess.run(
+            [
+                str(venv_python),
+                str(PROJECT_ROOT / "scripts" / "infra" / "ensure_postgres_ready.py"),
+                "--database-url",
+                database_url,
+                "--retries",
+                str(retries),
+                "--retry-delay-seconds",
+                str(retry_delay_seconds),
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            env=probe_env,
+            timeout=max(15, int(retries * max(retry_delay_seconds, 0.25) * 4)),
+        )
+        output = "\n".join(
+            part.strip()
+            for part in ((result.stdout or "").strip(), (result.stderr or "").strip())
+            if part and part.strip()
+        ).strip()
+        return result.returncode == 0, output
+
+    def _start_local_postgres_runtime(self, database_url: str) -> tuple[bool, str]:
+        target = self._database_target_from_url(database_url)
+        docker_bin = shutil.which("docker") or "docker"
+        compose_file = PROJECT_ROOT / "scripts" / "infra" / "docker-compose.infra.yml"
+        runtime_env = os.environ.copy()
+        runtime_env["POSTGRES_HOST"] = str(target["host"])
+        runtime_env["POSTGRES_PORT"] = str(target["port"])
+        runtime_env["POSTGRES_DB"] = str(target["database"])
+        runtime_env["POSTGRES_USER"] = str(target["username"])
+        runtime_env["POSTGRES_PASSWORD"] = str(target["password"])
+        runtime_env.setdefault("POSTGRES_CONTAINER_NAME", "homerun-postgres")
+        runtime_env.setdefault("POSTGRES_IMAGE", "postgres:16-alpine")
+
+        commands: list[list[str]] = [
+            [docker_bin, "compose", "-f", str(compose_file), "up", "-d", "postgres"],
+            [docker_bin, "start", runtime_env["POSTGRES_CONTAINER_NAME"]],
+            [
+                docker_bin,
+                "run",
+                "--name",
+                runtime_env["POSTGRES_CONTAINER_NAME"],
+                "--detach",
+                "--publish",
+                f"{runtime_env['POSTGRES_HOST']}:{runtime_env['POSTGRES_PORT']}:5432",
+                "--env",
+                f"POSTGRES_DB={runtime_env['POSTGRES_DB']}",
+                "--env",
+                f"POSTGRES_USER={runtime_env['POSTGRES_USER']}",
+                "--env",
+                f"POSTGRES_PASSWORD={runtime_env['POSTGRES_PASSWORD']}",
+                "--volume",
+                "homerun-postgres-data:/var/lib/postgresql/data",
+                runtime_env["POSTGRES_IMAGE"],
+                "postgres",
+                "-c",
+                "max_connections=200",
+            ],
+        ]
+
+        outputs: list[str] = []
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(PROJECT_ROOT),
+                    capture_output=True,
+                    text=True,
+                    env=runtime_env,
+                    timeout=120,
+                )
+            except Exception as exc:
+                outputs.append(f"{' '.join(command[:3])}: {exc}")
+                continue
+            combined = "\n".join(
+                part.strip()
+                for part in ((result.stdout or "").strip(), (result.stderr or "").strip())
+                if part and part.strip()
+            ).strip()
+            if result.returncode == 0:
+                return True, combined
+            outputs.append(combined or f"{' '.join(command)} exited with code {result.returncode}")
+        return False, "\n".join(entry for entry in outputs if entry)
+
+    def _ensure_database_ready(self, venv_python: Path) -> tuple[bool, str]:
+        database_url = self._resolve_runtime_database_url()
+        self._write_runtime_database_url(database_url)
+
+        ready, output = self._probe_database_ready(
+            venv_python,
+            database_url,
+            retries=2,
+            retry_delay_seconds=0.25,
+        )
+        if ready:
+            return True, database_url
+
+        if not self._is_local_database_target(database_url):
+            if output:
+                self._enqueue_log(output, source="SYSTEM", level="ERROR")
+            return False, database_url
+
+        self._enqueue_log(
+            ">>> Starting Postgres runtime...",
+            source="SYSTEM",
+            level="INFO",
+        )
+        started, start_output = self._start_local_postgres_runtime(database_url)
+        if start_output:
+            self._enqueue_log(start_output, source="SYSTEM", level="INFO" if started else "ERROR")
+        if not started:
+            return False, database_url
+
+        ready, output = self._probe_database_ready(
+            venv_python,
+            database_url,
+            retries=240,
+            retry_delay_seconds=0.5,
+        )
+        if output:
+            self._enqueue_log(output, source="SYSTEM", level="INFO" if ready else "ERROR")
+        return ready, database_url
+
+    def _spawn_worker_plane(self, plane_name: str, *, reason: str) -> subprocess.Popen:
+        source_tag = _WORKER_SOURCE_TAG_BY_PLANE[plane_name]
+        worker_proc = subprocess.Popen(
+            [
+                str(self._venv_python_path()),
+                "-m",
+                "workers.host",
+                plane_name,
+            ],
+            cwd=str(BACKEND_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=self._build_runtime_env(process_role="worker"),
+        )
+        _assign_to_job(worker_proc)
+        self.worker_procs[plane_name] = worker_proc
+        self._enqueue_log(
+            f">>> Starting {plane_name} worker plane ({reason})...",
+            source=source_tag,
+            level="INFO",
+        )
+        self._start_stream_thread(worker_proc, source_tag)
+        return worker_proc
+
+    def _ensure_worker_planes_alive(self) -> None:
+        if self.backend_proc is None or self.backend_proc.poll() is not None:
+            return
+        for _source_tag, plane_name in _WORKER_PLANES:
+            proc = self.worker_procs.get(plane_name)
+            if proc is not None and proc.poll() is None:
+                continue
+            if proc is not None:
+                self._enqueue_log(
+                    f"Worker plane {plane_name} exited with code {proc.poll()}, restarting.",
+                    source=_WORKER_SOURCE_TAG_BY_PLANE[plane_name],
+                    level="WARNING",
+                )
+            try:
+                self._spawn_worker_plane(plane_name, reason="health-supervisor")
+            except Exception as exc:
+                self._enqueue_log(
+                    f"FATAL: Failed to restart {plane_name} worker plane: {exc}",
+                    source=_WORKER_SOURCE_TAG_BY_PLANE[plane_name],
+                    level="ERROR",
+                )
+
+    def _ensure_worker_planes_alive_threadsafe(self) -> None:
+        with self._worker_supervisor_lock:
+            if self._worker_supervisor_inflight:
+                return
+            self._worker_supervisor_inflight = True
+        try:
+            self._ensure_worker_planes_alive()
+        except Exception as exc:
+            self._enqueue_log(
+                f"Worker plane supervision failed: {exc}",
+                source="SYSTEM",
+                level="ERROR",
+            )
+        finally:
+            with self._worker_supervisor_lock:
+                self._worker_supervisor_inflight = False
+
+    def _apply_health_safe(self, data: dict) -> None:
+        try:
+            self._apply_health(data)
+        except Exception as exc:
+            self._enqueue_log(
+                f"TUI health apply failed: {exc}",
+                source="SYSTEM",
+                level="ERROR",
+            )
+
     def _request_frontend_start(self, reason: str) -> None:
         if self._frontend_starting or self._frontend_alive():
             return
@@ -2249,12 +2550,7 @@ class HomerunApp(App):
     # ---- Start backend & frontend as subprocesses ----
     @work(thread=True)
     def _start_services(self) -> None:
-        """Start the backend (uvicorn) subprocess.
-
-        Workers run in-process inside the backend's asyncio event loop
-        (started as asyncio.create_task in main.py lifespan).  The TUI
-        only manages backend + frontend as OS-level subprocesses.
-        """
+        """Start backend and frontend subprocesses."""
         self._log_activity("[bold cyan]Starting services...[/]")
         self.call_from_thread(self._reset_worker_telemetry)
 
@@ -2266,10 +2562,7 @@ class HomerunApp(App):
         kill_port(FRONTEND_PORT)
 
         # Activate venv and start backend
-        if sys.platform == "win32":
-            venv_python = BACKEND_DIR / "venv" / "Scripts" / "python.exe"
-        else:
-            venv_python = BACKEND_DIR / "venv" / "bin" / "python"
+        venv_python = self._venv_python_path()
         if not venv_python.exists():
             setup_cmd = ".\\scripts\\infra\\setup.ps1" if sys.platform == "win32" else "./scripts/infra/setup.sh"
             self._enqueue_log(
@@ -2279,26 +2572,22 @@ class HomerunApp(App):
             )
             return
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        # Add venv bin to PATH so uvicorn is found
-        if sys.platform == "win32":
-            venv_bin = str(BACKEND_DIR / "venv" / "Scripts")
-        else:
-            venv_bin = str(BACKEND_DIR / "venv" / "bin")
-        env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
-        env["VIRTUAL_ENV"] = str(BACKEND_DIR / "venv")
-        # Default to INFO; the TUI level filter can show DEBUG if needed
-        env.setdefault("LOG_LEVEL", "INFO")
-        # Keep native ML/linear algebra threading conservative for stability.
-        env.setdefault("OMP_NUM_THREADS", "1")
-        env.setdefault("OPENBLAS_NUM_THREADS", "1")
-        env.setdefault("MKL_NUM_THREADS", "1")
-        env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-        env.setdefault("NUMEXPR_NUM_THREADS", "1")
-        env.setdefault("NEWS_FAISS_THREADS", "1")
-        env.setdefault("TOKENIZERS_PARALLELISM", "false")
-        env.setdefault("EMBEDDING_DEVICE", "cpu")
+        self._enqueue_log(
+            ">>> Ensuring database runtime is ready...",
+            source="SYSTEM",
+            level="INFO",
+        )
+        database_ready, database_url = self._ensure_database_ready(venv_python)
+        if not database_ready:
+            self._enqueue_log(
+                f"FATAL: Database is not reachable at {database_url}.",
+                source="BACKEND",
+                level="ERROR",
+            )
+            return
+
+        env = self._build_runtime_env(process_role="api")
+        env["DATABASE_URL"] = database_url
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -2332,8 +2621,9 @@ class HomerunApp(App):
             )
             return
 
-        # Stream backend output in a thread
-        self._stream_output(self.backend_proc, "BACKEND")
+        self._start_stream_thread(self.backend_proc, "BACKEND")
+
+        self.worker_procs = {}
 
     def _read_network_access_setting(self) -> bool:
         """Read allow_network_access from backend settings API."""
@@ -2393,7 +2683,7 @@ class HomerunApp(App):
             self._frontend_starting = False
             return
 
-        self._stream_output(self.frontend_proc, "FRONTEND")
+        self._start_stream_thread(self.frontend_proc, "FRONTEND")
 
     def _stream_output(self, proc: subprocess.Popen, tag: str) -> None:
         """Read process stdout line-by-line and enqueue for batched display."""
@@ -2426,6 +2716,15 @@ class HomerunApp(App):
             if not self._shutting_down:
                 self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
 
+    def _start_stream_thread(self, proc: subprocess.Popen, tag: str) -> None:
+        thread = threading.Thread(
+            target=self._stream_output,
+            args=(proc, tag),
+            name=f"{tag.lower()}-log-stream",
+            daemon=True,
+        )
+        thread.start()
+
     # ---- Activity hooks (reserved for future system feed) ----
     def _log_activity(self, text: str) -> None:
         """Thread-safe activity hook."""
@@ -2454,7 +2753,8 @@ class HomerunApp(App):
             req = urllib.request.Request(HEALTH_URL, method="GET")
             with urllib.request.urlopen(req, timeout=HEALTH_REQUEST_TIMEOUT_SECONDS) as resp:
                 data = json.loads(resp.read().decode())
-                self.call_from_thread(self._apply_health, data)
+                self._ensure_worker_planes_alive_threadsafe()
+                self.call_from_thread(self._apply_health_safe, data)
         except (urllib.error.URLError, Exception):
             self.call_from_thread(self._apply_health_offline)
         finally:
@@ -2651,12 +2951,21 @@ class HomerunApp(App):
             self._render_worker_panel(worker_name)
 
     def _update_workers_from_processes(self) -> None:
-        """Mark all worker panels offline when backend health is unreachable.
-
-        Workers run in-process inside the backend, so if the backend is down,
-        workers are down too.
-        """
-        self._set_workers_offline()
+        """Fallback worker state when the backend health endpoint is unreachable."""
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            plane_name = _WORKER_PLANE_BY_NAME.get(worker_name)
+            proc = self.worker_procs.get(plane_name or "")
+            running = proc is not None and proc.poll() is None
+            self._worker_state_cache[worker_name] = {
+                "running": running,
+                "enabled": running,
+                "interval_seconds": None,
+                "last_run_at": None,
+                "lag_seconds": None,
+                "current_activity": "Process running" if running else None,
+                "last_error": None,
+            }
+            self._render_worker_panel(worker_name)
 
     def _resolve_worker_state(self, snapshot: dict) -> tuple[str, str]:
         if not snapshot:
@@ -2831,7 +3140,11 @@ class HomerunApp(App):
         """
         procs = [
             p
-            for p in (self.backend_proc, self.frontend_proc)
+            for p in (
+                self.backend_proc,
+                self.frontend_proc,
+                *self.worker_procs.values(),
+            )
             if p and p.poll() is None
         ]
         for proc in procs:
@@ -2855,6 +3168,7 @@ class HomerunApp(App):
                 proc.wait(timeout=1)
             except Exception:
                 pass
+        self.worker_procs = {}
         # Sweep for orphaned worker processes that escaped the process tree kill.
         # The backend spawns workers via asyncio.create_subprocess_exec; if the
         # backend dies before taskkill /T runs, those children become orphans.
@@ -2899,7 +3213,9 @@ class HomerunApp(App):
                     continue
 
                 is_homerun = False
-                if "workers.runner" in cmd or "workers." in cmd and "_worker" in cmd:
+                if "workers.host" in cmd:
+                    is_homerun = True
+                elif "workers.runner" in cmd or "workers." in cmd and "_worker" in cmd:
                     is_homerun = True
                 elif "uvicorn" in cmd and "main:app" in cmd:
                     is_homerun = True

@@ -22,7 +22,7 @@ from utils.utcnow import utcnow
 from enum import Enum
 from typing import Any, Optional
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_FLOOR
 import uuid
 
 from sqlalchemy import delete, select
@@ -40,19 +40,17 @@ from services.trading_proxy import (
 )
 from utils.logger import get_logger
 from utils.secrets import decrypt_secret
-from utils.converters import safe_float
+from utils.converters import coerce_bool, safe_float
 
 logger = get_logger(__name__)
 
 ZERO = Decimal("0")
 USDC_BASE_UNITS = Decimal("1000000")
 POLYMARKET_SIGNATURE_TYPES = (0, 1, 2)
-DB_RETRY_ATTEMPTS = 3
-DB_RETRY_BASE_DELAY_SECONDS = 0.05
-DB_RETRY_MAX_DELAY_SECONDS = 0.3
 POST_ONLY_REPRICE_TICK = 0.01
 INITIALIZATION_RETRY_BACKOFF_SECONDS = 60.0
 MISSING_DEPENDENCY_RELOG_SECONDS = 300.0
+PENDING_RECONCILIATION_MAX_ATTEMPTS = 6
 
 
 def _to_decimal(value) -> Decimal:
@@ -102,6 +100,7 @@ def _parse_balance_allowance_amount(value: Any) -> Optional[Decimal]:
         return Decimal(str(parsed_float))
 
 
+from utils.retry import DB_RETRY_ATTEMPTS as _DB_RETRY_ATTEMPTS  # noqa: E402
 from utils.retry import is_retryable_db_error as _is_retryable_db_error  # noqa: E402
 from utils.retry import db_retry_delay as _db_retry_delay  # noqa: E402
 
@@ -168,6 +167,43 @@ def _next_post_only_retry_price(side: "OrderSide", price: float) -> float:
     if side == OrderSide.BUY:
         return _clamp_binary_price(float(price) - POST_ONLY_REPRICE_TICK)
     return _clamp_binary_price(float(price) + POST_ONLY_REPRICE_TICK)
+
+
+def _validated_positive_float(value: Any, *, field_name: str) -> float:
+    parsed = safe_float(value, None, reject_nan_inf=True)
+    if parsed is None or parsed <= 0.0:
+        raise ValueError(f"{field_name} must be a positive finite number")
+    return float(parsed)
+
+
+def _tick_size_from_position(position: dict[str, Any]) -> float:
+    for key in (
+        "_tick_size",
+        "tick_size",
+        "tickSize",
+        "min_tick_size",
+        "minimum_tick_size",
+        "price_increment",
+        "priceIncrement",
+        "_price_increment",
+    ):
+        parsed = safe_float(position.get(key), None, reject_nan_inf=True)
+        if parsed is not None and parsed > 0.0:
+            return float(parsed)
+    return POST_ONLY_REPRICE_TICK
+
+
+def _round_down_to_tick(price: float, tick_size: float) -> float:
+    tick = max(POST_ONLY_REPRICE_TICK, float(tick_size))
+    normalized_price = max(tick, float(price))
+    tick_decimal = Decimal(str(tick))
+    price_decimal = Decimal(str(normalized_price))
+    rounded = (price_decimal / tick_decimal).to_integral_value(rounding=ROUND_FLOOR) * tick_decimal
+    return float(rounded)
+
+
+def _pending_reconciliation_retry_delay(attempt: int) -> float:
+    return min(60.0, float(2 ** max(0, int(attempt) - 1)))
 
 
 def _parse_provider_datetime(value: Any) -> datetime:
@@ -307,6 +343,7 @@ class LiveExecutionService:
         self._market_positions: OrderedDict[str, Decimal] = OrderedDict()  # token_id -> USD exposure
         self._stats_lock: Optional[asyncio.Lock] = None
         self._init_lock: Optional[asyncio.Lock] = None
+        self._client_io_lock: Optional[asyncio.Lock] = None
         self._persist_lock: Optional[asyncio.Lock] = None
         self._balance_signature_type: Optional[int] = None
         self._runtime_state_loaded_for_wallet: Optional[str] = None
@@ -324,6 +361,8 @@ class LiveExecutionService:
             int(getattr(settings, "TRADING_MARKET_POSITION_LIMIT", 5000)),
         )
         self._background_tasks: set[asyncio.Task] = set()
+        self._reconciliation_tasks: dict[str, asyncio.Task] = {}
+        self._pending_reconciliations: list[dict[str, Any]] = []
 
     def _get_stats_lock(self) -> asyncio.Lock:
         if self._stats_lock is None:
@@ -335,10 +374,245 @@ class LiveExecutionService:
             self._init_lock = asyncio.Lock()
         return self._init_lock
 
+    def _get_client_io_lock(self) -> asyncio.Lock:
+        if self._client_io_lock is None:
+            self._client_io_lock = asyncio.Lock()
+        return self._client_io_lock
+
     def _get_persist_lock(self) -> asyncio.Lock:
         if self._persist_lock is None:
             self._persist_lock = asyncio.Lock()
         return self._persist_lock
+
+    async def _run_client_io(self, func: Any, *args: Any) -> Any:
+        async with self._get_client_io_lock():
+            return await asyncio.to_thread(func, *args)
+
+    async def check_buy_pre_submit_gate(
+        self,
+        *,
+        token_id: str,
+        required_notional_usd: float,
+    ) -> tuple[bool, Optional[str]]:
+        required_notional = _to_decimal(max(0.0, float(required_notional_usd)))
+        return await self._enforce_buy_pre_submit_gate(
+            token_id=token_id,
+            required_notional_usd=required_notional,
+        )
+
+    def _track_background_task(
+        self,
+        task: asyncio.Task,
+        *,
+        description: str,
+        registry: dict[str, asyncio.Task] | None = None,
+        registry_key: str | None = None,
+    ) -> asyncio.Task:
+        self._background_tasks.add(task)
+        if registry is not None and registry_key:
+            registry[registry_key] = task
+
+        def _finalize(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            if registry is not None and registry_key:
+                existing = registry.get(registry_key)
+                if existing is done_task:
+                    registry.pop(registry_key, None)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error("Background task failed", task_name=description, exc_info=exc)
+
+        task.add_done_callback(_finalize)
+        return task
+
+    def _start_background_task(
+        self,
+        coro: Any,
+        *,
+        name: str,
+        registry: dict[str, asyncio.Task] | None = None,
+        registry_key: str | None = None,
+    ) -> asyncio.Task | None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("Skipping background task spawn because no event loop is running", task_name=name)
+            return None
+        task = loop.create_task(coro, name=name)
+        return self._track_background_task(task, description=name, registry=registry, registry_key=registry_key)
+
+    def _pending_reconciliation_index(self, reconciliation_id: str) -> int | None:
+        key = str(reconciliation_id or "").strip()
+        if not key:
+            return None
+        for index, item in enumerate(self._pending_reconciliations):
+            if str(item.get("id") or "").strip() == key:
+                return index
+        return None
+
+    def _serialize_reconciliation_order(self, order: Order) -> dict[str, Any]:
+        return {
+            "order_id": str(order.id),
+            "token_id": str(order.token_id or "").strip(),
+            "side": order.side.value,
+            "price": float(order.price),
+            "filled_size": float(order.filled_size),
+            "market_question": order.market_question,
+            "opportunity_id": order.opportunity_id,
+        }
+
+    def _normalize_pending_reconciliation(self, raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        reconciliation_id = str(raw.get("id") or "").strip()
+        if not reconciliation_id:
+            return None
+        orders: list[dict[str, Any]] = []
+        for raw_order in raw.get("orders") or []:
+            if not isinstance(raw_order, dict):
+                continue
+            token_id = str(raw_order.get("token_id") or "").strip()
+            side_raw = str(raw_order.get("side") or "").strip().upper()
+            price = safe_float(raw_order.get("price"), None, reject_nan_inf=True)
+            filled_size = safe_float(raw_order.get("filled_size"), None, reject_nan_inf=True)
+            if not token_id or side_raw not in {OrderSide.BUY.value, OrderSide.SELL.value}:
+                continue
+            if price is None or price <= 0.0 or filled_size is None or filled_size <= 0.0:
+                continue
+            orders.append(
+                {
+                    "order_id": str(raw_order.get("order_id") or "").strip() or None,
+                    "token_id": token_id,
+                    "side": side_raw,
+                    "price": float(price),
+                    "filled_size": float(filled_size),
+                    "market_question": str(raw_order.get("market_question") or "").strip() or None,
+                    "opportunity_id": str(raw_order.get("opportunity_id") or "").strip() or None,
+                }
+            )
+        if not orders:
+            return None
+        attempts = int(raw.get("attempts") or 0)
+        return {
+            "id": reconciliation_id,
+            "created_at": str(raw.get("created_at") or utcnow().isoformat()),
+            "last_attempt_at": str(raw.get("last_attempt_at") or "") or None,
+            "last_error": str(raw.get("last_error") or "") or None,
+            "attempts": max(0, attempts),
+            "orders": orders,
+        }
+
+    async def _persist_runtime_state_now(self) -> None:
+        if not self._wallet_for_persistence():
+            return
+        await self._persist_runtime_state()
+
+    async def _run_pending_reconciliation(self, reconciliation_id: str) -> None:
+        index = self._pending_reconciliation_index(reconciliation_id)
+        if index is None:
+            return
+        payload = self._pending_reconciliations[index]
+        attempts = int(payload.get("attempts") or 0) + 1
+        payload["attempts"] = attempts
+        payload["last_attempt_at"] = utcnow().isoformat()
+        payload["last_error"] = None
+        await self._persist_runtime_state_now()
+
+        try:
+            await self._auto_reconcile(payload.get("orders") or [])
+        except Exception as exc:
+            payload["last_error"] = str(exc)
+            await self._persist_runtime_state_now()
+            logger.error(
+                "Pending partial-fill reconciliation failed",
+                reconciliation_id=reconciliation_id,
+                attempts=attempts,
+                exc_info=exc,
+            )
+            if attempts >= PENDING_RECONCILIATION_MAX_ATTEMPTS:
+                logger.error(
+                    "Pending partial-fill reconciliation reached max attempts",
+                    reconciliation_id=reconciliation_id,
+                    attempts=attempts,
+                )
+                return
+            retry_delay = _pending_reconciliation_retry_delay(attempts)
+            logger.warning(
+                "Scheduling pending partial-fill reconciliation retry",
+                reconciliation_id=reconciliation_id,
+                attempts=attempts,
+                retry_delay_seconds=retry_delay,
+            )
+            self._start_background_task(
+                self._retry_pending_reconciliation_after_delay(reconciliation_id, retry_delay),
+                name=f"live-execution-reconcile-retry-{reconciliation_id}",
+                registry=self._reconciliation_tasks,
+                registry_key=reconciliation_id,
+            )
+            return
+
+        index = self._pending_reconciliation_index(reconciliation_id)
+        if index is not None:
+            self._pending_reconciliations.pop(index)
+            await self._persist_runtime_state_now()
+
+    async def _enqueue_pending_reconciliation(self, orders: list[Order]) -> None:
+        serialized_orders = [
+            self._serialize_reconciliation_order(order)
+            for order in orders
+            if order.status in {OrderStatus.OPEN, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED}
+            and float(order.filled_size or 0.0) > 0.0
+        ]
+        if not serialized_orders:
+            return
+
+        payload = {
+            "id": uuid.uuid4().hex,
+            "created_at": utcnow().isoformat(),
+            "last_attempt_at": None,
+            "last_error": None,
+            "attempts": 0,
+            "orders": serialized_orders,
+        }
+        self._pending_reconciliations.append(payload)
+        await self._persist_runtime_state_now()
+        self._start_background_task(
+            self._run_pending_reconciliation(payload["id"]),
+            name=f"live-execution-reconcile-{payload['id']}",
+            registry=self._reconciliation_tasks,
+            registry_key=payload["id"],
+        )
+
+    async def _retry_pending_reconciliation_after_delay(
+        self,
+        reconciliation_id: str,
+        delay_seconds: float,
+    ) -> None:
+        await asyncio.sleep(max(0.0, float(delay_seconds)))
+        await self._run_pending_reconciliation(reconciliation_id)
+
+    def _schedule_restored_reconciliations(self) -> None:
+        for payload in list(self._pending_reconciliations):
+            reconciliation_id = str(payload.get("id") or "").strip()
+            if not reconciliation_id or reconciliation_id in self._reconciliation_tasks:
+                continue
+            attempts = int(payload.get("attempts") or 0)
+            if attempts >= PENDING_RECONCILIATION_MAX_ATTEMPTS:
+                logger.error(
+                    "Restored partial-fill reconciliation requires manual intervention",
+                    reconciliation_id=reconciliation_id,
+                    attempts=attempts,
+                )
+                continue
+            self._start_background_task(
+                self._run_pending_reconciliation(reconciliation_id),
+                name=f"live-execution-reconcile-{reconciliation_id}",
+                registry=self._reconciliation_tasks,
+                registry_key=reconciliation_id,
+            )
 
     def _normalize_evm_address(self, address: Any) -> Optional[str]:
         text = str(address or "").strip()
@@ -374,21 +648,21 @@ class LiveExecutionService:
         if getattr(self._client, "signature_type", None) != signature_type:
             try:
                 self._client.signature_type = signature_type
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as exc:
+                logger.debug("Failed to apply signature_type to trading client", exc_info=exc)
 
         builder = getattr(self._client, "builder", None)
         if builder is not None and getattr(builder, "sig_type", None) != signature_type:
             try:
                 builder.sig_type = signature_type
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as exc:
+                logger.debug("Failed to apply signature_type to trading client builder", exc_info=exc)
         funder = self._funder_for_signature_type(signature_type)
         if builder is not None and isinstance(funder, str) and getattr(builder, "funder", None) != funder:
             try:
                 builder.funder = funder
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as exc:
+                logger.debug("Failed to apply funder to trading client builder", exc_info=exc)
 
     def _is_invalid_signature_error(self, error_text: Any) -> bool:
         if error_text is None:
@@ -424,7 +698,7 @@ class LiveExecutionService:
 
         if refresh:
             try:
-                await asyncio.to_thread(self._client.update_balance_allowance, params)
+                await self._run_client_io(self._client.update_balance_allowance, params)
             except Exception as exc:
                 logger.debug(
                     "Conditional balance-allowance refresh failed",
@@ -434,7 +708,7 @@ class LiveExecutionService:
                 )
 
         try:
-            payload = await asyncio.to_thread(self._client.get_balance_allowance, params)
+            payload = await self._run_client_io(self._client.get_balance_allowance, params)
         except Exception as exc:
             logger.debug(
                 "Conditional balance-allowance fetch failed",
@@ -708,7 +982,7 @@ class LiveExecutionService:
                     continue
                 try:
                     params = build_params(sig_type)
-                    await asyncio.to_thread(self._client.update_balance_allowance, params)
+                    await self._run_client_io(self._client.update_balance_allowance, params)
                 except Exception as exc:
                     logger.debug(
                         "CLOB balance-allowance cache refresh failed for sig_type=%d: %s",
@@ -729,8 +1003,8 @@ class LiveExecutionService:
 
         try:
             await self._refresh_signature_type()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Conditional allowance refresh skipped because signature refresh failed", exc_info=exc)
 
         signature_type = self._resolved_signature_type()
         if not isinstance(signature_type, int) or not self._signature_type_supported(signature_type):
@@ -744,7 +1018,7 @@ class LiveExecutionService:
                 token_id=token_key,
                 signature_type=signature_type,
             )
-            await asyncio.to_thread(self._client.update_balance_allowance, params)
+            await self._run_client_io(self._client.update_balance_allowance, params)
             return True
         except Exception as exc:
             logger.warning(
@@ -763,8 +1037,8 @@ class LiveExecutionService:
 
         try:
             await self._refresh_signature_type()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Collateral allowance refresh skipped because signature refresh failed", exc_info=exc)
 
         signature_type = self._resolved_signature_type()
         if not isinstance(signature_type, int) or not self._signature_type_supported(signature_type):
@@ -777,7 +1051,7 @@ class LiveExecutionService:
                 asset_type=AssetType.COLLATERAL,
                 signature_type=signature_type,
             )
-            await asyncio.to_thread(self._client.update_balance_allowance, params)
+            await self._run_client_io(self._client.update_balance_allowance, params)
             return True
         except Exception as exc:
             logger.warning(
@@ -792,8 +1066,12 @@ class LiveExecutionService:
         if token_key:
             try:
                 await self._select_signature_type_for_conditional_token(token_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Sell allowance preparation could not refresh signature type",
+                    token_id=token_key,
+                    exc_info=exc,
+                )
         conditional_refreshed = False
         if token_key:
             conditional_refreshed = await self.refresh_conditional_balance_allowance(token_key)
@@ -882,7 +1160,7 @@ class LiveExecutionService:
             f"signature_type={signature_value} funder_wallet={funder_wallet or 'unknown'}. "
             "Collateral may be held under a different funder/signature wallet or reserved by open orders."
         )
-        logger.warning(
+        logger.info(
             "Buy pre-submit balance gate blocked order",
             token_id=token_key,
             required_usdc=str(required_usdc),
@@ -1126,6 +1404,7 @@ class LiveExecutionService:
                         )
                 except Exception as _bal_exc:
                     logger.warning("Balance probe during init failed (non-fatal): %s", _bal_exc)
+                self._schedule_restored_reconciliations()
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
                 self._last_init_error = None
                 self._init_retry_not_before = None
@@ -1246,7 +1525,7 @@ class LiveExecutionService:
 
         persist_lock = self._get_persist_lock()
         async with persist_lock:
-            for attempt in range(DB_RETRY_ATTEMPTS):
+            for attempt in range(_DB_RETRY_ATTEMPTS):
                 async with AsyncSessionLocal() as session:
                     try:
                         existing_result = await session.execute(
@@ -1279,7 +1558,7 @@ class LiveExecutionService:
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
-                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
                         if not _is_retryable_db_error(exc) or is_last:
                             logger.error("Failed to persist live trading orders", exc_info=exc)
                             return
@@ -1299,7 +1578,7 @@ class LiveExecutionService:
         positions = list(self._positions.values())
         persist_lock = self._get_persist_lock()
         async with persist_lock:
-            for attempt in range(DB_RETRY_ATTEMPTS):
+            for attempt in range(_DB_RETRY_ATTEMPTS):
                 async with AsyncSessionLocal() as session:
                     try:
                         await session.execute(
@@ -1328,7 +1607,7 @@ class LiveExecutionService:
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
-                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
                         if not _is_retryable_db_error(exc) or is_last:
                             logger.error("Failed to persist live trading positions", exc_info=exc)
                             return
@@ -1349,10 +1628,11 @@ class LiveExecutionService:
         last_trade_at = _normalize_utc_datetime(self._stats.last_trade_at)
         daily_reset_at = datetime.combine(self._daily_volume_reset, datetime.min.time(), tzinfo=timezone.utc)
         market_positions_json = {str(token_id): str(exposure) for token_id, exposure in self._market_positions.items()}
+        pending_reconciliation_json = [dict(item) for item in self._pending_reconciliations]
 
         persist_lock = self._get_persist_lock()
         async with persist_lock:
-            for attempt in range(DB_RETRY_ATTEMPTS):
+            for attempt in range(_DB_RETRY_ATTEMPTS):
                 async with AsyncSessionLocal() as session:
                     try:
                         result = await session.execute(
@@ -1375,13 +1655,14 @@ class LiveExecutionService:
                         row.last_trade_at = last_trade_at
                         row.daily_volume_reset_at = daily_reset_at
                         row.market_positions_json = market_positions_json
+                        row.pending_reconciliation_json = pending_reconciliation_json
                         row.balance_signature_type = self._balance_signature_type
                         row.updated_at = utcnow()
                         await session.commit()
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
-                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
                         if not _is_retryable_db_error(exc) or is_last:
                             logger.error("Failed to persist live trading runtime state", exc_info=exc)
                             return
@@ -1407,7 +1688,7 @@ class LiveExecutionService:
 
         persist_lock = self._get_persist_lock()
         async with persist_lock:
-            for attempt in range(DB_RETRY_ATTEMPTS):
+            for attempt in range(_DB_RETRY_ATTEMPTS):
                 async with AsyncSessionLocal() as session:
                     try:
                         runtime_id = self._runtime_state_id(wallet)
@@ -1502,16 +1783,23 @@ class LiveExecutionService:
                                     self._market_positions[token_key] = _to_decimal(exposure)
                                     self._market_positions.move_to_end(token_key)
                                 self._prune_market_positions()
+                            restored_reconciliations: list[dict[str, Any]] = []
+                            for raw_reconciliation in runtime_row.pending_reconciliation_json or []:
+                                normalized = self._normalize_pending_reconciliation(raw_reconciliation)
+                                if normalized is not None:
+                                    restored_reconciliations.append(normalized)
+                            self._pending_reconciliations = restored_reconciliations
                             if runtime_row.balance_signature_type is not None:
                                 self._balance_signature_type = int(runtime_row.balance_signature_type)
                         else:
                             self._stats.open_positions = len(self._positions)
+                            self._pending_reconciliations = []
 
                         self._runtime_state_loaded_for_wallet = wallet
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
-                        is_last = attempt >= DB_RETRY_ATTEMPTS - 1
+                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
                         if not _is_retryable_db_error(exc) or is_last:
                             logger.error("Failed to restore live trading runtime state", exc_info=exc)
                             return
@@ -1549,13 +1837,10 @@ class LiveExecutionService:
             self._daily_pnl = ZERO
             self._daily_volume_reset = today
             self._sync_stats_from_decimals()
-            try:
-                loop = asyncio.get_running_loop()
-                task = loop.create_task(self._persist_runtime_state())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            except RuntimeError:
-                pass
+            self._start_background_task(
+                self._persist_runtime_state(),
+                name="live-execution-persist-runtime-state",
+            )
 
     def _extract_server_orders(self, response: Any) -> list[dict[str, Any]]:
         if isinstance(response, list):
@@ -1745,8 +2030,8 @@ class LiveExecutionService:
         if not self.is_ready():
             try:
                 await self.ensure_initialized()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Order snapshot refresh could not initialize trading client", exc_info=exc)
             if not self.is_ready():
                 return cached_fallback
 
@@ -1766,29 +2051,42 @@ class LiveExecutionService:
                     snapshots[clob_id] = snapshot
 
         try:
-            response = self._client.get_orders()
+            response = await self._run_client_io(self._client.get_orders)
             _ingest_open_orders(response)
         except Exception as exc:
-            logger.error("Failed to fetch open provider orders", exc_info=exc)
+            if _is_transient_transport_error(exc):
+                logger.warning("Failed to fetch open provider orders", exc_info=exc)
+            else:
+                logger.error("Failed to fetch open provider orders", exc_info=exc)
             try:
                 reinitialized = await self.ensure_initialized()
-            except Exception:
+            except Exception as reinit_exc:
+                logger.warning(
+                    "Trading client reinitialization failed while fetching order snapshots",
+                    exc_info=reinit_exc,
+                )
                 reinitialized = False
             if reinitialized and self.is_ready():
                 try:
-                    response = self._client.get_orders()
+                    response = await self._run_client_io(self._client.get_orders)
                     _ingest_open_orders(response)
                 except Exception as retry_exc:
-                    logger.error(
-                        "Failed to fetch open provider orders after reinitializing trading client",
-                        exc_info=retry_exc,
-                    )
+                    if _is_transient_transport_error(retry_exc):
+                        logger.warning(
+                            "Failed to fetch open provider orders after reinitializing trading client",
+                            exc_info=retry_exc,
+                        )
+                    else:
+                        logger.error(
+                            "Failed to fetch open provider orders after reinitializing trading client",
+                            exc_info=retry_exc,
+                        )
 
         missing = requested.difference(snapshots.keys())
         if missing and hasattr(self._client, "get_order"):
             for clob_id in sorted(missing):
                 try:
-                    single_response = self._client.get_order(clob_id)
+                    single_response = await self._run_client_io(self._client.get_order, clob_id)
                 except Exception as exc:
                     error_text = str(exc).lower()
                     if "not found" in error_text or "does not exist" in error_text:
@@ -1877,9 +2175,12 @@ class LiveExecutionService:
             return []
 
         try:
-            provider_response = await asyncio.to_thread(self._client.get_orders)
+            provider_response = await self._run_client_io(self._client.get_orders)
         except Exception as exc:
-            logger.error("Failed to fetch provider open orders", exc_info=exc)
+            if _is_transient_transport_error(exc):
+                logger.warning("Failed to fetch provider open orders", exc_info=exc)
+            else:
+                logger.error("Failed to fetch provider open orders", exc_info=exc)
             return []
 
         provider_orders = self._extract_server_orders(provider_response)
@@ -2168,6 +2469,7 @@ class LiveExecutionService:
         min_order_size_usd: Optional[float] = None,
         market_question: Optional[str] = None,
         opportunity_id: Optional[str] = None,
+        skip_buy_pre_submit_gate: bool = False,
     ) -> Order:
         """
         Place an order on Polymarket.
@@ -2186,21 +2488,29 @@ class LiveExecutionService:
         Returns:
             Order object with status
         """
+        token_key = str(token_id or "").strip()
+        if not token_key:
+            raise ValueError("token_id is required")
+        normalized_price = _validated_positive_float(price, field_name="price")
+        normalized_size = _validated_positive_float(size, field_name="size")
+        if normalized_price > 1.0:
+            raise ValueError("price must be less than or equal to 1.0")
+
         order_id = str(uuid.uuid4())
         normalized_order_type = _normalize_order_type(order_type)
         order = Order(
             id=order_id,
-            token_id=token_id,
+            token_id=token_key,
             side=side,
-            price=price,
-            size=size,
+            price=normalized_price,
+            size=normalized_size,
             order_type=normalized_order_type,
             market_question=market_question,
             opportunity_id=opportunity_id,
         )
 
         # Calculate USD notional with Decimal to avoid float accumulation drift.
-        size_usd = _to_decimal(price) * _to_decimal(size)
+        size_usd = _to_decimal(normalized_price) * _to_decimal(normalized_size)
         reserved = False
 
         # VPN pre-trade check (blocks if VPN required but unreachable)
@@ -2217,7 +2527,7 @@ class LiveExecutionService:
         is_valid, error = await self._validate_and_reserve_order(
             size_usd=size_usd,
             side=side,
-            token_id=token_id,
+            token_id=token_key,
             min_order_size_usd=min_order_size_usd,
         )
         if not is_valid:
@@ -2233,18 +2543,18 @@ class LiveExecutionService:
             await self._sync_trading_transport()
             await self._refresh_signature_type()
             sell_allowance_retry_used = False
-            if side == OrderSide.BUY:
+            if side == OrderSide.BUY and not skip_buy_pre_submit_gate:
                 buy_gate_ok, buy_gate_error = await self._enforce_buy_pre_submit_gate(
-                    token_id=token_id,
+                    token_id=token_key,
                     required_notional_usd=size_usd,
                 )
                 if not buy_gate_ok:
                     raise RuntimeError(buy_gate_error or "BUY pre-submit gate failed")
             if side == OrderSide.SELL:
-                await self.prepare_sell_balance_allowance(token_id)
+                await self.prepare_sell_balance_allowance(token_key)
                 sell_gate_ok, sell_gate_error = await self._enforce_sell_pre_submit_gate(
-                    token_id=token_id,
-                    size=size,
+                    token_id=token_key,
+                    size=normalized_size,
                 )
                 if not sell_gate_ok:
                     raise RuntimeError(sell_gate_error or "SELL pre-submit gate failed")
@@ -2253,7 +2563,7 @@ class LiveExecutionService:
             from py_clob_client.clob_types import MarketOrderArgs, OrderArgs
             from py_clob_client.order_builder.constants import BUY, SELL
 
-            submit_price = float(price)
+            submit_price = float(normalized_price)
             order_side = BUY if side == OrderSide.BUY else SELL
             provider_order_type = _provider_order_type_value(normalized_order_type)
             provider_market_order = provider_order_type in {OrderType.FAK.value, OrderType.FOK.value}
@@ -2264,32 +2574,35 @@ class LiveExecutionService:
             for attempt in range(max_attempts + max_transport_retries):
                 order.price = submit_price
                 try:
-                    if provider_market_order:
-                        market_amount = float(size)
-                        if side == OrderSide.BUY:
-                            market_amount = float(max(0.0, submit_price) * max(0.0, size))
-                        order_args = MarketOrderArgs(
-                            token_id=token_id,
-                            amount=market_amount,
-                            side=order_side,
-                            price=submit_price,
-                            order_type=provider_order_type,
+                    async with self._get_client_io_lock():
+                        if provider_market_order:
+                            market_amount = float(normalized_size)
+                            if side == OrderSide.BUY:
+                                market_amount = float(max(0.0, submit_price) * max(0.0, normalized_size))
+                            order_args = MarketOrderArgs(
+                                token_id=token_key,
+                                amount=market_amount,
+                                side=order_side,
+                                price=submit_price,
+                                order_type=provider_order_type,
+                            )
+                            signed_order = await asyncio.to_thread(self._client.create_market_order, order_args)
+                        else:
+                            order_args = OrderArgs(
+                                price=submit_price,
+                                size=normalized_size,
+                                side=order_side,
+                                token_id=token_key,
+                            )
+                            signed_order = await asyncio.to_thread(self._client.create_order, order_args)
+                        response = await asyncio.to_thread(
+                            self._client.post_order,
+                            signed_order,
+                            provider_order_type,
+                            post_only=post_only,
                         )
-                        signed_order = self._client.create_market_order(order_args)
-                    else:
-                        order_args = OrderArgs(
-                            price=submit_price,
-                            size=size,
-                            side=order_side,
-                            token_id=token_id,
-                        )
-                        signed_order = self._client.create_order(order_args)
-                    # Post order to CLOB
-                    response = self._client.post_order(
-                        signed_order,
-                        provider_order_type,
-                        post_only=post_only,
-                    )
+                    if not isinstance(response, dict):
+                        raise RuntimeError("Trading provider returned malformed order response")
                 except Exception as exc:
                     error_text = str(exc).lower()
                     if attempt == 0 and self._is_invalid_signature_error(str(exc)):
@@ -2297,7 +2610,7 @@ class LiveExecutionService:
                             logger.warning(
                                 "Order creation failed with invalid signature; refreshing and retrying",
                                 attempt=attempt + 1,
-                                token_id=token_id,
+                                token_id=token_key,
                                 side=side.value,
                             )
                             await asyncio.sleep(0)
@@ -2308,11 +2621,11 @@ class LiveExecutionService:
                         and "not enough balance / allowance" in error_text
                     ):
                         sell_allowance_retry_used = True
-                        if await self.prepare_sell_balance_allowance(token_id):
+                        if await self.prepare_sell_balance_allowance(token_key):
                             logger.warning(
                                 "Sell order creation failed with stale balance/allowance cache; refreshed allowances and retrying",
                                 attempt=attempt + 1,
-                                token_id=token_id,
+                                token_id=token_key,
                             )
                             await asyncio.sleep(0)
                             continue
@@ -2326,7 +2639,7 @@ class LiveExecutionService:
                             logger.warning(
                                 "Post-only order crossed book; repricing one tick and retrying",
                                 attempt=attempt + 1,
-                                token_id=token_id,
+                                token_id=token_key,
                                 side=side.value,
                                 from_price=round(submit_price, 6),
                                 to_price=round(retry_price, 6),
@@ -2344,7 +2657,7 @@ class LiveExecutionService:
                             "Order submission failed with transient transport error; retrying",
                             attempt=attempt + 1,
                             transport_retry=transport_retries_used,
-                            token_id=token_id,
+                            token_id=token_key,
                             side=side.value,
                             error_type=type(exc).__name__,
                             error=str(exc)[:200],
@@ -2366,26 +2679,6 @@ class LiveExecutionService:
                     immediate_snapshot = self._parse_provider_order_snapshot(response)
                     if immediate_snapshot is not None:
                         self._apply_snapshot_to_order(order, immediate_snapshot)
-                    if (
-                        order.status in {OrderStatus.OPEN, OrderStatus.PENDING}
-                        and order.clob_order_id
-                        and hasattr(self._client, "get_order")
-                    ):
-                        try:
-                            single_response = self._client.get_order(str(order.clob_order_id))
-                            for server_order in self._extract_server_orders(single_response):
-                                snapshot = self._parse_provider_order_snapshot(server_order)
-                                if snapshot is None:
-                                    continue
-                                self._apply_snapshot_to_order(order, snapshot)
-                                break
-                        except Exception as exc:
-                            logger.debug(
-                                "Post-order snapshot lookup failed",
-                                order_id=order.id,
-                                clob_order_id=order.clob_order_id,
-                                exc_info=exc,
-                            )
                     stats_lock = self._get_stats_lock()
                     async with stats_lock:
                         self._stats.total_trades += 1
@@ -2403,7 +2696,7 @@ class LiveExecutionService:
                     logger.warning(
                         "Order rejected with invalid signature; refreshing and retrying",
                         attempt=attempt + 1,
-                        token_id=token_id,
+                        token_id=token_key,
                         side=side.value,
                     )
                     await asyncio.sleep(0)
@@ -2414,11 +2707,11 @@ class LiveExecutionService:
                     and "not enough balance / allowance" in error_message.lower()
                 ):
                     sell_allowance_retry_used = True
-                    if await self.prepare_sell_balance_allowance(token_id):
+                    if await self.prepare_sell_balance_allowance(token_key):
                         logger.warning(
                             "Sell order rejected with stale balance/allowance cache; refreshed allowances and retrying",
                             attempt=attempt + 1,
-                            token_id=token_id,
+                            token_id=token_key,
                         )
                         await asyncio.sleep(0)
                         continue
@@ -2432,7 +2725,7 @@ class LiveExecutionService:
                         logger.warning(
                             "Post-only order crossed book; repricing one tick and retrying",
                             attempt=attempt + 1,
-                            token_id=token_id,
+                            token_id=token_key,
                             side=side.value,
                             from_price=round(submit_price, 6),
                             to_price=round(retry_price, 6),
@@ -2446,7 +2739,7 @@ class LiveExecutionService:
                 await self._release_reservation(
                     size_usd=size_usd,
                     side=side,
-                    token_id=token_id,
+                    token_id=token_key,
                 )
                 reserved = False
                 logger.error(f"Order failed: {order.error_message}")
@@ -2459,7 +2752,7 @@ class LiveExecutionService:
                 await self._release_reservation(
                     size_usd=size_usd,
                     side=side,
-                    token_id=token_id,
+                    token_id=token_key,
                 )
                 reserved = False
             logger.error(f"Order execution error: {e}")
@@ -2611,7 +2904,7 @@ class LiveExecutionService:
             return False
 
         try:
-            response = await asyncio.to_thread(self._client.cancel, clob_order_id)
+            response = await self._run_client_io(self._client.cancel, clob_order_id)
         except Exception as exc:
             logger.error("Cancel order error", order_id=order_key, clob_order_id=clob_order_id, exc_info=exc)
             return False
@@ -2912,58 +3205,62 @@ class LiveExecutionService:
             List of orders placed
         """
 
-        # Pre-validate all positions before any execution
-        valid_positions = []
+        normalized_size_usd = _validated_positive_float(size_usd, field_name="size_usd")
+
+        # Pre-validate all positions before any execution.
+        valid_positions: list[dict[str, Any]] = []
         for position in positions:
-            token_id = position.get("token_id")
-            if not token_id:
-                logger.warning(f"Position missing token_id: {position}")
+            if not isinstance(position, dict):
+                logger.warning("Execution position payload must be a dict", payload_type=type(position).__name__)
                 continue
-            price = position.get("price", 0)
-            if price <= 0:
-                logger.warning(f"Invalid price {price} for {token_id}")
+            token_key = str(position.get("token_id") or "").strip()
+            if not token_key:
+                logger.warning("Execution position missing token_id", position=position)
                 continue
-            valid_positions.append(position)
+            execution_price = safe_float(position.get("price"), None, reject_nan_inf=True)
+            if execution_price is None or execution_price <= 0.0 or execution_price > 1.0:
+                logger.warning(
+                    "Execution position has invalid price",
+                    token_id=token_key,
+                    price=position.get("price"),
+                )
+                continue
+            normalized_position = dict(position)
+            normalized_position["token_id"] = token_key
+            normalized_position["price"] = float(execution_price)
+            valid_positions.append(normalized_position)
 
         if not valid_positions:
             logger.error("No valid positions to execute")
             return []
 
         # Build order coroutines for parallel execution
-        async def place_single_order(position: dict) -> Order:
-            token_id = position.get("token_id")
-            price = position.get("price")
-            position_usd = size_usd / len(valid_positions)
-            shares = position_usd / price
-            maker_mode_raw = position.get("_maker_mode")
-            if isinstance(maker_mode_raw, str):
-                maker_mode = maker_mode_raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
-            else:
-                maker_mode = bool(maker_mode_raw)
+        async def place_single_order(position: dict[str, Any]) -> Order:
+            token_key = str(position.get("token_id") or "").strip()
+            price = _validated_positive_float(position.get("price"), field_name="position.price")
+            position_usd = normalized_size_usd / len(valid_positions)
+            shares = _validated_positive_float(position_usd / price, field_name="shares")
+            maker_mode = bool(coerce_bool(position.get("_maker_mode"), False))
 
             post_only_raw = position.get("post_only")
             if post_only_raw is None:
                 post_only_raw = position.get("_post_only")
-            if isinstance(post_only_raw, str):
-                post_only = post_only_raw.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
-            elif post_only_raw is None:
-                post_only = False
-            else:
-                post_only = bool(post_only_raw)
-            post_only = post_only or maker_mode
+            post_only = bool(coerce_bool(post_only_raw, False)) or maker_mode
+            tick_size = _tick_size_from_position(position)
 
             # Crypto 15-min markets: use maker mode to avoid taker fees
             # and earn rebates.  Place at best_bid (or 1 tick below ask)
             # to sit on the book as a maker order.
             if maker_mode:
-                maker_price = position.get("_maker_price", price)
-                # Round down to tick size (0.01 for crypto markets)
-                maker_price = max(0.01, round(maker_price - 0.005, 2))
-                price = maker_price
-                shares = position_usd / price
+                maker_price = safe_float(position.get("_maker_price"), None, reject_nan_inf=True)
+                if maker_price is None or maker_price <= 0.0:
+                    maker_price = price
+                maker_price = _round_down_to_tick(float(maker_price) - (tick_size / 2.0), tick_size)
+                price = min(0.99, max(tick_size, float(maker_price)))
+                shares = _validated_positive_float(position_usd / price, field_name="shares")
 
             return await self.place_order(
-                token_id=token_id,
+                token_id=token_key,
                 side=OrderSide.BUY,
                 price=price,
                 size=shares,
@@ -2999,36 +3296,54 @@ class LiveExecutionService:
                 f"PARTIAL EXECUTION: {len(orders) - failed_count}/{len(valid_positions)} legs filled. "
                 f"Position has EXPOSURE RISK!"
             )
-            # Auto-reconcile: unwind filled legs from failed arbitrage
-            task = asyncio.create_task(self._auto_reconcile(orders, valid_positions, failed_count))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+            await self._enqueue_pending_reconciliation(orders)
 
         return orders
 
-    async def _auto_reconcile(self, orders: list, positions: list, failed_count: int):
+    async def _auto_reconcile(self, orders: list[dict[str, Any]]) -> None:
         """Auto-unwind partial multi-leg fills to prevent one-sided exposure."""
         await asyncio.sleep(2)  # Brief delay before reconciliation
-        logger.info(f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs")
-        for order in orders:
-            if order.status in (
-                OrderStatus.OPEN,
-                OrderStatus.FILLED,
-                OrderStatus.PARTIALLY_FILLED,
-            ):
-                if order.filled_size > 0:
-                    try:
-                        unwind = await self.place_order(
-                            token_id=order.token_id,
-                            side=OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY,
-                            price=order.price * 0.95 if order.side == OrderSide.BUY else order.price * 1.05,
-                            size=order.filled_size,
-                            order_type=OrderType.FOK,
-                            market_question=f"AUTO_RECONCILE: {order.market_question}",
-                        )
-                        logger.info(f"Reconciliation order placed: {unwind.status.value}")
-                    except Exception as e:
-                        logger.error(f"Reconciliation failed: {e}")
+        valid_orders = [order for order in orders if isinstance(order, dict)]
+        logger.warning("AUTO_RECONCILE: Unwinding filled legs", leg_count=len(valid_orders))
+        failures: list[str] = []
+        for order in valid_orders:
+            token_key = str(order.get("token_id") or "").strip()
+            side_raw = str(order.get("side") or "").strip().upper()
+            filled_size = safe_float(order.get("filled_size"), None, reject_nan_inf=True)
+            filled_price = safe_float(order.get("price"), None, reject_nan_inf=True)
+            if not token_key or side_raw not in {OrderSide.BUY.value, OrderSide.SELL.value}:
+                failures.append(f"invalid_order:{order.get('order_id') or 'unknown'}")
+                continue
+            if filled_size is None or filled_size <= 0.0 or filled_price is None or filled_price <= 0.0:
+                failures.append(f"invalid_fill:{order.get('order_id') or token_key}")
+                continue
+            try:
+                unwind = await self.place_order(
+                    token_id=token_key,
+                    side=OrderSide.SELL if side_raw == OrderSide.BUY.value else OrderSide.BUY,
+                    price=_clamp_binary_price(filled_price * (0.95 if side_raw == OrderSide.BUY.value else 1.05)),
+                    size=float(filled_size),
+                    order_type=OrderType.FOK,
+                    market_question=f"AUTO_RECONCILE: {order.get('market_question')}",
+                    opportunity_id=str(order.get("opportunity_id") or "").strip() or None,
+                )
+            except Exception as exc:
+                logger.error("Reconciliation order placement raised", token_id=token_key, exc_info=exc)
+                failures.append(f"exception:{token_key}")
+                continue
+
+            if unwind.status == OrderStatus.FAILED:
+                failures.append(f"failed:{token_key}:{unwind.error_message or 'unknown'}")
+            else:
+                logger.warning(
+                    "Reconciliation order placed",
+                    token_id=token_key,
+                    status=unwind.status.value,
+                    clob_order_id=unwind.clob_order_id,
+                )
+
+        if failures:
+            raise RuntimeError("; ".join(failures[:5]))
 
     def get_stats(self) -> TradingStats:
         """Get trading statistics"""
@@ -3091,7 +3406,7 @@ class LiveExecutionService:
             async def fetch_balance_snapshot(signature_type: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
                 params = build_balance_params(signature_type)
                 try:
-                    await asyncio.to_thread(self._client.update_balance_allowance, params)
+                    await self._run_client_io(self._client.update_balance_allowance, params)
                 except Exception as exc:
                     logger.warning(
                         "Balance allowance refresh failed; using cached values",
@@ -3099,7 +3414,7 @@ class LiveExecutionService:
                         exc_info=exc,
                     )
                 try:
-                    payload = await asyncio.to_thread(self._client.get_balance_allowance, params)
+                    payload = await self._run_client_io(self._client.get_balance_allowance, params)
                 except Exception as exc:
                     logger.warning(
                         "Balance allowance fetch failed",

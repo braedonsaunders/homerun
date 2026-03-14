@@ -1616,7 +1616,10 @@ export interface ExecutionLatencyPercentiles {
 
 export interface ExecutionLatencyBucket {
   count: number
+  armed_to_ws_release_ms: ExecutionLatencyPercentiles
   emit_to_queue_wake_ms: ExecutionLatencyPercentiles
+  ws_release_to_decision_ms: ExecutionLatencyPercentiles
+  ws_release_to_submit_start_ms: ExecutionLatencyPercentiles
   wake_to_context_ready_ms: ExecutionLatencyPercentiles
   context_ready_to_decision_ms: ExecutionLatencyPercentiles
   decision_to_submit_start_ms: ExecutionLatencyPercentiles
@@ -1627,6 +1630,8 @@ export interface ExecutionLatencyBucket {
 export interface ExecutionLatencySummary {
   internal_sla_definition: string
   internal_sla_target_ms: number
+  rolling_window_seconds: number
+  sample_count: number
   overall: ExecutionLatencyBucket
   by_source: Record<string, ExecutionLatencyBucket>
   by_strategy: Record<string, ExecutionLatencyBucket>

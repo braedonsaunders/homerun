@@ -889,7 +889,6 @@ async def upsert_trade_signal(
 
     if commit:
         await session.commit()
-        await refresh_trade_signal_snapshots(session)
         if publish_signal_emission:
             await _publish_trade_signal_emission(
                 row=row,
@@ -931,7 +930,6 @@ async def set_trade_signal_status(
     )
     if commit:
         await session.commit()
-        await refresh_trade_signal_snapshots(session)
         await _publish_trade_signal_emission(
             row=row,
             event_type="status_update",
@@ -979,7 +977,6 @@ async def expire_stale_signals(session: AsyncSession, *, commit: bool = True) ->
         )
     if rows and commit:
         await session.commit()
-        await refresh_trade_signal_snapshots(session)
         await _publish_trade_signal_batch(
             event_type="status_expired",
             signal_ids=expired_signal_ids,
@@ -1038,7 +1035,6 @@ async def expire_source_signals_except(
 
     if rows and commit:
         await session.commit()
-        await refresh_trade_signal_snapshots(session)
         await _publish_trade_signal_batch(
             event_type="status_expired",
             signal_ids=expired_signal_ids,
@@ -1180,31 +1176,36 @@ async def _expire_non_tradable_pending_signals(
 
     if changed:
         await session.commit()
-        await refresh_trade_signal_snapshots(session)
 
     return output
 
 
-async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str, Any]]:
-    """Recompute per-source signal stats from ``trade_signals``."""
+async def list_trade_signal_source_stats(
+    session: AsyncSession,
+) -> list[tuple[str, str, int, datetime | None, datetime | None]]:
+    return list(
+        (
+            await session.execute(
+                select(
+                    TradeSignal.source,
+                    TradeSignal.status,
+                    func.count(TradeSignal.id),
+                    func.max(TradeSignal.created_at),
+                    func.min(
+                        case(
+                            (TradeSignal.status == "pending", TradeSignal.created_at),
+                            else_=None,
+                        )
+                    ),
+                ).group_by(TradeSignal.source, TradeSignal.status)
+            )
+        ).all()
+    )
 
-    rows = (
-        await session.execute(
-            select(
-                TradeSignal.source,
-                TradeSignal.status,
-                func.count(TradeSignal.id),
-                func.max(TradeSignal.created_at),
-                func.min(
-                    case(
-                        (TradeSignal.status == "pending", TradeSignal.created_at),
-                        else_=None,
-                    )
-                ),
-            ).group_by(TradeSignal.source, TradeSignal.status)
-        )
-    ).all()
 
+def _serialize_trade_signal_source_stats(
+    rows: list[tuple[str, str, int, datetime | None, datetime | None]],
+) -> list[dict[str, Any]]:
     source_stats: dict[str, dict[str, Any]] = {}
     for source, status, count, latest_created, oldest_pending in rows:
         stats = source_stats.setdefault(
@@ -1230,8 +1231,8 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
         if oldest_pending and (stats["oldest_pending_at"] is None or oldest_pending < stats["oldest_pending_at"]):
             stats["oldest_pending_at"] = oldest_pending
 
-    out: list[dict[str, Any]] = []
     now = _utc_now()
+    out: list[dict[str, Any]] = []
     for source in sorted(source_stats.keys()):
         stats = source_stats[source]
         out.append(
@@ -1253,6 +1254,11 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
             }
         )
     return out
+
+
+async def read_trade_signal_source_stats(session: AsyncSession) -> list[dict[str, Any]]:
+    rows = await list_trade_signal_source_stats(session)
+    return _serialize_trade_signal_source_stats(rows)
 
 
 def _direction_from_outcome(outcome: Optional[str]) -> Optional[str]:

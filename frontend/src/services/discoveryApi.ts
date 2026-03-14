@@ -17,7 +17,10 @@ export interface DiscoveredWallet {
   total_trades: number
   wins: number
   losses: number
+  resolved_positions?: number
   win_rate: number
+  win_rate_score?: number
+  win_rate_confidence?: number
   total_pnl: number
   avg_roi: number
   sharpe_ratio: number | null
@@ -370,9 +373,14 @@ export interface PoolMember {
   trades_1h: number
   trades_24h: number
   last_trade_at?: string | null
+  wins?: number
+  losses?: number
+  resolved_positions?: number
   total_trades: number
   total_pnl: number
   win_rate: number
+  win_rate_score?: number
+  win_rate_confidence?: number
   tags: string[]
   strategies_detected: string[]
   market_categories: string[]
@@ -407,6 +415,7 @@ export const discoveryApi = {
     limit?: number
     offset?: number
     min_trades?: number
+    min_resolved_positions?: number
     min_pnl?: number
     insider_only?: boolean
     min_insider_score?: number

@@ -40,7 +40,7 @@ from config import settings as _cfg
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision
 from services.data_events import DataEvent
 from services.strategy_sdk import StrategySDK
-from utils.converters import safe_float, to_float, to_confidence, to_bool, clamp
+from utils.converters import clamp, coerce_bool as _coerce_bool, safe_float, to_bool, to_confidence, to_float
 from utils.signal_helpers import signal_payload
 from services.quality_filter import QualityFilterOverrides
 from utils.logger import get_logger
@@ -144,19 +144,6 @@ def _timeframe_override(params: dict[str, Any], base_key: str, timeframe: str) -
         if key in params:
             return params.get(key)
     return None
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:

@@ -1,4 +1,5 @@
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -360,5 +361,122 @@ async def test_wallet_discovery_priority_queue_excludes_top_pool_without_large_n
         assert counts["smart_pool_unanalyzed"] == 2
         assert counts["priority_total"] == 4
         assert ordered == ["top_only", "top_and_smart", "smart_only_false", "smart_only_null"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_wallet_discovery_maintenance_refresh_prioritizes_active_stale_wallets(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory("wallet_discovery_maintenance_refresh")
+    monkeypatch.setattr(wallet_discovery_module, "AsyncSessionLocal", session_factory)
+    service = wallet_discovery_module.WalletDiscoveryEngine()
+    now = utcnow()
+
+    try:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    DiscoveredWallet(
+                        address="active_stale",
+                        discovered_at=now - timedelta(days=2),
+                        last_analyzed_at=now - timedelta(days=2),
+                        last_trade_at=now - timedelta(minutes=15),
+                        trades_24h=45,
+                        trades_1h=6,
+                    ),
+                    DiscoveredWallet(
+                        address="inactive_older",
+                        discovered_at=now - timedelta(days=10),
+                        last_analyzed_at=now - timedelta(days=10),
+                        last_trade_at=now - timedelta(days=4),
+                        trades_24h=0,
+                        trades_1h=0,
+                    ),
+                    DiscoveredWallet(
+                        address="mid_stale",
+                        discovered_at=now - timedelta(days=3),
+                        last_analyzed_at=now - timedelta(days=3),
+                        last_trade_at=now - timedelta(hours=3),
+                        trades_24h=12,
+                        trades_1h=1,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        ordered = await service._maintenance_refresh_queue(
+            stale_cutoff=now - timedelta(hours=12),
+            limit=3,
+        )
+
+        assert ordered == ["active_stale", "mid_stale", "inactive_older"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_wallet_discovery_priority_queue_reanalyzes_large_trade_gap_wallets(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory("wallet_discovery_priority_trade_gap")
+    monkeypatch.setattr(wallet_discovery_module, "AsyncSessionLocal", session_factory)
+    service = wallet_discovery_module.WalletDiscoveryEngine()
+    now = utcnow()
+
+    try:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    DiscoveredWallet(
+                        address="gap_wallet",
+                        discovered_at=now - timedelta(days=3),
+                        last_analyzed_at=now - timedelta(hours=6),
+                        last_trade_at=now - timedelta(minutes=20),
+                        total_trades=194,
+                        wins=1,
+                        losses=0,
+                        trades_24h=31,
+                        trades_1h=5,
+                        metrics_source_version=wallet_discovery_module.METRICS_SOURCE_VERSION,
+                    ),
+                    DiscoveredWallet(
+                        address="fresh_gap_wallet",
+                        discovered_at=now - timedelta(days=2),
+                        last_analyzed_at=now - timedelta(hours=1),
+                        last_trade_at=now - timedelta(minutes=10),
+                        total_trades=220,
+                        wins=1,
+                        losses=0,
+                        trades_24h=40,
+                        trades_1h=7,
+                        metrics_source_version=wallet_discovery_module.METRICS_SOURCE_VERSION,
+                    ),
+                    DiscoveredWallet(
+                        address="normal_sample_wallet",
+                        discovered_at=now - timedelta(days=4),
+                        last_analyzed_at=now - timedelta(hours=8),
+                        last_trade_at=now - timedelta(hours=2),
+                        total_trades=362,
+                        wins=102,
+                        losses=21,
+                        trades_24h=18,
+                        trades_1h=2,
+                        metrics_source_version=wallet_discovery_module.METRICS_SOURCE_VERSION,
+                    ),
+                    DiscoveredWallet(
+                        address="backfill_wallet",
+                        discovered_at=now - timedelta(days=5),
+                        last_analyzed_at=now - timedelta(days=1),
+                        total_trades=75,
+                        wins=14,
+                        losses=6,
+                        metrics_source_version="legacy_v1",
+                    ),
+                ]
+            )
+            await session.commit()
+
+        ordered, counts = await service._priority_analysis_queue()
+
+        assert counts["trade_gap_reanalysis"] == 1
+        assert ordered == ["gap_wallet", "backfill_wallet"]
     finally:
         await engine.dispose()

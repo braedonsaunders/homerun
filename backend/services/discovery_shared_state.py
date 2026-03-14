@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -11,32 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models.database import DiscoveryControl, DiscoverySnapshot
+from utils.converters import format_iso_utc_z, parse_iso_datetime
 
 DISCOVERY_SNAPSHOT_ID = "latest"
 DISCOVERY_CONTROL_ID = "default"
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    text = value.strip()
-    if text.endswith("+00:00+00:00"):
-        text = text[:-6]
-    if text.endswith("Z"):
-        text = text[:-1]
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=None).isoformat() + "Z"
-
 
 def _default_status() -> dict[str, Any]:
     return {
@@ -57,10 +35,7 @@ async def write_discovery_snapshot(
 ) -> None:
     raw_last_run = status.get("last_run_at")
     if isinstance(raw_last_run, str):
-        try:
-            last_run = _parse_iso_datetime(raw_last_run)
-        except Exception:
-            last_run = None
+        last_run = parse_iso_datetime(raw_last_run, naive=True)
     elif isinstance(raw_last_run, datetime):
         last_run = raw_last_run
     else:
@@ -97,7 +72,7 @@ async def read_discovery_snapshot(session: AsyncSession) -> dict[str, Any]:
         "running": bool(row.running),
         "enabled": bool(row.enabled),
         "run_interval_minutes": int(row.run_interval_minutes or settings.DISCOVERY_RUN_INTERVAL_MINUTES),
-        "last_run_at": _format_iso_utc_z(row.last_run_at),
+        "last_run_at": format_iso_utc_z(row.last_run_at),
         "current_activity": row.current_activity,
         "wallets_discovered_last_run": int(row.wallets_discovered_last_run or 0),
         "wallets_analyzed_last_run": int(row.wallets_analyzed_last_run or 0),
@@ -110,7 +85,7 @@ async def get_discovery_status_from_db(session: AsyncSession) -> dict[str, Any]:
     status["paused"] = bool(control.get("is_paused", False))
     status["priority_backlog_mode"] = bool(control.get("priority_backlog_mode", True))
     status["requested_run_at"] = (
-        _format_iso_utc_z(control.get("requested_run_at")) if control.get("requested_run_at") else None
+        format_iso_utc_z(control.get("requested_run_at")) if control.get("requested_run_at") else None
     )
     return status
 

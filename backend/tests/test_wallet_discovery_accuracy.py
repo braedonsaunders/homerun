@@ -26,6 +26,14 @@ class TestWalletDiscoveryAccuracy:
         assert engine._clamp_numeric_value(1500.0, 1000.0) == 1000.0
         assert engine._clamp_numeric_value(float("inf"), 1000.0) is None
 
+    def test_confidence_adjusted_win_rate_shrinks_tiny_samples(self):
+        engine = WalletDiscoveryEngine()
+        tiny_sample = engine._confidence_adjusted_win_rate(wins=1, losses=0)
+        large_sample = engine._confidence_adjusted_win_rate(wins=100, losses=0)
+
+        assert tiny_sample < 0.6
+        assert large_sample > 0.9
+
     def test_accuracy_first_stats_override_inconsistent_trade_defaults(self):
         engine = WalletDiscoveryEngine()
         base_stats = engine._empty_stats()
@@ -65,7 +73,31 @@ class TestWalletDiscoveryAccuracy:
         assert merged["total_trades"] == 120
         assert merged["wins"] == 3
         assert merged["losses"] == 1
+        assert merged["resolved_positions"] == 4
+        assert merged["win_rate_score"] < merged["win_rate"]
         assert pytest.approx(merged["win_rate"], rel=1e-6) == 0.75
+
+    def test_classification_uses_resolved_position_sample_for_copy_candidate(self):
+        engine = WalletDiscoveryEngine()
+
+        classification = engine._classify_wallet(
+            {
+                "win_rate": 1.0,
+                "wins": 1,
+                "losses": 0,
+                "resolved_positions": 1,
+                "total_pnl": 27330.95,
+                "total_trades": 194,
+                "trades_per_day": 1.0,
+            },
+            {
+                "sharpe_ratio": None,
+                "profit_factor": None,
+            },
+        )
+
+        assert classification["recommendation"] != "copy_candidate"
+        assert "high_win_rate" not in classification["tags"]
 
     @pytest.mark.asyncio
     async def test_analyze_wallet_sets_accuracy_metrics_source_version(self):

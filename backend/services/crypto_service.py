@@ -82,6 +82,7 @@ class CryptoMarket:
         "fees_enabled",
         "event_slug",
         "event_title",
+        "price_to_beat",
         "is_current",  # True = currently live, False = upcoming
         "upcoming_markets",  # list of upcoming market dicts for this asset
     )
@@ -145,6 +146,7 @@ class CryptoMarket:
             "fees_enabled": self.fees_enabled,
             "event_slug": self.event_slug,
             "event_title": self.event_title,
+            "price_to_beat": self.price_to_beat,
             "upcoming_markets": self.upcoming_markets or [],
         }
 
@@ -344,6 +346,11 @@ class CryptoService:
                     self._last_fetch = time.monotonic()
             except Exception as e:
                 logger.warning(f"CryptoService fetch failed: {e}")
+        if self._cache:
+            try:
+                self._update_price_to_beat(self._cache)
+            except Exception as exc:
+                logger.warning("CryptoService price-to-beat refresh failed", exc_info=exc)
         return self._cache
 
     def _fetch_clob_midpoint(self, client: httpx.Client, token_id: str) -> Optional[float]:
@@ -911,6 +918,8 @@ class CryptoService:
         for slug in list(self._price_to_beat_retry_after.keys()):
             if slug not in active_slugs or slug in self._price_to_beat:
                 del self._price_to_beat_retry_after[slug]
+        for market in markets:
+            market.price_to_beat = self._price_to_beat.get(market.slug)
 
     async def _broadcast_markets(self) -> None:
         """Push live crypto market data to all connected frontends via WS.
@@ -925,9 +934,6 @@ class CryptoService:
             markets = await asyncio.to_thread(self.get_live_markets)
             if not markets:
                 return
-
-            # Update price-to-beat tracking
-            self._update_price_to_beat(markets)
 
             # Get real-time prices: try CLOB WS cache first, then HTTP CLOB API
             ws_prices: dict[str, float] = {}

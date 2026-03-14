@@ -1,12 +1,13 @@
 import asyncio
 import random
 from functools import wraps
-from typing import Callable, Type, Tuple
+from typing import Awaitable, Callable, Type, Tuple, TypeVar
 import httpx
 
 from utils.logger import get_logger
 
 logger = get_logger("retry")
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,58 @@ def db_retry_delay(
 ) -> float:
     """Exponential backoff delay for DB retries."""
     return min(float(base_delay) * (2 ** attempt), float(max_delay))
+
+
+def is_retryable_db_operation_error(exc: Exception) -> bool:
+    return isinstance(exc, asyncio.TimeoutError) or is_retryable_db_error(exc)
+
+
+async def run_with_db_retries(
+    operation: Callable[[int], Awaitable[T]],
+    *,
+    max_attempts: int = DB_RETRY_ATTEMPTS,
+    base_delay: float = DB_RETRY_BASE_DELAY_SECONDS,
+    max_delay: float = DB_RETRY_MAX_DELAY_SECONDS,
+    is_retryable: Callable[[Exception], bool] = is_retryable_db_operation_error,
+) -> T:
+    last_error: Exception | None = None
+    attempts = max(1, int(max_attempts))
+    for attempt in range(attempts):
+        try:
+            return await operation(attempt)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts - 1 or not is_retryable(exc):
+                raise
+            await asyncio.sleep(db_retry_delay(attempt, base_delay=base_delay, max_delay=max_delay))
+    raise RuntimeError("DB retry loop exited without result") from last_error
+
+
+async def commit_with_retry(
+    session,
+    *,
+    max_attempts: int = DB_RETRY_ATTEMPTS,
+    base_delay: float = DB_RETRY_BASE_DELAY_SECONDS,
+    max_delay: float = DB_RETRY_MAX_DELAY_SECONDS,
+    is_retryable: Callable[[Exception], bool] = is_retryable_db_operation_error,
+) -> None:
+    async def _commit(_attempt: int) -> None:
+        try:
+            await session.commit()
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            raise
+
+    await run_with_db_retries(
+        _commit,
+        max_attempts=max_attempts,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        is_retryable=is_retryable,
+    )
 
 
 class RetryConfig:

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -76,6 +77,10 @@ def _wallet(
     pool_membership_reason: str | None = "core_quality_gate",
     source_flags: dict | None = None,
 ):
+    normalized_win_rate = win_rate / 100.0 if win_rate > 1 else win_rate
+    resolved_positions = max(1, min(total_trades, 20))
+    wins = max(0, min(resolved_positions, int(round(resolved_positions * normalized_win_rate))))
+    losses = max(0, resolved_positions - wins)
     return SimpleNamespace(
         address=address,
         username=None,
@@ -90,6 +95,8 @@ def _wallet(
         trades_1h=0,
         trades_24h=0,
         last_trade_at=utcnow(),
+        wins=wins,
+        losses=losses,
         total_trades=total_trades,
         total_pnl=total_pnl,
         win_rate=win_rate,
@@ -367,3 +374,33 @@ async def test_pool_members_primary_market_category_falls_back_to_flags_when_act
     assert row["primary_market_category"] == "crypto"
     assert row["primary_market_category_basis"] == "flags"
     assert row["primary_market_category_share"] is None
+
+
+@pytest.mark.asyncio
+async def test_pool_members_pushes_base_filters_into_sql_and_avoids_wide_select():
+    wallets = [
+        _wallet(address="0xaaa", win_rate=0.82, total_pnl=4200.0, total_trades=84),
+    ]
+    session = _make_session(wallets)
+
+    await _call_pool_members(
+        session,
+        pool_only=True,
+        include_blacklisted=False,
+        min_win_rate=70.0,
+    )
+
+    statement = session.execute.call_args_list[0].args[0]
+    compiled = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "FROM discovered_wallets" in compiled
+    assert "discovered_wallets.in_top_pool = true" in compiled.lower()
+    assert "win_rate" in compiled
+    assert "metrics_json" not in compiled
+    assert "rolling_pnl" not in compiled
+    assert "insider_metrics_json" not in compiled

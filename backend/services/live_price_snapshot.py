@@ -7,6 +7,7 @@ from typing import Iterable
 
 from config import settings
 from services.polymarket import polymarket_client
+from utils.converters import normalize_identifier as _normalize_token_id
 
 # Keep HTTP load bounded while still feeling "live" in the UI.
 DEFAULT_PRICE_TTL_SECONDS = 0.25
@@ -21,11 +22,6 @@ DEFAULT_HISTORY_SIGNIFICANT_MOVE = 0.01  # 1 cent
 
 _price_cache_lock = asyncio.Lock()
 _price_cache: dict[str, tuple[float | None, float]] = {}
-
-
-def _normalize_token_id(value: object) -> str:
-    return str(value or "").strip().lower()
-
 
 def _coerce_mid_price(value: object) -> float | None:
     try:

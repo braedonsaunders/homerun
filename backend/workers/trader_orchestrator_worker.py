@@ -23,6 +23,7 @@ from models.database import (
     TraderDecision,
     TraderEvent,
     TraderOrder,
+    TraderOrchestratorSnapshot,
     TrackedWallet,
     Trader,
     TraderGroupMember,
@@ -69,7 +70,7 @@ from services.strategy_sdk import StrategySDK
 from services.strategies.news_edge import validate_news_edge_config
 from services.strategies.traders_copy_trade import validate_traders_copy_trade_config
 from services.strategy_versioning import normalize_strategy_version, resolve_strategy_version
-from services.runtime_signal_queue import wait_for_signal_batch
+from services.runtime_signal_queue import get_queue_depth, publish_signal_batch, wait_for_signal_batch
 from services.trader_orchestrator_state import (
     DEFAULT_TIMEOUT_TAKER_RESCUE_PRICE_BPS,
     DEFAULT_TIMEOUT_TAKER_RESCUE_TIME_IN_FORCE,
@@ -77,9 +78,9 @@ from services.trader_orchestrator_state import (
     DEFAULT_LIVE_PROVIDER_HEALTH,
     DEFAULT_LIVE_RISK_CLAMPS,
     DEFAULT_PENDING_LIVE_EXIT_GUARD,
+    ORCHESTRATOR_SNAPSHOT_ID,
     ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     cleanup_trader_open_orders,
-    compute_orchestrator_metrics,
     create_trader_event as _create_trader_event,
     create_trader_order as _create_trader_order,
     get_pending_live_exit_summary_for_trader,
@@ -87,6 +88,7 @@ from services.trader_orchestrator_state import (
     list_traders,
     reconcile_live_provider_orders,
     read_orchestrator_control,
+    read_orchestrator_snapshot,
     set_trader_paused,
     sync_trader_position_inventory,
     update_orchestrator_control,
@@ -97,7 +99,7 @@ from services.signal_bus import expire_stale_signals
 import services.trader_hot_state as hot_state
 from services.ws_feeds import get_feed_manager
 from utils.utcnow import utcnow
-from utils.converters import safe_float, safe_int
+from utils.converters import coerce_bool as _coerce_bool, parse_iso_datetime, safe_float, safe_int
 from utils.logger import get_logger
 from utils.secrets import decrypt_secret
 
@@ -105,6 +107,7 @@ logger = get_logger("trader_orchestrator_worker")
 strategy_db_loader = strategy_loader
 
 _TRADER_TIMEOUT_CANCEL_GRACE_SECONDS = 5.0
+_STRATEGY_EVALUATION_TIMEOUT_SECONDS = 15.0
 _abandoned_trader_cycle_tasks: set[asyncio.Task] = set()
 _inflight_trader_cycle_tasks: dict[str, asyncio.Task] = {}
 
@@ -318,6 +321,10 @@ _STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE = 200
 _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE = 5000
 _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
 _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
+_STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT = 8
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT = 32
+_STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 4
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 16
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
 _TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 1
 _trader_cycle_heartbeat_last_emitted: dict[str, datetime] = {}
@@ -330,7 +337,7 @@ _TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS = 20.0
 _TRADER_PENDING_EXIT_SUMMARY_TIMEOUT_SECONDS = 5.0
 _WS_FAILURE_PAUSE_THRESHOLD = 10
 _ws_auto_paused = False
-_LATENCY_SLA_STAGE_KEY = "emit_to_submit_start_ms"
+_LATENCY_SLA_STAGE_KEY = "ws_release_to_submit_start_ms"
 _LATENCY_SLA_BREACH_LOG_COOLDOWN_SECONDS = 60.0
 _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
 _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
@@ -371,6 +378,127 @@ _trader_maintenance_last_run: dict[str, datetime] = {}
 _latency_sla_breach_logged_at: dict[str, datetime] = {}
 _TRADERS_SCOPE_CONTEXT_CACHE_TTL_SECONDS = 5.0
 _traders_scope_context_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_lane_snapshot_metrics: dict[str, dict[str, Any]] = {}
+_lane_snapshot_seeded = False
+
+
+def _empty_lane_snapshot_metrics() -> dict[str, Any]:
+    return {
+        "traders_total": 0,
+        "traders_running": 0,
+        "decisions_count": 0,
+        "orders_count": 0,
+        "execution_sessions_count": 0,
+        "active_execution_sessions": 0,
+        "open_orders": 0,
+        "gross_exposure_usd": 0.0,
+        "daily_pnl": 0.0,
+    }
+
+
+def _seed_lane_snapshot_metrics(snapshot: dict[str, Any] | None) -> None:
+    global _lane_snapshot_seeded
+    if _lane_snapshot_seeded:
+        return
+    base_snapshot = dict(snapshot or {})
+    base_stats = dict(base_snapshot.get("stats") or {})
+    seeded_general = _empty_lane_snapshot_metrics()
+    seeded_general.update(
+        {
+            "traders_total": int(base_snapshot.get("traders_total", base_stats.get("traders_total", 0)) or 0),
+            "traders_running": int(base_snapshot.get("traders_running", base_stats.get("traders_running", 0)) or 0),
+            "decisions_count": int(base_snapshot.get("decisions_count", base_stats.get("decisions_count", 0)) or 0),
+            "orders_count": int(base_snapshot.get("orders_count", base_stats.get("orders_count", 0)) or 0),
+            "execution_sessions_count": int(
+                base_stats.get("execution_sessions_count", base_snapshot.get("execution_sessions_count", 0)) or 0
+            ),
+            "active_execution_sessions": int(
+                base_stats.get("active_execution_sessions", base_snapshot.get("active_execution_sessions", 0)) or 0
+            ),
+            "open_orders": int(base_snapshot.get("open_orders", base_stats.get("open_orders", 0)) or 0),
+            "gross_exposure_usd": float(
+                base_snapshot.get("gross_exposure_usd", base_stats.get("gross_exposure_usd", 0.0)) or 0.0
+            ),
+            "daily_pnl": float(base_snapshot.get("daily_pnl", base_stats.get("daily_pnl", 0.0)) or 0.0),
+        }
+    )
+    _lane_snapshot_metrics[_LANE_GENERAL] = seeded_general
+    _lane_snapshot_metrics[_LANE_CRYPTO] = _empty_lane_snapshot_metrics()
+    _lane_snapshot_seeded = True
+
+
+async def _build_orchestrator_snapshot_metrics(
+    *,
+    session: AsyncSession,
+    lane: str,
+    traders: list[dict[str, Any]] | None,
+    decisions_delta: int = 0,
+    orders_delta: int = 0,
+) -> dict[str, Any]:
+    if not _lane_snapshot_seeded:
+        snapshot_seed_payload = await read_orchestrator_snapshot(session)
+        snapshot_seed_stats = dict(snapshot_seed_payload.get("stats") or {}) if isinstance(snapshot_seed_payload, dict) else {}
+        if not snapshot_seed_stats:
+            persisted_row = await session.get(TraderOrchestratorSnapshot, ORCHESTRATOR_SNAPSHOT_ID)
+            if persisted_row is not None:
+                snapshot_seed_payload = {
+                    "traders_total": int(getattr(persisted_row, "traders_total", 0) or 0),
+                    "traders_running": int(getattr(persisted_row, "traders_running", 0) or 0),
+                    "decisions_count": int(getattr(persisted_row, "decisions_count", 0) or 0),
+                    "orders_count": int(getattr(persisted_row, "orders_count", 0) or 0),
+                    "open_orders": int(getattr(persisted_row, "open_orders", 0) or 0),
+                    "gross_exposure_usd": float(getattr(persisted_row, "gross_exposure_usd", 0.0) or 0.0),
+                    "daily_pnl": float(getattr(persisted_row, "daily_pnl", 0.0) or 0.0),
+                    "stats": dict(getattr(persisted_row, "stats_json", {}) or {}),
+                }
+        _seed_lane_snapshot_metrics(snapshot_seed_payload)
+
+    previous_lane_metrics = dict(_lane_snapshot_metrics.get(lane) or _empty_lane_snapshot_metrics())
+    lane_metrics = _empty_lane_snapshot_metrics()
+    lane_metrics["decisions_count"] = int(previous_lane_metrics.get("decisions_count", 0) or 0) + max(0, decisions_delta)
+    lane_metrics["orders_count"] = int(previous_lane_metrics.get("orders_count", 0) or 0) + max(0, orders_delta)
+    lane_metrics["execution_sessions_count"] = int(previous_lane_metrics.get("execution_sessions_count", 0) or 0)
+    lane_metrics["active_execution_sessions"] = int(previous_lane_metrics.get("active_execution_sessions", 0) or 0)
+
+    normalized_traders = [trader for trader in list(traders or []) if isinstance(trader, dict)]
+    lane_metrics["traders_total"] = len(normalized_traders)
+    lane_metrics["traders_running"] = sum(
+        1
+        for trader in normalized_traders
+        if bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
+    )
+
+    open_orders_total = 0
+    gross_exposure_total = 0.0
+    daily_pnl_total = 0.0
+    for trader in normalized_traders:
+        trader_id = str(trader.get("id") or "").strip()
+        if not trader_id:
+            continue
+        trader_mode = _canonical_trader_mode(trader.get("mode"), default="shadow")
+        open_orders_total += int(hot_state.get_open_order_count(trader_id, trader_mode) or 0)
+        gross_exposure_total += float(hot_state.get_trader_gross_exposure(trader_id, trader_mode) or 0.0)
+        daily_pnl_total += float(hot_state.get_daily_realized_pnl(trader_id, trader_mode) or 0.0)
+    lane_metrics["open_orders"] = open_orders_total
+    lane_metrics["gross_exposure_usd"] = gross_exposure_total
+    lane_metrics["daily_pnl"] = daily_pnl_total
+    _lane_snapshot_metrics[lane] = lane_metrics
+
+    merged = _empty_lane_snapshot_metrics()
+    for current_lane_metrics in _lane_snapshot_metrics.values():
+        if not isinstance(current_lane_metrics, dict):
+            continue
+        merged["traders_total"] += int(current_lane_metrics.get("traders_total", 0) or 0)
+        merged["traders_running"] += int(current_lane_metrics.get("traders_running", 0) or 0)
+        merged["decisions_count"] += int(current_lane_metrics.get("decisions_count", 0) or 0)
+        merged["orders_count"] += int(current_lane_metrics.get("orders_count", 0) or 0)
+        merged["execution_sessions_count"] += int(current_lane_metrics.get("execution_sessions_count", 0) or 0)
+        merged["active_execution_sessions"] += int(current_lane_metrics.get("active_execution_sessions", 0) or 0)
+        merged["open_orders"] += int(current_lane_metrics.get("open_orders", 0) or 0)
+        merged["gross_exposure_usd"] += float(current_lane_metrics.get("gross_exposure_usd", 0.0) or 0.0)
+        merged["daily_pnl"] += float(current_lane_metrics.get("daily_pnl", 0.0) or 0.0)
+    merged["execution_latency"] = await execution_latency_metrics.snapshot()
+    return merged
 
 
 def _traders_scope_cache_key(normalized_scope: dict[str, Any]) -> str:
@@ -733,7 +861,8 @@ def _session_dialect_name(session: Any) -> str:
     try:
         bind = session.get_bind()
         return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError) as exc:
+        logger.debug("Unable to determine session dialect name", exc_info=exc)
         return ""
 
 
@@ -792,15 +921,26 @@ def _enforce_strict_ws_strategy_params(
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-    except Exception:
-        return None
+    return parse_iso_datetime(ts, naive=False)
+
+
+def _strategy_evaluation_timeout_seconds(
+    control: dict[str, Any] | None,
+    source_config: dict[str, Any] | None,
+    strategy_params: dict[str, Any] | None,
+) -> float:
+    for raw_value in (
+        (strategy_params or {}).get("strategy_evaluation_timeout_seconds"),
+        (strategy_params or {}).get("evaluation_timeout_seconds"),
+        (source_config or {}).get("strategy_evaluation_timeout_seconds"),
+        (source_config or {}).get("evaluation_timeout_seconds"),
+        (control or {}).get("strategy_evaluation_timeout_seconds"),
+        getattr(settings, "TRADER_STRATEGY_EVALUATION_TIMEOUT_SECONDS", None),
+    ):
+        parsed = safe_float(raw_value, None, reject_nan_inf=True)
+        if parsed is not None and parsed > 0.0:
+            return max(0.1, float(parsed))
+    return _STRATEGY_EVALUATION_TIMEOUT_SECONDS
 
 
 def _compute_signal_latency_payload(
@@ -813,6 +953,7 @@ def _compute_signal_latency_payload(
     payload = getattr(signal, "payload_json", None)
     payload = payload if isinstance(payload, dict) else {}
     context = live_context if isinstance(live_context, dict) else {}
+    execution_armed_at = _parse_iso(str(payload.get("execution_armed_at") or ""))
     source_observed_at = _parse_iso(
         str(
             context.get("source_observed_at")
@@ -827,15 +968,19 @@ def _compute_signal_latency_payload(
 
     out: dict[str, Any] = {
         "measured_at": now.isoformat(),
+        "execution_armed_at": execution_armed_at.isoformat() if execution_armed_at is not None else None,
         "source_observed_at": source_observed_at.isoformat() if source_observed_at is not None else None,
         "signal_emitted_at": emitted_at.isoformat() if emitted_at is not None else None,
         "ingested_at": ingested_at.isoformat() if ingested_at is not None else None,
         "market_data_age_ms": context.get("market_data_age_ms", payload.get("market_data_age_ms")),
     }
+    if execution_armed_at is not None:
+        out["armed_to_now_ms"] = max(0, int((now - execution_armed_at).total_seconds() * 1000))
     if source_observed_at is not None:
         out["source_to_now_ms"] = max(0, int((now - source_observed_at).total_seconds() * 1000))
     if emitted_at is not None:
         out["emit_to_now_ms"] = max(0, int((now - emitted_at).total_seconds() * 1000))
+        out["ws_release_to_now_ms"] = max(0, int((now - emitted_at).total_seconds() * 1000))
     if ingested_at is not None:
         out["ingest_to_now_ms"] = max(0, int((now - ingested_at).total_seconds() * 1000))
     return out
@@ -852,6 +997,7 @@ def _build_execution_latency_sample(
 ) -> dict[str, Any]:
     payload = getattr(signal, "payload_json", None)
     payload = payload if isinstance(payload, dict) else {}
+    armed_at = _parse_iso(str(payload.get("execution_armed_at") or payload.get("signal_emitted_at") or payload.get("ingested_at") or ""))
     emitted_at = _parse_iso(str(payload.get("signal_emitted_at") or payload.get("ingested_at") or ""))
 
     def _delta_ms(start: datetime | None, end: datetime | None) -> int | None:
@@ -860,7 +1006,10 @@ def _build_execution_latency_sample(
         return max(0, int((end - start).total_seconds() * 1000))
 
     sample = {
+        "armed_to_ws_release_ms": _delta_ms(armed_at, emitted_at),
         "emit_to_queue_wake_ms": _delta_ms(emitted_at, wake_started_at),
+        "ws_release_to_decision_ms": _delta_ms(emitted_at, decision_ready_at),
+        "ws_release_to_submit_start_ms": _delta_ms(emitted_at, submit_started_at),
         "wake_to_context_ready_ms": _delta_ms(wake_started_at, context_ready_at),
         "context_ready_to_decision_ms": _delta_ms(context_ready_at, decision_ready_at),
         "decision_to_submit_start_ms": _delta_ms(decision_ready_at, submit_started_at),
@@ -871,30 +1020,7 @@ def _build_execution_latency_sample(
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-    text = str(value).strip().lower()
-    if not text:
-        return None
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    parsed = _coerce_optional_bool(value)
-    if parsed is None:
-        return bool(default)
-    return bool(parsed)
+    return _coerce_bool(value, None)
 
 
 def _normalize_strategy_type_values(raw: Any) -> set[str]:
@@ -922,7 +1048,8 @@ def _strategy_instance_for_source_config(source_config: dict[str, Any] | None) -
     if loaded is None:
         try:
             return resolve_strategy_instance(strategy_key)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to resolve strategy instance for source config", strategy_key=strategy_key, exc_info=exc)
             return None
     instance = getattr(loaded, "instance", None)
     if instance is not None:
@@ -2079,8 +2206,8 @@ def _load_versioned_strategy_instance(
         return None, "Strategy cache miss"
     try:
         instance.key = str(strategy_key or "").strip().lower()
-    except Exception:
-        pass
+    except (AttributeError, TypeError) as exc:
+        logger.debug("Unable to stamp versioned strategy key onto instance", strategy_key=strategy_key, exc_info=exc)
     return instance, None
 
 
@@ -2158,11 +2285,12 @@ async def _close_orchestrator_lock_connection(connection: asyncpg.Connection) ->
         close_result = connection.close()
         if asyncio.iscoroutine(close_result):
             await close_result
-    except Exception:
+    except Exception as close_exc:
+        logger.debug("Failed to close orchestrator lock connection cleanly", exc_info=close_exc)
         try:
             connection.terminate()
-        except Exception:
-            pass
+        except Exception as terminate_exc:
+            logger.warning("Failed to terminate orchestrator lock connection", exc_info=terminate_exc)
 
 
 async def _ensure_orchestrator_cycle_lock_owner() -> bool:
@@ -3254,6 +3382,12 @@ async def _run_trader_once(
         trader_id = str(trader["id"])
         source_configs = _normalize_source_configs(trader)
         effective_process_signals = bool(process_signals)
+        is_high_frequency_trader = _is_high_frequency_crypto_trader(trader)
+        runtime_trigger_signal_limit = (
+            _HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT
+            if is_high_frequency_trader
+            else _STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT
+        )
         default_strategy_params: dict[str, Any] = {}
         sources: list[str] = []
         strategy_types_by_source: dict[str, list[str]] = {}
@@ -3369,6 +3503,30 @@ async def _run_trader_once(
                             effective_process_signals = False
                     if effective_process_signals:
                         _trader_idle_maintenance_last_run[trader_id] = now
+                if stream_trigger_mode and prefetched_signals and len(prefetched_signals) > runtime_trigger_signal_limit:
+                    overflow_signals = prefetched_signals[runtime_trigger_signal_limit:]
+                    prefetched_signals = prefetched_signals[:runtime_trigger_signal_limit]
+                    overflow_signal_ids_by_source: dict[str, list[str]] = {}
+                    overflow_seen_ids_by_source: dict[str, set[str]] = {}
+                    for overflow_signal in overflow_signals:
+                        signal_source = normalize_source_key(getattr(overflow_signal, "source", "")) or "__all__"
+                        signal_id = str(getattr(overflow_signal, "id", "") or "").strip()
+                        if not signal_id:
+                            continue
+                        overflow_signal_ids_by_source.setdefault(signal_source, [])
+                        overflow_seen_ids_by_source.setdefault(signal_source, set())
+                        if signal_id in overflow_seen_ids_by_source[signal_source]:
+                            continue
+                        overflow_seen_ids_by_source[signal_source].add(signal_id)
+                        overflow_signal_ids_by_source[signal_source].append(signal_id)
+                    for signal_source, signal_ids in overflow_signal_ids_by_source.items():
+                        await publish_signal_batch(
+                            event_type="upsert_update",
+                            source=None if signal_source == "__all__" else signal_source,
+                            signal_ids=signal_ids,
+                            trigger="runtime_signal_overflow",
+                            reason="trader_orchestrator_trigger_batch_overflow",
+                        )
         open_positions = 0
         open_market_ids: set[str] = set()
         timeout_cleanup = {
@@ -3447,7 +3605,8 @@ async def _run_trader_once(
                     mode=run_mode,
                 )
         session_engine = ExecutionSessionEngine(session)
-        if run_trader_maintenance and hasattr(session, "execute"):
+        run_execution_maintenance = bool(run_trader_maintenance and run_mode != "live" and hasattr(session, "execute"))
+        if run_execution_maintenance:
             try:
                 reconcile_result = await asyncio.wait_for(
                     session_engine.reconcile_active_sessions(
@@ -3476,7 +3635,7 @@ async def _run_trader_once(
                     message=f"Expired {int(reconcile_result['expired'])} execution session(s)",
                     payload=reconcile_result,
                 )
-        if run_trader_maintenance and hasattr(session, "execute"):
+        if run_execution_maintenance:
             try:
                 timeout_cleanup = await asyncio.wait_for(
                     _enforce_source_open_order_timeouts(
@@ -3802,7 +3961,6 @@ async def _run_trader_once(
                     payload=block_entries_payload,
                 )
 
-        is_high_frequency_trader = _is_high_frequency_crypto_trader(trader)
         max_signals_cap = (
             _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE if is_high_frequency_trader else _STANDARD_MAX_SIGNALS_PER_CYCLE
         )
@@ -3836,6 +3994,14 @@ async def _run_trader_once(
             )
         )
         scan_batch_size = min(scan_batch_size, max_signals_per_cycle)
+        if stream_trigger_mode:
+            runtime_trigger_scan_batch_size = (
+                _HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE
+                if is_high_frequency_trader
+                else _STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE
+            )
+            max_signals_per_cycle = min(max_signals_per_cycle, runtime_trigger_signal_limit)
+            scan_batch_size = min(scan_batch_size, runtime_trigger_scan_batch_size, max_signals_per_cycle)
         enable_live_market_context = bool(live_market_context_settings.get("enabled", True))
         strict_ws_pricing_only = _coerce_bool(
             live_market_context_settings.get("strict_ws_pricing_only"),
@@ -3973,7 +4139,13 @@ async def _run_trader_once(
         try:
             global_unrealized_pnl = await get_unrealized_pnl(session, trader_id=None, mode=run_mode)
             trader_unrealized_pnl = await get_unrealized_pnl(session, trader_id=trader_id, mode=run_mode)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed to load unrealized PnL for trader cycle; using zero fallback",
+                trader_id=trader_id,
+                mode=run_mode,
+                exc_info=exc,
+            )
             global_unrealized_pnl = 0.0
             trader_unrealized_pnl = 0.0
         # Track cumulative notional committed within this cycle so that
@@ -4310,7 +4482,8 @@ async def _run_trader_once(
                             max_history_points=max_history_points,
                             strict_ws_only=strict_ws_pricing_enforced,
                         )
-                    except Exception:
+                    except Exception as cache_exc:
+                        logger.debug("Failed to load cached live market contexts after refresh failure", exc_info=cache_exc)
                         live_contexts = {}
                     if not live_contexts:
                         exc_name = type(exc).__name__
@@ -4966,26 +5139,46 @@ async def _run_trader_once(
                             copy_inventory_context_for_signal = copy_inventory_context
 
                     loop = asyncio.get_running_loop()
+                    evaluation_timeout_seconds = _strategy_evaluation_timeout_seconds(
+                        control,
+                        source_config,
+                        strategy_params,
+                    )
+                    decision_future = loop.run_in_executor(
+                        None,
+                        strategy.evaluate,
+                        runtime_signal,
+                        {
+                            "params": strategy_params,
+                            "trader": trader,
+                            "mode": control.get("mode", "shadow"),
+                            "live_market": live_context,
+                            "source_config": source_config,
+                            "traders_scope_context": (
+                                traders_scope_context if signal_source == "traders" else None
+                            ),
+                            "edge_calibration": edge_calibration_profile,
+                            "copy_risk_context": copy_risk_context,
+                            "copy_allocation_context": copy_allocation_context,
+                            "copy_inventory_context": copy_inventory_context_for_signal,
+                        },
+                    )
                     async with release_conn(session):
-                        decision_obj = await loop.run_in_executor(
-                            None,
-                            strategy.evaluate,
-                            runtime_signal,
-                            {
-                                "params": strategy_params,
-                                "trader": trader,
-                                "mode": control.get("mode", "shadow"),
-                                "live_market": live_context,
-                                "source_config": source_config,
-                                "traders_scope_context": (
-                                    traders_scope_context if signal_source == "traders" else None
-                                ),
-                                "edge_calibration": edge_calibration_profile,
-                                "copy_risk_context": copy_risk_context,
-                                "copy_allocation_context": copy_allocation_context,
-                                "copy_inventory_context": copy_inventory_context_for_signal,
-                            },
-                        )
+                        try:
+                            decision_obj = await asyncio.wait_for(
+                                decision_future,
+                                timeout=evaluation_timeout_seconds,
+                            )
+                        except asyncio.TimeoutError as exc:
+                            if not decision_future.done():
+                                decision_future.cancel()
+                            raise RuntimeError(
+                                f"Strategy evaluation timed out after {evaluation_timeout_seconds:.1f}s"
+                            ) from exc
+                        except asyncio.CancelledError:
+                            if not decision_future.done():
+                                decision_future.cancel()
+                            raise
                     checks_payload = _checks_to_payload(decision_obj.checks)
 
                     if live_context:
@@ -5398,7 +5591,10 @@ async def _run_trader_once(
                         )
                         submit_latency_payload.update(
                             {
+                                "armed_to_ws_release_ms": latency_sample.get("armed_to_ws_release_ms"),
                                 "emit_to_queue_wake_ms": latency_sample.get("emit_to_queue_wake_ms"),
+                                "ws_release_to_decision_ms": latency_sample.get("ws_release_to_decision_ms"),
+                                "ws_release_to_submit_start_ms": latency_sample.get("ws_release_to_submit_start_ms"),
                                 "wake_to_context_ready_ms": latency_sample.get("wake_to_context_ready_ms"),
                                 "context_ready_to_decision_ms": latency_sample.get("context_ready_to_decision_ms"),
                                 "decision_to_submit_start_ms": latency_sample.get("decision_to_submit_start_ms"),
@@ -5414,8 +5610,9 @@ async def _run_trader_once(
                             source=signal_source,
                             message=(
                                 "Hot-path execution latency "
-                                f"emit_to_now_ms={submit_latency_payload.get('emit_to_now_ms', 'unknown')} "
-                                f"decision_to_submit_ms={submit_latency_payload['decision_to_submit_ms']}"
+                                f"armed_to_release_ms={submit_latency_payload.get('armed_to_ws_release_ms', 'unknown')} "
+                                f"release_to_submit_ms={submit_latency_payload.get('ws_release_to_submit_start_ms', 'unknown')} "
+                                f"provider_ack_ms={submit_latency_payload.get('submit_start_to_provider_ack_ms', 'unknown')}"
                             ),
                             payload={
                                 "decision_id": decision_row.id,
@@ -5425,9 +5622,14 @@ async def _run_trader_once(
                             },
                             commit=False,
                         )
+                        execution_session_id = None
+                        execution_error_message = None
                         if isinstance(submit_result, tuple):
                             normalized_order_status = str(submit_result[0] or "").strip().lower()
                             order_status = normalized_order_status
+                            execution_error_message = (
+                                str(submit_result[2] or "").strip() if len(submit_result) > 2 else ""
+                            ) or None
                             if normalized_order_status == "skipped":
                                 final_decision = "skipped"
                                 skip_reason = str(submit_result[2] or "").strip() if len(submit_result) > 2 else ""
@@ -5441,6 +5643,21 @@ async def _run_trader_once(
                                     payload_patch={
                                         "execution_status": normalized_order_status,
                                         "execution_skip_reason": final_reason,
+                                    },
+                                    commit=False,
+                                )
+                            elif normalized_order_status in {"failed", "cancelled", "expired"}:
+                                final_decision = "failed"
+                                if execution_error_message:
+                                    final_reason = execution_error_message
+                                await update_trader_decision(
+                                    session,
+                                    decision_id=decision_row.id,
+                                    decision="failed",
+                                    reason=final_reason,
+                                    payload_patch={
+                                        "execution_status": normalized_order_status,
+                                        "execution_error": execution_error_message,
                                     },
                                     commit=False,
                                 )
@@ -5481,6 +5698,8 @@ async def _run_trader_once(
                         else:
                             normalized_order_status = str(submit_result.status or "").strip().lower()
                             order_status = normalized_order_status
+                            execution_session_id = str(submit_result.session_id or "").strip() or None
+                            execution_error_message = str(submit_result.error_message or "").strip() or None
                             orders_written += int(submit_result.orders_written or 0)
                             if normalized_order_status == "skipped":
                                 skip_reason = str(submit_result.error_message or "").strip()
@@ -5495,6 +5714,22 @@ async def _run_trader_once(
                                     payload_patch={
                                         "execution_status": normalized_order_status,
                                         "execution_skip_reason": final_reason,
+                                        "execution_session_id": str(submit_result.session_id or ""),
+                                    },
+                                    commit=False,
+                                )
+                            elif normalized_order_status in {"failed", "cancelled", "expired"}:
+                                final_decision = "failed"
+                                if execution_error_message:
+                                    final_reason = execution_error_message
+                                await update_trader_decision(
+                                    session,
+                                    decision_id=decision_row.id,
+                                    decision="failed",
+                                    reason=final_reason,
+                                    payload_patch={
+                                        "execution_status": normalized_order_status,
+                                        "execution_error": execution_error_message,
                                         "execution_session_id": str(submit_result.session_id or ""),
                                     },
                                     commit=False,
@@ -5540,6 +5775,27 @@ async def _run_trader_once(
                                 if opened_market_id:
                                     open_market_ids.add(opened_market_id)
                                 intra_cycle_committed_usd += size_usd
+                        if final_decision == "failed" and order_status in {"failed", "cancelled", "expired"}:
+                            await create_trader_event(
+                                session,
+                                trader_id=trader_id,
+                                event_type="execution_failed",
+                                severity="error",
+                                source=signal_source,
+                                message=final_reason,
+                                payload={
+                                    "decision_id": decision_row.id,
+                                    "signal_id": signal_id,
+                                    "strategy_key": resolved_strategy_key,
+                                    "order_status": order_status,
+                                    "execution_session_id": execution_session_id,
+                                    "error": execution_error_message,
+                                    "market_id": getattr(runtime_signal, "market_id", None),
+                                    "market_question": getattr(runtime_signal, "market_question", None),
+                                    "direction": getattr(runtime_signal, "direction", None),
+                                },
+                                commit=False,
+                            )
                     else:
                         signal_status = "failed" if final_decision == "failed" else "skipped"
                         await set_trade_signal_status(
@@ -5563,6 +5819,7 @@ async def _run_trader_once(
                         session,
                         trader_id=trader_id,
                         event_type="decision",
+                        severity="error" if final_decision == "failed" else "info",
                         source=signal_source,
                         message=final_reason,
                         payload={
@@ -5747,8 +6004,31 @@ async def _run_trader_once(
                                 "orders_written": orders_written,
                             },
                         )
+            if stream_trigger_mode and prefetched_signals:
+                deferred_signal_ids_by_source: dict[str, list[str]] = {}
+                deferred_seen_ids_by_source: dict[str, set[str]] = {}
+                for deferred_signal in prefetched_signals:
+                    deferred_source = normalize_source_key(getattr(deferred_signal, "source", "")) or "__all__"
+                    deferred_signal_id = str(getattr(deferred_signal, "id", "") or "").strip()
+                    if not deferred_signal_id:
+                        continue
+                    deferred_signal_ids_by_source.setdefault(deferred_source, [])
+                    deferred_seen_ids_by_source.setdefault(deferred_source, set())
+                    if deferred_signal_id in deferred_seen_ids_by_source[deferred_source]:
+                        continue
+                    deferred_seen_ids_by_source[deferred_source].add(deferred_signal_id)
+                    deferred_signal_ids_by_source[deferred_source].append(deferred_signal_id)
+                for deferred_source, deferred_signal_ids in deferred_signal_ids_by_source.items():
+                    await publish_signal_batch(
+                        event_type="upsert_update",
+                        source=None if deferred_source == "__all__" else deferred_source,
+                        signal_ids=deferred_signal_ids,
+                        trigger="runtime_signal_overflow",
+                        reason="trader_orchestrator_runtime_trigger_batch_deferred",
+                    )
+                prefetched_signals = None
             await _persist_trader_cycle_heartbeat(session, trader_id)
-            if defer_signal_processing:
+            if defer_signal_processing or stream_trigger_mode:
                 break
 
     return decisions_written, orders_written, processed_signals
@@ -5904,8 +6184,15 @@ async def _run_trader_once_with_timeout(
         if done_after:
             try:
                 task.result()
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.warning(
+                    "Trader cycle raised after timeout cancellation",
+                    trader_id=trader_id,
+                    process_signals=process_signals,
+                    exc_info=exc,
+                )
         else:
             _abandoned_trader_cycle_tasks.add(task)
             task.add_done_callback(_discard_abandoned_trader_cycle)
@@ -5947,8 +6234,14 @@ async def _run_trader_once_with_timeout(
             task.cancel()
             try:
                 await asyncio.shield(asyncio.wait({task}, timeout=_TRADER_TIMEOUT_CANCEL_GRACE_SECONDS))
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.warning(
+                    "Trader cycle cleanup wait failed after parent cancellation",
+                    trader_id=trader_id,
+                    exc_info=exc,
+                )
             if not task.done():
                 _abandoned_trader_cycle_tasks.add(task)
                 task.add_done_callback(_discard_abandoned_trader_cycle)
@@ -6009,6 +6302,28 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                 isinstance(cycle_trigger, dict)
                 and str(cycle_trigger.get("event_type") or "").strip().lower() == "runtime_signal_batch"
             )
+            if not runtime_triggered_cycle:
+                try:
+                    queued_signal_depth = int(get_queue_depth(lane=lane_key) or 0)
+                except Exception:
+                    queued_signal_depth = 0
+                if queued_signal_depth > 0:
+                    (
+                        cycle_trigger,
+                        stream_claim_cursor,
+                        stream_last_claim_run_at,
+                    ) = await _wait_for_runtime_trigger(
+                        None,
+                        0.05,
+                        consumer=stream_consumer_name,
+                        group=stream_group,
+                        claim_cursor=stream_claim_cursor,
+                        last_claim_run_at=stream_last_claim_run_at,
+                    )
+                    runtime_triggered_cycle = bool(
+                        isinstance(cycle_trigger, dict)
+                        and str(cycle_trigger.get("event_type") or "").strip().lower() == "runtime_signal_batch"
+                    )
             now_for_maintenance = utcnow()
             maintenance_due = (
                 last_maintenance_at is None
@@ -6034,13 +6349,18 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                     await _worker_sleep(2)
                     continue
 
-                if run_maintenance:
-                    try:
-                        await refresh_strategy_runtime_if_needed(source_keys=None)
-                    except Exception as exc:
-                        logger.warning("Failed strategy runtime refresh pass: %s", exc)
-
                 async with AsyncSessionLocal() as session:
+                    control = await read_orchestrator_control(session)
+                    manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
+                    if manual_force_cycle:
+                        run_maintenance = False
+
+                    if run_maintenance:
+                        try:
+                            await refresh_strategy_runtime_if_needed(source_keys=None)
+                        except Exception as exc:
+                            logger.warning("Failed strategy runtime refresh pass: %s", exc)
+
                     if run_maintenance:
                         try:
                             await expire_stale_signals(session)
@@ -6068,7 +6388,8 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                                 await session.rollback()
                             logger.warning("Failed orphan-order reconciliation pass: %s", exc)
 
-                    control = await read_orchestrator_control(session)
+                    if run_maintenance:
+                        control = await read_orchestrator_control(session)
                     control_active = bool(control.get("is_enabled", False)) and not bool(control.get("is_paused", True))
                     if control_active and run_maintenance:
                         try:
@@ -6117,7 +6438,6 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                             ),
                         )
                     )
-                    manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
 
                     if not control.get("is_enabled"):
                         traders = [
@@ -6142,7 +6462,11 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                                 enabled=False,
                                 current_activity="Disabled",
                                 interval_seconds=cycle_interval,
-                                stats=await compute_orchestrator_metrics(session),
+                                stats=await _build_orchestrator_snapshot_metrics(
+                                    session=session,
+                                    lane=lane_key,
+                                    traders=traders,
+                                ),
                             )
                             skip_cycle = True
 
@@ -6212,7 +6536,11 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                                     current_activity="Blocked: live credentials missing",
                                     interval_seconds=cycle_interval,
                                     last_error=None,
-                                    stats=await compute_orchestrator_metrics(session),
+                                    stats=await _build_orchestrator_snapshot_metrics(
+                                        session=session,
+                                        lane=lane_key,
+                                        traders=traders,
+                                    ),
                                 )
                                 skip_cycle = True
                             else:
@@ -6237,7 +6565,11 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                             current_activity="Blocked: live trading service failed to initialize",
                             interval_seconds=cycle_interval,
                             last_error=None,
-                            stats=await compute_orchestrator_metrics(session),
+                            stats=await _build_orchestrator_snapshot_metrics(
+                                session=session,
+                                lane=lane_key,
+                                traders=traders,
+                            ),
                         )
                     skip_cycle = True
 
@@ -6255,6 +6587,30 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                         last_claim_run_at=stream_last_claim_run_at,
                     )
                     continue
+
+                cycle_trigger_label = (
+                    str(cycle_trigger.get("event_type") or "").strip().lower()
+                    if isinstance(cycle_trigger, dict)
+                    else ""
+                ) or ("requested_run" if manual_force_cycle else "scheduled")
+
+                if write_snapshot:
+                    async with AsyncSessionLocal() as session:
+                        if manual_force_cycle:
+                            await update_orchestrator_control(session, requested_run_at=None)
+                        await _write_orchestrator_snapshot_best_effort(
+                            session,
+                            running=True,
+                            enabled=bool(control.get("is_enabled", False)) and not bool(control.get("is_paused", True)),
+                            current_activity=f"Starting cycle[{cycle_trigger_label}:{lane_key}]",
+                            interval_seconds=cycle_interval,
+                            last_error=None,
+                            stats=await _build_orchestrator_snapshot_metrics(
+                                session=session,
+                                lane=lane_key,
+                                traders=traders,
+                            ),
+                        )
 
                 total_decisions = 0
                 total_orders = 0
@@ -6371,17 +6727,18 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                     async with AsyncSessionLocal() as session:
                         if manual_force_cycle and not manage_only_cycle:
                             await update_orchestrator_control(session, requested_run_at=None)
-                        metrics = await compute_orchestrator_metrics(session)
+                        metrics = await _build_orchestrator_snapshot_metrics(
+                            session=session,
+                            lane=lane_key,
+                            traders=traders,
+                            decisions_delta=total_decisions,
+                            orders_delta=total_orders,
+                        )
                         metrics["decisions_last_cycle"] = total_decisions
                         metrics["orders_last_cycle"] = total_orders
                         metrics["signals_processed_last_cycle"] = total_processed_signals
                         metrics["cycle_lane"] = lane_key
-                        trigger_label = (
-                            str(cycle_trigger.get("event_type") or "").strip().lower()
-                            if isinstance(cycle_trigger, dict)
-                            else ""
-                        ) or ("requested_run" if manual_force_cycle else "scheduled")
-                        metrics["cycle_trigger"] = trigger_label
+                        metrics["cycle_trigger"] = cycle_trigger_label
                         metrics["maintenance_run"] = bool(run_maintenance)
                         metrics["maintenance_interval_seconds"] = float(maintenance_interval_seconds)
                         _maybe_log_execution_latency_sla_breach(
@@ -6390,13 +6747,13 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                         )
                         open_orders = int(metrics.get("open_orders", 0) or 0)
                         activity = (
-                            f"Cycle[{trigger_label}:{lane_key}] signals={total_processed_signals} "
+                            f"Cycle[{cycle_trigger_label}:{lane_key}] signals={total_processed_signals} "
                             f"decisions={total_decisions} orders={total_orders}"
                         )
                         if manage_only_cycle:
                             reasons = ",".join(manage_only_reasons) if manage_only_reasons else "gated"
                             activity = (
-                                f"Manage-only[{trigger_label}:{lane_key}] ({reasons}) signals={total_processed_signals} "
+                                f"Manage-only[{cycle_trigger_label}:{lane_key}] ({reasons}) signals={total_processed_signals} "
                                 f"decisions={total_decisions} orders={total_orders}"
                             )
                         elif (
@@ -6445,7 +6802,11 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                                 1, int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)
                             ),
                             last_error=str(exc),
-                            stats=await compute_orchestrator_metrics(session),
+                            stats=await _build_orchestrator_snapshot_metrics(
+                                session=session,
+                                lane=lane_key,
+                                traders=traders,
+                            ),
                         )
                 except Exception as snapshot_exc:
                     logger.warning(
@@ -6474,13 +6835,26 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
 async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True, write_snapshot: bool = True) -> None:
     """Run the trader orchestrator worker loop (called from API process lifespan)."""
     notifier = None
+    notifier_start_task: asyncio.Task | None = None
     if notifier_enabled:
         try:
             from services.notifier import notifier as notifier_service
 
             notifier = notifier_service
-            await notifier.start()
-            logger.info("Autotrader notifier started")
+            notifier_start_task = asyncio.create_task(notifier.start(), name="autotrader-notifier-start")
+
+            def _handle_notifier_start_done(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
+                else:
+                    logger.info("Autotrader notifier started")
+
+            notifier_start_task.add_done_callback(_handle_notifier_start_done)
+            logger.info("Autotrader notifier start scheduled")
         except Exception as exc:
             logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
 
@@ -6492,6 +6866,14 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
     except asyncio.CancelledError:
         logger.info("Trader orchestrator worker shutting down")
     finally:
+        if notifier_start_task is not None and not notifier_start_task.done():
+            notifier_start_task.cancel()
+            try:
+                await notifier_start_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("Notifier start task cleanup skipped: %s", exc)
         if notifier is not None:
             try:
                 await notifier.shutdown()

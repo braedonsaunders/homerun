@@ -430,6 +430,37 @@ async def submit_execution_leg(
                 notional_usd=notional,
             )
 
+    skip_buy_pre_submit_gate = False
+    if mode_key == "live" and order_side == "BUY":
+        buy_gate_ok, buy_gate_error = await live_execution_service.check_buy_pre_submit_gate(
+            token_id=token_id,
+            required_notional_usd=effective_notional,
+        )
+        if not buy_gate_ok:
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="skipped",
+                effective_price=price,
+                error_message=buy_gate_error or "BUY pre-submit gate failed.",
+                payload={
+                    "mode": mode_key,
+                    "submission": "skipped",
+                    "reason": "buy_pre_submit_gate",
+                    "token_id": token_id,
+                    "token_id_source": token_source,
+                    "token_resolution_attempts": token_attempts,
+                    "leg": dict(leg),
+                    "shares": shares,
+                    "requested_shares": requested_shares,
+                    "min_live_shares": _MIN_LIVE_SHARES,
+                    "requested_notional_usd": notional,
+                    "effective_notional_usd": effective_notional,
+                },
+                shares=shares,
+                notional_usd=effective_notional,
+            )
+        skip_buy_pre_submit_gate = True
+
     time_in_force = str(leg.get("time_in_force") or "GTC").strip().upper()
     post_only = bool(leg.get("post_only", False))
 
@@ -520,6 +551,7 @@ async def submit_execution_leg(
         time_in_force=time_in_force,
         post_only=post_only,
         enforce_fallback_bound=True,
+        skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
     )
 
     execution_error_text = str(execution.error_message or "").lower()
@@ -543,6 +575,7 @@ async def submit_execution_leg(
                     time_in_force=time_in_force,
                     post_only=post_only,
                     enforce_fallback_bound=True,
+                    skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
                 )
                 if retry_execution.status != "failed":
                     execution = retry_execution

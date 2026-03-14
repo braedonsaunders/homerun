@@ -225,6 +225,28 @@ async def test_reconcile_does_not_infer_resolution_on_tradable_market(tmp_path, 
         await engine.dispose()
 
 
+def test_price_inference_requires_terminal_market_signal():
+    market_info = {
+        "active": True,
+        "closed": False,
+        "accepting_orders": True,
+        "enable_order_book": True,
+        "resolved": None,
+        "winner": None,
+        "winning_outcome": None,
+        "end_date": (datetime.utcnow() - timedelta(minutes=30)).isoformat() + "Z",
+        "outcome_prices": [0.0035, 0.9965],
+    }
+
+    inferred = position_lifecycle._extract_winning_outcome_index_from_prices(
+        market_info,
+        market_tradable=False,
+        settle_floor=0.98,
+    )
+
+    assert inferred is None
+
+
 @pytest.mark.asyncio
 async def test_load_market_info_prefers_force_refreshed_condition_lookup(monkeypatch):
     market_id = "0x67ac92b23bf20382bff35cf4519403d3aab4b2015dd2e3943b6a511e32f1687e"
@@ -344,6 +366,73 @@ async def test_live_mark_to_market_keeps_position_open_and_records_pending_exit(
             pending_exit = (order.payload_json or {}).get("pending_live_exit")
             assert isinstance(pending_exit, dict)
             assert pending_exit.get("close_trigger") == "manual_mark_to_market"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_reconcile_does_not_infer_resolution_for_ended_but_active_market(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            await _seed_order(
+                session,
+                direction="buy_no",
+                mode="live",
+                payload_json={
+                    "token_id": "token-1",
+                    "provider_reconciliation": {
+                        "filled_size": 5.0,
+                        "average_fill_price": 0.875,
+                        "filled_notional_usd": 4.375,
+                    },
+                },
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "load_market_info_for_orders",
+                AsyncMock(
+                    return_value={
+                        "market-1": {
+                            "active": True,
+                            "closed": False,
+                            "accepting_orders": True,
+                            "enable_order_book": True,
+                            "resolved": None,
+                            "winner": None,
+                            "winning_outcome": None,
+                            "end_date": (datetime.utcnow() - timedelta(minutes=30)).isoformat() + "Z",
+                            "outcome_prices": [0.0035, 0.9965],
+                        }
+                    }
+                ),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_positions_by_token",
+                AsyncMock(return_value={"token-1": {"asset": "token-1", "size": 5.0, "curPrice": 0.9965}}),
+            )
+            monkeypatch.setattr(
+                position_lifecycle,
+                "_load_execution_wallet_recent_sell_trades_by_token",
+                AsyncMock(return_value={}),
+            )
+            monkeypatch.setattr(position_lifecycle.polymarket_client, "get_midpoint", AsyncMock(return_value=None))
+
+            result = await position_lifecycle.reconcile_live_positions(
+                session,
+                trader_id="trader-1",
+                trader_params={},
+                dry_run=False,
+            )
+            order = await session.get(TraderOrder, "order-1")
+
+            assert result["closed"] == 0
+            assert result["held"] == 1
+            assert order is not None
+            assert order.status == "executed"
+            assert (order.payload_json or {}).get("position_close") is None
+            assert (order.payload_json or {}).get("pending_live_exit") is None
     finally:
         await engine.dispose()
 
@@ -1795,10 +1884,8 @@ async def test_paper_strategy_reverse_intent_emits_reverse_signal(tmp_path, monk
             )
 
             upsert_mock = AsyncMock(return_value=SimpleNamespace(id="reverse-signal-paper-1"))
-            refresh_mock = AsyncMock(return_value=[])
             publish_mock = AsyncMock(return_value=None)
             monkeypatch.setattr(position_lifecycle, "upsert_trade_signal", upsert_mock)
-            monkeypatch.setattr(position_lifecycle, "refresh_trade_signal_snapshots", refresh_mock)
             monkeypatch.setattr("services.event_bus.event_bus.publish", publish_mock)
 
             result = await position_lifecycle.reconcile_paper_positions(
@@ -1909,10 +1996,8 @@ async def test_live_pending_exit_fill_emits_reverse_signal_when_armed(tmp_path, 
             )
 
             upsert_mock = AsyncMock(return_value=SimpleNamespace(id="reverse-signal-live-1"))
-            refresh_mock = AsyncMock(return_value=[])
             publish_mock = AsyncMock(return_value=None)
             monkeypatch.setattr(position_lifecycle, "upsert_trade_signal", upsert_mock)
-            monkeypatch.setattr(position_lifecycle, "refresh_trade_signal_snapshots", refresh_mock)
             monkeypatch.setattr("services.event_bus.event_bus.publish", publish_mock)
 
             result = await position_lifecycle.reconcile_live_positions(

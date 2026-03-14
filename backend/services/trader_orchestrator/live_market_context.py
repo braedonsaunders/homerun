@@ -10,7 +10,7 @@ from config import settings
 from services.market_runtime import get_market_runtime
 from services.polymarket import polymarket_client
 from services.ws_feeds import get_feed_manager
-from utils.converters import safe_float
+from utils.converters import coerce_bool as _coerce_bool, normalize_identifier as _normalize_identifier, safe_float
 from utils.logger import get_logger
 from utils.signal_helpers import signal_payload
 from utils.utcnow import utcnow
@@ -32,19 +32,6 @@ def _strict_ws_ttl_seconds_for_source(source: Any) -> float:
     except Exception:
         scanner_max_age_ms = 30000.0
     return max(default_ttl, max(100.0, scanner_max_age_ms) / 1000.0)
-
-
-def _coerce_bool(value: Any) -> Optional[bool]:
-    if isinstance(value, bool):
-        return value
-    if value in (None, ""):
-        return None
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return None
 
 
 def _parse_market_datetime(value: Any) -> Optional[datetime]:

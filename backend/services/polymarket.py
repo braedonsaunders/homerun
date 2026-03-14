@@ -11,6 +11,7 @@ from utils.utcnow import utcnow, utcfromtimestamp
 
 from config import settings
 from models import Market, Event
+from utils.converters import coerce_bool as _coerce_bool
 from utils.rate_limiter import rate_limiter, endpoint_for_url
 from utils.logger import get_logger
 
@@ -964,20 +965,6 @@ class PolymarketClient:
         return yes_price is not None and no_price is not None
 
     @staticmethod
-    def _coerce_bool(value: object) -> Optional[bool]:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if text in {"true", "1", "yes", "y", "t"}:
-                return True
-            if text in {"false", "0", "no", "n", "f", ""}:
-                return False
-        return None
-
-    @staticmethod
     def _coerce_datetime(value: object) -> Optional[datetime]:
         if value is None:
             return None
@@ -1062,42 +1049,45 @@ class PolymarketClient:
         else:
             ref_now = ref_now.astimezone(timezone.utc)
 
-        closed = PolymarketClient._coerce_bool(market_info.get("closed"))
+        closed = _coerce_bool(market_info.get("closed"), None)
         if closed is True:
             return False
 
-        active = PolymarketClient._coerce_bool(market_info.get("active"))
+        active = _coerce_bool(market_info.get("active"), None)
         if active is False:
             return False
 
-        archived = PolymarketClient._coerce_bool(market_info.get("archived"))
+        archived = _coerce_bool(market_info.get("archived"), None)
         if archived is True:
             return False
 
-        accepting_orders = PolymarketClient._coerce_bool(
+        accepting_orders = _coerce_bool(
             market_info.get("accepting_orders")
             if market_info.get("accepting_orders") is not None
-            else market_info.get("acceptingOrders")
+            else market_info.get("acceptingOrders"),
+            None,
         )
         if accepting_orders is False:
             return False
 
-        enable_order_book = PolymarketClient._coerce_bool(
+        enable_order_book = _coerce_bool(
             market_info.get("enable_order_book")
             if market_info.get("enable_order_book") is not None
-            else market_info.get("enableOrderBook")
+            else market_info.get("enableOrderBook"),
+            None,
         )
         if enable_order_book is False:
             return False
 
-        resolved = PolymarketClient._coerce_bool(
+        resolved = _coerce_bool(
             market_info.get("resolved")
             if market_info.get("resolved") is not None
             else (
                 market_info.get("isResolved")
                 if market_info.get("isResolved") is not None
                 else market_info.get("is_resolved")
-            )
+            ),
+            None,
         )
         if resolved is True:
             return False

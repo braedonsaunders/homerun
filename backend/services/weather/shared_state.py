@@ -20,6 +20,7 @@ from models.database import (
 )
 from models.opportunity import Opportunity
 from services.event_bus import event_bus
+from utils.converters import format_iso_utc_z, parse_iso_datetime
 
 WEATHER_SNAPSHOT_ID = "latest"
 WEATHER_CONTROL_ID = "default"
@@ -27,29 +28,6 @@ MIN_TIME_TO_RESOLUTION = timedelta(minutes=30)
 
 # In-memory cache of enriched intents for strategy consumption within a cycle.
 _enriched_weather_intents: list[dict[str, Any]] = []
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    text = value.strip()
-    if text.endswith("+00:00+00:00"):
-        text = text[:-6]
-    if text.endswith("Z"):
-        text = text[:-1]
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=None).isoformat() + "Z"
-
 
 def _normalize_weather_edge_title(title: str) -> str:
     prefix = "weather edge:"
@@ -164,10 +142,7 @@ async def write_weather_snapshot(
 ) -> None:
     last_scan = status.get("last_scan")
     if isinstance(last_scan, str):
-        try:
-            last_scan = _parse_iso_datetime(last_scan)
-        except Exception:
-            last_scan = utcnow()
+        last_scan = parse_iso_datetime(last_scan, naive=True) or utcnow()
     elif last_scan is None:
         last_scan = utcnow()
 
@@ -237,7 +212,7 @@ async def read_weather_snapshot(
         "running": row.running,
         "enabled": row.enabled,
         "interval_seconds": row.interval_seconds,
-        "last_scan": _format_iso_utc_z(row.last_scan_at),
+        "last_scan": format_iso_utc_z(row.last_scan_at),
         "opportunities_count": len(opportunities),
         "current_activity": row.current_activity,
         "stats": row.stats_json or {},

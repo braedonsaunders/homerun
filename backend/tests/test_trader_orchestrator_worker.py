@@ -1516,6 +1516,83 @@ async def test_run_trader_once_skips_live_maintenance_on_runtime_trigger_cycle(m
 
 
 @pytest.mark.asyncio
+async def test_run_trader_once_skips_live_maintenance_on_scheduled_cycle(monkeypatch):
+    trader_id = "trader-live-scheduled"
+
+    class _Session:
+        async def get(self, *_args, **_kwargs):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+        async def execute(self, *_args, **_kwargs):
+            return None
+
+        def in_transaction(self):
+            return False
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    reconcile_sessions_mock = AsyncMock(return_value={"active_seen": 0, "expired": 0, "completed": 0, "failed": 0})
+    timeout_cleanup_mock = AsyncMock(
+        return_value={
+            "configured": 0,
+            "updated": 0,
+            "suppressed": 0,
+            "taker_rescue_attempted": 0,
+            "taker_rescue_succeeded": 0,
+            "taker_rescue_failed": 0,
+            "sources": [],
+            "errors": [],
+            "provider_reconcile": {},
+        }
+    )
+
+    monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(trader_orchestrator_worker, "get_open_position_count_for_trader", AsyncMock(return_value=0))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_open_order_count_for_trader", AsyncMock(return_value=0))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_open_market_ids_for_trader", AsyncMock(return_value=set()))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_daily_realized_pnl", AsyncMock(return_value=0.0))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_unrealized_pnl", AsyncMock(return_value=0.0))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_consecutive_loss_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(trader_orchestrator_worker, "get_last_resolved_loss_at", AsyncMock(return_value=None))
+    monkeypatch.setattr(trader_orchestrator_worker, "_live_provider_failure_snapshot", AsyncMock(return_value={"count": 0, "errors": []}))
+    monkeypatch.setattr(trader_orchestrator_worker, "_live_risk_clamp_event_should_emit", AsyncMock(return_value=False))
+    monkeypatch.setattr(trader_orchestrator_worker, "_persist_trader_cycle_heartbeat", AsyncMock(return_value=None))
+    monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", AsyncMock(return_value=None))
+    monkeypatch.setattr(trader_orchestrator_worker, "_enforce_source_open_order_timeouts", timeout_cleanup_mock)
+    monkeypatch.setattr(
+        trader_orchestrator_worker.ExecutionSessionEngine,
+        "reconcile_active_sessions",
+        reconcile_sessions_mock,
+    )
+
+    trader_payload = dict(_base_trader_payload(allow_averaging=True))
+    trader_payload["id"] = trader_id
+
+    decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
+        trader_payload,
+        _base_control_payload(),
+        process_signals=False,
+    )
+
+    assert decisions_written == 0
+    assert orders_written == 0
+    assert processed_signals == 0
+    reconcile_sessions_mock.assert_not_awaited()
+    timeout_cleanup_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_emit_cycle_heartbeat_is_throttled(monkeypatch):
     create_event_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)

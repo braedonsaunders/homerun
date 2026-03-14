@@ -28,6 +28,7 @@ WORKER_NAME = "redeemer"
 DEFAULT_INTERVAL_SECONDS = 120
 _IDLE_SLEEP_SECONDS = 2
 _MAX_CONSECUTIVE_DB_FAILURES = 3
+_REDEEM_CYCLE_TIMEOUT_SECONDS = 90.0
 
 
 async def _run_redeem_cycle(*, dry_run: bool) -> dict[str, Any]:
@@ -85,7 +86,10 @@ async def run_worker_loop() -> None:
                 continue
 
             cycle_reason = "requested" if requested_run else "scheduled"
-            summary = await _run_redeem_cycle(dry_run=not requested_run)
+            summary = await asyncio.wait_for(
+                _run_redeem_cycle(dry_run=not requested_run),
+                timeout=_REDEEM_CYCLE_TIMEOUT_SECONDS,
+            )
 
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
@@ -109,6 +113,28 @@ async def run_worker_loop() -> None:
 
             consecutive_db_failures = 0
             await asyncio.sleep(interval_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Redeemer worker cycle timed out after %.0fs",
+                _REDEEM_CYCLE_TIMEOUT_SECONDS,
+            )
+            try:
+                async with AsyncSessionLocal() as session:
+                    await write_worker_snapshot(
+                        session,
+                        WORKER_NAME,
+                        running=True,
+                        enabled=bool(is_enabled and not is_paused),
+                        current_activity="Redeemer cycle timed out",
+                        interval_seconds=interval_seconds,
+                        stats={
+                            "requested_run": bool(requested_run),
+                            "timed_out": True,
+                        },
+                    )
+            except Exception:
+                pass
+            await asyncio.sleep(_IDLE_SLEEP_SECONDS)
         except OperationalError as exc:
             if not _is_retryable_db_error(exc):
                 raise

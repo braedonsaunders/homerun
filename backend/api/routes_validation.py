@@ -97,6 +97,9 @@ class CodeBacktestRequest(BaseModel):
     replay_timeframe: str = Field(default="30m", min_length=2, max_length=8)
     replay_max_markets: int = Field(default=80, ge=1, le=300)
     replay_max_steps: int = Field(default=72, ge=1, le=500)
+    max_opportunities: int = Field(default=100, ge=1, le=500)
+    max_signals: int = Field(default=50, ge=1, le=500)
+    max_positions: int = Field(default=50, ge=1, le=500)
 
 
 class CodeBacktestOptimizeRequest(BaseModel):
@@ -322,6 +325,7 @@ async def run_code_backtest(req: CodeBacktestRequest):
         replay_timeframe=req.replay_timeframe,
         replay_max_markets=req.replay_max_markets,
         replay_max_steps=req.replay_max_steps,
+        max_opportunities=req.max_opportunities,
     )
     return result.to_dict()
 
@@ -339,6 +343,7 @@ async def run_evaluate_backtest_endpoint(req: CodeBacktestRequest):
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,
+        max_signals=req.max_signals,
     )
     return result.to_dict()
 
@@ -356,6 +361,7 @@ async def run_exit_backtest_endpoint(req: CodeBacktestRequest):
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,
+        max_positions=req.max_positions,
     )
     return result.to_dict()
 

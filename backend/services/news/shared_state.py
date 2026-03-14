@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -20,32 +20,10 @@ from models.database import (
 from services.event_bus import event_bus
 from services.shared_state import _commit_with_retry
 from services.market_tradability import get_market_tradability_map
+from utils.converters import format_iso_utc_z, parse_iso_datetime
 
 NEWS_SNAPSHOT_ID = "latest"
 NEWS_CONTROL_ID = "default"
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    text = value.strip()
-    if text.endswith("+00:00+00:00"):
-        text = text[:-6]
-    if text.endswith("Z"):
-        text = text[:-1]
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=None).isoformat() + "Z"
-
 
 def _default_status() -> dict[str, Any]:
     return {
@@ -74,17 +52,11 @@ async def write_news_snapshot(
 
     last_scan = status.get("last_scan")
     if has_last_scan and isinstance(last_scan, str):
-        try:
-            last_scan = _parse_iso_datetime(last_scan)
-        except Exception:
-            last_scan = utcnow()
+        last_scan = parse_iso_datetime(last_scan, naive=True) or utcnow()
 
     next_scan = status.get("next_scan")
     if has_next_scan and isinstance(next_scan, str):
-        try:
-            next_scan = _parse_iso_datetime(next_scan)
-        except Exception:
-            next_scan = None
+        next_scan = parse_iso_datetime(next_scan, naive=True)
 
     result = await session.execute(select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == NEWS_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
@@ -146,8 +118,8 @@ async def read_news_snapshot(session: AsyncSession) -> dict[str, Any]:
         "running": bool(row.running),
         "enabled": bool(row.enabled),
         "interval_seconds": int(row.interval_seconds or 120),
-        "last_scan": _format_iso_utc_z(row.last_scan_at),
-        "next_scan": _format_iso_utc_z(row.next_scan_at),
+        "last_scan": format_iso_utc_z(row.last_scan_at),
+        "next_scan": format_iso_utc_z(row.next_scan_at),
         "current_activity": row.current_activity,
         "last_error": row.last_error,
         "degraded_mode": bool(row.degraded_mode),

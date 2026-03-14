@@ -872,6 +872,7 @@ async def run_strategy_backtest(
     replay_timeframe: str = _DEFAULT_REPLAY_TIMEFRAME,
     replay_max_markets: int = _DEFAULT_REPLAY_MAX_MARKETS,
     replay_max_steps: int = _DEFAULT_REPLAY_MAX_STEPS,
+    max_opportunities: int = 100,
 ) -> BacktestResult:
     """Run a strategy's detection code against current and replayed market data."""
     result = BacktestResult(strategy_slug=slug)
@@ -992,9 +993,18 @@ async def run_strategy_backtest(
                 "OHLC replay is disabled for async detect_async() strategies in code backtest mode."
             )
 
-        result.opportunities = _serialize_opportunities(opportunities or [])
+        capped_opportunities = list(opportunities or [])
+        capped_limit = max(1, int(max_opportunities))
+        total_found = len(capped_opportunities)
+        if total_found > capped_limit:
+            capped_opportunities = capped_opportunities[:capped_limit]
+            result.validation_warnings.append(
+                f"Opportunity output truncated to {capped_limit} rows from {total_found} detected opportunities."
+            )
+
+        result.opportunities = _serialize_opportunities(capped_opportunities)
         result.num_opportunities = len(result.opportunities)
-        result.quality_reports = _build_quality_reports(opportunities or [])
+        result.quality_reports = _build_quality_reports(capped_opportunities)
         result.success = True
 
     except asyncio.TimeoutError:
@@ -1223,6 +1233,7 @@ async def run_evaluate_backtest(
                     risk_evaluator=_backtest_risk_evaluator,
                     invoke_hooks=False,
                     strategy_params=params,
+                    execution_mode="backtest",
                 )
 
                 decision_str = str(gate_result["final_decision"])

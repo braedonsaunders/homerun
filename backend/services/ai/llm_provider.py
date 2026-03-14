@@ -222,6 +222,39 @@ def _extract_error_message(data: Any, fallback: str) -> str:
     return fallback_text or "Unknown error"
 
 
+def _extract_openai_choice_message(data: Any, *, provider_label: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{provider_label} returned a malformed response payload")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError(f"{provider_label} returned no choices")
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise RuntimeError(f"{provider_label} returned a malformed choice payload")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError(f"{provider_label} returned a malformed message payload")
+    return message
+
+
+def _message_content_text(message: dict[str, Any], *, provider_label: str) -> str:
+    content = message.get("content", "")
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        if parts:
+            return "".join(parts)
+    raise RuntimeError(f"{provider_label} returned unsupported message content")
+
+
 def _openai_json_schema_response_format(schema: dict, name: str = "structured_output") -> dict:
     """Build OpenAI-compatible JSON schema response_format payload."""
     safe_name = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name) or "structured_output"
@@ -755,9 +788,8 @@ class OpenAIProvider(BaseLLMProvider):
             error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
 
-        choice = data["choices"][0]
-        message = choice["message"]
-        content = message.get("content", "") or ""
+        message = _extract_openai_choice_message(data, provider_label="OpenAI API")
+        content = _message_content_text(message, provider_label="OpenAI API")
 
         parsed_tool_calls = None
         if message.get("tool_calls"):
@@ -832,10 +864,8 @@ class OpenAIProvider(BaseLLMProvider):
             error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
 
-        try:
-            content = data["choices"][0]["message"].get("content", "")
-        except (TypeError, KeyError, IndexError) as exc:
-            raise RuntimeError("OpenAI API returned malformed response payload") from exc
+        message = _extract_openai_choice_message(data, provider_label="OpenAI API")
+        content = _message_content_text(message, provider_label="OpenAI API")
 
         try:
             return _parse_structured_json_content(content)
@@ -1818,10 +1848,8 @@ class LMStudioProvider(BaseLLMProvider):
             error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(f"LM Studio API error ({response.status_code}): {error_msg}")
 
-        try:
-            content = data["choices"][0]["message"].get("content", "")
-        except (TypeError, KeyError, IndexError) as exc:
-            raise RuntimeError("LM Studio API returned malformed response payload") from exc
+        message = _extract_openai_choice_message(data, provider_label="LM Studio API")
+        content = _message_content_text(message, provider_label="LM Studio API")
 
         try:
             return _parse_structured_json_content(content)

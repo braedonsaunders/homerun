@@ -37,7 +37,7 @@ from models.database import (
     MarketConfluenceSignal,
 )
 from utils.logger import get_logger
-from utils.retry import is_retryable_db_error, db_retry_delay, DB_RETRY_ATTEMPTS
+from utils.retry import run_with_db_retries
 
 logger = get_logger("market_cache")
 
@@ -187,12 +187,10 @@ class MarketCacheService:
         # Update in-memory cache immediately
         self._market_cache[condition_id] = data
 
-        # Persist to database with retry
-        for attempt in range(DB_RETRY_ATTEMPTS):
-            try:
-                async with AsyncSessionLocal() as session:
+        async def _persist(_attempt: int) -> None:
+            async with AsyncSessionLocal() as session:
+                try:
                     now = _utcnow_naive()
-                    # Separate known columns from extra data
                     known_keys = {
                         "question",
                         "slug",
@@ -227,26 +225,24 @@ class MarketCacheService:
                     )
                     await session.execute(stmt)
                     await session.commit()
-                return
-            except (DBAPIError, asyncio.TimeoutError) as e:
-                if attempt < DB_RETRY_ATTEMPTS - 1 and (
-                    isinstance(e, asyncio.TimeoutError) or is_retryable_db_error(e)
-                ):
-                    await asyncio.sleep(db_retry_delay(attempt))
-                    continue
-                logger.error(
-                    "Failed to persist market cache entry",
-                    condition_id=condition_id,
-                    error=str(e),
-                )
-                return
-            except Exception as e:
-                logger.error(
-                    "Failed to persist market cache entry",
-                    condition_id=condition_id,
-                    error=str(e),
-                )
-                return
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        try:
+            await run_with_db_retries(_persist)
+        except (DBAPIError, asyncio.TimeoutError) as e:
+            logger.error(
+                "Failed to persist market cache entry",
+                condition_id=condition_id,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to persist market cache entry",
+                condition_id=condition_id,
+                error=str(e),
+            )
 
     async def bulk_set_markets(self, markets: dict[str, dict]):
         """Bulk cache market metadata."""
@@ -299,10 +295,6 @@ class MarketCacheService:
                 logger.info("Bulk cached markets", count=len(markets))
         except Exception as e:
             logger.error("Failed to bulk persist market cache", error=str(e))
-
-    def get_market_sync(self, condition_id: str) -> Optional[dict]:
-        """Synchronous in-memory lookup (for hot path)."""
-        return self._market_cache.get(condition_id)
 
     # -------------------- Username lookups --------------------
 
@@ -372,10 +364,6 @@ class MarketCacheService:
                 logger.info("Bulk cached usernames", count=len(normalised))
         except Exception as e:
             logger.error("Failed to bulk persist username cache", error=str(e))
-
-    def get_username_sync(self, address: str) -> Optional[str]:
-        """Synchronous in-memory lookup (for hot path)."""
-        return self._username_cache.get(address.lower())
 
     # -------------------- Statistics & maintenance --------------------
 

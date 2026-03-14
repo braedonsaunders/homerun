@@ -25,7 +25,7 @@ from services.strategies.base import (
     utcnow,
 )
 from services.strategy_sdk import StrategySDK
-from utils.converters import clamp, safe_float, to_float
+from utils.converters import clamp, coerce_bool as _coerce_bool, safe_float, to_float
 from utils.signal_helpers import days_to_resolution
 
 
@@ -101,19 +101,6 @@ def late_favorite_alpha_defaults() -> dict[str, Any]:
 
 def late_favorite_alpha_config_schema() -> dict[str, Any]:
     return dict(LATE_FAVORITE_ALPHA_CONFIG_SCHEMA)
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:

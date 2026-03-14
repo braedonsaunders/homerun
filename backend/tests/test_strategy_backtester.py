@@ -75,6 +75,42 @@ class ReplaySensitiveStrategy(BaseStrategy):
         return opportunities
 
 
+class EvaluateSelectedStrategy(BaseStrategy):
+    strategy_type = "unit_evaluate"
+    name = "Unit Evaluate"
+    description = "unit test"
+    default_config = {
+        "require_strict_ws_pricing": True,
+        "require_live_market_revalidation": True,
+        "max_market_data_age_ms": 1000,
+    }
+
+    def detect(self, events, markets, prices):
+        return []
+
+    def evaluate(self, signal, context):
+        return SimpleNamespace(
+            decision="selected",
+            reason="selected",
+            score=1.0,
+            size_usd=25.0,
+            checks=[],
+        )
+
+
+class MultiOpportunityStrategy(BaseStrategy):
+    strategy_type = "unit_multi"
+    name = "Unit Multi"
+    description = "unit test"
+
+    def detect(self, events, markets, prices):
+        return [
+            FakeOpportunity(id="opp_1", stable_id="opp_1", roi_percent=1.0),
+            FakeOpportunity(id="opp_2", stable_id="opp_2", roi_percent=2.0),
+            FakeOpportunity(id="opp_3", stable_id="opp_3", roi_percent=3.0),
+        ]
+
+
 class _FakeLoader:
     def __init__(self, instance):
         self._instance = instance
@@ -212,6 +248,30 @@ async def test_run_strategy_backtest_replays_ohlc_when_live_snapshot_empty(monke
     assert "backtest_replay_ts_ms" in ctx
 
 
+@pytest.mark.asyncio
+async def test_run_strategy_backtest_caps_opportunity_output(monkeypatch):
+    market = _make_market()
+    event = _make_event(market)
+    strategy = MultiOpportunityStrategy()
+
+    _patch_common(monkeypatch, strategy, market, event)
+    monkeypatch.setattr(strategy_backtester.scanner, "_market_price_history", {}, raising=False)
+
+    result = await strategy_backtester.run_strategy_backtest(
+        source_code="class Dummy: pass",
+        slug="multi_test",
+        use_ohlc_replay=False,
+        max_opportunities=2,
+    )
+
+    assert result.success is True
+    assert result.runtime_error is None
+    assert result.num_opportunities == 2
+    assert [opp["id"] for opp in result.opportunities] == ["opp_1", "opp_2"]
+    assert len(result.quality_reports) == 2
+    assert any("truncated to 2 rows from 3 detected" in warning for warning in result.validation_warnings)
+
+
 class ExitDecisionStrategy(BaseStrategy):
     strategy_type = "unit_exit"
     name = "Unit Exit"
@@ -245,6 +305,10 @@ class _FakeTraderPositionModel:
 class _FakeLegacyTraderPositionModel:
     status = _FakeColumn()
     opened_at = _FakeColumn()
+    created_at = _FakeColumn()
+
+
+class _FakeTradeSignalEmissionModel:
     created_at = _FakeColumn()
 
 
@@ -291,6 +355,75 @@ class _FakeSessionContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+@pytest.mark.asyncio
+async def test_run_evaluate_backtest_skips_live_execution_freshness_gates(monkeypatch):
+    strategy = EvaluateSelectedStrategy()
+    now = datetime.now(timezone.utc)
+    signals = [
+        SimpleNamespace(
+            id="sig_eval_1",
+            market_id="m1",
+            source="scanner",
+            strategy_type="unit_evaluate",
+            direction="buy_yes",
+            created_at=now - timedelta(minutes=5),
+            payload_json={},
+        ),
+    ]
+
+    monkeypatch.setattr(
+        strategy_backtester,
+        "validate_strategy_source",
+        lambda source: {
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "class_name": strategy.__class__.__name__,
+        },
+    )
+    monkeypatch.setattr(strategy_backtester, "StrategyLoader", lambda: _FakeLoader(strategy))
+
+    import models.database as database_models
+
+    monkeypatch.setattr(database_models, "AsyncSessionLocal", lambda: _FakeSessionContext(signals))
+    monkeypatch.setattr(database_models, "TradeSignalEmission", _FakeTradeSignalEmissionModel)
+
+    captured_query: dict[str, object] = {}
+
+    def _fake_select(*args):
+        query = _FakeQuery()
+        captured_query["model"] = args[0]
+        captured_query["query"] = query
+        return query
+
+    monkeypatch.setattr(sqlalchemy, "select", _fake_select)
+
+    result = await strategy_backtester.run_evaluate_backtest(
+        source_code="class Dummy: pass",
+        slug="evaluate_test",
+        max_signals=1,
+    )
+
+    assert result.success is True
+    assert result.runtime_error is None
+    assert result.num_signals == 1
+    assert result.selected == 1
+    assert result.blocked == 0
+    assert captured_query["model"] is _FakeTradeSignalEmissionModel
+
+    decision = result.decisions[0]
+    assert decision["decision"] == "selected"
+    assert any(g["gate"] == "strict_ws_pricing" and g["status"] == "skipped" for g in decision["platform_gates"])
+    assert any(
+        g["gate"] == "live_market_revalidation" and g["status"] == "skipped"
+        for g in decision["platform_gates"]
+    )
+    assert any(
+        g["gate"] == "market_data_freshness" and g["status"] == "skipped"
+        for g in decision["platform_gates"]
+    )
 
 
 @pytest.mark.asyncio

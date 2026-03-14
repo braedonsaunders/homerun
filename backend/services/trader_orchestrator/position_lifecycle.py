@@ -12,7 +12,7 @@ from config import settings
 from models.database import TradeSignal, TraderOrder
 from services.polymarket import polymarket_client
 from services.runtime_signal_queue import publish_signal_batch
-from services.signal_bus import make_dedupe_key, refresh_trade_signal_snapshots, upsert_trade_signal
+from services.signal_bus import make_dedupe_key, upsert_trade_signal
 from services.simulation import simulation_service
 from services.strategy_sdk import StrategySDK
 from services.live_execution_service import live_execution_service
@@ -703,6 +703,129 @@ def _extract_winning_outcome_index(market_info: Optional[dict[str, Any]]) -> Opt
     return None
 
 
+def _market_has_terminal_resolution_signal(market_info: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(market_info, dict):
+        return False
+
+    if _safe_bool(market_info.get("closed"), False):
+        return True
+    if _safe_bool(market_info.get("archived"), False):
+        return True
+
+    resolved_value = (
+        market_info.get("resolved")
+        if market_info.get("resolved") is not None
+        else (
+            market_info.get("isResolved")
+            if market_info.get("isResolved") is not None
+            else market_info.get("is_resolved")
+        )
+    )
+    if _safe_bool(resolved_value, False):
+        return True
+
+    winner = market_info.get("winner")
+    if winner not in (None, ""):
+        return True
+
+    winning_outcome = (
+        market_info.get("winning_outcome")
+        if market_info.get("winning_outcome") is not None
+        else market_info.get("winningOutcome")
+    )
+    if winning_outcome not in (None, ""):
+        return True
+
+    raw_status = (
+        market_info.get("status")
+        if market_info.get("status") is not None
+        else (
+            market_info.get("market_status")
+            if market_info.get("market_status") is not None
+            else market_info.get("marketStatus")
+        )
+    )
+    status_text = str(raw_status or "").strip().lower()
+    if status_text:
+        normalized = status_text.replace("_", " ").replace("-", " ")
+        blocked_terms = (
+            "in review",
+            "review",
+            "in dispute",
+            "dispute",
+            "final",
+            "resolved",
+            "settled",
+            "closed",
+            "expired",
+            "cancelled",
+            "canceled",
+        )
+        if any(term in normalized for term in blocked_terms):
+            return True
+
+    uma_statuses: list[str] = []
+    raw_uma_status = (
+        market_info.get("uma_resolution_status")
+        if market_info.get("uma_resolution_status") is not None
+        else market_info.get("umaResolutionStatus")
+    )
+    if isinstance(raw_uma_status, list):
+        uma_statuses.extend(str(item or "").strip() for item in raw_uma_status if str(item or "").strip())
+    elif raw_uma_status not in (None, ""):
+        uma_statuses.append(str(raw_uma_status).strip())
+
+    raw_uma_statuses = (
+        market_info.get("uma_resolution_statuses")
+        if market_info.get("uma_resolution_statuses") is not None
+        else market_info.get("umaResolutionStatuses")
+    )
+    if isinstance(raw_uma_statuses, list):
+        uma_statuses.extend(str(item or "").strip() for item in raw_uma_statuses if str(item or "").strip())
+    elif raw_uma_statuses not in (None, ""):
+        uma_statuses.append(str(raw_uma_statuses).strip())
+
+    if uma_statuses:
+        blocked_terms = (
+            "proposed",
+            "review",
+            "dispute",
+            "final",
+            "resolved",
+            "settled",
+            "closed",
+            "expired",
+            "cancelled",
+            "canceled",
+        )
+        for raw in uma_statuses:
+            normalized = raw.lower().replace("_", " ").replace("-", " ")
+            if any(term in normalized for term in blocked_terms):
+                return True
+
+    end_dt = polymarket_client._coerce_datetime(
+        market_info.get("end_date") if market_info.get("end_date") is not None else market_info.get("endDate")
+    )
+    ended = end_dt is not None and end_dt <= utcnow()
+    accepting_orders_value = (
+        market_info.get("accepting_orders")
+        if market_info.get("accepting_orders") is not None
+        else market_info.get("acceptingOrders")
+    )
+    enable_order_book_value = (
+        market_info.get("enable_order_book")
+        if market_info.get("enable_order_book") is not None
+        else market_info.get("enableOrderBook")
+    )
+    if ended and (
+        _safe_bool(accepting_orders_value, True) is False
+        or _safe_bool(enable_order_book_value, True) is False
+    ):
+        return True
+
+    return False
+
+
 def _extract_winning_outcome_index_from_prices(
     market_info: Optional[dict[str, Any]],
     *,
@@ -712,6 +835,8 @@ def _extract_winning_outcome_index_from_prices(
     if not isinstance(market_info, dict):
         return None
     if market_tradable:
+        return None
+    if not _market_has_terminal_resolution_signal(market_info):
         return None
 
     settle_floor = min(1.0, max(0.5, settle_floor))
@@ -1830,7 +1955,6 @@ async def reconcile_paper_positions(
         await session.commit()
         await _publish_trader_order_updates(touched_rows)
         if reverse_signal_ids_by_source:
-            await refresh_trade_signal_snapshots(session)
             await _publish_reverse_signal_batches(reverse_signal_ids_by_source, emitted_at=now)
 
     return {
@@ -4149,7 +4273,6 @@ async def reconcile_live_positions(
         await session.commit()
         await _publish_trader_order_updates(touched_rows)
         if reverse_signal_ids_by_source:
-            await refresh_trade_signal_snapshots(session)
             await _publish_reverse_signal_batches(reverse_signal_ids_by_source, emitted_at=now)
 
     return {
