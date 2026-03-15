@@ -9241,30 +9241,35 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         ))}
                         <span className="ml-auto text-[10px] font-mono text-muted-foreground">{filteredAllTradeHistory.length} rows</span>
                       </div>
-                      <div className="flex-1 min-h-0 overflow-hidden">
+                      <div className="flex-1 min-h-0 flex flex-col rounded-md border border-border/60 bg-card/80">
                         {filteredAllTradeHistory.length === 0 ? (
                           <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No trades matching filters.</div>
                         ) : (
-                          <div className="h-full min-h-0 overflow-auto rounded-md border border-border/60 bg-card/80">
-                            <Table className="w-full table-fixed">
-                              <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                                <TableRow>
-                                  <TableHead className="w-[32%] text-[10px]">Market</TableHead>
-                                  <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                  <TableHead className="w-[8%] text-[10px] text-right">Notional</TableHead>
-                                  <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
-                                  <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
-                                  <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
-                                  <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
-                                  <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
-                                  <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
-                                  <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
-                                  <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                                  <TableHead className="w-[5%] text-[10px]">Mark Age</TableHead>
-                                  <TableHead className="w-[5%] text-[10px]">Eval Age</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
+                          <>
+                            <div className="shrink-0 border-b border-border/60">
+                              <table className="w-full table-fixed text-sm">
+                                <thead>
+                                  <tr className="border-b">
+                                    <th className="w-[32%] h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[10px]">Market</th>
+                                    <th className="w-[6%] h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[10px]">Dir</th>
+                                    <th className="w-[8%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Notional</th>
+                                    <th className="w-[6%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Fill</th>
+                                    <th className="w-[6%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Fill Progress</th>
+                                    <th className="w-[6%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Mark</th>
+                                    <th className="w-[8%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">U-P&amp;L</th>
+                                    <th className="w-[7%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Edge Δ</th>
+                                    <th className="w-[8%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">R-P&amp;L</th>
+                                    <th className="w-[8%] h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[10px]">Venue</th>
+                                    <th className="w-[6%] h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[10px]">Exit %</th>
+                                    <th className="w-[5%] h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[10px]">Mark Age</th>
+                                    <th className="w-[5%] h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[10px]">Eval Age</th>
+                                  </tr>
+                                </thead>
+                              </table>
+                            </div>
+                            <div className="flex-1 min-h-0 overflow-auto">
+                              <Table className="w-full table-fixed">
+                                <TableBody>
                                 {filteredAllTradeHistory.map((order) => {
                                   const status = normalizeStatus(order.status)
                                   const lifecycleLabel = resolveOrderLifecycleLabel(status)
@@ -9503,7 +9508,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 })}
                               </TableBody>
                             </Table>
-                          </div>
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>
@@ -9596,29 +9602,34 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <p className="text-xs font-mono">{allBotsPositionSummary.freshMarks} / {allBotsPositionSummary.markedRows}</p>
                         </div>
                       </div>
-                      <div className="flex-1 min-h-0 overflow-hidden">
+                      <div className="flex-1 min-h-0 flex flex-col rounded-md border border-border/60 bg-card/80">
                         {filteredAllPositionBook.length === 0 ? (
                           <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No positions matching filters.</div>
                         ) : (
-                          <div className="h-full min-h-0 overflow-auto rounded-md border border-border/60 bg-card/80">
-                            <Table className="min-w-[1240px]">
-                              <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
-                                <TableRow>
-                                  <TableHead className="text-[11px]">Market</TableHead>
-                                  <TableHead className="text-[11px]">L</TableHead>
-                                  <TableHead className="text-[11px]">Dir</TableHead>
-                                  <TableHead className="text-[11px] text-right">Exposure</TableHead>
-                                  <TableHead className="text-[11px] text-right">Avg Px</TableHead>
-                                  <TableHead className="text-[11px] text-right">Mark</TableHead>
-                                  <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
-                                  <TableHead className="text-[11px] text-right">Edge</TableHead>
-                                  <TableHead className="text-[11px] text-right">Conf</TableHead>
-                                  <TableHead className="text-[11px] text-right">Orders</TableHead>
-                                  <TableHead className="text-[11px] text-right">Mode</TableHead>
-                                  <TableHead className="text-[11px]">Updated</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
+                          <>
+                            <div className="shrink-0 border-b border-border/60 overflow-x-auto">
+                              <table className="min-w-[1240px] w-full text-sm">
+                                <thead>
+                                  <tr className="border-b">
+                                    <th className="h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[11px]">Market</th>
+                                    <th className="h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[11px]">L</th>
+                                    <th className="h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[11px]">Dir</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Exposure</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Avg Px</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Mark</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">U-P&amp;L</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Edge</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Conf</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Orders</th>
+                                    <th className="h-8 px-4 text-right align-middle font-medium text-muted-foreground text-[11px]">Mode</th>
+                                    <th className="h-8 px-4 text-left align-middle font-medium text-muted-foreground text-[11px]">Updated</th>
+                                  </tr>
+                                </thead>
+                              </table>
+                            </div>
+                            <div className="flex-1 min-h-0 overflow-auto">
+                              <Table className="min-w-[1240px]">
+                                <TableBody>
                                 {filteredAllPositionBook.map((row) => {
                                   const marketForModal = resolveCryptoMarketFromAliases([row.marketId, ...row.marketAliases])
                                   return (
@@ -9700,7 +9711,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 })}
                               </TableBody>
                             </Table>
-                          </div>
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>
