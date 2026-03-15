@@ -815,6 +815,21 @@ class IntentRuntime:
                 if str(snapshot.get("status") or "").strip().lower() in _SIGNAL_ACTIVE_STATUSES:
                     tokens_to_subscribe.update(snapshot.get("required_token_ids") or [])
         if bootstrap_snapshots:
+            bootstrap_snapshots_by_source: dict[str, dict[str, dict[str, Any]]] = {}
+            for signal_id, snapshot in bootstrap_snapshots.items():
+                source_key = str(snapshot.get("source") or "").strip()
+                if not source_key:
+                    continue
+                bootstrap_snapshots_by_source.setdefault(source_key, {})[signal_id] = copy.deepcopy(snapshot)
+            for source_key, snapshots in bootstrap_snapshots_by_source.items():
+                await publish_signal_batch(
+                    event_type="upsert_reactivated",
+                    source=source_key,
+                    signal_ids=sorted(snapshots.keys()),
+                    trigger="intent_runtime_hydrate",
+                    reason="bootstrap_pending_signals",
+                    signal_snapshots=snapshots,
+                )
             await self._enqueue_projection(
                 {
                     "kind": "upsert",

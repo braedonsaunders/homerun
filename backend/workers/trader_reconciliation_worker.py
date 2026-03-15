@@ -21,6 +21,7 @@ from services.trader_orchestrator_state import (
     create_trader_event,
     get_open_order_count_for_trader,
     list_traders,
+    recover_missing_live_trader_orders,
     reconcile_live_provider_orders,
     sync_trader_position_inventory,
 )
@@ -208,6 +209,19 @@ async def _run_reconciliation_cycle(
     provider_pass: bool,
 ) -> dict[str, Any]:
     summary = _empty_cycle_summary()
+    async with AsyncSessionLocal() as session:
+        try:
+            await recover_missing_live_trader_orders(
+                session,
+                trader_ids=None,
+                commit=True,
+                broadcast=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Live order authority recovery failed during reconciliation cycle",
+                exc_info=exc,
+            )
     async with AsyncSessionLocal() as session:
         traders = await list_traders(session)
 

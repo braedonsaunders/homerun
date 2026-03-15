@@ -2468,7 +2468,7 @@ export const adoptTraderLiveWalletPosition = async (
 
 export const getAllTraderOrders = async (limit = 2000): Promise<TraderOrder[]> => {
   const { data } = await api.get('/traders/orders/all', {
-    params: { limit: Math.max(1, Math.trunc(Number(limit) || 2000)), reconcile_live: false },
+    params: { limit: Math.max(1, Math.trunc(Number(limit) || 2000)) },
   })
   return data.orders || []
 }

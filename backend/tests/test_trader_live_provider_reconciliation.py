@@ -4,18 +4,20 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from models.database import Base, Trader, TraderOrder
+from models.database import Base, LiveTradingOrder, Trader, TraderOrder
 from services import trader_orchestrator_state
 from workers import trader_reconciliation_worker
 from services.trader_orchestrator_state import (
     cleanup_trader_open_orders,
     get_open_order_count_for_trader,
     get_open_position_count_for_trader,
+    recover_missing_live_trader_orders,
     reconcile_live_provider_orders,
     sync_trader_position_inventory,
 )
@@ -36,6 +38,7 @@ async def _seed_trader(session, trader_id: str) -> None:
             source_configs_json=[{"source_key": "crypto", "strategy_key": "btc_eth_highfreq", "strategy_params": {}}],
             risk_limits_json={},
             metadata_json={},
+            mode="live",
             is_enabled=True,
             is_paused=False,
             interval_seconds=60,
@@ -280,6 +283,233 @@ async def test_reconcile_live_provider_orders_updates_fill_state(tmp_path, monke
             await sync_trader_position_inventory(session, trader_id=trader_id, mode="live")
             open_positions = await get_open_position_count_for_trader(session, trader_id, mode="live")
             assert open_positions == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recover_missing_live_trader_orders_adopts_existing_provider_authority(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    trader_id = "live-trader-adopt-authority"
+    try:
+        async with session_factory() as session:
+            await _seed_trader(session, trader_id)
+            now = utcnow()
+            session.add(
+                TraderOrder(
+                    id="live-order-existing",
+                    trader_id=trader_id,
+                    source="crypto",
+                    strategy_key="tail_end_carry",
+                    market_id="market-mavs-cavs",
+                    market_question="Mavericks vs. Cavaliers",
+                    direction="buy_no",
+                    mode="live",
+                    status="resolved_win",
+                    notional_usd=4.47,
+                    entry_price=0.895,
+                    effective_price=0.895,
+                    reason="Tail carry signal selected",
+                    payload_json={
+                        "provider_clob_order_id": "clob-mavs-cavs",
+                        "position_close": {
+                            "close_trigger": "resolution_inferred",
+                            "closed_at": now.isoformat(),
+                            "close_price": 1.0,
+                        },
+                    },
+                    created_at=now,
+                    executed_at=now,
+                    updated_at=now,
+                    actual_profit=0.53,
+                )
+            )
+            session.add(
+                LiveTradingOrder(
+                    id="venue-order-mavs-cavs",
+                    wallet_address="0xwallet",
+                    clob_order_id="clob-mavs-cavs",
+                    token_id="token-mavs-cavs",
+                    side="BUY",
+                    price=0.895,
+                    size=5.0,
+                    order_type="IOC",
+                    status="filled",
+                    filled_size=5.0,
+                    average_fill_price=0.895,
+                    market_question="Mavericks vs. Cavaliers",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            result = await recover_missing_live_trader_orders(
+                session,
+                trader_ids=[trader_id],
+                commit=True,
+                broadcast=False,
+            )
+
+            assert result["recovered_orders"] == 0
+            assert result["adopted_existing_orders"] == 1
+
+            rows = (
+                await session.execute(
+                    select(TraderOrder)
+                    .where(TraderOrder.trader_id == trader_id)
+                    .order_by(TraderOrder.created_at.asc(), TraderOrder.id.asc())
+                )
+            ).scalars().all()
+            assert len(rows) == 1
+            payload = dict(rows[0].payload_json or {})
+            assert payload["provider_clob_order_id"] == "clob-mavs-cavs"
+            assert payload["live_wallet_authority"]["live_trading_order_id"] == "venue-order-mavs-cavs"
+            assert rows[0].reason == "Tail carry signal selected"
+            assert rows[0].status == "resolved_win"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recover_missing_live_trader_orders_collapses_duplicate_authority_rows(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    trader_id = "live-trader-collapse-authority"
+    try:
+        async with session_factory() as session:
+            await _seed_trader(session, trader_id)
+            now = utcnow()
+            session.add_all(
+                [
+                    TraderOrder(
+                        id="live-order-canonical",
+                        trader_id=trader_id,
+                        source="crypto",
+                        strategy_key="tail_end_carry",
+                        market_id="market-mavs-cavs",
+                        market_question="Mavericks vs. Cavaliers",
+                        direction="buy_no",
+                        mode="live",
+                        status="resolved_win",
+                        notional_usd=4.47,
+                        entry_price=0.895,
+                        effective_price=0.895,
+                        reason="Tail carry signal selected",
+                        payload_json={
+                            "provider_clob_order_id": "clob-mavs-cavs",
+                            "position_close": {
+                                "close_trigger": "resolution_inferred",
+                                "closed_at": now.isoformat(),
+                                "close_price": 1.0,
+                            },
+                        },
+                        created_at=now,
+                        executed_at=now,
+                        updated_at=now,
+                        actual_profit=0.53,
+                    ),
+                    TraderOrder(
+                        id="live-order-duplicate-a",
+                        trader_id=trader_id,
+                        source="crypto",
+                        strategy_key="tail_end_carry",
+                        market_id="market-mavs-cavs",
+                        market_question="Mavericks vs. Cavaliers",
+                        direction="buy_no",
+                        mode="live",
+                        status="resolved_win",
+                        notional_usd=4.47,
+                        entry_price=0.895,
+                        effective_price=0.895,
+                        reason="Recovered from live venue authority",
+                        payload_json={
+                            "provider_clob_order_id": "clob-mavs-cavs",
+                            "live_wallet_authority": {
+                                "live_trading_order_id": "venue-order-mavs-cavs",
+                            },
+                            "position_close": {
+                                "close_trigger": "resolution_inferred",
+                                "closed_at": now.isoformat(),
+                                "close_price": 1.0,
+                            },
+                        },
+                        created_at=now,
+                        executed_at=now,
+                        updated_at=now,
+                        actual_profit=0.53,
+                    ),
+                    TraderOrder(
+                        id="live-order-duplicate-b",
+                        trader_id=trader_id,
+                        source="crypto",
+                        strategy_key="tail_end_carry",
+                        market_id="market-mavs-cavs",
+                        market_question="Mavericks vs. Cavaliers",
+                        direction="buy_no",
+                        mode="live",
+                        status="resolved_win",
+                        notional_usd=4.47,
+                        entry_price=0.895,
+                        effective_price=0.895,
+                        reason="Recovered from live venue authority",
+                        payload_json={
+                            "provider_clob_order_id": "clob-mavs-cavs",
+                            "live_wallet_authority": {
+                                "live_trading_order_id": "venue-order-mavs-cavs",
+                            },
+                            "position_close": {
+                                "close_trigger": "resolution_inferred",
+                                "closed_at": now.isoformat(),
+                                "close_price": 1.0,
+                            },
+                        },
+                        created_at=now,
+                        executed_at=now,
+                        updated_at=now,
+                        actual_profit=0.53,
+                    ),
+                    LiveTradingOrder(
+                        id="venue-order-mavs-cavs",
+                        wallet_address="0xwallet",
+                        clob_order_id="clob-mavs-cavs",
+                        token_id="token-mavs-cavs",
+                        side="BUY",
+                        price=0.895,
+                        size=5.0,
+                        order_type="IOC",
+                        status="filled",
+                        filled_size=5.0,
+                        average_fill_price=0.895,
+                        market_question="Mavericks vs. Cavaliers",
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            result = await recover_missing_live_trader_orders(
+                session,
+                trader_ids=[trader_id],
+                commit=True,
+                broadcast=False,
+            )
+
+            assert result["recovered_orders"] == 0
+            assert result["collapsed_duplicates"] == 2
+
+            rows = (
+                await session.execute(
+                    select(TraderOrder)
+                    .where(TraderOrder.trader_id == trader_id)
+                    .order_by(TraderOrder.id.asc())
+                )
+            ).scalars().all()
+            assert [row.id for row in rows] == ["live-order-canonical"]
+            canonical = rows[0]
+            assert canonical.status == "resolved_win"
+            canonical_payload = dict(canonical.payload_json or {})
+            assert canonical_payload["live_wallet_authority"]["live_trading_order_id"] == "venue-order-mavs-cavs"
     finally:
         await engine.dispose()
 

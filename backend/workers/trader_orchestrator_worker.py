@@ -25,6 +25,7 @@ from models.database import (
     TraderEvent,
     TraderOrder,
     TraderOrchestratorSnapshot,
+    TraderSignalCursor,
     TrackedWallet,
     Trader,
     TraderGroupMember,
@@ -82,21 +83,29 @@ from services.trader_orchestrator_state import (
     ORCHESTRATOR_SNAPSHOT_ID,
     ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS,
     cleanup_trader_open_orders,
+    create_trader_decision as _create_trader_decision,
+    create_trader_decision_checks as _create_trader_decision_checks,
     create_trader_event as _create_trader_event,
     create_trader_order as _create_trader_order,
     get_pending_live_exit_summary_for_trader,
     list_live_wallet_positions_for_trader,
     list_traders,
+    record_signal_consumption as _record_signal_consumption,
     reconcile_live_provider_orders,
     read_orchestrator_control,
     read_orchestrator_snapshot,
     set_trader_paused,
     sync_trader_position_inventory,
+    upsert_trader_signal_cursor as _persist_trader_signal_cursor,
     update_orchestrator_control,
-    update_trader_decision,
+    update_trader_decision as _persist_trader_decision_update,
     write_orchestrator_snapshot,
 )
-from services.signal_bus import expire_stale_signals
+from services.signal_bus import (
+    expire_stale_signals,
+    set_trade_signal_status as _persist_trade_signal_status,
+    upsert_trade_signal as _upsert_trade_signal,
+)
 import services.trader_hot_state as hot_state
 from services.ws_feeds import get_feed_manager
 from utils.utcnow import utcnow
@@ -112,6 +121,7 @@ _STRATEGY_EVALUATION_TIMEOUT_SECONDS = 15.0
 _STRATEGY_EVAL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="strategy-eval")
 _abandoned_trader_cycle_tasks: set[asyncio.Task] = set()
 _inflight_trader_cycle_tasks: dict[str, asyncio.Task] = {}
+_pending_runtime_cycle_specs: dict[str, dict[str, Any]] = {}
 
 
 def _discard_abandoned_trader_cycle(task: asyncio.Task) -> None:
@@ -123,52 +133,257 @@ def _clear_inflight_trader_cycle_task(trader_id: str, task: asyncio.Task) -> Non
         _inflight_trader_cycle_tasks.pop(trader_id, None)
 
 
-# ── Hot-path shims ────────────────────────────────────────────────
-# These replace the DB-backed originals with write-behind buffer calls.
-# Signature matches the call sites so we don't rewrite 50+ callers.
+def _merge_trigger_signal_ids_by_source(
+    current: dict[str, list[str]] | None,
+    incoming: dict[str, list[str]] | None,
+) -> dict[str, list[str]] | None:
+    merged: dict[str, list[str]] = {}
+    seen_ids: dict[str, set[str]] = {}
+    for payload in (current, incoming):
+        if not isinstance(payload, dict):
+            continue
+        for raw_source, raw_signal_ids in payload.items():
+            source_key = str(raw_source or "").strip().lower()
+            if not source_key:
+                continue
+            merged.setdefault(source_key, [])
+            seen_ids.setdefault(source_key, set())
+            if not isinstance(raw_signal_ids, list):
+                continue
+            for raw_signal_id in raw_signal_ids:
+                signal_id = str(raw_signal_id or "").strip()
+                if not signal_id or signal_id in seen_ids[source_key]:
+                    continue
+                seen_ids[source_key].add(signal_id)
+                merged[source_key].append(signal_id)
+    return merged or None
 
-class _DecisionStub:
-    def __init__(self, row_id: str):
-        self.id = row_id
+
+def _merge_trigger_signal_snapshots_by_source(
+    current: dict[str, dict[str, dict[str, Any]]] | None,
+    incoming: dict[str, dict[str, dict[str, Any]]] | None,
+) -> dict[str, dict[str, dict[str, Any]]] | None:
+    merged: dict[str, dict[str, dict[str, Any]]] = {}
+    for payload in (current, incoming):
+        if not isinstance(payload, dict):
+            continue
+        for raw_source, raw_snapshots in payload.items():
+            source_key = str(raw_source or "").strip().lower()
+            if not source_key or not isinstance(raw_snapshots, dict):
+                continue
+            merged.setdefault(source_key, {})
+            for raw_signal_id, snapshot in raw_snapshots.items():
+                signal_id = str(raw_signal_id or "").strip()
+                if not signal_id or not isinstance(snapshot, dict):
+                    continue
+                merged[source_key][signal_id] = copy.deepcopy(snapshot)
+    return merged or None
+
+
+def _runtime_hot_path_owns_signal_execution(
+    *,
+    lane_key: str,
+    process_runtime_triggers: bool,
+    trader: dict[str, Any],
+) -> bool:
+    return (
+        lane_key == _LANE_GENERAL
+        and not process_runtime_triggers
+        and not _is_crypto_source_trader(trader)
+    )
+
+
+def _queue_pending_runtime_cycle(
+    *,
+    trader: dict[str, Any],
+    control: dict[str, Any],
+    process_signals: bool,
+    trigger_signal_ids_by_source: dict[str, list[str]] | None,
+    trigger_signal_snapshots_by_source: dict[str, dict[str, dict[str, Any]]] | None,
+    timeout_seconds: float,
+) -> None:
+    trader_id = str(trader.get("id") or "").strip()
+    if not trader_id:
+        return
+    existing = _pending_runtime_cycle_specs.get(trader_id)
+    if existing is None:
+        _pending_runtime_cycle_specs[trader_id] = {
+            "trader": copy.deepcopy(trader),
+            "control": copy.deepcopy(control),
+            "process_signals": bool(process_signals),
+            "trigger_signal_ids_by_source": _merge_trigger_signal_ids_by_source(
+                None,
+                trigger_signal_ids_by_source,
+            ),
+            "trigger_signal_snapshots_by_source": _merge_trigger_signal_snapshots_by_source(
+                None,
+                trigger_signal_snapshots_by_source,
+            ),
+            "timeout_seconds": float(max(1.0, timeout_seconds)),
+        }
+        return
+    existing["trader"] = copy.deepcopy(trader)
+    existing["control"] = copy.deepcopy(control)
+    existing["process_signals"] = bool(existing.get("process_signals") or process_signals)
+    existing["trigger_signal_ids_by_source"] = _merge_trigger_signal_ids_by_source(
+        existing.get("trigger_signal_ids_by_source"),
+        trigger_signal_ids_by_source,
+    )
+    existing["trigger_signal_snapshots_by_source"] = _merge_trigger_signal_snapshots_by_source(
+        existing.get("trigger_signal_snapshots_by_source"),
+        trigger_signal_snapshots_by_source,
+    )
+    existing["timeout_seconds"] = float(
+        max(
+            safe_float(existing.get("timeout_seconds"), 1.0),
+            max(1.0, float(timeout_seconds)),
+        )
+    )
+
+
+async def _launch_pending_runtime_cycle_if_any(trader_id: str) -> None:
+    pending = _pending_runtime_cycle_specs.pop(str(trader_id or "").strip(), None)
+    if not isinstance(pending, dict):
+        return
+    await _run_trader_once_with_timeout(
+        pending["trader"],
+        pending["control"],
+        process_signals=bool(pending.get("process_signals")),
+        trigger_signal_ids_by_source=pending.get("trigger_signal_ids_by_source"),
+        trigger_signal_snapshots_by_source=pending.get("trigger_signal_snapshots_by_source"),
+        timeout_seconds=float(max(1.0, safe_float(pending.get("timeout_seconds"), 1.0))),
+    )
+
+
+def _handle_trader_cycle_task_done(trader_id: str, task: asyncio.Task) -> None:
+    _clear_inflight_trader_cycle_task(trader_id, task)
+    if not trader_id or trader_id not in _pending_runtime_cycle_specs:
+        return
+    try:
+        task.get_loop().create_task(
+            _launch_pending_runtime_cycle_if_any(trader_id),
+            name=f"trader-runtime-pending-{trader_id}",
+        )
+    except Exception:
+        return
+
+
+async def _pause_until_next_cycle(
+    *,
+    process_runtime_triggers: bool,
+    sleep_seconds: float,
+    stream_consumer_name: str,
+    stream_group: str,
+    stream_claim_cursor: str,
+    stream_last_claim_run_at: datetime | None,
+) -> tuple[dict[str, Any] | None, str, datetime | None]:
+    if not process_runtime_triggers:
+        await _worker_sleep(max(0.05, float(sleep_seconds)))
+        return None, stream_claim_cursor, stream_last_claim_run_at
+    return await _wait_for_runtime_trigger(
+        None,
+        sleep_seconds,
+        consumer=stream_consumer_name,
+        group=stream_group,
+        claim_cursor=stream_claim_cursor,
+        last_claim_run_at=stream_last_claim_run_at,
+    )
+
+
+# ── Hot-path shims ────────────────────────────────────────────────
+# These keep the call sites stable while restoring synchronous DB-backed
+# writes for authoritative execution and audit state.
 
 
 async def record_signal_consumption(session, *, trader_id, signal_id, outcome, reason=None, decision_id=None, payload=None, commit=True):
-    await hot_state.buffer_signal_consumption(
-        trader_id=trader_id, signal_id=signal_id, outcome=outcome,
-        reason=reason, decision_id=decision_id, payload=payload,
+    await _record_signal_consumption(
+        session,
+        trader_id=trader_id,
+        signal_id=signal_id,
+        outcome=outcome,
+        reason=reason,
+        decision_id=decision_id,
+        payload=payload,
+        commit=commit,
     )
 
 
 async def upsert_trader_signal_cursor(session, *, trader_id, last_signal_created_at, last_signal_id, commit=True):
     last_runtime_sequence = get_intent_runtime().get_runtime_sequence(str(last_signal_id or ""))
     hot_state.update_signal_cursor(trader_id, "live", last_signal_created_at, last_signal_id, last_runtime_sequence)
-    await hot_state.buffer_signal_cursor(
-        trader_id=trader_id, last_signal_created_at=last_signal_created_at,
+    await _persist_trader_signal_cursor(
+        session,
+        trader_id=trader_id,
+        last_signal_created_at=last_signal_created_at,
         last_signal_id=last_signal_id,
-        last_runtime_sequence=last_runtime_sequence,
+        commit=False,
     )
+    row = await session.get(TraderSignalCursor, trader_id)
+    if row is not None:
+        row.last_runtime_sequence = last_runtime_sequence
+    if commit:
+        await _commit_with_retry(session)
+    else:
+        await session.flush()
 
 
 async def create_trader_decision(session, *, trader_id, signal, strategy_key, strategy_version=None,
                                   decision, reason=None, score=None, checks_summary=None,
                                   risk_snapshot=None, payload=None, trace_id=None, commit=True):
-    row_id = await hot_state.buffer_decision(
-        trader_id=trader_id, signal_id=str(signal.id),
-        signal_source=str(getattr(signal, "source", "")),
-        strategy_key=strategy_key, strategy_version=strategy_version,
-        decision=decision, reason=reason, score=score, trace_id=trace_id,
-        checks_summary=checks_summary, risk_snapshot=risk_snapshot, payload=payload,
-        publish=False,
+    return await _create_trader_decision(
+        session,
+        trader_id=trader_id,
+        signal=signal,
+        strategy_key=strategy_key,
+        strategy_version=strategy_version,
+        decision=decision,
+        reason=reason,
+        score=score,
+        checks_summary=checks_summary,
+        risk_snapshot=risk_snapshot,
+        payload=payload,
+        trace_id=trace_id,
+        commit=commit,
     )
-    return _DecisionStub(row_id)
 
 
 async def create_trader_decision_checks(session, *, decision_id, checks, commit=True):
-    await hot_state.buffer_decision_checks(decision_id=decision_id, checks=checks)
+    await _create_trader_decision_checks(
+        session,
+        decision_id=decision_id,
+        checks=checks,
+        commit=commit,
+    )
+
+
+async def update_trader_decision(
+    session,
+    *,
+    decision_id,
+    decision=None,
+    reason=None,
+    payload_patch=None,
+    checks_summary_patch=None,
+    commit=True,
+):
+    return await _persist_trader_decision_update(
+        session,
+        decision_id=str(decision_id or ""),
+        decision=decision,
+        reason=reason,
+        payload_patch=payload_patch,
+        checks_summary_patch=checks_summary_patch,
+        commit=commit,
+    )
 
 
 async def set_trade_signal_status(session, *, signal_id, status, commit=True):
-    await hot_state.buffer_signal_status(signal_id=signal_id, status=status)
+    await _persist_trade_signal_status(
+        session,
+        str(signal_id or ""),
+        str(status or ""),
+        commit=commit,
+    )
     await get_intent_runtime().update_signal_status(signal_id=str(signal_id or ""), status=str(status or ""))
 
 
@@ -185,9 +400,8 @@ async def create_trader_event(
     payload=None,
     commit=True,
 ):
-    del session
-    del commit
-    return await hot_state.buffer_trader_event(
+    return await _create_trader_event(
+        session,
         event_type=str(event_type or ""),
         severity=str(severity or "info"),
         trader_id=str(trader_id or "") or None,
@@ -196,6 +410,7 @@ async def create_trader_event(
         message=message,
         trace_id=str(trace_id or "") or None,
         payload=dict(payload or {}),
+        commit=commit,
     )
 
 
@@ -214,9 +429,8 @@ async def upsert_strategy_experiment_assignment(
     payload=None,
     commit=True,
 ):
-    del session
-    del commit
-    await hot_state.buffer_experiment_assignment(
+    await _upsert_strategy_experiment_assignment(
+        session,
         experiment_id=str(experiment_id or ""),
         trader_id=str(trader_id or "") or None,
         signal_id=str(signal_id or "") or None,
@@ -227,6 +441,7 @@ async def upsert_strategy_experiment_assignment(
         decision_id=str(decision_id or "") or None,
         order_id=str(order_id or "") or None,
         payload=dict(payload or {}),
+        commit=commit,
     )
 
 
@@ -262,6 +477,40 @@ async def list_unconsumed_trade_signals(
         cursor_signal_id=cursor_signal_id,
         limit=int(limit),
     )
+
+
+async def _ensure_runtime_signal_persisted(session, signal: Any) -> None:
+    signal_id = str(getattr(signal, "id", "") or "").strip()
+    if not signal_id:
+        return
+    row = await _upsert_trade_signal(
+        session,
+        source=str(getattr(signal, "source", "") or "").strip(),
+        source_item_id=str(getattr(signal, "source_item_id", "") or "").strip() or None,
+        signal_type=str(getattr(signal, "signal_type", "") or "").strip(),
+        strategy_type=str(getattr(signal, "strategy_type", "") or "").strip() or None,
+        market_id=str(getattr(signal, "market_id", "") or "").strip(),
+        market_question=str(getattr(signal, "market_question", "") or "").strip() or None,
+        direction=str(getattr(signal, "direction", "") or "").strip() or None,
+        entry_price=safe_float(getattr(signal, "entry_price", None), None),
+        edge_percent=safe_float(getattr(signal, "edge_percent", None), None),
+        confidence=safe_float(getattr(signal, "confidence", None), None),
+        liquidity=safe_float(getattr(signal, "liquidity", None), None),
+        expires_at=getattr(signal, "expires_at", None),
+        payload_json=dict(getattr(signal, "payload_json", None) or {}),
+        strategy_context_json=dict(getattr(signal, "strategy_context_json", None) or {}),
+        quality_passed=getattr(signal, "quality_passed", None),
+        quality_rejection_reasons=None,
+        dedupe_key=str(getattr(signal, "dedupe_key", "") or "").strip(),
+        signal_id=signal_id,
+        runtime_sequence=getattr(signal, "runtime_sequence", None),
+        commit=False,
+    )
+    desired_status = str(getattr(signal, "status", "") or "").strip().lower()
+    if desired_status and str(getattr(row, "status", "") or "").strip().lower() != desired_status:
+        row.status = desired_status
+        row.updated_at = utcnow()
+    await session.flush()
 
 
 async def get_open_position_count_for_trader(session, trader_id, mode=None, position_cap_scope=None):
@@ -907,6 +1156,46 @@ async def submit_order(
     )
 
 
+def _execution_outcome_decision_check(
+    *,
+    status: str,
+    reason: str | None,
+    execution_session_id: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"skipped", "failed", "cancelled", "expired"}:
+        return None
+
+    detail = str(reason or error_message or "").strip()
+    normalized_detail = detail.lower()
+    check_key = "execution_submission"
+    check_label = "Execution submission"
+    if "buy pre-submit gate failed" in normalized_detail:
+        check_key = "buy_pre_submit_gate"
+        check_label = "Buy collateral balance/allowance"
+
+    if not detail:
+        detail = (
+            "Execution skipped before order submission."
+            if normalized_status == "skipped"
+            else "Execution failed during order submission."
+        )
+
+    return {
+        "check_key": check_key,
+        "check_label": check_label,
+        "passed": False,
+        "score": None,
+        "detail": detail,
+        "payload": {
+            "execution_status": normalized_status,
+            "execution_session_id": str(execution_session_id or "") or None,
+            "error": str(error_message or "") or None,
+        },
+    }
+
+
 def _enforce_strict_ws_strategy_params(
     strategy_params: dict[str, Any],
     *,
@@ -915,10 +1204,14 @@ def _enforce_strict_ws_strategy_params(
 ) -> dict[str, Any]:
     strategy_params["require_strict_ws_pricing"] = True
     strategy_params.setdefault("strict_ws_price_sources", list(strict_ws_price_sources))
-    strategy_params["max_market_data_age_ms"] = max(
-        int(strict_age_budget_ms),
-        safe_int(strategy_params.get("max_market_data_age_ms"), int(strict_age_budget_ms)),
-    )
+    existing_age_budget_ms = safe_int(strategy_params.get("max_market_data_age_ms"), None)
+    if existing_age_budget_ms is None:
+        strategy_params["max_market_data_age_ms"] = int(strict_age_budget_ms)
+    else:
+        strategy_params["max_market_data_age_ms"] = min(
+            int(strict_age_budget_ms),
+            int(existing_age_budget_ms),
+        )
     return strategy_params
 
 
@@ -4514,6 +4807,7 @@ async def _run_trader_once(
                 assignment_source = "pinned_config"
 
                 try:
+                    await _ensure_runtime_signal_persisted(session, signal)
                     if source_config is None:
                         await record_signal_consumption(
                             session,
@@ -4560,6 +4854,32 @@ async def _run_trader_once(
                             strict_age_budget_ms=strict_age_budget_ms,
                             strict_ws_price_sources=list(strict_ws_price_sources),
                         )
+                        signal_payload = getattr(signal, "payload_json", None)
+                        signal_payload = signal_payload if isinstance(signal_payload, dict) else {}
+                        signal_emitted_at = _parse_iso(
+                            str(signal_payload.get("signal_emitted_at") or signal_payload.get("ingested_at") or "")
+                        )
+                        strict_release_age_budget_ms = max(
+                            50,
+                            safe_int(strategy_params.get("max_market_data_age_ms"), int(strict_age_budget_ms)),
+                        )
+                        if signal_emitted_at is not None:
+                            signal_release_age_ms = max(
+                                0,
+                                int((signal_wake_started_at - signal_emitted_at).total_seconds() * 1000),
+                            )
+                            if signal_release_age_ms > strict_release_age_budget_ms:
+                                await get_intent_runtime().defer_signal(
+                                    signal_id=signal_id,
+                                    required_token_ids=list(getattr(signal, "required_token_ids", None) or []),
+                                    reason="strict_ws_pricing_signal_release_stale",
+                                )
+                                deferred_signals += 1
+                                deferred_by_reason["strict_ws_pricing_signal_release_stale"] = (
+                                    deferred_by_reason.get("strict_ws_pricing_signal_release_stale", 0) + 1
+                                )
+                                defer_signal_processing = True
+                                continue
                     requested_strategy_version = prefetched_source_runtime.get("requested_strategy_version")
                     requested_strategy_version_error = (
                         str(prefetched_source_runtime.get("requested_strategy_version_error") or "").strip() or None
@@ -5374,6 +5694,7 @@ async def _run_trader_once(
                         live_context=live_context,
                         measured_at=decision_ready_at,
                     )
+                    decision_check_count = len(checks_payload)
 
                     decision_row = await create_trader_decision(
                         session,
@@ -5384,7 +5705,7 @@ async def _run_trader_once(
                         decision=final_decision,
                         reason=final_reason,
                         score=score,
-                        checks_summary={"count": len(checks_payload)},
+                        checks_summary={"count": decision_check_count},
                         risk_snapshot=risk_snapshot,
                         payload={
                             "source_key": signal_source,
@@ -5548,21 +5869,21 @@ async def _run_trader_once(
 
                     order_status = None
                     if final_decision == "selected":
+                        await _commit_with_retry(session)
                         submit_started_at = utcnow()
-                        async with release_conn(session):
-                            submit_result = await submit_order(
-                                session_engine=session_engine,
-                                trader_id=trader_id,
-                                signal=runtime_signal,
-                                decision_id=decision_row.id,
-                                strategy_key=resolved_strategy_key,
-                                strategy_version=resolved_strategy_version,
-                                strategy_params=strategy_params,
-                                risk_limits=effective_risk_limits,
-                                mode=str(control.get("mode", "shadow")),
-                                size_usd=size_usd,
-                                reason=final_reason,
-                            )
+                        submit_result = await submit_order(
+                            session_engine=session_engine,
+                            trader_id=trader_id,
+                            signal=runtime_signal,
+                            decision_id=decision_row.id,
+                            strategy_key=resolved_strategy_key,
+                            strategy_version=resolved_strategy_version,
+                            strategy_params=strategy_params,
+                            risk_limits=effective_risk_limits,
+                            mode=str(control.get("mode", "shadow")),
+                            size_usd=size_usd,
+                            reason=final_reason,
+                        )
                         submit_completed_at = utcnow()
                         submit_latency_payload = _compute_signal_latency_payload(
                             runtime_signal,
@@ -5633,6 +5954,18 @@ async def _run_trader_once(
                                 skip_reason = str(submit_result[2] or "").strip() if len(submit_result) > 2 else ""
                                 if skip_reason:
                                     final_reason = skip_reason
+                                execution_check = _execution_outcome_decision_check(
+                                    status=normalized_order_status,
+                                    reason=final_reason,
+                                    error_message=execution_error_message,
+                                )
+                                if execution_check is not None:
+                                    await create_trader_decision_checks(
+                                        session,
+                                        decision_id=decision_row.id,
+                                        checks=[execution_check],
+                                        commit=False,
+                                    )
                                 await update_trader_decision(
                                     session,
                                     decision_id=decision_row.id,
@@ -5642,12 +5975,25 @@ async def _run_trader_once(
                                         "execution_status": normalized_order_status,
                                         "execution_skip_reason": final_reason,
                                     },
+                                    checks_summary_patch={"count": decision_check_count + 1},
                                     commit=False,
                                 )
                             elif normalized_order_status in {"failed", "cancelled", "expired"}:
                                 final_decision = "failed"
                                 if execution_error_message:
                                     final_reason = execution_error_message
+                                execution_check = _execution_outcome_decision_check(
+                                    status=normalized_order_status,
+                                    reason=final_reason,
+                                    error_message=execution_error_message,
+                                )
+                                if execution_check is not None:
+                                    await create_trader_decision_checks(
+                                        session,
+                                        decision_id=decision_row.id,
+                                        checks=[execution_check],
+                                        commit=False,
+                                    )
                                 await update_trader_decision(
                                     session,
                                     decision_id=decision_row.id,
@@ -5657,6 +6003,7 @@ async def _run_trader_once(
                                         "execution_status": normalized_order_status,
                                         "execution_error": execution_error_message,
                                     },
+                                    checks_summary_patch={"count": decision_check_count + 1},
                                     commit=False,
                                 )
                             if normalized_order_status in {
@@ -5704,6 +6051,19 @@ async def _run_trader_once(
                                 final_decision = "skipped"
                                 if skip_reason:
                                     final_reason = skip_reason
+                                execution_check = _execution_outcome_decision_check(
+                                    status=normalized_order_status,
+                                    reason=final_reason,
+                                    execution_session_id=execution_session_id,
+                                    error_message=execution_error_message,
+                                )
+                                if execution_check is not None:
+                                    await create_trader_decision_checks(
+                                        session,
+                                        decision_id=decision_row.id,
+                                        checks=[execution_check],
+                                        commit=False,
+                                    )
                                 await update_trader_decision(
                                     session,
                                     decision_id=decision_row.id,
@@ -5714,12 +6074,26 @@ async def _run_trader_once(
                                         "execution_skip_reason": final_reason,
                                         "execution_session_id": str(submit_result.session_id or ""),
                                     },
+                                    checks_summary_patch={"count": decision_check_count + 1},
                                     commit=False,
                                 )
                             elif normalized_order_status in {"failed", "cancelled", "expired"}:
                                 final_decision = "failed"
                                 if execution_error_message:
                                     final_reason = execution_error_message
+                                execution_check = _execution_outcome_decision_check(
+                                    status=normalized_order_status,
+                                    reason=final_reason,
+                                    execution_session_id=execution_session_id,
+                                    error_message=execution_error_message,
+                                )
+                                if execution_check is not None:
+                                    await create_trader_decision_checks(
+                                        session,
+                                        decision_id=decision_row.id,
+                                        checks=[execution_check],
+                                        commit=False,
+                                    )
                                 await update_trader_decision(
                                     session,
                                     decision_id=decision_row.id,
@@ -5730,6 +6104,7 @@ async def _run_trader_once(
                                         "execution_error": execution_error_message,
                                         "execution_session_id": str(submit_result.session_id or ""),
                                     },
+                                    checks_summary_patch={"count": decision_check_count + 1},
                                     commit=False,
                                 )
 
@@ -6145,11 +6520,26 @@ async def _run_trader_once_with_timeout(
     trader_id = str(trader.get("id") or "")
     existing = _inflight_trader_cycle_tasks.get(trader_id) if trader_id else None
     if existing is not None and not existing.done():
-        logger.warning(
-            "Trader cycle skipped because prior run is still finishing for trader=%s process_signals=%s",
-            trader_id,
-            process_signals,
-        )
+        has_runtime_trigger = bool(trigger_signal_ids_by_source) or bool(trigger_signal_snapshots_by_source)
+        if process_signals and has_runtime_trigger:
+            _queue_pending_runtime_cycle(
+                trader=trader,
+                control=control,
+                process_signals=process_signals,
+                trigger_signal_ids_by_source=trigger_signal_ids_by_source,
+                trigger_signal_snapshots_by_source=trigger_signal_snapshots_by_source,
+                timeout_seconds=timeout,
+            )
+            logger.warning(
+                "Queued pending runtime trigger because prior trader run is still finishing for trader=%s",
+                trader_id,
+            )
+        else:
+            logger.warning(
+                "Trader cycle skipped because prior run is still finishing for trader=%s process_signals=%s",
+                trader_id,
+                process_signals,
+            )
         return 0, 0, 0
 
     task = asyncio.create_task(
@@ -6165,7 +6555,7 @@ async def _run_trader_once_with_timeout(
     if trader_id:
         _inflight_trader_cycle_tasks[trader_id] = task
         task.add_done_callback(
-            lambda done_task, current_trader_id=trader_id: _clear_inflight_trader_cycle_task(
+            lambda done_task, current_trader_id=trader_id: _handle_trader_cycle_task_done(
                 current_trader_id,
                 done_task,
             )
@@ -6258,9 +6648,143 @@ async def _run_trader_once_with_timeout(
         return 0, 0, 0
 
 
-async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = True) -> None:
+async def _build_runtime_trigger_specs(
+    *,
+    lane_key: str,
+    cycle_trigger: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], float]:
+    control: dict[str, Any] | None = None
+    traders: list[dict[str, Any]] = []
+    mode = "shadow"
+    async with AsyncSessionLocal() as session:
+        control = await read_orchestrator_control(session)
+        if (
+            not bool(control.get("is_enabled", False))
+            or bool(control.get("is_paused", True))
+            or bool(control.get("kill_switch", False))
+        ):
+            return control, [], 3.0
+        mode = _canonical_trader_mode(control.get("mode"), default="shadow")
+        if mode == "live":
+            app_settings = await session.get(AppSettings, "default")
+            if not _is_live_credentials_configured(app_settings):
+                return control, [], 3.0
+        traders = [
+            trader
+            for trader in await list_traders(
+                session,
+                mode=mode if mode in {"shadow", "live"} else None,
+            )
+            if _trader_matches_lane(trader, lane_key)
+        ]
+    if mode == "live" and not await live_execution_service.ensure_initialized():
+        return control, [], 3.0
+    default_trader_cycle_timeout = float(max(12, ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS * 3))
+    control_settings = dict((control or {}).get("settings") or {})
+    global_runtime_settings = dict(control_settings.get("global_runtime") or {})
+    configured_trader_cycle_timeout = safe_float(
+        global_runtime_settings.get("trader_cycle_timeout_seconds"),
+        0.0,
+    )
+    effective_trader_cycle_timeout = (
+        configured_trader_cycle_timeout
+        if configured_trader_cycle_timeout > 0
+        else default_trader_cycle_timeout
+    )
+    trader_cycle_timeout_seconds = float(
+        max(
+            3.0,
+            min(
+                180.0,
+                effective_trader_cycle_timeout,
+            ),
+        )
+    )
+    specs: list[dict[str, Any]] = []
+    for trader in traders:
+        if not bool(trader.get("is_enabled", True)) or bool(trader.get("is_paused", False)):
+            continue
+        trader_mode = _canonical_trader_mode(trader.get("mode"), default="shadow")
+        if trader_mode != mode:
+            continue
+        if not _runtime_trigger_matches_trader(trader, cycle_trigger):
+            continue
+        trigger_signal_ids_by_source = _trigger_signal_ids_for_trader(trader, cycle_trigger)
+        if (
+            isinstance(cycle_trigger, dict)
+            and str(cycle_trigger.get("event_type") or "").strip().lower() == "runtime_signal_batch"
+            and trigger_signal_ids_by_source is None
+        ):
+            continue
+        specs.append(
+            {
+                "trader": trader,
+                "process_signals": True,
+                "trigger_signal_ids_by_source": trigger_signal_ids_by_source,
+                "trigger_signal_snapshots_by_source": _trigger_signal_snapshots_for_trader(trader, cycle_trigger),
+            }
+        )
+    return control, specs, trader_cycle_timeout_seconds
+
+
+async def run_runtime_trigger_loop(*, lane: str = _LANE_GENERAL) -> None:
+    lane_key = str(lane or _LANE_GENERAL).strip().lower()
+    stream_group = _stream_group_name_for_lane(lane_key)
+    stream_consumer_name = f"{lane_key}-runtime-{os.getpid()}-{utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    stream_claim_cursor = "0-0"
+    stream_last_claim_run_at: datetime | None = None
+    logger.info("Starting trader orchestrator runtime trigger loop", lane=lane_key)
+    while True:
+        cycle_trigger, stream_claim_cursor, stream_last_claim_run_at = await _wait_for_runtime_trigger(
+            None,
+            60.0,
+            consumer=stream_consumer_name,
+            group=stream_group,
+            claim_cursor=stream_claim_cursor,
+            last_claim_run_at=stream_last_claim_run_at,
+        )
+        runtime_triggered_cycle = bool(
+            isinstance(cycle_trigger, dict)
+            and str(cycle_trigger.get("event_type") or "").strip().lower() == "runtime_signal_batch"
+        )
+        if not runtime_triggered_cycle:
+            continue
+        try:
+            control, specs, trader_cycle_timeout_seconds = await _build_runtime_trigger_specs(
+                lane_key=lane_key,
+                cycle_trigger=cycle_trigger,
+            )
+            if not control or not specs:
+                continue
+            tasks = [
+                asyncio.create_task(
+                    _run_trader_once_with_timeout(
+                        spec["trader"],
+                        control,
+                        process_signals=bool(spec["process_signals"]),
+                        trigger_signal_ids_by_source=spec["trigger_signal_ids_by_source"],
+                        trigger_signal_snapshots_by_source=spec["trigger_signal_snapshots_by_source"],
+                        timeout_seconds=trader_cycle_timeout_seconds,
+                    )
+                )
+                for spec in specs
+            ]
+            if tasks:
+                await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Runtime trigger dispatch failed",
+                lane=lane_key,
+                exc_info=exc,
+            )
+
+
+async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = True, process_runtime_triggers: bool = True) -> None:
     global _ws_auto_paused
     lane_key = str(lane or _LANE_GENERAL).strip().lower()
+    runtime_hot_path_owned_by_lane = lane_key == _LANE_GENERAL and not process_runtime_triggers
     stream_group = _stream_group_name_for_lane(lane_key)
     logger.info("Starting trader orchestrator worker loop")
 
@@ -6299,7 +6823,7 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                 isinstance(cycle_trigger, dict)
                 and str(cycle_trigger.get("event_type") or "").strip().lower() == "runtime_signal_batch"
             )
-            if not runtime_triggered_cycle:
+            if process_runtime_triggers and not runtime_triggered_cycle:
                 try:
                     queued_signal_depth = int(get_queue_depth(lane=lane_key) or 0)
                 except Exception:
@@ -6519,13 +7043,13 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                         runtime_trigger_event,
                         stream_claim_cursor,
                         stream_last_claim_run_at,
-                    ) = await _wait_for_runtime_trigger(
-                        None,
-                        sleep_seconds,
-                        consumer=stream_consumer_name,
-                        group=stream_group,
-                        claim_cursor=stream_claim_cursor,
-                        last_claim_run_at=stream_last_claim_run_at,
+                    ) = await _pause_until_next_cycle(
+                        process_runtime_triggers=process_runtime_triggers,
+                        sleep_seconds=sleep_seconds,
+                        stream_consumer_name=stream_consumer_name,
+                        stream_group=stream_group,
+                        stream_claim_cursor=stream_claim_cursor,
+                        stream_last_claim_run_at=stream_last_claim_run_at,
                     )
                     continue
 
@@ -6600,6 +7124,12 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                         )
                     process_signals_for_trader = True
                     if manage_only_cycle or is_paused or not due:
+                        process_signals_for_trader = False
+                    if runtime_hot_path_owned_by_lane and _runtime_hot_path_owns_signal_execution(
+                        lane_key=lane_key,
+                        process_runtime_triggers=process_runtime_triggers,
+                        trader=trader,
+                    ):
                         process_signals_for_trader = False
                     trigger_signal_ids_by_source = (
                         _trigger_signal_ids_for_trader(trader, cycle_trigger) if runtime_trigger_for_trader else None
@@ -6742,11 +7272,11 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                             total_processed_signals == 0 and total_decisions == 0 and total_orders == 0 and open_orders > 0
                         ):
                             activity = (
-                                f"Cycle[{trigger_label}:{lane_key}] monitoring open orders={open_orders} (no new pending signals)"
+                                f"Cycle[{cycle_trigger_label}:{lane_key}] monitoring open orders={open_orders} (no new pending signals)"
                             )
                         elif high_frequency_crypto_active and total_processed_signals == 0:
                             activity = (
-                                f"Cycle[{trigger_label}:{lane_key}] high-frequency crypto monitor active (no new pending signals)"
+                                f"Cycle[{cycle_trigger_label}:{lane_key}] high-frequency crypto monitor active (no new pending signals)"
                             )
                         await _write_orchestrator_snapshot_best_effort(
                             session,
@@ -6762,13 +7292,13 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                     runtime_trigger_event,
                     stream_claim_cursor,
                     stream_last_claim_run_at,
-                ) = await _wait_for_runtime_trigger(
-                    None,
-                    sleep_seconds,
-                    consumer=stream_consumer_name,
-                    group=stream_group,
-                    claim_cursor=stream_claim_cursor,
-                    last_claim_run_at=stream_last_claim_run_at,
+                ) = await _pause_until_next_cycle(
+                    process_runtime_triggers=process_runtime_triggers,
+                    sleep_seconds=sleep_seconds,
+                    stream_consumer_name=stream_consumer_name,
+                    stream_group=stream_group,
+                    stream_claim_cursor=stream_claim_cursor,
+                    stream_last_claim_run_at=stream_last_claim_run_at,
                 )
             except Exception as exc:
                 logger.exception("Trader orchestrator worker cycle failed: %s", exc)
@@ -6799,13 +7329,13 @@ async def run_worker_loop(*, lane: str = _LANE_GENERAL, write_snapshot: bool = T
                     runtime_trigger_event,
                     stream_claim_cursor,
                     stream_last_claim_run_at,
-                ) = await _wait_for_runtime_trigger(
-                    None,
-                    2,
-                    consumer=stream_consumer_name,
-                    group=stream_group,
-                    claim_cursor=stream_claim_cursor,
-                    last_claim_run_at=stream_last_claim_run_at,
+                ) = await _pause_until_next_cycle(
+                    process_runtime_triggers=process_runtime_triggers,
+                    sleep_seconds=2,
+                    stream_consumer_name=stream_consumer_name,
+                    stream_group=stream_group,
+                    stream_claim_cursor=stream_claim_cursor,
+                    stream_last_claim_run_at=stream_last_claim_run_at,
                 )
     finally:
         if lane_key == _LANE_GENERAL:
@@ -6818,6 +7348,7 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
     """Run the trader orchestrator worker loop (called from API process lifespan)."""
     notifier = None
     notifier_start_task: asyncio.Task | None = None
+    runtime_trigger_task: asyncio.Task | None = None
     if notifier_enabled:
         try:
             from services.notifier import notifier as notifier_service
@@ -6842,12 +7373,31 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
 
     try:
         try:
-            await run_worker_loop(lane=lane, write_snapshot=write_snapshot)
+            if str(lane or _LANE_GENERAL).strip().lower() == _LANE_GENERAL:
+                runtime_trigger_task = asyncio.create_task(
+                    run_runtime_trigger_loop(lane=lane),
+                    name=f"trader-orchestrator-runtime-{lane}",
+                )
+                await run_worker_loop(
+                    lane=lane,
+                    write_snapshot=write_snapshot,
+                    process_runtime_triggers=False,
+                )
+            else:
+                await run_worker_loop(lane=lane, write_snapshot=write_snapshot)
         except TypeError:
             await run_worker_loop()
     except asyncio.CancelledError:
         logger.info("Trader orchestrator worker shutting down")
     finally:
+        if runtime_trigger_task is not None and not runtime_trigger_task.done():
+            runtime_trigger_task.cancel()
+            try:
+                await runtime_trigger_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("Runtime trigger loop cleanup skipped: %s", exc)
         if notifier_start_task is not None and not notifier_start_task.done():
             notifier_start_task.cancel()
             try:

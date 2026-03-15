@@ -57,6 +57,8 @@ SETTINGS_REFRESH_SECONDS = 30
 DEFAULT_SUMMARY_INTERVAL_MINUTES = 60
 COMMAND_POLL_TIMEOUT_SECONDS = 25
 COMMAND_LOOP_IDLE_SECONDS = 3
+TELEGRAM_SETTINGS_LOAD_TIMEOUT_SECONDS = 10
+TELEGRAM_COMMAND_TIMEOUT_SECONDS = 12
 CLOSE_ALERT_MARKER_LIMIT = 4000
 CLOSE_ALERT_BATCH_LIMIT = 10
 TELEGRAM_UPDATE_DRAIN_LIMIT = 50
@@ -1245,7 +1247,13 @@ class TelegramNotifier:
             try:
                 now_monotonic = time.monotonic()
                 if now_monotonic - self._last_settings_reload_monotonic >= SETTINGS_REFRESH_SECONDS:
-                    await self._load_settings()
+                    try:
+                        await asyncio.wait_for(
+                            self._load_settings(),
+                            timeout=TELEGRAM_SETTINGS_LOAD_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("Telegram settings reload timed out; keeping current settings")
                     self._last_settings_reload_monotonic = now_monotonic
 
                 if not self._bot_token or not self._chat_id:
@@ -1293,7 +1301,20 @@ class TelegramNotifier:
                 operator = f"telegram:{sender_id}"
 
         try:
-            response = await self._handle_telegram_command(text=text, operator=operator, chat_id=chat_id)
+            response = await asyncio.wait_for(
+                self._handle_telegram_command(text=text, operator=operator, chat_id=chat_id),
+                timeout=TELEGRAM_COMMAND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Telegram command timed out",
+                operator=operator,
+                chat_id=chat_id,
+            )
+            response = (
+                "⚠️ Backend is busy and the command timed out.\n"
+                "Try again in a minute."
+            )
         except Exception as exc:
             logger.error("Telegram command processing failed", exc_info=exc)
             response = "❌ Telegram command failed.\nPlease retry or check backend logs."

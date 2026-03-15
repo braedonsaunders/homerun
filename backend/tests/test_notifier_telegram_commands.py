@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +88,38 @@ async def test_handle_telegram_command_autotrader_requires_valid_action():
     )
 
     assert response == "Usage: <code>/autotrader on [shadow|live]</code> or <code>/autotrader off</code>"
+
+
+@pytest.mark.asyncio
+async def test_process_telegram_update_returns_timeout_message_when_command_hangs(monkeypatch):
+    notifier = TelegramNotifier()
+    queued_messages: list[str] = []
+
+    async def _hang(*, text: str, operator: str, chat_id: str) -> str:
+        del text
+        del operator
+        del chat_id
+        await asyncio.sleep(60)
+        return "unreachable"
+
+    async def _enqueue(message: str) -> None:
+        queued_messages.append(message)
+
+    monkeypatch.setattr(notifier, "_handle_telegram_command", _hang)
+    monkeypatch.setattr(notifier, "_enqueue", _enqueue)
+    monkeypatch.setattr(notifier_module, "TELEGRAM_COMMAND_TIMEOUT_SECONDS", 0.01)
+
+    await notifier._process_telegram_update(
+        {
+            "message": {
+                "chat": {"id": "12345"},
+                "text": "/status",
+                "from": {"username": "ops"},
+            }
+        }
+    )
+
+    assert queued_messages == ["⚠️ Backend is busy and the command timed out.\nTry again in a minute."]
 
 
 @pytest.mark.asyncio

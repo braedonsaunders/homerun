@@ -23,10 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AsyncSessionLocal,
-    ExecutionSession,
-    ExecutionSessionEvent,
-    ExecutionSessionLeg,
-    ExecutionSessionOrder,
     TradeSignal,
     TraderDecision,
     TraderDecisionCheck,
@@ -48,12 +44,6 @@ from services.trader_orchestrator_state import (
     _normalize_mode_key,
     _normalize_status_key,
     _position_cap_scope_key,
-    _serialize_execution_event,
-    _serialize_execution_leg,
-    _serialize_execution_order,
-    _serialize_execution_session,
-    _serialize_order,
-    sync_trader_position_inventory,
 )
 from utils.converters import safe_float
 from utils.logger import get_logger
@@ -200,7 +190,7 @@ _seed_lock = asyncio.Lock()
 
 @dataclass
 class _AuditEntry:
-    kind: str  # "decision" | "decision_checks" | "consumption" | "cursor" | "signal_status" | "trader_event" | "experiment_assignment" | "execution_outcome"
+    kind: str  # "decision" | "decision_checks" | "consumption" | "cursor" | "signal_status" | "trader_event" | "experiment_assignment"
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.monotonic)
 
@@ -219,7 +209,6 @@ _AUDIT_KIND_PRIORITY = {
     "signal_status": 4,
     "trader_event": 5,
     "experiment_assignment": 6,
-    "execution_outcome": 7,
 }
 
 _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
@@ -941,6 +930,64 @@ async def buffer_decision(
     return row_id
 
 
+async def update_buffered_decision(
+    *,
+    decision_id: str,
+    decision: str | None = None,
+    reason: str | None = None,
+    payload_patch: dict[str, Any] | None = None,
+    checks_summary_patch: dict[str, Any] | None = None,
+) -> bool:
+    decision_key = str(decision_id or "").strip()
+    if not decision_key:
+        return False
+
+    published_payload: dict[str, Any] | None = None
+    async with _audit_lock:
+        for entry in reversed(_audit_buffer):
+            if entry.kind != "decision":
+                continue
+            payload = entry.payload if isinstance(entry.payload, dict) else {}
+            if str(payload.get("id") or "").strip() != decision_key:
+                continue
+            if decision is not None:
+                payload["decision"] = str(decision)
+            if reason is not None:
+                payload["reason"] = reason
+            if payload_patch:
+                merged_payload = dict(payload.get("payload_json") or {})
+                merged_payload.update(payload_patch)
+                payload["payload_json"] = merged_payload
+            if checks_summary_patch:
+                merged_summary = dict(payload.get("checks_summary_json") or {})
+                merged_summary.update(checks_summary_patch)
+                payload["checks_summary_json"] = merged_summary
+            published_payload = dict(payload)
+            break
+
+    if published_payload is None:
+        return False
+
+    try:
+        await event_bus.publish(
+            "trader_decision",
+            {
+                "id": decision_key,
+                "trader_id": published_payload.get("trader_id"),
+                "signal_id": published_payload.get("signal_id"),
+                "source": published_payload.get("source"),
+                "strategy_key": published_payload.get("strategy_key"),
+                "decision": published_payload.get("decision"),
+                "reason": published_payload.get("reason"),
+                "score": published_payload.get("score"),
+            },
+        )
+    except Exception:
+        pass
+
+    return True
+
+
 async def buffer_decision_checks(*, decision_id: str, checks: list[dict[str, Any]]) -> None:
     if not checks:
         return
@@ -1004,187 +1051,6 @@ async def buffer_signal_status(*, signal_id: str, status: str, effective_price: 
     )
     async with _audit_lock:
         _audit_buffer_append(entry)
-
-
-def _snapshot_execution_session_row(row: ExecutionSession) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "trader_id": row.trader_id,
-        "signal_id": row.signal_id,
-        "decision_id": row.decision_id,
-        "source": row.source,
-        "strategy_key": row.strategy_key,
-        "strategy_version": row.strategy_version,
-        "mode": row.mode,
-        "status": row.status,
-        "policy": row.policy,
-        "plan_id": row.plan_id,
-        "market_ids_json": list(row.market_ids_json or []),
-        "legs_total": int(row.legs_total or 0),
-        "legs_completed": int(row.legs_completed or 0),
-        "legs_failed": int(row.legs_failed or 0),
-        "legs_open": int(row.legs_open or 0),
-        "requested_notional_usd": row.requested_notional_usd,
-        "executed_notional_usd": row.executed_notional_usd,
-        "max_unhedged_notional_usd": row.max_unhedged_notional_usd,
-        "unhedged_notional_usd": row.unhedged_notional_usd,
-        "trace_id": row.trace_id,
-        "started_at": row.started_at,
-        "completed_at": row.completed_at,
-        "expires_at": row.expires_at,
-        "error_message": row.error_message,
-        "payload_json": dict(row.payload_json or {}),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def _snapshot_execution_leg_row(row: ExecutionSessionLeg) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "session_id": row.session_id,
-        "leg_index": int(row.leg_index or 0),
-        "leg_id": row.leg_id,
-        "market_id": row.market_id,
-        "market_question": row.market_question,
-        "token_id": row.token_id,
-        "side": row.side,
-        "outcome": row.outcome,
-        "price_policy": row.price_policy,
-        "time_in_force": row.time_in_force,
-        "post_only": bool(row.post_only),
-        "target_price": row.target_price,
-        "requested_notional_usd": row.requested_notional_usd,
-        "requested_shares": row.requested_shares,
-        "filled_notional_usd": row.filled_notional_usd,
-        "filled_shares": row.filled_shares,
-        "avg_fill_price": row.avg_fill_price,
-        "status": row.status,
-        "last_error": row.last_error,
-        "metadata_json": dict(row.metadata_json or {}),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def _snapshot_trader_order_row(row: TraderOrder) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "trader_id": row.trader_id,
-        "signal_id": row.signal_id,
-        "decision_id": row.decision_id,
-        "source": row.source,
-        "strategy_key": row.strategy_key,
-        "strategy_version": row.strategy_version,
-        "market_id": row.market_id,
-        "market_question": row.market_question,
-        "direction": row.direction,
-        "event_id": row.event_id,
-        "trace_id": row.trace_id,
-        "mode": row.mode,
-        "status": row.status,
-        "notional_usd": row.notional_usd,
-        "entry_price": row.entry_price,
-        "effective_price": row.effective_price,
-        "edge_percent": row.edge_percent,
-        "confidence": row.confidence,
-        "actual_profit": row.actual_profit,
-        "reason": row.reason,
-        "payload_json": dict(row.payload_json or {}),
-        "error_message": row.error_message,
-        "created_at": row.created_at,
-        "executed_at": row.executed_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def _snapshot_execution_order_row(row: ExecutionSessionOrder) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "session_id": row.session_id,
-        "leg_id": row.leg_id,
-        "trader_order_id": row.trader_order_id,
-        "provider_order_id": row.provider_order_id,
-        "provider_clob_order_id": row.provider_clob_order_id,
-        "action": row.action,
-        "side": row.side,
-        "price": row.price,
-        "size": row.size,
-        "notional_usd": row.notional_usd,
-        "status": row.status,
-        "reason": row.reason,
-        "payload_json": dict(row.payload_json or {}),
-        "error_message": row.error_message,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def _snapshot_execution_event_row(row: ExecutionSessionEvent) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "session_id": row.session_id,
-        "leg_id": row.leg_id,
-        "event_type": row.event_type,
-        "severity": row.severity,
-        "message": row.message,
-        "payload_json": dict(row.payload_json or {}),
-        "created_at": row.created_at,
-    }
-
-
-async def buffer_execution_outcome(
-    *,
-    session_row: ExecutionSession,
-    leg_rows: list[ExecutionSessionLeg],
-    trader_orders: list[TraderOrder],
-    execution_orders: list[ExecutionSessionOrder],
-    events: list[ExecutionSessionEvent],
-    signal_id: str,
-    signal_status: str,
-    effective_price: float | None = None,
-) -> None:
-    entry = _AuditEntry(
-        kind="execution_outcome",
-        payload={
-            "session": _snapshot_execution_session_row(session_row),
-            "legs": [_snapshot_execution_leg_row(row) for row in leg_rows],
-            "trader_orders": [_snapshot_trader_order_row(row) for row in trader_orders],
-            "execution_orders": [_snapshot_execution_order_row(row) for row in execution_orders],
-            "events": [_snapshot_execution_event_row(row) for row in events],
-            "signal": {
-                "signal_id": str(signal_id or ""),
-                "status": str(signal_status or ""),
-                "effective_price": effective_price,
-            },
-        },
-    )
-    async with _audit_lock:
-        _audit_buffer_append(entry)
-    try:
-        await event_bus.publish("execution_session", _serialize_execution_session(session_row))
-    except Exception:
-        pass
-    for leg_row in leg_rows:
-        try:
-            await event_bus.publish("execution_leg", _serialize_execution_leg(leg_row))
-        except Exception:
-            pass
-    for trader_order in trader_orders:
-        try:
-            await event_bus.publish("trader_order", _serialize_order(trader_order))
-        except Exception:
-            pass
-    for execution_order in execution_orders:
-        try:
-            await event_bus.publish("execution_order", _serialize_execution_order(execution_order))
-        except Exception:
-            pass
-    for event_row in events:
-        try:
-            await event_bus.publish("execution_session_event", _serialize_execution_event(event_row))
-        except Exception:
-            pass
 
 
 async def buffer_trader_event(
@@ -1298,8 +1164,6 @@ async def flush_audit_buffer() -> int:
                             _flush_trader_event(session, entry.payload)
                         elif entry.kind == "experiment_assignment":
                             await _flush_experiment_assignment(session, entry.payload)
-                        elif entry.kind == "execution_outcome":
-                            await _flush_execution_outcome(session, entry.payload)
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -1308,8 +1172,9 @@ async def flush_audit_buffer() -> int:
         async with _audit_lock:
             headroom = _AUDIT_BUFFER_MAX_SIZE - len(_audit_buffer)
             if headroom > 0:
-                _audit_buffer.extend(batch[:headroom])
-                dropped = len(batch) - headroom
+                preserved_batch = batch[:headroom]
+                _audit_buffer[:0] = preserved_batch
+                dropped = len(batch) - len(preserved_batch)
             else:
                 dropped = len(batch)
         if dropped > 0:
@@ -1426,164 +1291,6 @@ async def _flush_signal_status(session: AsyncSession, p: dict[str, Any]) -> None
         if p.get("effective_price") is not None:
             signal.effective_price = p["effective_price"]
         signal.updated_at = utcnow()
-
-
-async def _flush_execution_outcome(session: AsyncSession, p: dict[str, Any]) -> None:
-    session_payload = dict(p.get("session") or {})
-    if session_payload:
-        await session.merge(
-            ExecutionSession(
-                id=session_payload["id"],
-                trader_id=session_payload["trader_id"],
-                signal_id=session_payload.get("signal_id"),
-                decision_id=session_payload.get("decision_id"),
-                source=session_payload["source"],
-                strategy_key=session_payload.get("strategy_key"),
-                strategy_version=session_payload.get("strategy_version"),
-                mode=session_payload["mode"],
-                status=session_payload["status"],
-                policy=session_payload.get("policy"),
-                plan_id=session_payload.get("plan_id"),
-                market_ids_json=list(session_payload.get("market_ids_json") or []),
-                legs_total=int(session_payload.get("legs_total") or 0),
-                legs_completed=int(session_payload.get("legs_completed") or 0),
-                legs_failed=int(session_payload.get("legs_failed") or 0),
-                legs_open=int(session_payload.get("legs_open") or 0),
-                requested_notional_usd=session_payload.get("requested_notional_usd"),
-                executed_notional_usd=session_payload.get("executed_notional_usd") or 0.0,
-                max_unhedged_notional_usd=session_payload.get("max_unhedged_notional_usd") or 0.0,
-                unhedged_notional_usd=session_payload.get("unhedged_notional_usd") or 0.0,
-                trace_id=session_payload.get("trace_id"),
-                started_at=session_payload.get("started_at"),
-                completed_at=session_payload.get("completed_at"),
-                expires_at=session_payload.get("expires_at"),
-                error_message=session_payload.get("error_message"),
-                payload_json=dict(session_payload.get("payload_json") or {}),
-                created_at=session_payload.get("created_at") or utcnow(),
-                updated_at=session_payload.get("updated_at") or utcnow(),
-            )
-        )
-
-    for leg_payload in p.get("legs") or []:
-        await session.merge(
-            ExecutionSessionLeg(
-                id=leg_payload["id"],
-                session_id=leg_payload["session_id"],
-                leg_index=int(leg_payload.get("leg_index") or 0),
-                leg_id=leg_payload["leg_id"],
-                market_id=leg_payload["market_id"],
-                market_question=leg_payload.get("market_question"),
-                token_id=leg_payload.get("token_id"),
-                side=leg_payload.get("side") or "buy",
-                outcome=leg_payload.get("outcome"),
-                price_policy=leg_payload.get("price_policy") or "maker_limit",
-                time_in_force=leg_payload.get("time_in_force") or "GTC",
-                post_only=bool(leg_payload.get("post_only", False)),
-                target_price=leg_payload.get("target_price"),
-                requested_notional_usd=leg_payload.get("requested_notional_usd"),
-                requested_shares=leg_payload.get("requested_shares"),
-                filled_notional_usd=leg_payload.get("filled_notional_usd") or 0.0,
-                filled_shares=leg_payload.get("filled_shares") or 0.0,
-                avg_fill_price=leg_payload.get("avg_fill_price"),
-                status=leg_payload.get("status") or "pending",
-                last_error=leg_payload.get("last_error"),
-                metadata_json=dict(leg_payload.get("metadata_json") or {}),
-                created_at=leg_payload.get("created_at") or utcnow(),
-                updated_at=leg_payload.get("updated_at") or utcnow(),
-            )
-        )
-
-    sync_targets: set[tuple[str, str]] = set()
-    for order_payload in p.get("trader_orders") or []:
-        await session.merge(
-            TraderOrder(
-                id=order_payload["id"],
-                trader_id=order_payload["trader_id"],
-                signal_id=order_payload.get("signal_id"),
-                decision_id=order_payload.get("decision_id"),
-                source=order_payload["source"],
-                strategy_key=order_payload.get("strategy_key"),
-                strategy_version=order_payload.get("strategy_version"),
-                market_id=order_payload["market_id"],
-                market_question=order_payload.get("market_question"),
-                direction=order_payload.get("direction"),
-                event_id=order_payload.get("event_id"),
-                trace_id=order_payload.get("trace_id"),
-                mode=order_payload.get("mode") or "shadow",
-                status=order_payload.get("status") or "submitted",
-                notional_usd=order_payload.get("notional_usd"),
-                entry_price=order_payload.get("entry_price"),
-                effective_price=order_payload.get("effective_price"),
-                edge_percent=order_payload.get("edge_percent"),
-                confidence=order_payload.get("confidence"),
-                actual_profit=order_payload.get("actual_profit"),
-                reason=order_payload.get("reason"),
-                payload_json=dict(order_payload.get("payload_json") or {}),
-                error_message=order_payload.get("error_message"),
-                created_at=order_payload.get("created_at") or utcnow(),
-                executed_at=order_payload.get("executed_at"),
-                updated_at=order_payload.get("updated_at") or utcnow(),
-            )
-        )
-        trader_id = str(order_payload.get("trader_id") or "").strip()
-        mode = str(order_payload.get("mode") or "").strip()
-        if trader_id and mode:
-            sync_targets.add((trader_id, mode))
-
-    for execution_order_payload in p.get("execution_orders") or []:
-        await session.merge(
-            ExecutionSessionOrder(
-                id=execution_order_payload["id"],
-                session_id=execution_order_payload["session_id"],
-                leg_id=execution_order_payload["leg_id"],
-                trader_order_id=execution_order_payload.get("trader_order_id"),
-                provider_order_id=execution_order_payload.get("provider_order_id"),
-                provider_clob_order_id=execution_order_payload.get("provider_clob_order_id"),
-                action=execution_order_payload.get("action") or "submit",
-                side=execution_order_payload.get("side") or "buy",
-                price=execution_order_payload.get("price"),
-                size=execution_order_payload.get("size"),
-                notional_usd=execution_order_payload.get("notional_usd"),
-                status=execution_order_payload.get("status") or "submitted",
-                reason=execution_order_payload.get("reason"),
-                payload_json=dict(execution_order_payload.get("payload_json") or {}),
-                error_message=execution_order_payload.get("error_message"),
-                created_at=execution_order_payload.get("created_at") or utcnow(),
-                updated_at=execution_order_payload.get("updated_at") or utcnow(),
-            )
-        )
-
-    for event_payload in p.get("events") or []:
-        await session.merge(
-            ExecutionSessionEvent(
-                id=event_payload["id"],
-                session_id=event_payload["session_id"],
-                leg_id=event_payload.get("leg_id"),
-                event_type=event_payload["event_type"],
-                severity=event_payload.get("severity") or "info",
-                message=event_payload.get("message"),
-                payload_json=dict(event_payload.get("payload_json") or {}),
-                created_at=event_payload.get("created_at") or utcnow(),
-            )
-        )
-
-    signal_payload = dict(p.get("signal") or {})
-    signal_id = str(signal_payload.get("signal_id") or "").strip()
-    if signal_id:
-        signal = await session.get(TradeSignal, signal_id)
-        if signal is not None:
-            signal.status = str(signal_payload.get("status") or signal.status or "").strip().lower()
-            if signal_payload.get("effective_price") is not None:
-                signal.effective_price = signal_payload["effective_price"]
-            signal.updated_at = utcnow()
-
-    for trader_id, mode in sorted(sync_targets):
-        await sync_trader_position_inventory(
-            session,
-            trader_id=trader_id,
-            mode=mode,
-            commit=False,
-        )
 
 
 def _flush_trader_event(session: AsyncSession, p: dict[str, Any]) -> None:

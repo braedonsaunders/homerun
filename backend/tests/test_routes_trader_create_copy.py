@@ -138,6 +138,51 @@ async def test_get_all_traders_rejects_invalid_mode():
 
 
 @pytest.mark.asyncio
+async def test_get_all_trader_orders_history_is_read_only_by_default(monkeypatch):
+    session_obj = object()
+    list_orders_mock = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(routes_traders, "list_serialized_trader_orders", list_orders_mock)
+
+    result = await routes_traders.get_all_trader_orders(
+        session=session_obj,
+        status=None,
+        limit=2000,
+    )
+
+    assert result == {"orders": []}
+    list_orders_mock.assert_awaited_once_with(
+        session_obj,
+        trader_id=None,
+        status=None,
+        limit=2000,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_trader_orders_history_is_read_only_by_default(monkeypatch):
+    session_obj = object()
+    list_orders_mock = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(routes_traders, "list_serialized_trader_orders", list_orders_mock)
+
+    result = await routes_traders.get_trader_orders(
+        trader_id="live-trader-1",
+        session=session_obj,
+        status=None,
+        limit=200,
+    )
+
+    assert result == {"orders": []}
+    list_orders_mock.assert_awaited_once_with(
+        session_obj,
+        trader_id="live-trader-1",
+        status=None,
+        limit=200,
+    )
+
+
+@pytest.mark.asyncio
 async def test_start_trader_unpauses_active_trader(monkeypatch):
     session_obj = object()
     trader_id = "trader-1"

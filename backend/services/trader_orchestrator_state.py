@@ -10,7 +10,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings
-from sqlalchemy import and_, case, desc, func, or_, select, update as sa_update
+from sqlalchemy import and_, case, desc, func, or_, select, text as sa_text, update as sa_update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,8 @@ from models.database import (
     ExecutionSessionEvent,
     ExecutionSessionLeg,
     ExecutionSessionOrder,
+    LiveTradingOrder,
+    LiveTradingPosition,
     TradeSignal,
     Strategy,
     Trader,
@@ -33,6 +36,7 @@ from models.database import (
     TraderOrchestratorSnapshot,
     TraderSignalCursor,
     TraderSignalConsumption,
+    StrategyExperimentAssignment,
     release_conn,
 )
 from utils.logger import get_logger
@@ -130,6 +134,7 @@ _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 30.0
 _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 120.0
 _TRADER_MODES = {"shadow", "live"}
 _MANUAL_LIVE_POSITION_SOURCE = "manual_wallet_position"
+_LIVE_ORDER_AUTHORITY_RECOVERY_LOCK_KEY = 674021913
 _LEGACY_CRYPTO_STRATEGY_TIMEFRAME_ALIASES: dict[str, str] = {
     "crypto_5m": "5m",
     "crypto_15m": "15m",
@@ -1215,6 +1220,174 @@ def _resolve_provider_order_ids(
     return provider_order_id, provider_clob_order_id
 
 
+async def _acquire_live_order_authority_recovery_lock(session: AsyncSession) -> None:
+    await session.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": _LIVE_ORDER_AUTHORITY_RECOVERY_LOCK_KEY},
+    )
+
+
+async def _reassign_deleted_live_order_references(
+    session: AsyncSession,
+    *,
+    duplicate_order_id: str,
+    canonical_order_id: str,
+) -> None:
+    if not duplicate_order_id or not canonical_order_id or duplicate_order_id == canonical_order_id:
+        return
+    await session.execute(
+        sa_update(ExecutionSessionOrder)
+        .where(ExecutionSessionOrder.trader_order_id == duplicate_order_id)
+        .values(trader_order_id=canonical_order_id)
+    )
+    await session.execute(
+        sa_update(StrategyExperimentAssignment)
+        .where(StrategyExperimentAssignment.order_id == duplicate_order_id)
+        .values(order_id=canonical_order_id)
+    )
+
+
+def _extract_live_order_authority_ids_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    provider_clob_id = str(payload.get("provider_clob_order_id") or "").strip()
+    authority_payload = payload.get("live_wallet_authority")
+    if not isinstance(authority_payload, dict):
+        authority_payload = {}
+    live_order_id = str(authority_payload.get("live_trading_order_id") or "").strip()
+    return provider_clob_id, live_order_id
+
+
+def _value_is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _merge_missing_mapping_values(target: dict[str, Any], source: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    merged = dict(target)
+    changed = False
+    for key, source_value in source.items():
+        target_value = merged.get(key)
+        if isinstance(source_value, dict):
+            if isinstance(target_value, dict):
+                nested_value, nested_changed = _merge_missing_mapping_values(target_value, source_value)
+                if nested_changed:
+                    merged[key] = nested_value
+                    changed = True
+                continue
+            if _value_is_missing(target_value):
+                merged[key] = copy.deepcopy(source_value)
+                changed = True
+            continue
+        if _value_is_missing(source_value) or not _value_is_missing(target_value):
+            continue
+        merged[key] = copy.deepcopy(source_value)
+        changed = True
+    return merged, changed
+
+
+def _live_order_authority_key_from_payload(payload: dict[str, Any]) -> str:
+    provider_clob_id, live_order_id = _extract_live_order_authority_ids_from_payload(payload)
+    if provider_clob_id:
+        return f"clob:{provider_clob_id.lower()}"
+    if live_order_id:
+        return f"live:{live_order_id}"
+    return ""
+
+
+def _live_order_authority_row_sort_key(row: TraderOrder) -> tuple[int, int, int, float, float, str]:
+    updated_at = row.updated_at or row.executed_at or row.created_at or _now()
+    created_at = row.created_at or row.updated_at or updated_at
+    return (
+        1 if str(row.reason or "").strip().lower() == "recovered from live venue authority" else 0,
+        1 if not str(row.decision_id or "").strip() else 0,
+        1 if not str(row.signal_id or "").strip() else 0,
+        -updated_at.timestamp(),
+        -created_at.timestamp(),
+        str(row.id or ""),
+    )
+
+
+def _build_live_order_authority_payload(
+    *,
+    live_row: LiveTradingOrder,
+    position_row: LiveTradingPosition | None,
+    now: datetime,
+) -> dict[str, Any]:
+    fill_size = max(0.0, safe_float(live_row.filled_size, 0.0) or 0.0)
+    average_fill_price = safe_float(live_row.average_fill_price, None)
+    filled_notional_usd = 0.0
+    if fill_size > 0.0 and average_fill_price is not None and average_fill_price > 0.0:
+        filled_notional_usd = fill_size * average_fill_price
+    if filled_notional_usd <= 0.0:
+        fallback_price = safe_float(live_row.price, 0.0) or 0.0
+        if fill_size > 0.0 and fallback_price > 0.0:
+            filled_notional_usd = fill_size * fallback_price
+
+    trader_status = _map_live_trading_order_status_to_trader_order_status(
+        live_status=live_row.status,
+        filled_notional_usd=filled_notional_usd,
+    )
+    entry_price = average_fill_price if average_fill_price is not None and average_fill_price > 0.0 else safe_float(live_row.price, None)
+    order_notional_usd = filled_notional_usd
+    if order_notional_usd <= 0.0:
+        order_notional_usd = max(
+            0.0,
+            (safe_float(live_row.size, 0.0) or 0.0) * (safe_float(live_row.price, 0.0) or 0.0),
+        )
+
+    provider_clob_id = str(live_row.clob_order_id or "").strip()
+    provider_snapshot = {
+        "normalized_status": _normalize_status_key(live_row.status),
+        "status": str(live_row.status or ""),
+        "clob_order_id": provider_clob_id or None,
+        "asset_id": str(live_row.token_id or "").strip(),
+        "filled_size": fill_size,
+        "average_fill_price": average_fill_price,
+        "filled_notional_usd": filled_notional_usd,
+        "limit_price": safe_float(live_row.price, None),
+        "size": safe_float(live_row.size, None),
+        "updated_at": to_iso(live_row.updated_at),
+    }
+    payload_json: dict[str, Any] = {
+        "provider_clob_order_id": provider_clob_id or None,
+        "provider_reconciliation": {
+            "source": "live_trading_orders_recovery",
+            "snapshot_status": _normalize_status_key(live_row.status),
+            "mapped_status": trader_status,
+            "reconciled_at": to_iso(now),
+            "filled_size": fill_size,
+            "average_fill_price": average_fill_price,
+            "filled_notional_usd": filled_notional_usd,
+            "snapshot": provider_snapshot,
+        },
+        "live_wallet_authority": {
+            "source": "live_trading_orders",
+            "live_trading_order_id": str(live_row.id),
+            "wallet_address": str(live_row.wallet_address or ""),
+            "token_id": str(live_row.token_id or ""),
+            "recovered_at": to_iso(now),
+        },
+        "token_id": str(live_row.token_id or "").strip(),
+        "order_type": str(live_row.order_type or "").strip(),
+    }
+    if position_row is not None:
+        payload_json["position_state"] = {
+            "last_mark_price": safe_float(position_row.average_cost, None),
+            "last_mark_source": "live_wallet_recovery",
+            "last_marked_at": to_iso(position_row.updated_at),
+        }
+    return {
+        "payload_json": payload_json,
+        "trader_status": trader_status,
+        "entry_price": entry_price,
+        "order_notional_usd": order_notional_usd,
+    }
+
+
 def _cleanup_timeout_reason(note_reason: str) -> bool:
     normalized = str(note_reason or "").strip().lower()
     return normalized.startswith("max_open_order_timeout")
@@ -1396,6 +1569,373 @@ def _map_provider_snapshot_status(snapshot_status: str, filled_notional_usd: flo
             return "executed"
         return "cancelled" if status_key in {"cancelled", "expired"} else "failed"
     return ""
+
+
+def _map_live_trading_order_status_to_trader_order_status(
+    *,
+    live_status: Any,
+    filled_notional_usd: float,
+) -> str:
+    mapped_status = _map_provider_snapshot_status(str(live_status or ""), filled_notional_usd)
+    if mapped_status == "executed":
+        return "open"
+    if mapped_status == "open":
+        return "open" if filled_notional_usd > 0.0 else "submitted"
+    if mapped_status:
+        return mapped_status
+    return "submitted"
+
+
+async def _infer_live_order_authority_candidate(
+    session: AsyncSession,
+    *,
+    market_question: str,
+    created_at: datetime,
+    trader_ids: set[str] | None,
+) -> dict[str, Any] | None:
+    question = str(market_question or "").strip()
+    if not question:
+        return None
+
+    window_start = created_at - timedelta(days=7)
+    window_end = created_at + timedelta(minutes=5)
+    rows = (
+        await session.execute(
+            select(
+                TraderDecision.id.label("decision_id"),
+                TraderDecision.trader_id.label("trader_id"),
+                TraderDecision.strategy_key.label("strategy_key"),
+                TraderDecision.strategy_version.label("strategy_version"),
+                TraderDecision.decision.label("decision"),
+                TraderDecision.created_at.label("decision_created_at"),
+                TradeSignal.id.label("signal_id"),
+                TradeSignal.source.label("signal_source"),
+                TradeSignal.market_id.label("market_id"),
+                TradeSignal.market_question.label("market_question"),
+                TradeSignal.direction.label("direction"),
+                Trader.is_enabled.label("is_enabled"),
+                Trader.is_paused.label("is_paused"),
+            )
+            .join(TradeSignal, TradeSignal.id == TraderDecision.signal_id)
+            .join(Trader, Trader.id == TraderDecision.trader_id)
+            .where(
+                Trader.mode == "live",
+                TradeSignal.market_question == question,
+                TraderDecision.created_at >= window_start,
+                TraderDecision.created_at <= window_end,
+            )
+            .order_by(desc(TraderDecision.created_at))
+        )
+    ).all()
+    if not rows:
+        return None
+
+    best_by_trader: dict[str, tuple[float, dict[str, Any]]] = {}
+    for row in rows:
+        trader_id = str(row.trader_id or "").strip()
+        if not trader_id:
+            continue
+        if trader_ids is not None and trader_id not in trader_ids:
+            continue
+        direction = str(row.direction or "").strip().lower()
+        market_id = str(row.market_id or "").strip()
+        if not direction or not market_id:
+            continue
+
+        decision_key = _normalize_status_key(row.decision)
+        decision_created_at = row.decision_created_at
+        if decision_created_at is None:
+            continue
+        if decision_created_at.tzinfo is None:
+            decision_created_at = decision_created_at.replace(tzinfo=timezone.utc)
+        else:
+            decision_created_at = decision_created_at.astimezone(timezone.utc)
+        delta_seconds = abs((created_at - decision_created_at).total_seconds())
+        if decision_key == "selected":
+            score = 400.0
+        elif decision_key == "failed":
+            score = 320.0
+        elif decision_key == "blocked":
+            score = 180.0
+        elif decision_key == "skipped":
+            score = 120.0
+        else:
+            score = 60.0
+        score -= min(delta_seconds / 60.0, 180.0)
+        if bool(row.is_enabled):
+            score += 8.0
+        if bool(row.is_paused):
+            score -= 4.0
+        candidate = {
+            "decision_id": str(row.decision_id or "").strip() or None,
+            "trader_id": trader_id,
+            "strategy_key": str(row.strategy_key or "").strip() or None,
+            "strategy_version": int(row.strategy_version) if row.strategy_version is not None else None,
+            "signal_id": str(row.signal_id or "").strip() or None,
+            "source": str(row.signal_source or "").strip() or "scanner",
+            "market_id": market_id,
+            "market_question": question,
+            "direction": direction,
+            "decision_created_at": decision_created_at,
+        }
+        existing = best_by_trader.get(trader_id)
+        if existing is None or score > existing[0]:
+            best_by_trader[trader_id] = (score, candidate)
+
+    if not best_by_trader:
+        return None
+
+    ranked = sorted(
+        best_by_trader.values(),
+        key=lambda item: (
+            item[0],
+            item[1]["decision_created_at"],
+        ),
+        reverse=True,
+    )
+    top_score, top_candidate = ranked[0]
+    if len(ranked) > 1 and abs(top_score - ranked[1][0]) < 0.001:
+        return None
+    return top_candidate
+
+
+async def recover_missing_live_trader_orders(
+    session: AsyncSession,
+    *,
+    trader_ids: list[str] | None = None,
+    commit: bool = True,
+    broadcast: bool = True,
+) -> dict[str, Any]:
+    trader_id_filter = {str(value or "").strip() for value in (trader_ids or []) if str(value or "").strip()}
+    await _acquire_live_order_authority_recovery_lock(session)
+    live_rows = list(
+        (
+            await session.execute(
+                select(LiveTradingOrder)
+                .where(func.lower(func.coalesce(LiveTradingOrder.status, "")).in_(("open", "filled", "pending", "partially_filled")))
+                .order_by(desc(LiveTradingOrder.created_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not live_rows:
+        if commit and session.in_transaction():
+            await session.rollback()
+        return {"recovered_orders": 0, "affected_traders": 0, "ambiguous_orders": 0}
+
+    live_orders_by_token: dict[str, LiveTradingPosition] = {}
+    position_rows = list((await session.execute(select(LiveTradingPosition))).scalars().all())
+    for row in position_rows:
+        token_key = _wallet_position_token_key(row.token_id)
+        if not token_key:
+            continue
+        current = live_orders_by_token.get(token_key)
+        if current is None or (current.updated_at or current.created_at or _now()) < (row.updated_at or row.created_at or _now()):
+            live_orders_by_token[token_key] = row
+
+    existing_rows = list(
+        (
+            await session.execute(
+                select(TraderOrder).where(TraderOrder.mode == "live")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = _now()
+    existing_provider_rows_by_clob_id: dict[str, TraderOrder] = {}
+    existing_rows_by_live_order_id: dict[str, TraderOrder] = {}
+    rows_by_authority_key: dict[str, list[TraderOrder]] = {}
+    rows_without_authority: list[TraderOrder] = []
+    for row in existing_rows:
+        payload = dict(row.payload_json or {})
+        authority_key = _live_order_authority_key_from_payload(payload)
+        if authority_key:
+            rows_by_authority_key.setdefault(authority_key, []).append(row)
+            continue
+        rows_without_authority.append(row)
+
+    collapsed_duplicates = 0
+    for group in rows_by_authority_key.values():
+        ordered_group = sorted(group, key=_live_order_authority_row_sort_key)
+        canonical_row = ordered_group[0]
+        canonical_payload = dict(canonical_row.payload_json or {})
+        canonical_payload_changed = False
+
+        for duplicate_row in ordered_group[1:]:
+            duplicate_payload = dict(duplicate_row.payload_json or {})
+            merged_payload, merged_changed = _merge_missing_mapping_values(canonical_payload, duplicate_payload)
+            if merged_changed:
+                canonical_payload = merged_payload
+                canonical_payload_changed = True
+            await _reassign_deleted_live_order_references(
+                session,
+                duplicate_order_id=str(duplicate_row.id or ""),
+                canonical_order_id=str(canonical_row.id or ""),
+            )
+            await session.delete(duplicate_row)
+            collapsed_duplicates += 1
+
+        if canonical_payload_changed:
+            canonical_row.payload_json = canonical_payload
+            canonical_row.updated_at = now
+
+        provider_clob_id, live_order_id = _extract_live_order_authority_ids_from_payload(canonical_payload)
+        if provider_clob_id:
+            existing_provider_rows_by_clob_id[provider_clob_id] = canonical_row
+        if live_order_id:
+            existing_rows_by_live_order_id[live_order_id] = canonical_row
+
+    for row in rows_without_authority:
+        payload = dict(row.payload_json or {})
+        provider_clob_id, live_order_id = _extract_live_order_authority_ids_from_payload(payload)
+        if provider_clob_id:
+            existing_provider_rows_by_clob_id[provider_clob_id] = row
+        if live_order_id:
+            existing_rows_by_live_order_id[live_order_id] = row
+
+    recovered_rows: list[TraderOrder] = []
+    affected_traders: set[str] = set()
+    ambiguous_orders = 0
+    adopted_existing_orders = 0
+
+    for live_row in live_rows:
+        clob_order_id = str(live_row.clob_order_id or "").strip()
+        live_order_id = str(live_row.id or "").strip()
+
+        token_key = _wallet_position_token_key(live_row.token_id)
+        position_row = live_orders_by_token.get(token_key)
+        market_question = str(live_row.market_question or (position_row.market_question if position_row is not None else "") or "").strip()
+        created_at = live_row.created_at or live_row.updated_at or now
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+
+        recovery_state = _build_live_order_authority_payload(
+            live_row=live_row,
+            position_row=position_row,
+            now=now,
+        )
+        existing_row = None
+        if clob_order_id:
+            existing_row = existing_provider_rows_by_clob_id.get(clob_order_id)
+        if existing_row is None and live_order_id:
+            existing_row = existing_rows_by_live_order_id.get(live_order_id)
+        if existing_row is not None:
+            existing_payload = dict(existing_row.payload_json or {})
+            merged_payload, payload_changed = _merge_missing_mapping_values(
+                existing_payload,
+                dict(recovery_state["payload_json"] or {}),
+            )
+            if payload_changed:
+                existing_row.payload_json = merged_payload
+                existing_row.updated_at = now
+                adopted_existing_orders += 1
+            if clob_order_id:
+                existing_provider_rows_by_clob_id[clob_order_id] = existing_row
+            if live_order_id:
+                existing_rows_by_live_order_id[live_order_id] = existing_row
+            continue
+
+        candidate = await _infer_live_order_authority_candidate(
+            session,
+            market_question=market_question,
+            created_at=created_at,
+            trader_ids=trader_id_filter or None,
+        )
+        if candidate is None:
+            ambiguous_orders += 1
+            continue
+
+        recovered_row = TraderOrder(
+            id=_new_id(),
+            trader_id=str(candidate["trader_id"]),
+            signal_id=candidate.get("signal_id"),
+            decision_id=candidate.get("decision_id"),
+            source=str(candidate.get("source") or "scanner"),
+            strategy_key=candidate.get("strategy_key"),
+            strategy_version=candidate.get("strategy_version"),
+            market_id=str(candidate["market_id"]),
+            market_question=market_question or None,
+            direction=str(candidate["direction"]),
+            event_id=None,
+            trace_id=None,
+            mode="live",
+            status=str(recovery_state["trader_status"]),
+            notional_usd=float(recovery_state["order_notional_usd"]) if float(recovery_state["order_notional_usd"] or 0.0) > 0.0 else None,
+            entry_price=float(recovery_state["entry_price"]) if recovery_state["entry_price"] is not None and float(recovery_state["entry_price"]) > 0.0 else None,
+            effective_price=float(recovery_state["entry_price"]) if recovery_state["entry_price"] is not None and float(recovery_state["entry_price"]) > 0.0 else None,
+            edge_percent=None,
+            confidence=None,
+            actual_profit=None,
+            reason="Recovered from live venue authority",
+            payload_json=dict(recovery_state["payload_json"] or {}),
+            error_message=live_row.error_message,
+            created_at=created_at,
+            executed_at=live_row.updated_at if str(recovery_state["trader_status"]) == "open" else None,
+            updated_at=live_row.updated_at or now,
+        )
+        session.add(recovered_row)
+        recovered_rows.append(recovered_row)
+        affected_traders.add(str(candidate["trader_id"]))
+        if clob_order_id:
+            existing_provider_rows_by_clob_id[clob_order_id] = recovered_row
+        if live_order_id:
+            existing_rows_by_live_order_id[live_order_id] = recovered_row
+
+    if not recovered_rows and collapsed_duplicates <= 0 and adopted_existing_orders <= 0:
+        if commit and session.in_transaction():
+            await session.rollback()
+        return {
+            "recovered_orders": 0,
+            "affected_traders": 0,
+            "ambiguous_orders": ambiguous_orders,
+            "collapsed_duplicates": 0,
+            "adopted_existing_orders": 0,
+        }
+
+    await session.flush()
+    for trader_id in sorted(affected_traders):
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="live_order_authority_recovered",
+            severity="warn",
+            source="live_wallet_authority",
+            message="Recovered missing live venue orders into trader order authority.",
+            payload={
+                "recovered_order_ids": [row.id for row in recovered_rows if row.trader_id == trader_id],
+            },
+            commit=False,
+        )
+        await sync_trader_position_inventory(
+            session,
+            trader_id=trader_id,
+            mode="live",
+            commit=False,
+        )
+
+    if commit:
+        await _commit_with_retry(session)
+    else:
+        await session.flush()
+
+    if broadcast:
+        for row in recovered_rows:
+            try:
+                await event_bus.publish("trader_order", _serialize_order(row))
+            except Exception:
+                continue
+
+    return {
+        "recovered_orders": len(recovered_rows),
+        "affected_traders": len(affected_traders),
+        "ambiguous_orders": ambiguous_orders,
+        "collapsed_duplicates": collapsed_duplicates,
+        "adopted_existing_orders": adopted_existing_orders,
+    }
 
 
 def _map_live_order_status_to_leg_status(order_status: str) -> str:
@@ -3157,6 +3697,7 @@ async def update_trader_decision(
     decision: str | None = None,
     reason: str | None = None,
     payload_patch: dict[str, Any] | None = None,
+    checks_summary_patch: dict[str, Any] | None = None,
     commit: bool = True,
 ) -> TraderDecision | None:
     row = await session.get(TraderDecision, decision_id)
@@ -3171,6 +3712,10 @@ async def update_trader_decision(
         merged_payload = dict(row.payload_json or {})
         merged_payload.update(payload_patch)
         row.payload_json = merged_payload
+    if checks_summary_patch:
+        merged_checks_summary = dict(row.checks_summary_json or {})
+        merged_checks_summary.update(checks_summary_patch)
+        row.checks_summary_json = merged_checks_summary
 
     serialized_row = _serialize_decision(row)
     if not commit:
@@ -3990,40 +4535,27 @@ async def record_signal_consumption(
         signal_ts = signal_row.updated_at or signal_row.created_at
         if signal_ts is not None and signal_ts > consumed_at:
             consumed_at = signal_ts
-    existing = (
-        (
-            await session.execute(
-                select(TraderSignalConsumption).where(
-                    TraderSignalConsumption.trader_id == trader_id,
-                    TraderSignalConsumption.signal_id == signal_id,
-                )
-            )
-        )
-        .scalars()
-        .first()
+    stmt = pg_insert(TraderSignalConsumption).values(
+        id=_new_id(),
+        trader_id=trader_id,
+        signal_id=signal_id,
+        decision_id=decision_id,
+        outcome=outcome,
+        reason=reason,
+        payload_json=payload or {},
+        consumed_at=consumed_at,
     )
-    if existing is not None:
-        existing.decision_id = decision_id
-        existing.outcome = outcome
-        existing.reason = reason
-        existing.payload_json = payload or {}
-        existing.consumed_at = consumed_at
-        if commit:
-            await _commit_with_retry(session)
-        return
-
-    session.add(
-        TraderSignalConsumption(
-            id=_new_id(),
-            trader_id=trader_id,
-            signal_id=signal_id,
-            decision_id=decision_id,
-            outcome=outcome,
-            reason=reason,
-            payload_json=payload or {},
-            consumed_at=consumed_at,
-        )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_trader_signal_consumption",
+        set_={
+            "decision_id": stmt.excluded.decision_id,
+            "outcome": stmt.excluded.outcome,
+            "reason": stmt.excluded.reason,
+            "payload_json": stmt.excluded.payload_json,
+            "consumed_at": stmt.excluded.consumed_at,
+        },
     )
+    await session.execute(stmt)
     if commit:
         await _commit_with_retry(session)
 

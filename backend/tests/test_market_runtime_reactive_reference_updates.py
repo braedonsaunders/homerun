@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,6 +204,50 @@ async def test_market_runtime_reacts_to_reference_updates_without_waiting_for_pe
     assert runtime._crypto_markets[1]["oracle_price"] == 3500.0
     assert runtime._last_crypto_trigger == "reference_ws"
     assert runtime._last_crypto_refresh_at is not None
+
+
+def test_rebuild_crypto_rows_from_cache_refreshes_time_derived_fields():
+    fake_reference = _FakeReferenceRuntime({"BTC": 70000.0})
+    runtime = market_runtime.MarketRuntime()
+    runtime._reference_runtime = fake_reference
+    runtime._feed_manager = SimpleNamespace(_started=False)
+
+    now = market_runtime.utcnow()
+    rebuilt = runtime._rebuild_crypto_rows_from_cache(
+        [
+            {
+                "id": "btc-5m",
+                "slug": "btc-5m",
+                "asset": "BTC",
+                "timeframe": "5min",
+                "start_time": (now - timedelta(seconds=15)).isoformat().replace("+00:00", "Z"),
+                "end_time": (now + timedelta(seconds=9)).isoformat().replace("+00:00", "Z"),
+                "seconds_left": 120,
+                "is_live": False,
+                "is_current": False,
+                "up_price": 0.52,
+                "down_price": 0.48,
+                "combined": 0.10,
+                "clob_token_ids": ["btc-up", "btc-down"],
+                "oracle_price": None,
+                "oracle_source": None,
+                "oracle_updated_at_ms": None,
+                "oracle_age_seconds": None,
+                "oracle_prices_by_source": {},
+                "oracle_history": [],
+            }
+        ]
+    )
+
+    assert len(rebuilt) == 1
+    row = rebuilt[0]
+    assert row["is_live"] is True
+    assert row["is_current"] is True
+    assert isinstance(row["seconds_left"], int)
+    assert 0 <= row["seconds_left"] <= 9
+    assert row["combined"] == pytest.approx(1.0)
+    assert row["oracle_price"] == 70000.0
+    assert row["oracle_source"] == "chainlink"
 
 
 @pytest.mark.asyncio

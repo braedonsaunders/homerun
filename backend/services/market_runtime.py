@@ -46,6 +46,19 @@ def _copy_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _parse_iso_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _near_market_boundary() -> bool:
     now_ts = time.time()
     for interval in _BOUNDARY_INTERVALS_SECONDS:
@@ -725,6 +738,7 @@ class MarketRuntime:
         reference_runtime = self._reference_runtime
         rebuilt: list[dict[str, Any]] = []
         now_iso = utcnow().isoformat().replace("+00:00", "Z")
+        now_dt = utcnow()
         strict_age = float(getattr(settings, "WS_EXECUTION_PRICE_STALE_SECONDS", 1.0) or 1.0)
         for existing in rows:
             row = dict(existing)
@@ -744,6 +758,20 @@ class MarketRuntime:
             row["oracle_age_seconds"] = oracle.get("age_seconds") if oracle else row.get("oracle_age_seconds")
             row["oracle_prices_by_source"] = reference_runtime.get_oracle_prices_by_source(asset) if asset else row.get("oracle_prices_by_source")
             row["oracle_history"] = reference_runtime.get_oracle_history(asset, points=80) if asset else row.get("oracle_history")
+            start_time = _parse_iso_utc(row.get("start_time"))
+            end_time = _parse_iso_utc(row.get("end_time"))
+            if start_time is not None and end_time is not None:
+                row["is_live"] = start_time <= now_dt < end_time
+                row["is_current"] = bool(row["is_live"])
+            elif end_time is not None:
+                row["is_live"] = now_dt < end_time
+            if end_time is not None:
+                row["seconds_left"] = max(0, int(round((end_time - now_dt).total_seconds())))
+            else:
+                row["seconds_left"] = None
+            up_price = _to_float(row.get("up_price"))
+            down_price = _to_float(row.get("down_price"))
+            row["combined"] = (up_price + down_price) if up_price is not None and down_price is not None else None
             row["price_updated_at"] = now_iso
             rebuilt.append(row)
         return rebuilt

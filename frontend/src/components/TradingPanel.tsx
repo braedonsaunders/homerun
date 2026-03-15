@@ -2511,12 +2511,16 @@ function parseTraderDeleteLiveExposure(error: unknown): { message: string; summa
 
   const message = cleanText(detail.message) || 'Trader has live exposure.'
   const livePositions = Math.max(0, Math.trunc(toNumber(detail.open_live_positions)))
+  const shadowPositions = Math.max(0, Math.trunc(toNumber(detail.open_shadow_positions)))
   const liveOrders = Math.max(0, Math.trunc(toNumber(detail.open_live_orders)))
+  const shadowOrders = Math.max(0, Math.trunc(toNumber(detail.open_shadow_orders)))
   const otherPositions = Math.max(0, Math.trunc(toNumber(detail.open_other_positions)))
   const otherOrders = Math.max(0, Math.trunc(toNumber(detail.open_other_orders)))
   const parts: string[] = []
   if (livePositions > 0) parts.push(`${livePositions} live position(s)`)
+  if (shadowPositions > 0) parts.push(`${shadowPositions} shadow position(s)`)
   if (liveOrders > 0) parts.push(`${liveOrders} live active order(s)`)
+  if (shadowOrders > 0) parts.push(`${shadowOrders} shadow active order(s)`)
   if (otherPositions > 0) parts.push(`${otherPositions} unknown position(s)`)
   if (otherOrders > 0) parts.push(`${otherOrders} unknown active order(s)`)
   return {
@@ -4420,7 +4424,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [traderTogglePendingById, setTraderTogglePendingById] = useState<Record<string, TraderToggleAction>>({})
   const [saveError, setSaveError] = useState<string | null>(null)
   const [deleteAction, setDeleteAction] = useState<'block' | 'disable' | 'force_delete'>('disable')
-  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [deleteForceConfirm, setDeleteForceConfirm] = useState(false)
   const [tuneDraftTraderId, setTuneDraftTraderId] = useState<string | null>(null)
   const [tuneDraftDirty, setTuneDraftDirty] = useState(false)
   const [tuneSaveError, setTuneSaveError] = useState<string | null>(null)
@@ -4762,6 +4766,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => traders.find((trader) => trader.id === selectedTraderId) || null,
     [traders, selectedTraderId]
   )
+  useEffect(() => {
+    setDeleteForceConfirm(false)
+  }, [selectedTraderId])
   const selectedTraderSourceConfigs = useMemo(
     () => (Array.isArray(selectedTrader?.source_configs) ? selectedTrader.source_configs : []),
     [selectedTrader]
@@ -5387,7 +5394,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     setDraftCopyFromTraderId('')
     setDraftCopyFromMode(selectedAccountMode)
     setDeleteAction('disable')
-    setDeleteConfirmName('')
+    setDeleteForceConfirm(false)
     setSaveError(null)
     setTuneDraftTraderId(null)
     setTuneDraftDirty(false)
@@ -5412,7 +5419,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     applyTraderDraftSettings(trader)
     setDraftCopyFromMode(trader.mode === 'live' ? 'live' : 'shadow')
     setDeleteAction('disable')
-    setDeleteConfirmName('')
+    setDeleteForceConfirm(false)
     setSaveError(null)
     setTuneDraftTraderId(trader.id)
     setTuneDraftDirty(false)
@@ -6328,6 +6335,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     },
     onSuccess: (result, variables) => {
       setSaveError(null)
+      setDeleteForceConfirm(false)
       if (result.status === 'deleted') {
         if (selectedTraderId === variables.traderId) {
           const fallback = traders.find((row) => row.id !== variables.traderId)
@@ -6344,12 +6352,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const liveExposure = parseTraderDeleteLiveExposure(error)
       if (liveExposure) {
         setDeleteAction('force_delete')
-        setDeleteConfirmName('')
+        setDeleteForceConfirm(false)
         setSaveError(
           [
             liveExposure.message,
             liveExposure.summary ? `Current exposure: ${liveExposure.summary}.` : null,
-            'Select Force Delete and type the bot name to confirm permanent deletion.',
+            'Select Force Delete and confirm the override to permanently delete now.',
           ]
             .filter(Boolean)
             .join(' ')
@@ -8203,6 +8211,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [selectedPositionBook]
   )
 
+  const selectedTraderOpenLivePositions = useMemo(
+    () => selectedPositionBook.filter((row) => row.liveOrderCount > 0).length,
+    [selectedPositionBook]
+  )
+
+  const selectedTraderOpenShadowPositions = useMemo(
+    () => selectedPositionBook.filter((row) => row.shadowOrderCount > 0).length,
+    [selectedPositionBook]
+  )
+
   const selectedTraderOpenLiveOrders = useMemo(
     () => selectedOrders.filter((order) => OPEN_ORDER_STATUSES.has(normalizeStatus(order.status)) && String(order.mode || '').toLowerCase() === 'live').length,
     [selectedOrders]
@@ -8212,6 +8230,24 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => selectedOrders.filter((order) => OPEN_ORDER_STATUSES.has(normalizeStatus(order.status)) && String(order.mode || '').toLowerCase() === 'shadow').length,
     [selectedOrders]
   )
+
+  const selectedTraderHasAnyDeleteExposure = (
+    selectedTraderOpenLivePositions > 0
+    || selectedTraderOpenShadowPositions > 0
+    || selectedTraderOpenLiveOrders > 0
+    || selectedTraderOpenShadowOrders > 0
+  )
+
+  const selectedTraderHasLiveDeleteExposure = selectedTraderOpenLivePositions > 0 || selectedTraderOpenLiveOrders > 0
+
+  const selectedTraderDeleteExposureSummary = [
+    selectedTraderOpenLivePositions > 0 ? `${selectedTraderOpenLivePositions} live position(s)` : null,
+    selectedTraderOpenShadowPositions > 0 ? `${selectedTraderOpenShadowPositions} shadow position(s)` : null,
+    selectedTraderOpenLiveOrders > 0 ? `${selectedTraderOpenLiveOrders} live open order(s)` : null,
+    selectedTraderOpenShadowOrders > 0 ? `${selectedTraderOpenShadowOrders} shadow open order(s)` : null,
+  ]
+    .filter(Boolean)
+    .join(' • ')
 
   const selectedDecision = useMemo(
     () => selectedDecisions.find((decision) => decision.id === selectedDecisionId) || null,
@@ -11737,7 +11773,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           setTraderFlyoutOpen(open)
           if (!open) {
             setSaveError(null)
-            setDeleteConfirmName('')
+            setDeleteForceConfirm(false)
             setTuneSaveError(null)
             setTuneIterateError(null)
             setTuneRevertError(null)
@@ -12252,15 +12288,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     icon={AlertTriangle}
                     iconClassName="text-red-500"
                     tone="danger"
-                    count={`${selectedTraderOpenLiveOrders + selectedTraderOpenShadowOrders} open orders`}
+                    count={`${selectedTraderOpenLivePositions + selectedTraderOpenShadowPositions} positions • ${selectedTraderOpenLiveOrders + selectedTraderOpenShadowOrders} open orders`}
                     defaultOpen={false}
                   >
+                    <p className="text-xs text-muted-foreground">
+                      Open live positions: {selectedTraderOpenLivePositions} • Open shadow positions: {selectedTraderOpenShadowPositions}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       Open live orders: {selectedTraderOpenLiveOrders} • Open shadow orders: {selectedTraderOpenShadowOrders}
                     </p>
                     <Select
                       value={deleteAction}
-                      onValueChange={(value) => setDeleteAction(value as 'block' | 'disable' | 'force_delete')}
+                      onValueChange={(value) => {
+                        setDeleteAction(value as 'block' | 'disable' | 'force_delete')
+                        setDeleteForceConfirm(false)
+                      }}
                     >
                       <SelectTrigger className="h-8">
                         <SelectValue />
@@ -12272,18 +12314,31 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       </SelectContent>
                     </Select>
                     {deleteAction === 'force_delete' ? (
-                      <div>
-                        <p className="text-[11px] text-amber-500/90 mb-1">
-                          Override mode: use when live orders were already closed manually on Polymarket.
+                      <div className="space-y-2 rounded-md border border-red-500/40 bg-red-500/10 p-3">
+                        <p className="text-xs font-medium text-red-700 dark:text-red-100">
+                          {selectedTraderHasLiveDeleteExposure ? 'Force delete with live exposure' : 'Confirm force delete'}
                         </p>
-                        <Label className="text-xs">
-                          Type bot name to confirm force delete: <span className="font-mono">{selectedTrader.name}</span>
-                        </Label>
-                        <Input
-                          value={deleteConfirmName}
-                          onChange={(event) => setDeleteConfirmName(event.target.value)}
-                          className="mt-1"
-                        />
+                        <p className="text-[11px] text-red-700/90 dark:text-red-100/90">
+                          {selectedTraderHasLiveDeleteExposure
+                            ? `This permanently deletes ${selectedTrader.name} while live exposure is still open. Only continue if those positions or orders were already flattened outside Homerun.`
+                            : `This permanently deletes ${selectedTrader.name} and bypasses the normal exposure safety check.`}
+                        </p>
+                        {selectedTraderHasAnyDeleteExposure ? (
+                          <p className="text-[11px] text-red-700/90 dark:text-red-100/90">
+                            Current exposure: {selectedTraderDeleteExposureSummary}.
+                          </p>
+                        ) : null}
+                        <div className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-background/70 px-3 py-2">
+                          <div className="space-y-0.5">
+                            <Label className="text-xs text-foreground">Confirm permanent deletion</Label>
+                            <p className="text-[11px] text-muted-foreground">
+                              {selectedTraderHasLiveDeleteExposure
+                                ? 'I understand this can orphan live exposure if it is still open.'
+                                : 'I understand this permanently deletes the bot.'}
+                            </p>
+                          </div>
+                          <Switch checked={deleteForceConfirm} onCheckedChange={setDeleteForceConfirm} />
+                        </div>
                       </div>
                     ) : null}
                     <Button
@@ -12291,7 +12346,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       className="h-8 text-xs"
                       disabled={
                         deleteTraderMutation.isPending ||
-                        (deleteAction === 'force_delete' && deleteConfirmName !== selectedTrader.name)
+                        (deleteAction === 'force_delete' && !deleteForceConfirm)
                       }
                       onClick={() => deleteTraderMutation.mutate({ traderId: selectedTrader.id, action: deleteAction })}
                     >
