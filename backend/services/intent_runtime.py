@@ -1292,44 +1292,56 @@ class IntentRuntime:
         keep_dedupe_keys = {str(key) for key in (payload.get("keep_dedupe_keys") or []) if str(key).strip()}
         if not snapshots and not sweep_missing:
             return
-        async with AsyncSessionLocal() as session:
-            signal_types_by_source: set[str] = set()
-            for snapshot in snapshots.values():
-                signal_type = str(snapshot.get("signal_type") or "").strip().lower()
-                if signal_type:
-                    signal_types_by_source.add(signal_type)
-                row = await upsert_trade_signal(
-                    session,
-                    source=str(snapshot.get("source") or source),
-                    source_item_id=snapshot.get("source_item_id"),
-                    signal_type=signal_type,
-                    strategy_type=snapshot.get("strategy_type"),
-                    market_id=str(snapshot.get("market_id") or ""),
-                    market_question=snapshot.get("market_question"),
-                    direction=snapshot.get("direction"),
-                    entry_price=snapshot.get("entry_price"),
-                    edge_percent=snapshot.get("edge_percent"),
-                    confidence=snapshot.get("confidence"),
-                    liquidity=snapshot.get("liquidity"),
-                    expires_at=_normalize_datetime(snapshot.get("expires_at")),
-                    payload_json=copy.deepcopy(snapshot.get("payload_json") or {}),
-                    strategy_context_json=copy.deepcopy(snapshot.get("strategy_context_json") or {}),
-                    quality_passed=snapshot.get("quality_passed"),
-                    quality_rejection_reasons=None,
-                    dedupe_key=str(snapshot.get("dedupe_key") or ""),
-                    signal_id=str(snapshot.get("id") or "") or None,
-                    runtime_sequence=snapshot.get("runtime_sequence"),
-                    commit=False,
-                )
-                desired_status = str(snapshot.get("status") or "").strip().lower()
-                if desired_status and desired_status != str(getattr(row, "status", "") or "").strip().lower():
-                    row.status = desired_status
-                    row.updated_at = _normalize_datetime(snapshot.get("updated_at")) or utcnow()
-                row.runtime_sequence = _normalize_runtime_sequence(snapshot.get("runtime_sequence"))
-                effective_price = snapshot.get("effective_price")
-                if effective_price is not None:
-                    row.effective_price = effective_price
-            if sweep_missing:
+
+        _UPSERT_CHUNK_SIZE = 50
+        snapshot_items = list(snapshots.values())
+        signal_types_by_source: set[str] = set()
+
+        # Process in chunks to avoid holding a connection for minutes
+        for chunk_start in range(0, max(len(snapshot_items), 1), _UPSERT_CHUNK_SIZE):
+            chunk = snapshot_items[chunk_start:chunk_start + _UPSERT_CHUNK_SIZE]
+            if not chunk:
+                break
+            async with AsyncSessionLocal() as session:
+                for snapshot in chunk:
+                    signal_type = str(snapshot.get("signal_type") or "").strip().lower()
+                    if signal_type:
+                        signal_types_by_source.add(signal_type)
+                    row = await upsert_trade_signal(
+                        session,
+                        source=str(snapshot.get("source") or source),
+                        source_item_id=snapshot.get("source_item_id"),
+                        signal_type=signal_type,
+                        strategy_type=snapshot.get("strategy_type"),
+                        market_id=str(snapshot.get("market_id") or ""),
+                        market_question=snapshot.get("market_question"),
+                        direction=snapshot.get("direction"),
+                        entry_price=snapshot.get("entry_price"),
+                        edge_percent=snapshot.get("edge_percent"),
+                        confidence=snapshot.get("confidence"),
+                        liquidity=snapshot.get("liquidity"),
+                        expires_at=_normalize_datetime(snapshot.get("expires_at")),
+                        payload_json=copy.deepcopy(snapshot.get("payload_json") or {}),
+                        strategy_context_json=copy.deepcopy(snapshot.get("strategy_context_json") or {}),
+                        quality_passed=snapshot.get("quality_passed"),
+                        quality_rejection_reasons=None,
+                        dedupe_key=str(snapshot.get("dedupe_key") or ""),
+                        signal_id=str(snapshot.get("id") or "") or None,
+                        runtime_sequence=snapshot.get("runtime_sequence"),
+                        commit=False,
+                    )
+                    desired_status = str(snapshot.get("status") or "").strip().lower()
+                    if desired_status and desired_status != str(getattr(row, "status", "") or "").strip().lower():
+                        row.status = desired_status
+                        row.updated_at = _normalize_datetime(snapshot.get("updated_at")) or utcnow()
+                    row.runtime_sequence = _normalize_runtime_sequence(snapshot.get("runtime_sequence"))
+                    effective_price = snapshot.get("effective_price")
+                    if effective_price is not None:
+                        row.effective_price = effective_price
+                await session.commit()
+
+        if sweep_missing:
+            async with AsyncSessionLocal() as session:
                 await expire_source_signals_except(
                     session,
                     source=source,
@@ -1337,7 +1349,7 @@ class IntentRuntime:
                     signal_types=sorted(signal_types_by_source),
                     commit=False,
                 )
-            await session.commit()
+                await session.commit()
 
     async def _project_status(self, payload: dict[str, Any]) -> None:
         await self._project_status_batch([payload])
@@ -1357,19 +1369,24 @@ class IntentRuntime:
             }
         if not latest_by_signal_id:
             return
-        async with AsyncSessionLocal() as session:
-            changed_any = False
-            for item in latest_by_signal_id.values():
-                changed = await project_trade_signal_status(
-                    session,
-                    str(item.get("signal_id") or ""),
-                    str(item.get("status") or ""),
-                    effective_price=item.get("effective_price"),
-                    commit=False,
-                )
-                changed_any = changed_any or bool(changed)
-            if changed_any:
-                await session.commit()
+
+        _STATUS_CHUNK_SIZE = 50
+        items = list(latest_by_signal_id.values())
+        for chunk_start in range(0, len(items), _STATUS_CHUNK_SIZE):
+            chunk = items[chunk_start:chunk_start + _STATUS_CHUNK_SIZE]
+            async with AsyncSessionLocal() as session:
+                changed_any = False
+                for item in chunk:
+                    changed = await project_trade_signal_status(
+                        session,
+                        str(item.get("signal_id") or ""),
+                        str(item.get("status") or ""),
+                        effective_price=item.get("effective_price"),
+                        commit=False,
+                    )
+                    changed_any = changed_any or bool(changed)
+                if changed_any:
+                    await session.commit()
 
 
 _intent_runtime: IntentRuntime | None = None

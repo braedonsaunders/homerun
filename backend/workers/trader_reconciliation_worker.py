@@ -212,63 +212,69 @@ async def _run_reconciliation_cycle(
         traders = await list_traders(session)
 
     summary["traders_seen"] = len(traders)
-    for trader in traders:
+
+    _RECONCILE_CONCURRENCY = 2
+    sem = asyncio.Semaphore(_RECONCILE_CONCURRENCY)
+
+    async def _reconcile_one(trader: dict[str, Any]) -> dict[str, Any] | None:
         trader_id = str(trader.get("id") or "").strip()
         if not trader_id:
-            continue
-        result: dict[str, Any] | None = None
-        for attempt in range(_TRADER_RECONCILE_ATTEMPTS):
-            try:
-                result = await _reconcile_live_state_for_trader(trader, provider_pass=provider_pass)
-                break
-            except StaleDataError as exc:
-                if attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
+            return None
+        async with sem:
+            for attempt in range(_TRADER_RECONCILE_ATTEMPTS):
+                try:
+                    return await _reconcile_live_state_for_trader(trader, provider_pass=provider_pass)
+                except StaleDataError as exc:
+                    if attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
+                        logger.warning(
+                            "Live reconciliation stale-row conflict for trader=%s reason=%s attempt=%d/%d; retrying",
+                            trader_id,
+                            reason,
+                            attempt + 1,
+                            _TRADER_RECONCILE_ATTEMPTS,
+                            exc_info=exc,
+                        )
+                        await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
+                        continue
+                    summary["failures"] = int(summary["failures"]) + 1
                     logger.warning(
-                        "Live reconciliation stale-row conflict for trader=%s reason=%s attempt=%d/%d; retrying",
+                        "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
                         trader_id,
                         reason,
-                        attempt + 1,
-                        _TRADER_RECONCILE_ATTEMPTS,
-                        exc_info=exc,
-                    )
-                    await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
-                    continue
-                summary["failures"] = int(summary["failures"]) + 1
-                logger.warning(
-                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
-                    trader_id,
-                    reason,
-                    type(exc).__name__,
-                    False,
-                    exc_info=exc,
-                )
-            except Exception as exc:
-                retryable_db = _is_retryable_db_error(exc)
-                if retryable_db and attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
-                    logger.warning(
-                        "Live reconciliation retrying trader=%s reason=%s attempt=%d/%d due retryable DB error (%s)",
-                        trader_id,
-                        reason,
-                        attempt + 1,
-                        _TRADER_RECONCILE_ATTEMPTS,
                         type(exc).__name__,
+                        False,
                         exc_info=exc,
                     )
-                    await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
-                    continue
-                summary["failures"] = int(summary["failures"]) + 1
-                logger.warning(
-                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
-                    trader_id,
-                    reason,
-                    type(exc).__name__,
-                    retryable_db,
-                    exc_info=exc,
-                )
-            break
-        if result is None:
-            continue
+                except Exception as exc:
+                    retryable_db = _is_retryable_db_error(exc)
+                    if retryable_db and attempt < _TRADER_RECONCILE_ATTEMPTS - 1:
+                        logger.warning(
+                            "Live reconciliation retrying trader=%s reason=%s attempt=%d/%d due retryable DB error (%s)",
+                            trader_id,
+                            reason,
+                            attempt + 1,
+                            _TRADER_RECONCILE_ATTEMPTS,
+                            type(exc).__name__,
+                            exc_info=exc,
+                        )
+                        await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
+                        continue
+                    summary["failures"] = int(summary["failures"]) + 1
+                    logger.warning(
+                        "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
+                        trader_id,
+                        reason,
+                        type(exc).__name__,
+                        retryable_db,
+                        exc_info=exc,
+                    )
+                break
+        return None
 
+    results = await asyncio.gather(*[_reconcile_one(t) for t in traders], return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException) or result is None:
+            continue
         provider = result.get("provider") or {}
         lifecycle = result.get("lifecycle") or {}
         inventory = result.get("inventory") or {}
