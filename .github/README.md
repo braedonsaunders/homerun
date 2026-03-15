@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="../homerun-logo.png" alt="Homerun" width="340" />
+  <img src="../logo.png" alt="Homerun" width="340" />
   <h1>Homerun</h1>
   <p><strong>Wire any data source into any trading strategy for prediction markets.</strong></p>
   <p>Polymarket + Kalshi scanning, DB-managed Python runtimes, and paper/live execution orchestration.</p>
