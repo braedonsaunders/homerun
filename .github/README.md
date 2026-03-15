@@ -37,13 +37,17 @@ Most trading bots force a rigid pipeline or a toy DSL. Homerun does not.
 - Unified opportunity model across scanner/news/weather/events/trader flows.
 - Built for prediction markets first (binary contracts, event settlement, cross-venue dislocations).
 
-## Quick Links
+## One-Click Launch
 
-- Start local dev: `make setup && make dev`
-- Start terminal UI: `make run`
-- Strategy API docs: `GET /api/strategy-manager/docs`
-- Data source API docs: `GET /api/data-sources/docs`
-- FastAPI swagger: `http://localhost:8000/docs`
+Get up and running instantly with the platform launcher for your OS — no terminal required.
+
+| Platform | Launcher | Location |
+|----------|----------|----------|
+| **Windows** | `Homerun.bat` | `scripts/launchers/Homerun.bat` |
+| **macOS** | `Homerun.command` | `scripts/launchers/Homerun.command` |
+| **Linux** | `Homerun.desktop` | `scripts/launchers/Homerun.desktop` |
+
+Double-click the launcher for your platform to install dependencies, start all services, and open the dashboard.
 
 ## Wire Any Source Into Any Strategy
 
