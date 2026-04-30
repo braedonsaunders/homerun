@@ -14,7 +14,13 @@ from services.optimization.execution_estimator import (
     ExecutionEstimator,
     ExecutionEstimatorConfig,
 )
-from services.fill_simulator import build_survival_features
+from services.fill_simulator import (
+    build_survival_features,
+    ensemble_estimate,
+    get_empirical_constants,
+    measured_latency_cached,
+)
+from services.fill_simulator.cox_inference import _cache as _cox_cache  # for lookup hint
 from services.strategy_sdk import StrategySDK
 from utils.converters import safe_float
 
@@ -770,7 +776,32 @@ async def submit_execution_leg(
                 notional_usd=0.0,
             )
 
-        estimate = _execution_estimator.estimate_order(
+        # Build the ensemble: pessimistic / realistic / optimistic.
+        # The Cox model is loaded lazily — if an active model has been
+        # cached in-process we evaluate; otherwise the ensemble falls
+        # back to the heuristic estimator's fill_probability output.
+        # Cox loading is fire-and-forget on the cache: subsequent
+        # orders pick up the loaded model on cache hit.
+        constants = get_empirical_constants()
+        latency = measured_latency_cached()
+        survival_features_struct = build_survival_features(
+            estimate=None,
+            order_book=book_payload,
+            recent_trades=recent_trades,
+            book_age_ms=book_age_ms,
+            payload=payload,
+            side=order_side,
+            limit_price=float(price or 0.0),
+            notional_usd=float(notional or 0.0),
+            latency_p95_ms=latency.p95_ms,
+            recent_trade_lookback_seconds=30.0,
+        )
+        survival_covariates = survival_features_struct.to_payload()
+        cox_snapshot = None
+        cached_entry = _cox_cache.get(survival_covariates.get("market_type_strata") or "pooled")
+        if cached_entry is not None:
+            _ts, cox_snapshot = cached_entry
+        ensemble = ensemble_estimate(
             order_book=book_payload,
             side=order_side,
             size_shares=shares,
@@ -778,22 +809,23 @@ async def submit_execution_leg(
             order_type=order_type,
             recent_trades=recent_trades,
             book_age_ms=book_age_ms,
-            config=ExecutionEstimatorConfig(
-                fee_bps=0.0,
-                latency_ms=350.0,
-                time_in_force_seconds=6.0,
-                displayed_depth_factor=0.88,
-                min_depth_factor=0.20,
-                max_book_age_ms=10_000.0,
-                stale_depth_decay=0.55,
-                maker_queue_ahead_fraction=0.65,
-                maker_trade_flow_multiplier=1.20,
-                adverse_selection_multiplier=0.70,
-            ),
+            time_in_force_seconds=6.0,
+            fee_bps=0.0,
+            cox_snapshot=cox_snapshot,
+            survival_covariates=survival_covariates,
+            latency=latency,
+            constants=constants,
         )
+        # The realistic scenario is the canonical fill estimate that
+        # decides status/notional/etc.  Pessimistic + optimistic are
+        # persisted alongside for the UI's PnL-band display.
+        estimate = ensemble.realistic.estimate
         quote_price = estimate.average_price
         effective_shadow_notional = estimate.filled_notional_usd
         shadow_status = _shadow_status_for_estimate(estimate)
+        # Refresh survival features with the realized estimate's
+        # queue_ahead so the persisted snapshot matches what the Cox
+        # trainer will see at training time.
         survival_features = build_survival_features(
             estimate=estimate,
             order_book=book_payload,
@@ -803,7 +835,7 @@ async def submit_execution_leg(
             side=order_side,
             limit_price=float(price or 0.0),
             notional_usd=float(notional or 0.0),
-            latency_p95_ms=None,
+            latency_p95_ms=latency.p95_ms,
             recent_trade_lookback_seconds=30.0,
         )
         shadow_simulation_payload = {
@@ -815,11 +847,12 @@ async def submit_execution_leg(
             "price_impact_bps": estimate.price_impact_bps,
             "adverse_selection_bps": estimate.adverse_selection_bps,
             "adverse_selection_cost_usd": estimate.adverse_selection_cost_usd,
-            "fill_probability": estimate.fill_probability,
+            "fill_probability": ensemble.realistic.fill_probability,
             "queue_ahead_shares": estimate.queue_ahead_shares,
             "levels_consumed": estimate.levels_consumed,
             "execution_estimate": estimate.to_dict(),
             "survival_features": survival_features.to_payload(),
+            "ensemble": ensemble.to_dict(),
         }
         if estimate.filled_shares <= 0:
             return LegSubmitResult(

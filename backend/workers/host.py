@@ -90,6 +90,10 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
             "workers.redeemer_worker",
+            # Keep the in-process latency / empirical-constants / Cox-
+            # model caches warm so the order hot path never blocks on
+            # a DB round trip.  Cheap (~few SELECTs per minute).
+            "workers.fill_simulator_refresh_worker",
         ),
         "runtime_names": (
             "trader_orchestrator",
@@ -168,6 +172,7 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
             "workers.redeemer_worker",
+            "workers.fill_simulator_refresh_worker",
         ),
         "runtime_names": (
             "trader_orchestrator",
