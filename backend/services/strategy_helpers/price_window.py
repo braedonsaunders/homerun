@@ -161,3 +161,237 @@ class PriceWindow:
 
     def __len__(self) -> int:
         return len(self.samples)
+
+
+# ---------------------------------------------------------------------------
+# MultiWindow — fan one tick into N rolling lookbacks on a shared price stream
+# ---------------------------------------------------------------------------
+
+
+class MultiWindow:
+    """Fan a single price stream into multiple rolling lookback windows.
+
+    Removes the dict-of-dicts boilerplate when a strategy wants to reason
+    about the same price across several timeframes (e.g. 5m / 15m / 1h /
+    4h). One ``record(price)`` updates every child window; per-window
+    statistics are then queryable by label.
+
+    Typical use::
+
+        from services.strategy_sdk import StrategySDK
+
+        mw = StrategySDK.MultiWindow(lookbacks={
+            "5m":  300,
+            "15m": 900,
+            "1h":  3600,
+            "4h":  14400,
+        })
+
+        def on_tick(price):
+            mw.record(price)
+            if mw.all_agree(direction="up", min_return=0.01):
+                ...   # all four lookbacks confirm an upward move >= 1%
+
+    Notes
+    -----
+    * ``lookbacks`` maps a label -> seconds. Window sizes are independent
+      and the sample buffers are separate per label, so the longest
+      window does not bound the shortest one's eviction policy.
+    * ``log_returns()`` returns one log-return per label, computed against
+      a sample ``seconds_ago=window_seconds`` ago — i.e. the full
+      lookback. ``None`` entries indicate insufficient data for that
+      label (rather than dropped entries) so callers can distinguish
+      "haven't seen enough ticks" from "no movement."
+    """
+
+    __slots__ = ("_windows",)
+
+    def __init__(self, lookbacks: dict[str, float]) -> None:
+        if not lookbacks:
+            raise ValueError("MultiWindow requires at least one lookback")
+        windows: dict[str, PriceWindow] = {}
+        for label, seconds in lookbacks.items():
+            secs = float(seconds)
+            if secs <= 0:
+                raise ValueError(f"MultiWindow lookback '{label}' must be > 0 (got {seconds})")
+            windows[str(label)] = PriceWindow(window_seconds=secs)
+        self._windows = windows
+
+    # ── Recording ──────────────────────────────────────────────
+
+    def record(self, price: float, ts_ms: Optional[int] = None) -> None:
+        """Append the same observation to every child window."""
+        ts = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
+        for window in self._windows.values():
+            window.record(price, ts_ms=ts)
+
+    # ── Access ─────────────────────────────────────────────────
+
+    def __getitem__(self, label: str) -> PriceWindow:
+        return self._windows[str(label)]
+
+    def __contains__(self, label: object) -> bool:
+        return str(label) in self._windows
+
+    def __iter__(self):
+        return iter(self._windows)
+
+    def __len__(self) -> int:
+        return len(self._windows)
+
+    def labels(self) -> list[str]:
+        """Lookback labels in insertion order."""
+        return list(self._windows.keys())
+
+    def windows(self) -> dict[str, PriceWindow]:
+        """Live mapping of label -> PriceWindow (mutating returned dict
+        does not detach windows from the MultiWindow)."""
+        return dict(self._windows)
+
+    @property
+    def has_data(self) -> bool:
+        """True when **every** child window has enough samples for statistics."""
+        return all(w.has_data for w in self._windows.values())
+
+    # ── Aggregate stats ────────────────────────────────────────
+
+    def log_returns(self) -> dict[str, Optional[float]]:
+        """Per-label log return computed over each window's full lookback.
+
+        Returns ``None`` for labels that lack a prior observation old
+        enough to anchor the return.
+        """
+        return {
+            label: window.log_return(seconds_ago=window.window_seconds)
+            for label, window in self._windows.items()
+        }
+
+    def realized_volatility_bps_per_sec(
+        self, sample_period_s: float = 1.0
+    ) -> dict[str, float]:
+        """Per-label realized volatility in bps per ``sample_period_s``."""
+        return {
+            label: window.realized_volatility_bps_per_sec(sample_period_s)
+            for label, window in self._windows.items()
+        }
+
+    # ── Multi-window confirmation primitives ───────────────────
+
+    def aligned_count(
+        self,
+        *,
+        direction: str = "up",
+        min_return: float = 0.0,
+    ) -> int:
+        """Number of lookbacks whose log-return matches ``direction``.
+
+        ``direction`` is ``"up"`` or ``"down"``. ``min_return`` is the
+        minimum |log-return| (e.g. ``0.01`` for ~1%) to count toward
+        agreement; defaults to 0 (any sign-aligned movement counts).
+        Labels without enough data contribute nothing.
+        """
+        sign = _direction_sign(direction)
+        threshold = abs(float(min_return))
+        count = 0
+        for ret in self.log_returns().values():
+            if ret is None:
+                continue
+            if sign > 0 and ret >= threshold:
+                count += 1
+            elif sign < 0 and ret <= -threshold:
+                count += 1
+        return count
+
+    def all_agree(
+        self,
+        *,
+        direction: str = "up",
+        min_return: float = 0.0,
+    ) -> bool:
+        """True iff every lookback that has data agrees on ``direction``.
+
+        Requires every child window to ``has_data``; this avoids reporting
+        agreement on a partially-populated tracker.
+        """
+        if not self.has_data:
+            return False
+        return self.aligned_count(direction=direction, min_return=min_return) == len(
+            self._windows
+        )
+
+
+# ---------------------------------------------------------------------------
+# Module-level confirmation helpers (work on plain dicts so callers can mix
+# values from different sources, not just MultiWindow)
+# ---------------------------------------------------------------------------
+
+
+def _direction_sign(direction: str) -> int:
+    norm = str(direction or "").strip().lower()
+    if norm in {"up", "long", "buy", "yes", "+", "1"}:
+        return 1
+    if norm in {"down", "short", "sell", "no", "-", "-1"}:
+        return -1
+    raise ValueError(f"Unknown direction '{direction}' — expected 'up' or 'down'")
+
+
+def timeframes_agree(
+    returns_by_label: dict[str, Optional[float]],
+    *,
+    direction: str = "up",
+    min_count: int = 1,
+    min_return: float = 0.0,
+) -> bool:
+    """Return True when at least ``min_count`` labels agree on ``direction``.
+
+    ``returns_by_label`` is the kind of dict returned by
+    :meth:`MultiWindow.log_returns` — values may be ``None`` to indicate
+    insufficient data. ``min_return`` is the minimum |log-return| each
+    label must reach to count toward agreement (defaults to 0, i.e. any
+    sign-aligned movement counts).
+    """
+    sign = _direction_sign(direction)
+    threshold = abs(float(min_return))
+    if min_count < 1:
+        raise ValueError("min_count must be >= 1")
+    count = 0
+    for ret in returns_by_label.values():
+        if ret is None:
+            continue
+        if sign > 0 and ret >= threshold:
+            count += 1
+        elif sign < 0 and ret <= -threshold:
+            count += 1
+        if count >= min_count:
+            return True
+    return False
+
+
+def weighted_signal(
+    returns_by_label: dict[str, Optional[float]],
+    weights: dict[str, float],
+) -> Optional[float]:
+    """Weighted average of per-label log-returns.
+
+    Labels missing from ``returns_by_label`` (or with ``None`` value)
+    are skipped, and weights are renormalised over the labels that
+    contributed — so a partially-populated MultiWindow still produces a
+    meaningful signal rather than collapsing to zero.
+
+    Returns ``None`` when no label contributes (all missing or all
+    weights are zero).
+    """
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for label, weight in weights.items():
+        w = float(weight)
+        if w <= 0:
+            continue
+        ret = returns_by_label.get(label)
+        if ret is None:
+            continue
+        weighted_sum += w * float(ret)
+        total_weight += w
+    if total_weight <= 0:
+        return None
+    return weighted_sum / total_weight

@@ -1714,6 +1714,33 @@ class StrategyRuntimeRevision(Base):
     __table_args__ = (Index("idx_strategy_runtime_revisions_updated", "updated_at"),)
 
 
+class StrategyPersistentState(Base):
+    """Durable per-strategy key/value state.
+
+    Backs ``StrategySDK.PersistentState`` — gives custom strategies a
+    place to persist data across worker restarts (rolling stats, last
+    seen timestamps, multi-window state, etc.) without each strategy
+    inventing its own table. ``self.state`` on BaseStrategy is in-memory
+    only; this is the durable counterpart.
+
+    Composite PK on ``(strategy_slug, key)``. Values are JSON, so any
+    JSON-serialisable Python value can be stored. Strategies access
+    rows through the SDK helper, never directly.
+    """
+
+    __tablename__ = "strategy_persistent_state"
+
+    strategy_slug = Column(String, primary_key=True)
+    key = Column(String, primary_key=True)
+    value = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_strategy_persistent_state_slug", "strategy_slug"),
+        Index("idx_strategy_persistent_state_updated", "updated_at"),
+    )
+
+
 # ==================== DATA SOURCES ====================
 
 

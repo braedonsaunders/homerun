@@ -83,11 +83,47 @@ pytest tests/ -v  # verbose output
 
 ### Adding a New Strategy
 
-1. Create a new file in `backend/services/strategies/`
-2. Extend `BaseStrategy` from `backend/services/strategies/base.py`
-3. Implement the `detect()` method
-4. Register the strategy in the scanner (`backend/services/scanner.py`)
-5. Add tests in `backend/tests/`
+Strategies are stored in the database (`strategies` table), not as Python
+files in this repo. The `.py` files under `backend/services/strategies/`
+are *system* (built-in) strategies that ship with the platform and are
+seeded into the DB at migration time — end users never edit them
+directly.
+
+#### As a user (creating a custom strategy in your install)
+
+1. Open the **Strategies** screen in the UI and click **New Strategy**.
+2. Start from `GET /strategies/template` (the form prefills it). The
+   endpoint also returns curated examples — including a multi-timeframe
+   *Compound Movement* example demonstrating
+   `StrategySDK.MultiWindow`, `on_timeframe_close()`, and
+   `StrategySDK.PersistentState`.
+3. Extend `BaseStrategy` from `services.strategies.base` and implement
+   `detect()` (or `detect_async()` for I/O-bound work). Optionally
+   override `evaluate()` and `should_exit()`.
+4. Save. The backend AST-validates the source (no `os` / `subprocess` /
+   `eval` / arbitrary imports) and persists it into the `strategies`
+   table. `StrategyLoader` compiles and hot-reloads it without a restart.
+5. `GET /strategies/docs` is the live, machine-readable reference for
+   `BaseStrategy`, the `StrategySDK` surface, hooks, and config schema.
+
+API equivalents (CLI / scripting): `POST /strategies/validate` for a
+pre-flight check, `POST /strategies` to create, `PUT /strategies/{id}`
+to edit, `POST /strategies/{id}/reload` to force a hot-reload.
+
+#### As a platform maintainer (adding a built-in / system strategy)
+
+1. Add a new file in `backend/services/strategies/` extending
+   `BaseStrategy`.
+2. Register a seed entry in
+   `backend/services/opportunity_strategy_catalog.py`
+   (`SYSTEM_OPPORTUNITY_STRATEGY_SEEDS`) — slug, source_key, import path,
+   config schema. The catalog converts seeds into `Strategy` rows on
+   migration.
+3. Add tests in `backend/tests/`.
+
+System strategies are loaded the same way as user strategies (through
+the `strategies` table); the only difference is that system rows have
+`is_system=True` and are seeded from this repo at migration time.
 
 ### Adding an API Endpoint
 

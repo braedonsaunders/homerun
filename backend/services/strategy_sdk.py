@@ -53,7 +53,13 @@ import re
 import time
 from typing import Any, Optional
 from utils.converters import coerce_bool as _coerce_bool
-from services.strategy_helpers.price_window import PriceWindow
+from services.strategy_helpers.persistent_state import PersistentState
+from services.strategy_helpers.price_window import (
+    MultiWindow,
+    PriceWindow,
+    timeframes_agree,
+    weighted_signal,
+)
 from services.strategy_helpers.cycle_tracker import CycleTracker
 from services.strategy_helpers.price_history import MarketPriceHistory, PriceSnapshot
 # Note: crypto_strategy_utils is loaded lazily via a descriptor below to
@@ -89,6 +95,31 @@ class StrategySDK:
     # oracle feed, etc.). Multi-stream callers maintain their own
     # ``dict[stream_id, PriceWindow]``.
     PriceWindow = PriceWindow
+
+    # MultiWindow fans one price stream into N rolling lookbacks at
+    # different sizes — the canonical primitive for compound-movement
+    # / multi-timeframe-confirmation strategies (e.g. 5m+15m+1h+4h on
+    # the same crypto spot price). One ``record(price)`` updates every
+    # child window; ``all_agree()`` / ``aligned_count()`` provide the
+    # standard confirmation checks. Module helpers ``timeframes_agree``
+    # and ``weighted_signal`` accept the dict shapes MultiWindow emits.
+    MultiWindow = MultiWindow
+    timeframes_agree = staticmethod(timeframes_agree)
+    weighted_signal = staticmethod(weighted_signal)
+
+    # PersistentState is the durable counterpart to ``BaseStrategy.state``
+    # — a per-strategy key/value cache backed by ``strategy_persistent_state``.
+    # Unlike ``self.state`` (in-memory, lost on worker restart), this
+    # survives across restarts and across worker processes. Use it for
+    # rolling stats, last-seen timestamps, multi-window snapshots, or any
+    # other state your strategy needs to outlive a single process.
+    #
+    # Usage:
+    #     ps = StrategySDK.PersistentState(strategy_slug=self.strategy_type)
+    #     await ps.load()           # hydrate from DB once
+    #     ps.set("last_ts", 12345)  # cached + marked dirty
+    #     await ps.flush()          # write dirty entries
+    PersistentState = PersistentState
 
     # CycleTracker is opt-in: only meaningful for fixed-cycle recurring
     # markets (e.g. Polymarket's 5m / 15m / 1h crypto over-under

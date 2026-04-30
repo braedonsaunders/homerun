@@ -303,6 +303,71 @@ def _has_custom_detect_sync(strategy: "BaseStrategy") -> bool:
     return method is not base_method
 
 
+# ---------------------------------------------------------------------------
+# Timeframe-close hook helpers
+# ---------------------------------------------------------------------------
+
+# Canonical timeframe -> seconds lookup, mirroring the values used by the
+# crypto strategy utils. Kept lightweight + local so this module doesn't
+# pull in services.strategy_helpers.crypto_strategy_utils (which would
+# create an import cycle through the strategies package).
+_TIMEFRAME_CLOSE_SECONDS: dict[str, int] = {
+    "5m": 300,
+    "5min": 300,
+    "15m": 900,
+    "15min": 900,
+    "1h": 3600,
+    "1hr": 3600,
+    "60m": 3600,
+    "60min": 3600,
+    "4h": 14_400,
+    "4hr": 14_400,
+    "240m": 14_400,
+    "240min": 14_400,
+}
+
+
+def _parse_timeframe_close_interval(value: Any) -> tuple[Optional[str], int]:
+    """Normalise a user-supplied timeframe label and return (canonical, seconds).
+
+    Accepts canonical labels ("5m", "15m", "1h", "4h") and common aliases
+    ("5min" / "1hr" / "60m" / "240m" / case variants). Returns
+    ``(None, 0)`` for anything we can't parse so the caller can skip
+    the entry without raising — bad config in DB-stored strategies
+    should not crash the runtime.
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None, 0
+    seconds = _TIMEFRAME_CLOSE_SECONDS.get(raw)
+    if seconds is None:
+        return None, 0
+    canonical = {300: "5m", 900: "15m", 3600: "1h", 14_400: "4h"}[seconds]
+    return canonical, seconds
+
+
+def _last_boundary_at_or_before(now: datetime, interval_seconds: int) -> datetime:
+    """Return the most recent wall-clock boundary at or before ``now``.
+
+    Boundaries are aligned to the unix epoch — i.e. for a 5-minute
+    interval the boundaries are 00:00, 00:05, 00:10, ... regardless of
+    when the process started. This keeps multiple workers / restarts in
+    sync on the same boundaries.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    elapsed = (now - epoch).total_seconds()
+    floored = int(elapsed) - (int(elapsed) % int(interval_seconds))
+    return epoch + _timedelta_seconds(floored)
+
+
+def _timedelta_seconds(seconds: int):
+    """Tiny helper so the import of ``timedelta`` lives in one place."""
+    from datetime import timedelta
+    return timedelta(seconds=seconds)
+
+
 class BaseStrategy(ABC):
     """Base class for all trading strategies.
 
@@ -452,6 +517,22 @@ class BaseStrategy(ABC):
     # Strategy-level entry gate. Set False for manage-existing-only strategies
     # (for example, manual position adoption bots that should only run should_exit()).
     allow_new_entries: bool = True
+
+    # Timeframe close hook — opt-in. Set to a list of canonical timeframe
+    # labels (any of "5m", "15m", "1h", "4h"; case-insensitive aliases like
+    # "5min" / "1hr" / "4hr" / "240m" also accepted) and the default
+    # ``on_event`` for ``MARKET_DATA_REFRESH`` will additionally call
+    # ``on_timeframe_close(timeframe, boundary_ts, ...)`` whenever a
+    # wall-clock boundary for that timeframe was crossed since this
+    # strategy last saw a refresh. Boundaries are detected per-strategy
+    # (so the hook isn't shared across the catalog) and only fire once
+    # per crossing — even if the scanner cadence is faster than the
+    # boundary, you'll see exactly one call per close.
+    #
+    # Useful for "compound movement" strategies that want to act on candle
+    # closes rather than every tick. Strategies that only need tick-level
+    # logic should leave this empty (the default).
+    timeframe_close_intervals: list[str] = []
     supports_entry_take_profit_exit: bool = False
     default_open_order_timeout_seconds: Optional[float] = None
     # Realtime scanner routing for MARKET_DATA_REFRESH batches:
@@ -677,15 +758,117 @@ class BaseStrategy(ABC):
             # 2. detect_sync() if the subclass provides its own override → run in thread-pool
             # 3. detect() (backward-compat name) → run in thread-pool
             if _has_custom_detect_async(self):
-                return await self.detect_async(event.events or [], event.markets or [], event.prices or {})
-            loop = asyncio.get_running_loop()
-            if _has_custom_detect_sync(self):
-                return await loop.run_in_executor(
-                    None, self.detect_sync, event.events or [], event.markets or [], event.prices or {}
+                opps = await self.detect_async(event.events or [], event.markets or [], event.prices or {})
+            else:
+                loop = asyncio.get_running_loop()
+                if _has_custom_detect_sync(self):
+                    opps = await loop.run_in_executor(
+                        None, self.detect_sync, event.events or [], event.markets or [], event.prices or {}
+                    )
+                else:
+                    opps = await loop.run_in_executor(
+                        None, self.detect, event.events or [], event.markets or [], event.prices or {}
+                    )
+            extra = await self._maybe_dispatch_timeframe_closes(event)
+            if extra:
+                return list(opps) + list(extra)
+            return opps
+        return []
+
+    async def _maybe_dispatch_timeframe_closes(self, event: DataEvent) -> list[Opportunity]:
+        """Detect wall-clock boundary crossings since last refresh and fire
+        ``on_timeframe_close()`` for each. Internal — invoked by the default
+        ``on_event`` for MARKET_DATA_REFRESH and skipped entirely when the
+        strategy has not opted in via ``timeframe_close_intervals``.
+        """
+        intervals = list(self.timeframe_close_intervals or [])
+        if not intervals:
+            return []
+        now_ts = event.timestamp
+        if now_ts is None:
+            return []
+        last_seen: dict[str, datetime] = self._state.setdefault("_timeframe_close_seen", {})
+        emitted: list[Opportunity] = []
+        for raw in intervals:
+            timeframe, seconds = _parse_timeframe_close_interval(raw)
+            if timeframe is None or seconds <= 0:
+                continue
+            prior = last_seen.get(timeframe)
+            boundary_ts = _last_boundary_at_or_before(now_ts, seconds)
+            last_seen[timeframe] = now_ts
+            # First refresh after process start — no prior reference to
+            # compare against, so we don't synthesise a "close" event.
+            if prior is None:
+                continue
+            if boundary_ts <= prior:
+                continue
+            try:
+                hook_result = await self._invoke_timeframe_close_hook(
+                    timeframe, boundary_ts, event
                 )
-            return await loop.run_in_executor(
-                None, self.detect, event.events or [], event.markets or [], event.prices or {}
-            )
+            except Exception:  # pragma: no cover - defensive: never break detect()
+                logger = self._timeframe_close_logger()
+                if logger is not None:
+                    logger.exception(
+                        "on_timeframe_close raised for strategy=%s timeframe=%s",
+                        getattr(self, "strategy_type", self.__class__.__name__),
+                        timeframe,
+                    )
+                continue
+            if hook_result:
+                emitted.extend(hook_result)
+        return emitted
+
+    async def _invoke_timeframe_close_hook(
+        self,
+        timeframe: str,
+        boundary_ts: datetime,
+        event: DataEvent,
+    ) -> list[Opportunity]:
+        """Run ``on_timeframe_close`` (sync or async) and return its output."""
+        result = self.on_timeframe_close(
+            timeframe,
+            boundary_ts,
+            event.events or [],
+            event.markets or [],
+            event.prices or {},
+        )
+        if asyncio.iscoroutine(result):
+            result = await result
+        return list(result or [])
+
+    @staticmethod
+    def _timeframe_close_logger():
+        try:
+            import logging
+            return logging.getLogger("services.strategies.base")
+        except Exception:
+            return None
+
+    def on_timeframe_close(
+        self,
+        timeframe: str,
+        boundary_ts: datetime,
+        events: list[Event],
+        markets: list[Market],
+        prices: dict[str, dict],
+    ) -> list[Opportunity] | "asyncio.Future[list[Opportunity]]":
+        """Hook fired when a wall-clock boundary for ``timeframe`` is crossed.
+
+        Override this when your strategy reasons about candle closes rather
+        than every tick — e.g. "all four of (5m, 15m, 1h, 4h) just closed and
+        agree on direction." Opt in by setting ``timeframe_close_intervals``
+        on your subclass.
+
+        ``boundary_ts`` is the closing edge of the just-completed window
+        (``floor(now / interval)``), not the current scan time. Multiple
+        boundaries may fire in a single refresh if the scanner skipped a
+        cadence — each crossing produces exactly one call.
+
+        Default implementation is a no-op returning ``[]``. Returning
+        opportunities is fully supported and they will be merged into the
+        list returned from the parent refresh dispatch.
+        """
         return []
 
     def on_blocked(

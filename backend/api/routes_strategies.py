@@ -34,6 +34,7 @@ from services.strategy_experiments import (
     serialize_strategy_experiment,
 )
 from services.strategy_loader import (
+    MULTI_WINDOW_STRATEGY_TEMPLATE,
     STRATEGY_TEMPLATE,
     StrategyValidationError,
     strategy_loader,
@@ -382,9 +383,28 @@ def _strategy_to_dict(row: Strategy) -> dict:
 
 @router.get("/template")
 async def get_unified_template():
-    """Return the unified strategy template."""
+    """Return the unified strategy template + curated examples."""
     return {
         "template": STRATEGY_TEMPLATE,
+        "examples": [
+            {
+                "slug": "basic",
+                "label": "Basic strategy",
+                "description": "Minimal detect/evaluate/should_exit skeleton.",
+                "source": STRATEGY_TEMPLATE,
+            },
+            {
+                "slug": "compound_movement",
+                "label": "Compound Movement (multi-timeframe)",
+                "description": (
+                    "5m / 15m / 1h windows on a shared price stream, fires only "
+                    "on candle closes when enough timeframes agree. Demonstrates "
+                    "StrategySDK.MultiWindow, on_timeframe_close(), and "
+                    "StrategySDK.PersistentState."
+                ),
+                "source": MULTI_WINDOW_STRATEGY_TEMPLATE,
+            },
+        ],
         "instructions": (
             "Create a class that extends BaseStrategy and implements detect() or "
             "detect_async() for opportunity detection. For execution strategies, "
@@ -510,6 +530,17 @@ async def get_unified_docs():
                         "Optional strategy-level entry gate. "
                         "Set False for manage-existing-only bots that should run "
                         "should_exit() without opening new positions."
+                    ),
+                },
+                "timeframe_close_intervals": {
+                    "type": "list[str]",
+                    "required": False,
+                    "description": (
+                        "Opt into candle-close callbacks. Set to canonical timeframes "
+                        "('5m','15m','1h','4h' — aliases like '5min','1hr','60m','240m' "
+                        "also accepted). The default on_event(MARKET_DATA_REFRESH) will "
+                        "fire on_timeframe_close(timeframe, boundary_ts, events, markets, prices) "
+                        "once per crossing. Empty list = hook never fires."
                     ),
                 },
             },
@@ -1077,6 +1108,27 @@ async def get_unified_docs():
                     "Size exceeds max_trade_notional_usd — capped to the limit before risk evaluation",
                 ],
             },
+            "on_timeframe_close": {
+                "signature": (
+                    "on_timeframe_close(self, timeframe: str, boundary_ts: datetime, "
+                    "events, markets, prices) -> list[Opportunity] | Awaitable[...]"
+                ),
+                "description": (
+                    "Fires whenever a wall-clock boundary for an opted-in timeframe is "
+                    "crossed. Opt in by setting class attribute timeframe_close_intervals "
+                    "(e.g. ['5m','15m','1h','4h']). Use this for compound-movement / "
+                    "candle-close strategies that should act once per closed window "
+                    "rather than on every tick. Returned opportunities are merged with "
+                    "those returned from detect()/detect_async() in the same refresh."
+                ),
+                "called_when": [
+                    "A wall-clock boundary is crossed since this strategy last saw a "
+                    "MARKET_DATA_REFRESH (boundaries are unix-epoch aligned).",
+                    "Skipped cycles still produce exactly one call per crossing — the "
+                    "hook does not replay older boundaries.",
+                ],
+                "default_behavior": "No-op — returns []. Override to act on candle closes.",
+            },
         },
         # ── Section 6: Config Schema ─────────────────────────────────
         "config_schema": {
@@ -1195,6 +1247,60 @@ async def get_unified_docs():
                 "StrategySDK.normalize_strategy_retention_config(config)": "Normalize retention aliases to retention_max_age_minutes",
                 "StrategySDK.normalize_reverse_intent(value, ...)": "Normalize stop-and-reverse payload for should_exit()",
                 "StrategySDK.parse_duration_minutes(value)": "Parse durations like 15m, 2h, 3d into minutes",
+            },
+            "price_window_helpers": {
+                "StrategySDK.PriceWindow(window_seconds=...)": (
+                    "Rolling per-stream price window. Maintain a "
+                    "dict[token_id, PriceWindow] for one window per outcome / "
+                    "feed. Methods: record(price, ts_ms), log_return(seconds_ago), "
+                    "stddev(), realized_volatility_bps_per_sec(), distance_bps()."
+                ),
+                "StrategySDK.MultiWindow(lookbacks={...})": (
+                    "Fan one price stream into N rolling lookbacks at different "
+                    "sizes — the canonical primitive for compound-movement / "
+                    "multi-timeframe-confirmation strategies. "
+                    "lookbacks={'5m':300,'15m':900,'1h':3600,'4h':14400}. "
+                    "Methods: record(price), log_returns() -> dict, "
+                    "all_agree(direction, min_return), aligned_count(...), "
+                    "realized_volatility_bps_per_sec()."
+                ),
+                "StrategySDK.timeframes_agree(returns_by_label, direction, min_count, min_return)": (
+                    "Module helper. Returns True iff at least min_count labels "
+                    "agree on direction. Accepts the dict shape MultiWindow.log_returns() emits."
+                ),
+                "StrategySDK.weighted_signal(returns_by_label, weights)": (
+                    "Module helper. Weighted average of per-label log returns; "
+                    "renormalises over labels that contributed (so partial data "
+                    "still produces a meaningful signal)."
+                ),
+                "BaseStrategy.timeframe_close_intervals = ['5m','15m','1h','4h']": (
+                    "Class attribute. Opt into wall-clock candle-close callbacks: "
+                    "the default on_event(MARKET_DATA_REFRESH) will additionally "
+                    "fire on_timeframe_close(timeframe, boundary_ts, events, markets, prices) "
+                    "exactly once per crossing. Boundaries are unix-epoch aligned "
+                    "so multiple workers / restarts agree on close times."
+                ),
+            },
+            "persistent_state_helper": {
+                "summary": (
+                    "BaseStrategy.state is in-memory only — lost on worker restart. "
+                    "StrategySDK.PersistentState is the durable counterpart, backed by "
+                    "the strategy_persistent_state table."
+                ),
+                "StrategySDK.PersistentState(strategy_slug)": (
+                    "Construct a per-strategy key/value cache. "
+                    "Pass strategy_slug=self.strategy_type when instantiating from a strategy."
+                ),
+                "await state.load()": (
+                    "Hydrate the cache from the DB. Call once after instantiation."
+                ),
+                "state.get(key, default=None)": "Read from cache (deep copy returned).",
+                "state.set(key, value)": (
+                    "Update cache + mark dirty. value must be JSON-serialisable."
+                ),
+                "state.delete(key)": "Remove from cache + queue DB delete.",
+                "state.dirty": "True when there are unflushed writes.",
+                "await state.flush()": "Persist dirty entries. No-op when clean.",
             },
             "market_and_execution_helpers": {
                 "StrategySDK.opposite_direction(direction)": "Map buy_yes <-> buy_no",

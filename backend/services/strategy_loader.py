@@ -138,6 +138,135 @@ class MyCustomStrategy(BaseStrategy):
 '''
 
 
+# Compound-movement / multi-timeframe-confirmation example. Showcases
+# StrategySDK.MultiWindow (fans one tick into 5m/15m/1h/4h lookbacks),
+# the on_timeframe_close() hook, and StrategySDK.PersistentState for
+# durable cross-restart counters. Strategy authors can copy this when
+# building strategies that reason about candle closes rather than every
+# tick.
+MULTI_WINDOW_STRATEGY_TEMPLATE = '''"""
+Strategy: Multi-Timeframe Compound Movement
+
+Fires when 5m + 15m + 1h windows on a shared price stream agree on
+direction. Acts only when a timeframe boundary closes, not on every
+tick. Persistent counter survives worker restarts.
+"""
+
+from datetime import datetime
+from typing import Any
+
+from models import Market, Event, Opportunity
+from services.strategies.base import BaseStrategy
+from services.strategy_sdk import StrategySDK
+
+
+class CompoundMovementStrategy(BaseStrategy):
+    name = "Compound Movement (5m / 15m / 1h)"
+    description = "Trades only when all configured timeframes agree on direction"
+
+    mispricing_type = "within_market"
+    source_key = "scanner"
+    subscriptions = ["market_data_refresh"]
+
+    # Opt into candle-close callbacks. The default on_event(MARKET_DATA_REFRESH)
+    # will call on_timeframe_close(timeframe, boundary_ts, ...) once per
+    # crossing.
+    timeframe_close_intervals = ["5m", "15m", "1h"]
+
+    default_config = {
+        "min_return_per_window": 0.005,  # 0.5% per timeframe to count as aligned
+        "min_aligned_windows": 3,
+        "min_edge_percent": 3.0,
+        "take_profit_pct": 12.0,
+        "stop_loss_pct": 6.0,
+    }
+
+    def __init__(self):
+        super().__init__()
+        # token_id -> MultiWindow tracking 5m / 15m / 1h on the same stream
+        self._windows: dict[str, Any] = {}
+        # Durable counter — survives worker restarts.
+        self._stats: StrategySDK.PersistentState | None = None
+
+    def detect(self, events, markets, prices):
+        """Update multi-window trackers for every active market."""
+        for market in markets:
+            if not market.active or market.closed:
+                continue
+            token_id = self._primary_token_id(market)
+            if not token_id:
+                continue
+            price = StrategySDK.get_live_price(market, prices)
+            if price is None:
+                continue
+            mw = self._windows.get(token_id)
+            if mw is None:
+                mw = StrategySDK.MultiWindow(lookbacks={
+                    "5m": 300,
+                    "15m": 900,
+                    "1h": 3600,
+                })
+                self._windows[token_id] = mw
+            mw.record(price)
+        return []  # entry decisions happen on candle close, not every tick
+
+    async def on_timeframe_close(self, timeframe, boundary_ts, events, markets, prices):
+        """Act once per closed candle: emit when enough timeframes agree."""
+        if self._stats is None:
+            self._stats = StrategySDK.PersistentState(self.strategy_type)
+            await self._stats.load()
+
+        opportunities = []
+        min_return = float(self.config.get("min_return_per_window", 0.005))
+        min_aligned = int(self.config.get("min_aligned_windows", 3))
+
+        for market in markets:
+            if not market.active or market.closed:
+                continue
+            token_id = self._primary_token_id(market)
+            mw = self._windows.get(token_id)
+            if mw is None or not mw.has_data:
+                continue
+
+            returns = mw.log_returns()
+            up_count = sum(
+                1 for r in returns.values()
+                if r is not None and r >= min_return
+            )
+            if up_count < min_aligned:
+                continue
+
+            opp = self.create_opportunity(
+                title=f"Compound up ({up_count}/{len(returns)} agree)",
+                description=f"All windows agree at {boundary_ts.isoformat()}",
+                total_cost=float(StrategySDK.get_live_price(market, prices) or 0),
+                markets=[market],
+                positions=[{"market": market, "side": "YES", "size": 1.0}],
+            )
+            if opp is not None:
+                opp.strategy_context = {
+                    "boundary_ts": boundary_ts.isoformat(),
+                    "timeframe": timeframe,
+                    "log_returns": returns,
+                    "aligned_count": up_count,
+                }
+                opportunities.append(opp)
+
+        # Track lifetime emissions across worker restarts.
+        emitted = int(self._stats.get("total_emitted", default=0))
+        self._stats.set("total_emitted", emitted + len(opportunities))
+        if self._stats.dirty:
+            await self._stats.flush()
+
+        return opportunities
+
+    @staticmethod
+    def _primary_token_id(market) -> str | None:
+        token_ids = getattr(market, "clob_token_ids", None) or []
+        return token_ids[0] if token_ids else None
+'''
+
+
 # ---------------------------------------------------------------------------
 # Allowed imports (merged superset from plugin_loader + strategy_db_loader)
 # ---------------------------------------------------------------------------
