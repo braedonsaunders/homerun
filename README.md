@@ -1,6 +1,5 @@
 <div align="center">
   <img src="./screenshots/homerun-social.png" alt="Homerun" width="100%" />
-  <h1>Homerun</h1>
   <p><strong>The open-source operating system for prediction market alpha.</strong></p>
   <p>Built-in strategies & data sources. Full Python. Paper to live. One platform.</p>
 </div>
