@@ -14,6 +14,7 @@ from services.optimization.execution_estimator import (
     ExecutionEstimator,
     ExecutionEstimatorConfig,
 )
+from services.fill_simulator import build_survival_features
 from services.strategy_sdk import StrategySDK
 from utils.converters import safe_float
 
@@ -793,6 +794,18 @@ async def submit_execution_leg(
         quote_price = estimate.average_price
         effective_shadow_notional = estimate.filled_notional_usd
         shadow_status = _shadow_status_for_estimate(estimate)
+        survival_features = build_survival_features(
+            estimate=estimate,
+            order_book=book_payload,
+            recent_trades=recent_trades,
+            book_age_ms=book_age_ms,
+            payload=payload,
+            side=order_side,
+            limit_price=float(price or 0.0),
+            notional_usd=float(notional or 0.0),
+            latency_p95_ms=None,
+            recent_trade_lookback_seconds=30.0,
+        )
         shadow_simulation_payload = {
             "filled": estimate.filled_shares > 0,
             "fill_ratio": estimate.fill_ratio,
@@ -806,6 +819,7 @@ async def submit_execution_leg(
             "queue_ahead_shares": estimate.queue_ahead_shares,
             "levels_consumed": estimate.levels_consumed,
             "execution_estimate": estimate.to_dict(),
+            "survival_features": survival_features.to_payload(),
         }
         if estimate.filled_shares <= 0:
             return LegSubmitResult(

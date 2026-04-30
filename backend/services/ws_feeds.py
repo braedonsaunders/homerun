@@ -1502,6 +1502,14 @@ class FeedManager:
         self._cache = PriceCache()
         self._polymarket_feed = PolymarketWSFeed(cache=self._cache)
         self._kalshi_feed = KalshiWSFeed(cache=self._cache)
+        # User-channel feed (wallet's own orders/fills).  Only starts
+        # when ``configure_user_feed_credentials`` has been called with
+        # valid Polymarket API credentials — see ``start()`` below.
+        # The feed feeds ``WalletStateCache`` so the orchestrator can
+        # read wallet state without REST polls on the hot path.
+        from services.polymarket_user_feed import get_polymarket_user_feed
+        self._polymarket_user_feed = get_polymarket_user_feed()
+        self._user_feed_credentials_set: bool = False
         self._http_fallback_fn: Optional[Callable[[str], Coroutine[Any, Any, Optional[OrderBook]]]] = None
         self._started = False
         self._start_lock = asyncio.Lock()
@@ -1553,6 +1561,71 @@ class FeedManager:
     def kalshi_feed(self) -> KalshiWSFeed:
         return self._kalshi_feed
 
+    @property
+    def polymarket_user_feed(self):
+        """The wallet's own-order WS feed (``services.polymarket_user_feed``).
+
+        May be inactive if credentials weren't configured at startup.
+        """
+        return self._polymarket_user_feed
+
+    def configure_user_feed_credentials(
+        self,
+        *,
+        api_key: str | None,
+        api_secret: str | None,
+        api_passphrase: str | None,
+        wallet_address: str | None,
+    ) -> bool:
+        """Set the credentials the user-channel WS will use.
+
+        Called by ``live_execution_service`` once it has resolved the
+        wallet's API key trio.  Returns True if credentials are
+        complete; False if anything is missing (in which case the
+        user feed will refuse to start, the trading plane will be
+        unable to read wallet state from WS, and the freshness gate
+        will keep the orchestrator from trading on stale REST state).
+
+        If ``FeedManager`` has already started (race: live_execution_service
+        finishes initializing AFTER feed_manager.start), kicks off the
+        user feed in the background here.
+        """
+        if not (api_key and api_secret and api_passphrase):
+            self._user_feed_credentials_set = False
+            return False
+        self._polymarket_user_feed.configure_credentials(
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+            wallet_address=wallet_address,
+        )
+        self._user_feed_credentials_set = True
+        # Late-arriving credentials: start the user feed now if the
+        # rest of FeedManager is already up.
+        if self._started and not self._polymarket_user_feed.is_running:
+            try:
+                loop = self._loop or asyncio.get_event_loop()
+                loop.create_task(
+                    self._polymarket_user_feed.start(),
+                    name="polymarket-user-feed-late-start",
+                )
+            except Exception as exc:
+                logger.warning("Polymarket user feed late start failed", exc_info=exc)
+        return True
+
+    async def ensure_user_subscribed(self, condition_ids: list[str]) -> None:
+        """Subscribe the user feed to additional markets.
+
+        **Architectural mandate**: strategies call this BEFORE emitting
+        signals into the runtime — it guarantees that by the time the
+        orchestrator picks up a signal, the wallet's WS subscription
+        is live for that market and any subsequent fills will flow
+        into ``WalletStateCache``.
+        """
+        if not condition_ids:
+            return
+        await self._polymarket_user_feed.subscribe_conditions(condition_ids)
+
     # -- lifecycle ----------------------------------------------------------
 
     def set_http_fallback(
@@ -1564,7 +1637,7 @@ class FeedManager:
         self._http_fallback_fn = fn
 
     async def start(self) -> None:
-        """Start both feeds.  Idempotent."""
+        """Start all feeds (market + kalshi + user channel).  Idempotent."""
         if self._started:
             return
         async with self._start_lock:
@@ -1574,12 +1647,28 @@ class FeedManager:
                 self._http_fallback_fn = _build_polymarket_http_fallback_order_book
             await self._polymarket_feed.start()
             await self._kalshi_feed.start()
+            # Start the user-channel feed only if credentials were
+            # configured.  Missing creds is the dev/shadow-mode case
+            # — the user feed is skipped and the freshness gate will
+            # block live trading until credentials arrive.
+            if self._user_feed_credentials_set:
+                try:
+                    await self._polymarket_user_feed.start()
+                except Exception as exc:
+                    logger.warning("Polymarket user feed start failed (non-fatal)", exc_info=exc)
+            else:
+                logger.info(
+                    "Polymarket user feed not started: credentials not configured "
+                    "(call configure_user_feed_credentials() first)"
+                )
             self._started = True
             loop = asyncio.get_running_loop()
             self._loop = loop  # store for thread-safe scheduling from callbacks
             from services.microstructure_recorder import get_microstructure_recorder
+            from services.book_delta_decomposer import get_book_delta_decomposer
 
             get_microstructure_recorder().start()
+            get_book_delta_decomposer().start()
             self._eviction_task = loop.create_task(self._cache_eviction_loop())
             # Wire PositionMarkState to receive every price tick
             from services.position_mark_state import get_position_mark_state
@@ -1603,9 +1692,15 @@ class FeedManager:
             self._price_push_task.cancel()
         await self._polymarket_feed.stop()
         await self._kalshi_feed.stop()
+        try:
+            await self._polymarket_user_feed.stop()
+        except Exception as exc:
+            logger.debug("Polymarket user feed stop failed (non-fatal)", exc_info=exc)
         from services.microstructure_recorder import get_microstructure_recorder
+        from services.book_delta_decomposer import get_book_delta_decomposer
 
         await get_microstructure_recorder().stop()
+        await get_book_delta_decomposer().stop()
         self._cache.clear()
         self._ws_push_clients.clear()
         self._token_to_ws_clients.clear()
@@ -1686,8 +1781,13 @@ class FeedManager:
         """Dispatch a TRADE_EXECUTION DataEvent for each trade."""
         try:
             from services.microstructure_recorder import get_microstructure_recorder
+            from services.book_delta_decomposer import get_book_delta_decomposer
 
             get_microstructure_recorder().record_trade(token_id=token_id, trade=trade)
+            # Order matters — feed the trade BEFORE the post-trade book
+            # update arrives so the decomposer can match the depth delta
+            # against this print.
+            get_book_delta_decomposer().record_trade(token_id=token_id, trade=trade)
         except Exception as exc:
             logger.debug("Microstructure trade record failed", exc_info=exc)
         if self._loop is None:
@@ -1733,15 +1833,24 @@ class FeedManager:
         """
         try:
             from services.microstructure_recorder import get_microstructure_recorder
+            from services.book_delta_decomposer import get_book_delta_decomposer
 
+            order_book_snapshot = self._cache.get_order_book(token_id)
             get_microstructure_recorder().record_book(
                 token_id=token_id,
-                order_book=self._cache.get_order_book(token_id),
+                order_book=order_book_snapshot,
                 best_bid=bid,
                 best_ask=ask,
                 exchange_ts=exchange_ts,
                 ingest_ts=ingest_ts,
                 sequence=sequence,
+            )
+            get_book_delta_decomposer().record_book(
+                token_id=token_id,
+                order_book=order_book_snapshot,
+                best_bid=bid,
+                best_ask=ask,
+                observed_ts=ingest_ts,
             )
         except Exception as exc:
             logger.debug("Microstructure book record failed", exc_info=exc)

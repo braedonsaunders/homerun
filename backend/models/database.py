@@ -3183,6 +3183,85 @@ class MarketMicrostructureSnapshot(Base):
     )
 
 
+class BookDeltaEvent(Base):
+    """Tick-by-tick decomposition of order book delta events.
+
+    Every WebSocket update is classified into ``trade`` (a print at the
+    same price level cleared real depth) or ``cancel`` (depth disappeared
+    with no matching trade — interpreted as a cancellation).  This lets
+    the fill simulator distinguish queue-advancing fills from queue-
+    advancing cancels, which have very different implications for adverse
+    selection.
+
+    Trades carry a non-null ``trade_price`` and ``trade_size``; cancels
+    carry the level + side that emptied with ``cancel_size`` set.
+
+    Persisted by the WebSocket consumer in services/ws_feeds.py — see
+    ``BookDeltaDecomposer``.
+    """
+
+    __tablename__ = "book_delta_events"
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False, default="polymarket", index=True)
+    token_id = Column(String, nullable=False, index=True)
+    observed_at = Column(DateTime, nullable=False, index=True)
+    exchange_ts_ms = Column(BigInteger, nullable=True)
+    sequence = Column(BigInteger, nullable=True)
+    event_type = Column(String, nullable=False, index=True)  # "trade" | "cancel"
+    side = Column(String, nullable=True)  # "bid" | "ask"
+    price = Column(Float, nullable=False)
+    trade_size = Column(Float, nullable=True)  # filled size at this print
+    cancel_size = Column(Float, nullable=True)  # depth that disappeared without trade
+    queue_depth_before = Column(Float, nullable=True)  # depth at price BEFORE event
+    queue_depth_after = Column(Float, nullable=True)
+    spread_bps_at_event = Column(Float, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_bde_token_observed", "token_id", "observed_at"),
+        Index("idx_bde_token_type_observed", "token_id", "event_type", "observed_at"),
+    )
+
+
+class FillProbabilityModel(Base):
+    """Versioned Cox proportional hazards (or Kaplan-Meier fallback) fill model.
+
+    Trained nightly by ``workers/cox_trainer_worker.py`` from
+    ``trader_orders`` joined against ``market_microstructure_snapshots``
+    at placement time.  Each row is one promoted model; the ``active``
+    flag picks which one inference reads.
+    """
+
+    __tablename__ = "fill_probability_models"
+
+    id = Column(String, primary_key=True)
+    family = Column(String, nullable=False, default="cox_ph", index=True)  # "cox_ph" | "kaplan_meier"
+    strata_key = Column(String, nullable=False, default="pooled", index=True)  # e.g. "pooled" | "crypto_15m" | "crypto_60m"
+    trained_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
+    training_window_start = Column(DateTime, nullable=True)
+    training_window_end = Column(DateTime, nullable=True)
+    n_events = Column(Integer, nullable=False, default=0)
+    n_observations = Column(Integer, nullable=False, default=0)
+    concordance_index = Column(Float, nullable=True)
+    brier_score = Column(Float, nullable=True)
+    log_likelihood = Column(Float, nullable=True)
+    coefficients_json = Column(JSON, nullable=False, default=dict)  # {covariate: hazard_ratio}
+    baseline_survival_json = Column(JSON, nullable=True)  # KM-style baseline S(t)
+    feature_means_json = Column(JSON, nullable=True)  # for centering at inference
+    feature_stds_json = Column(JSON, nullable=True)  # for standardizing
+    config_json = Column(JSON, default=dict)  # hyperparams, covariate list
+    promoted_at = Column(DateTime, nullable=True)
+    active = Column(Boolean, default=False, nullable=False, index=True)
+    notes = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("idx_fpm_family_strata_active", "family", "strata_key", "active"),
+        Index("idx_fpm_active_trained", "active", "trained_at"),
+    )
+
+
 # ==================== WORKER RUNTIME STATE ====================
 
 
