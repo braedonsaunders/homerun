@@ -29,8 +29,18 @@ from services.fill_simulator.survival_features import (
     SurvivalFeatures,
     build_survival_features,
 )
+from services.fill_simulator.cox_inference import (
+    FillModelSnapshot,
+    evaluate_fill_probability,
+    invalidate_cache,
+    load_active_fill_model,
+)
 
 __all__ = [
     "SurvivalFeatures",
     "build_survival_features",
+    "FillModelSnapshot",
+    "evaluate_fill_probability",
+    "invalidate_cache",
+    "load_active_fill_model",
 ]

@@ -32,6 +32,12 @@ lightgbm>=4.6.0
 sentence-transformers>=2.2.0
 faiss-cpu>=1.7.0
 
+# Shadow simulator: Cox proportional hazards fill model
+# (services/fill_simulator/cox_trainer.py).  Provides CoxPHFitter,
+# KaplanMeierFitter, concordance_index.  Pure-Python on top of scipy;
+# no GPU.  Pinned >=0.27 for the ``baseline_survival_at_times`` API.
+lifelines>=0.27.0
+
 # GUI uses tkinter (ships with Python, no pip install needed)
 pytest-asyncio>=0.23.0,<1.0
 pytest-timeout>=2.3.0,<3.0

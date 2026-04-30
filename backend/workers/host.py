@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 os.environ["HOMERUN_PROCESS_ROLE"] = "worker"
+# Plane is set in main() once the CLI arg is parsed; downstream
+# services consult ``HOMERUN_WORKER_PLANE`` to gate plane-specific
+# behavior (e.g. only the ``trading`` plane runs the Polymarket
+# user-channel WS feed — running it in two processes against the
+# same wallet causes the server to drop both connections).
 
 from config import RUNTIME_SETTINGS_PRECEDENCE, apply_runtime_settings_overrides
 from models.database import AsyncSessionLocal
@@ -68,8 +73,88 @@ else:
 
 _LOCKS_DIR = Path(__file__).resolve().parents[1] / ".runtime" / "locks"
 
+# Plane separation: the trading hot path and the ML-heavy news/weather
+# ingest workers run in separate processes so a 2GB sentence-
+# transformers + FAISS heap can never page out the live-money trader.
+# Production deploys ``trading`` and ``news`` as two distinct host
+# processes; ``all`` is kept only for legacy single-process use.
 _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
+    "trading": {
+        "worker_modules": (
+            "workers.market_universe_worker",
+            "workers.scanner_worker",
+            "workers.scanner_slo_worker",
+            "workers.tracked_traders_worker",
+            "workers.discovery_worker",
+            "workers.events_worker",
+            "workers.trader_reconciliation_worker",
+            "workers.fast_trader_runtime",
+            "workers.redeemer_worker",
+        ),
+        "runtime_names": (
+            "trader_orchestrator",
+            "trader_orchestrator_crypto",
+        ),
+        "load_strategy_registry": True,
+        # Only load strategies the trading plane actually runs.  Excluding
+        # ``news`` and ``weather`` is critical: ``news_edge`` strategy
+        # imports ``services.news.semantic_matcher`` at module top, which
+        # transitively imports ``sentence_transformers`` → ``transformers``
+        # → ``torch`` (~2 GB heap).  Without this filter the trading plane
+        # carries the ML stack despite never matching news/weather.
+        "strategy_source_keys": ("scanner", "traders", "crypto", "sports", "manual"),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": True,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": True,
+        "start_feed_manager": True,
+        "start_market_runtime": True,
+        "load_market_cache": True,
+        "load_news_feed": False,
+        "initialize_live_execution": True,
+        "start_copy_trade_service": True,
+        "start_position_monitor": True,
+        "start_fill_monitor": True,
+    },
+    "news": {
+        # ML/embedding workers.  Hand off opportunities to the trading
+        # plane via DB writes (``bridge_opportunities_to_signals``);
+        # no shared in-process state with trading.
+        "worker_modules": (
+            "workers.news_worker",
+            "workers.weather_worker",
+            # Cox PH fill-model trainer (lifelines + pandas + scipy).
+            # Lives on the news plane to keep its dependency stack out
+            # of the trading-plane RAM footprint; the trader hot path
+            # only reads the persisted ``fill_probability_models``
+            # active row.
+            "workers.cox_trainer_worker",
+        ),
+        "runtime_names": (),
+        "load_strategy_registry": True,
+        # News plane owns the ML strategies.  ``news_edge`` lives here
+        # (sentence-transformers + FAISS) along with weather strategies
+        # that subscribe to ``WeatherDataEvent``.  See trading plane
+        # comment for the rationale.
+        "strategy_source_keys": ("news", "weather"),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": True,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        "load_market_cache": False,
+        "load_news_feed": True,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+    },
     "all": {
+        # Legacy: single-process mode bundling trading + news.
+        # Prefer ``trading`` + ``news`` as separate processes in prod.
         "worker_modules": (
             "workers.market_universe_worker",
             "workers.scanner_worker",
@@ -79,6 +164,7 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.events_worker",
             "workers.news_worker",
             "workers.weather_worker",
+            "workers.cox_trainer_worker",
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
             "workers.redeemer_worker",
@@ -261,6 +347,41 @@ class WorkerHost:
                 logger.warning(failure_message, plane=self._plane_name, exc_info=exc)
 
         self._schedule_background_task(_run(), name=f"{self._plane_name}-{task_name}")
+
+    async def _run_trade_signal_pruner_loop(self) -> None:
+        """Periodic pruner: deletes terminal trade_signals past the 24h
+        reactivation lookback.  Runs every 30 minutes on the trading
+        plane only.  See the call site in ``_initialize_services``
+        for the full rationale.
+        """
+        # Stagger initial fire so we don't compete with startup queries.
+        await asyncio.sleep(120.0)
+        while not self._shutting_down:
+            try:
+                from services.maintenance import maintenance_service
+
+                result = await maintenance_service.cleanup_terminal_trade_signals(
+                    older_than_hours=24,
+                )
+                deleted = int(result.get("trade_signals_deleted", 0) or 0)
+                if deleted > 0:
+                    logger.info(
+                        "Pruned terminal trade signals",
+                        plane=self._plane_name,
+                        deleted=deleted,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Terminal trade signal pruner cycle failed",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                await asyncio.sleep(1800.0)  # 30 minutes
+            except asyncio.CancelledError:
+                raise
 
     async def _initialize_live_execution_background(self) -> None:
         try:
@@ -621,6 +742,20 @@ class WorkerHost:
             name="memory-diagnostic",
         ))
 
+        # Hot-table pruner: keep ``trade_signals`` bounded so the fast
+        # trader's ``list_unconsumed_trade_signals`` query stays under
+        # the 2.5s fast-tier ``statement_timeout``.  Without this, the
+        # table accretes 100K+ terminal rows in days and queries blow
+        # past the timeout, corrupting asyncpg's protocol state with
+        # cancelled-mid-flight queries (the "cannot switch to state X"
+        # warnings).  Trading plane only — terminal signals must be
+        # pruned where signals are produced + consumed.
+        if self._plane_name == "trading":
+            self._background_tasks.append(asyncio.create_task(
+                self._run_trade_signal_pruner_loop(),
+                name="trade-signal-pruner",
+            ))
+
         if self._enabled("load_strategy_registry"):
             try:
                 from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
@@ -628,13 +763,25 @@ class WorkerHost:
 
                 async with AsyncSessionLocal() as session:
                     seeded = await ensure_all_strategies_seeded(session)
-                loaded = await strategy_loader.refresh_all_from_db()
+                # Per-plane strategy filter.  Without this, every plane
+                # imports every strategy at startup — the trading plane
+                # ends up loading ``news_edge`` which transitively pulls
+                # in torch + sentence_transformers (~2 GB heap).
+                source_keys = self._plane_config.get("strategy_source_keys")
+                if source_keys:
+                    loaded = await strategy_loader.refresh_all_from_db(
+                        source_keys=list(source_keys),
+                        prune_unlisted=False,
+                    )
+                else:
+                    loaded = await strategy_loader.refresh_all_from_db()
                 logger.info(
                     "Strategy registries loaded",
                     plane=self._plane_name,
                     seeded=seeded.get("seeded", 0),
                     loaded=len(loaded.get("loaded", [])),
                     errors=len(loaded.get("errors", {})),
+                    source_keys=list(source_keys) if source_keys else "all",
                 )
             except Exception as exc:
                 logger.warning("Failed to preload strategy registries", plane=self._plane_name, exc_info=exc)
@@ -991,7 +1138,12 @@ def main() -> None:
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     args = _parse_args()
-    asyncio.run(_run(str(args.plane)))
+    plane_name = str(args.plane)
+    # Plane env var so plane-specific gating (e.g. user-channel WS
+    # feed only on ``trading``) can detect the plane without passing
+    # arguments through every callsite.
+    os.environ["HOMERUN_WORKER_PLANE"] = plane_name
+    asyncio.run(_run(plane_name))
 
 
 if __name__ == "__main__":
