@@ -9980,9 +9980,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </div>
 
                   <TabsContent value="overview" className="mt-2 flex-1 min-h-0 overflow-hidden">
-                    <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-                      <div className="min-h-0 flex flex-col gap-2">
-                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] xl:grid-rows-[auto_minmax(0,1fr)]">
+                      <div className="min-h-0 flex flex-col gap-2 xl:contents">
+                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 xl:col-start-1 xl:row-start-1">
                           <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 p-2.5">
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5">
@@ -10144,7 +10144,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </div>
                         </div>
 
-                        <div className="min-h-0 flex-1 rounded-md border border-border/60 bg-card/80 overflow-hidden">
+                        <div className="min-h-0 flex-1 xl:min-h-0 xl:col-start-1 xl:row-start-2 rounded-md border border-border/60 bg-card/80 overflow-hidden">
                           <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <Clock3 className="w-3.5 h-3.5 text-cyan-500" />
@@ -10188,8 +10188,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </div>
                       </div>
 
-                      <div className="min-h-0 flex flex-col gap-2">
-                        <div className="rounded-md border border-border/60 bg-card/80 p-2.5">
+                      <div className="min-h-0 flex flex-col gap-2 xl:contents">
+                        <div className="rounded-md border border-border/60 bg-card/80 p-2.5 xl:col-start-2 xl:row-start-1">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <PieChart className="w-3.5 h-3.5 text-cyan-500" />
@@ -10262,7 +10262,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </div>
                         </div>
 
-                        <div className="min-h-0 flex-1 rounded-md border border-border/60 bg-card/80 overflow-hidden">
+                        <div className="min-h-0 flex-1 xl:min-h-0 xl:col-start-2 xl:row-start-2 rounded-md border border-border/60 bg-card/80 overflow-hidden">
                           <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <Trophy className="w-3.5 h-3.5 text-cyan-500" />

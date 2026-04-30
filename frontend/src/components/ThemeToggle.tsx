@@ -1,22 +1,29 @@
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Sun, Moon } from 'lucide-react'
+import { Sun, Moon, Monitor } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { systemThemeAtom, themeAtom, themePreferenceAtom, Theme } from '../store/atoms'
+import { systemThemeAtom, themeAtom, themePreferenceAtom, ThemePreference } from '../store/atoms'
 import { useEffect } from 'react'
 import { Button } from './ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
+const PREFERENCE_CYCLE: ThemePreference[] = ['system', 'light', 'dark']
+
+const PREFERENCE_LABEL: Record<ThemePreference, string> = {
+  system: 'Auto',
+  light: 'Light',
+  dark: 'Dark',
+}
+
 export default function ThemeToggle({ className = '' }: { className?: string }) {
   const theme = useAtomValue(themeAtom)
-  const systemTheme = useAtomValue(systemThemeAtom)
-  const [themePreference, setThemePreference] = useAtom(themePreferenceAtom)
   const setSystemTheme = useSetAtom(systemThemeAtom)
+  const [themePreference, setThemePreference] = useAtom(themePreferenceAtom)
 
-  const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark'
-  const isFollowingSystem = themePreference === 'system'
+  const currentIndex = PREFERENCE_CYCLE.indexOf(themePreference)
+  const nextPreference = PREFERENCE_CYCLE[(currentIndex + 1) % PREFERENCE_CYCLE.length]
 
-  const toggleTheme = () => {
-    setThemePreference(nextTheme === systemTheme ? 'system' : nextTheme)
+  const cycleTheme = () => {
+    setThemePreference(nextPreference)
   }
 
   useEffect(() => {
@@ -48,27 +55,25 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
     root.style.colorScheme = theme
   }, [theme])
 
+  const Icon = themePreference === 'system' ? Monitor : themePreference === 'dark' ? Moon : Sun
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           variant="ghost"
           size="sm"
-          onClick={toggleTheme}
-          aria-label={`Switch to ${nextTheme} mode`}
-          className={cn("h-8 px-2", className)}
+          onClick={cycleTheme}
+          aria-label={`Theme: ${PREFERENCE_LABEL[themePreference]}. Click to switch to ${PREFERENCE_LABEL[nextPreference]}.`}
+          className={cn('h-8 px-2', className)}
         >
-          {theme === 'dark' ? (
-            <Sun className="w-3.5 h-3.5" />
-          ) : (
-            <Moon className="w-3.5 h-3.5" />
-          )}
+          <Icon className="w-3.5 h-3.5" />
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        {isFollowingSystem
-          ? `Following system (${theme}). Click to switch to ${nextTheme} mode.`
-          : `Manual ${theme} mode. Click to switch to ${nextTheme}${nextTheme === systemTheme ? ' and resume system sync' : ''}.`}
+        {themePreference === 'system'
+          ? `Auto · ${theme} (follows system). Click for ${PREFERENCE_LABEL[nextPreference]}.`
+          : `${PREFERENCE_LABEL[themePreference]} (manual). Click for ${PREFERENCE_LABEL[nextPreference]}.`}
       </TooltipContent>
     </Tooltip>
   )
