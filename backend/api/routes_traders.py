@@ -493,8 +493,6 @@ async def get_all_traders(
     session: AsyncSession = Depends(get_db_session),
 ):
     mode_key = str(mode or "").strip().lower()
-    if mode_key == "paper":
-        mode_key = "shadow"
     if mode_key and mode_key not in {"shadow", "live"}:
         raise HTTPException(status_code=422, detail="mode must be 'shadow' or 'live'")
     return {"traders": await list_traders(session, mode=mode_key or None)}
@@ -1182,8 +1180,6 @@ async def get_trader_copy_analytics_route(
         raise HTTPException(status_code=404, detail="Trader not found")
 
     mode_key = str(mode or "").strip().lower()
-    if mode_key == "paper":
-        mode_key = "shadow"
     if mode_key and mode_key not in {"shadow", "live"}:
         raise HTTPException(status_code=422, detail="mode must be 'shadow' or 'live'")
 
@@ -1908,8 +1904,6 @@ async def sell_trader_order_now(
         raise HTTPException(status_code=404, detail="Order not found")
 
     mode_key = str(order.mode or "").strip().lower()
-    if mode_key == "paper":
-        mode_key = "shadow"
 
     status_key = str(order.status or "").strip().lower()
     if status_key not in OPEN_ORDER_STATUSES:
@@ -2091,8 +2085,6 @@ async def manual_buy(
         raise HTTPException(status_code=404, detail="Trader not found")
 
     mode = str(trader.mode or "shadow").strip().lower()
-    if mode == "paper":
-        mode = "shadow"
     now = utcnow()
     created_orders = []
 

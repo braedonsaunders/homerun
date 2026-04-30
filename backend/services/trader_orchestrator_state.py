@@ -16,6 +16,7 @@ from sqlalchemy import and_, case, desc, func, or_, select, text as sa_text, upd
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from models.database import (
     AppSettings,
@@ -187,8 +188,6 @@ def _new_id() -> str:
 
 def _normalize_mode_key(mode: Any) -> str:
     key = str(mode or "").strip().lower()
-    if key == "paper":
-        return "shadow"
     if key in _TRADER_MODES:
         return key
     return "other"
@@ -3798,8 +3797,6 @@ def _canonical_strategy_key(value: Any) -> str:
 
 def _normalize_trader_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    if mode == "paper":
-        return "shadow"
     if not mode:
         return "shadow"
     if mode not in _TRADER_MODES:
@@ -4894,7 +4891,7 @@ async def list_traders(session: AsyncSession, mode: Optional[str] = None) -> lis
     if mode is not None:
         mode_key = _normalize_trader_mode(mode)
         if mode_key == "shadow":
-            query = query.where(func.lower(func.coalesce(Trader.mode, "")).in_(("shadow", "paper", "")))
+            query = query.where(func.lower(func.coalesce(Trader.mode, "")).in_(("shadow", "")))
         else:
             query = query.where(func.lower(func.coalesce(Trader.mode, "")) == mode_key)
     rows = (await session.execute(query.order_by(Trader.name.asc()))).scalars().all()
@@ -6585,6 +6582,7 @@ async def list_unconsumed_trade_signals(
     signal_ids: Optional[list[str]] = None,
     exclude_market_ids: Optional[list[str]] = None,
     limit: int = 200,
+    defer_heavy_columns: bool = False,
 ) -> list[TradeSignal]:
     now = _now().replace(tzinfo=None)
     scanner_runtime_ready_clause = or_(
@@ -6656,8 +6654,23 @@ async def list_unconsumed_trade_signals(
     # branches so reactivated signals re-emerge even when their
     # runtime_sequence falls below the cursor.
     reactivated_after_consumption_clause = ~never_consumed_clause
+    # ``defer_heavy_columns=True`` skips ``payload_json`` and
+    # ``strategy_context_json`` at SELECT time.  Each is ~3KB JSON
+    # decoded by asyncpg ON THE EVENT LOOP — for a 200-row result the
+    # fast trader's cycle blocked 2-4 seconds on JSON decode alone,
+    # exceeding the 2.5s fast-tier ``statement_timeout`` and corrupting
+    # asyncpg protocol state.  Fast trader never reads these columns
+    # so it opts in; the orchestrator worker keeps the default eager
+    # load because it does need the payload for execution.
+    query = select(TradeSignal)
+    if defer_heavy_columns:
+        query = query.options(
+            defer(TradeSignal.payload_json),
+            defer(TradeSignal.strategy_context_json),
+            defer(TradeSignal.quality_rejection_reasons),
+        )
     query = (
-        select(TradeSignal)
+        query
         .where(unconsumed_or_reactivated_clause)
         .where(or_(TradeSignal.expires_at.is_(None), TradeSignal.expires_at >= now))
         .where(scanner_runtime_ready_clause)
@@ -8431,8 +8444,6 @@ async def cleanup_trader_open_orders(
     live_taker_rescue_time_in_force: str = DEFAULT_TIMEOUT_TAKER_RESCUE_TIME_IN_FORCE,
 ) -> dict[str, Any]:
     scope_key = str(scope or "shadow").strip().lower()
-    if scope_key == "paper":
-        scope_key = "shadow"
     if scope_key == "all":
         allowed_modes = {"shadow", "live", "other"}
     elif scope_key in {"shadow", "live"}:
@@ -9329,12 +9340,11 @@ async def get_last_resolved_loss_at(
 async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
     order_status_key = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
     order_mode_key = func.lower(func.trim(func.coalesce(TraderOrder.mode, "")))
-    shadow_mode_keys = ("shadow", "paper")
     open_order_filter = or_(
-        and_(order_mode_key.in_(shadow_mode_keys), order_status_key.in_(tuple(UNFILLED_ORDER_STATUSES))),
+        and_(order_mode_key == "shadow", order_status_key.in_(tuple(UNFILLED_ORDER_STATUSES))),
         and_(order_mode_key == "live", order_status_key.in_(tuple(UNFILLED_ORDER_STATUSES))),
         and_(
-            order_mode_key.not_in(shadow_mode_keys + ("live",)),
+            order_mode_key.not_in(("shadow", "live")),
             order_status_key.in_(tuple(UNFILLED_ORDER_STATUSES)),
         ),
     )

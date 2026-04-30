@@ -29,7 +29,7 @@ async def _seed_order(
     direction: str = "buy_yes",
     order_id: str = "order-1",
     signal_id: str = "signal-1",
-    mode: str = "paper",
+    mode: str = "shadow",
     status: str = "executed",
     payload_json: dict | None = None,
 ) -> None:
@@ -312,7 +312,7 @@ async def test_reconcile_infers_resolution_from_settled_prices_when_terminal(tmp
                 ),
             )
 
-            result = await position_lifecycle.reconcile_paper_positions(
+            result = await position_lifecycle.reconcile_shadow_positions(
                 session,
                 trader_id="trader-1",
                 trader_params={},
@@ -351,7 +351,7 @@ async def test_reconcile_prefers_explicit_winner_over_price_inference(tmp_path, 
                 ),
             )
 
-            result = await position_lifecycle.reconcile_paper_positions(
+            result = await position_lifecycle.reconcile_shadow_positions(
                 session,
                 trader_id="trader-1",
                 trader_params={},
@@ -1138,7 +1138,7 @@ async def test_reconcile_does_not_infer_resolution_on_tradable_market(tmp_path, 
                 ),
             )
 
-            result = await position_lifecycle.reconcile_paper_positions(
+            result = await position_lifecycle.reconcile_shadow_positions(
                 session,
                 trader_id="trader-1",
                 trader_params={},
@@ -4135,7 +4135,7 @@ async def test_live_price_uses_wallet_mark_when_market_price_unavailable(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_paper_strategy_reverse_intent_emits_reverse_signal(tmp_path, monkeypatch):
+async def test_shadow_strategy_reverse_intent_emits_reverse_signal(tmp_path, monkeypatch):
     engine, session_factory = await _build_session_factory(tmp_path)
     try:
         async with session_factory() as session:
@@ -4200,7 +4200,7 @@ async def test_paper_strategy_reverse_intent_emits_reverse_signal(tmp_path, monk
             monkeypatch.setattr(position_lifecycle, "upsert_trade_signal", upsert_mock)
             monkeypatch.setattr("services.event_bus.event_bus.publish", publish_mock)
 
-            result = await position_lifecycle.reconcile_paper_positions(
+            result = await position_lifecycle.reconcile_shadow_positions(
                 session,
                 trader_id="trader-1",
                 trader_params={},

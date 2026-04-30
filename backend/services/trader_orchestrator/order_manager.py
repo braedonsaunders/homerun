@@ -8,6 +8,7 @@ from typing import Any
 from services.live_execution_adapter import execute_live_order
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
+from services.trader_orchestrator.hot_path import allow_polymarket_rest_call
 from services.optimization.execution_estimator import (
     ExecutionEstimate,
     ExecutionEstimator,
@@ -406,7 +407,7 @@ async def _resolve_shadow_book_and_tape(
         return None, [], None, "ws_order_book_error", repr(exc)
 
 
-def _paper_status_for_estimate(estimate: ExecutionEstimate) -> str:
+def _shadow_status_for_estimate(estimate: ExecutionEstimate) -> str:
     if estimate.filled_shares <= 0:
         return "skipped"
     return "executed"
@@ -439,9 +440,17 @@ def _resolve_condition_id_for_leg(
 
 
 async def _fetch_token_id_from_market(market_id: str, outcome: str) -> str | None:
-    """Live fallback: query the Polymarket CLOB/Gamma API for token IDs by market condition_id."""
+    """Live fallback: query the Polymarket CLOB/Gamma API for token IDs by market condition_id.
+
+    Gated by ``allow_polymarket_rest_call`` — if the orchestrator hot
+    path reaches this function the call short-circuits.  Strategies are
+    supposed to provide token_ids in the signal payload; we should
+    never hit this path with a healthy emit pipeline.
+    """
     condition_id = market_id.strip()
     if not condition_id:
+        return None
+    if not allow_polymarket_rest_call("token_id_lookup"):
         return None
     try:
         market_info = await polymarket_client.get_market_by_condition_id(condition_id)
@@ -473,11 +482,7 @@ async def submit_execution_leg(
     notional_usd: float,
     strategy_params: dict[str, Any] | None = None,
 ) -> LegSubmitResult:
-    requested_mode_key = str(mode or "").strip().lower()
-    mode_key = requested_mode_key
-    if mode_key == "paper":
-        mode_key = "shadow"
-    legacy_paper_compat = requested_mode_key == "paper"
+    mode_key = str(mode or "").strip().lower()
     if mode_key not in {"live", "shadow"}:
         return LegSubmitResult(
             leg_id=str(leg.get("leg_id") or "leg"),
@@ -736,8 +741,8 @@ async def submit_execution_leg(
             token_id=token_id,
             live_context=live_context,
         )
-        payload_mode = "paper" if legacy_paper_compat else "shadow"
-        submission_label = "simulated" if legacy_paper_compat else "shadow_microstructure_simulated"
+        payload_mode = "shadow"
+        submission_label = "shadow_microstructure_simulated"
         if book_payload is None:
             return LegSubmitResult(
                 leg_id=leg_id,
@@ -787,8 +792,8 @@ async def submit_execution_leg(
         )
         quote_price = estimate.average_price
         effective_shadow_notional = estimate.filled_notional_usd
-        paper_status = _paper_status_for_estimate(estimate)
-        paper_simulation_payload = {
+        shadow_status = _shadow_status_for_estimate(estimate)
+        shadow_simulation_payload = {
             "filled": estimate.filled_shares > 0,
             "fill_ratio": estimate.fill_ratio,
             "estimated_fee_usd": estimate.fees_usd,
@@ -805,7 +810,7 @@ async def submit_execution_leg(
         if estimate.filled_shares <= 0:
             return LegSubmitResult(
                 leg_id=leg_id,
-                status=paper_status,
+                status=shadow_status,
                 effective_price=price,
                 error_message=f"Shadow execution did not fill: {estimate.reason}.",
                 payload={
@@ -828,7 +833,7 @@ async def submit_execution_leg(
                     "effective_notional_usd": 0.0,
                     "time_in_force": time_in_force,
                     "post_only": post_only,
-                    "paper_simulation": paper_simulation_payload,
+                    "shadow_simulation": shadow_simulation_payload,
                 },
                 provider_order_id=None,
                 provider_clob_order_id=None,
@@ -838,7 +843,7 @@ async def submit_execution_leg(
 
         return LegSubmitResult(
             leg_id=leg_id,
-            status=paper_status,
+            status=shadow_status,
             effective_price=quote_price,
             error_message=None,
             payload={
@@ -861,7 +866,7 @@ async def submit_execution_leg(
                 "effective_notional_usd": effective_shadow_notional,
                 "time_in_force": time_in_force,
                 "post_only": post_only,
-                "paper_simulation": paper_simulation_payload,
+                "shadow_simulation": shadow_simulation_payload,
             },
             provider_order_id=None,
             provider_clob_order_id=None,

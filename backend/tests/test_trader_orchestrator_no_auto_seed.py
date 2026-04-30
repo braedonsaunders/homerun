@@ -192,11 +192,11 @@ async def test_create_trader_copy_rejects_unknown_source(postgres_session_factor
 @pytest.mark.asyncio
 async def test_create_trader_scopes_by_mode_and_list_filter(postgres_session_factory):
     async with postgres_session_factory() as session:
-        paper = await create_trader(
+        shadow = await create_trader(
             session,
             {
-                "name": "Paper Scoped Trader",
-                "mode": "paper",
+                "name": "Shadow Scoped Trader",
+                "mode": "shadow",
                 "source_configs": [
                     {
                         "source_key": "crypto",
@@ -220,30 +220,33 @@ async def test_create_trader_scopes_by_mode_and_list_filter(postgres_session_fac
                 ],
             },
         )
-        shadow = await create_trader(
-            session,
-            {
-                "name": "Shadow Scoped Trader",
-                "mode": "shadow",
-                "source_configs": [
-                    {
-                        "source_key": "crypto",
-                        "strategy_key": "btc_eth_maker_quote",
-                        "strategy_params": {},
-                    }
-                ],
-            },
-        )
-        paper_rows = await list_traders(session, mode="paper")
         shadow_rows = await list_traders(session, mode="shadow")
         live_rows = await list_traders(session, mode="live")
 
-    assert paper["mode"] == "shadow"
     assert shadow["mode"] == "shadow"
     assert live["mode"] == "live"
-    assert {row["id"] for row in paper_rows} == {paper["id"], shadow["id"]}
-    assert {row["id"] for row in shadow_rows} == {paper["id"], shadow["id"]}
+    assert {row["id"] for row in shadow_rows} == {shadow["id"]}
     assert {row["id"] for row in live_rows} == {live["id"]}
+
+
+@pytest.mark.asyncio
+async def test_create_trader_rejects_legacy_paper_mode(postgres_session_factory):
+    async with postgres_session_factory() as session:
+        with pytest.raises(ValueError, match="mode must be 'shadow' or 'live'"):
+            await create_trader(
+                session,
+                {
+                    "name": "Legacy Paper Trader",
+                    "mode": "paper",
+                    "source_configs": [
+                        {
+                            "source_key": "crypto",
+                            "strategy_key": "btc_eth_maker_quote",
+                            "strategy_params": {},
+                        }
+                    ],
+                },
+            )
 
 
 @pytest.mark.asyncio

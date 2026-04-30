@@ -31,7 +31,7 @@ class ExecuteTradeRequest(BaseModel):
 
 @simulation_router.post("/accounts")
 async def create_simulation_account(request: CreateAccountRequest):
-    """Create a new simulation account for paper trading"""
+    """Create a new simulation account for shadow trading"""
     try:
         account = await simulation_service.create_account(
             name=request.name,

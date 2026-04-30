@@ -1179,7 +1179,7 @@ class ValidationService:
                     "realized_pnl_total": 0.0,
                     # Per-mode split so the frontend can present "real
                     # venue trades" separately from "simulated/shadow
-                    # paper trades". Both lenses live in the same dict
+                    # microstructure trades". Both lenses live in the same dict
                     # under ``modes`` -> { live: {...}, shadow: {...} }.
                     "modes": {},
                 },

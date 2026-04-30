@@ -437,7 +437,7 @@ async def test_run_exit_backtest_uses_existing_position_columns_and_tracks_actio
             market_id="m1",
             market_question="Market close",
             direction="buy_yes",
-            mode="paper",
+            mode="shadow",
             total_notional_usd=1000.0,
             avg_entry_price=0.4,
             first_order_at=now - timedelta(minutes=90),
@@ -449,7 +449,7 @@ async def test_run_exit_backtest_uses_existing_position_columns_and_tracks_actio
             market_id="m2",
             market_question="Market reduce",
             direction="buy_no",
-            mode="paper",
+            mode="shadow",
             total_notional_usd=800.0,
             avg_entry_price=0.5,
             first_order_at=now - timedelta(minutes=45),
@@ -461,7 +461,7 @@ async def test_run_exit_backtest_uses_existing_position_columns_and_tracks_actio
             market_id="m3",
             market_question="Market hold",
             direction="buy_yes",
-            mode="paper",
+            mode="shadow",
             total_notional_usd=600.0,
             avg_entry_price=0.6,
             first_order_at=now - timedelta(minutes=20),
@@ -514,7 +514,7 @@ async def test_run_exit_backtest_uses_existing_position_columns_and_tracks_actio
     assert decisions["p_reduce"]["reduce_fraction"] == 0.5
     assert decisions["p_hold"]["action"] == "hold"
     assert decisions["p_close"]["age_minutes"] > 0
-    assert decisions["p_close"]["mode"] == "paper"
+    assert decisions["p_close"]["mode"] == "shadow"
     assert captured_query["model"] is _FakeTraderPositionModel
     assert len(getattr(captured_query["query"], "order_by_args", ())) == 2
 
@@ -530,7 +530,7 @@ async def test_run_exit_backtest_supports_opened_at_fallback_column(monkeypatch)
             market_id="m_legacy",
             market_question="Legacy opened_at position",
             direction="buy_yes",
-            mode="paper",
+            mode="shadow",
             total_notional_usd=500.0,
             avg_entry_price=0.45,
             created_at=now - timedelta(minutes=70),

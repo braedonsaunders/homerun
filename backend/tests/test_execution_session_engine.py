@@ -420,7 +420,7 @@ async def test_execute_signal_flushes_new_trader_orders_before_execution_orders(
         strategy_version=None,
         strategy_params={},
         risk_limits={},
-        mode="paper",
+        mode="shadow",
         size_usd=10.0,
         reason="strict-flush-order",
     )
@@ -601,7 +601,7 @@ async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
         strategy_params=strategy_params,
         explicit_strategy_params={"max_market_data_age_ms": 250},
         risk_limits={},
-        mode="paper",
+        mode="shadow",
         size_usd=160.0,
         reason="test-hedging",
     )

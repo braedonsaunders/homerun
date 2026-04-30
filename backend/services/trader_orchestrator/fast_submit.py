@@ -16,7 +16,7 @@ Key differences vs. SessionEngine:
 
 The low-level submission to the provider still flows through the
 well-tested ``submit_execution_leg`` primitive in ``order_manager``, so
-every token-resolution, buy pre-submit gate, shadow-mode paper-fill and
+every token-resolution, buy pre-submit gate, shadow-mode microstructure-fill and
 live-provider submission path remains identical to the orchestrated one.
 
 A fast trader *must* be single-leg single-market.  If the signal has no

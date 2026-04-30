@@ -201,7 +201,7 @@ class StrategySDK:
         "min_wallet_count": 2,
         "max_entry_price": 0.85,
         "min_order_size_usd": 1.0,
-        "paper_min_order_size_usd": 1.0,
+        "shadow_min_order_size_usd": 1.0,
         "live_min_order_size_usd": 1.0,
         "firehose_require_active_signal": True,
         "firehose_require_tradable_market": True,
@@ -242,7 +242,7 @@ class StrategySDK:
             {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1, "phase": "signal"},
             {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
             {"key": "min_order_size_usd", "label": "Min Order Size (USD)", "type": "number", "min": 0.01},
-            {"key": "paper_min_order_size_usd", "label": "Paper Min Order Size (USD)", "type": "number", "min": 0.01},
+            {"key": "shadow_min_order_size_usd", "label": "Shadow Min Order Size (USD)", "type": "number", "min": 0.01},
             {"key": "live_min_order_size_usd", "label": "Live Min Order Size (USD)", "type": "number", "min": 0.01},
             {"key": "firehose_require_active_signal", "label": "Require Active Signal", "type": "boolean", "phase": "signal"},
             {"key": "firehose_require_tradable_market", "label": "Require Tradable Market", "type": "boolean", "phase": "signal"},
@@ -1738,8 +1738,8 @@ class StrategySDK:
         cfg["min_wallet_count"] = StrategySDK._coerce_int(cfg.get("min_wallet_count"), 2, 1, 1000)
         cfg["max_entry_price"] = StrategySDK._coerce_float(cfg.get("max_entry_price"), 0.85, 0.0, 1.0)
         cfg["min_order_size_usd"] = StrategySDK._coerce_float(cfg.get("min_order_size_usd"), 1.0, 0.01, 10_000_000.0)
-        cfg["paper_min_order_size_usd"] = StrategySDK._coerce_float(
-            cfg.get("paper_min_order_size_usd"),
+        cfg["shadow_min_order_size_usd"] = StrategySDK._coerce_float(
+            cfg.get("shadow_min_order_size_usd", cfg.get("paper_min_order_size_usd")),
             cfg["min_order_size_usd"],
             0.01,
             10_000_000.0,

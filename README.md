@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./screenshots/homerun-social.png" alt="Homerun" width="100%" />
   <p><strong>The open-source operating system for prediction market alpha.</strong></p>
-  <p>Built-in strategies & data sources. Full Python. Paper to live. One platform.</p>
+  <p>Built-in strategies & data sources. Full Python. Shadow to live. One platform.</p>
 </div>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 > **If you can fetch the signal, you can trade the signal.**
 >
-> Homerun is a full-stack platform for building, backtesting, and executing prediction market trading systems. Write strategies and data sources in pure Python. Connect any signal — RSS, REST APIs, Twitter, Chainlink, Binance, custom scripts — into any strategy. Validate, backtest, paper trade, then go live. Everything is hot-reloadable, DB-managed, and version-controlled.
+> Homerun is a full-stack platform for building, backtesting, and executing prediction market trading systems. Write strategies and data sources in pure Python. Connect any signal — RSS, REST APIs, Twitter, Chainlink, Binance, custom scripts — into any strategy. Validate, backtest against L2 book history, run in shadow mode against a microstructure-aware fill simulator, then go live. Everything is hot-reloadable, DB-managed, and version-controlled.
 
 <br />
 
@@ -34,8 +34,8 @@ Most trading bots give you a toy DSL and a rigid pipeline. Homerun gives you **f
 | Strategy logic | Expression rules or YAML | Full async Python classes with `detect`, `evaluate`, `should_exit` |
 | Data ingestion | Fixed connectors | Any Python, RSS, REST API, WebSocket — or write your own |
 | Runtime editing | Redeploy the whole thing | Hot-reload via UI or API, zero downtime |
-| Backtesting | Basic or none | Walk-forward analysis, parameter sweeps, A/B experiments |
-| Execution | Single venue | Polymarket + Kalshi + paper, unified pipeline |
+| Backtesting | Basic or none | L2 book replay, Cox-PH-modeled fill probability, walk-forward analysis, parameter sweeps |
+| Execution | Single venue | Polymarket + Kalshi + microstructure-aware shadow, unified pipeline |
 | AI | Bolted on | Native LLM scoring, semantic search, autonomous research agent |
 
 ## What's Inside
@@ -90,7 +90,7 @@ Two ways to wire sources into strategies:
 
 ### Execution & Risk Management
 
-- **Paper + Live Trading** — Identical API, switch with one toggle
+- **Shadow + Live Trading** — Identical API surface; one toggle promotes a strategy from `mode="shadow"` (microstructure-simulated) to `mode="live"` (real CLOB)
 - **Multi-Stage Pipeline** — Detect > Evaluate > Preflight > Arm > Execute > Monitor
 - **Maker-Mode Orders** — 0% fees on Polymarket CLOB limit orders
 - **Multi-Leg Execution** — Parallel order submission with hedging
@@ -98,6 +98,19 @@ Two ways to wire sources into strategies:
 - **Kelly Criterion Sizing** — Bankroll-aware position sizing
 - **Token Circuit Breaker** — Per-token flash crash prevention with automatic cooldown
 - **Fill Monitoring** — Real-time order tracking, partial fill handling, timeout management
+
+### Backtesting & Shadow Simulation
+
+Homerun ships a microstructure-aware backtester and shadow-mode runtime that go far past the standard "depth-ahead-must-clear" heuristic everyone else uses:
+
+- **L2 book replay** — every order book delta and trade print from Polymarket's WebSocket is persisted to `MarketMicrostructureSnapshot` (25 levels each side, 0.5 s sampling). Replay any historical period tick-for-tick.
+- **Trade-vs-cancel decomposition** — depth disappearance is split into *fills* (someone took it) vs *cancels* (someone pulled it) using the trade tape. The two have very different implications for adverse selection, and most retail simulators conflate them.
+- **Cox proportional hazards fill model** — `P(fill within Δt)` learned from your own historical TraderOrder fills. Covariates include queue depth ahead/behind, spread, recent trade intensity, **time-to-resolution** (the Polymarket-specific covariate that nobody else models — 60–90% of taker flow on 15-min crypto binaries hits in the last few minutes), side imbalance, underlying volatility, measured latency. Trained nightly with C-index and Brier-score validation.
+- **Measured-latency injection** — order placement latency is sampled from `ExecutionLatencyMetrics` (rolling 15-min p50/p95/p99 across nine pipeline stages), not a single hardcoded constant.
+- **Pessimistic / realistic / optimistic ensemble** — every shadow-mode order returns three fill estimates instead of one. The diff between them is your calibration signal.
+- **Triangulation** — backtest PnL vs shadow PnL vs live PnL for the same strategy is plotted side by side. Big divergence means the fill model is the prime suspect.
+
+The backtester surface lives under **Strategies → Research → Backtest Suite** (per-strategy detect / evaluate / exit / full-execution runs), and the fill-model surface lives under **Strategies → ML Models** (Cox model status, calibration plots, hazard-ratio table, retrain controls).
 
 ### Wallet Intelligence & Discovery
 
@@ -259,7 +272,7 @@ class MacroFeedSource(BaseDataSource):
 This software can drive real-money trading decisions.
 
 - Always validate and backtest strategy code before enabling execution
-- Start in paper mode and graduate carefully
+- Start in shadow mode and graduate carefully — and watch the triangulation panel for backtest/shadow/live PnL divergence
 - Nothing in this repository is financial advice
 
 ## Contributing

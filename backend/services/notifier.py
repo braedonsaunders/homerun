@@ -227,8 +227,6 @@ def _build_table(headers: list[str], rows: list[list[str]], align: list[str] | N
 
 def _normalize_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    if mode == "paper":
-        return "shadow"
     if mode in {"shadow", "live"}:
         return mode
     return "other"

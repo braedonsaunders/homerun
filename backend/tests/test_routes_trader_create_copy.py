@@ -20,7 +20,7 @@ async def test_create_route_forwards_copy_from_trader_id(monkeypatch):
         "id": "new-trader-1",
         "name": "Copied Bot",
         "description": "copied",
-        "mode": "paper",
+        "mode": "shadow",
         "source_configs": [],
         "risk_limits": {},
         "metadata": {},
@@ -238,7 +238,7 @@ async def test_start_trader_unpauses_active_trader(monkeypatch):
     update_trader_mock = AsyncMock(return_value=updated)
     read_control_mock = AsyncMock(return_value={"mode": "live"})
     sync_inventory_mock = AsyncMock(return_value=None)
-    open_summary_mock = AsyncMock(return_value={"live": 0, "paper": 0})
+    open_summary_mock = AsyncMock(return_value={"live": 0, "shadow": 0})
     create_event_mock = AsyncMock(return_value=None)
     copy_bootstrap_mock = AsyncMock(
         return_value={

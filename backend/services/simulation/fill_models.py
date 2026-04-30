@@ -16,7 +16,7 @@ class FillConfig:
 
 
 class FillModel:
-    """Execution fill models for replay and paper simulation."""
+    """Execution fill models for replay and shadow simulation."""
 
     _execution_estimator = ExecutionEstimator()
 

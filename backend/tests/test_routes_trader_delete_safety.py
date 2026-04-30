@@ -20,12 +20,12 @@ async def test_delete_route_writes_deleted_event_without_trader_fk(monkeypatch):
     monkeypatch.setattr(
         routes_traders,
         "get_open_position_summary_for_trader",
-        AsyncMock(return_value={"live": 0, "paper": 2, "other": 0, "total": 2}),
+        AsyncMock(return_value={"live": 0, "shadow": 2, "other": 0, "total": 2}),
     )
     monkeypatch.setattr(
         routes_traders,
         "get_open_order_summary_for_trader",
-        AsyncMock(return_value={"live": 0, "paper": 2, "other": 0, "total": 2}),
+        AsyncMock(return_value={"live": 0, "shadow": 2, "other": 0, "total": 2}),
     )
     monkeypatch.setattr(routes_traders, "delete_trader", AsyncMock(return_value=True))
     create_event = AsyncMock(return_value=None)
@@ -52,12 +52,12 @@ async def test_delete_route_blocks_live_exposure_without_force(monkeypatch):
     monkeypatch.setattr(
         routes_traders,
         "get_open_position_summary_for_trader",
-        AsyncMock(return_value={"live": 1, "paper": 0, "other": 0, "total": 1}),
+        AsyncMock(return_value={"live": 1, "shadow": 0, "other": 0, "total": 1}),
     )
     monkeypatch.setattr(
         routes_traders,
         "get_open_order_summary_for_trader",
-        AsyncMock(return_value={"live": 0, "paper": 0, "other": 0, "total": 0}),
+        AsyncMock(return_value={"live": 0, "shadow": 0, "other": 0, "total": 0}),
     )
     delete_trader_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(routes_traders, "delete_trader", delete_trader_mock)
@@ -88,12 +88,12 @@ async def test_delete_route_force_delete_allows_live_exposure(monkeypatch):
     monkeypatch.setattr(
         routes_traders,
         "get_open_position_summary_for_trader",
-        AsyncMock(return_value={"live": 2, "paper": 0, "other": 0, "total": 2}),
+        AsyncMock(return_value={"live": 2, "shadow": 0, "other": 0, "total": 2}),
     )
     monkeypatch.setattr(
         routes_traders,
         "get_open_order_summary_for_trader",
-        AsyncMock(return_value={"live": 1, "paper": 0, "other": 0, "total": 1}),
+        AsyncMock(return_value={"live": 1, "shadow": 0, "other": 0, "total": 1}),
     )
     delete_trader_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(routes_traders, "delete_trader", delete_trader_mock)

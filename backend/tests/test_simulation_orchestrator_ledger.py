@@ -24,7 +24,7 @@ async def _build_session_factory(_tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_record_and_close_orchestrator_paper_fill_updates_simulation_account(tmp_path):
+async def test_record_and_close_orchestrator_shadow_fill_updates_simulation_account(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     service = SimulationService()
     account_id = uuid.uuid4().hex
@@ -39,7 +39,7 @@ async def test_record_and_close_orchestrator_paper_fill_updates_simulation_accou
             session.add(account)
             await session.commit()
 
-            opened = await service.record_orchestrator_paper_fill(
+            opened = await service.record_orchestrator_shadow_fill(
                 account_id=account_id,
                 trader_id="trader-1",
                 signal_id="signal-1",
@@ -69,7 +69,7 @@ async def test_record_and_close_orchestrator_paper_fill_updates_simulation_accou
             assert position.status == TradeStatus.OPEN
             assert position.quantity == pytest.approx(400.0, rel=1e-9)
 
-            closed = await service.close_orchestrator_paper_fill(
+            closed = await service.close_orchestrator_shadow_fill(
                 account_id=account_id,
                 trade_id=opened["trade_id"],
                 position_id=opened["position_id"],
@@ -120,8 +120,8 @@ async def test_record_orchestrator_fill_rejects_when_insufficient_capital(tmp_pa
             session.add(account)
             await session.commit()
 
-            with pytest.raises(ValueError, match="Insufficient paper capital"):
-                await service.record_orchestrator_paper_fill(
+            with pytest.raises(ValueError, match="Insufficient shadow capital"):
+                await service.record_orchestrator_shadow_fill(
                     account_id=account_id,
                     trader_id="trader-1",
                     signal_id="signal-2",
@@ -154,7 +154,7 @@ async def test_record_orchestrator_fill_tracks_entry_fee_and_slippage(tmp_path):
             session.add(account)
             await session.commit()
 
-            opened = await service.record_orchestrator_paper_fill(
+            opened = await service.record_orchestrator_shadow_fill(
                 account_id=account_id,
                 trader_id="trader-2",
                 signal_id="signal-3",

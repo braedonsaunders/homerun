@@ -44,7 +44,7 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_execution_simulator_uses_paper_order_manager_and_persists_manifest(monkeypatch):
+async def test_execution_simulator_uses_shadow_order_manager_and_persists_manifest(monkeypatch):
     simulator = ExecutionSimulator()
     now = datetime.now(timezone.utc)
     emission_created_at = (now - timedelta(minutes=20)).replace(tzinfo=None)
@@ -112,9 +112,9 @@ async def test_execution_simulator_uses_paper_order_manager_and_persists_manifes
             effective_price=0.505,
             error_message=None,
             payload={
-                "mode": "paper",
+                "mode": "shadow",
                 "submission": "simulated",
-                "paper_simulation": {
+                "shadow_simulation": {
                     "filled": True,
                     "fill_ratio": 1.0,
                     "slippage_bps": 11.25,

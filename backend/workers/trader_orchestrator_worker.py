@@ -34,6 +34,8 @@ from models.database import (
     init_database,
     release_conn,
 )
+from services.trader_orchestrator.hot_path import allow_polymarket_rest_call, hot_path_no_rest
+from services.wallet_state_cache import get_wallet_state_cache
 from services.trader_orchestrator.live_market_context import (
     RuntimeTradeSignalView,
     build_cached_live_signal_contexts,
@@ -837,7 +839,6 @@ async def get_trader_source_exposure(session, *, trader_id, source, mode=None):
 async def get_trader_copy_leader_exposure(session, *, trader_id, source_wallet, mode=None):
     return hot_state.get_copy_leader_exposure(trader_id, source_wallet, mode or "live")
 create_trader_order = _create_trader_order
-reconcile_paper_positions = reconcile_shadow_positions
 _RESUME_POLICIES = {"resume_full", "manage_only", "flatten_then_start"}
 _ACTIVE_ORDER_STATUSES = {"submitted", "executed", "completed", "open"}
 _ORPHAN_CLEANUP_MAX_TRADERS_PER_CYCLE = 32
@@ -1149,9 +1150,6 @@ _LIVE_PROVIDER_INFRA_ERROR_MARKERS = (
 )
 
 _CANONICAL_TRADER_MODES = {"shadow", "live"}
-_LEGACY_MODE_ALIASES = {
-    "paper": "shadow",
-}
 _LEGACY_STRATEGY_ALIASES: dict[str, str] = {
     "news_reaction": "news_edge",
 }
@@ -1161,7 +1159,6 @@ def _canonical_trader_mode(value: Any, *, default: str = "shadow") -> str:
     key = str(value or "").strip().lower()
     if not key:
         key = default
-    key = _LEGACY_MODE_ALIASES.get(key, key)
     if key not in _CANONICAL_TRADER_MODES:
         return default
     return key
@@ -2270,9 +2267,7 @@ def _resolve_shadow_account_id(control: dict[str, Any], trader: dict[str, Any]) 
     metadata_payload = metadata_payload if isinstance(metadata_payload, dict) else {}
     candidates = (
         settings_payload.get("shadow_account_id"),
-        settings_payload.get("paper_account_id"),
         metadata_payload.get("shadow_account_id"),
-        metadata_payload.get("paper_account_id"),
     )
     for candidate in candidates:
         account_id = str(candidate or "").strip()
@@ -2312,13 +2307,13 @@ def _shadow_ledger_token_id(payload: dict[str, Any], direction: str) -> str:
     return ""
 
 
-async def _backfill_simulation_ledger_for_active_paper_orders(
+async def _backfill_simulation_ledger_for_active_shadow_orders(
     session: Any,
     *,
     trader_id: str,
-    paper_account_id: str,
+    shadow_account_id: str,
 ) -> dict[str, Any]:
-    account_id = str(paper_account_id or "").strip()
+    account_id = str(shadow_account_id or "").strip()
     if not trader_id or not account_id:
         return {"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}
 
@@ -2329,7 +2324,7 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
             await session.execute(
                 select(TraderOrder)
                 .where(TraderOrder.trader_id == trader_id)
-                .where(mode_expr.in_(("shadow", "paper")))
+                .where(mode_expr == "shadow")
                 .where(status_expr.in_(tuple(_ACTIVE_ORDER_STATUSES)))
                 .order_by(TraderOrder.created_at.asc())
             )
@@ -2372,15 +2367,15 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
             continue
 
         direction = str(row.direction or "").strip().lower()
-        paper_sim = payload.get("paper_simulation")
-        paper_sim = paper_sim if isinstance(paper_sim, dict) else {}
-        execution_fee_usd = safe_float(paper_sim.get("estimated_fee_usd"), None)
-        execution_slippage_usd = safe_float(paper_sim.get("slippage_usd"), None)
+        shadow_sim = payload.get("shadow_simulation") or payload.get("paper_simulation")
+        shadow_sim = shadow_sim if isinstance(shadow_sim, dict) else {}
+        execution_fee_usd = safe_float(shadow_sim.get("estimated_fee_usd"), None)
+        execution_slippage_usd = safe_float(shadow_sim.get("slippage_usd"), None)
         token_id = _shadow_ledger_token_id(payload, direction)
         signal_id = str(row.signal_id or "").strip() or str(row.id)
         strategy_type = str(row.strategy_key or payload.get("strategy_type") or "").strip() or "trader_orchestrator"
         try:
-            ledger_row = await simulation_service.record_orchestrator_paper_fill(
+            ledger_row = await simulation_service.record_orchestrator_shadow_fill(
                 account_id=account_id,
                 trader_id=str(trader_id),
                 signal_id=signal_id,
@@ -2409,7 +2404,7 @@ async def _backfill_simulation_ledger_for_active_paper_orders(
             errors.append(
                 {
                     "order_id": str(row.id),
-                    "reason": "record_orchestrator_paper_fill_failed",
+                    "reason": "record_orchestrator_shadow_fill_failed",
                     "error": str(exc),
                 }
             )
@@ -3594,6 +3589,10 @@ async def _build_traders_scope_context(session: Any, traders_scope: dict[str, An
             if wallet.startswith("0x") and len(wallet) == 42:
                 normalized.add(wallet)
                 continue
+            # Hot-path gate: usernames in scope config must be resolved
+            # outside the trader cycle.  Skip silently rather than block.
+            if not allow_polymarket_rest_call("resolve_wallet_identifier"):
+                continue
             try:
                 resolved = await polymarket_client.resolve_wallet_identifier(wallet)
             except ValueError:
@@ -4015,7 +4014,7 @@ async def _run_terminal_stale_order_watchdog(session: Any, *, now: datetime | No
                     reason="terminal_market_watchdog",
                 )
             else:
-                lifecycle_result = await reconcile_paper_positions(
+                lifecycle_result = await reconcile_shadow_positions(
                     session,
                     trader_id=trader_id,
                     trader_params={},
@@ -4150,6 +4149,72 @@ async def _run_trader_once(
         """Add to a cumulative bucket — used inside per-signal loops."""
         delta_ms = (time.monotonic() - started_mono) * 1000.0
         _accumulators[name] = _accumulators.get(name, 0.0) + delta_ms
+
+    # ARCHITECTURAL CONTRACT: the orchestrator hot path MUST NOT call
+    # Polymarket REST APIs.  All wallet state is push-driven via the
+    # CLOB user-channel WS into ``WalletStateCache``; market data is
+    # push-driven via the market-channel WS into ``feed_manager.cache``.
+    # The reconciliation worker (separate worker, slow cadence) is the
+    # only writer that calls REST.  ``hot_path_no_rest()`` activates
+    # the contextvar that gates every ``polymarket_client.X`` call site
+    # in the orchestrator's call chain — accidental future regressions
+    # short-circuit to cached/empty data and surface in the
+    # ``hot_path.get_blocked_call_counters()`` diagnostic.
+    with hot_path_no_rest():
+        return await _run_trader_once_inner(
+            trader=trader,
+            control=control,
+            process_signals=process_signals,
+            trigger_signal_ids_by_source=trigger_signal_ids_by_source,
+            trigger_signal_snapshots_by_source=trigger_signal_snapshots_by_source,
+            cycle_timeout_seconds=cycle_timeout_seconds,
+            cycle_started_mono=cycle_started_mono,
+            stage_timings_ms=stage_timings_ms,
+            _accumulators=_accumulators,
+            _checkpoint=_checkpoint,
+            _accumulate=_accumulate,
+        )
+
+
+async def _run_trader_once_inner(
+    *,
+    trader: dict[str, Any],
+    control: dict[str, Any],
+    process_signals: bool,
+    trigger_signal_ids_by_source: dict[str, list[str]] | None,
+    trigger_signal_snapshots_by_source: dict[str, dict[str, dict[str, Any]]] | None,
+    cycle_timeout_seconds: float,
+    cycle_started_mono: float,
+    stage_timings_ms: dict[str, float],
+    _accumulators: dict[str, float],
+    _checkpoint,
+    _accumulate,
+) -> tuple[int, int, int]:
+    decisions_written = 0
+    orders_written = 0
+    processed_signals = 0
+    prefiltered_signals = 0
+    prefiltered_by_reason: dict[str, int] = {}
+    crypto_scope_prefiltered_dimensions: dict[str, int] = {}
+
+    # Freshness gate: refuse to trade on stale wallet state.  When the
+    # WS disconnects or the reconciliation worker's REST seed lapses,
+    # we'd rather skip the cycle and emit an audit alert than make
+    # decisions on data that may be minutes out of date.  This is the
+    # institutional defensive-degradation contract.
+    run_mode_for_gate = _canonical_trader_mode(control.get("mode"), default="shadow")
+    if run_mode_for_gate == "live" and process_signals:
+        ws_cache = get_wallet_state_cache()
+        fresh, fresh_reason = ws_cache.is_fresh()
+        if not fresh:
+            # Should never fire after bootstrap — see init contract.
+            logger.warning(
+                "Trader cycle skipped: wallet state stale",
+                trader_id=str(trader.get("id") or ""),
+                reason=fresh_reason,
+                cache_stats=ws_cache.stats_snapshot(),
+            )
+            return 0, 0, 0
 
     async with AsyncSessionLocal() as session:
         # Bound DB statements inside this cycle without leaking the timeout
@@ -4371,10 +4436,10 @@ async def _run_trader_once(
         if run_trader_maintenance:
             if run_mode == "shadow":
                 shadow_account_id = _resolve_shadow_account_id(control, trader)
-                backfill_result = await _backfill_simulation_ledger_for_active_paper_orders(
+                backfill_result = await _backfill_simulation_ledger_for_active_shadow_orders(
                     session,
                     trader_id=trader_id,
-                    paper_account_id=shadow_account_id,
+                    shadow_account_id=shadow_account_id,
                 )
                 if backfill_result.get("errors"):
                     await create_trader_event(
@@ -4387,7 +4452,7 @@ async def _run_trader_once(
                         payload=backfill_result,
                     )
                 force_flatten = resume_policy == "flatten_then_start"
-                lifecycle_result = await reconcile_paper_positions(
+                lifecycle_result = await reconcile_shadow_positions(
                     session,
                     trader_id=trader_id,
                     trader_params=default_strategy_params,
@@ -5013,7 +5078,7 @@ async def _run_trader_once(
                     )
             elif run_mode == "shadow":
                 try:
-                    safe_exit_result = await reconcile_paper_positions(
+                    safe_exit_result = await reconcile_shadow_positions(
                         session,
                         trader_id=trader_id,
                         trader_params=default_strategy_params,
@@ -7576,9 +7641,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
             "traders_seen": 0,
             "rows_seen": 0,
             "shadow_closed": 0,
-            "paper_closed": 0,
             "non_shadow_cancelled": 0,
-            "non_paper_cancelled": 0,
         }
 
     per_trader_mode: dict[tuple[str, str], int] = {}
@@ -7587,19 +7650,15 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
         if not trader_id:
             continue
         mode_key = str(row.mode_key or "").strip().lower()
-        if mode_key == "":
+        if mode_key == "" or mode_key not in _CANONICAL_TRADER_MODES:
             mode_key = "other"
-        else:
-            mode_key = _LEGACY_MODE_ALIASES.get(mode_key, mode_key)
-            if mode_key not in _CANONICAL_TRADER_MODES:
-                mode_key = "other"
         per_trader_mode[(trader_id, mode_key)] = int(row.count or 0)
 
     shadow_closed = 0
     non_shadow_cancelled = 0
     for trader_id, mode_key in per_trader_mode:
         if mode_key == "shadow":
-            result = await reconcile_paper_positions(
+            result = await reconcile_shadow_positions(
                 session,
                 trader_id=trader_id,
                 trader_params={},
@@ -7635,9 +7694,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
             "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
             "rows_seen": len(per_trader_mode),
             "shadow_closed": shadow_closed,
-            "paper_closed": shadow_closed,
             "non_shadow_cancelled": non_shadow_cancelled,
-            "non_paper_cancelled": non_shadow_cancelled,
         },
         commit=True,
     )
@@ -7646,9 +7703,7 @@ async def _reconcile_orphan_open_orders(session: Any) -> dict[str, int]:
         "traders_seen": len({tid for tid, _ in per_trader_mode.keys()}),
         "rows_seen": len(per_trader_mode),
         "shadow_closed": shadow_closed,
-        "paper_closed": shadow_closed,
         "non_shadow_cancelled": non_shadow_cancelled,
-        "non_paper_cancelled": non_shadow_cancelled,
     }
 
 

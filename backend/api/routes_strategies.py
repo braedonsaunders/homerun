@@ -668,7 +668,7 @@ async def get_unified_docs():
                 "fields": {
                     "context['params']": "dict — Strategy config (merged default_config + user overrides)",
                     "context['trader']": "object — Trader ORM row (has .mode, .budget, etc.)",
-                    "context['mode']": "str — 'paper' or 'live'",
+                    "context['mode']": "str — 'shadow' or 'live'",
                     "context['live_market']": "dict — Live CLOB prices if available",
                     "context['source_config']": "dict — Source configuration from trader settings",
                 },

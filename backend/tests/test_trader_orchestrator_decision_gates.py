@@ -411,7 +411,7 @@ def test_non_live_stacking_guard_allows_occupied_market_when_averaging_allowed()
         risk_evaluator=_risk_evaluator,
         invoke_hooks=False,
         strategy_params={"enforce_min_exit_notional": False},
-        execution_mode="paper",
+        execution_mode="shadow",
     )
 
     assert result["final_decision"] == "selected"

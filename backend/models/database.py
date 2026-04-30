@@ -593,7 +593,7 @@ class PositionSide(enum.Enum):
 
 
 class SimulationAccount(Base):
-    """Simulated trading account for paper trading"""
+    """Simulated trading account for shadow trading"""
 
     __tablename__ = "simulation_accounts"
 

@@ -19,7 +19,7 @@ for execution-realistic backtesting. It models:
 * **Walk-forward**: rolling and anchored splits, with bootstrap confidence
   intervals on Sharpe / Sortino / max-drawdown / hit-rate / profit-factor.
 
-The legacy ``execution_simulator.py`` remains for paper trading replay; this
+The legacy ``execution_simulator.py`` remains for shadow trading replay; this
 package is for *strategy-fitness* backtesting where execution realism matters.
 """
 

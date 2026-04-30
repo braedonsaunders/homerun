@@ -37,7 +37,7 @@ The following are out of scope:
 ## Best Practices for Users
 
 - **Never commit secrets** — keep private keys and API secrets out of version control
-- **Use paper trading mode first** — verify the system works before enabling live trading
+- **Use shadow trading mode first** — verify the system works against the microstructure-aware fill simulator before enabling live trading
 - **Set conservative limits** — use the Settings UI to cap trade sizes and daily volume
 - **Keep dependencies updated** — run `pip install --upgrade -r requirements.txt` and `npm update` regularly
 - **Run behind a firewall** — the dashboard and API are not designed for public internet exposure without additional authentication

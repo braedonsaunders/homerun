@@ -2045,25 +2045,25 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -2176,25 +2176,25 @@ async def test_run_trader_once_emits_filtered_heartbeat_for_crypto_scope_prefilt
         "metadata": {"resume_policy": "resume_full"},
     }
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -2301,10 +2301,10 @@ async def test_run_trader_once_persists_heartbeat_when_idle_gate_short_circuits(
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         backfill_mock,
     )
-    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_shadow_positions", reconcile_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_position_count_for_trader", open_positions_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_order_count_for_trader", AsyncMock(return_value=0))
@@ -2328,7 +2328,7 @@ async def test_run_trader_once_persists_heartbeat_when_idle_gate_short_circuits(
                 "risk_limits": {},
                 "metadata": {"resume_policy": "resume_full"},
             },
-            {"mode": "paper", "settings": {}},
+            {"mode": "shadow", "settings": {}},
             process_signals=True,
         )
     finally:
@@ -2353,7 +2353,7 @@ async def test_run_trader_once_runs_live_execution_session_maintenance(monkeypat
     commit_mock = AsyncMock(return_value=None)
     create_event_mock = AsyncMock(return_value=None)
     backfill_mock = AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []})
-    paper_reconcile_mock = AsyncMock(
+    shadow_reconcile_mock = AsyncMock(
         return_value={
             "matched": 0,
             "closed": 0,
@@ -2378,10 +2378,10 @@ async def test_run_trader_once_runs_live_execution_session_maintenance(monkeypat
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         backfill_mock,
     )
-    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", paper_reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_shadow_positions", shadow_reconcile_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_position_count_for_trader", open_positions_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_order_count_for_trader", AsyncMock(return_value=0))
@@ -2421,7 +2421,7 @@ async def test_run_trader_once_runs_live_execution_session_maintenance(monkeypat
     assert orders_written == 0
     assert reconcile_calls == [{"mode": "live", "trader_id": trader_id}]
     backfill_mock.assert_not_awaited()
-    paper_reconcile_mock.assert_not_awaited()
+    shadow_reconcile_mock.assert_not_awaited()
     sync_mock.assert_not_awaited()
     open_positions_mock.assert_not_awaited()
     open_markets_mock.assert_not_awaited()
@@ -2441,7 +2441,7 @@ async def test_run_trader_once_persists_heartbeat_when_signal_queue_is_empty(mon
     monkeypatch.setattr(trader_orchestrator_worker, "_trader_idle_maintenance_last_run", {})
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
@@ -2528,10 +2528,10 @@ async def test_run_trader_once_reconciles_positions_when_source_configs_missing(
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         backfill_mock,
     )
-    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_shadow_positions", reconcile_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_position_count_for_trader", open_positions_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_open_order_count_for_trader", AsyncMock(return_value=0))
@@ -2548,7 +2548,7 @@ async def test_run_trader_once_reconciles_positions_when_source_configs_missing(
                 "risk_limits": {},
                 "metadata": {"resume_policy": "resume_full"},
             },
-            {"mode": "paper", "settings": {}},
+            {"mode": "shadow", "settings": {}},
             process_signals=True,
         )
     finally:
@@ -2584,10 +2584,10 @@ async def test_run_trader_once_skips_heavy_maintenance_when_manage_only_cycle_is
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         backfill_mock,
     )
-    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_shadow_positions", reconcile_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "get_trader_signal_cursor", cursor_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "list_unconsumed_trade_signals", list_signals_mock)
@@ -2608,7 +2608,7 @@ async def test_run_trader_once_skips_heavy_maintenance_when_manage_only_cycle_is
                 "risk_limits": {},
                 "metadata": {"resume_policy": "resume_full"},
             },
-            {"mode": "paper", "settings": {}},
+            {"mode": "shadow", "settings": {}},
             process_signals=False,
         )
     finally:
@@ -2844,7 +2844,7 @@ async def test_terminal_stale_order_watchdog_respects_alert_cooldown(monkeypatch
     stale_order = SimpleNamespace(
         id="order-1",
         trader_id="trader-1",
-        mode="paper",
+        mode="shadow",
         status="executed",
         market_id="market-1",
         executed_at=now - timedelta(minutes=10),
@@ -2936,7 +2936,7 @@ async def test_run_worker_loop_skips_terminal_stale_watchdog_when_globally_disab
                 "is_paused": True,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
+                "mode": "shadow",
                 "settings": {},
             }
         ),
@@ -3000,7 +3000,7 @@ async def test_run_worker_loop_releases_session_before_hot_state_maintenance(mon
                 "is_paused": True,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
+                "mode": "shadow",
                 "settings": {},
             }
         ),
@@ -3035,7 +3035,7 @@ async def test_run_worker_loop_releases_session_before_hot_state_maintenance(mon
 async def test_run_worker_loop_runs_manage_only_cycle_when_globally_paused(monkeypatch):
     class _Session:
         async def get(self, model, key):
-            if getattr(model, "__name__", "") == "SimulationAccount" and key == "paper-1":
+            if getattr(model, "__name__", "") == "SimulationAccount" and key == "shadow-1":
                 return object()
             return None
 
@@ -3079,8 +3079,8 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_globally_paused(monke
                 "is_paused": True,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
-                "settings": {"paper_account_id": "paper-1"},
+                "mode": "shadow",
+                "settings": {"shadow_account_id": "shadow-1"},
             }
         ),
     )
@@ -3109,7 +3109,7 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_globally_paused(monke
 async def test_run_worker_loop_dispatches_crypto_traders_concurrently_with_non_crypto(monkeypatch):
     class _Session:
         async def get(self, model, key):
-            if getattr(model, "__name__", "") == "SimulationAccount" and key == "paper-1":
+            if getattr(model, "__name__", "") == "SimulationAccount" and key == "shadow-1":
                 return object()
             return None
 
@@ -3161,8 +3161,8 @@ async def test_run_worker_loop_dispatches_crypto_traders_concurrently_with_non_c
                 "is_paused": False,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
-                "settings": {"paper_account_id": "paper-1"},
+                "mode": "shadow",
+                "settings": {"shadow_account_id": "shadow-1"},
             }
         ),
     )
@@ -3175,7 +3175,7 @@ async def test_run_worker_loop_dispatches_crypto_traders_concurrently_with_non_c
                     "id": "crypto-1",
                     "is_enabled": True,
                     "is_paused": False,
-                    "mode": "paper",
+                    "mode": "shadow",
                     "metadata": {},
                     "source_configs": [{"source_key": "crypto", "strategy_key": "generic_crypto", "strategy_params": {}}],
                 },
@@ -3183,7 +3183,7 @@ async def test_run_worker_loop_dispatches_crypto_traders_concurrently_with_non_c
                     "id": "weather-1",
                     "is_enabled": True,
                     "is_paused": False,
-                    "mode": "paper",
+                    "mode": "shadow",
                     "metadata": {},
                     "source_configs": [{"source_key": "weather", "strategy_key": "weather_edge", "strategy_params": {}}],
                 },
@@ -3206,7 +3206,7 @@ async def test_run_worker_loop_dispatches_crypto_traders_concurrently_with_non_c
 async def test_run_worker_loop_processes_scanner_signals_on_scheduled_general_lane(monkeypatch):
     class _Session:
         async def get(self, model, key):
-            if getattr(model, "__name__", "") == "SimulationAccount" and key == "paper-1":
+            if getattr(model, "__name__", "") == "SimulationAccount" and key == "shadow-1":
                 return object()
             return None
 
@@ -3246,8 +3246,8 @@ async def test_run_worker_loop_processes_scanner_signals_on_scheduled_general_la
                 "is_paused": False,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
-                "settings": {"paper_account_id": "paper-1"},
+                "mode": "shadow",
+                "settings": {"shadow_account_id": "shadow-1"},
             }
         ),
     )
@@ -3260,7 +3260,7 @@ async def test_run_worker_loop_processes_scanner_signals_on_scheduled_general_la
                     "id": "scanner-1",
                     "is_enabled": True,
                     "is_paused": False,
-                    "mode": "paper",
+                    "mode": "shadow",
                     "metadata": {},
                     "source_configs": [{"source_key": "scanner", "strategy_key": "custom_scanner_strategy"}],
                 }
@@ -3285,7 +3285,7 @@ async def test_run_worker_loop_processes_scanner_signals_on_scheduled_general_la
 async def test_run_worker_loop_skips_scheduled_signals_when_disabled(monkeypatch):
     class _Session:
         async def get(self, model, key):
-            if getattr(model, "__name__", "") == "SimulationAccount" and key == "paper-1":
+            if getattr(model, "__name__", "") == "SimulationAccount" and key == "shadow-1":
                 return object()
             return None
 
@@ -3325,8 +3325,8 @@ async def test_run_worker_loop_skips_scheduled_signals_when_disabled(monkeypatch
                 "is_paused": False,
                 "kill_switch": False,
                 "run_interval_seconds": 1,
-                "mode": "paper",
-                "settings": {"paper_account_id": "paper-1"},
+                "mode": "shadow",
+                "settings": {"shadow_account_id": "shadow-1"},
             }
         ),
     )
@@ -3339,7 +3339,7 @@ async def test_run_worker_loop_skips_scheduled_signals_when_disabled(monkeypatch
                     "id": "scanner-1",
                     "is_enabled": True,
                     "is_paused": False,
-                    "mode": "paper",
+                    "mode": "shadow",
                     "metadata": {},
                     "source_configs": [{"source_key": "scanner", "strategy_key": "custom_scanner_strategy"}],
                 }
@@ -3367,7 +3367,7 @@ async def test_run_worker_loop_skips_scheduled_signals_when_disabled(monkeypatch
 async def test_run_worker_loop_runs_manage_only_cycle_when_kill_switch_enabled(monkeypatch):
     class _Session:
         async def get(self, model, key):
-            if getattr(model, "__name__", "") == "SimulationAccount" and key == "paper-1":
+            if getattr(model, "__name__", "") == "SimulationAccount" and key == "shadow-1":
                 return object()
             return None
 
@@ -3411,8 +3411,8 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_kill_switch_enabled(m
                 "is_paused": False,
                 "kill_switch": True,
                 "run_interval_seconds": 1,
-                "mode": "paper",
-                "settings": {"paper_account_id": "paper-1"},
+                "mode": "shadow",
+                "settings": {"shadow_account_id": "shadow-1"},
             }
         ),
     )
@@ -3438,9 +3438,9 @@ async def test_run_worker_loop_runs_manage_only_cycle_when_kill_switch_enabled(m
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphan_open_orders_routes_paper_and_non_paper(monkeypatch):
+async def test_reconcile_orphan_open_orders_routes_shadow_and_non_shadow(monkeypatch):
     rows = [
-        SimpleNamespace(trader_id="orphan-paper", mode_key="paper", count=2),
+        SimpleNamespace(trader_id="orphan-shadow", mode_key="shadow", count=2),
         SimpleNamespace(trader_id="orphan-live", mode_key="live", count=1),
     ]
 
@@ -3457,7 +3457,7 @@ async def test_reconcile_orphan_open_orders_routes_paper_and_non_paper(monkeypat
     sync_mock = AsyncMock(return_value={})
     event_mock = AsyncMock(return_value=None)
 
-    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_paper_positions", reconcile_mock)
+    monkeypatch.setattr(trader_orchestrator_worker, "reconcile_shadow_positions", reconcile_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "cleanup_trader_open_orders", cleanup_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", sync_mock)
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", event_mock)
@@ -3466,8 +3466,8 @@ async def test_reconcile_orphan_open_orders_routes_paper_and_non_paper(monkeypat
 
     assert summary["traders_seen"] == 2
     assert summary["rows_seen"] == 2
-    assert summary["paper_closed"] == 2
-    assert summary["non_paper_cancelled"] == 1
+    assert summary["shadow_closed"] == 2
+    assert summary["non_shadow_cancelled"] == 1
     reconcile_mock.assert_awaited_once()
     cleanup_mock.assert_awaited_once()
     sync_mock.assert_awaited_once()
@@ -3551,12 +3551,12 @@ async def test_run_trader_once_blocks_stacking_when_allow_averaging_false(monkey
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -3724,7 +3724,7 @@ async def test_run_trader_once_claims_live_signal_before_submit(monkeypatch):
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(
             return_value={
                 "attempted": 0,
@@ -3736,7 +3736,7 @@ async def test_run_trader_once_claims_live_signal_before_submit(monkeypatch):
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -3922,7 +3922,7 @@ async def test_run_trader_once_persists_blocked_decision_when_db_stacking_verifi
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(
             return_value={
                 "attempted": 0,
@@ -3934,7 +3934,7 @@ async def test_run_trader_once_persists_blocked_decision_when_db_stacking_verifi
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -4290,12 +4290,12 @@ async def test_run_trader_once_allows_reentry_when_allow_averaging_true(monkeypa
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -4346,8 +4346,8 @@ async def test_run_trader_once_allows_reentry_when_allow_averaging_true(monkeypa
     monkeypatch.setattr(trader_orchestrator_worker, "upsert_trader_signal_cursor", AsyncMock(return_value=None))
 
     control_payload = _base_control_payload()
-    control_payload["mode"] = "paper"
-    control_payload["settings"]["paper_account_id"] = "paper-1"
+    control_payload["mode"] = "shadow"
+    control_payload["settings"]["shadow_account_id"] = "shadow-1"
 
     decisions_written, orders_written, _processed_signals = await trader_orchestrator_worker._run_trader_once(
         _base_trader_payload(allow_averaging=True),
@@ -4577,12 +4577,12 @@ async def test_run_trader_once_marks_signal_skipped_when_strategy_skips(monkeypa
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -4713,13 +4713,13 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -4775,12 +4775,12 @@ async def test_run_trader_once_blocks_unavailable_strategy_only(monkeypatch):
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -4905,13 +4905,13 @@ async def test_run_trader_once_uses_cached_live_context_builder_for_trigger_cycl
 
     trader_payload = _base_trader_payload(allow_averaging=True)
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": False},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -4951,12 +4951,12 @@ async def test_run_trader_once_uses_cached_live_context_builder_for_trigger_cycl
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -5085,13 +5085,13 @@ async def test_run_trader_once_trigger_cycle_fetches_full_live_context_when_stri
 
     trader_payload = _base_trader_payload(allow_averaging=True)
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5131,12 +5131,12 @@ async def test_run_trader_once_trigger_cycle_fetches_full_live_context_when_stri
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -5209,13 +5209,13 @@ async def test_run_trader_once_defers_signals_when_strict_ws_context_unavailable
 
     trader_payload = _base_trader_payload(allow_averaging=True)
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5255,12 +5255,12 @@ async def test_run_trader_once_defers_signals_when_strict_ws_context_unavailable
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -5367,13 +5367,13 @@ async def test_run_trader_once_uses_strategy_configured_strict_sources_for_live_
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5426,12 +5426,12 @@ async def test_run_trader_once_uses_strategy_configured_strict_sources_for_live_
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -5553,13 +5553,13 @@ async def test_run_trader_once_loads_strict_scanner_live_context_from_cache(monk
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5599,12 +5599,12 @@ async def test_run_trader_once_loads_strict_scanner_live_context_from_cache(monk
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -5742,13 +5742,13 @@ async def test_run_trader_once_uses_scanner_signal_market_snapshot_when_live_con
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5792,12 +5792,12 @@ async def test_run_trader_once_uses_scanner_signal_market_snapshot_when_live_con
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -5928,13 +5928,13 @@ async def test_run_trader_once_uses_scanner_signal_created_at_when_payload_times
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -5978,12 +5978,12 @@ async def test_run_trader_once_uses_scanner_signal_created_at_when_payload_times
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -6058,7 +6058,7 @@ async def test_run_trader_once_defers_signals_when_strict_ws_release_is_stale(mo
     trader_payload = _base_trader_payload(allow_averaging=True)
     trader_payload["source_configs"][0]["strategy_params"]["max_market_data_age_ms"] = 15000
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
@@ -6068,7 +6068,7 @@ async def test_run_trader_once_defers_signals_when_strict_ws_release_is_stale(mo
                     "max_market_data_age_ms": 10000,
                 },
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -6120,12 +6120,12 @@ async def test_run_trader_once_defers_signals_when_strict_ws_release_is_stale(mo
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -6261,13 +6261,13 @@ async def test_run_trader_once_uses_fresh_scanner_row_timestamp_for_strict_ws_re
     }
 
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": True, "strict_ws_pricing_only": True},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
 
@@ -6319,12 +6319,12 @@ async def test_run_trader_once_uses_fresh_scanner_row_timestamp_for_strict_ws_re
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(return_value={"matched": 0, "closed": 0, "held": 0, "skipped": 0, "total_realized_pnl": 0.0, "by_status": {}}),
     )
     monkeypatch.setattr(trader_orchestrator_worker, "sync_trader_position_inventory", AsyncMock(return_value={}))
@@ -6413,13 +6413,13 @@ async def test_run_trader_once_prefetches_strategy_metadata_once_per_source(monk
     trader_payload["source_configs"][0]["strategy_params"]["max_signals_per_cycle"] = 2
     trader_payload["source_configs"][0]["strategy_params"]["scan_batch_size"] = 2
     control_payload = {
-        "mode": "paper",
+        "mode": "shadow",
         "settings": {
             "global_risk": {"max_orders_per_cycle": 50, "max_daily_loss_usd": 5000.0},
             "global_runtime": {
                 "live_market_context": {"enabled": False, "strict_ws_pricing_only": False},
             },
-            "paper_account_id": "paper-1",
+            "shadow_account_id": "shadow-1",
         },
     }
     resolve_mock = AsyncMock(
@@ -6458,12 +6458,12 @@ async def test_run_trader_once_prefetches_strategy_metadata_once_per_source(monk
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "reconcile_paper_positions",
+        "reconcile_shadow_positions",
         AsyncMock(
             return_value={
                 "matched": 0,
@@ -6615,7 +6615,7 @@ async def test_run_trader_once_live_runtime_trigger_processes_runtime_trigger_ba
     )
     monkeypatch.setattr(
         trader_orchestrator_worker,
-        "_backfill_simulation_ledger_for_active_paper_orders",
+        "_backfill_simulation_ledger_for_active_shadow_orders",
         AsyncMock(return_value={"attempted": 0, "backfilled": 0, "skipped": 0, "errors": []}),
     )
     monkeypatch.setattr(

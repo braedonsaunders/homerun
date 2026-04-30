@@ -89,7 +89,7 @@ async def test_get_gross_exposure_floors_live_exposure_from_wallet_positions(tmp
 
             assert await get_gross_exposure(session, mode="live") == pytest.approx(10.26)
             assert await get_gross_exposure(session) == pytest.approx(10.26)
-            assert await get_gross_exposure(session, mode="paper") == 0.0
+            assert await get_gross_exposure(session, mode="shadow") == 0.0
     finally:
         await engine.dispose()
 

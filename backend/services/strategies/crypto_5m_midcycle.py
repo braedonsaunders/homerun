@@ -5,7 +5,7 @@ cycle (BTC / ETH / SOL / XRP), this strategy observes which side is
 currently winning by checking the Chainlink oracle's distance from
 the cycle's reference price. If the move is large enough (default
 ≥ 5 bps) AND the live Polymarket book lets us buy the winning side
-cheaply enough (default ≤ 70¢ VWAP entry), we enter a $15 paper /
+cheaply enough (default ≤ 70¢ VWAP entry), we enter a $15 shadow /
 live position and hold to resolution.
 
 This is "observe, don't predict" — by 150s in, the price has had

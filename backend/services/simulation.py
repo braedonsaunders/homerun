@@ -45,7 +45,7 @@ class SlippageModel:
 
 
 class SimulationService:
-    """Paper trading simulation service"""
+    """Shadow trading simulation service"""
 
     POLYMARKET_FEE = 0.02  # 2% winner fee
     DB_RETRY_ATTEMPTS = 8
@@ -281,7 +281,7 @@ class SimulationService:
 
             return trade
 
-    async def record_orchestrator_paper_fill(
+    async def record_orchestrator_shadow_fill(
         self,
         *,
         account_id: str,
@@ -300,7 +300,7 @@ class SimulationService:
         session: AsyncSession = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        """Record a paper autotrader fill into simulation account ledger."""
+        """Record a shadow autotrader fill into simulation account ledger."""
         async with contextlib.AsyncExitStack() as stack:
             if session is None:
                 session = await stack.enter_async_context(AsyncSessionLocal())
@@ -311,20 +311,20 @@ class SimulationService:
             normalized_entry_fee = max(0.0, float(execution_fee_usd or 0.0))
             normalized_entry_slippage = max(0.0, float(execution_slippage_usd or 0.0))
             if normalized_notional <= 0:
-                raise ValueError("Paper fill notional must be greater than 0.")
+                raise ValueError("Shadow fill notional must be greater than 0.")
             if normalized_entry_price <= 0:
-                raise ValueError("Paper fill entry price must be greater than 0.")
+                raise ValueError("Shadow fill entry price must be greater than 0.")
 
             account = await session.get(SimulationAccount, account_id)
             if account is None:
-                raise ValueError(f"Paper account not found: {account_id}")
+                raise ValueError(f"Shadow account not found: {account_id}")
 
             required_capital = normalized_notional + normalized_entry_fee
             available_capital = float(account.current_capital or 0.0)
             if required_capital > available_capital:
                 raise ValueError(
                     (
-                        "Insufficient paper capital for autotrader fill: "
+                        "Insufficient shadow capital for autotrader fill: "
                         f"required=${required_capital:.2f} available=${available_capital:.2f}"
                     )
                 )
@@ -417,7 +417,7 @@ class SimulationService:
                 "opened_at": now.isoformat() + "Z",
             }
 
-    async def close_orchestrator_paper_fill(
+    async def close_orchestrator_shadow_fill(
         self,
         *,
         account_id: str,
@@ -431,7 +431,7 @@ class SimulationService:
         session: AsyncSession = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        """Resolve an orchestrator-paper simulation fill at a provided close mark."""
+        """Resolve an orchestrator-shadow simulation fill at a provided close mark."""
         async with contextlib.AsyncExitStack() as stack:
             if session is None:
                 session = await stack.enter_async_context(AsyncSessionLocal())
@@ -441,7 +441,7 @@ class SimulationService:
 
             account = await session.get(SimulationAccount, account_id)
             if account is None:
-                raise ValueError(f"Paper account not found: {account_id}")
+                raise ValueError(f"Shadow account not found: {account_id}")
 
             trade = await session.get(SimulationTrade, trade_id)
             if trade is None or str(trade.account_id) != str(account_id):

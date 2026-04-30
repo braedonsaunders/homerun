@@ -26,13 +26,15 @@ from services.trader_order_verification import (
 )
 from services.trader_orchestrator_state import _dedupe_live_authority_rows, _extract_copy_source_wallet_from_payload
 from services.trader_orchestrator import exit_executor
+from services.trader_orchestrator.hot_path import allow_polymarket_rest_call, is_hot_path_no_rest
+from services.wallet_state_cache import get_wallet_state_cache
 from utils.utcnow import utcnow
 from utils.converters import safe_float
 import services.trader_hot_state as hot_state
 
 logger = logging.getLogger("position_lifecycle")
 
-PAPER_ACTIVE_STATUSES = {"submitted", "executed", "completed", "open", "pending", "placing", "queued"}
+SHADOW_ACTIVE_STATUSES = {"submitted", "executed", "completed", "open", "pending", "placing", "queued"}
 LIVE_ACTIVE_STATUSES = {"submitted", "executed", "completed", "open", "pending", "placing", "queued"}
 _FAILED_EXIT_MAX_RETRIES = 5
 _FAILED_EXIT_MIN_RETRY_INTERVAL_SECONDS = 15
@@ -275,8 +277,8 @@ def _iso_utc(value: datetime) -> str:
 def _mark_touch_interval_seconds(params: dict[str, Any], *, mode: str) -> float:
     mode_key = str(mode or "").strip().lower()
     aliases: tuple[str, ...]
-    if mode_key == "paper":
-        aliases = ("paper_mark_touch_interval_seconds", "mark_touch_interval_seconds")
+    if mode_key == "shadow":
+        aliases = ("shadow_mark_touch_interval_seconds", "mark_touch_interval_seconds")
     else:
         aliases = ("live_mark_touch_interval_seconds", "mark_touch_interval_seconds")
     for key in aliases:
@@ -877,10 +879,6 @@ def _payload_exit_param(
         return exit_config.get(prefixed_key)
     if name in exit_config:
         return exit_config.get(name)
-    if prefix_key != "paper":
-        paper_key = f"paper_{name}"
-        if paper_key in exit_config:
-            return exit_config.get(paper_key)
     return default
 
 
@@ -3260,6 +3258,21 @@ async def _resolve_execution_wallet_address() -> str:
 
 async def _load_execution_wallet_positions_by_token() -> dict[str, dict[str, Any]]:
     global _wallet_positions_cache, _wallet_positions_last_refresh_succeeded
+
+    # Hot-path read from WalletStateCache.  When the orchestrator is
+    # in the no-REST scope, we serve cached state regardless of TTL —
+    # the reconciliation worker is the single REST writer that keeps
+    # the cache fresh on its own cadence.
+    if is_hot_path_no_rest():
+        ws_cache = get_wallet_state_cache()
+        snapshot = ws_cache.positions_by_token()
+        if snapshot:
+            return snapshot
+        # Fall through to existing in-process TTL cache (DB-backed,
+        # not REST) — last-resort fallback for the very-first cycle
+        # before reconciliation has seeded.  Never call REST.
+        return cached_data if (cached_data := _wallet_positions_cache[1]) else {}
+
     cached_at, cached_data = _wallet_positions_cache
     if _wallet_positions_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_CACHE_TTL_SECONDS:
         return cached_data
@@ -3307,9 +3320,24 @@ async def _load_execution_wallet_positions_by_token() -> dict[str, dict[str, Any
 
 async def _load_execution_wallet_closed_positions_by_token() -> dict[str, dict[str, Any]]:
     global _wallet_closed_positions_cache, _wallet_closed_positions_last_refresh_succeeded
+
+    # Hot-path read from WalletStateCache.
+    if is_hot_path_no_rest():
+        ws_cache = get_wallet_state_cache()
+        snapshot = ws_cache.closed_positions_by_token()
+        if snapshot:
+            return snapshot
+        return _wallet_closed_positions_cache[1] or {}
+
     cached_at, cached_data = _wallet_closed_positions_cache
     if _wallet_closed_positions_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return cached_data
+
+    # Hot-path gate: orchestrator must not block on REST.  Return
+    # whatever cache we have (even stale or empty) — the reconciliation
+    # worker is responsible for refreshing this off the hot path.
+    if not allow_polymarket_rest_call("closed_positions"):
+        return cached_data or {}
 
     wallet = await _resolve_execution_wallet_address()
     if not wallet:
@@ -3346,6 +3374,10 @@ async def _load_execution_wallet_trade_history() -> list[dict[str, Any]]:
     cached_at, cached_data = _wallet_trades_cache
     if cached_data and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return list(cached_data)
+
+    # Hot-path gate: never issue REST from the orchestrator hot loop.
+    if not allow_polymarket_rest_call("wallet_trades"):
+        return list(cached_data) if cached_data else []
 
     wallet = await _resolve_execution_wallet_address()
     if not wallet:
@@ -3386,7 +3418,7 @@ async def _load_execution_wallet_recent_buy_trades_by_token() -> dict[str, list[
             if cid:
                 condition_ids_to_fetch.add(cid)
 
-    if condition_ids_to_fetch:
+    if condition_ids_to_fetch and allow_polymarket_rest_call("market_by_condition_id_batch_buys"):
         batch_size = 10
 
         async def _fetch_condition(cid: str) -> tuple[str, Optional[dict[str, Any]]]:
@@ -3507,7 +3539,7 @@ async def _load_execution_wallet_recent_sell_trades_by_token() -> dict[str, dict
             if cid:
                 condition_ids_to_fetch.add(cid)
 
-    if condition_ids_to_fetch:
+    if condition_ids_to_fetch and allow_polymarket_rest_call("market_by_condition_id_batch_sells"):
         _BATCH = 10
 
         async def _fetch_condition(cid: str) -> tuple[str, Optional[dict[str, Any]]]:
@@ -3608,6 +3640,10 @@ async def _load_execution_wallet_recent_close_activity_by_token() -> dict[str, d
     cached_at, cached_data = _wallet_activity_cache
     if _wallet_activity_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return cached_data
+
+    # Hot-path gate: orchestrator hot loop must not issue REST.
+    if not allow_polymarket_rest_call("wallet_activity"):
+        return cached_data or {}
 
     wallet = await _resolve_execution_wallet_address()
     if not wallet:
@@ -3940,6 +3976,13 @@ async def load_market_info_for_orders(orders: list[TraderOrder]) -> dict[str, Op
             _, cached_info = _market_info_cache[lookup_id]
             return lookup_id, cached_info
 
+        # Hot-path gate: never fetch market info from REST when the
+        # orchestrator is in the no-REST scope.  Fall back to the
+        # in-memory market_cache_service / feed_manager view.
+        if not allow_polymarket_rest_call("market_info_lookup"):
+            existing = _market_info_cache.get(lookup_id)
+            return lookup_id, (existing[1] if existing else None)
+
         info: Optional[dict[str, Any]] = None
         if lookup_id.startswith("0x"):
             info = await polymarket_client.get_market_by_condition_id(lookup_id, force_refresh=True)
@@ -3978,7 +4021,7 @@ async def load_market_info_for_orders(orders: list[TraderOrder]) -> dict[str, Op
     return out
 
 
-async def reconcile_paper_positions(
+async def reconcile_shadow_positions(
     session: AsyncSession,
     *,
     trader_id: str,
@@ -3987,16 +4030,12 @@ async def reconcile_paper_positions(
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
     order_ids: Optional[list[str]] = None,
-    reason: str = "paper_position_lifecycle",
-    position_mode: str = "paper",
-    param_prefix: str = "paper",
-    enable_simulation_ledger: bool = True,
+    reason: str = "shadow_position_lifecycle",
+    enable_simulation_ledger: bool = False,
 ) -> dict[str, Any]:
     params = dict(trader_params or {})
-    mode_key = str(position_mode or "paper").strip().lower()
-    if mode_key not in {"paper", "shadow"}:
-        raise ValueError("position_mode must be 'paper' or 'shadow'")
-    prefix_key = str(param_prefix or mode_key).strip().lower()
+    mode_key = "shadow"
+    prefix_key = "shadow"
 
     def _trader_param(name: str, default: Any = None) -> Any:
         prefixed_key = f"{prefix_key}_{name}"
@@ -4004,10 +4043,6 @@ async def reconcile_paper_positions(
             return params.get(prefixed_key)
         if name in params:
             return params.get(name)
-        if prefix_key != "paper":
-            paper_key = f"paper_{name}"
-            if paper_key in params:
-                return params.get(paper_key)
         return default
 
     resolution_infer_from_prices = _safe_bool(_trader_param("resolution_infer_from_prices"), True)
@@ -4022,7 +4057,7 @@ async def reconcile_paper_positions(
                 select(TraderOrder).where(
                     TraderOrder.trader_id == trader_id,
                     func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key,
-                    func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(PAPER_ACTIVE_STATUSES)),
+                    func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(SHADOW_ACTIVE_STATUSES)),
                 )
             )
         )
@@ -4258,10 +4293,10 @@ async def reconcile_paper_positions(
                 if _exit_instance is not None:
                     try:
 
-                        class _PaperPositionView:
+                        class _ShadowPositionView:
                             pass
 
-                        pos_view = _PaperPositionView()
+                        pos_view = _ShadowPositionView()
                         pos_view.entry_price = entry_price
                         pos_view.current_price = current_price
                         pos_view.highest_price = highest_price
@@ -4436,7 +4471,7 @@ async def reconcile_paper_positions(
             sim_position_id = str(simulation_ledger.get("position_id") or "").strip()
             if sim_account_id and sim_trade_id and sim_position_id:
                 try:
-                    simulation_close = await simulation_service.close_orchestrator_paper_fill(
+                    simulation_close = await simulation_service.close_orchestrator_shadow_fill(
                         account_id=sim_account_id,
                         trade_id=sim_trade_id,
                         position_id=sim_position_id,
@@ -4617,32 +4652,6 @@ async def reconcile_paper_positions(
     }
 
 
-async def reconcile_shadow_positions(
-    session: AsyncSession,
-    *,
-    trader_id: str,
-    trader_params: Optional[dict[str, Any]] = None,
-    dry_run: bool = False,
-    force_mark_to_market: bool = False,
-    max_age_hours: Optional[int] = None,
-    order_ids: Optional[list[str]] = None,
-    reason: str = "shadow_position_lifecycle",
-) -> dict[str, Any]:
-    return await reconcile_paper_positions(
-        session,
-        trader_id=trader_id,
-        trader_params=trader_params,
-        dry_run=dry_run,
-        force_mark_to_market=force_mark_to_market,
-        max_age_hours=max_age_hours,
-        order_ids=order_ids,
-        reason=reason,
-        position_mode="shadow",
-        param_prefix="shadow",
-        enable_simulation_ledger=False,
-    )
-
-
 async def reconcile_live_positions(
     session: AsyncSession,
     *,
@@ -4656,10 +4665,10 @@ async def reconcile_live_positions(
 ) -> dict[str, Any]:
     """Lifecycle management for live positions.
 
-    Mirrors reconcile_paper_positions but operates on mode='live' orders.
+    Mirrors reconcile_shadow_positions but operates on mode='live' orders.
     Handles: stop-loss, take-profit, trailing stop, max hold, market
     inactivity, and resolution detection.  Does NOT interact with the
-    simulation ledger (that is paper-only).
+    simulation ledger (that is shadow-only).
     """
     params = dict(trader_params or {})
     resolution_infer_from_prices = _safe_bool(params.get("live_resolution_infer_from_prices"), True)
@@ -5732,12 +5741,13 @@ async def reconcile_live_positions(
                     )
                 )
             unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in ws_mid_prices]
-            if unresolved_token_ids:
+            if unresolved_token_ids and allow_polymarket_rest_call("midpoints_batch"):
                 # ONE HTTP request for all unresolved tokens via the
                 # CLOB /midpoints batch endpoint instead of N parallel
-                # single-token GETs.  The client also has a 3s
-                # in-process cache so a follow-up cycle on the same
-                # token universe collapses to zero network calls.
+                # single-token GETs.  Skipped on the orchestrator hot
+                # path — the WS feed is supposed to have these
+                # tokens; if it doesn't we use the cached/live midpoint
+                # already in ``ws_mid_prices`` and accept the gap.
                 try:
                     batch = await asyncio.wait_for(
                         polymarket_client.get_midpoints_batch(unresolved_token_ids),
@@ -5745,6 +5755,8 @@ async def reconcile_live_positions(
                     )
                 except Exception:
                     batch = {}
+            elif unresolved_token_ids:
+                batch = {}
                 for token_id, midpoint in batch.items():
                     parsed = safe_float(midpoint)
                     if parsed is None or parsed < 0:

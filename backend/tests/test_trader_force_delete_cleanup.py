@@ -52,7 +52,7 @@ async def test_force_delete_cleans_up_active_orders_before_delete(tmp_path):
                     source="crypto",
                     market_id="market-force-delete",
                     direction="buy_yes",
-                    mode="paper",
+                    mode="shadow",
                     status="executed",
                     notional_usd=25.0,
                     entry_price=0.5,

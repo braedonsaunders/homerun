@@ -32,13 +32,13 @@ def test_validate_trader_filter_config_normalizes_min_order_size_fields():
     cfg = StrategySDK.validate_trader_filter_config(
         {
             "min_order_size_usd": "3.5",
-            "paper_min_order_size_usd": "2.0",
+            "shadow_min_order_size_usd": "2.0",
             "live_min_order_size_usd": "4.25",
         }
     )
 
     assert cfg["min_order_size_usd"] == 3.5
-    assert cfg["paper_min_order_size_usd"] == 2.0
+    assert cfg["shadow_min_order_size_usd"] == 2.0
     assert cfg["live_min_order_size_usd"] == 4.25
 
 

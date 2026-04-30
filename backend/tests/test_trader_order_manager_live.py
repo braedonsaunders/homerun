@@ -385,7 +385,7 @@ async def test_submit_execution_leg_live_does_not_fallback_to_market_id_token():
 
 
 @pytest.mark.asyncio
-async def test_submit_execution_leg_paper_skips_without_executable_book(monkeypatch):
+async def test_submit_execution_leg_shadow_skips_without_executable_book(monkeypatch):
     async def _no_token(*_args, **_kwargs):
         return None
 
@@ -400,7 +400,7 @@ async def test_submit_execution_leg_paper_skips_without_executable_book(monkeypa
     )
 
     result = await order_manager.submit_execution_leg(
-        mode="paper",
+        mode="shadow",
         signal=signal,
         leg={
             "leg_id": "leg_1",
@@ -416,7 +416,7 @@ async def test_submit_execution_leg_paper_skips_without_executable_book(monkeypa
     assert result.status == "skipped"
     assert result.error_message == "No order book available for shadow execution leg."
     assert result.payload["submission"] == "skipped"
-    assert result.payload["mode"] == "paper"
+    assert result.payload["mode"] == "shadow"
     assert result.payload["reason"] == "missing_order_book"
     assert result.notional_usd == 0.0
 
@@ -469,7 +469,7 @@ async def test_submit_execution_leg_shadow_uses_microstructure_context(monkeypat
     assert result.payload["submission"] == "shadow_microstructure_simulated"
     assert result.payload["quote_source"] == "signal_microstructure_context"
     assert result.payload["token_id_source"] == "payload.selected_token_id"
-    assert result.payload["paper_simulation"]["execution_estimate"]["levels_consumed"] == 1
+    assert result.payload["shadow_simulation"]["execution_estimate"]["levels_consumed"] == 1
     execution_mock.assert_not_awaited()
 
 
@@ -485,7 +485,7 @@ async def test_submit_execution_leg_rejects_tiny_price_without_floor_inflation()
     )
 
     result = await order_manager.submit_execution_leg(
-        mode="paper",
+        mode="shadow",
         signal=signal,
         leg={
             "leg_id": "leg_1",

@@ -45,7 +45,7 @@ async def test_list_serialized_trader_orders_enriches_payload_from_cached_market
                 source="traders",
                 market_id=condition_id,
                 market_question="Jazz vs Rockets",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={},
             )
@@ -88,7 +88,7 @@ async def test_list_serialized_trader_orders_keeps_existing_payload_metadata(tmp
                 source="traders",
                 market_id=condition_id,
                 market_question="Manual payload metadata",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={
                     "market_slug": "payload-market-slug",
@@ -137,7 +137,7 @@ async def test_list_serialized_trader_orders_uses_cached_market_outcome_labels_f
                 market_id=condition_id,
                 market_question="BOS vs DEN",
                 direction="buy_yes",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={},
             )
@@ -246,7 +246,7 @@ async def test_list_serialized_trader_orders_includes_trade_bundle_metadata_for_
                 market_id="market-atletico",
                 market_question="Will Atlético Nacional win on 2026-04-01?",
                 direction="buy_yes",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={
                     "token_id": "token-atletico",
@@ -262,7 +262,7 @@ async def test_list_serialized_trader_orders_includes_trade_bundle_metadata_for_
                 market_id="market-cucuta",
                 market_question="Will Cúcuta Deportivo FC win on 2026-04-01?",
                 direction="buy_yes",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={
                     "token_id": "token-cucuta",
@@ -456,7 +456,7 @@ async def test_list_serialized_trader_orders_demotes_unproven_guaranteed_bundle_
                 market_id="market-draw",
                 market_question="Will draw happen?",
                 direction="buy_yes",
-                mode="paper",
+                mode="shadow",
                 status="open",
                 payload_json={
                     "token_id": "token-draw",
@@ -544,7 +544,7 @@ async def test_list_serialized_trader_orders_prefers_order_execution_shape_over_
                 market_id="market-seoul",
                 market_question="Will the highest temperature in Seoul be 15°C on April 4?",
                 direction="buy_yes",
-                mode="paper",
+                mode="shadow",
                 status="closed_win",
                 actual_profit=0.17,
                 payload_json={

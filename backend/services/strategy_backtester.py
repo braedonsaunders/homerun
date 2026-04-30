@@ -1327,7 +1327,7 @@ async def run_exit_backtest(
 ) -> ExitBacktestResult:
     """Run a strategy's should_exit() against current open positions.
 
-    Loads the strategy, fetches open paper positions, and runs should_exit()
+    Loads the strategy, fetches open shadow positions, and runs should_exit()
     on each to show which would be closed and why.
     """
     result = ExitBacktestResult(strategy_slug=slug)
@@ -1363,7 +1363,7 @@ async def run_exit_backtest(
         result.total_time_ms = (time.monotonic() - total_start) * 1000
         return result
 
-    # 3. Fetch open paper positions
+    # 3. Fetch open shadow positions
     data_start = time.monotonic()
     try:
         from models.database import AsyncSessionLocal, TraderPosition
@@ -1470,7 +1470,7 @@ async def run_exit_backtest(
                 pos_view.market_id = getattr(pos, "market_id", "")
                 pos_view.market_question = getattr(pos, "market_question", "")
                 pos_view.direction = getattr(pos, "direction", "")
-                pos_view.mode = getattr(pos, "mode", "paper")
+                pos_view.mode = getattr(pos, "mode", "shadow")
                 pos_view.total_notional_usd = notional_usd
                 pos_view.opened_at = opened_at
 

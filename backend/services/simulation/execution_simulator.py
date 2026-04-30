@@ -562,14 +562,14 @@ class ExecutionSimulator:
             if token_id:
                 leg["token_id"] = token_id
             submission = await submit_execution_leg(
-                mode="paper",
+                mode="shadow",
                 signal=execution_signal,
                 leg=leg,
                 notional_usd=notional_usd,
             )
             normalized_status = str(submission.status or "").strip().lower()
-            paper_payload = submission.payload.get("paper_simulation") if isinstance(submission.payload, dict) else {}
-            slippage_bps = self._to_float((paper_payload or {}).get("slippage_bps"), 0.0)
+            shadow_payload = submission.payload.get("shadow_simulation") if isinstance(submission.payload, dict) else {}
+            slippage_bps = self._to_float((shadow_payload or {}).get("slippage_bps"), 0.0)
             if normalized_status not in {"executed", "open", "submitted"}:
                 skipped += 1
                 sequence = await self._append_event(
@@ -589,7 +589,7 @@ class ExecutionSimulator:
                     realized_pnl_usd=0.0,
                     unrealized_pnl_usd=0.0,
                     payload={
-                        "reason": str(submission.error_message or "paper_execution_unfilled"),
+                        "reason": str(submission.error_message or "shadow_execution_unfilled"),
                         "status": normalized_status,
                         "execution_payload": submission.payload,
                         "replay_point": replay_point,

@@ -44,7 +44,7 @@ homerun/
 │   │   │   ├── base.py         # BaseStrategy ABC
 │   │   │   ├── basic.py        # BasicArbStrategy
 │   │   │   └── ...             # 30+ strategy implementations
-│   │   ├── simulation.py       # Paper trading engine
+│   │   ├── simulation.py       # Shadow trading engine (microstructure-aware fill simulator)
 │   │   ├── copy_trader.py      # Copy trading service
 │   │   ├── credential_manager.py
 │   │   ├── event_bus.py        # Async pub/sub singleton
@@ -119,7 +119,7 @@ Homerun scans prediction markets (Polymarket, Kalshi) for mispricings and arbitr
 - **SETTLEMENT_LAG**: A market's outcome is known but the price hasn't settled yet
 - **NEWS_INFORMATION**: Breaking news implies a probability different from the market price
 
-It then allows paper trading, copy trading, or live execution of these opportunities.
+It then allows shadow trading (microstructure-simulated, no on-chain submission), copy trading, or live execution of these opportunities.
 
 ### Key Domain Types
 
