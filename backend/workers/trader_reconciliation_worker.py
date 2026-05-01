@@ -668,14 +668,35 @@ async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
                 elapsed_s=round(time.monotonic() - cycle_start_mono, 1),
             )
         except asyncio.CancelledError:
-            # Surface the cancel so we know if some other code stopped
-            # us, then re-raise so the host's supervisor can restart.
+            # A child cancellation should NOT kill the reseeder loop —
+            # production showed the loop dying after one cycle because
+            # the host's worker-freshness monitor restart-cancelled the
+            # parent task while we were mid-cycle, propagating cancel
+            # into our wait_for and bubbling out as CancelledError.
+            # Re-raising killed the loop permanently; instead, check
+            # whether we were genuinely asked to stop and continue if
+            # not.  Worker-shutdown sets stop_event BEFORE cancelling
+            # the task (see ``run_worker_loop``'s finally block), so
+            # a stop_event check after a small yield disambiguates
+            # genuine shutdown from spurious cancellation.
+            elapsed = round(time.monotonic() - cycle_start_mono, 1)
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                pass
+            if stop_event.is_set():
+                logger.warning(
+                    "WalletStateCache reseeder cycle cancelled (shutdown)",
+                    cycle=cycle,
+                    elapsed_s=elapsed,
+                )
+                raise
             logger.warning(
-                "WalletStateCache reseeder cycle cancelled",
+                "WalletStateCache reseeder cycle cancelled (recovering — "
+                "stop_event not set, will retry next interval)",
                 cycle=cycle,
-                elapsed_s=round(time.monotonic() - cycle_start_mono, 1),
+                elapsed_s=elapsed,
             )
-            raise
         except BaseException as exc:
             logger.warning(
                 "WalletStateCache REST reseed cycle failed",
