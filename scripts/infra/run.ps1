@@ -599,8 +599,12 @@ function Wait-ForDockerRuntime {
 }
 
 function Test-PostgresRuntimeAvailable {
-    if (Test-DockerRuntimeAvailable) { return $true }
-    return [bool](Find-PostgresBinDir)
+    # Docker-only — native postgres is no longer an acceptable
+    # runtime.  See the rationale on the removed Start-PostgresLocal
+    # fallback in the main flow: native postgres would race the
+    # Docker path on port 5432 and silently fork into a divergent
+    # data directory.
+    return Test-DockerRuntimeAvailable
 }
 
 function Ensure-PostgresRuntime {
@@ -1293,18 +1297,19 @@ function Ensure-Postgres {
     }
     Show-PostgresDockerDiagnostics -ContainerName $ContainerName
 
-    $localStarted = Start-PostgresLocal -PgHost $PgHost -Port $Port -User $User -DataDir $DataDir
-    if ($localStarted -and (Wait-ForService -TargetHost $PgHost -Port $Port -TimeoutSeconds 90)) {
-        $script:postgresPort = [int]$Port
-        $script:postgresStartedByScript = $true
-        $script:postgresStartMode = "local"
-        Write-Host "Postgres started via local PostgreSQL on ${PgHost}:${Port}" -ForegroundColor Green
-        return
-    }
-
-    Write-Host "Failed to start Postgres automatically." -ForegroundColor Red
+    # Native-postgres fallback removed.  It was racing the Docker
+    # path on port 5432: when Docker briefly failed (e.g. desktop
+    # daemon still warming up after a reboot), the fallback spawned
+    # ``postgres.exe`` against ``C:/homerun/data/postgres`` and held
+    # 5432, after which Docker compose could never bind even on
+    # subsequent retries.  The fallback also produced two divergent
+    # data directories (Docker volume vs ``C:/homerun/data/postgres``)
+    # depending on which path won the race — silently corrupting
+    # state across runs.  Docker-only is the only sane configuration.
+    Write-Host "Failed to start Postgres via Docker." -ForegroundColor Red
     Write-Host "Launcher could not confirm Postgres is reachable on ${PgHost}:${Port}." -ForegroundColor Yellow
-    Write-Host "Resolve the connectivity issue shown above, then rerun Homerun.bat." -ForegroundColor Yellow
+    Write-Host "Ensure Docker Desktop is running and ``homerun-postgres`` can bind to port ${Port}." -ForegroundColor Yellow
+    Write-Host "If port ${Port} is held by another process (e.g. native PostgreSQL service), stop it before retrying." -ForegroundColor Yellow
     exit 1
 }
 
