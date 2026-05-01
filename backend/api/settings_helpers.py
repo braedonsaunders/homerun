@@ -365,6 +365,10 @@ def redeemer_payload(settings: AppSettings) -> dict[str, Any]:
             getattr(settings, "redeemer_force_including_losers", None),
             False,
         ),
+        "default_collateral": _with_default(
+            getattr(settings, "polymarket_default_collateral", None),
+            "pusd",
+        ),
     }
 
 
@@ -831,6 +835,10 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             settings.redeemer_max_gas_price_gwei = float(redeemer.max_gas_price_gwei)
         if getattr(redeemer, "force_including_losers", None) is not None:
             settings.redeemer_force_including_losers = bool(redeemer.force_including_losers)
+        if getattr(redeemer, "default_collateral", None) is not None:
+            raw = str(redeemer.default_collateral or "").strip().lower()
+            if raw in {"pusd", "usdc.e", "usdc_native"}:
+                settings.polymarket_default_collateral = raw
 
     if maintenance:
         maint = maintenance

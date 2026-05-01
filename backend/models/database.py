@@ -1361,6 +1361,12 @@ class AppSettings(Base):
     redeemer_max_gas_price_gwei = Column(Float, nullable=True)
     redeemer_force_including_losers = Column(Boolean, nullable=True)
 
+    # Polymarket collateral selection — default for operator-initiated
+    # split/merge calls. Recognized values: ``pusd``, ``usdc.e``,
+    # ``usdc_native``. Redemption auto-detects collateral per-position
+    # from chain math regardless of this value (see alembic 202604300004).
+    polymarket_default_collateral = Column(String, nullable=True)
+
     # Search Settings (which platforms to query, result limits)
     search_polymarket_enabled = Column(Boolean, default=True)
     search_kalshi_enabled = Column(Boolean, default=False)

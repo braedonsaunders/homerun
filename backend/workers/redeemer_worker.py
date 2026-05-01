@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 from models.database import AsyncSessionLocal, init_database, recover_pool
 from services.ctf_execution import ctf_execution_service
 from services.live_execution_service import live_execution_service
+from services.polymarket_collateral import collateral_registry
 from services.worker_state import (
     _is_retryable_db_error,
     clear_worker_run_request,
@@ -25,6 +26,12 @@ WORKER_NAME = "redeemer"
 DEFAULT_INTERVAL_SECONDS = 120
 _IDLE_SLEEP_SECONDS = 2
 _MAX_CONSECUTIVE_DB_FAILURES = 3
+# How long we stay in the hard-stop state after a boot-invariant
+# failure before re-attempting verification.  Operator-actionable
+# failures (e.g. NegRiskAdapter redeployment) typically need a code
+# update, but a transient RPC failure shouldn't lock us out forever —
+# 15 minutes is a balance between "loud failure" and "self-heal".
+_BOOT_INVARIANT_RETRY_SECONDS = 900.0
 # Dry-run scans (the default scheduled cycle) only do view calls and finish
 # in seconds, but a real-mode run has to walk every resolved condition with
 # multiple chain RPCs (payoutDenominator + per-token balance + redeem) and
@@ -32,6 +39,26 @@ _MAX_CONSECUTIVE_DB_FAILURES = 3
 # wider budget; dry-runs still complete inside their normal envelope.
 _REDEEM_CYCLE_TIMEOUT_SECONDS = 90.0
 _REDEEM_REAL_CYCLE_TIMEOUT_SECONDS = 240.0
+
+
+async def _verify_boot_invariants() -> str | None:
+    """One-shot boot check before the redeemer enters its loop.
+
+    Asserts every registered NegRiskAdapter's on-chain ``col``/``wcol``
+    match the static registry. Returns ``None`` on success or an
+    error string on failure — the loop refuses to redeem until a
+    subsequent retry succeeds (handles transient RPC outages while
+    still failing loudly on genuine adapter drift).
+    """
+    try:
+        w3 = await ctf_execution_service._get_web3()
+    except Exception as exc:
+        return f"rpc_unavailable_for_invariant_check:{exc}"
+    try:
+        await collateral_registry.verify_invariants(w3)
+    except Exception as exc:
+        return str(exc)
+    return None
 
 
 async def _run_redeem_cycle(*, dry_run: bool) -> dict[str, Any]:
@@ -87,6 +114,39 @@ async def run_worker_loop() -> None:
             if not is_enabled or is_paused:
                 await asyncio.sleep(max(_IDLE_SLEEP_SECONDS, interval_seconds))
                 continue
+
+            # Boot-time invariant check: assert every registered
+            # NegRiskAdapter's on-chain ``col``/``wcol`` match our
+            # static expectations before we will touch any redemption.
+            # A violation hard-stops the worker for
+            # ``_BOOT_INVARIANT_RETRY_SECONDS``, surfacing
+            # ``collateral_invariants_violated:...`` to the operator
+            # dashboard. Once verification succeeds, ``invariants_verified``
+            # latches True for the remainder of the process lifetime —
+            # we never re-check the gate during normal cycles.
+            if not collateral_registry.invariants_verified():
+                invariant_failure = await _verify_boot_invariants()
+                if invariant_failure is not None:
+                    async with AsyncSessionLocal() as session:
+                        await write_worker_snapshot(
+                            session,
+                            WORKER_NAME,
+                            running=False,
+                            enabled=True,
+                            current_activity="Boot invariant failed — refusing to redeem",
+                            interval_seconds=interval_seconds,
+                            last_error=f"collateral_invariants_violated:{invariant_failure}",
+                            stats={
+                                "invariant_failure": invariant_failure,
+                                "retry_in_seconds": _BOOT_INVARIANT_RETRY_SECONDS,
+                            },
+                        )
+                    logger.error(
+                        "Redeemer refusing to start: collateral invariants violated: %s",
+                        invariant_failure,
+                    )
+                    await asyncio.sleep(_BOOT_INVARIANT_RETRY_SECONDS)
+                    continue
 
             cycle_reason = "requested" if requested_run else "scheduled"
             cycle_timeout = (

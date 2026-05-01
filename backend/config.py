@@ -262,6 +262,17 @@ class Settings(BaseSettings):
     REDEEMER_MAX_GAS_PRICE_GWEI: float = 200.0  # Defer redemption when network is hot
     REDEEMER_FORCE_INCLUDING_LOSERS: bool = False  # Operator override: redeem $0-payout dust too
 
+    # Polymarket Collateral Selection
+    # ---------------------------------------------------------------
+    # Default collateral used by operator-initiated split/merge calls
+    # against the Conditional Tokens Framework. Recognized values:
+    # ``pusd`` (Polymarket's canonical stablecoin post-2026-04
+    # migration), ``usdc.e`` (legacy bridged USDC), ``usdc_native``
+    # (Polygon-native USDC).  Redemption is unaffected by this setting
+    # — the redeemer always derives the collateral per-position from
+    # the chain's own getPositionId math (see services.polymarket_collateral).
+    POLYMARKET_DEFAULT_COLLATERAL: str = "pusd"
+
     # Stale-Order Sweeper Policy (live CLOB cleanup)
     # ----------------------------------------------------------------
     # The reconciliation worker periodically cancels open CLOB orders
@@ -874,6 +885,7 @@ async def apply_search_filters():
         ("REDEEMER_MIN_PAYOUT_USD", "redeemer_min_payout_usd", None),
         ("REDEEMER_MAX_GAS_PRICE_GWEI", "redeemer_max_gas_price_gwei", None),
         ("REDEEMER_FORCE_INCLUDING_LOSERS", "redeemer_force_including_losers", None),
+        ("POLYMARKET_DEFAULT_COLLATERAL", "polymarket_default_collateral", None),
     ]
 
     for config_attr, db_attr, default in _apply:

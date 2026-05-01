@@ -7,6 +7,16 @@ from typing import Any, Optional
 from config import settings
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
+from services.polymarket_collateral import (
+    CTF_ADDRESS,
+    CollateralKind,
+    CollateralMatch,
+    CollateralToken,
+    PUSD_ADDRESS,
+    USDC_E_ADDRESS,
+    USDC_NATIVE_ADDRESS,
+    collateral_registry,
+)
 from utils.converters import safe_float
 from utils.logger import get_logger
 
@@ -15,12 +25,35 @@ logger = get_logger(__name__)
 _USDC_DECIMALS = 6
 _MAX_UINT256 = 2**256 - 1
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+_ZERO_BYTES32 = "0x" + "00" * 32
 _MIN_APPROVAL_BUFFER_BASE = 10_000_000  # 10 USDC (6 decimals)
 _NONCE_RACE_ERROR_MARKERS = (
     "replacement transaction underpriced",
     "transaction underpriced",
     "nonce too low",
 )
+
+
+_VALID_DEFAULT_COLLATERALS: dict[str, str] = {
+    "pusd": PUSD_ADDRESS,
+    "usdc.e": USDC_E_ADDRESS,
+    "usdc_native": USDC_NATIVE_ADDRESS,
+}
+
+
+def _resolve_default_collateral_address() -> str:
+    """Return the address of the operator-configured default collateral.
+
+    Used by ``split_position``/``merge_positions`` when the caller does
+    not specify a collateral explicitly. The default tracks Polymarket's
+    current canonical (pUSD post-2026-04 migration) but is operator-
+    overridable via the ``POLYMARKET_DEFAULT_COLLATERAL`` setting so
+    legacy USDC.e-only deployments stay supported without code changes.
+    """
+    raw = str(getattr(settings, "POLYMARKET_DEFAULT_COLLATERAL", "") or "").strip().lower()
+    if not raw:
+        return PUSD_ADDRESS
+    return _VALID_DEFAULT_COLLATERALS.get(raw, PUSD_ADDRESS)
 
 
 @dataclass
@@ -33,8 +66,10 @@ class CTFExecutionResult:
 
 
 class CTFExecutionService:
-    CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    # Source of truth for canonical contract addresses lives in
+    # ``services.polymarket_collateral``. Re-exposed as class attrs so
+    # call sites and tests can patch them without having to re-import.
+    CTF_ADDRESS = CTF_ADDRESS
     CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 
     _CTF_ABI = [
@@ -150,6 +185,27 @@ class CTFExecutionService:
                 {"name": "amount", "type": "uint256"},
             ],
             "outputs": [{"name": "", "type": "bool"}],
+            "stateMutability": "nonpayable",
+        },
+    ]
+
+    # NegRiskAdapter.redeemPositions(bytes32 conditionId, uint256[] amounts).
+    # Source verified against
+    # https://github.com/Polymarket/neg-risk-ctf-adapter/blob/main/src/NegRiskAdapter.sol
+    # — the adapter requires ``setApprovalForAll(adapter, true)`` on the
+    # CTF (it pulls the wallet's WCOL positions via ``safeBatchTransferFrom``),
+    # then redeems against the inner CTF and unwraps WCOL → parent
+    # collateral back to the caller.  ``amounts`` is length-2:
+    # ``[yes_amount, no_amount]``.
+    _NEG_RISK_ADAPTER_ABI = [
+        {
+            "name": "redeemPositions",
+            "type": "function",
+            "inputs": [
+                {"name": "_conditionId", "type": "bytes32"},
+                {"name": "_amounts", "type": "uint256[]"},
+            ],
+            "outputs": [],
             "stateMutability": "nonpayable",
         },
     ]
@@ -475,82 +531,137 @@ class CTFExecutionService:
         except Exception:
             return None
 
-    async def ensure_usdc_approval(self, *, min_amount_base_units: int = 0) -> CTFExecutionResult:
+    async def ensure_collateral_approval(
+        self,
+        *,
+        collateral_address: str,
+        min_amount_base_units: int = 0,
+    ) -> CTFExecutionResult:
+        """Ensure CTF has ERC-20 ``approve`` allowance to pull the given collateral.
+
+        Required before splitting collateral into a complete set of
+        outcomes. Uses ``_MAX_UINT256`` to amortize the approval cost
+        across many splits; the floor of ``_MIN_APPROVAL_BUFFER_BASE``
+        ensures we top-up rather than incrementally approve.
+        """
+        action_label = f"approve_collateral:{(collateral_address or '').lower()}"
         try:
             wallet_ctx = await self._resolve_wallet_context()
             w3 = await self._get_web3()
             owner = w3.to_checksum_address(wallet_ctx["execution_wallet"])
-            usdc_address = w3.to_checksum_address(self.USDC_ADDRESS)
+            collateral_checksum = w3.to_checksum_address(collateral_address)
             ctf_address = w3.to_checksum_address(self.CTF_ADDRESS)
-            usdc = w3.eth.contract(address=usdc_address, abi=self._ERC20_ABI)
-            allowance = await asyncio.to_thread(lambda: usdc.functions.allowance(owner, ctf_address).call())
+            erc20 = w3.eth.contract(address=collateral_checksum, abi=self._ERC20_ABI)
+            allowance = await asyncio.to_thread(
+                lambda: erc20.functions.allowance(owner, ctf_address).call()
+            )
             required = max(int(min_amount_base_units), _MIN_APPROVAL_BUFFER_BASE)
             if int(allowance or 0) >= required:
                 return CTFExecutionResult(
                     status="executed",
-                    action="approve_usdc",
+                    action=action_label,
                     tx_hash=None,
                     error_message=None,
-                    payload={"allowance": int(allowance), "required": required, "already_approved": True},
+                    payload={
+                        "collateral_address": collateral_address,
+                        "allowance": int(allowance),
+                        "required": required,
+                        "already_approved": True,
+                    },
                 )
 
-            data = usdc.functions.approve(ctf_address, _MAX_UINT256)._encode_transaction_data()
+            data = erc20.functions.approve(ctf_address, _MAX_UINT256)._encode_transaction_data()
             result = await self._execute_contract_call(
-                contract_address=self.USDC_ADDRESS,
+                contract_address=collateral_address,
                 data=data,
                 gas_limit=140_000,
-                action="approve_usdc",
+                action=action_label,
             )
             if result.status == "executed":
-                result.payload.update({"required": required, "already_approved": False})
+                result.payload.update(
+                    {
+                        "collateral_address": collateral_address,
+                        "required": required,
+                        "already_approved": False,
+                    }
+                )
             return result
         except Exception as exc:
-            logger.error("USDC approval check failed", exc_info=exc)
+            logger.error(
+                "Collateral approval check failed",
+                collateral_address=collateral_address,
+                exc_info=exc,
+            )
             return CTFExecutionResult(
                 status="failed",
-                action="approve_usdc",
+                action=action_label,
                 tx_hash=None,
                 error_message=str(exc),
-                payload={},
+                payload={"collateral_address": collateral_address},
             )
 
-    async def ensure_exchange_approval(self) -> CTFExecutionResult:
+    async def _ensure_ctf_operator_approval(
+        self,
+        *,
+        operator_address: str,
+        action: str,
+    ) -> CTFExecutionResult:
+        """Idempotent ``setApprovalForAll(operator, true)`` on the CTF.
+
+        Required for any contract that needs to pull the wallet's
+        ERC-1155 positions on its behalf — the CTF Exchange (existing
+        order matching path) and any NegRiskAdapter we redeem through
+        (it pulls WCOL positions in its ``redeemPositions``).
+        """
         try:
             wallet_ctx = await self._resolve_wallet_context()
             w3 = await self._get_web3()
             owner = w3.to_checksum_address(wallet_ctx["execution_wallet"])
             ctf_address = w3.to_checksum_address(self.CTF_ADDRESS)
-            exchange_address = w3.to_checksum_address(self.CTF_EXCHANGE)
+            operator_checksum = w3.to_checksum_address(operator_address)
             ctf = w3.eth.contract(address=ctf_address, abi=self._CTF_ABI)
-            approved = await asyncio.to_thread(lambda: ctf.functions.isApprovedForAll(owner, exchange_address).call())
+            approved = await asyncio.to_thread(
+                lambda: ctf.functions.isApprovedForAll(owner, operator_checksum).call()
+            )
             if bool(approved):
                 return CTFExecutionResult(
                     status="executed",
-                    action="approve_exchange",
+                    action=action,
                     tx_hash=None,
                     error_message=None,
-                    payload={"already_approved": True},
+                    payload={"already_approved": True, "operator": operator_address},
                 )
 
-            data = ctf.functions.setApprovalForAll(exchange_address, True)._encode_transaction_data()
+            data = ctf.functions.setApprovalForAll(operator_checksum, True)._encode_transaction_data()
             result = await self._execute_contract_call(
                 contract_address=self.CTF_ADDRESS,
                 data=data,
                 gas_limit=170_000,
-                action="approve_exchange",
+                action=action,
             )
             if result.status == "executed":
-                result.payload.update({"already_approved": False})
+                result.payload.update({"already_approved": False, "operator": operator_address})
             return result
         except Exception as exc:
-            logger.error("Exchange approval check failed", exc_info=exc)
+            logger.error(
+                "CTF operator approval failed",
+                operator=operator_address,
+                action=action,
+                exc_info=exc,
+            )
             return CTFExecutionResult(
                 status="failed",
-                action="approve_exchange",
+                action=action,
                 tx_hash=None,
                 error_message=str(exc),
-                payload={},
+                payload={"operator": operator_address},
             )
+
+    async def ensure_exchange_approval(self) -> CTFExecutionResult:
+        return await self._ensure_ctf_operator_approval(
+            operator_address=self.CTF_EXCHANGE,
+            action="approve_exchange",
+        )
 
     async def get_native_gas_affordability(self, *, gas_limit: int) -> dict[str, Any]:
         try:
@@ -577,7 +688,20 @@ class CTFExecutionService:
                 "error": str(exc),
             }
 
-    async def split_position(self, *, condition_id: str, amount_usd: float) -> CTFExecutionResult:
+    async def split_position(
+        self,
+        *,
+        condition_id: str,
+        amount_usd: float,
+        collateral_address: str | None = None,
+    ) -> CTFExecutionResult:
+        """Split parent collateral into a complete set of binary outcome shares.
+
+        ``collateral_address`` defaults to the operator-configured
+        ``POLYMARKET_DEFAULT_COLLATERAL`` (currently pUSD post-2026-04
+        migration). Pass an explicit address to override — e.g. when
+        operating against a legacy USDC.e-collateralized condition.
+        """
         normalized_condition_id = self._normalize_condition_id(condition_id)
         amount = max(0.0, safe_float(amount_usd, 0.0) or 0.0)
         if amount <= 0.0:
@@ -589,8 +713,13 @@ class CTFExecutionService:
                 payload={"condition_id": normalized_condition_id},
             )
 
+        collateral = (collateral_address or _resolve_default_collateral_address()).strip()
+
         amount_base = self._to_base_units(amount)
-        approval = await self.ensure_usdc_approval(min_amount_base_units=amount_base)
+        approval = await self.ensure_collateral_approval(
+            collateral_address=collateral,
+            min_amount_base_units=amount_base,
+        )
         if approval.status != "executed":
             return approval
 
@@ -601,8 +730,8 @@ class CTFExecutionService:
         w3 = await self._get_web3()
         ctf = w3.eth.contract(address=w3.to_checksum_address(self.CTF_ADDRESS), abi=self._CTF_ABI)
         data = ctf.functions.splitPosition(
-            self.USDC_ADDRESS,
-            "0x" + ("00" * 32),
+            w3.to_checksum_address(collateral),
+            _ZERO_BYTES32,
             normalized_condition_id,
             [1, 2],
             amount_base,
@@ -616,6 +745,7 @@ class CTFExecutionService:
         result.payload.update(
             {
                 "condition_id": normalized_condition_id,
+                "collateral_address": collateral,
                 "amount_usd": amount,
                 "amount_base_units": amount_base,
                 "shares_per_side": amount,
@@ -623,7 +753,17 @@ class CTFExecutionService:
         )
         return result
 
-    async def merge_positions(self, *, condition_id: str, shares_per_side: float) -> CTFExecutionResult:
+    async def merge_positions(
+        self,
+        *,
+        condition_id: str,
+        shares_per_side: float,
+        collateral_address: str | None = None,
+    ) -> CTFExecutionResult:
+        """Merge a complete set of binary outcomes back to parent collateral.
+
+        See ``split_position`` for the ``collateral_address`` contract.
+        """
         normalized_condition_id = self._normalize_condition_id(condition_id)
         shares = max(0.0, safe_float(shares_per_side, 0.0) or 0.0)
         if shares <= 0.0:
@@ -635,12 +775,14 @@ class CTFExecutionService:
                 payload={"condition_id": normalized_condition_id},
             )
 
+        collateral = (collateral_address or _resolve_default_collateral_address()).strip()
+
         amount_base = self._to_base_units(shares)
         w3 = await self._get_web3()
         ctf = w3.eth.contract(address=w3.to_checksum_address(self.CTF_ADDRESS), abi=self._CTF_ABI)
         data = ctf.functions.mergePositions(
-            self.USDC_ADDRESS,
-            "0x" + ("00" * 32),
+            w3.to_checksum_address(collateral),
+            _ZERO_BYTES32,
             normalized_condition_id,
             [1, 2],
             amount_base,
@@ -654,30 +796,50 @@ class CTFExecutionService:
         result.payload.update(
             {
                 "condition_id": normalized_condition_id,
+                "collateral_address": collateral,
                 "shares_per_side": shares,
                 "amount_base_units": amount_base,
             }
         )
         return result
 
-    async def redeem_positions(
+    # ── Redemption (auto + manual) ────────────────────────────────
+    #
+    # Redemption goes through one of two contract paths based on the
+    # collateral that minted the position:
+    #
+    #   * Vanilla (USDC.e, pUSD, USDC native): call CTF.redeemPositions
+    #     with the correct ``collateralToken`` arg.  No approval needed —
+    #     the CTF burns the wallet's own ERC-1155 positions in place.
+    #
+    #   * NegRisk-wrapped (WCOL): call ``NegRiskAdapter.redeemPositions``
+    #     which pulls the wallet's WCOL positions via
+    #     ``ctf.safeBatchTransferFrom`` (so the adapter must have
+    #     ``setApprovalForAll`` from the wallet on the CTF), redeems
+    #     against the inner CTF, and unwraps WCOL → parent collateral.
+    #     The amounts arg is fixed length-2 ``[yes, no]`` per the source.
+    #
+    # Calling vanilla with the wrong collateral, or vanilla on a NegRisk
+    # position, silently no-ops and leaves resolved shares unredeemable.
+    # Inference via the collateral registry is therefore mandatory.
+
+    async def _redeem_via_vanilla_ctf(
         self,
         *,
+        w3,
+        collateral_address: str,
         condition_id: str,
-        index_sets: list[int] | None = None,
+        index_sets: list[int],
     ) -> CTFExecutionResult:
-        normalized_condition_id = self._normalize_condition_id(condition_id)
-        normalized_sets = [int(value) for value in (index_sets or [1, 2]) if int(value) > 0]
-        if not normalized_sets:
-            normalized_sets = [1, 2]
-
-        w3 = await self._get_web3()
-        ctf = w3.eth.contract(address=w3.to_checksum_address(self.CTF_ADDRESS), abi=self._CTF_ABI)
+        ctf = w3.eth.contract(
+            address=w3.to_checksum_address(self.CTF_ADDRESS),
+            abi=self._CTF_ABI,
+        )
         data = ctf.functions.redeemPositions(
-            self.USDC_ADDRESS,
-            "0x" + ("00" * 32),
-            normalized_condition_id,
-            normalized_sets,
+            w3.to_checksum_address(collateral_address),
+            _ZERO_BYTES32,
+            condition_id,
+            index_sets,
         )._encode_transaction_data()
         result = await self._execute_contract_call(
             contract_address=self.CTF_ADDRESS,
@@ -687,11 +849,219 @@ class CTFExecutionService:
         )
         result.payload.update(
             {
-                "condition_id": normalized_condition_id,
-                "index_sets": normalized_sets,
+                "condition_id": condition_id,
+                "collateral_address": collateral_address,
+                "index_sets": list(index_sets),
+                "redemption_path": "ctf_vanilla",
             }
         )
         return result
+
+    async def _redeem_via_negrisk_adapter(
+        self,
+        *,
+        w3,
+        adapter_address: str,
+        condition_id: str,
+        amounts_yes_no_base_units: tuple[int, int],
+    ) -> CTFExecutionResult:
+        # The adapter pulls our WCOL positions via safeBatchTransferFrom,
+        # so it must have setApprovalForAll on the CTF first.
+        approval = await self._ensure_ctf_operator_approval(
+            operator_address=adapter_address,
+            action="approve_negrisk_adapter",
+        )
+        if approval.status != "executed":
+            return approval
+
+        adapter = w3.eth.contract(
+            address=w3.to_checksum_address(adapter_address),
+            abi=self._NEG_RISK_ADAPTER_ABI,
+        )
+        amounts = [int(amounts_yes_no_base_units[0]), int(amounts_yes_no_base_units[1])]
+        data = adapter.functions.redeemPositions(
+            condition_id,
+            amounts,
+        )._encode_transaction_data()
+        # NegRisk redeem does more than vanilla CTF (transfer batch +
+        # inner redeem + unwrap), so its gas envelope is wider.
+        result = await self._execute_contract_call(
+            contract_address=adapter_address,
+            data=data,
+            gas_limit=400_000,
+            action="redeem",
+        )
+        result.payload.update(
+            {
+                "condition_id": condition_id,
+                "adapter_address": adapter_address,
+                "amounts_yes_no": amounts,
+                "redemption_path": "negrisk_adapter",
+            }
+        )
+        return result
+
+    async def _resolve_balances_for_condition(
+        self,
+        *,
+        w3,
+        wallet_checksum: str,
+        condition_id: str,
+        candidates: tuple[CollateralToken, ...],
+    ) -> tuple[CollateralToken | None, dict[int, int]]:
+        """Probe ``balanceOf`` on every (candidate collateral × slot) for a binary condition.
+
+        Returns the unique collateral that holds a non-zero balance plus
+        the per-slot raw balances. Used by the operator-driven
+        ``redeem_positions`` path where the caller knows the condition
+        but not the collateral. Two view calls per candidate × 2 slots
+        is dirt cheap and gives provably-correct dispatch.
+        """
+        ctf = w3.eth.contract(
+            address=w3.to_checksum_address(self.CTF_ADDRESS),
+            abi=self._CTF_ABI,
+        )
+
+        # Build collection IDs for the binary partition once.
+        slot_collection_ids: dict[int, bytes] = {}
+        for slot in (0, 1):
+            try:
+                slot_collection_ids[slot] = await asyncio.to_thread(
+                    lambda s=slot: ctf.functions.getCollectionId(
+                        _ZERO_BYTES32, condition_id, 1 << s
+                    ).call()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "getCollectionId failed during redeem balance probe",
+                    condition_id=condition_id,
+                    slot=slot,
+                    error=str(exc),
+                )
+                return None, {}
+
+        for candidate in candidates:
+            balances: dict[int, int] = {}
+            for slot, collection_id in slot_collection_ids.items():
+                try:
+                    pid = int(
+                        await asyncio.to_thread(
+                            lambda c=candidate, cid=collection_id: ctf.functions.getPositionId(
+                                w3.to_checksum_address(c.address), cid
+                            ).call()
+                        )
+                    )
+                    bal = int(
+                        await asyncio.to_thread(
+                            lambda token=pid: ctf.functions.balanceOf(
+                                wallet_checksum, token
+                            ).call()
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "balanceOf probe failed during redeem discovery",
+                        condition_id=condition_id,
+                        slot=slot,
+                        collateral=candidate.name,
+                        error=str(exc),
+                    )
+                    bal = 0
+                balances[slot] = bal
+            if any(b > 0 for b in balances.values()):
+                return candidate, balances
+
+        return None, {}
+
+    async def redeem_positions(
+        self,
+        *,
+        condition_id: str,
+        index_sets: list[int] | None = None,
+    ) -> CTFExecutionResult:
+        """Redeem all of the wallet's holdings on a condition.
+
+        Discovers the collateral by probing CTF ``balanceOf`` against
+        every registered candidate, then dispatches:
+
+          * Vanilla → ``CTF.redeemPositions(collateral, 0x0, conditionId, indexSets)``
+          * NegRisk → ``NegRiskAdapter.redeemPositions(conditionId, [yes, no])``
+
+        Returns a ``failed`` result with structured detail if no
+        collateral candidate produces non-zero shares — never silently
+        attempts a redemption that would no-op.
+        """
+        normalized_condition_id = self._normalize_condition_id(condition_id)
+        normalized_sets = [int(value) for value in (index_sets or [1, 2]) if int(value) > 0]
+        if not normalized_sets:
+            normalized_sets = [1, 2]
+
+        w3 = await self._get_web3()
+
+        # Boot invariants must pass before we touch NegRisk routing.
+        # verify_invariants is idempotent and cheap on the hot path.
+        try:
+            await collateral_registry.verify_invariants(w3)
+        except Exception as exc:
+            return CTFExecutionResult(
+                status="failed",
+                action="redeem",
+                tx_hash=None,
+                error_message=f"collateral_invariants_violated:{exc}",
+                payload={"condition_id": normalized_condition_id},
+            )
+
+        wallet_ctx = await self._resolve_wallet_context()
+        wallet_checksum = w3.to_checksum_address(wallet_ctx["execution_wallet"])
+
+        match_collateral, balances = await self._resolve_balances_for_condition(
+            w3=w3,
+            wallet_checksum=wallet_checksum,
+            condition_id=normalized_condition_id,
+            candidates=collateral_registry.all_candidates(),
+        )
+
+        if match_collateral is None or not any(b > 0 for b in balances.values()):
+            return CTFExecutionResult(
+                status="failed",
+                action="redeem",
+                tx_hash=None,
+                error_message="no_redeemable_balance_for_any_known_collateral",
+                payload={
+                    "condition_id": normalized_condition_id,
+                    "candidates_tried": [c.name for c in collateral_registry.all_candidates()],
+                },
+            )
+
+        if match_collateral.kind == CollateralKind.VANILLA:
+            return await self._redeem_via_vanilla_ctf(
+                w3=w3,
+                collateral_address=match_collateral.address,
+                condition_id=normalized_condition_id,
+                index_sets=normalized_sets,
+            )
+
+        # NEGRISK_WRAPPED — pass the wallet's per-slot balances as
+        # [yes (slot 0), no (slot 1)]. The adapter requires both, even if
+        # one is zero.
+        adapter = match_collateral.adapter
+        if adapter is None:
+            return CTFExecutionResult(
+                status="failed",
+                action="redeem",
+                tx_hash=None,
+                error_message="negrisk_collateral_missing_adapter_metadata",
+                payload={
+                    "condition_id": normalized_condition_id,
+                    "collateral": match_collateral.name,
+                },
+            )
+        return await self._redeem_via_negrisk_adapter(
+            w3=w3,
+            adapter_address=adapter.address,
+            condition_id=normalized_condition_id,
+            amounts_yes_no_base_units=(int(balances.get(0, 0)), int(balances.get(1, 0))),
+        )
 
     @staticmethod
     def compute_condition_payout_breakdown(
@@ -959,6 +1329,7 @@ class CTFExecutionService:
                 "redeemed": 0,
                 "skipped_low_payout": 0,
                 "skipped_high_gas": 0,
+                "skipped_unknown_collateral": 0,
                 "failed": 0,
                 "dry_run": bool(dry_run),
                 "errors": ["missing_execution_wallet"],
@@ -975,6 +1346,7 @@ class CTFExecutionService:
                 "redeemed": 0,
                 "skipped_low_payout": 0,
                 "skipped_high_gas": 0,
+                "skipped_unknown_collateral": 0,
                 "failed": 0,
                 "dry_run": bool(dry_run),
                 "errors": [],
@@ -1017,12 +1389,38 @@ class CTFExecutionService:
                 "redeemed": 0,
                 "skipped_low_payout": 0,
                 "skipped_high_gas": 0,
+                "skipped_unknown_collateral": 0,
                 "failed": 0,
                 "dry_run": bool(dry_run),
                 "errors": [],
             }
 
         w3 = await self._get_web3()
+
+        # Boot invariants must pass before we can dispatch NegRisk
+        # redemptions; verify_invariants is idempotent and refuses to
+        # succeed if the on-chain adapter state has drifted from the
+        # registry. Failure here aborts the cycle loudly — the redeemer
+        # worker surfaces the error to operator dashboards rather than
+        # silently mis-routing redemptions.
+        try:
+            await collateral_registry.verify_invariants(w3)
+        except Exception as exc:
+            return {
+                "wallet_address": execution_wallet,
+                "positions_scanned": len(positions),
+                "conditions_checked": 0,
+                "resolved_conditions": 0,
+                "redeemable_value_usd": 0.0,
+                "redeemed": 0,
+                "skipped_low_payout": 0,
+                "skipped_high_gas": 0,
+                "skipped_unknown_collateral": 0,
+                "failed": 0,
+                "dry_run": bool(dry_run),
+                "errors": [f"collateral_invariants_violated:{exc}"],
+            }
+
         ctf = w3.eth.contract(address=w3.to_checksum_address(self.CTF_ADDRESS), abi=self._CTF_ABI)
         checksum_wallet = w3.to_checksum_address(execution_wallet)
 
@@ -1041,6 +1439,7 @@ class CTFExecutionService:
         redeemed = 0
         skipped_low_payout = 0
         skipped_high_gas = 0
+        skipped_unknown_collateral = 0
         failed = 0
         resolved = 0
         redeemable_value_usd = 0.0
@@ -1055,11 +1454,50 @@ class CTFExecutionService:
                     continue
                 resolved += 1
 
-                # Read per-outcome numerators only for the slots we hold —
-                # avoids guessing the market's outcome count.
-                slots = sorted({int(h.outcome_index) for h in holdings})
+                # Infer the collateral that backs this condition's
+                # positions from on-chain math. All holdings under one
+                # condition share a collateral by construction — we
+                # infer once using the first held token + outcomeIndex
+                # hint and trust the chain-derived slot for the rest.
+                # Inference is cached, so re-asking on the next cycle
+                # is free.
+                first = holdings[0]
+                try:
+                    match = await collateral_registry.infer(
+                        w3,
+                        condition_id=condition_id,
+                        token_id=first.token_id_uint,
+                        outcome_index_hint=first.outcome_index,
+                    )
+                except Exception as exc:
+                    failed += 1
+                    errors.append(f"collateral_inference_error:{condition_id}:{exc}")
+                    continue
+                if match is None:
+                    skipped_unknown_collateral += 1
+                    errors.append(f"unknown_collateral:{condition_id}:tokens={len(holdings)}")
+                    logger.warning(
+                        "Skipping resolved condition with unknown collateral",
+                        condition_id=condition_id,
+                        wallet=execution_wallet,
+                        token_id=str(first.token_id_uint),
+                        candidates=[c.name for c in collateral_registry.all_candidates()],
+                    )
+                    continue
+
+                # Read per-slot numerators (only the slots we hold) and
+                # per-token balances. Use the chain-derived slot from
+                # inference for the first held token; for the rest, keep
+                # the data-API outcome_index — it is just a hint and we
+                # always go through balanceOf(token_id) for the actual
+                # value, so a mis-labelled outcome_index is at worst a
+                # cosmetic key in the breakdown (won't change payout).
+                slots_held: set[int] = {match.outcome_slot}
+                for held in holdings[1:]:
+                    slots_held.add(int(held.outcome_index))
+
                 outcome_numerators: dict[int, int] = {}
-                for slot in slots:
+                for slot in sorted(slots_held):
                     try:
                         n = await asyncio.to_thread(
                             lambda s=slot: ctf.functions.payoutNumerators(condition_id, s).call()
@@ -1071,17 +1509,27 @@ class CTFExecutionService:
                         outcome_numerators[slot] = 0
                         errors.append(f"numerator_read_failed:{condition_id}:slot={slot}:{exc}")
 
-                # Per-slot balances (chain truth, not data-API mark).
+                # Per-slot raw balances (chain truth, not data-API mark).
+                # Track raw uint256 balances for NegRisk amounts arg, and
+                # human shares for the payout breakdown.
+                outcome_raw_balances: dict[int, int] = {}
                 outcome_balances: dict[int, float] = {}
-                for held in holdings:
-                    raw_balance = await asyncio.to_thread(
-                        lambda token=held.token_id_uint: ctf.functions.balanceOf(
-                            checksum_wallet, token
-                        ).call()
+                for idx, held in enumerate(holdings):
+                    held_slot = match.outcome_slot if idx == 0 else int(held.outcome_index)
+                    raw_balance = int(
+                        await asyncio.to_thread(
+                            lambda token=held.token_id_uint: ctf.functions.balanceOf(
+                                checksum_wallet, token
+                            ).call()
+                        )
+                        or 0
                     )
-                    shares = float(raw_balance or 0) / (10**_USDC_DECIMALS)
-                    outcome_balances[int(held.outcome_index)] = (
-                        outcome_balances.get(int(held.outcome_index), 0.0) + shares
+                    outcome_raw_balances[held_slot] = (
+                        outcome_raw_balances.get(held_slot, 0) + raw_balance
+                    )
+                    shares = float(raw_balance) / (10**_USDC_DECIMALS)
+                    outcome_balances[held_slot] = (
+                        outcome_balances.get(held_slot, 0.0) + shares
                     )
 
                 breakdown = self.compute_condition_payout_breakdown(
@@ -1131,9 +1579,10 @@ class CTFExecutionService:
                     skipped_low_payout += 1
 
                 logger.info(
-                    "redeemer.decision condition=%s payout_usd=%.4f total_shares=%.4f "
+                    "redeemer.decision condition=%s collateral=%s payout_usd=%.4f total_shares=%.4f "
                     "winning_shares=%.4f losing_shares=%.4f redeem=%s reason=%s gas_gwei=%.2f dry_run=%s",
                     condition_id,
+                    match.collateral.name,
                     expected_payout_usd,
                     total_shares,
                     breakdown["winning_shares"],
@@ -1151,9 +1600,33 @@ class CTFExecutionService:
                         redeemed += 1
                     continue
 
-                redeem_result = await self.redeem_positions(
-                    condition_id=condition_id, index_sets=[1, 2]
-                )
+                # Dispatch redemption to the contract path that matches
+                # the inferred collateral.
+                if match.collateral.kind == CollateralKind.VANILLA:
+                    redeem_result = await self._redeem_via_vanilla_ctf(
+                        w3=w3,
+                        collateral_address=match.collateral.address,
+                        condition_id=condition_id,
+                        index_sets=[1, 2],
+                    )
+                else:  # CollateralKind.NEGRISK_WRAPPED
+                    adapter = match.collateral.adapter
+                    if adapter is None:
+                        failed += 1
+                        errors.append(
+                            f"negrisk_collateral_missing_adapter:{condition_id}"
+                        )
+                        continue
+                    redeem_result = await self._redeem_via_negrisk_adapter(
+                        w3=w3,
+                        adapter_address=adapter.address,
+                        condition_id=condition_id,
+                        amounts_yes_no_base_units=(
+                            int(outcome_raw_balances.get(0, 0)),
+                            int(outcome_raw_balances.get(1, 0)),
+                        ),
+                    )
+
                 if redeem_result.status == "executed":
                     redeemed += 1
                 else:
@@ -1174,6 +1647,7 @@ class CTFExecutionService:
             "redeemed": redeemed,
             "skipped_low_payout": skipped_low_payout,
             "skipped_high_gas": skipped_high_gas,
+            "skipped_unknown_collateral": skipped_unknown_collateral,
             "failed": failed,
             "gas_price_gwei": round(gas_price_gwei, 2),
             "policy": {

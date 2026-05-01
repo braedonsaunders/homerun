@@ -256,6 +256,15 @@ class RedeemerSettings(BaseModel):
         default=False,
         description="Operator override: redeem $0-payout positions too (gas burn for wallet hygiene)",
     )
+    default_collateral: str = Field(
+        default="pusd",
+        pattern=r"^(pusd|usdc\.e|usdc_native)$",
+        description=(
+            "Default collateral for operator-initiated split/merge calls. "
+            "'pusd' (Polymarket canonical post-2026-04), 'usdc.e' (legacy bridged), "
+            "'usdc_native' (Polygon-native). Redemption auto-detects collateral from chain."
+        ),
+    )
 
 
 class DiscoverySettings(BaseModel):

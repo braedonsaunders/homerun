@@ -230,3 +230,398 @@ def test_redeemer_payout_missing_numerator_treated_as_zero():
     assert breakdown["expected_payout_usd"] == pytest.approx(100.0)
     assert breakdown["winning_shares"] == pytest.approx(100.0)
     assert breakdown["losing_shares"] == pytest.approx(25.0)
+
+
+# ── Collateral-aware redemption dispatch ────────────────────────────
+#
+# The auto-redeemer must dispatch to vanilla CTF or NegRiskAdapter
+# based on the chain-derived collateral kind.  Calling vanilla on a
+# NegRisk position (or vice versa) silently no-ops on chain — we lock
+# the routing in with these tests so that bug class can never recur.
+
+from services.polymarket_collateral import (
+    CollateralKind,
+    CollateralMatch,
+    CollateralToken,
+    EXPECTED_NEGRISK_ADAPTERS,
+    PUSD_ADDRESS,
+    USDC_E_ADDRESS,
+)
+
+
+class _RedeemTracker:
+    """Captures the path taken by ``_redeem_via_*`` helpers."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def vanilla(self, **kwargs):
+        self.calls.append({"path": "vanilla", **kwargs})
+
+    def negrisk(self, **kwargs):
+        self.calls.append({"path": "negrisk", **kwargs})
+
+
+def _make_match_vanilla() -> CollateralMatch:
+    return CollateralMatch(
+        collateral=CollateralToken(
+            name="pUSD",
+            address=PUSD_ADDRESS,
+            kind=CollateralKind.VANILLA,
+        ),
+        outcome_slot=0,
+        index_set=1,
+    )
+
+
+def _make_match_negrisk() -> CollateralMatch:
+    adapter = EXPECTED_NEGRISK_ADAPTERS[0]
+    return CollateralMatch(
+        collateral=CollateralToken(
+            name=f"WCOL ({adapter.name})",
+            address=adapter.wrapped_collateral,
+            kind=CollateralKind.NEGRISK_WRAPPED,
+            adapter=adapter,
+        ),
+        outcome_slot=0,
+        index_set=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_redeem_vanilla_path_targets_ctf_with_correct_collateral(monkeypatch):
+    """Vanilla redemption must call CTF.redeemPositions with the
+    inferred collateral as the first arg — NOT the legacy hardcoded
+    USDC.e — so post-pUSD-migration positions redeem correctly."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+    captured: dict = {}
+
+    async def _fake_execute(**kwargs):
+        captured.update(kwargs)
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=kwargs["action"],
+            tx_hash="0xfeed",
+            error_message=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(service, "_execute_contract_call", _fake_execute)
+
+    class _StubFunc:
+        def _encode_transaction_data(self):
+            return b"\xab"
+
+    class _StubFunctions:
+        def redeemPositions(self, *_args):
+            return _StubFunc()
+
+    class _StubContract:
+        def __init__(self):
+            self.functions = _StubFunctions()
+
+    class _StubW3:
+        @staticmethod
+        def to_checksum_address(a):
+            return a
+
+        class eth:
+            @staticmethod
+            def contract(*, address, abi):
+                return _StubContract()
+
+    result = await service._redeem_via_vanilla_ctf(
+        w3=_StubW3,
+        collateral_address=PUSD_ADDRESS,
+        condition_id="0x" + "ab" * 32,
+        index_sets=[1, 2],
+    )
+
+    assert result.status == "executed"
+    assert captured["contract_address"] == service.CTF_ADDRESS
+    assert captured["action"] == "redeem"
+    assert result.payload["redemption_path"] == "ctf_vanilla"
+    assert result.payload["collateral_address"] == PUSD_ADDRESS
+
+
+@pytest.mark.asyncio
+async def test_redeem_negrisk_path_requires_adapter_approval_then_routes(monkeypatch):
+    """NegRisk redemption must (1) ensure setApprovalForAll(adapter)
+    on the CTF and (2) call NegRiskAdapter.redeemPositions, never the
+    raw CTF — calling raw CTF would target a position the wallet
+    doesn't hold and silently no-op."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+    flow: list[str] = []
+
+    async def _fake_approval(*, operator_address, action):
+        flow.append(f"approve:{operator_address}:{action}")
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=action,
+            tx_hash="0xappr",
+            error_message=None,
+            payload={"already_approved": False, "operator": operator_address},
+        )
+
+    captured: dict = {}
+
+    async def _fake_execute(**kwargs):
+        flow.append(f"execute:{kwargs['contract_address']}:{kwargs['action']}")
+        captured.update(kwargs)
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=kwargs["action"],
+            tx_hash="0xredeem",
+            error_message=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(service, "_ensure_ctf_operator_approval", _fake_approval)
+    monkeypatch.setattr(service, "_execute_contract_call", _fake_execute)
+
+    class _StubFunc:
+        def _encode_transaction_data(self):
+            return b"\xcd"
+
+    class _StubFunctions:
+        def redeemPositions(self, *_args):
+            return _StubFunc()
+
+    class _StubContract:
+        def __init__(self):
+            self.functions = _StubFunctions()
+
+    class _StubW3:
+        @staticmethod
+        def to_checksum_address(a):
+            return a
+
+        class eth:
+            @staticmethod
+            def contract(*, address, abi):
+                return _StubContract()
+
+    adapter_address = EXPECTED_NEGRISK_ADAPTERS[0].address
+    result = await service._redeem_via_negrisk_adapter(
+        w3=_StubW3,
+        adapter_address=adapter_address,
+        condition_id="0x" + "cd" * 32,
+        amounts_yes_no_base_units=(11_000_000, 0),
+    )
+
+    # 1. Approval call happens first.
+    # 2. Redeem call happens second, against the adapter (not the CTF).
+    assert flow[0].startswith(f"approve:{adapter_address}:approve_negrisk_adapter")
+    assert flow[1].startswith(f"execute:{adapter_address}:redeem")
+    assert result.status == "executed"
+    assert result.payload["redemption_path"] == "negrisk_adapter"
+    assert result.payload["amounts_yes_no"] == [11_000_000, 0]
+    assert captured["contract_address"] == adapter_address
+
+
+@pytest.mark.asyncio
+async def test_redeem_negrisk_aborts_when_approval_fails(monkeypatch):
+    """If ``setApprovalForAll`` reverts, we must NOT submit the
+    redemption — the adapter would revert pulling positions and we'd
+    burn gas for nothing."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+
+    async def _fail_approval(*, operator_address, action):
+        return mod.CTFExecutionResult(
+            status="failed",
+            action=action,
+            tx_hash=None,
+            error_message="revert",
+            payload={"operator": operator_address},
+        )
+
+    submitted = False
+
+    async def _fake_execute(**kwargs):
+        nonlocal submitted
+        submitted = True
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=kwargs["action"],
+            tx_hash="0x",
+            error_message=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(service, "_ensure_ctf_operator_approval", _fail_approval)
+    monkeypatch.setattr(service, "_execute_contract_call", _fake_execute)
+
+    result = await service._redeem_via_negrisk_adapter(
+        w3=None,  # never reached
+        adapter_address=EXPECTED_NEGRISK_ADAPTERS[0].address,
+        condition_id="0x" + "ef" * 32,
+        amounts_yes_no_base_units=(0, 0),
+    )
+
+    assert result.status == "failed"
+    assert submitted is False
+
+
+@pytest.mark.asyncio
+async def test_redeem_resolved_wallet_positions_skips_unknown_collateral(monkeypatch):
+    """A resolved condition whose collateral can't be inferred must NOT
+    trigger a redemption — silent no-op redemption is the bug we're
+    fixing. Surface as ``skipped_unknown_collateral``."""
+    from services import ctf_execution as mod
+    from services.polymarket_collateral import collateral_registry
+
+    service = CTFExecutionService()
+
+    # Force live_execution_service to claim the wallet.
+    monkeypatch.setattr(
+        mod.live_execution_service,
+        "get_execution_wallet_address",
+        lambda: "0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae",
+    )
+
+    # One position to scan.
+    async def _fake_positions(_wallet):
+        return [
+            {
+                "conditionId": "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
+                "asset": "12345678901234567890",
+                "outcomeIndex": 0,
+            }
+        ]
+
+    monkeypatch.setattr(mod.polymarket_client, "get_wallet_positions", _fake_positions)
+
+    # Stub the registry so verify_invariants succeeds and inference returns None.
+    async def _verify_ok(_w3):
+        return None
+
+    async def _infer_none(_w3, *, condition_id, token_id, outcome_index_hint=None):
+        return None
+
+    monkeypatch.setattr(collateral_registry, "verify_invariants", _verify_ok)
+    monkeypatch.setattr(collateral_registry, "infer", _infer_none)
+
+    # Stub w3 + CTF to report the condition resolved (denominator > 0).
+    class _Funcs:
+        def payoutDenominator(self, _cond):
+            return _CallResult(1)
+
+        def payoutNumerators(self, _cond, _slot):
+            return _CallResult(1)
+
+        def balanceOf(self, _wallet, _token):
+            return _CallResult(11_000_000)
+
+    class _Contract:
+        functions = _Funcs()
+
+    class _W3:
+        @staticmethod
+        def to_checksum_address(a):
+            return a
+
+        class eth:
+            @staticmethod
+            def contract(*, address, abi):
+                return _Contract()
+
+    async def _fake_w3():
+        return _W3
+
+    monkeypatch.setattr(service, "_get_web3", _fake_w3)
+    monkeypatch.setattr(service, "_gas_price_gwei", AsyncMock(return_value=10.0))
+
+    redeemed_calls = []
+
+    async def _should_not_be_called(*args, **kwargs):
+        redeemed_calls.append((args, kwargs))
+        raise AssertionError("must not redeem with unknown collateral")
+
+    monkeypatch.setattr(service, "_redeem_via_vanilla_ctf", _should_not_be_called)
+    monkeypatch.setattr(service, "_redeem_via_negrisk_adapter", _should_not_be_called)
+
+    summary = await service.redeem_resolved_wallet_positions(dry_run=False)
+
+    assert summary["resolved_conditions"] == 1
+    assert summary["skipped_unknown_collateral"] == 1
+    assert summary["redeemed"] == 0
+    assert any("unknown_collateral" in e for e in summary["errors"])
+    assert redeemed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_redeem_resolved_wallet_positions_aborts_when_invariant_fails(monkeypatch):
+    """Boot invariant violation (e.g. NegRiskAdapter redeployed) must
+    refuse the entire cycle, not silently proceed with vanilla-only
+    redemptions."""
+    from services import ctf_execution as mod
+    from services.polymarket_collateral import collateral_registry
+
+    service = CTFExecutionService()
+
+    monkeypatch.setattr(
+        mod.live_execution_service,
+        "get_execution_wallet_address",
+        lambda: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    )
+
+    async def _one_pos(_wallet):
+        return [
+            {
+                "conditionId": "0x" + "ab" * 32,
+                "asset": "1",
+                "outcomeIndex": 0,
+            }
+        ]
+
+    monkeypatch.setattr(mod.polymarket_client, "get_wallet_positions", _one_pos)
+
+    async def _verify_fails(_w3):
+        raise RuntimeError("wcol() invariant violated: ...")
+
+    monkeypatch.setattr(collateral_registry, "verify_invariants", _verify_fails)
+
+    class _W3:
+        @staticmethod
+        def to_checksum_address(a):
+            return a
+
+        class eth:
+            @staticmethod
+            def contract(*, address, abi):
+                return None
+
+    async def _fake_w3():
+        return _W3
+
+    monkeypatch.setattr(service, "_get_web3", _fake_w3)
+
+    summary = await service.redeem_resolved_wallet_positions(dry_run=False)
+    assert summary["redeemed"] == 0
+    assert summary["resolved_conditions"] == 0
+    assert any("collateral_invariants_violated" in e for e in summary["errors"])
+
+
+def test_default_collateral_resolution_falls_back_to_pusd(monkeypatch):
+    """The split/merge default must follow the operator setting — and
+    fall back to pUSD (the post-2026-04 canonical) when missing."""
+    from services import ctf_execution as mod
+
+    monkeypatch.setattr(mod.settings, "POLYMARKET_DEFAULT_COLLATERAL", "", raising=False)
+    assert mod._resolve_default_collateral_address() == PUSD_ADDRESS
+
+    monkeypatch.setattr(mod.settings, "POLYMARKET_DEFAULT_COLLATERAL", "usdc.e", raising=False)
+    assert mod._resolve_default_collateral_address() == USDC_E_ADDRESS
+
+    monkeypatch.setattr(mod.settings, "POLYMARKET_DEFAULT_COLLATERAL", "PUSD", raising=False)
+    assert mod._resolve_default_collateral_address() == PUSD_ADDRESS
+
+    monkeypatch.setattr(mod.settings, "POLYMARKET_DEFAULT_COLLATERAL", "garbage_value", raising=False)
+    # Unknown values fall through to pUSD rather than crashing.
+    assert mod._resolve_default_collateral_address() == PUSD_ADDRESS
