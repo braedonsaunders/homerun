@@ -2383,7 +2383,7 @@ export default function BacktestStudio({
                   <div className="space-y-0.5 text-[11px]">
                     {Object.entries(constants.values).map(([k, v]) => (
                       <div key={k} className="grid grid-cols-[1fr,60px] items-center gap-1">
-                        <span className="truncate text-muted-foreground">{k.replaceAll('_', ' ')}</span>
+                        <span className="truncate text-muted-foreground">{k.replace(/_/g, ' ')}</span>
                         <span className="text-right font-mono tabular-nums">{fmtNum(v, 3)}</span>
                       </div>
                     ))}
