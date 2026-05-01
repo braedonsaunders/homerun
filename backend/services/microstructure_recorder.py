@@ -1,3 +1,17 @@
+"""Microstructure recorder + data-quality controls.
+
+Persists per-token book snapshots and trade prints to
+``MarketMicrostructureSnapshot``.  Every accepted book passes a
+structural validation gate (price bounds, level ordering, bid <= ask,
+sequence monotonicity); rejects are counted by reason and surfaced
+via ``get_data_quality_stats()`` for the BacktestStudio UI.
+
+Polymarket binary tokens trade in [0, 1] (probabilities), so a level
+priced at 1.5 is corrupt — silent acceptance pollutes the Cox PH
+training set.  Multi-outcome markets stay in [0, 1] per outcome
+token (the n outcome prices sum to ~1.0 across the parent market).
+The same [0, 1] bound applies in both cases.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +39,18 @@ def _epoch_to_utc(value: float | None) -> datetime:
     return datetime.fromtimestamp(float(value), tz=timezone.utc)
 
 
+# Reject reasons surfaced via get_data_quality_stats().
+_REJECT_REASONS = (
+    "price_out_of_bounds",   # bid/ask outside [0, 1]
+    "crossed_book",          # bid >= ask
+    "unsorted_levels",       # bids not descending or asks not ascending
+    "duplicate_price",       # same price appears twice on one side
+    "stale_snapshot",        # ingest_ts older than threshold
+    "clock_skew",            # ingest_ts in the future
+    "sequence_regression",   # sequence number went backward
+)
+
+
 class MicrostructureRecorder:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[MarketMicrostructureSnapshot] | None = None
@@ -33,6 +59,13 @@ class MicrostructureRecorder:
         self._book_min_interval_seconds = 0.50
         self._max_levels = 25
         self._dropped = 0
+        # Data quality tracking
+        self._last_sequence: dict[str, int] = {}
+        self._sequence_gaps: int = 0
+        self._reject_counts: dict[str, int] = {r: 0 for r in _REJECT_REASONS}
+        self._accepted_books: int = 0
+        self._stale_seconds_threshold: float = 30.0
+        self._clock_skew_seconds_tolerance: float = 5.0
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -78,10 +111,32 @@ class MicrostructureRecorder:
         self._last_book_write[normalized_token] = now_epoch
         bid = _coerce_float(best_bid, 0.0)
         ask = _coerce_float(best_ask, 0.0)
-        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else bid or ask
-        spread_bps = ((ask - bid) / mid * 10_000.0) if bid > 0 and ask > 0 and mid > 0 else None
         bids = self._levels(order_book, "bids")
         asks = self._levels(order_book, "asks")
+
+        # ── Data quality gate ─────────────────────────────────────
+        # Validate before persistence: price bounds, level ordering,
+        # crossed book, duplicate prices, sequence regression, clock
+        # skew.  Rejects are counted by reason and surfaced via
+        # get_data_quality_stats() for the BacktestStudio UI.  We
+        # accept "thin" books (e.g., ask=0 means no asks visible)
+        # because that's a real market state, not a corruption.
+        reject = self._validate_book(
+            token_id=normalized_token,
+            bid=bid,
+            ask=ask,
+            bids=bids,
+            asks=asks,
+            ingest_ts=now_epoch,
+            sequence=sequence,
+        )
+        if reject is not None:
+            self._reject_counts[reject] = self._reject_counts.get(reject, 0) + 1
+            return
+
+        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else bid or ask
+        spread_bps = ((ask - bid) / mid * 10_000.0) if bid > 0 and ask > 0 and mid > 0 else None
+        self._accepted_books += 1
         row = MarketMicrostructureSnapshot(
             id=uuid.uuid4().hex,
             provider="polymarket",
@@ -147,6 +202,119 @@ class MicrostructureRecorder:
             self._dropped += 1
             if self._dropped % 1000 == 1:
                 logger.warning("Microstructure recorder queue is full", dropped=self._dropped)
+
+    def _validate_book(
+        self,
+        *,
+        token_id: str,
+        bid: float,
+        ask: float,
+        bids: list[dict[str, float]],
+        asks: list[dict[str, float]],
+        ingest_ts: float,
+        sequence: int | None,
+    ) -> str | None:
+        """Return reject reason or None (accept).  Cheap checks only —
+        this runs in the WebSocket hot path on every book update.
+        """
+        # Price bounds: outcome tokens trade in [0, 1].  Allow 0 (no
+        # bid/ask present means thin book) but reject anything outside.
+        for level in bids + asks:
+            price = float(level.get("price") or 0.0)
+            if price < 0.0 or price > 1.0:
+                return "price_out_of_bounds"
+        if bid > 1.0 or ask > 1.0 or bid < 0.0 or ask < 0.0:
+            return "price_out_of_bounds"
+
+        # Crossed book: bid >= ask is corrupt unless one side is empty.
+        if bid > 0 and ask > 0 and bid >= ask:
+            return "crossed_book"
+
+        # Level ordering: bids descending, asks ascending; no duplicates.
+        if not self._levels_sorted_descending(bids):
+            return "unsorted_levels"
+        if not self._levels_sorted_ascending(asks):
+            return "unsorted_levels"
+        if self._has_duplicate_prices(bids) or self._has_duplicate_prices(asks):
+            return "duplicate_price"
+
+        # Stale snapshot: ingest_ts more than _stale_seconds_threshold
+        # behind wall clock.  Distinguish from clock_skew (ahead).
+        wall = datetime.now(timezone.utc).timestamp()
+        if ingest_ts > 0:
+            age = wall - ingest_ts
+            if age > self._stale_seconds_threshold:
+                return "stale_snapshot"
+            if age < -self._clock_skew_seconds_tolerance:
+                return "clock_skew"
+
+        # Sequence regression: track last sequence per token; if a
+        # snapshot arrives with a smaller seq than the last accepted,
+        # reject.  Gaps (seq jumps forward by >1) are counted but
+        # don't reject — the missing snapshot may be a genuine drop.
+        if sequence is not None:
+            try:
+                seq_int = int(sequence)
+            except (TypeError, ValueError):
+                seq_int = 0
+            if seq_int > 0:
+                prev = self._last_sequence.get(token_id)
+                if prev is not None:
+                    if seq_int < prev:
+                        return "sequence_regression"
+                    if seq_int > prev + 1:
+                        self._sequence_gaps += 1
+                self._last_sequence[token_id] = seq_int
+
+        return None
+
+    @staticmethod
+    def _levels_sorted_descending(levels: list[dict[str, float]]) -> bool:
+        prev = None
+        for level in levels:
+            price = float(level.get("price") or 0.0)
+            if prev is not None and price > prev:
+                return False
+            prev = price
+        return True
+
+    @staticmethod
+    def _levels_sorted_ascending(levels: list[dict[str, float]]) -> bool:
+        prev = None
+        for level in levels:
+            price = float(level.get("price") or 0.0)
+            if prev is not None and price < prev:
+                return False
+            prev = price
+        return True
+
+    @staticmethod
+    def _has_duplicate_prices(levels: list[dict[str, float]]) -> bool:
+        seen: set[float] = set()
+        for level in levels:
+            price = float(level.get("price") or 0.0)
+            if price in seen:
+                return True
+            seen.add(price)
+        return False
+
+    def get_data_quality_stats(self) -> dict[str, Any]:
+        """Snapshot of data-quality counters for the UI.  Cheap call —
+        returns the in-memory counters without DB access.
+        """
+        total_attempts = self._accepted_books + sum(self._reject_counts.values())
+        accept_rate = (
+            self._accepted_books / total_attempts if total_attempts > 0 else None
+        )
+        return {
+            "accepted_books": self._accepted_books,
+            "total_attempts": total_attempts,
+            "accept_rate": accept_rate,
+            "rejects_by_reason": dict(self._reject_counts),
+            "sequence_gaps_observed": self._sequence_gaps,
+            "tokens_tracked": len(self._last_sequence),
+            "queue_dropped": self._dropped,
+        }
 
     def _levels(self, order_book: Any, side_name: str) -> list[dict[str, float]]:
         raw = getattr(order_book, side_name, None)

@@ -582,6 +582,21 @@ async def _capture_latency() -> dict[str, Any]:
     }
 
 
+def _capture_data_quality() -> dict[str, Any]:
+    """Snapshot the microstructure recorder's data-quality counters.
+
+    Surfaces accept-rate, sequence gaps, and per-reason reject counts
+    so the BacktestStudio UI can flag data corruption that would
+    otherwise silently pollute the Cox PH training set.
+    """
+    try:
+        from services.microstructure_recorder import get_microstructure_recorder
+
+        return get_microstructure_recorder().get_data_quality_stats()
+    except Exception:
+        return {"accepted_books": 0, "total_attempts": 0, "accept_rate": None}
+
+
 def _capture_empirical_constants() -> dict[str, Any]:
     constants = get_empirical_constants()
     return {
@@ -769,6 +784,7 @@ async def run_unified_backtest(
     decomp = await decomp_task
     latency = await latency_task
     constants = _capture_empirical_constants()
+    data_quality = _capture_data_quality()
 
     # Counterfactual replay for sample fills (best-effort, optional).
     fills_sample = exec_dict.get("fills_sample") or []
@@ -815,6 +831,7 @@ async def run_unified_backtest(
         "decomposition": decomp,
         "counterfactuals": counterfactuals,
         "ensemble_band": ensemble_band,
+        "data_quality": data_quality,
     }
     _store_run(out)
     return out
