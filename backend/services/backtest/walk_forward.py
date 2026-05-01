@@ -325,20 +325,36 @@ async def run_walk_forward(
     async def _run_one(fold: WalkForwardWindow) -> WalkForwardRunWindow:
         async with semaphore:
             try:
-                exec_result: ExecutionBacktestResult = await run_execution_backtest(
-                    source_code=source_code,
-                    slug=f"{slug}_w{fold.fold_index}",
-                    config=config,
-                    token_ids=token_ids,
-                    start=fold.test_start,
-                    end=fold.test_end,
-                    initial_capital_usd=initial_capital_usd,
-                    submit_p50_ms=submit_p50_ms,
-                    submit_p95_ms=submit_p95_ms,
-                    cancel_p50_ms=cancel_p50_ms,
-                    cancel_p95_ms=cancel_p95_ms,
-                    seed=seed,
-                )
+                # Pass the REAL strategy slug (not a per-fold synthetic
+                # one) so the engine's ``OpportunityHistory.strategy_type
+                # == slug`` filter actually matches.  Earlier we used
+                # ``f"{slug}_w{idx}"`` for log identification, but that
+                # synthetic slug would never have any historical
+                # opportunities — every fold returned 0 trades.  Fold
+                # identification is preserved via the result's
+                # ``index`` + ``test_start_iso`` fields.
+                exec_kwargs: dict[str, Any] = {
+                    "source_code": source_code,
+                    "slug": slug,
+                    "config": config,
+                    "token_ids": token_ids,
+                    "start": fold.test_start,
+                    "end": fold.test_end,
+                    "initial_capital_usd": initial_capital_usd,
+                }
+                # The function uses ``submit_latency_p50_ms`` etc; map
+                # the unified-runner-style names to those.
+                if submit_p50_ms is not None:
+                    exec_kwargs["submit_latency_p50_ms"] = float(submit_p50_ms)
+                if submit_p95_ms is not None:
+                    exec_kwargs["submit_latency_p95_ms"] = float(submit_p95_ms)
+                if cancel_p50_ms is not None:
+                    exec_kwargs["cancel_latency_p50_ms"] = float(cancel_p50_ms)
+                if cancel_p95_ms is not None:
+                    exec_kwargs["cancel_latency_p95_ms"] = float(cancel_p95_ms)
+                if seed is not None:
+                    exec_kwargs["seed"] = int(seed)
+                exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
                 d = exec_result.to_dict()
                 return WalkForwardRunWindow(
                     index=fold.fold_index,

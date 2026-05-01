@@ -3268,6 +3268,40 @@ class FillProbabilityModel(Base):
     )
 
 
+class BacktestRun(Base):
+    """Persisted Backtest Studio run.
+
+    Replaces the prior process-local LRU so runs survive worker
+    restarts.  Summary columns are denormalized for the run-history
+    list query (sort by started_at, render the row sparkline + return
+    %) while the full augmented result lives in ``result_json`` for
+    the per-run detail view.
+    """
+
+    __tablename__ = "backtest_runs"
+
+    id = Column(String, primary_key=True)
+    strategy_slug = Column(String, nullable=True)
+    strategy_name = Column(String, nullable=True)
+    started_at = Column(DateTime, nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    total_time_ms = Column(Float, nullable=False, default=0.0)
+    status = Column(String, nullable=False, default="ok", index=True)  # "ok" | "failed"
+    trade_count = Column(Integer, nullable=False, default=0)
+    total_return_pct = Column(Float, nullable=False, default=0.0)
+    sparkline_pct_json = Column(JSON, nullable=True)  # list[float]
+    result_json = Column(JSON, nullable=False, default=dict)
+    # Optional FK to a strategy row.  We don't enforce a hard FK so
+    # runs survive the strategy being deleted/renamed; the slug is
+    # the durable identifier.
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_btr_strategy_started", "strategy_slug", "started_at"),
+        Index("idx_btr_started", "started_at"),
+    )
+
+
 # ==================== WORKER RUNTIME STATE ====================
 
 

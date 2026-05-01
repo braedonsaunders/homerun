@@ -658,7 +658,7 @@ export default function BacktestStudio({
   const [windowDays, setWindowDays] = useState<string>('7')
   // Center-pane subtab.  Three coherent groupings + a small status
   // ribbon-equivalent so the workbench doesn't scroll-and-pray.
-  const [centerTab, setCenterTab] = useState<'performance' | 'fill_quality' | 'robustness'>('performance')
+  const [centerTab, setCenterTab] = useState<'performance' | 'fill_quality' | 'robustness' | 'portfolio'>('performance')
 
   // Active run.
   const [activeRun, setActiveRun] = useState<UnifiedBacktestResult | null>(null)
@@ -1040,18 +1040,67 @@ export default function BacktestStudio({
 
         {/* CENTER — results */}
         <ScrollArea className="flex-1 min-h-0">
-          {!activeRun ? (
-            <div className="space-y-4 p-3">
+          <div className="space-y-4 p-3">
+            {/* SUBTAB STRIP — always visible.  Performance / Fill
+                quality / Robustness require an active run to populate;
+                Portfolio is run-independent (live cross-strategy
+                correlation) and renders the same regardless. */}
+            <div className="flex items-center gap-1 border-b border-border/40 pb-1.5">
+              {([
+                ['performance', 'Performance', TrendingUp],
+                ['fill_quality', 'Fill quality', Zap],
+                ['robustness', 'Robustness', Activity],
+                ['portfolio', 'Portfolio', Layers3],
+              ] as Array<[
+                'performance' | 'fill_quality' | 'robustness' | 'portfolio',
+                string,
+                typeof TrendingUp,
+              ]>).map(([key, label, Icon]) => {
+                const active = centerTab === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setCenterTab(key)}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-sm px-3 py-1 text-[11px] font-medium transition-colors',
+                      active
+                        ? 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30'
+                        : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="h-3 w-3" />
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Empty-state placeholder for run-required tabs when no
+                run is loaded. */}
+            {!activeRun && centerTab !== 'portfolio' ? (
               <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
                 <Flame className="h-7 w-7 text-amber-300/50" />
-                <div className="text-sm font-medium">No run loaded</div>
+                <div className="text-sm font-medium">
+                  {centerTab === 'performance'
+                    ? 'No run loaded'
+                    : centerTab === 'fill_quality'
+                      ? 'No fill data'
+                      : 'No robustness data'}
+                </div>
                 <div className="max-w-[420px] text-xs text-muted-foreground">
-                  Pick a strategy and click <strong>Run backtest</strong>. Results will include
-                  L2 replay, ensemble PnL bands at p10/p50/p90, counterfactual queue replay,
-                  walk-forward cross-validation, and the active Cox PH fill model snapshot.
+                  {centerTab === 'performance'
+                    ? 'Pick a strategy and click Run backtest. Headline KPIs, risk-adjusted metrics with deflated Sharpe, and the equity curve appear here.'
+                    : centerTab === 'fill_quality'
+                      ? 'Run a backtest to populate ensemble PnL bands, counterfactual queue replay, and partial-fill aggregation against the live trade tape.'
+                      : 'Run a backtest to populate triangulation, regime decomposition, and walk-forward cross-validation.'}
                 </div>
               </div>
-              {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
+            ) : null}
+
+            {/* PORTFOLIO TAB — always renders, never gated on activeRun. */}
+            {centerTab === 'portfolio' ? (
+              portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
@@ -1062,40 +1111,21 @@ export default function BacktestStudio({
                   </div>
                   <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
                 </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="space-y-4 p-3">
-              {/* SUBTAB STRIP — three coherent groupings so the user
-                  sees the run without scrolling and chooses depth. */}
-              <div className="flex items-center gap-1 border-b border-border/40 pb-1.5">
-                {([
-                  ['performance', 'Performance', TrendingUp],
-                  ['fill_quality', 'Fill quality', Zap],
-                  ['robustness', 'Robustness', Activity],
-                ] as Array<['performance' | 'fill_quality' | 'robustness', string, typeof TrendingUp]>).map(
-                  ([key, label, Icon]) => {
-                    const active = centerTab === key
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setCenterTab(key)}
-                        className={cn(
-                          'flex items-center gap-1.5 rounded-sm px-3 py-1 text-[11px] font-medium transition-colors',
-                          active
-                            ? 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30'
-                            : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground',
-                        )}
-                      >
-                        <Icon className="h-3 w-3" />
-                        {label}
-                      </button>
-                    )
-                  },
-                )}
-              </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
+                  <Layers3 className="h-7 w-7 text-emerald-300/40" />
+                  <div className="text-sm font-medium">No portfolio data yet</div>
+                  <div className="max-w-[420px] text-xs text-muted-foreground">
+                    The portfolio correlation matrix needs at least 2 strategies with ≥ 5
+                    terminal trades each in the last 30 days. As trades resolve, this view
+                    populates automatically.
+                  </div>
+                </div>
+              )
+            ) : null}
 
+            {activeRun ? (
+              <>
               {/* HEADLINE KPIS + SECONDARY METRICS — Performance tab. */}
               {centerTab === 'performance' && (
               <>
@@ -1540,8 +1570,9 @@ export default function BacktestStudio({
                   </pre>
                 </div>
               ) : null}
-            </div>
-          )}
+              </>
+            ) : null}
+          </div>
         </ScrollArea>
 
         {/* RIGHT RAIL — microstructure / fill model */}

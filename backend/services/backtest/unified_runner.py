@@ -47,50 +47,148 @@ from services.strategy_backtester import (
 logger = logging.getLogger("backtest.unified_runner")
 
 
-_RECENT_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
-_MAX_RECENT_RUNS = 32
+# Process-local hot cache.  Real persistence lives in the
+# ``backtest_runs`` table (Alembic 202604300005).  The cache fronts
+# the table for the very-recent reads the run-history poll generates
+# every 5 seconds in the Studio UI.
+_RECENT_RUNS_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_HOT_CACHE_MAX = 32
 
 
-def _store_run(run: dict[str, Any]) -> None:
+def _cache_run(run: dict[str, Any]) -> None:
     run_id = str(run.get("run_id") or "")
     if not run_id:
         return
-    _RECENT_RUNS[run_id] = run
-    while len(_RECENT_RUNS) > _MAX_RECENT_RUNS:
-        _RECENT_RUNS.popitem(last=False)
+    _RECENT_RUNS_CACHE[run_id] = run
+    while len(_RECENT_RUNS_CACHE) > _HOT_CACHE_MAX:
+        _RECENT_RUNS_CACHE.popitem(last=False)
 
 
-def list_recent_runs() -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for run in reversed(_RECENT_RUNS.values()):
-        # Subsample the equity curve to a fixed-length sparkline (16
-        # points), normalized as % drift from the run's starting
-        # equity.  This gives the run-history list a tiny visual
-        # signature per row without bloating the response.
-        curve = run.get("execution", {}).get("equity_curve_sample") or []
-        sparkline_pct: list[float] = []
+async def _persist_run_to_db(run: dict[str, Any]) -> None:
+    """Insert the run row into ``backtest_runs``.  Best-effort —
+    failures log but don't propagate (the cache still serves the run
+    in this process even if persistence fails)."""
+    from datetime import datetime as _dt
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    def _parse_iso(value: Any) -> _dt | None:
+        if not value:
+            return None
         try:
-            equities = [
-                float(p.get("equity_usd"))
-                for p in curve
-                if isinstance(p, dict) and isinstance(p.get("equity_usd"), (int, float))
-            ]
-            if len(equities) >= 2:
-                target_n = 16
-                if len(equities) > target_n:
-                    step = max(1, len(equities) // target_n)
-                    sampled = equities[::step][:target_n]
-                else:
-                    sampled = equities
-                base = sampled[0] or 1.0
-                sparkline_pct = [
-                    (v - base) / base * 100.0 if base else 0.0 for v in sampled
-                ]
+            return _dt.fromisoformat(str(value).replace("Z", "+00:00"))
         except Exception:
-            sparkline_pct = []
+            return None
+
+    exec_dict = run.get("execution") or {}
+    sparkline = _build_sparkline_pct(exec_dict)
+    row = BacktestRun(
+        id=str(run.get("run_id")),
+        strategy_slug=run.get("strategy_slug"),
+        strategy_name=run.get("strategy_name"),
+        started_at=_parse_iso(run.get("started_at")) or datetime.now(timezone.utc),
+        completed_at=_parse_iso(run.get("completed_at")),
+        total_time_ms=float(run.get("total_time_ms") or 0.0),
+        status="ok" if exec_dict.get("success") else "failed",
+        trade_count=int(exec_dict.get("trade_count") or 0),
+        total_return_pct=float(exec_dict.get("total_return_pct") or 0.0),
+        sparkline_pct_json=sparkline,
+        result_json=run,
+    )
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add(row)
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Failed to persist backtest run %s: %s", run.get("run_id"), exc)
+
+
+def _build_sparkline_pct(exec_dict: dict[str, Any]) -> list[float]:
+    """16-point %-drift series from the run's equity curve."""
+    curve = exec_dict.get("equity_curve_sample") or []
+    try:
+        equities = [
+            float(p.get("equity_usd"))
+            for p in curve
+            if isinstance(p, dict) and isinstance(p.get("equity_usd"), (int, float))
+        ]
+        if len(equities) < 2:
+            return []
+        target_n = 16
+        if len(equities) > target_n:
+            step = max(1, len(equities) // target_n)
+            sampled = equities[::step][:target_n]
+        else:
+            sampled = equities
+        base = sampled[0] or 1.0
+        return [(v - base) / base * 100.0 if base else 0.0 for v in sampled]
+    except Exception:
+        return []
+
+
+def _store_run(run: dict[str, Any]) -> None:
+    """Insert the run into both the hot cache + the DB.  DB write is
+    fire-and-forget (scheduled on the event loop) so the API caller
+    isn't blocked on the ~few-ms write."""
+    _cache_run(run)
+    try:
+        asyncio.create_task(_persist_run_to_db(run))
+    except RuntimeError:
+        # No running loop (test contexts) — fall back to direct await.
+        asyncio.get_event_loop().run_until_complete(_persist_run_to_db(run))
+
+
+async def list_recent_runs(*, limit: int = 32) -> list[dict[str, Any]]:
+    """Read the run-history list from the DB (newest first), with
+    the hot cache as a write-through that catches the most-recent
+    additions before they've been read back from the table."""
+    from sqlalchemy import select
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(BacktestRun)
+                .order_by(BacktestRun.started_at.desc())
+                .limit(int(max(1, limit)))
+            )
+            for row in result.scalars().all():
+                seen_ids.add(str(row.id))
+                out.append(
+                    {
+                        "run_id": str(row.id),
+                        "strategy_slug": row.strategy_slug,
+                        "strategy_name": row.strategy_name,
+                        "started_at": (
+                            row.started_at.replace(tzinfo=timezone.utc).isoformat()
+                            if row.started_at and row.started_at.tzinfo is None
+                            else (row.started_at.isoformat() if row.started_at else None)
+                        ),
+                        "completed_at": (
+                            row.completed_at.replace(tzinfo=timezone.utc).isoformat()
+                            if row.completed_at and row.completed_at.tzinfo is None
+                            else (row.completed_at.isoformat() if row.completed_at else None)
+                        ),
+                        "total_time_ms": float(row.total_time_ms or 0.0),
+                        "status": str(row.status or "ok"),
+                        "trade_count": int(row.trade_count or 0),
+                        "total_return_pct": float(row.total_return_pct or 0.0),
+                        "sparkline_pct": list(row.sparkline_pct_json or []),
+                    }
+                )
+    except Exception as exc:
+        logger.debug("DB run-history read failed (using cache only): %s", exc)
+
+    # Merge in any cache rows the DB didn't return yet (write race).
+    for run in reversed(_RECENT_RUNS_CACHE.values()):
+        run_id = str(run.get("run_id") or "")
+        if run_id in seen_ids:
+            continue
+        seen_ids.add(run_id)
         out.append(
             {
-                "run_id": run["run_id"],
+                "run_id": run_id,
                 "strategy_slug": run.get("strategy_slug"),
                 "strategy_name": run.get("strategy_name"),
                 "started_at": run.get("started_at"),
@@ -99,14 +197,35 @@ def list_recent_runs() -> list[dict[str, Any]]:
                 "status": "ok" if run.get("execution", {}).get("success") else "failed",
                 "trade_count": run.get("execution", {}).get("trade_count", 0),
                 "total_return_pct": run.get("execution", {}).get("total_return_pct", 0.0),
-                "sparkline_pct": sparkline_pct,
+                "sparkline_pct": _build_sparkline_pct(run.get("execution") or {}),
             }
         )
-    return out
+    out.sort(key=lambda r: str(r.get("started_at") or ""), reverse=True)
+    return out[:limit]
 
 
-def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
-    return _RECENT_RUNS.get(str(run_id))
+async def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
+    """Hot-cache → DB fallback for a single run by id."""
+    cached = _RECENT_RUNS_CACHE.get(str(run_id))
+    if cached is not None:
+        return cached
+    from sqlalchemy import select
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    try:
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(BacktestRun).where(BacktestRun.id == str(run_id))
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            blob = row.result_json
+            return blob if isinstance(blob, dict) else None
+    except Exception as exc:
+        logger.debug("DB single-run read failed for %s: %s", run_id, exc)
+        return None
 
 
 def _compute_partial_fill_aggregates(exec_dict: dict[str, Any]) -> dict[str, Any]:

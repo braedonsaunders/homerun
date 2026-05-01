@@ -86,13 +86,13 @@ async def run_backtest(req: UnifiedBacktestRequest):
 
 
 @router.get("/runs")
-async def list_runs() -> dict[str, list[dict[str, Any]]]:
-    return {"runs": list_recent_runs()}
+async def list_runs(limit: int = 32) -> dict[str, list[dict[str, Any]]]:
+    return {"runs": await list_recent_runs(limit=int(max(1, min(200, limit))))}
 
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    run = get_recent_run(run_id)
+    run = await get_recent_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run
