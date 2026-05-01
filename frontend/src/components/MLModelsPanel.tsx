@@ -39,11 +39,14 @@ import {
   type MLModel,
 } from '../services/apiMachineLearning'
 
-type TabId = 'fill-model' | 'data' | 'import' | 'models' | 'adapters' | 'deployments' | 'jobs'
+// Data tab removed — recording controls + dataset browsing live in
+// Research → Data Lab.  ML training can pull from the same Data Lab
+// API (see /api/dataset/* and the Cox PH trainer's existing direct
+// reads of MarketMicrostructureSnapshot + TraderOrder).
+type TabId = 'fill-model' | 'import' | 'models' | 'adapters' | 'deployments' | 'jobs'
 
 const TABS: { id: TabId; label: string; icon: typeof Database }[] = [
   { id: 'fill-model', label: 'Fill Model', icon: Sparkles },
-  { id: 'data', label: 'Data', icon: Database },
   { id: 'import', label: 'Import', icon: Upload },
   { id: 'models', label: 'Models', icon: Brain },
   { id: 'adapters', label: 'Adapters', icon: Activity },
@@ -79,53 +82,6 @@ function parseList(value: string): string[] {
 function formatMetric(value: number | null | undefined, decimals = 3): string {
   if (value == null || Number.isNaN(value)) return '-'
   return Number(value).toFixed(decimals)
-}
-
-function DataTab() {
-  // Recorder controls + storage stats moved to Research → Data Lab
-  // (Browse for rows, Record for capture).  This tab is now a clear
-  // pointer so existing operator muscle memory still finds the
-  // controls.
-  return (
-    <div className="space-y-3 p-4">
-      <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
-        <div className="flex items-center gap-2">
-          <Database className="h-4 w-4 text-violet-300" />
-          <span className="text-sm font-semibold">Data controls have moved</span>
-        </div>
-        <p className="mt-2 text-[12px] text-muted-foreground">
-          Recorder configuration, storage usage, and dataset browsing now
-          live in <strong className="text-violet-200">Research → Data Lab</strong> —
-          unified into one surface so on-demand capture sessions, the
-          background recorder, and the unified backtester all share the
-          same vocabulary.
-        </p>
-        <div className="mt-3 grid gap-2 text-[11px] md:grid-cols-2">
-          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
-            <div className="flex items-center gap-1 font-medium">
-              <Sparkles className="h-3 w-3 text-violet-300" />
-              Browse mode
-            </div>
-            <div className="text-muted-foreground">
-              Filter and preview microstructure snapshots, book-delta events,
-              opportunities, trader orders, and backtest runs. Export CSVs.
-            </div>
-          </div>
-          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
-            <div className="flex items-center gap-1 font-medium">
-              <Activity className="h-3 w-3 text-violet-300" />
-              Record mode
-            </div>
-            <div className="text-muted-foreground">
-              Storage overview (per-table rows + GB), background recorder
-              (interval / retention / assets / timeframes), and on-demand
-              capture sessions consumable by the unified backtester.
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function ImportTab() {
@@ -560,7 +516,14 @@ export default function MLModelsPanel() {
           <Brain className="w-4 h-4 text-violet-400 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold leading-tight">Machine Learning</p>
-            <p className="text-[10px] text-muted-foreground leading-tight">{headerNote}</p>
+            <p className="text-[10px] text-muted-foreground leading-tight">
+              {headerNote}
+              <span className="ml-1 inline-flex items-center gap-0.5 text-violet-300/80">
+                <Database className="h-2.5 w-2.5" />
+                Training data: <span className="font-medium">Research → Data Lab</span>
+                {' '}(microstructure_snapshot, book_delta_event, trader_order)
+              </span>
+            </p>
           </div>
           <Badge variant="outline" className={cn('shrink-0', capabilities?.runtime_active ? 'border-emerald-500/30 text-emerald-400' : 'text-muted-foreground')}>
             {capabilities?.runtime_active ? 'active deployment' : 'idle'}
@@ -588,7 +551,6 @@ export default function MLModelsPanel() {
       </div>
       <ScrollArea className="flex-1 min-h-0">
         {activeTab === 'fill-model' ? <FillModelPanel /> : null}
-        {activeTab === 'data' ? <DataTab /> : null}
         {activeTab === 'import' ? <ImportTab /> : null}
         {activeTab === 'models' ? <ModelsTab /> : null}
         {activeTab === 'adapters' ? <AdaptersTab /> : null}

@@ -22,12 +22,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowDown,
   ArrowUp,
-  Calendar,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  CircleStop,
   Clock,
   Database,
   Download,
@@ -51,15 +49,27 @@ import { ScrollArea } from './ui/scroll-area'
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import {
+  type CreateRecordingSessionPayload,
   type DatasetColumn,
   type DatasetFilter,
   type DatasetFilterValues,
   type DatasetQueryResult,
   type DatasetSummary,
+  type MicrostructureRecorderStatus,
+  type RecordingCaptureType,
+  type RecordingSession,
+  type RecordingTargetKind,
+  cancelRecordingSession,
+  createRecordingSession,
   datasetCsvUrl,
+  deleteRecordingSession,
   getDatasetStorageSummary,
+  getMicrostructureRecorderStatus,
   listDatasets,
+  listRecordingSessions,
   queryDataset,
+  startRecordingSession,
+  stopRecordingSession,
 } from '../services/apiDataset'
 import {
   deleteMLData,
@@ -647,7 +657,138 @@ function StorageOverviewSection() {
   )
 }
 
-function BackgroundRecorderSection() {
+function MicrostructureRecorderSection() {
+  const queryClient = useQueryClient()
+  const statusQuery = useQuery<MicrostructureRecorderStatus>({
+    queryKey: ['data-lab', 'recorder-microstructure'],
+    queryFn: getMicrostructureRecorderStatus,
+    refetchInterval: 5_000,
+  })
+  const s = statusQuery.data
+  const running = Boolean(s?.running)
+  const acceptPct =
+    s?.accept_rate != null ? `${(s.accept_rate * 100).toFixed(1)}%` : '—'
+  const rejectsTotal = Object.values(s?.rejects_by_reason || {}).reduce(
+    (a, b) => a + (b ?? 0),
+    0,
+  )
+  const visibleRejects = Object.entries(s?.rejects_by_reason || {})
+    .filter(([, n]) => (n ?? 0) > 0)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30">
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+          <span className="text-xs font-semibold">Microstructure recorder</span>
+          <span className="text-[10px] text-muted-foreground">
+            prediction markets (Polymarket / Kalshi) · L2 book + trade prints
+          </span>
+          <Badge
+            variant="outline"
+            className={cn(
+              'text-[9px]',
+              running
+                ? 'border-emerald-500/40 text-emerald-300'
+                : 'border-border/40 text-muted-foreground',
+            )}
+          >
+            {running ? 'capturing' : 'idle'}
+          </Badge>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 gap-1 text-[10px]"
+          onClick={() =>
+            queryClient.invalidateQueries({
+              queryKey: ['data-lab', 'recorder-microstructure'],
+            })
+          }
+          disabled={statusQuery.isFetching}
+        >
+          <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-4">
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Tokens tracked
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {s?.tokens_tracked != null ? s.tokens_tracked.toLocaleString() : '—'}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Accept rate
+          </div>
+          <div
+            className={cn(
+              'font-mono text-sm tabular-nums',
+              (s?.accept_rate ?? 1) >= 0.99
+                ? 'text-emerald-300'
+                : (s?.accept_rate ?? 1) >= 0.95
+                ? 'text-amber-300'
+                : 'text-rose-300',
+            )}
+          >
+            {acceptPct}
+          </div>
+          <div className="text-[9px] text-muted-foreground">
+            {(s?.accepted_books ?? 0).toLocaleString()} / {(s?.total_attempts ?? 0).toLocaleString()}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Sequence gaps
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {s?.sequence_gaps_observed != null
+              ? s.sequence_gaps_observed.toLocaleString()
+              : '—'}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Queue dropped
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {s?.queue_dropped != null ? s.queue_dropped.toLocaleString() : '—'}
+          </div>
+        </div>
+      </div>
+      {rejectsTotal > 0 ? (
+        <div className="border-t border-border/30 px-3 py-2">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+            Validation rejects ({rejectsTotal.toLocaleString()})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {visibleRejects.map(([reason, n]) => (
+              <span
+                key={reason}
+                className="rounded-sm bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-200"
+              >
+                {reason} <span className="font-mono tabular-nums">{n.toLocaleString()}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
+        Always-on capture from the WebSocket feed.  No per-asset config —
+        captures whatever the orchestrator subscribes to.  For targeted
+        captures (specific markets, specific windows, specific tick
+        intervals), use the on-demand sessions panel below.
+      </div>
+    </div>
+  )
+}
+
+
+function CryptoOhlcRecorderSection() {
   const queryClient = useQueryClient()
   const cfgQuery = useQuery({
     queryKey: ['data-lab', 'recorder-config'],
@@ -706,8 +847,10 @@ function BackgroundRecorderSection() {
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <Clock className="h-3.5 w-3.5 text-violet-300" />
-          <span className="text-xs font-semibold">Background recorder</span>
-          <span className="text-[10px] text-muted-foreground">always-on, market-wide</span>
+          <span className="text-xs font-semibold">Crypto OHLC recorder</span>
+          <span className="text-[10px] text-muted-foreground">
+            crypto bars (BTC / ETH / SOL / ...) at fixed timeframes — feeds the crypto ML adapters
+          </span>
           <Badge
             variant="outline"
             className={cn(
@@ -883,53 +1026,546 @@ function BackgroundRecorderSection() {
   )
 }
 
-function OnDemandSessionsSection() {
+// ─── On-demand recording sessions ──────────────────────────────────────
+
+const CAPTURE_TYPE_OPTIONS: RecordingCaptureType[] = ['book', 'trade', 'delta']
+const TARGET_KIND_OPTIONS: { value: RecordingTargetKind; label: string; hint: string }[] = [
+  { value: 'token', label: 'Token IDs', hint: 'paste raw clob_token_id values' },
+  { value: 'condition', label: 'Condition IDs', hint: 'expand to all outcome tokens' },
+  { value: 'event', label: 'Event slugs', hint: 'expand to all markets in the event' },
+]
+
+function statusToTone(s: RecordingSession['status']): 'good' | 'bad' | 'warn' | 'neutral' {
+  if (s === 'running') return 'good'
+  if (s === 'completed') return 'good'
+  if (s === 'failed') return 'bad'
+  if (s === 'cancelled') return 'bad'
+  if (s === 'paused') return 'warn'
+  if (s === 'scheduled') return 'warn'
+  return 'neutral'
+}
+
+function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+  return `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`
+}
+
+function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [targetKind, setTargetKind] = useState<RecordingTargetKind>('token')
+  const [targetText, setTargetText] = useState('')
+  const [captureTypes, setCaptureTypes] = useState<Set<RecordingCaptureType>>(
+    new Set(['book', 'trade']),
+  )
+  const [tickIntervalMs, setTickIntervalMs] = useState('500')
+  const [maxDurationMin, setMaxDurationMin] = useState('60')
+  const [scheduledStart, setScheduledStart] = useState('')
+  const [scheduledEnd, setScheduledEnd] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const queryClient = useQueryClient()
+  const createMutation = useMutation({
+    mutationFn: createRecordingSession,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-sessions'] })
+      setName('')
+      setDescription('')
+      setTargetText('')
+      setError(null)
+      onClose()
+    },
+    onError: (err) => setError((err as Error).message || 'create failed'),
+  })
+
+  // Close on Escape, lock background scroll when open.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  const submit = () => {
+    setError(null)
+    const targets = targetText
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (!name.trim()) {
+      setError('Name is required')
+      return
+    }
+    if (targets.length === 0) {
+      setError('At least one target value is required')
+      return
+    }
+    if (captureTypes.size === 0) {
+      setError('Pick at least one capture type')
+      return
+    }
+    const tick = Math.max(50, Math.min(60_000, parseInt(tickIntervalMs, 10) || 500))
+    const maxDurationSeconds =
+      maxDurationMin && parseInt(maxDurationMin, 10) > 0
+        ? parseInt(maxDurationMin, 10) * 60
+        : null
+    const payload: CreateRecordingSessionPayload = {
+      name: name.trim(),
+      description: description.trim() || undefined,
+      target_kind: targetKind,
+      target_values: targets,
+      capture_types: Array.from(captureTypes),
+      tick_interval_ms: tick,
+      max_duration_seconds: maxDurationSeconds ?? undefined,
+      scheduled_start_at: scheduledStart ? new Date(scheduledStart).toISOString() : null,
+      scheduled_end_at: scheduledEnd ? new Date(scheduledEnd).toISOString() : null,
+    }
+    createMutation.mutate(payload)
+  }
+
   return (
-    <div className="rounded-md border border-dashed border-border/40 bg-card/20 p-3">
-      <div className="flex items-center gap-2">
-        <PlayCircle className="h-3.5 w-3.5 text-violet-300" />
-        <span className="text-xs font-semibold">On-demand sessions</span>
-        <Badge variant="outline" className="border-amber-500/30 text-[9px] text-amber-300">
-          coming soon
-        </Badge>
+    <>
+      {/* Scrim — click to close */}
+      <div
+        className={cn(
+          'fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity',
+          open ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
+        onClick={onClose}
+      />
+      {/* Flyout panel — slides in from the right */}
+      <div
+        className={cn(
+          'fixed inset-y-0 right-0 z-50 flex w-[480px] max-w-[95vw] flex-col border-l border-border/60 bg-background/95 shadow-2xl backdrop-blur transition-transform duration-200',
+          open ? 'translate-x-0' : 'translate-x-full',
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <PlayCircle className="h-4 w-4 text-violet-300" />
+            <div>
+              <div className="text-sm font-semibold leading-tight">New recording session</div>
+              <div className="text-[10px] text-muted-foreground leading-tight">
+                Pick markets, capture types, and a window — backtester will replay this slice.
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-sm p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="space-y-4 p-4">
+            {/* Identity */}
+            <div className="space-y-2">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Identity
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Name</Label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="trump_2028_election_pre_debate"
+                  className="h-8 text-[12px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Description (optional)</Label>
+                <Input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="capturing book + trade for Trump-Vance debate window"
+                  className="h-8 text-[12px]"
+                />
+              </div>
+            </div>
+
+            {/* Targeting */}
+            <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                What to capture
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Target kind</Label>
+                <div className="grid grid-cols-3 gap-1">
+                  {TARGET_KIND_OPTIONS.map((o) => {
+                    const active = targetKind === o.value
+                    return (
+                      <button
+                        key={o.value}
+                        onClick={() => setTargetKind(o.value)}
+                        className={cn(
+                          'rounded-sm border px-2 py-1.5 text-left transition-colors',
+                          active
+                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                            : 'border-border/40 bg-background/40 text-muted-foreground hover:text-foreground',
+                        )}
+                      >
+                        <div className="text-[11px] font-medium">{o.label}</div>
+                        <div className="text-[9px] text-muted-foreground/80">{o.hint}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">
+                  Targets <span className="text-muted-foreground">(one per line, or comma-separated)</span>
+                </Label>
+                <textarea
+                  value={targetText}
+                  onChange={(e) => setTargetText(e.target.value)}
+                  placeholder={
+                    targetKind === 'token'
+                      ? '0x1a2b3c… (clob token id)'
+                      : targetKind === 'condition'
+                      ? '0xabc… (condition_id)'
+                      : 'who-wins-the-2028-election'
+                  }
+                  className="min-h-[80px] w-full rounded-sm border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-[11px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px]">Capture types</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {CAPTURE_TYPE_OPTIONS.map((t) => {
+                    const active = captureTypes.has(t)
+                    return (
+                      <button
+                        key={t}
+                        onClick={() => {
+                          setCaptureTypes((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(t)) next.delete(t)
+                            else next.add(t)
+                            return next
+                          })
+                        }}
+                        className={cn(
+                          'rounded-sm border px-2.5 py-1 text-[11px] transition-colors',
+                          active
+                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                            : 'border-border/40 text-muted-foreground hover:text-foreground',
+                        )}
+                      >
+                        {t}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  book = L2 snapshots · trade = print tape · delta = trade-vs-cancel events
+                </div>
+              </div>
+            </div>
+
+            {/* Cadence + window */}
+            <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Cadence + window
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Tick interval (ms)</Label>
+                  <Input
+                    type="number"
+                    min={50}
+                    max={60_000}
+                    step={50}
+                    value={tickIntervalMs}
+                    onChange={(e) => setTickIntervalMs(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Max duration (min)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={maxDurationMin}
+                    onChange={(e) => setMaxDurationMin(e.target.value)}
+                    className="h-8 text-[12px]"
+                    placeholder="blank = unlimited"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Scheduled start (blank = on demand)</Label>
+                  <Input
+                    type="datetime-local"
+                    value={scheduledStart}
+                    onChange={(e) => setScheduledStart(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Scheduled end (optional)</Label>
+                  <Input
+                    type="datetime-local"
+                    value={scheduledEnd}
+                    onChange={(e) => setScheduledEnd(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {error ? (
+              <div className="rounded-sm bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
+                {error}
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
+
+        <div className="flex items-center justify-between gap-2 border-t border-border/40 px-4 py-3">
+          <span className="text-[10px] text-muted-foreground">
+            Will be created as{' '}
+            <strong className="text-foreground">
+              {scheduledStart ? 'scheduled' : 'pending'}
+            </strong>
+            {scheduledStart ? '' : ' — click Start on the row to activate'}.
+          </span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="h-8 text-[11px]" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 gap-1 text-[11px]"
+              onClick={submit}
+              disabled={createMutation.isPending}
+            >
+              {createMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <PlayCircle className="h-3 w-3" />
+              )}
+              Create session
+            </Button>
+          </div>
+        </div>
       </div>
-      <p className="mt-1.5 text-[11px] text-muted-foreground">
-        Capture targeted slices of market data on demand or on a schedule:
-        pick markets, set the tick frequency, choose what to record (book L2,
-        trade prints, deltas), and either run now or schedule for later.
-        Each session writes to a labeled dataset that shows up in Browse.
-      </p>
-      <div className="mt-2 grid grid-cols-2 gap-2 opacity-50 md:grid-cols-4">
-        <div className="rounded-sm border border-border/30 bg-background/40 px-2 py-1.5 text-[10px]">
-          <div className="flex items-center gap-1 font-medium">
-            <Layers3 className="h-3 w-3" />
-            Markets
+    </>
+  )
+}
+
+function SessionRow({ s }: { s: RecordingSession }) {
+  const queryClient = useQueryClient()
+  const startMutation = useMutation({
+    mutationFn: () => startRecordingSession(s.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-sessions'] }),
+  })
+  const stopMutation = useMutation({
+    mutationFn: () => stopRecordingSession(s.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-sessions'] }),
+  })
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelRecordingSession(s.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-sessions'] }),
+  })
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteRecordingSession(s.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-sessions'] }),
+  })
+
+  const tone = statusToTone(s.status)
+  const duration =
+    s.started_at && (s.ended_at || s.status === 'running')
+      ? new Date(s.ended_at ?? new Date().toISOString()).getTime() -
+        new Date(s.started_at).getTime()
+      : 0
+
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(s.status)
+  const isStartable = ['pending', 'scheduled'].includes(s.status)
+  const isStoppable = s.status === 'running'
+
+  return (
+    <tr className="border-t border-border/20">
+      <td className="px-2 py-1.5">
+        <div className="font-medium">{s.name}</div>
+        {s.description ? (
+          <div className="text-[10px] text-muted-foreground">{s.description}</div>
+        ) : null}
+        <div className="font-mono text-[9px] text-muted-foreground/60">{s.id.slice(0, 12)}</div>
+      </td>
+      <td className="px-2 py-1.5 text-[10px]">
+        <span
+          className={cn(
+            'rounded-sm px-1.5 py-0.5',
+            tone === 'good' && 'bg-emerald-500/15 text-emerald-200',
+            tone === 'bad' && 'bg-rose-500/15 text-rose-200',
+            tone === 'warn' && 'bg-amber-500/15 text-amber-200',
+            tone === 'neutral' && 'bg-muted/40 text-muted-foreground',
+          )}
+        >
+          {s.status}
+        </span>
+        {s.error ? (
+          <div className="mt-1 max-w-[180px] truncate text-[9px] text-rose-300" title={s.error}>
+            {s.error}
           </div>
-          <div className="text-muted-foreground">multi-select picker</div>
+        ) : null}
+      </td>
+      <td className="px-2 py-1.5 text-[10px]">
+        <div className="text-muted-foreground">
+          {s.target_kind} · {s.target_values.length} target
+          {s.target_values.length === 1 ? '' : 's'}
         </div>
-        <div className="rounded-sm border border-border/30 bg-background/40 px-2 py-1.5 text-[10px]">
-          <div className="flex items-center gap-1 font-medium">
-            <Clock className="h-3 w-3" />
-            Tick interval
+        {s.target_token_ids.length > 0 ? (
+          <div className="font-mono text-[9px] text-muted-foreground/70">
+            → {s.target_token_ids.length} token{s.target_token_ids.length === 1 ? '' : 's'} resolved
           </div>
-          <div className="text-muted-foreground">100ms — 1h</div>
+        ) : null}
+      </td>
+      <td className="px-2 py-1.5 text-[10px]">
+        <div className="flex flex-wrap gap-0.5">
+          {s.capture_types.map((c) => (
+            <span key={c} className="rounded-sm bg-violet-500/10 px-1 py-0 text-[9px] text-violet-200">
+              {c}
+            </span>
+          ))}
         </div>
-        <div className="rounded-sm border border-border/30 bg-background/40 px-2 py-1.5 text-[10px]">
-          <div className="flex items-center gap-1 font-medium">
-            <Calendar className="h-3 w-3" />
-            Schedule
-          </div>
-          <div className="text-muted-foreground">now / cron / window</div>
+        <div className="mt-0.5 text-[9px] text-muted-foreground">{s.tick_interval_ms} ms</div>
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono text-[10px] tabular-nums">
+        {s.rows_captured.toLocaleString()}
+      </td>
+      <td className="px-2 py-1.5 text-[10px] text-muted-foreground">
+        {duration > 0 ? fmtDuration(duration) : '—'}
+      </td>
+      <td className="px-2 py-1.5">
+        <div className="flex gap-1">
+          {isStartable ? (
+            <button
+              onClick={() => startMutation.mutate()}
+              className="rounded-sm border border-emerald-500/40 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+              disabled={startMutation.isPending}
+            >
+              Start
+            </button>
+          ) : null}
+          {isStoppable ? (
+            <button
+              onClick={() => stopMutation.mutate()}
+              className="rounded-sm border border-amber-500/40 px-1.5 py-0.5 text-[9px] text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+              disabled={stopMutation.isPending}
+            >
+              Stop
+            </button>
+          ) : null}
+          {!isTerminal ? (
+            <button
+              onClick={() => cancelMutation.mutate()}
+              className="rounded-sm border border-rose-500/40 px-1.5 py-0.5 text-[9px] text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+              disabled={cancelMutation.isPending}
+            >
+              Cancel
+            </button>
+          ) : null}
+          {isTerminal ? (
+            <button
+              onClick={() => {
+                if (confirm(`Delete session '${s.name}'?  Captured rows stay in DB.`)) {
+                  deleteMutation.mutate()
+                }
+              }}
+              className="rounded-sm border border-border/40 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-muted/40 disabled:opacity-50"
+              disabled={deleteMutation.isPending}
+            >
+              Delete
+            </button>
+          ) : null}
         </div>
-        <div className="rounded-sm border border-border/30 bg-background/40 px-2 py-1.5 text-[10px]">
-          <div className="flex items-center gap-1 font-medium">
-            <CircleStop className="h-3 w-3" />
-            Capture
+      </td>
+    </tr>
+  )
+}
+
+function OnDemandSessionsSection() {
+  const sessionsQuery = useQuery({
+    queryKey: ['data-lab', 'recording-sessions'],
+    queryFn: () => listRecordingSessions(undefined, 100),
+    refetchInterval: 5_000,
+  })
+  const sessions = sessionsQuery.data ?? []
+  const [flyoutOpen, setFlyoutOpen] = useState(false)
+
+  return (
+    <>
+      <div className="rounded-md border border-border/40 bg-card/30">
+        <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <PlayCircle className="h-3.5 w-3.5 text-violet-300" />
+            <span className="text-xs font-semibold">On-demand sessions</span>
+            <span className="text-[10px] text-muted-foreground">
+              targeted captures · backtester-consumable
+            </span>
+            <Badge variant="outline" className="text-[9px]">
+              {sessions.length} session{sessions.length === 1 ? '' : 's'}
+            </Badge>
           </div>
-          <div className="text-muted-foreground">book / trades / deltas</div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 text-[10px]"
+            onClick={() => setFlyoutOpen(true)}
+          >
+            <PlayCircle className="h-3 w-3" />
+            New session
+          </Button>
+        </div>
+
+        <div className="max-h-[480px] overflow-y-auto">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-card/95 text-[9px] uppercase tracking-wide text-muted-foreground backdrop-blur">
+              <tr>
+                <th className="px-2 py-1.5 text-left">Session</th>
+                <th className="px-2 py-1.5 text-left">Status</th>
+                <th className="px-2 py-1.5 text-left">Targets</th>
+                <th className="px-2 py-1.5 text-left">Capture</th>
+                <th className="px-2 py-1.5 text-right">Rows</th>
+                <th className="px-2 py-1.5 text-left">Duration</th>
+                <th className="px-2 py-1.5 text-left">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                    <PlayCircle className="mx-auto mb-1 h-4 w-4 opacity-40" />
+                    No sessions yet. Click <strong>New session</strong> to capture a slice of
+                    market data on demand.
+                  </td>
+                </tr>
+              ) : (
+                sessions.map((s) => <SessionRow key={s.id} s={s} />)
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
+          Each completed session is replayable through the unified backtester — pass
+          <code className="mx-1 rounded-sm bg-muted/40 px-1 py-0 font-mono">session_id</code>
+          on POST /backtest/run and the backtester scopes its replay to the session's
+          target tokens × time window.
         </div>
       </div>
-    </div>
+
+      <NewSessionFlyout open={flyoutOpen} onClose={() => setFlyoutOpen(false)} />
+    </>
   )
 }
 
@@ -937,7 +1573,8 @@ function RecordView() {
   return (
     <div className="flex flex-col gap-3 p-3">
       <StorageOverviewSection />
-      <BackgroundRecorderSection />
+      <MicrostructureRecorderSection />
+      <CryptoOhlcRecorderSection />
       <OnDemandSessionsSection />
     </div>
   )

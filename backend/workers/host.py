@@ -395,6 +395,35 @@ class WorkerHost:
             except asyncio.CancelledError:
                 raise
 
+    async def _run_recording_session_loop(self) -> None:
+        """Tick the recording-session manager every 5s.
+
+        Promotes ``scheduled`` sessions whose start time has passed,
+        refreshes ``rows_captured`` for ``running`` sessions, and
+        auto-terminates them at ``scheduled_end_at`` /
+        ``max_duration_seconds``.  Cheap — bulk SELECT + small UPDATE
+        per running session — so 5s cadence is fine.
+        """
+        # Stagger initial fire so we don't compete with startup queries.
+        await asyncio.sleep(15.0)
+        while not self._shutting_down:
+            try:
+                from services.recording_session_service import session_loop_tick
+
+                await session_loop_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Recording session loop cycle failed",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                raise
+
     async def _initialize_live_execution_background(self) -> None:
         try:
             trading_initialized = await live_execution_service.initialize()
@@ -788,6 +817,16 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_trade_signal_pruner_loop(),
                 name="trade-signal-pruner",
+            ))
+
+        # Recording-session manager — promotes scheduled sessions, ticks
+        # running ones, and auto-stops at scheduled_end_at /
+        # max_duration_seconds.  Trading plane only so we don't run
+        # multiple managers when other planes are also up.
+        if self._plane_name == "trading":
+            self._background_tasks.append(asyncio.create_task(
+                self._run_recording_session_loop(),
+                name="recording-session-manager",
             ))
 
         if self._enabled("load_strategy_registry"):

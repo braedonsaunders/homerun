@@ -58,6 +58,10 @@ class UnifiedBacktestRequest(BaseModel):
     token_ids: list[str] | None = None
     start: datetime | None = None
     end: datetime | None = None
+    # When set, the backtester scopes its replay to the recording
+    # session's target tokens × time window — overrides token_ids /
+    # start / end if provided here OR in the request.
+    session_id: str | None = None
     initial_capital_usd: float = Field(default=1000.0, gt=0.0)
     submit_p50_ms: float | None = Field(default=None, ge=0.0)
     submit_p95_ms: float | None = Field(default=None, ge=0.0)
@@ -83,14 +87,36 @@ async def run_backtest(req: UnifiedBacktestRequest):
     counterfactual replays, and sample ensemble bands.  All fields
     are JSON-safe; the UI consumes the response directly.
     """
+    # Resolve session_id (if any) into concrete token_ids + window.
+    # Session scoping wins over per-request token_ids / start / end so
+    # the operator can hit the same backtest button against a session
+    # without re-typing window bounds.
+    token_ids = req.token_ids
+    start = req.start
+    end = req.end
+    session_meta: dict[str, Any] | None = None
+    if req.session_id:
+        from services.recording_session_service import session_backtest_scope
+
+        scope = await session_backtest_scope(req.session_id)
+        if scope is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Recording session '{req.session_id}' not found or has no captured data",
+            )
+        token_ids = scope["token_ids"]
+        start = scope["start"]
+        end = scope["end"]
+        session_meta = {"session_id": scope["session_id"], "session_name": scope["session_name"]}
+
     try:
         result = await run_unified_backtest(
             source_code=req.source_code,
             slug=req.slug,
             config=req.config,
-            token_ids=req.token_ids,
-            start=req.start,
-            end=req.end,
+            token_ids=token_ids,
+            start=start,
+            end=end,
             initial_capital_usd=req.initial_capital_usd,
             submit_p50_ms=req.submit_p50_ms,
             submit_p95_ms=req.submit_p95_ms,
@@ -106,6 +132,9 @@ async def run_backtest(req: UnifiedBacktestRequest):
     except Exception as exc:
         logger.exception("Unified backtest failed")
         raise HTTPException(status_code=500, detail=f"backtest failed: {exc}") from exc
+
+    if session_meta is not None and isinstance(result, dict):
+        result["recording_session"] = session_meta
     return _sanitize_floats(result)
 
 

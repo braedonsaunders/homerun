@@ -97,6 +97,118 @@ export async function queryDataset(
   return data
 }
 
+// ─── Recording sessions ─────────────────────────────────────────────────
+
+export type RecordingSessionStatus =
+  | 'pending'
+  | 'scheduled'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type RecordingTargetKind = 'token' | 'condition' | 'event'
+export type RecordingCaptureType = 'book' | 'trade' | 'delta'
+
+export interface RecordingSession {
+  id: string
+  name: string
+  description: string | null
+  status: RecordingSessionStatus
+  platform: string
+  target_kind: RecordingTargetKind
+  target_values: string[]
+  target_token_ids: string[]
+  capture_types: RecordingCaptureType[]
+  tick_interval_ms: number
+  retention_days: number | null
+  scheduled_start_at: string | null
+  scheduled_end_at: string | null
+  max_duration_seconds: number | null
+  started_at: string | null
+  ended_at: string | null
+  rows_captured: number
+  last_capture_at: string | null
+  error: string | null
+  config: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateRecordingSessionPayload {
+  name: string
+  description?: string
+  platform?: string
+  target_kind?: RecordingTargetKind
+  target_values: string[]
+  capture_types?: RecordingCaptureType[]
+  tick_interval_ms?: number
+  retention_days?: number | null
+  scheduled_start_at?: string | null
+  scheduled_end_at?: string | null
+  max_duration_seconds?: number | null
+  config?: Record<string, unknown> | null
+}
+
+export async function listRecordingSessions(
+  statuses?: RecordingSessionStatus[],
+  limit = 100,
+): Promise<RecordingSession[]> {
+  const params: Record<string, string | number> = { limit }
+  if (statuses && statuses.length > 0) params.statuses = statuses.join(',')
+  const { data } = await api.get<{ sessions: RecordingSession[] }>('/dataset/sessions', { params })
+  return data.sessions ?? []
+}
+
+export async function createRecordingSession(
+  payload: CreateRecordingSessionPayload,
+): Promise<RecordingSession> {
+  const { data } = await api.post<RecordingSession>('/dataset/sessions', payload)
+  return data
+}
+
+export async function getRecordingSession(id: string): Promise<RecordingSession> {
+  const { data } = await api.get<RecordingSession>(`/dataset/sessions/${encodeURIComponent(id)}`)
+  return data
+}
+
+export async function startRecordingSession(id: string): Promise<RecordingSession> {
+  const { data } = await api.post<RecordingSession>(`/dataset/sessions/${encodeURIComponent(id)}/start`)
+  return data
+}
+
+export async function stopRecordingSession(id: string): Promise<RecordingSession> {
+  const { data } = await api.post<RecordingSession>(`/dataset/sessions/${encodeURIComponent(id)}/stop`)
+  return data
+}
+
+export async function cancelRecordingSession(id: string): Promise<RecordingSession> {
+  const { data } = await api.post<RecordingSession>(`/dataset/sessions/${encodeURIComponent(id)}/cancel`)
+  return data
+}
+
+export async function deleteRecordingSession(id: string): Promise<void> {
+  await api.delete(`/dataset/sessions/${encodeURIComponent(id)}`)
+}
+
+export interface MicrostructureRecorderStatus {
+  running: boolean
+  tokens_tracked: number
+  accepted_books: number
+  total_attempts: number
+  accept_rate: number | null
+  rejects_by_reason: Record<string, number>
+  sequence_gaps_observed: number
+  queue_dropped: number
+  error?: string
+}
+
+export async function getMicrostructureRecorderStatus(): Promise<MicrostructureRecorderStatus> {
+  const { data } = await api.get<MicrostructureRecorderStatus>('/dataset/recorder/microstructure')
+  return data
+}
+
 export interface DatasetStorageRow {
   name: string
   label: string

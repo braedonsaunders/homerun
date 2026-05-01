@@ -602,6 +602,184 @@ async def export_dataset_csv(
     )
 
 
+# ── Recording sessions (on-demand captures) ────────────────────────────
+
+
+from pydantic import BaseModel as _PydBaseModel
+
+
+class RecordingSessionCreate(_PydBaseModel):
+    name: str
+    description: str | None = None
+    platform: str = "polymarket"
+    target_kind: str = "token"  # token | condition | event
+    target_values: list[str]
+    capture_types: list[str] | None = None  # subset of book/trade/delta
+    tick_interval_ms: int = 500
+    retention_days: int | None = None
+    scheduled_start_at: datetime | None = None
+    scheduled_end_at: datetime | None = None
+    max_duration_seconds: int | None = None
+    config: dict[str, Any] | None = None
+
+
+def _serialize_session(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "status": row.status,
+        "platform": row.platform,
+        "target_kind": row.target_kind,
+        "target_values": list(row.target_values_json or []),
+        "target_token_ids": list(row.target_token_ids_json or []),
+        "capture_types": list(row.capture_types_json or []),
+        "tick_interval_ms": row.tick_interval_ms,
+        "retention_days": row.retention_days,
+        "scheduled_start_at": row.scheduled_start_at.isoformat() if row.scheduled_start_at else None,
+        "scheduled_end_at": row.scheduled_end_at.isoformat() if row.scheduled_end_at else None,
+        "max_duration_seconds": row.max_duration_seconds,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+        "rows_captured": int(row.rows_captured or 0),
+        "last_capture_at": row.last_capture_at.isoformat() if row.last_capture_at else None,
+        "error": row.error,
+        "config": row.config_json,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/sessions")
+async def list_recording_sessions(
+    statuses: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    """List recording sessions, optionally filtered by status (csv)."""
+    from services.recording_session_service import list_sessions
+
+    parsed = [s.strip() for s in (statuses or "").split(",") if s.strip()] or None
+    rows = await list_sessions(statuses=parsed, limit=limit)
+    return {"sessions": [_serialize_session(r) for r in rows]}
+
+
+@router.post("/sessions")
+async def create_recording_session(body: RecordingSessionCreate) -> dict[str, Any]:
+    """Create a new on-demand recording session.
+
+    If ``scheduled_start_at`` is set the session lands in ``scheduled``
+    and the manager loop will activate it at that time.  Otherwise the
+    session lands in ``pending`` — call POST /sessions/{id}/start to
+    activate immediately.
+    """
+    from services.recording_session_service import SessionSpec, create_session
+
+    spec = SessionSpec(
+        name=body.name,
+        description=body.description,
+        platform=body.platform,
+        target_kind=body.target_kind,
+        target_values=body.target_values,
+        capture_types=body.capture_types,
+        tick_interval_ms=body.tick_interval_ms,
+        retention_days=body.retention_days,
+        scheduled_start_at=body.scheduled_start_at,
+        scheduled_end_at=body.scheduled_end_at,
+        max_duration_seconds=body.max_duration_seconds,
+        config=body.config,
+    )
+    row = await create_session(spec)
+    return _serialize_session(row)
+
+
+@router.get("/sessions/{session_id}")
+async def get_recording_session(session_id: str) -> dict[str, Any]:
+    from services.recording_session_service import get_session
+
+    row = await get_session(session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return _serialize_session(row)
+
+
+@router.post("/sessions/{session_id}/start")
+async def start_recording_session(session_id: str) -> dict[str, Any]:
+    from services.recording_session_service import start_session
+
+    try:
+        row = await start_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_session(row)
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_recording_session(session_id: str) -> dict[str, Any]:
+    from services.recording_session_service import stop_session
+
+    try:
+        row = await stop_session(session_id, status="completed")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_session(row)
+
+
+@router.post("/sessions/{session_id}/cancel")
+async def cancel_recording_session(session_id: str) -> dict[str, Any]:
+    from services.recording_session_service import stop_session
+
+    try:
+        row = await stop_session(session_id, status="cancelled")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_session(row)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_recording_session(session_id: str) -> dict[str, Any]:
+    from services.recording_session_service import delete_session
+
+    deleted = await delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return {"deleted": True, "id": session_id}
+
+
+@router.get("/recorder/microstructure")
+async def microstructure_recorder_status() -> dict[str, Any]:
+    """Live status of the WebSocket-driven microstructure recorder.
+
+    This is the always-on book + trade-print capture path for the
+    prediction-market venues (Polymarket, Kalshi).  Unlike the crypto
+    OHLC recorder, it has no per-asset config — it captures whatever
+    the orchestrator + scanner are subscribed to and applies the
+    structural validation gate (price bounds, ordering, sequence
+    monotonicity) before persistence.
+
+    Returns:
+      running: bool — heuristic ("any tokens tracked in this process?")
+      tokens_tracked: int
+      accepted_books, total_attempts, accept_rate
+      rejects_by_reason: per-reason counters
+      sequence_gaps_observed: forward jumps > 1
+      queue_dropped: backpressure drops
+    """
+    try:
+        from services.microstructure_recorder import get_microstructure_recorder
+
+        rec = get_microstructure_recorder()
+        stats = rec.get_data_quality_stats()
+        # "Running" heuristic — recorder is in-process and recording
+        # whenever the WebSocket feed is alive; we proxy on whether
+        # any token has been seen.  Once we add an explicit lifecycle
+        # API on the recorder this can become a real status field.
+        stats["running"] = bool(stats.get("tokens_tracked"))
+        return stats
+    except Exception as exc:
+        logger.exception("microstructure_recorder_status failed")
+        return {"error": str(exc), "running": False}
+
+
 @router.get("/storage/summary")
 async def storage_summary() -> dict[str, Any]:
     """Per-table storage usage: row count, on-disk bytes (Postgres

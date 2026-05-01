@@ -3311,6 +3311,58 @@ class BacktestRun(Base):
     )
 
 
+class RecordingSession(Base):
+    """On-demand market-data capture session.
+
+    Operator-triggered (or scheduled) capture of book + trade + delta
+    data for a specific set of markets and a specific time window.
+    Surfaced in Research → Data Lab → Record mode and consumable by
+    the unified backtester via ``session_id``: the backtester scopes
+    its replay to ``target_token_ids`` × ``[started_at, ended_at]``.
+
+    The session row is metadata only — captured rows continue to
+    live in ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent``
+    with no schema change there, pinned to the session implicitly
+    by the (token, time-window) pair.
+    """
+
+    __tablename__ = "recording_sessions"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    # status: pending | scheduled | running | paused | completed | failed | cancelled
+    status = Column(String, nullable=False, default="pending", index=True)
+
+    # Targeting
+    platform = Column(String, nullable=False, default="polymarket")
+    target_kind = Column(String, nullable=False, default="token")  # token|condition|event
+    target_values_json = Column(JSON, nullable=False, default=list)  # operator input
+    target_token_ids_json = Column(JSON, nullable=True)  # resolved tokens
+
+    # What to capture: subset of {"book", "trade", "delta"}
+    capture_types_json = Column(JSON, nullable=False, default=list)
+    tick_interval_ms = Column(Integer, nullable=False, default=500)
+    retention_days = Column(Integer, nullable=True)
+
+    # Scheduling
+    scheduled_start_at = Column(DateTime, nullable=True)
+    scheduled_end_at = Column(DateTime, nullable=True)
+    max_duration_seconds = Column(Integer, nullable=True)
+    started_at = Column(DateTime, nullable=True, index=True)
+    ended_at = Column(DateTime, nullable=True)
+
+    # Progress
+    rows_captured = Column(Integer, nullable=False, default=0)
+    last_capture_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+    # Per-platform / per-recorder extras (book depth limit, etc.)
+    config_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
 # ==================== WORKER RUNTIME STATE ====================
 
 
