@@ -452,18 +452,68 @@ async def _validate_strategy_code(args: dict) -> dict:
 
 
 async def _run_strategy_backtest(args: dict) -> dict:
+    """Run a unified backtest for a strategy by ID or slug.
+
+    Looks up the strategy's current source_code + config, then dispatches
+    to the same Cox-aware execution-realistic engine BacktestStudio uses.
+    Returns a compact summary so the LLM gets the headline numbers
+    without drowning in the full nested result.
+    """
     try:
-        from services.strategy_backtester import StrategyBacktester
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import or_, select
 
-        sid = args["strategy_id"]
-        lookback = args.get("lookback_days", 30)
+        from models.database import AsyncSessionLocal, Strategy
+        from services.backtest.unified_runner import run_unified_backtest
 
-        backtester = StrategyBacktester()
-        result = await backtester.run_strategy_backtest(
-            strategy_slug=sid,
-            lookback_days=lookback,
+        sid = str(args.get("strategy_id") or "").strip()
+        if not sid:
+            return {"error": "strategy_id is required"}
+        lookback = int(args.get("lookback_days") or 30)
+        lookback = max(1, min(180, lookback))
+
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(Strategy).where(or_(Strategy.id == sid, Strategy.slug == sid))
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return {"error": f"Strategy '{sid}' not found"}
+            source = str(row.source_code or "")
+            slug = str(row.slug or sid)
+            cfg = dict(row.config or {})
+
+        if not source.strip():
+            return {"error": f"Strategy '{slug}' has no source_code"}
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=lookback)
+
+        result = await run_unified_backtest(
+            source_code=source,
+            slug=slug,
+            config=cfg,
+            start=start,
+            end=end,
         )
-        return result if isinstance(result, dict) else {"result": result}
+
+        execution = result.get("execution") or {}
+        sharpe = execution.get("sharpe") or {}
+        deflated = result.get("deflated_sharpe") or {}
+        return {
+            "run_id": result.get("run_id"),
+            "strategy_slug": slug,
+            "lookback_days": lookback,
+            "success": execution.get("success"),
+            "trade_count": execution.get("trade_count"),
+            "total_return_pct": execution.get("total_return_pct"),
+            "sharpe": sharpe.get("value") if isinstance(sharpe, dict) else sharpe,
+            "max_drawdown_pct": execution.get("max_drawdown_pct"),
+            "deflated_sharpe_probability": deflated.get("deflated_sharpe"),
+            "fees_paid_usd": execution.get("fees_paid_usd"),
+            "runtime_error": execution.get("runtime_error"),
+        }
     except Exception as exc:
         logger.error("run_strategy_backtest failed: %s", exc)
         return {"error": str(exc)}

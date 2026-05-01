@@ -338,11 +338,15 @@ async def get_execution_sim_events(run_id: str, limit: int = 2000, offset: int =
 
 @router.post("/code-backtest")
 async def run_code_backtest(req: CodeBacktestRequest):
-    """Run a strategy's source code against current market data.
+    """Detect-mode dry run — runs detect() against current market data.
 
-    This compiles the strategy, loads it in a sandbox, runs detect()
-    against the live market snapshot, and returns what opportunities
-    it would find right now.
+    Compiles the strategy, loads it in a sandbox, runs detect() once
+    against the live snapshot, and returns the opportunities it would
+    find right now.  This is a quick "does the code do anything" probe.
+
+    For a real backtest with fills, PnL, Sharpe, drawdown, and
+    Cox-aware fill simulation, use ``POST /backtest/run`` instead —
+    that's the unified pipeline BacktestStudio uses.
     """
     from services.strategy_backtester import run_strategy_backtest
 
@@ -412,21 +416,24 @@ async def run_code_backtest_optimize(req: CodeBacktestOptimizeRequest):
 
 @router.post("/code-backtest/execution")
 async def run_code_backtest_execution(req: ExecutionBacktestRequest):
-    """Execution-realistic backtest with full L2 replay and bootstrap CIs.
+    """Execution-realistic backtest, delegating to the unified runner.
 
-    See ``ExecutionBacktestRequest`` for all parameters. The endpoint runs
-    the strategy through the production matching engine (``services.backtest``)
-    against real ``MarketMicrostructureSnapshot`` data, including any
-    laddered/chunked/escalating exits the strategy declares via
-    ``exit_policies``. Returns headline + risk-adjusted metrics with
-    bootstrap 95% CIs plus a sampled fills/equity ledger for the UI.
+    Kept for backwards compatibility with callers that hit this URL
+    (LLM agent tools, ad-hoc scripts).  The canonical UI path is
+    ``POST /backtest/run`` which exposes the same engine plus all of
+    the augmentation (Cox fill model, ensemble band, regime
+    decomposition, deflated Sharpe, walk-forward).  This route returns
+    the same augmented dict as ``/backtest/run`` so callers that
+    upgrade their consumer pick up the richer fields automatically;
+    the legacy flat ``ExecutionBacktestResult`` keys live unchanged
+    under the ``execution`` sub-object.
     """
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    from services.strategy_backtester import run_execution_backtest
+    from services.backtest.unified_runner import run_unified_backtest
 
     end_dt = _dt.now(_tz.utc)
     start_dt = end_dt - _td(hours=int(req.lookback_hours))
-    result = await run_execution_backtest(
+    return await run_unified_backtest(
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,
@@ -434,17 +441,12 @@ async def run_code_backtest_execution(req: ExecutionBacktestRequest):
         start=start_dt,
         end=end_dt,
         initial_capital_usd=req.initial_capital_usd,
-        max_intents=req.max_intents,
-        submit_latency_p50_ms=req.submit_latency_p50_ms,
-        submit_latency_p95_ms=req.submit_latency_p95_ms,
-        cancel_latency_p50_ms=req.cancel_latency_p50_ms,
-        cancel_latency_p95_ms=req.cancel_latency_p95_ms,
+        submit_p50_ms=req.submit_latency_p50_ms,
+        submit_p95_ms=req.submit_latency_p95_ms,
+        cancel_p50_ms=req.cancel_latency_p50_ms,
+        cancel_p95_ms=req.cancel_latency_p95_ms,
         seed=req.seed,
-        fills_sample_size=req.fills_sample_size,
-        equity_sample_size=req.equity_sample_size,
-        bootstrap_resamples=req.bootstrap_resamples,
     )
-    return result.to_dict()
 
 
 @router.get("/guardrails/config")

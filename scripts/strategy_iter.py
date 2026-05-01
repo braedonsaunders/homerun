@@ -1,7 +1,15 @@
-"""Iterative strategy refinement harness.
+"""Iterative strategy refinement harness — detect-mode dry runs.
 
-Drives /api/validation/code-backtest against the current source of negrisk.py
-or stat_arb.py and prints a compact metrics table so we can compare iterations.
+Drives /api/validation/code-backtest (the detect() lifecycle-hook
+dry-run endpoint) against the current source of negrisk.py or
+stat_arb.py and prints a compact metrics table — opportunity count,
+ROI distribution, subtype breakdown — so we can compare iterations.
+
+This is NOT a real backtest: no fills, no PnL, no Sharpe.  For the
+real thing use the BacktestStudio UI or POST /backtest/run, both of
+which exercise the unified Cox-aware execution-realistic engine.
+This script is the right tool when the question is "does my new
+detect() logic find more/better opportunities right now?".
 
 Usage:
     python scripts/strategy_iter.py negrisk

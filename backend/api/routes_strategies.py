@@ -1839,30 +1839,46 @@ async def get_unified_docs():
         "backtesting": {
             "description": (
                 "Test your strategy code against real data without saving. "
-                "Three backtest modes match the three lifecycle phases."
+                "For a real backtest with fills, PnL, Sharpe, drawdown, and "
+                "Cox-aware fill simulation, use POST /backtest/run — that's "
+                "the unified pipeline BacktestStudio uses and is the "
+                "canonical backtester.  The three modes below are quick "
+                "lifecycle-hook dry runs (no fills simulated)."
             ),
             "modes": {
+                "unified": {
+                    "endpoint": "POST /backtest/run",
+                    "what_it_does": (
+                        "Full execution-realistic backtest with L2 replay, Cox PH "
+                        "fill model, ensemble bands, walk-forward, deflated Sharpe, "
+                        "and regime decomposition.  This is what BacktestStudio runs."
+                    ),
+                    "returns": "Augmented unified result with execution + fill_model + walk_forward + deflated_sharpe + regime_breakdown + ensemble_band",
+                },
                 "detect": {
                     "endpoint": "POST /validation/code-backtest",
                     "what_it_does": (
-                        "Compiles your source code, runs detect() against the current "
-                        "live market snapshot, and returns what opportunities it finds right now."
+                        "Lifecycle-hook dry run: compiles your source code, runs "
+                        "detect() against the current live snapshot, and returns "
+                        "what opportunities it finds right now.  No fills simulated."
                     ),
                     "returns": "List of opportunities with ROI, risk score, markets, positions",
                 },
                 "evaluate": {
                     "endpoint": "POST /validation/code-backtest/evaluate",
                     "what_it_does": (
-                        "Compiles your source code, fetches recent trade signals from the DB, "
-                        "runs evaluate() on each, and shows which would be selected vs skipped."
+                        "Lifecycle-hook dry run: runs evaluate() on each recent "
+                        "trade signal and shows which would be selected vs skipped.  "
+                        "No fills simulated."
                     ),
                     "returns": "List of decisions with checks, scores, and reasons for each signal",
                 },
                 "exit": {
                     "endpoint": "POST /validation/code-backtest/exit",
                     "what_it_does": (
-                        "Compiles your source code, fetches current open positions, "
-                        "runs should_exit() on each, and shows which would be closed vs held."
+                        "Lifecycle-hook dry run: runs should_exit() on each open "
+                        "position and shows which would be closed vs held.  No "
+                        "fills simulated."
                     ),
                     "returns": "List of exit decisions with action (close/hold/reduce) and reason",
                 },
@@ -1925,9 +1941,11 @@ async def get_unified_docs():
             },
             "validation": {
                 "POST /strategy-manager/validate": "Validate source code without saving",
-                "POST /validation/code-backtest": "Run detect() backtest against live market data",
-                "POST /validation/code-backtest/evaluate": "Run evaluate() backtest against recent signals",
-                "POST /validation/code-backtest/exit": "Run should_exit() backtest against open positions",
+                "POST /backtest/run": "Unified execution-realistic backtest (canonical) — Cox fills + walk-forward + deflated Sharpe + ensemble band",
+                "POST /backtest/walk-forward": "Walk-forward analysis across N folds",
+                "POST /validation/code-backtest": "Lifecycle-hook dry run — detect() against live market data",
+                "POST /validation/code-backtest/evaluate": "Lifecycle-hook dry run — evaluate() against recent signals",
+                "POST /validation/code-backtest/exit": "Lifecycle-hook dry run — should_exit() against open positions",
             },
         },
         # ── Section 12: Quick Start ──────────────────────────────────
@@ -1936,7 +1954,7 @@ async def get_unified_docs():
             "2. Import from models using Opportunity (not ArbitrageOpportunity)",
             "3. Implement detect() to find opportunities from events/markets/prices",
             "4. POST /strategy-manager/validate with your source_code → check for errors",
-            "5. POST /validation/code-backtest with your source_code → see what it finds",
+            "5. POST /backtest/run with your source_code → full execution-realistic backtest with PnL, Sharpe, fills, walk-forward",
             "6. POST /strategy-manager to save it (set source_key, enabled=true)",
             "7. Optionally implement evaluate() for custom execution gating",
             "8. Optionally implement should_exit() for custom exit logic",
