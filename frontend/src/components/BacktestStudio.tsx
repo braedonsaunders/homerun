@@ -49,6 +49,7 @@ import {
   getDecompositionSummary,
   getEmpiricalConstants,
   getLatencyDistribution,
+  getTriangulation,
 } from '../services/apiFillModel'
 
 interface BacktestStudioProps {
@@ -397,6 +398,16 @@ export default function BacktestStudio({
     queryKey: ['fill-model', 'decomposition'],
     queryFn: () => getDecompositionSummary(24),
     refetchInterval: 30_000,
+  })
+
+  // Triangulation: backtest vs shadow vs live PnL for THIS strategy
+  // over the last 30 days.  Big divergence between any two means the
+  // fill model is the prime suspect.  Only loaded when we have a slug.
+  const triangulationQuery = useQuery({
+    queryKey: ['triangulation', initialSlug],
+    queryFn: () => getTriangulation(initialSlug || '', 30),
+    enabled: Boolean(initialSlug && initialSlug !== '_backtest_unified' && initialSlug !== '_research'),
+    refetchInterval: 60_000,
   })
 
   const loadRunMutation = useMutation({
@@ -748,6 +759,78 @@ export default function BacktestStudio({
                   <CounterfactualList rows={activeRun.counterfactuals} />
                 </div>
               </div>
+
+              {/* TRIANGULATION — backtest vs shadow vs live PnL */}
+              {triangulationQuery.data ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Activity className="h-3.5 w-3.5 text-amber-300" />
+                    Triangulation — backtest vs shadow vs live (last 30 days)
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      same strategy across regimes
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(() => {
+                      const tri = triangulationQuery.data
+                      const shadowMode = tri.modes.shadow
+                      const liveMode = tri.modes.live
+                      const btPnl = exec
+                        ? (exec.final_equity_usd ?? 0) - (exec.initial_capital_usd ?? 0)
+                        : 0
+                      const shadowPnl = shadowMode?.realized_pnl_usd ?? 0
+                      const livePnl = liveMode?.realized_pnl_usd ?? 0
+                      // Tone the live tile by alignment with backtest.
+                      const liveDeltaPct = btPnl !== 0 ? ((livePnl - btPnl) / Math.abs(btPnl)) * 100 : 0
+                      const shadowDeltaPct =
+                        btPnl !== 0 ? ((shadowPnl - btPnl) / Math.abs(btPnl)) * 100 : 0
+                      const divergent =
+                        Math.abs(liveDeltaPct) > 30 || Math.abs(shadowDeltaPct) > 30
+                      return (
+                        <>
+                          <StatTile
+                            label="Backtest PnL"
+                            value={fmtUsd(btPnl)}
+                            hint={`${exec?.trade_count ?? 0} trades · ${fmtPct(exec?.total_return_pct, 1)}`}
+                            tone={btPnl >= 0 ? 'good' : 'bad'}
+                            icon={Flame}
+                          />
+                          <StatTile
+                            label="Shadow PnL"
+                            value={fmtUsd(shadowPnl)}
+                            hint={
+                              shadowMode
+                                ? `${shadowMode.orders} orders · ${shadowMode.filled} filled · ${
+                                    btPnl !== 0 ? `Δ ${fmtPct(shadowDeltaPct, 0)}` : 'no backtest'
+                                  }`
+                                : 'no shadow data'
+                            }
+                            tone={shadowPnl >= 0 ? 'good' : 'bad'}
+                          />
+                          <StatTile
+                            label="Live PnL"
+                            value={fmtUsd(livePnl)}
+                            hint={
+                              liveMode
+                                ? `${liveMode.orders} orders · ${liveMode.filled} filled · ${
+                                    btPnl !== 0 ? `Δ ${fmtPct(liveDeltaPct, 0)}` : 'no backtest'
+                                  }`
+                                : 'no live data'
+                            }
+                            tone={
+                              divergent ? 'warn' : livePnl >= 0 ? 'good' : 'bad'
+                            }
+                          />
+                        </>
+                      )
+                    })()}
+                  </div>
+                  <div className="mt-2 text-[10px] text-muted-foreground">
+                    Δ &gt; 30% between any two regimes ⇒ the fill model is likely the suspect (latency or queue
+                    assumptions). Δ &lt; 10% means the simulator is well-calibrated for this strategy.
+                  </div>
+                </div>
+              ) : null}
 
               {/* RUNTIME ERRORS */}
               {exec?.runtime_error ? (
