@@ -72,8 +72,14 @@ interface BacktestStudioProps {
   strategyLabel?: string | null
 }
 
+// Backend sentinel for "ratio with zero denominator" (e.g., gain-to-
+// pain with no losses).  metrics.py:_NO_DENOM_SENTINEL = 1_000_000.
+// Render as ∞ in the UI so it's not mistaken for an absurd magnitude.
+const NO_DENOM_SENTINEL = 1_000_000
+
 function fmtNum(value: number | null | undefined, digits = 2): string {
   if (value == null || !Number.isFinite(Number(value))) return '—'
+  if (Math.abs(Number(value)) >= NO_DENOM_SENTINEL) return '∞'
   return Number(value).toLocaleString(undefined, {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,

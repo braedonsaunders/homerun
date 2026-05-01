@@ -30,6 +30,14 @@ ANN_TRADING_DAYS = 252
 SECONDS_PER_TRADING_DAY = 6.5 * 3600  # ignored — we use periods returned
 ANN_CALENDAR_SECONDS = 365 * 24 * 3600
 
+# Sentinel for ratios whose denominator is zero (winning streak with
+# no losses, etc.).  Returned by tail_ratio / gain_to_pain /
+# profit_factor instead of math.inf so the result stays JSON-
+# compliant — FastAPI's default encoder rejects Infinity / NaN and
+# fails the entire response with a 500.  Values >= this sentinel
+# should be rendered as "∞ (no denominator)" in the UI.
+_NO_DENOM_SENTINEL = 1_000_000.0
+
 
 @dataclass
 class TradeOutcome:
@@ -103,9 +111,15 @@ def bootstrap_ci(
     for _ in range(int(n_resamples)):
         resample = [sample_list[rng.randrange(n)] for _ in range(n)]
         try:
-            stats.append(float(statistic(resample)))
+            v = float(statistic(resample))
         except Exception:
             continue
+        # Drop non-finite results so the CI bounds stay JSON-safe.  A
+        # statistic that legitimately returns infinity (zero-denominator
+        # ratio) should be returning the _NO_DENOM_SENTINEL instead.
+        if math.isnan(v) or math.isinf(v):
+            continue
+        stats.append(v)
     if not stats:
         return None, None
     stats.sort()
@@ -279,7 +293,11 @@ def profit_factor_of(trades: Sequence[TradeOutcome]) -> float:
     gross_win = sum(t.pnl_usd for t in trades if t.pnl_usd > 0)
     gross_loss = -sum(t.pnl_usd for t in trades if t.pnl_usd < 0)
     if gross_loss <= 0:
-        return float("inf") if gross_win > 0 else 0.0
+        # No losing trades.  Return a large finite sentinel (not
+        # math.inf — JSON has no representation for it and FastAPI
+        # rejects the response).  The UI treats >= _NO_DENOM as
+        # "no denominator, exceptional run".
+        return _NO_DENOM_SENTINEL if gross_win > 0 else 0.0
     return gross_win / gross_loss
 
 
@@ -337,7 +355,7 @@ def tail_ratio(returns: Sequence[float], *, alpha: float = 0.05) -> float:
     upside = abs(_percentile(returns, 1.0 - alpha))
     downside = abs(_percentile(returns, alpha))
     if downside <= 0:
-        return float("inf") if upside > 0 else 0.0
+        return _NO_DENOM_SENTINEL if upside > 0 else 0.0
     return upside / downside
 
 
@@ -350,7 +368,7 @@ def gain_to_pain(returns: Sequence[float]) -> float:
     gains = sum(r for r in returns if r > 0)
     pains = -sum(r for r in returns if r < 0)
     if pains <= 0:
-        return float("inf") if gains > 0 else 0.0
+        return _NO_DENOM_SENTINEL if gains > 0 else 0.0
     return gains / pains
 
 
@@ -497,13 +515,20 @@ def compute_metrics(
         pnls, lambda xs: sum(1 for x in xs if x > 0) / len(xs) if xs else 0.0,
         n_resamples=bootstrap_resamples, seed=seed,
     )
+    def _pf_stat(xs):
+        if not xs:
+            return 0.0
+        gw = sum(x for x in xs if x > 0)
+        gl = -sum(x for x in xs if x < 0)
+        if gl <= 0:
+            # Same sentinel convention as profit_factor_of() so the CI
+            # doesn't silently expand to 1e11+ when the resample has
+            # zero losses (which then breaks JSON encoding via inf).
+            return _NO_DENOM_SENTINEL if gw > 0 else 0.0
+        return gw / gl
+
     pf_lo, pf_hi = bootstrap_ci(
-        pnls,
-        lambda xs: (
-            sum(x for x in xs if x > 0)
-            / max(1e-9, -sum(x for x in xs if x < 0))
-        ) if xs else 0.0,
-        n_resamples=bootstrap_resamples, seed=seed,
+        pnls, _pf_stat, n_resamples=bootstrap_resamples, seed=seed,
     )
     expect_lo, expect_hi = bootstrap_ci(
         pnls, _mean, n_resamples=bootstrap_resamples, seed=seed,

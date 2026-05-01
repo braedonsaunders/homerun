@@ -10,6 +10,7 @@ for back-compat.  The new UI uses these.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,29 @@ from services.backtest.unified_runner import (
 
 logger = logging.getLogger("routes.backtest")
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
+
+
+def _sanitize_floats(value: Any) -> Any:
+    """Recursively replace non-finite floats (inf/-inf/NaN) with None.
+
+    FastAPI's default encoder rejects these and 500s the entire
+    response.  metrics.py uses _NO_DENOM_SENTINEL for legitimate
+    "no denominator" cases; this catches anything that slips through
+    (a future bug in a metric, a third-party lib that emits NaN, etc.).
+    Belt-and-suspenders so a single misbehaving field can't take down
+    the whole backtest result.
+    """
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: _sanitize_floats(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_floats(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_floats(v) for v in value)
+    return value
 
 
 class UnifiedBacktestRequest(BaseModel):
@@ -82,12 +106,13 @@ async def run_backtest(req: UnifiedBacktestRequest):
     except Exception as exc:
         logger.exception("Unified backtest failed")
         raise HTTPException(status_code=500, detail=f"backtest failed: {exc}") from exc
-    return result
+    return _sanitize_floats(result)
 
 
 @router.get("/runs")
 async def list_runs(limit: int = 32) -> dict[str, list[dict[str, Any]]]:
-    return {"runs": await list_recent_runs(limit=int(max(1, min(200, limit))))}
+    runs = await list_recent_runs(limit=int(max(1, min(200, limit))))
+    return {"runs": _sanitize_floats(runs)}
 
 
 @router.get("/runs/{run_id}")
@@ -95,7 +120,7 @@ async def get_run(run_id: str):
     run = await get_recent_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return run
+    return _sanitize_floats(run)
 
 
 class WalkForwardRequest(BaseModel):
@@ -135,7 +160,7 @@ async def drift_monitor_route(window_days: int = 30):
     except Exception as exc:
         logger.exception("Drift monitor failed")
         raise HTTPException(status_code=500, detail=f"drift failed: {exc}") from exc
-    return result.to_dict()
+    return _sanitize_floats(result.to_dict())
 
 
 @router.get("/portfolio-correlation")
@@ -156,7 +181,7 @@ async def portfolio_correlation_route(
     except Exception as exc:
         logger.exception("Portfolio correlation failed")
         raise HTTPException(status_code=500, detail=f"correlation failed: {exc}") from exc
-    return result.to_dict()
+    return _sanitize_floats(result.to_dict())
 
 
 class CPCVRequest(BaseModel):
@@ -214,7 +239,7 @@ async def run_cpcv_route(req: CPCVRequest):
     except Exception as exc:
         logger.exception("CPCV run failed")
         raise HTTPException(status_code=500, detail=f"cpcv failed: {exc}") from exc
-    return result.to_dict()
+    return _sanitize_floats(result.to_dict())
 
 
 class MonteCarloLatencyRequest(BaseModel):
@@ -265,7 +290,7 @@ async def run_monte_carlo_latency_route(req: MonteCarloLatencyRequest):
     except Exception as exc:
         logger.exception("Monte-carlo latency run failed")
         raise HTTPException(status_code=500, detail=f"monte-carlo failed: {exc}") from exc
-    return result.to_dict()
+    return _sanitize_floats(result.to_dict())
 
 
 @router.post("/walk-forward")
@@ -298,4 +323,4 @@ async def run_walk_forward_route(req: WalkForwardRequest):
     except Exception as exc:
         logger.exception("Walk-forward run failed")
         raise HTTPException(status_code=500, detail=f"walk-forward failed: {exc}") from exc
-    return result.to_dict()
+    return _sanitize_floats(result.to_dict())
