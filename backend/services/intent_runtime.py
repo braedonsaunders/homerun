@@ -1060,19 +1060,50 @@ class IntentRuntime:
                     self._hot_seed_retry_not_before[token_id] = now_mono + _HOT_SUBSCRIPTION_SEED_RETRY_SECONDS
                     seed_candidates.append(token_id)
                 if seed_candidates:
-                    seed_sem = asyncio.Semaphore(_HOT_SUBSCRIPTION_SEED_CONCURRENCY)
+                    # Bounded worker pool — was ``[task for t in
+                    # candidates] + asyncio.gather(*tasks)`` with a
+                    # Semaphore.  Production watchdog caught 141 tasks
+                    # parked at this line during a token prewarm
+                    # burst, drowning the trading loop.  Live count
+                    # is now exactly _HOT_SUBSCRIPTION_SEED_CONCURRENCY
+                    # regardless of input.
+                    seed_queue: asyncio.Queue = asyncio.Queue()
+                    for token_id in seed_candidates:
+                        seed_queue.put_nowait(token_id)
 
-                    async def _seed_one(token_id: str) -> None:
-                        async with seed_sem:
+                    async def _seed_worker() -> None:
+                        while True:
+                            try:
+                                token_id = seed_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                return
                             try:
                                 await seed_order_book(token_id)
                             except Exception:
-                                return
+                                pass
+                            finally:
+                                seed_queue.task_done()
+                                await asyncio.sleep(0)
 
-                    await asyncio.gather(
-                        *[_seed_one(token_id) for token_id in seed_candidates],
-                        return_exceptions=True,
+                    seed_worker_count = max(
+                        1,
+                        min(
+                            _HOT_SUBSCRIPTION_SEED_CONCURRENCY,
+                            len(seed_candidates),
+                        ),
                     )
+                    seed_workers = [
+                        asyncio.create_task(
+                            _seed_worker(), name=f"intent-runtime-seed-{i}"
+                        )
+                        for i in range(seed_worker_count)
+                    ]
+                    try:
+                        await asyncio.gather(*seed_workers, return_exceptions=True)
+                    finally:
+                        for w in seed_workers:
+                            if not w.done():
+                                w.cancel()
         except Exception as exc:
             logger.warning("Intent runtime token prewarm subscribe failed", exc_info=exc)
 
