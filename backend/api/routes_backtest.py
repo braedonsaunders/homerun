@@ -139,6 +139,64 @@ async def portfolio_correlation_route(
     return result.to_dict()
 
 
+class CPCVRequest(BaseModel):
+    source_code: str = Field(..., min_length=10)
+    slug: str = Field(default="_backtest_cpcv", min_length=1)
+    config: dict[str, Any] | None = None
+    token_ids: list[str] | None = None
+    start: datetime
+    end: datetime
+    initial_capital_usd: float = Field(default=1000.0, gt=0.0)
+    n_folds: int = Field(default=6, ge=3, le=12)
+    k_test_folds: int = Field(default=2, ge=1, le=6)
+    embargo_seconds: float = Field(default=3600.0, ge=0.0, le=86_400.0)
+    submit_p50_ms: float | None = Field(default=None, ge=0.0)
+    submit_p95_ms: float | None = Field(default=None, ge=0.0)
+    cancel_p50_ms: float | None = Field(default=None, ge=0.0)
+    cancel_p95_ms: float | None = Field(default=None, ge=0.0)
+    seed: int | None = None
+    concurrency: int = Field(default=2, ge=1, le=8)
+    max_paths: int = Field(default=64, ge=4, le=200)
+
+
+@router.post("/cpcv")
+async def run_cpcv_route(req: CPCVRequest):
+    """Combinatorial Purged Cross-Validation (Lopez de Prado).
+
+    Evaluates the strategy on every C(n_folds, k_test_folds) combination
+    of test windows, producing a distribution of out-of-sample Sharpes
+    plus a Probability of Backtest Overfitting (PBO) estimate.  More
+    rigorous than walk-forward: catches edges that hold up against an
+    arbitrary subset of history, not just a single chronological path.
+    """
+    from services.backtest.cpcv import run_cpcv as _run
+
+    try:
+        result = await _run(
+            source_code=req.source_code,
+            slug=req.slug,
+            config=req.config,
+            token_ids=req.token_ids,
+            start=req.start,
+            end=req.end,
+            initial_capital_usd=req.initial_capital_usd,
+            n_folds=req.n_folds,
+            k_test_folds=req.k_test_folds,
+            embargo_seconds=req.embargo_seconds,
+            submit_p50_ms=req.submit_p50_ms,
+            submit_p95_ms=req.submit_p95_ms,
+            cancel_p50_ms=req.cancel_p50_ms,
+            cancel_p95_ms=req.cancel_p95_ms,
+            seed=req.seed,
+            concurrency=req.concurrency,
+            max_paths=req.max_paths,
+        )
+    except Exception as exc:
+        logger.exception("CPCV run failed")
+        raise HTTPException(status_code=500, detail=f"cpcv failed: {exc}") from exc
+    return result.to_dict()
+
+
 @router.post("/walk-forward")
 async def run_walk_forward_route(req: WalkForwardRequest):
     """Run walk-forward analysis: split [start, end] into n_folds and
