@@ -6,8 +6,21 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from services.machine_learning_sdk import get_machine_learning_sdk
+from services.ml import list_ml_capabilities
 
 router = APIRouter(prefix="/ml", tags=["Machine Learning"])
+
+
+@router.get("/tasks")
+async def list_tasks_route() -> dict[str, list[dict[str, Any]]]:
+    """List every registered MLCapability — built-in + strategy-attached.
+
+    Frontend reads this to populate task_key dropdowns instead of
+    hardcoding ``crypto_directional`` strings.  Adding a new ML task
+    means declaring ``ml_capability = MLCapability(...)`` on a
+    strategy class — it shows up here automatically.
+    """
+    return {"tasks": [cap.to_summary() for cap in list_ml_capabilities()]}
 
 
 def _translate_ml_error(exc: Exception) -> HTTPException:

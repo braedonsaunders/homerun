@@ -473,6 +473,25 @@ class BaseStrategy(ABC):
     # Default config (overridden by user settings in UI)
     default_config: dict = {}
 
+    # ── Optional ML capability declaration ──────────────────────
+    # Set to an MLCapability instance if this strategy uses an ML
+    # model (e.g. directional probability, fill calibration, signal
+    # quality scoring).  The ml_strategy_registry iterates loaded
+    # strategies and picks up these declarations automatically — so
+    # adding a new ML-using strategy doesn't require touching any
+    # central registry, just attaching the attribute.
+    #
+    # Example:
+    #     from services.ml import MLCapability
+    #     class MyStrategy(BaseStrategy):
+    #         ml_capability = MLCapability(
+    #             task_key="my_strategy_signal",
+    #             label="My Strategy Signal",
+    #             allowed_assets=("btc", "eth"),
+    #             ...
+    #         )
+    ml_capability: Any = None
+
     # ── Strategy metadata (declare on your subclass) ────────────
     # These let strategies declare their requirements and behavior so the
     # infrastructure can route, filter, and manage them without hardcoding.
