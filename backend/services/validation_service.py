@@ -14,7 +14,14 @@ import math
 from pathlib import Path
 import re
 import sys
+import time
 import uuid
+
+# 60s TTL for the demoted-strategy-types cache.  Operator/guardrail
+# changes call ``invalidate_demoted_cache`` for immediate effect; the
+# TTL is a safety net so a forgotten invalidation doesn't permanently
+# stale the orchestrator's view.
+_DEMOTED_CACHE_TTL_SECONDS = 60.0
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
@@ -1517,13 +1524,39 @@ class ValidationService:
         return {"strategy_type": strategy_type, "manual_override": False}
 
     async def get_demoted_strategy_types(self) -> set[str]:
+        # Process-wide cache: this is read EVERY orchestrator cycle for
+        # EVERY trader (~6 traders × multiple cycles/second).  Each call
+        # opened a fresh session, ran a SELECT, returned the set — at
+        # ~200ms/query under contention that's >1s of DB time per
+        # trader cycle just for this read.  The data changes only when
+        # an operator manually demotes a strategy or the auto-demotion
+        # guardrail fires; both paths can call ``invalidate_demoted_cache``
+        # if sub-TTL freshness matters.  60s TTL is a good default.
+        now_mono = time.monotonic()
+        cached = getattr(self, "_demoted_cache", None)
+        if cached is not None:
+            cached_at, cached_set = cached
+            if now_mono - cached_at < _DEMOTED_CACHE_TTL_SECONDS:
+                return cached_set
         async with AsyncSessionLocal() as session:
             rows = (
                 await session.execute(
                     select(StrategyValidationProfile.strategy_type).where(StrategyValidationProfile.status == "demoted")
                 )
             ).all()
-        return {r[0] for r in rows}
+        result = {r[0] for r in rows}
+        self._demoted_cache = (now_mono, result)
+        return result
+
+    def invalidate_demoted_cache(self) -> None:
+        """Drop the demoted-strategy-types cache.
+
+        Call from the auto-demotion guardrail / manual UI override path
+        if you need the next ``get_demoted_strategy_types`` to re-read
+        from the DB immediately.  Otherwise the cache picks up changes
+        within ``_DEMOTED_CACHE_TTL_SECONDS``.
+        """
+        self._demoted_cache = None
 
     async def _recover_incomplete_jobs(self) -> None:
         async with AsyncSessionLocal() as session:

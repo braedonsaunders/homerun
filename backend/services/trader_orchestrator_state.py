@@ -9306,19 +9306,62 @@ async def get_realized_pnl(
     return float((await session.execute(query)).scalar() or 0.0)
 
 
+# Per-cycle TTL caches for setup-phase aggregations.  These run on
+# EVERY orchestrator cycle for every trader (~6 traders × multiple
+# cycles/second) and previously contributed ~1-3s of DB time to the
+# 5s ``setup`` stage observed in production.  They aggregate over
+# ``trader_orders`` which only changes when an order resolves; a
+# 30s TTL is safe (no decision logic depends on sub-30s freshness)
+# and the next-tick re-evaluation after a fill is bounded by the
+# TTL window.  Invalidation is best-effort via
+# ``invalidate_realized_pnl_cache`` from order-completion paths.
+_DAILY_PNL_CACHE_TTL_SECONDS = 30.0
+_LOSS_STREAK_CACHE_TTL_SECONDS = 30.0
+_LAST_LOSS_CACHE_TTL_SECONDS = 30.0
+_daily_pnl_cache: dict[tuple, tuple[float, float]] = {}
+_loss_streak_cache: dict[tuple, tuple[float, int]] = {}
+_last_loss_cache: dict[tuple, tuple[float, Optional[datetime]]] = {}
+
+
+def invalidate_realized_pnl_cache(
+    trader_id: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> None:
+    """Drop cached daily PnL / loss-streak / last-loss for one trader.
+
+    Call from any code path that flips a ``trader_order.status`` into
+    a terminal/realized state so the next read sees fresh values
+    rather than waiting up to ``_DAILY_PNL_CACHE_TTL_SECONDS``.
+    """
+    if trader_id is None and mode is None:
+        _daily_pnl_cache.clear()
+        _loss_streak_cache.clear()
+        _last_loss_cache.clear()
+        return
+    for cache in (_daily_pnl_cache, _loss_streak_cache, _last_loss_cache):
+        for key in [k for k in cache if (trader_id is None or k[0] == trader_id) and (mode is None or k[1] == mode)]:
+            cache.pop(key, None)
+
+
 async def get_daily_realized_pnl(
     session: AsyncSession,
     *,
     trader_id: Optional[str] = None,
     mode: Optional[str] = None,
 ) -> float:
+    cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
+    cached = _daily_pnl_cache.get(cache_key)
+    if cached is not None and (time.monotonic() - cached[0]) < _DAILY_PNL_CACHE_TTL_SECONDS:
+        return cached[1]
     today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return await get_realized_pnl(
+    result = await get_realized_pnl(
         session,
         trader_id=trader_id,
         mode=mode,
         since=today_start,
     )
+    _daily_pnl_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 async def get_unrealized_pnl(
@@ -9432,6 +9475,15 @@ async def get_consecutive_loss_count(
     limit: int = 100,
     since: Optional[datetime] = None,
 ) -> int:
+    # Cached at the same 30s cadence as daily PnL — both depend on
+    # terminal-state trader_orders which change only on resolution.
+    # Skip cache when caller passes a custom ``since`` so paginated
+    # / windowed lookups still hit the DB.
+    if since is None:
+        cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None, int(limit or 100))
+        cached = _loss_streak_cache.get(cache_key)
+        if cached is not None and (time.monotonic() - cached[0]) < _LOSS_STREAK_CACHE_TTL_SECONDS:
+            return cached[1]
     query = (
         select(TraderOrder.status, TraderOrder.updated_at)
         .where(TraderOrder.trader_id == trader_id)
@@ -9459,6 +9511,9 @@ async def get_consecutive_loss_count(
             continue
         if status in REALIZED_WIN_ORDER_STATUSES:
             break
+    if since is None:
+        cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None, int(limit or 100))
+        _loss_streak_cache[cache_key] = (time.monotonic(), losses)
     return losses
 
 
@@ -9469,6 +9524,11 @@ async def get_last_resolved_loss_at(
     mode: Optional[str] = None,
     since: Optional[datetime] = None,
 ) -> Optional[datetime]:
+    if since is None:
+        cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
+        cached = _last_loss_cache.get(cache_key)
+        if cached is not None and (time.monotonic() - cached[0]) < _LAST_LOSS_CACHE_TTL_SECONDS:
+            return cached[1]
     query = select(func.max(TraderOrder.updated_at)).where(
         TraderOrder.trader_id == trader_id,
         TraderOrder.status.in_(tuple(REALIZED_LOSS_ORDER_STATUSES)),
@@ -9483,7 +9543,11 @@ async def get_last_resolved_loss_at(
     if since is not None:
         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
         query = query.where(TraderOrder.updated_at >= since_utc)
-    return (await session.execute(query)).scalar_one_or_none()
+    result = (await session.execute(query)).scalar_one_or_none()
+    if since is None:
+        cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
+        _last_loss_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
