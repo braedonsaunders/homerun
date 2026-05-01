@@ -1668,25 +1668,186 @@ def _code_evolution_score(
 
 
 def _summarize_unified_for_prompt(result: dict) -> dict:
-    """Compact summary of a unified backtest result for the LLM prompt.
+    """Rich summary of a unified backtest result for the LLM prompt.
 
-    Commit 3 enriches this with Cox C-index, ensemble band, regime
-    breakdown, etc.; here we just keep the prompt readable by stripping
-    the noisy nested arrays.
+    The LLM gets enough institutional-grade signal to write changes that
+    target what's actually breaking — fill quality, regime weakness,
+    overfit risk — not just opportunity count.  Surfaces:
+
+    - Headline metrics + drawdown + drawdown duration
+    - Cox PH C-index and top-3 hazard ratios (covariates moving fill prob)
+    - Ensemble p10/p50/p90 spread across the sample fills
+    - Deflated Sharpe band (observed_sharpe, sr_zero, dsr)
+    - Regime decomposition outliers (best/worst regime by Sharpe)
+    - Triangulation deltas (counterfactual vs realized fill counts)
+    - Walk-forward summary, when commit 4 has populated it on the result
+
+    Plain ints/floats only — JSON-encoded into the system prompt so
+    the LLM can pattern-match on the numbers.
     """
     if not isinstance(result, dict):
         return {}
     execution = result.get("execution") or {}
-    sharpe = execution.get("sharpe") or {}
-    return {
+    sharpe_obj = execution.get("sharpe") or {}
+    sortino_obj = execution.get("sortino") or {}
+    hit_rate_obj = execution.get("hit_rate") or {}
+
+    out: dict[str, Any] = {
         "success": execution.get("success"),
         "trade_count": execution.get("trade_count"),
+        "total_fills": execution.get("total_fills"),
+        "rejected_orders": execution.get("rejected_orders"),
+        "cancelled_orders": execution.get("cancelled_orders"),
         "total_return_pct": execution.get("total_return_pct"),
-        "sharpe": sharpe.get("value") if isinstance(sharpe, dict) else sharpe,
+        "annualized_return_pct": execution.get("annualized_return_pct"),
+        "sharpe": _ci_dict(sharpe_obj),
+        "sortino": _ci_dict(sortino_obj),
+        "hit_rate": _ci_dict(hit_rate_obj),
         "max_drawdown_pct": execution.get("max_drawdown_pct"),
+        "drawdown_duration_seconds": execution.get("drawdown_duration_seconds"),
+        "fees_paid_usd": execution.get("fees_paid_usd"),
         "validation_errors": execution.get("validation_errors"),
         "runtime_error": execution.get("runtime_error"),
     }
+
+    # --- Cox PH fill model
+    fill_model = result.get("fill_model") or {}
+    if fill_model.get("loaded"):
+        coefficients = fill_model.get("coefficients") or {}
+        # Hazard ratios = exp(beta).  Surface the top-3 by |beta|.
+        try:
+            from math import exp
+            ranked = sorted(
+                ((str(name), float(beta)) for name, beta in coefficients.items()),
+                key=lambda kv: abs(kv[1]),
+                reverse=True,
+            )[:3]
+            top_hazards = [
+                {"covariate": name, "beta": round(beta, 4), "hazard_ratio": round(exp(beta), 4)}
+                for name, beta in ranked
+            ]
+        except Exception:
+            top_hazards = []
+        out["fill_model"] = {
+            "family": fill_model.get("family"),
+            "concordance_index": fill_model.get("concordance_index"),
+            "n_events": fill_model.get("n_events"),
+            "top_hazards": top_hazards,
+        }
+    else:
+        out["fill_model"] = {"loaded": False}
+
+    # --- Deflated Sharpe band
+    deflated = result.get("deflated_sharpe") or {}
+    if deflated:
+        out["deflated_sharpe"] = {
+            "observed_sharpe": deflated.get("observed_sharpe"),
+            "sr_zero": deflated.get("sr_zero"),
+            "probabilistic_sharpe": deflated.get("probabilistic_sharpe"),
+            "deflated_sharpe": deflated.get("deflated_sharpe"),
+            "n_trials": deflated.get("n_trials"),
+        }
+
+    # --- Ensemble fill-probability band, aggregated to p10/p50/p90 across sample fills
+    ensemble = result.get("ensemble_band") or []
+    if isinstance(ensemble, list) and ensemble:
+        def _percentile(values: list[float], p: float) -> float | None:
+            if not values:
+                return None
+            xs = sorted(values)
+            k = max(0, min(len(xs) - 1, int(round((len(xs) - 1) * p))))
+            return round(float(xs[k]), 4)
+        pess = [float(e.get("pessimistic")) for e in ensemble if e.get("pessimistic") is not None]
+        real = [float(e.get("realistic")) for e in ensemble if e.get("realistic") is not None]
+        opt = [float(e.get("optimistic")) for e in ensemble if e.get("optimistic") is not None]
+        out["ensemble_fill_prob"] = {
+            "n_fills": len(ensemble),
+            "pessimistic_p50": _percentile(pess, 0.5),
+            "realistic_p10": _percentile(real, 0.1),
+            "realistic_p50": _percentile(real, 0.5),
+            "realistic_p90": _percentile(real, 0.9),
+            "optimistic_p50": _percentile(opt, 0.5),
+            "spread_p50": (
+                round(_percentile(opt, 0.5) - _percentile(pess, 0.5), 4)
+                if (pess and opt) else None
+            ),
+        }
+
+    # --- Regime decomposition outliers (best vs worst regime by Sharpe)
+    regime = result.get("regime_breakdown") or {}
+    regimes = regime.get("regimes") if isinstance(regime, dict) else None
+    if isinstance(regimes, list) and regimes:
+        scored = [r for r in regimes if isinstance(r, dict) and isinstance(r.get("sharpe"), (int, float))]
+        if scored:
+            best = max(scored, key=lambda r: r.get("sharpe") or float("-inf"))
+            worst = min(scored, key=lambda r: r.get("sharpe") or float("inf"))
+            out["regime_outliers"] = {
+                "best": {
+                    "regime": best.get("regime"),
+                    "sharpe": best.get("sharpe"),
+                    "trade_count": best.get("trade_count"),
+                    "total_return_pct": best.get("total_return_pct"),
+                },
+                "worst": {
+                    "regime": worst.get("regime"),
+                    "sharpe": worst.get("sharpe"),
+                    "trade_count": worst.get("trade_count"),
+                    "total_return_pct": worst.get("total_return_pct"),
+                },
+            }
+
+    # --- Triangulation deltas (counterfactual vs actual fills)
+    counterfactuals = result.get("counterfactuals") or []
+    if isinstance(counterfactuals, list) and counterfactuals:
+        deltas = []
+        for cf in counterfactuals:
+            if not isinstance(cf, dict):
+                continue
+            actual = cf.get("actual_fill_probability")
+            simulated = cf.get("simulated_fill_probability")
+            if isinstance(actual, (int, float)) and isinstance(simulated, (int, float)):
+                deltas.append(float(simulated) - float(actual))
+        if deltas:
+            mean_delta = sum(deltas) / len(deltas)
+            out["triangulation"] = {
+                "n_samples": len(deltas),
+                "mean_delta_sim_minus_actual": round(mean_delta, 4),
+                "max_abs_delta": round(max(abs(d) for d in deltas), 4),
+            }
+
+    # --- Latency (only meaningful when measured)
+    latency = result.get("latency") or {}
+    if isinstance(latency, dict) and latency.get("sample_count"):
+        out["latency"] = {
+            "p50_ms": latency.get("p50_ms"),
+            "p95_ms": latency.get("p95_ms"),
+            "sample_count": latency.get("sample_count"),
+        }
+
+    # --- Walk-forward summary (populated by commit 4's per-iteration gate)
+    wf = result.get("walk_forward") if isinstance(result, dict) else None
+    if isinstance(wf, dict) and wf:
+        out["walk_forward"] = {
+            "n_folds": wf.get("n_windows_run"),
+            "stable_window_pct": wf.get("stable_window_pct"),
+            "fold_returns_pct": wf.get("fold_returns_pct"),
+            "mean_return_pct": wf.get("mean_return_pct"),
+            "min_return_pct": wf.get("min_return_pct"),
+            "max_return_pct": wf.get("max_return_pct"),
+        }
+
+    return out
+
+
+def _ci_dict(metric: Any) -> dict | float | None:
+    """Compact a CI metric ``{value, ci_lower, ci_upper}`` for the prompt."""
+    if isinstance(metric, dict):
+        return {
+            "value": metric.get("value"),
+            "ci_lower": metric.get("ci_lower"),
+            "ci_upper": metric.get("ci_upper"),
+        }
+    return metric
 
 
 # ---------------------------------------------------------------------------
@@ -1928,18 +2089,54 @@ def _build_code_evolution_system_prompt(
 
     return f"""\
 You are the Homerun Code Evolution agent — you improve prediction market trading
-strategy source code through iterative modifications and backtesting.
+strategy source code through iterative modifications and unified backtesting.
 
 ## Current State
 - **Strategy**: {strategy_slug} (class: {class_name})
 - **Iteration**: {iteration_num}
-- **Baseline score**: {baseline_score:.4f}
+- **Best score so far**: {baseline_score:.4f}
 - **Trader summary**: {trader_json}
-- **Last backtest**: {backtest_json}
 
-## Scoring Formula
-Score = opportunity_count * 0.3 + avg_roi * 0.3 + quality_pass_rate * 0.25 + diversity * 0.15
-Higher is better. Your goal is to maximize this score via code changes.
+## Last unified backtest (read carefully — this is your full evidence)
+```json
+{backtest_json}
+```
+
+The fields above include:
+- `sharpe`, `sortino`, `hit_rate` — bootstrap CIs `{{value, ci_lower, ci_upper}}`.
+  When the lower bound is below 0, the metric is not statistically significant
+  with the current sample.
+- `deflated_sharpe` — Lopez de Prado's overfit-aware probability the true
+  Sharpe exceeds 0 given the search space.  Below ~0.95 means we cannot
+  distinguish the strategy from luck given how many knobs were tuned.
+- `fill_model.concordance_index` — Cox PH C-index for the active fill
+  model.  Above 0.55 is informative; below 0.55 means the simulator is
+  effectively guessing.  `top_hazards` lists the 3 covariates with the
+  largest |beta|; `hazard_ratio > 1` means that covariate makes a fill
+  MORE likely (a queue-position improvement, for example).
+- `ensemble_fill_prob` — pessimistic / realistic / optimistic fill
+  probabilities aggregated across the sample fills.  A wide
+  `spread_p50` means the answer is highly latency-sensitive — your
+  edge can evaporate in slow-network regimes.
+- `regime_outliers` — best and worst regime by Sharpe.  If the worst
+  regime has heavy trade count, you have a regime-specific weakness
+  worth fixing in detect/evaluate.
+- `triangulation.mean_delta_sim_minus_actual` — positive means the
+  simulator OVER-estimates fills vs reality (be more conservative);
+  negative means UNDER-estimates (you may be leaving edge on the table).
+- `walk_forward` (when present) — per-fold return %.  An iteration
+  that pumps in-sample Sharpe but flunks `stable_window_pct` is overfit.
+
+## Scoring formula (institutional, optimize this)
+score = sharpe_value
+      * deflated_sharpe_probability    # 0..1, overfit penalty
+      * walk_forward_stability_fraction # 0..1, fraction of WF folds >= 0
+      - max(0, max_drawdown_pct - 15) * 0.05
+
+Iterations that pump in-sample Sharpe but fail walk-forward stability
+or fail the deflated-Sharpe overfit test get crushed.  Maximize this
+score by writing code changes that move the underlying drivers, not
+just the headline number.
 
 ## Current Strategy Source Code
 ```python
@@ -1949,13 +2146,16 @@ Higher is better. Your goal is to maximize this score via code changes.
 ## Instructions
 1. Use `get_strategy_template` to understand the BaseStrategy API contract.
 2. Use `get_iteration_history` to see what changes have been tried before.
-3. Use `get_backtest_results` to understand current detection performance.
+3. Use `get_backtest_results` for the previous unified result if you need it.
 4. Use `get_cortex_memories` for strategy-related lessons.
-5. Analyze the strategy code and identify specific improvements:
+5. Reason from the full backtest above — diagnose WHY the score is what
+   it is (regime weakness? wide ensemble spread? bad C-index? overfit per
+   deflated Sharpe? walk-forward instability?), then write code that
+   targets the diagnosed weakness:
    - Better detection logic in detect() / detect_async()
    - Improved filtering or scoring in evaluate()
    - Smarter exit conditions in should_exit()
-   - Better use of market data, prices, or event information
+   - Tighter entry/exit prices when the simulator is over-optimistic
 6. Use `propose_code_change` to submit the COMPLETE modified source code.
 
 ## Rules
