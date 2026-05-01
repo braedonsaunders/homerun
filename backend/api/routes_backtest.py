@@ -42,6 +42,11 @@ class UnifiedBacktestRequest(BaseModel):
     seed: int | None = None
     counterfactual_sample_size: int = Field(default=8, ge=0, le=64)
     ensemble_sample_size: int = Field(default=8, ge=0, le=64)
+    # Phase 12f/g operator overrides — default None means "use the
+    # built-in defaults" (impact disabled, no maker rebate).
+    impact_strength_bps: float | None = Field(default=None, ge=0.0, le=500.0)
+    maker_rebate_bps: float | None = Field(default=None, ge=0.0, le=20.0)
+    maker_rebate_max_spread_bps: float | None = Field(default=None, ge=0.0, le=500.0)
 
 
 @router.post("/run")
@@ -70,6 +75,9 @@ async def run_backtest(req: UnifiedBacktestRequest):
             seed=req.seed,
             counterfactual_sample_size=req.counterfactual_sample_size,
             ensemble_sample_size=req.ensemble_sample_size,
+            impact_strength_bps=req.impact_strength_bps,
+            maker_rebate_bps=req.maker_rebate_bps,
+            maker_rebate_max_spread_bps=req.maker_rebate_max_spread_bps,
         )
     except Exception as exc:
         logger.exception("Unified backtest failed")

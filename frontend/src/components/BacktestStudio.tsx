@@ -584,6 +584,8 @@ export default function BacktestStudio({
   const [submitP50, setSubmitP50] = useState<string>('')
   const [submitP95, setSubmitP95] = useState<string>('')
   const [seed, setSeed] = useState<string>('')
+  const [impactBps, setImpactBps] = useState<string>('')
+  const [makerRebateBps, setMakerRebateBps] = useState<string>('')
 
   // Active run.
   const [activeRun, setActiveRun] = useState<UnifiedBacktestResult | null>(null)
@@ -696,6 +698,8 @@ export default function BacktestStudio({
       seed: seed ? parseInt(seed, 10) : undefined,
       counterfactual_sample_size: 8,
       ensemble_sample_size: 8,
+      impact_strength_bps: impactBps ? parseFloat(impactBps) : undefined,
+      maker_rebate_bps: makerRebateBps ? parseFloat(makerRebateBps) : undefined,
     })
   }
 
@@ -862,6 +866,28 @@ export default function BacktestStudio({
                   value={submitP95}
                   onChange={(e) => setSubmitP95(e.target.value)}
                   placeholder="measured"
+                  className="h-7 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
+                  Impact (bps)
+                </Label>
+                <Input
+                  value={impactBps}
+                  onChange={(e) => setImpactBps(e.target.value)}
+                  placeholder="0 (off)"
+                  className="h-7 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Polymarket maker LP-rewards approximation. ~1-3 bps realistic on top crypto markets; >5 bps optimistic. Only paid on inside-band fills.">
+                  Maker rebate (bps)
+                </Label>
+                <Input
+                  value={makerRebateBps}
+                  onChange={(e) => setMakerRebateBps(e.target.value)}
+                  placeholder="0 (off)"
                   className="h-7 text-xs"
                 />
               </div>

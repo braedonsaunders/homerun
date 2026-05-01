@@ -562,6 +562,9 @@ async def run_unified_backtest(
     seed: int | None = None,
     counterfactual_sample_size: int = 8,
     ensemble_sample_size: int = 8,
+    impact_strength_bps: float | None = None,
+    maker_rebate_bps: float | None = None,
+    maker_rebate_max_spread_bps: float | None = None,
 ) -> dict[str, Any]:
     """Run the full backtest pipeline + augment with fill-simulator data.
 
@@ -574,20 +577,32 @@ async def run_unified_backtest(
     started_perf = time.perf_counter()
 
     # Core engine.
-    exec_result: ExecutionBacktestResult = await run_execution_backtest(
-        source_code=source_code,
-        slug=slug,
-        config=config,
-        token_ids=token_ids,
-        start=start,
-        end=end,
-        initial_capital_usd=initial_capital_usd,
-        submit_p50_ms=submit_p50_ms,
-        submit_p95_ms=submit_p95_ms,
-        cancel_p50_ms=cancel_p50_ms,
-        cancel_p95_ms=cancel_p95_ms,
-        seed=seed,
-    )
+    exec_kwargs: dict[str, Any] = {
+        "source_code": source_code,
+        "slug": slug,
+        "config": config,
+        "token_ids": token_ids,
+        "start": start,
+        "end": end,
+        "initial_capital_usd": initial_capital_usd,
+    }
+    if submit_p50_ms is not None:
+        exec_kwargs["submit_latency_p50_ms"] = float(submit_p50_ms)
+    if submit_p95_ms is not None:
+        exec_kwargs["submit_latency_p95_ms"] = float(submit_p95_ms)
+    if cancel_p50_ms is not None:
+        exec_kwargs["cancel_latency_p50_ms"] = float(cancel_p50_ms)
+    if cancel_p95_ms is not None:
+        exec_kwargs["cancel_latency_p95_ms"] = float(cancel_p95_ms)
+    if seed is not None:
+        exec_kwargs["seed"] = int(seed)
+    if impact_strength_bps is not None:
+        exec_kwargs["impact_strength_bps"] = float(impact_strength_bps)
+    if maker_rebate_bps is not None:
+        exec_kwargs["maker_rebate_bps"] = float(maker_rebate_bps)
+    if maker_rebate_max_spread_bps is not None:
+        exec_kwargs["maker_rebate_max_spread_bps"] = float(maker_rebate_max_spread_bps)
+    exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     exec_dict = exec_result.to_dict()
 
     # Snapshot the fill simulator state.  Run in parallel — they

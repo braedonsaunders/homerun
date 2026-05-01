@@ -227,6 +227,10 @@ export interface RunBacktestRequest {
   seed?: number
   counterfactual_sample_size?: number
   ensemble_sample_size?: number
+  // Phase 12f/g operator overrides
+  impact_strength_bps?: number
+  maker_rebate_bps?: number
+  maker_rebate_max_spread_bps?: number
 }
 
 export async function runUnifiedBacktest(req: RunBacktestRequest): Promise<UnifiedBacktestResult> {

@@ -1648,6 +1648,9 @@ async def run_execution_backtest(
     fills_sample_size: int = 200,
     equity_sample_size: int = 500,
     bootstrap_resamples: int = 2000,
+    impact_strength_bps: float = 0.0,
+    maker_rebate_bps: float = 0.0,
+    maker_rebate_max_spread_bps: float = 50.0,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
@@ -1666,7 +1669,7 @@ async def run_execution_backtest(
         PortfolioConfig,
         TradeIntent,
     )
-    from services.backtest.matching_engine import FeeModel
+    from services.backtest.matching_engine import FeeModel, ImpactModel
     from sqlalchemy import select, func as sa_func
     from models.database import (
         AsyncSessionLocal,
@@ -1833,7 +1836,11 @@ async def run_execution_backtest(
             ),
             seed=seed,
         ),
-        fees=FeeModel(),
+        fees=FeeModel(
+            maker_rebate_bps=float(maker_rebate_bps or 0.0),
+            maker_rebate_max_spread_bps=float(maker_rebate_max_spread_bps or 50.0),
+        ),
+        impact=ImpactModel(strength_bps=float(impact_strength_bps or 0.0)),
         seed=seed,
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
