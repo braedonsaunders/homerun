@@ -62,6 +62,11 @@ class TrainAdapterRequest(BaseModel):
     training_window_days: int = Field(default=90, ge=7, le=365)
     holdout_days: int = Field(default=7, ge=1, le=90)
     params: dict[str, Any] | None = None
+    # When set, the adapter trains only on rows captured during this
+    # recording session (session.target_token_ids × started_at..ended_at).
+    # Overrides training_window_days when provided.  Surfaces in the
+    # adapter manifest so the UI can later show "trained from session X".
+    recording_session_id: str | None = None
 
 
 class PruneDataRequest(BaseModel):

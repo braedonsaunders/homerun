@@ -920,21 +920,40 @@ class MachineLearningSDK:
             },
         }
 
-    async def _load_training_rows(self, *, task_key: str, days_lookback: int, assets: list[str], timeframes: list[str]) -> list[dict[str, Any]]:
-        cutoff = utcnow() - timedelta(days=max(1, int(days_lookback)))
+    async def _load_training_rows(
+        self,
+        *,
+        task_key: str,
+        days_lookback: int,
+        assets: list[str],
+        timeframes: list[str],
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load training rows.
+
+        ``start_at`` / ``end_at`` override the rolling ``days_lookback``
+        window when provided — used by recording-session-scoped
+        training so the adapter sees exactly the captured slice.
+        """
+        cutoff = (
+            start_at if start_at is not None
+            else utcnow() - timedelta(days=max(1, int(days_lookback)))
+        )
         async with AsyncSessionLocal() as session:
-            rows = (
-                await session.execute(
-                    select(MLTrainingSnapshot)
-                    .where(
-                        MLTrainingSnapshot.task_key == task_key,
-                        MLTrainingSnapshot.asset.in_(assets),
-                        MLTrainingSnapshot.timeframe.in_(timeframes),
-                        MLTrainingSnapshot.timestamp >= cutoff,
-                    )
-                    .order_by(MLTrainingSnapshot.timestamp.asc())
+            stmt = (
+                select(MLTrainingSnapshot)
+                .where(
+                    MLTrainingSnapshot.task_key == task_key,
+                    MLTrainingSnapshot.asset.in_(assets),
+                    MLTrainingSnapshot.timeframe.in_(timeframes),
+                    MLTrainingSnapshot.timestamp >= cutoff,
                 )
-            ).scalars().all()
+                .order_by(MLTrainingSnapshot.timestamp.asc())
+            )
+            if end_at is not None:
+                stmt = stmt.where(MLTrainingSnapshot.timestamp <= end_at)
+            rows = (await session.execute(stmt)).scalars().all()
         return [
             {
                 "task_key": row.task_key,
@@ -1068,11 +1087,48 @@ class MachineLearningSDK:
         feature_names = [str(item) for item in _ensure_json_list(manifest.get("feature_names")) if str(item).strip()]
         assets = task.normalize_assets(_ensure_json_list(manifest.get("assets")))
         timeframes = task.normalize_timeframes(_ensure_json_list(manifest.get("timeframes")))
+
+        # Optional recording-session scoping.  When set, the adapter
+        # trains on exactly the (asset × timeframe × time-window) slice
+        # the session captured.  The session metadata is preserved in
+        # the adapter manifest so downstream tooling can show
+        # "trained from session X" and re-derive the slice on demand.
+        session_scope: dict[str, Any] | None = None
+        recording_session_id = str(payload.get("recording_session_id") or "").strip()
+        session_start: datetime | None = None
+        session_end: datetime | None = None
+        if recording_session_id:
+            try:
+                from services.recording_session_service import session_training_scope
+                session_scope = await session_training_scope(recording_session_id)
+            except Exception:
+                session_scope = None
+            if session_scope is None:
+                await self._update_job(
+                    job_id,
+                    status="failed",
+                    error=f"Recording session '{recording_session_id}' not found or has no captured rows",
+                    message="Session scope unavailable",
+                )
+                return
+            session_start = session_scope.get("start")
+            session_end = session_scope.get("end")
+            await self._update_job(
+                job_id,
+                status="running",
+                message=(
+                    f"Loading session '{session_scope.get('session_name')}' "
+                    f"({session_scope.get('rows_captured', 0)} rows captured)"
+                ),
+            )
+
         training_rows = await self._load_training_rows(
             task_key=task.task_key,
             days_lookback=days_lookback,
             assets=assets,
             timeframes=timeframes,
+            start_at=session_start,
+            end_at=session_end,
         )
         x_all, y_all, _, meta_rows = task.build_training_dataset(training_rows, feature_names=feature_names)
         if len(y_all) < 50:
@@ -1176,6 +1232,10 @@ class MachineLearningSDK:
                 "days_lookback": days_lookback,
                 "holdout_days": holdout_days,
                 "sample_count": int(len(y_all)),
+                "recording_session_id": (session_scope or {}).get("session_id"),
+                "recording_session_name": (session_scope or {}).get("session_name"),
+                "session_start": session_start.isoformat() if session_start else None,
+                "session_end": session_end.isoformat() if session_end else None,
             },
             created_at=utcnow(),
             updated_at=utcnow(),

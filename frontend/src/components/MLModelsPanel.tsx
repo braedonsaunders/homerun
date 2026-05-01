@@ -38,6 +38,10 @@ import {
   type MLJob,
   type MLModel,
 } from '../services/apiMachineLearning'
+import {
+  listRecordingSessions,
+  type RecordingSession,
+} from '../services/apiDataset'
 
 // Data tab removed — recording controls + dataset browsing live in
 // Research → Data Lab.  ML training can pull from the same Data Lab
@@ -242,11 +246,25 @@ function AdaptersTab() {
   const queryClient = useQueryClient()
   const { data: models = [] } = useQuery<MLModel[]>({ queryKey: ['ml-models'], queryFn: () => getMLModels(), refetchInterval: 10000 })
   const { data: adapters = [] } = useQuery<MLAdapter[]>({ queryKey: ['ml-adapters'], queryFn: () => getMLAdapters(), refetchInterval: 10000 })
+  // Recording sessions usable as training sources — anything that's
+  // captured rows (running, completed, paused).  Pending/scheduled
+  // have no rows yet so they're useless for training.
+  const { data: trainableSessions = [] } = useQuery<RecordingSession[]>({
+    queryKey: ['ml-trainable-sessions'],
+    queryFn: () => listRecordingSessions(['running', 'completed', 'paused'], 100),
+    refetchInterval: 30_000,
+  })
   const [baseModelId, setBaseModelId] = useState('')
   const [adapterKind, setAdapterKind] = useState('platt_scaler')
   const [name, setName] = useState('')
   const [trainingWindowDays, setTrainingWindowDays] = useState('90')
   const [holdoutDays, setHoldoutDays] = useState('7')
+  const [trainingSourceSessionId, setTrainingSourceSessionId] = useState<string>('')
+
+  const selectedSession = useMemo(
+    () => trainableSessions.find((s) => s.id === trainingSourceSessionId) ?? null,
+    [trainableSessions, trainingSourceSessionId],
+  )
 
   useEffect(() => {
     if (!baseModelId && models[0]?.id) setBaseModelId(models[0].id)
@@ -276,7 +294,107 @@ function AdaptersTab() {
     <div className="space-y-5 p-4">
       <ErrorBanner message={getErrorMessage(trainMutation.error ?? archiveMutation.error ?? deleteMutation.error ?? evalMutation.error)} />
       <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-3">
-        <div className="text-sm font-medium">Train Local Adapter</div>
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-medium">Train Local Adapter</div>
+        </div>
+
+        {/* Training source — Global vs Recording session */}
+        <div className="space-y-1">
+          <Label className="text-xs">Training source</Label>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => setTrainingSourceSessionId('')}
+              className={cn(
+                'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                trainingSourceSessionId === ''
+                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                  : 'border-border/40 text-muted-foreground hover:text-foreground',
+              )}
+            >
+              Global rolling window
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (trainableSessions.length > 0) {
+                  setTrainingSourceSessionId(trainableSessions[0].id)
+                }
+              }}
+              disabled={trainableSessions.length === 0}
+              className={cn(
+                'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                trainingSourceSessionId !== ''
+                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                  : 'border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-50',
+              )}
+            >
+              Recording session ({trainableSessions.length})
+            </button>
+          </div>
+          {trainingSourceSessionId !== '' ? (
+            <div className="mt-1 space-y-1">
+              <select
+                value={trainingSourceSessionId}
+                onChange={(e) => setTrainingSourceSessionId(e.target.value)}
+                className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs"
+              >
+                {trainableSessions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} — {s.status} · {s.rows_captured.toLocaleString()} rows
+                  </option>
+                ))}
+              </select>
+              {selectedSession ? (
+                <div className="rounded-md border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-[11px] text-violet-100">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-sm bg-violet-500/20 px-1.5 py-0 text-[10px] uppercase tracking-wide">
+                      {selectedSession.status}
+                    </span>
+                    <span className="font-medium">{selectedSession.name}</span>
+                  </div>
+                  <div className="mt-1 grid grid-cols-2 gap-2 text-[10px] text-muted-foreground md:grid-cols-4">
+                    <div>
+                      <span className="block text-muted-foreground/70">Targets</span>
+                      <span className="font-mono">
+                        {selectedSession.target_kind} · {selectedSession.target_token_ids.length} token
+                        {selectedSession.target_token_ids.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="block text-muted-foreground/70">Capture</span>
+                      <span className="font-mono">{selectedSession.capture_types.join(', ')}</span>
+                    </div>
+                    <div>
+                      <span className="block text-muted-foreground/70">Rows captured</span>
+                      <span className="font-mono">
+                        {selectedSession.rows_captured.toLocaleString()}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="block text-muted-foreground/70">Window</span>
+                      <span className="font-mono">
+                        {selectedSession.started_at
+                          ? new Date(selectedSession.started_at).toLocaleString()
+                          : '—'}
+                        {selectedSession.ended_at
+                          ? ` → ${new Date(selectedSession.ended_at).toLocaleString()}`
+                          : selectedSession.status === 'running'
+                          ? ' → now'
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-1 text-[10px] text-violet-200/70">
+                    Training will use only rows captured during this session.  The session id is
+                    preserved on the resulting adapter for attribution.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
             <Label className="text-xs">Base Model</Label>
@@ -296,8 +414,26 @@ function AdaptersTab() {
             <Input className="h-8 text-xs" value={name} onChange={(event) => setName(event.target.value)} placeholder="adapter_v1" />
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Training Window (days)</Label>
-            <Input className="h-8 text-xs" type="number" min={7} max={365} value={trainingWindowDays} onChange={(event) => setTrainingWindowDays(event.target.value)} />
+            <Label
+              className={cn(
+                'text-xs',
+                trainingSourceSessionId !== '' && 'text-muted-foreground/50',
+              )}
+            >
+              Training Window (days)
+              {trainingSourceSessionId !== '' ? (
+                <span className="ml-1 text-[10px] italic">— overridden by session window</span>
+              ) : null}
+            </Label>
+            <Input
+              className="h-8 text-xs"
+              type="number"
+              min={7}
+              max={365}
+              value={trainingWindowDays}
+              onChange={(event) => setTrainingWindowDays(event.target.value)}
+              disabled={trainingSourceSessionId !== ''}
+            />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Holdout (days)</Label>
@@ -315,10 +451,13 @@ function AdaptersTab() {
             name: name.trim() || undefined,
             training_window_days: Number(trainingWindowDays),
             holdout_days: Number(holdoutDays),
+            recording_session_id: trainingSourceSessionId || undefined,
           })}
         >
           {trainMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Brain className="mr-1 h-3 w-3" />}
-          Train Adapter
+          {trainingSourceSessionId !== '' && selectedSession
+            ? `Train on session "${selectedSession.name}"`
+            : 'Train Adapter'}
         </Button>
       </div>
 

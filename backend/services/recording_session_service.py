@@ -366,6 +366,77 @@ async def _resolve_target_tokens(*, kind: str, values: list[str]) -> list[str]:
 # ── Backtester integration ─────────────────────────────────────────────
 
 
+async def get_protected_token_windows() -> list[dict[str, Any]]:
+    """Return (token_ids, started_at, ended_at) tuples for every
+    session whose captured rows must NOT be auto-pruned.
+
+    Protection contract: any maintenance job that bulk-deletes from
+    ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent`` MUST exclude
+    rows whose ``(token_id, observed_at)`` falls inside any returned
+    window.  Sessions explicitly stand in for "the operator (or a
+    scheduled job) wanted these specific rows kept" — losing them to
+    a default retention policy would silently corrupt every
+    backtest, ML training run, and replay scoped to that session.
+
+    Cancelled / failed sessions are NOT protected (the rows weren't
+    a deliberate capture in the end).  Pending / scheduled sessions
+    have no captured rows yet so there's nothing to protect — they
+    return an empty token list and the caller can skip them.
+
+    Cheap query — single SELECT with a status filter.  Cache for
+    a few minutes if you call it on a hot loop.
+    """
+    PROTECTED_STATUSES = ("running", "paused", "completed")
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(
+            select(RecordingSession).where(
+                RecordingSession.status.in_(PROTECTED_STATUSES)
+            )
+        )).scalars().all()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        tokens = list(r.target_token_ids_json or [])
+        if not tokens or r.started_at is None:
+            continue
+        out.append({
+            "session_id": r.id,
+            "session_name": r.name,
+            "token_ids": tokens,
+            "started_at": r.started_at,
+            "ended_at": r.ended_at,  # may be None for running sessions — protect to "now"
+            "status": r.status,
+        })
+    return out
+
+
+async def session_training_scope(session_id: str) -> dict[str, Any] | None:
+    """Translate a session into ML adapter training filters.
+
+    Adapters consume ``training_rows`` filtered by
+    ``(token_ids, started_at..ended_at)``; the SDK's
+    ``_load_training_rows`` accepts these as additional filters when
+    a ``recording_session_id`` is set in the training payload.
+
+    Returns None if the session is missing, has no captured rows, or
+    hasn't started yet.
+    """
+    row = await get_session(session_id)
+    if row is None or row.started_at is None:
+        return None
+    tokens = list(row.target_token_ids_json or [])
+    if not tokens:
+        return None
+    end = row.ended_at or _utcnow()
+    return {
+        "session_id": row.id,
+        "session_name": row.name,
+        "token_ids": tokens,
+        "start": row.started_at,
+        "end": end,
+        "rows_captured": int(row.rows_captured or 0),
+    }
+
+
 async def session_backtest_scope(session_id: str) -> dict[str, Any] | None:
     """Translate a session into ``run_unified_backtest`` kwargs.
 

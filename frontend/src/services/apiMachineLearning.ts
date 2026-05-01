@@ -180,6 +180,11 @@ export interface MLTrainAdapterRequest {
   training_window_days?: number
   holdout_days?: number
   params?: Record<string, unknown>
+  // When set, the trainer scopes its rows to the session's
+  // (target_token_ids × started_at..ended_at) slice instead of
+  // the rolling training_window_days lookback.  Preserved in the
+  // resulting adapter's training_source manifest.
+  recording_session_id?: string
 }
 
 export interface MLUpdateDeploymentRequest {
