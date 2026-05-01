@@ -37,6 +37,7 @@ inputs (including latency-model seed) it produces identical fills.
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -228,6 +229,12 @@ class FeeModel:
                 )
         return bps_fee + gas - rebate_credit
 
+    # ------------------------------------------------------------------
+    # Adversarial book impact — see ``ImpactModel`` below.  The
+    # FeeModel doesn't apply impact directly, but we hold a reference
+    # so the matching engine can pull both from a single config point.
+    # ------------------------------------------------------------------
+
     def resolution_fee(self, *, gross_winnings_usd: float) -> float:
         """Fee charged at settlement on a position's gross winnings.
 
@@ -240,6 +247,68 @@ class FeeModel:
             return 0.0
         rate = max(0.0, float(self.resolution_fee_rate))
         return float(gross_winnings_usd) * rate
+
+
+# ── Adversarial book impact model ──────────────────────────────────────
+#
+# The standard backtest assumption is that your order does NOT move the
+# book — you fill at the displayed price and other participants don't
+# respond.  For tiny orders against deep books that's a reasonable
+# approximation.  For institutional-size orders or thin books, it's
+# significantly optimistic: real makers lift their quotes when they see
+# an aggressive taker walking the book; real takers fade.
+#
+# This model adds a square-root-impact penalty to taker fills.  The
+# penalty represents how much the book would have shifted AWAY from
+# the taker over the course of consuming visible depth.  Calibration:
+#
+#   impact_bps = strength * sqrt(your_notional / total_visible_notional)
+#
+# where ``strength`` is a per-venue tunable.  Empirical literature on
+# equities pins ``strength`` around 0.5-1.0; on prediction markets it
+# is likely smaller (binary contracts have natural anchors at 0/1) —
+# we default to 0.0 (off) so existing backtests are unchanged, and
+# expose ``impact_bps`` as an additive override for the operator.
+#
+# The model is consulted by the matching engine on each taker fill;
+# it adjusts the effective fill price by ``impact_bps`` BPS in the
+# adverse direction (BUY pays more, SELL receives less).
+
+
+@dataclass
+class ImpactModel:
+    """Square-root book-impact response function.
+
+    Formula:  ``adverse_bps = strength_bps * sqrt(your_size / book_depth)``
+
+    ``strength_bps`` is the impact (in bps of price) you'd pay if you
+    consumed exactly 100% of visible side depth.  Smaller fractions
+    scale by sqrt of the depth ratio (Almgren-Chriss).
+
+    ``strength_bps = 0`` disables impact.  Calibration starting points:
+        * 5–10 bps  — top-of-book on deep crypto markets (BTC/ETH 5m).
+        * 25–50 bps — illiquid event markets, thin books, or off-hours.
+
+    The default of 0 is intentional: existing backtests are unchanged
+    until an operator opts in by setting ``impact=ImpactModel(strength_bps=10)``
+    on BacktestConfig.
+    """
+
+    strength_bps: float = 0.0
+    cap_bps: float = 200.0  # never penalise a single fill more than 200 bps
+
+    def adverse_bps(self, *, your_size_shares: float, side_visible_depth_shares: float) -> float:
+        """Return the bps adverse adjustment (>= 0) applied to the fill
+        price.  Caller decides direction (BUY adds bps, SELL subtracts).
+        """
+        if self.strength_bps <= 0:
+            return 0.0
+        if your_size_shares <= 0 or side_visible_depth_shares <= 0:
+            return 0.0
+        ratio = max(0.0, float(your_size_shares) / float(side_visible_depth_shares))
+        # Square-root impact, capped.  Strength is already in bps.
+        bps = float(self.strength_bps) * math.sqrt(ratio)
+        return min(bps, max(0.0, float(self.cap_bps)))
 
 
 # ── Matching engine ──────────────────────────────────────────────────────
@@ -302,10 +371,12 @@ class MatchingEngine:
         venue: Optional[Venue] = None,
         latency: Optional[LatencyModel] = None,
         fees: Optional[FeeModel] = None,
+        impact: Optional[ImpactModel] = None,
     ):
         self.venue: Venue = venue or PolymarketVenue()
         self.latency: LatencyModel = latency or LatencyModel()
         self.fees: FeeModel = fees or FeeModel()
+        self.impact: ImpactModel = impact or ImpactModel()
 
         self._orders: dict[str, BacktestOrder] = {}
         self._working_by_token: dict[str, list[str]] = {}
@@ -567,6 +638,23 @@ class MatchingEngine:
         remaining = order.remaining_size
         if remaining <= 0:
             return
+        # Pre-compute total visible depth on the consumed side for the
+        # impact model.  Excludes levels worse than the limit (the
+        # taker can't actually reach those).
+        total_visible_depth = 0.0
+        for lvl_p, lvl_q in levels:
+            if lvl_q <= 0:
+                continue
+            if side_norm == "SELL" and lvl_p + 1e-12 < order.price:
+                continue
+            if side_norm == "BUY" and lvl_p - 1e-12 > order.price:
+                continue
+            total_visible_depth += lvl_q
+        impact_bps = self.impact.adverse_bps(
+            your_size_shares=order.remaining_size,
+            side_visible_depth_shares=total_visible_depth,
+        )
+        impact_factor = impact_bps / 10_000.0  # fraction of price
         for price, qty in levels:
             if remaining <= 0:
                 break
@@ -577,30 +665,41 @@ class MatchingEngine:
             if side_norm == "BUY" and price - 1e-12 > order.price:
                 break
             take = min(qty, remaining)
+            # Apply adverse-direction impact: BUY pays more, SELL gets less.
+            adjusted_price = price
+            if impact_factor > 0:
+                if side_norm == "BUY":
+                    adjusted_price = min(0.9999, price * (1.0 + impact_factor))
+                else:
+                    adjusted_price = max(0.0001, price * (1.0 - impact_factor))
             fill = Fill(
                 order_id=order.order_id,
                 token_id=order.token_id,
                 side=side_norm,
-                price=price,
+                price=adjusted_price,
                 size=take,
                 fee_usd=self.fees.fill_fee(
-                    price=price, size=take, is_maker=False,
+                    price=adjusted_price, size=take, is_maker=False,
                     mid_price=book.snapshot.mid if book.snapshot else None,
                 ),
                 occurred_at=order.venue_received_at or self._now or order.submitted_at,
                 fill_index=len(self._fills_by_order[order.order_id]),
                 venue_sequence=book.snapshot.sequence,
+                notes={"impact_bps": impact_bps} if impact_bps > 0 else {},
             )
             produced.append(fill)
             order.fills.append(fill)
             self._fills_by_order[order.order_id].append(fill)
             new_filled = order.filled_size + take
             order.avg_fill_price = (
-                (order.avg_fill_price * order.filled_size + price * take) / new_filled
+                (order.avg_fill_price * order.filled_size + adjusted_price * take) / new_filled
                 if new_filled > 0
-                else price
+                else adjusted_price
             )
             order.filled_size = new_filled
+            # Book consumption tracks displayed depth at the original
+            # ladder price — the impact model adjusts what WE pay, not
+            # what the resting maker received.
             book.consume(side_taker=side_norm, price=price, size=take)
             remaining -= take
 

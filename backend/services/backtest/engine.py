@@ -44,6 +44,7 @@ from services.backtest.matching_engine import (
     BacktestOrder,
     Fill,
     FeeModel,
+    ImpactModel,
     MatchingEngine,
     OrderState,
     make_order_id,
@@ -90,6 +91,7 @@ class BacktestConfig:
     latency: Optional[LatencyModel] = None
     fees: Optional[FeeModel] = None
     venue: Optional[Venue] = None
+    impact: Optional["ImpactModel"] = None
     final_close_at_last_mid: bool = True  # mark-to-market unclosed positions
     max_force_exit_attempts: int = 3
     seed: Optional[int] = 42
@@ -149,6 +151,7 @@ class BacktestEngine:
             venue=self.config.venue or PolymarketVenue(),
             latency=self.config.latency or LatencyModel(seed=self.config.seed),
             fees=fees,
+            impact=self.config.impact or ImpactModel(),
         )
         # Snapshot of the "current best" book per token, used by the
         # exit-decision hook to feed market_state into should_exit().
