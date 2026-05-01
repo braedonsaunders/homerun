@@ -512,6 +512,16 @@ class _FastTraderTask:
         signal_id = str(getattr(signal, "id", "") or "").strip()
         if not signal_id:
             return
+        # Mark consumed in the in-memory signal_cache BEFORE writing to
+        # DB so subsequent cache reads (which may race) correctly skip
+        # this signal.  The cache's consumed-set is per-trader and
+        # idempotent, so re-marking is harmless.
+        try:
+            from services import signal_cache as _signal_cache
+
+            _signal_cache.get_signal_cache().mark_consumed(self.trader_id, signal_id)
+        except Exception:
+            pass
         signal_status = str(outcome or "").strip().lower()
         if signal_status == "blocked":
             signal_status = "skipped"
@@ -717,24 +727,85 @@ class _FastTraderTask:
                 )
                 cursor_row = await session.get(TraderSignalCursor, trader_id)
                 cursor_runtime_sequence = safe_int(getattr(cursor_row, "last_runtime_sequence", None), None)
-            signals = await list_unconsumed_trade_signals(
-                session,
-                trader_id=trader_id,
-                sources=accepted_sources,
-                strategy_types_by_source=strategy_types_by_source,
-                cursor_runtime_sequence=cursor_runtime_sequence,
-                cursor_created_at=cursor_created_at,
-                cursor_signal_id=cursor_signal_id,
-                limit=_MAX_SIGNALS_PER_CYCLE,
-                # Fast trader never reads payload_json /
-                # strategy_context_json; deferring them turns this
-                # SELECT from a 200-row × 3KB JSON-decode-on-loop
-                # blocker into a header-only fetch.  See state.py
-                # for the full rationale.
-                defer_heavy_columns=True,
-            )
+
+            # Cache-first read: the in-memory signal_cache is hydrated
+            # by ``signal_bus`` publishing full signal payloads on the
+            # ``signal_payloads`` Redis channel.  Under steady state
+            # (publisher healthy, cache populated, trader's consumed
+            # set hydrated) this is a microsecond dict lookup vs the
+            # 1-7s DB query that previously dominated the fast tier.
+            # Falls back to DB on any miss — the cache is a fast path,
+            # not the source of truth.
+            signals: list = []
+            cache_hit = False
+            try:
+                from services import signal_cache as _signal_cache
+
+                cache = _signal_cache.get_signal_cache()
+                if cache.is_trader_hydrated(trader_id):
+                    cached_signals = cache.get_unconsumed_signals(
+                        trader_id=trader_id,
+                        sources=accepted_sources,
+                        cursor_runtime_sequence=cursor_runtime_sequence,
+                        limit=_MAX_SIGNALS_PER_CYCLE,
+                    )
+                    if cached_signals:
+                        signals = cached_signals
+                        cache_hit = True
+                        self._last_stage_timings_ms["signal_cache_hit"] = round(
+                            (time.monotonic() - stage_start) * 1000.0, 1
+                        )
+            except Exception as exc:
+                logger.debug(
+                    "signal_cache read failed; falling back to DB",
+                    trader_id=trader_id,
+                    exc_info=exc,
+                )
+
+            if not cache_hit:
+                # Cold cache, miss, or trader not yet hydrated — DB
+                # safety net.  Also serves as the periodic reconcile
+                # path that keeps the cache honest if a publish was
+                # dropped while Redis was briefly down.
+                signals = await list_unconsumed_trade_signals(
+                    session,
+                    trader_id=trader_id,
+                    sources=accepted_sources,
+                    strategy_types_by_source=strategy_types_by_source,
+                    cursor_runtime_sequence=cursor_runtime_sequence,
+                    cursor_created_at=cursor_created_at,
+                    cursor_signal_id=cursor_signal_id,
+                    limit=_MAX_SIGNALS_PER_CYCLE,
+                    # Fast trader never reads payload_json /
+                    # strategy_context_json; deferring them turns this
+                    # SELECT from a 200-row × 3KB JSON-decode-on-loop
+                    # blocker into a header-only fetch.  See state.py
+                    # for the full rationale.
+                    defer_heavy_columns=True,
+                )
+                # Hydrate the trader's consumed-id ring on first miss
+                # so subsequent cache reads return correct results.
+                # Empty hydration is fine — ``mark_consumed`` adds to
+                # the set on each consumption.
+                try:
+                    from services import signal_cache as _signal_cache
+
+                    cache = _signal_cache.get_signal_cache()
+                    if not cache.is_trader_hydrated(trader_id):
+                        # Initialize with the empty set; future
+                        # consumptions update it.  A backfill from
+                        # ``trader_signal_consumption`` could be added
+                        # here for traders with long histories, but
+                        # the cursor predicate already bounds the
+                        # working set so empty-init converges quickly.
+                        cache.hydrate_trader_consumed_ids(trader_id, [])
+                except Exception:
+                    pass
             self._last_stage_timings_ms["db_list_signals"] = round(
                 (time.monotonic() - stage_start) * 1000.0, 1
+            )
+            self._last_stage_timings_ms["signal_source"] = (
+                "cache" if cache_hit else "db"
             )
             if not signals:
                 if is_db_pressure_active():

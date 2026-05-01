@@ -1082,6 +1082,11 @@ async def _record_signal_emission(
 # See ``services/wallet_state_bus.py`` for the analogous pattern.
 SIGNAL_EMISSION_CHANNEL = "trade_signals:emission"
 SIGNAL_BATCH_CHANNEL = "trade_signals:batch"
+# Channel for full signal payloads (vs the lightweight notifications
+# above).  Subscribed by ``services/signal_cache.py`` in the trading
+# plane to populate an in-memory cache, eliminating the fast trader's
+# per-cycle ``list_unconsumed_trade_signals`` DB query.
+SIGNAL_PAYLOADS_CHANNEL = "signal_payloads"
 
 
 async def _publish_redis(channel: str, payload: dict[str, Any]) -> None:
@@ -1113,6 +1118,38 @@ async def _publish_redis(channel: str, payload: dict[str, Any]) -> None:
         pass
 
 
+def _serialize_signal_payload(row: TradeSignal) -> dict[str, Any]:
+    """Build the full-fidelity signal snapshot for Redis transmission.
+
+    Mirrors the columns ``services/signal_cache.SignalSnapshot`` reads
+    on the consumer side.  Heavy JSON columns are EXCLUDED — fast
+    trader doesn't read them and shipping ~3 KB of unused JSON over
+    the bus on every signal would waste bandwidth.
+    """
+    return {
+        "id": str(row.id or ""),
+        "source": str(row.source or ""),
+        "source_item_id": row.source_item_id,
+        "signal_type": str(row.signal_type or ""),
+        "strategy_type": row.strategy_type,
+        "market_id": str(row.market_id or ""),
+        "market_question": row.market_question,
+        "direction": row.direction,
+        "entry_price": float(row.entry_price) if row.entry_price is not None else None,
+        "effective_price": float(row.effective_price) if row.effective_price is not None else None,
+        "edge_percent": float(row.edge_percent) if row.edge_percent is not None else None,
+        "confidence": float(row.confidence) if row.confidence is not None else None,
+        "liquidity": float(row.liquidity) if row.liquidity is not None else None,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "status": str(row.status or "pending"),
+        "quality_passed": row.quality_passed,
+        "dedupe_key": str(row.dedupe_key or ""),
+        "runtime_sequence": int(row.runtime_sequence) if row.runtime_sequence is not None else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 async def _publish_trade_signal_emission(
     *,
     row: TradeSignal,
@@ -1140,8 +1177,17 @@ async def _publish_trade_signal_emission(
         await event_bus.publish("trade_signal_emission", payload)
     except Exception:
         pass
-    # Cross-plane wakeup.
+    # Cross-plane wakeup (lightweight notification).
     await _publish_redis(SIGNAL_EMISSION_CHANNEL, payload)
+    # Full payload for the trading-plane signal cache.  This is what
+    # eliminates the fast trader's per-cycle DB poll: the cache hydrates
+    # from this channel and serves reads in microseconds.  Soft-fail at
+    # the publish layer; the cache also has a DB-fallback safety net.
+    try:
+        full_snapshot = _serialize_signal_payload(row)
+        await _publish_redis(SIGNAL_PAYLOADS_CHANNEL, full_snapshot)
+    except Exception:
+        pass
 
 
 async def _publish_trade_signal_batch(

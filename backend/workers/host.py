@@ -998,6 +998,27 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
+            # Signal cache: full-payload Redis subscriber that
+            # eliminates the fast trader's per-cycle
+            # ``list_unconsumed_trade_signals`` DB query.  When the
+            # cache has the signals (steady state), the fast trader
+            # reads from in-memory in microseconds; on miss, it falls
+            # back to the DB safety net.
+            try:
+                from services import signal_cache
+
+                self._schedule_background_startup(
+                    task_name="signal-cache-subscriber",
+                    starter=signal_cache.start_subscriber,
+                    failure_message="signal_cache subscriber start failed",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to schedule signal_cache subscriber",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
     async def _start_plane(self) -> None:
         loop = asyncio.get_running_loop()
         cpu_count = os.cpu_count() or 4
@@ -1165,6 +1186,16 @@ class WorkerHost:
             except Exception as exc:
                 logger.warning(
                     "signal_bus_redis_bridge stop raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                from services import signal_cache
+
+                await signal_cache.stop_subscriber()
+            except Exception as exc:
+                logger.warning(
+                    "signal_cache subscriber stop raised",
                     plane=self._plane_name,
                     exc_info=exc,
                 )
