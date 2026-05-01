@@ -187,18 +187,66 @@ class EventDispatcher:
             if handler_timeout_seconds is None
             else max(1.0, float(handler_timeout_seconds))
         )
-        tasks = [
-            asyncio.create_task(
-                self._safe_invoke(
-                    slug,
-                    handler,
-                    event,
-                    timeout_seconds=timeout_seconds,
+        # Bounded worker pool when many strategies are registered.
+        # Production saw 16-19 strategies fan out per event with each
+        # strategy spawning its own HTTP/DB sub-tasks, multiplying loop
+        # pressure into the hundreds.  At small N (<=6) keep the simple
+        # gather form so the typical case has zero scheduling overhead.
+        if len(handlers) <= 6:
+            tasks = [
+                asyncio.create_task(
+                    self._safe_invoke(
+                        slug,
+                        handler,
+                        event,
+                        timeout_seconds=timeout_seconds,
+                    )
                 )
-            )
-            for slug, handler in handlers
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+                for slug, handler in handlers
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            queue: asyncio.Queue = asyncio.Queue()
+            for item in handlers:
+                queue.put_nowait(item)
+            results: list = []
+
+            async def _dispatch_worker() -> None:
+                while True:
+                    try:
+                        slug, handler = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    try:
+                        result = await self._safe_invoke(
+                            slug,
+                            handler,
+                            event,
+                            timeout_seconds=timeout_seconds,
+                        )
+                        results.append(result)
+                    except Exception as exc:
+                        results.append(exc)
+                    finally:
+                        queue.task_done()
+                        await asyncio.sleep(0)
+
+            # Concurrency=8 keeps the loop healthy even when 20+
+            # strategies are registered.  Each strategy still gets
+            # the same per-handler timeout; we just run at most 8 at
+            # a time instead of all in parallel.
+            workers = [
+                asyncio.create_task(
+                    _dispatch_worker(), name=f"event-dispatch-worker-{i}"
+                )
+                for i in range(min(8, len(handlers)))
+            ]
+            try:
+                await asyncio.gather(*workers, return_exceptions=True)
+            finally:
+                for w in workers:
+                    if not w.done():
+                        w.cancel()
 
         all_opportunities = []
         for result in results:

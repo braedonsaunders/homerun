@@ -107,12 +107,39 @@ async def get_market_tradability_map(
     if not keys:
         return {}
 
-    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
+    # Bounded worker pool: was ``[task for x in keys] + asyncio.gather(*tasks)``
+    # with a Semaphore.  Even at concurrency=12, ALL N tasks lived in
+    # the asyncio task registry — production saw 143 parked tasks for
+    # one batch.  Worker-pool keeps live count at exactly N regardless
+    # of input size.  See ``services/wallet_discovery.py``'s
+    # ``_run_with_bounded_workers`` for the same pattern.
+    queue: asyncio.Queue = asyncio.Queue()
+    for mid in keys:
+        queue.put_nowait(mid)
     result: dict[str, bool] = {}
 
-    async def _resolve(mid: str) -> None:
-        async with semaphore:
-            result[mid] = await is_market_tradable(mid, now=ref_now)
+    async def _worker() -> None:
+        while True:
+            try:
+                mid = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                result[mid] = await is_market_tradable(mid, now=ref_now)
+            except Exception:
+                pass
+            finally:
+                queue.task_done()
+                await asyncio.sleep(0)
 
-    await asyncio.gather(*[_resolve(mid) for mid in keys])
+    workers = [
+        asyncio.create_task(_worker(), name=f"market-tradability-worker-{i}")
+        for i in range(max(1, int(max_concurrency)))
+    ]
+    try:
+        await asyncio.gather(*workers, return_exceptions=True)
+    finally:
+        for w in workers:
+            if not w.done():
+                w.cancel()
     return result
