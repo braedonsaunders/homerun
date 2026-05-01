@@ -1653,8 +1653,11 @@ async def run_execution_backtest(
     equity_sample_size: int = 500,
     bootstrap_resamples: int = 2000,
     impact_strength_bps: float = 0.0,
+    impact_capacity_threshold: float = 0.5,
+    impact_capacity_exponent: float = 1.5,
     maker_rebate_bps: float = 0.0,
     maker_rebate_max_spread_bps: float = 50.0,
+    latency_correlation_window_ms: float = 5.0,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
@@ -1893,12 +1896,17 @@ async def run_execution_backtest(
                 p50_ms=cancel_latency_p50_ms, p95_ms=cancel_latency_p95_ms
             ),
             seed=seed,
+            correlation_window_ms=float(latency_correlation_window_ms or 0.0),
         ),
         fees=FeeModel(
             maker_rebate_bps=float(maker_rebate_bps or 0.0),
             maker_rebate_max_spread_bps=float(maker_rebate_max_spread_bps or 50.0),
         ),
-        impact=ImpactModel(strength_bps=float(impact_strength_bps or 0.0)),
+        impact=ImpactModel(
+            strength_bps=float(impact_strength_bps or 0.0),
+            capacity_threshold=float(impact_capacity_threshold),
+            capacity_exponent=float(impact_capacity_exponent),
+        ),
         seed=seed,
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)

@@ -708,8 +708,11 @@ async def run_unified_backtest(
     counterfactual_sample_size: int = 8,
     ensemble_sample_size: int = 8,
     impact_strength_bps: float | None = None,
+    impact_capacity_threshold: float | None = None,
+    impact_capacity_exponent: float | None = None,
     maker_rebate_bps: float | None = None,
     maker_rebate_max_spread_bps: float | None = None,
+    latency_correlation_window_ms: float | None = None,
 ) -> dict[str, Any]:
     """Run the full backtest pipeline + augment with fill-simulator data.
 
@@ -743,10 +746,16 @@ async def run_unified_backtest(
         exec_kwargs["seed"] = int(seed)
     if impact_strength_bps is not None:
         exec_kwargs["impact_strength_bps"] = float(impact_strength_bps)
+    if impact_capacity_threshold is not None:
+        exec_kwargs["impact_capacity_threshold"] = float(impact_capacity_threshold)
+    if impact_capacity_exponent is not None:
+        exec_kwargs["impact_capacity_exponent"] = float(impact_capacity_exponent)
     if maker_rebate_bps is not None:
         exec_kwargs["maker_rebate_bps"] = float(maker_rebate_bps)
     if maker_rebate_max_spread_bps is not None:
         exec_kwargs["maker_rebate_max_spread_bps"] = float(maker_rebate_max_spread_bps)
+    if latency_correlation_window_ms is not None:
+        exec_kwargs["latency_correlation_window_ms"] = float(latency_correlation_window_ms)
     exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     exec_dict = exec_result.to_dict()
 

@@ -277,25 +277,42 @@ class FeeModel:
 
 @dataclass
 class ImpactModel:
-    """Square-root book-impact response function.
+    """Almgren-Chriss square-root impact + capacity curve.
 
-    Formula:  ``adverse_bps = strength_bps * sqrt(your_size / book_depth)``
+    Two-regime response function on the size/depth ratio ``r``:
+
+      * ``r <= capacity_threshold``  →  ``strength_bps * sqrt(r)``
+        (textbook Almgren-Chriss; impact grows concavely with size).
+      * ``r >  capacity_threshold``  →  the same square-root term at
+        the threshold PLUS a superlinear penalty
+        ``strength_bps * (r - threshold) ** capacity_exponent``.
+
+    The second regime models capacity decay: real books thin out
+    under sustained pressure, late-arriving liquidity is asymmetric
+    (other makers pull ahead of you), and sweep orders pay a worse
+    blended price than depth-weighted average suggests.  Without this
+    term the simulator says a $100k order in a $10k book pays the
+    same impact as $1k in a $10k book — patently wrong.
 
     ``strength_bps`` is the impact (in bps of price) you'd pay if you
-    consumed exactly 100% of visible side depth.  Smaller fractions
-    scale by sqrt of the depth ratio (Almgren-Chriss).
+    consumed exactly the threshold fraction of visible side depth.
+    ``cap_bps`` truncates the worst case so a single sweep can't
+    eat infinite impact.
 
-    ``strength_bps = 0`` disables impact.  Calibration starting points:
-        * 5–10 bps  — top-of-book on deep crypto markets (BTC/ETH 5m).
-        * 25–50 bps — illiquid event markets, thin books, or off-hours.
+    ``strength_bps = 0`` disables impact entirely (existing backtests
+    unchanged until operators opt in).  Calibration starting points:
+        * 5-10 bps  — top-of-book on deep crypto markets (BTC/ETH 5m).
+        * 25-50 bps — illiquid event markets, thin books, or off-hours.
 
-    The default of 0 is intentional: existing backtests are unchanged
-    until an operator opts in by setting ``impact=ImpactModel(strength_bps=10)``
-    on BacktestConfig.
+    Defaults: capacity_threshold=0.5 (50% of book), capacity_exponent=1.5
+    — kicks in when an order is half the visible book and grows fast
+    from there.
     """
 
     strength_bps: float = 0.0
     cap_bps: float = 200.0  # never penalise a single fill more than 200 bps
+    capacity_threshold: float = 0.5
+    capacity_exponent: float = 1.5
 
     def adverse_bps(self, *, your_size_shares: float, side_visible_depth_shares: float) -> float:
         """Return the bps adverse adjustment (>= 0) applied to the fill
@@ -306,8 +323,14 @@ class ImpactModel:
         if your_size_shares <= 0 or side_visible_depth_shares <= 0:
             return 0.0
         ratio = max(0.0, float(your_size_shares) / float(side_visible_depth_shares))
-        # Square-root impact, capped.  Strength is already in bps.
-        bps = float(self.strength_bps) * math.sqrt(ratio)
+        threshold = max(1e-6, float(self.capacity_threshold))
+        if ratio <= threshold:
+            bps = float(self.strength_bps) * math.sqrt(ratio)
+        else:
+            base_bps = float(self.strength_bps) * math.sqrt(threshold)
+            excess = ratio - threshold
+            penalty_bps = float(self.strength_bps) * (excess ** float(self.capacity_exponent))
+            bps = base_bps + penalty_bps
         return min(bps, max(0.0, float(self.cap_bps)))
 
 
@@ -417,8 +440,11 @@ class MatchingEngine:
         if decision.adjusted_size is not None:
             order.size = decision.adjusted_size
 
-        # Sample submit latency now so it's deterministic w.r.t. time of submit
-        latency_ms = self.latency.sample_submit_ms()
+        # Sample submit latency now so it's deterministic w.r.t. time of submit.
+        # Pass the submit timestamp so multi-leg orders fired in the same
+        # scheduling tick share a single network-path draw (correlated
+        # latency); single-leg strategies are unaffected.
+        latency_ms = self.latency.sample_submit_ms(at=order.submitted_at)
         order.venue_received_at = order.submitted_at + timedelta(milliseconds=latency_ms)
         order.state = OrderState.PENDING
         self._orders[order.order_id] = order
@@ -431,7 +457,7 @@ class MatchingEngine:
             return False
         if order_id in self._pending_cancels:
             return True
-        latency_ms = self.latency.sample_cancel_ms()
+        latency_ms = self.latency.sample_cancel_ms(at=requested_at)
         effective = requested_at + timedelta(milliseconds=latency_ms)
         self._pending_cancels[order_id] = effective
         order.cancel_pending_at = effective

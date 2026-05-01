@@ -107,27 +107,80 @@ DEFAULT_CANCEL_PROFILE = LatencyProfile.from_quantiles(p50_ms=200.0, p95_ms=600.
 
 @dataclass
 class LatencyModel:
-    """Pair of independent latency distributions for submit and cancel.
+    """Pair of latency distributions for submit and cancel, with
+    optional multi-leg correlation.
 
     The matching engine consumes ``LatencyModel.sample_submit_ms`` /
     ``sample_cancel_ms`` to advance simulated time after each interaction.
     Pass a fixed seed for reproducible backtests.
+
+    Multi-leg correlation: when ``correlation_window_ms > 0``, orders
+    submitted within the same window share a single latency draw.
+    The institutional reality this models: when a strategy fires 4
+    legs of an arbitrage in the same tick, all 4 traverse the same
+    network path and the same RPC queue — their latencies are heavily
+    correlated, not independent.  The default of 5ms reflects the
+    typical resolution of "same scheduling tick" on Polymarket's
+    CLOB.  Set to 0 to restore the legacy independent-draw behavior.
+
+    Pass an emit timestamp via ``sample_submit_ms(at=ts)`` to bucket
+    correlated calls; calling without ``at=`` always draws independently
+    (legacy behavior, used by single-leg strategies and tests).
     """
 
     submit: LatencyProfile = field(default_factory=lambda: DEFAULT_SUBMIT_PROFILE)
     cancel: LatencyProfile = field(default_factory=lambda: DEFAULT_CANCEL_PROFILE)
     rng: Optional[random.Random] = None
     seed: Optional[int] = None
+    correlation_window_ms: float = 5.0
 
     def __post_init__(self) -> None:
         if self.rng is None:
             self.rng = random.Random(self.seed)
+        # Correlation cache: {("submit"|"cancel", bucket_id): cached_ms}.
+        # Bucket id is the floor(ts_ms / window_ms) so all calls in the
+        # same window resolve to the same dict entry.  Bounded to the
+        # most recent 1024 buckets to avoid unbounded growth.
+        self._bucket_cache: dict[tuple[str, int], float] = {}
+        self._bucket_order: list[tuple[str, int]] = []
 
-    def sample_submit_ms(self) -> float:
-        return self.submit.sample(self.rng)  # type: ignore[arg-type]
+    def _bucket_id(self, at) -> Optional[int]:
+        if at is None or self.correlation_window_ms <= 0:
+            return None
+        try:
+            ts_ms = float(at.timestamp()) * 1000.0
+        except AttributeError:
+            try:
+                ts_ms = float(at) * 1000.0
+            except (TypeError, ValueError):
+                return None
+        return int(ts_ms // float(self.correlation_window_ms))
 
-    def sample_cancel_ms(self) -> float:
-        return self.cancel.sample(self.rng)  # type: ignore[arg-type]
+    def _correlated_sample(self, kind: str, profile: "LatencyProfile", at) -> float:
+        bucket = self._bucket_id(at)
+        if bucket is None:
+            return profile.sample(self.rng)  # type: ignore[arg-type]
+        key = (kind, bucket)
+        cached = self._bucket_cache.get(key)
+        if cached is not None:
+            return cached
+        drawn = profile.sample(self.rng)  # type: ignore[arg-type]
+        self._bucket_cache[key] = drawn
+        self._bucket_order.append(key)
+        if len(self._bucket_order) > 1024:
+            old = self._bucket_order.pop(0)
+            self._bucket_cache.pop(old, None)
+        return drawn
+
+    def sample_submit_ms(self, *, at=None) -> float:
+        if at is None:
+            return self.submit.sample(self.rng)  # type: ignore[arg-type]
+        return self._correlated_sample("submit", self.submit, at)
+
+    def sample_cancel_ms(self, *, at=None) -> float:
+        if at is None:
+            return self.cancel.sample(self.rng)  # type: ignore[arg-type]
+        return self._correlated_sample("cancel", self.cancel, at)
 
     @classmethod
     def deterministic(
