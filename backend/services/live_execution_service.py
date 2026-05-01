@@ -2184,16 +2184,38 @@ class LiveExecutionService:
         if not order_ids:
             return
 
+        # Per-stage breakdown for slow-log diagnosis.  Production saw
+        # ``persist_orders`` = 8047ms with no visibility into whether
+        # the cost was the persist_lock acquire, the AsyncSessionLocal
+        # checkout, the SELECT existence-check, the SELECT signal-
+        # resolve, or the COMMIT itself.  Every stage is timed; if
+        # total >= 2s we log a structured warning naming the offender.
+        _persist_started = _time.monotonic()
+        _persist_breakdown: dict[str, float] = {"orders": len(order_ids)}
+
+        def _persist_record(stage: str, started_mono: float) -> None:
+            elapsed_ms = (_time.monotonic() - started_mono) * 1000.0
+            _persist_breakdown[stage] = round(
+                _persist_breakdown.get(stage, 0.0) + elapsed_ms, 1
+            )
+
+        _stage_started = _time.monotonic()
         persist_lock = self._get_persist_lock()
         async with persist_lock:
+            _persist_record("persist_lock_wait", _stage_started)
             for attempt in range(_DB_RETRY_ATTEMPTS):
                 needs_retry = False
+                _persist_breakdown["attempts"] = float(attempt + 1)
+                _stage_started = _time.monotonic()
                 async with AsyncSessionLocal() as session:
+                    _persist_record("session_checkout", _stage_started)
                     try:
+                        _stage_started = _time.monotonic()
                         existing_result = await session.execute(
                             select(LiveTradingOrder).where(LiveTradingOrder.id.in_(order_ids))
                         )
                         existing_rows = {row.id: row for row in existing_result.scalars().all()}
+                        _persist_record("select_existing", _stage_started)
                         signal_ids = sorted(
                             {
                                 str(order.opportunity_id or "").strip()
@@ -2203,6 +2225,7 @@ class LiveExecutionService:
                         )
                         market_ids_by_signal_id: dict[str, str] = {}
                         if signal_ids:
+                            _stage_started = _time.monotonic()
                             signal_result = await session.execute(
                                 select(TradeSignal.id, TradeSignal.market_id).where(TradeSignal.id.in_(signal_ids))
                             )
@@ -2211,6 +2234,7 @@ class LiveExecutionService:
                                 for signal_id, market_id in signal_result.all()
                                 if str(signal_id or "").strip() and str(market_id or "").strip()
                             }
+                            _persist_record("select_signals", _stage_started)
                         for order in unique_orders.values():
                             row = existing_rows.get(order.id)
                             if row is None:
@@ -2255,7 +2279,20 @@ class LiveExecutionService:
                             row.error_message = order.error_message
                             row.created_at = created_at
                             row.updated_at = updated_at
+                        _stage_started = _time.monotonic()
                         await session.commit()
+                        _persist_record("commit", _stage_started)
+                        _persist_breakdown["total_ms"] = round(
+                            (_time.monotonic() - _persist_started) * 1000.0, 1
+                        )
+                        if _persist_breakdown["total_ms"] >= 2000.0:
+                            try:
+                                logger.warning(
+                                    "_persist_orders slow",
+                                    breakdown=_persist_breakdown,
+                                )
+                            except Exception:
+                                pass
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
@@ -2475,15 +2512,37 @@ class LiveExecutionService:
         market_positions_json = {str(token_id): str(exposure) for token_id, exposure in self._market_positions.items()}
         pending_reconciliation_json = [dict(item) for item in self._pending_reconciliations]
 
+        # Per-stage breakdown for slow-log diagnosis.  Production saw
+        # this function take 3-9 s on every order despite being a
+        # single-row UPSERT — the cost was hidden between persist_lock
+        # acquire, AsyncSessionLocal checkout, the SELECT, the
+        # ``_derive_pnl_counters_from_orders`` aggregate query, and
+        # the COMMIT.
+        _prs_started = _time.monotonic()
+        _prs_breakdown: dict[str, float] = {}
+
+        def _prs_record(stage: str, started_mono: float) -> None:
+            elapsed_ms = (_time.monotonic() - started_mono) * 1000.0
+            _prs_breakdown[stage] = round(
+                _prs_breakdown.get(stage, 0.0) + elapsed_ms, 1
+            )
+
+        _stage_started = _time.monotonic()
         persist_lock = self._get_persist_lock()
         async with persist_lock:
+            _prs_record("persist_lock_wait", _stage_started)
             for attempt in range(_DB_RETRY_ATTEMPTS):
+                _prs_breakdown["attempts"] = float(attempt + 1)
+                _stage_started = _time.monotonic()
                 async with AsyncSessionLocal() as session:
+                    _prs_record("session_checkout", _stage_started)
                     try:
+                        _stage_started = _time.monotonic()
                         result = await session.execute(
                             select(LiveTradingRuntimeState).where(LiveTradingRuntimeState.id == runtime_id)
                         )
                         row = result.scalar_one_or_none()
+                        _prs_record("select_state", _stage_started)
                         if row is None:
                             row = LiveTradingRuntimeState(id=runtime_id, wallet_address=wallet)
                             session.add(row)
@@ -2496,9 +2555,11 @@ class LiveExecutionService:
                         # ``total_pnl`` stuck at 0 across every wallet.  Sourcing
                         # from TraderOrder also picks up the verifier's
                         # corrections automatically.
+                        _stage_started = _time.monotonic()
                         derived = await self._derive_pnl_counters_from_orders(
                             session, wallet
                         )
+                        _prs_record("derive_pnl", _stage_started)
                         row.wallet_address = wallet
                         row.total_trades = int(self._stats.total_trades)
                         row.winning_trades = int(derived["winning_trades"])
@@ -2514,7 +2575,20 @@ class LiveExecutionService:
                         row.pending_reconciliation_json = pending_reconciliation_json
                         row.balance_signature_type = self._balance_signature_type
                         row.updated_at = utcnow()
+                        _stage_started = _time.monotonic()
                         await session.commit()
+                        _prs_record("commit", _stage_started)
+                        _prs_breakdown["total_ms"] = round(
+                            (_time.monotonic() - _prs_started) * 1000.0, 1
+                        )
+                        if _prs_breakdown["total_ms"] >= 2000.0:
+                            try:
+                                logger.warning(
+                                    "_persist_runtime_state slow",
+                                    breakdown=_prs_breakdown,
+                                )
+                            except Exception:
+                                pass
                         return
                     except (OperationalError, InterfaceError) as exc:
                         await session.rollback()
@@ -3507,7 +3581,21 @@ class LiveExecutionService:
             reserved = True
 
         if reserved:
-            await self._persist_runtime_state()
+            # Persist removed: ``_persist_runtime_state`` was the third
+            # call in a chain on every order (validate-reserve here +
+            # success-branch inline + post-loop outer).  Each call
+            # serializes on ``_persist_lock`` and opens a fresh
+            # ``AsyncSessionLocal``; under DB pool pressure this turned
+            # the local-only volume bump into a 3-9s wait
+            # (``submit_validate_reserve=6297ms`` in production).  The
+            # subsequent inner persist (success path) or
+            # ``_release_reservation`` persist (failure path) writes the
+            # SAME state moments later, so the volume bump always
+            # reaches the DB before ``place_order`` returns.  The only
+            # window where in-memory volume diverges from persisted is
+            # an OS-level worker kill between this point and the next
+            # persist — same window that already existed on the
+            # exception path; deemed acceptable.
             return True, ""
         return False, "Order reservation failed"
 
@@ -3708,6 +3796,14 @@ class LiveExecutionService:
             transport_retries_used = 0
             max_transport_retries = 2
             max_attempts = 3 if side == OrderSide.SELL else 2
+            # Tracks whether the success branch's ``_persist_runtime_state``
+            # already ran inside the for-loop.  When True, the outer
+            # post-loop call is redundant — was costing 3-10s of dead
+            # time per successful order under DB pool pressure (see
+            # production breakdown: persist_runtime_state_inner=3625
+            # ms, persist_runtime_state_outer=9688 ms for the SAME
+            # function call moments apart).
+            runtime_state_persisted_inline = False
             for attempt in range(max_attempts + max_transport_retries):
                 order.price = submit_price
                 try:
@@ -3965,6 +4061,7 @@ class LiveExecutionService:
                     _stage_started = _time.monotonic()
                     await self._persist_runtime_state()
                     _po_record("persist_runtime_state_inner", _stage_started)
+                    runtime_state_persisted_inline = True
                     self._invalidate_balance_cache()
                     logger.info(f"Order placed successfully: {order.clob_order_id}")
                     break
@@ -4121,9 +4218,16 @@ class LiveExecutionService:
         _stage_started = _time.monotonic()
         await self._persist_orders([order])
         _po_record("persist_orders", _stage_started)
-        _stage_started = _time.monotonic()
-        await self._persist_runtime_state()
-        _po_record("persist_runtime_state_outer", _stage_started)
+        # Skip the outer ``_persist_runtime_state`` when the success-
+        # branch already ran it inline.  Was a free 3-10s win per
+        # successful order — the same function called twice within
+        # microseconds, second call rewriting identical state under
+        # DB pool pressure.  Failure paths still go through here so
+        # the runtime state captures the OrderStatus.FAILED transition.
+        if not runtime_state_persisted_inline:
+            _stage_started = _time.monotonic()
+            await self._persist_runtime_state()
+            _po_record("persist_runtime_state_outer", _stage_started)
 
         # Stash the breakdown on the Order so the orchestrator's
         # ps_submit_order slow-log can surface it (live_execution_adapter
