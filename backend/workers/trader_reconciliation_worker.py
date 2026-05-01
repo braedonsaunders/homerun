@@ -1675,27 +1675,38 @@ async def run_worker_loop() -> None:
         name="wallet-cache-reseeder",
     )
 
-    # Strategy seeding/refresh wrapped in a timeout so a slow DB can't
-    # delay the rest of the worker loop indefinitely.  Failure here is
-    # non-fatal — strategies are loaded into runtime by the host
-    # bootstrap path too.
-    try:
-        async with AsyncSessionLocal() as session:
+    # Strategy seeding/refresh: run as a SEPARATE BACKGROUND TASK so
+    # the wait_for timeout's cancellation chain cannot propagate into
+    # ``run_worker_loop``'s parent task and silently kill sibling tasks
+    # like the wallet reseeder.  Production caught this on Python 3.14:
+    # the strategy seed's wait_for(30s) timed out exactly when the
+    # reseeder cycle was 29.6-29.9s in, and the reseeder cycle was
+    # cancelled — confirmed by the watchdog.  The strategy seed is
+    # non-critical here (the host bootstrap also seeds strategies),
+    # so worst-case isolation is the right call.
+    async def _seed_strategies_in_background() -> None:
+        try:
+            async with AsyncSessionLocal() as session:
+                await asyncio.wait_for(
+                    ensure_all_strategies_seeded(session),
+                    timeout=30.0,
+                )
             await asyncio.wait_for(
-                ensure_all_strategies_seeded(session),
+                refresh_strategy_runtime_if_needed(source_keys=None, force=True),
                 timeout=30.0,
             )
-        await asyncio.wait_for(
-            refresh_strategy_runtime_if_needed(source_keys=None, force=True),
-            timeout=30.0,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Reconciliation strategy startup sync timed out; "
-            "continuing without — host bootstrap also seeds strategies."
-        )
-    except Exception as exc:
-        logger.warning("Reconciliation strategy startup sync failed", exc_info=exc)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Reconciliation strategy startup sync timed out; "
+                "continuing without — host bootstrap also seeds strategies."
+            )
+        except Exception as exc:
+            logger.warning("Reconciliation strategy startup sync failed", exc_info=exc)
+
+    asyncio.create_task(
+        _seed_strategies_in_background(),
+        name="reconciliation-strategy-seed-bg",
+    )
 
     consecutive_db_failures = 0
     wallet_monitor_wallet = ""

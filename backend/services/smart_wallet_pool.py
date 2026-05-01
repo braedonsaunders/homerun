@@ -1011,22 +1011,27 @@ class SmartWalletPoolService:
         if not sample:
             return
 
-        semaphore = asyncio.Semaphore(8)
-
+        # Bounded worker pool — was ``[task for x in sample]`` +
+        # ``asyncio.gather(*tasks)`` with a Semaphore(8).  Even though
+        # only 8 ran at once, ALL N tasks existed in the asyncio
+        # registry simultaneously; with N ~= 50-200 wallets that
+        # ballooned task count and starved the trading loop (the
+        # event-loop watchdog caught it as Task-19987..20044 etc. all
+        # parked at line 1019 in ``_scan_wallet``).  Worker-pool
+        # pattern caps live tasks at exactly ``concurrency``.
         async def _scan_wallet(address: str) -> int:
-            async with semaphore:
-                try:
-                    trades = await self.client.get_wallet_trades(
-                        address,
-                        limit=min(per_wallet_limit, 200),
-                    )
-                except Exception as e:
-                    logger.debug(
-                        "Wallet trade candidate fetch failed",
-                        wallet=address,
-                        error=str(e),
-                    )
-                    return 0
+            try:
+                trades = await self.client.get_wallet_trades(
+                    address,
+                    limit=min(per_wallet_limit, 200),
+                )
+            except Exception as e:
+                logger.debug(
+                    "Wallet trade candidate fetch failed",
+                    wallet=address,
+                    error=str(e),
+                )
+                return 0
 
                 inserted = 0
                 for trade in trades:
@@ -1081,7 +1086,40 @@ class SmartWalletPoolService:
 
                 return inserted
 
-        counts = await asyncio.gather(*[_scan_wallet(addr) for addr in sample])
+        counts: list[int] = []
+        scan_queue: asyncio.Queue = asyncio.Queue()
+        for addr in sample:
+            scan_queue.put_nowait(addr)
+
+        async def _scan_worker() -> None:
+            while True:
+                try:
+                    addr = scan_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    counts.append(await _scan_wallet(addr))
+                except Exception as exc:
+                    logger.debug(
+                        "Wallet trade candidate scan worker error",
+                        wallet=addr,
+                        error=str(exc),
+                    )
+                    counts.append(0)
+                finally:
+                    scan_queue.task_done()
+                    await asyncio.sleep(0)
+
+        scan_workers = [
+            asyncio.create_task(_scan_worker(), name=f"smart-wallet-scan-{i}")
+            for i in range(8)
+        ]
+        try:
+            await asyncio.gather(*scan_workers, return_exceptions=True)
+        finally:
+            for w in scan_workers:
+                if not w.done():
+                    w.cancel()
         total_inserted = sum(counts)
         if total_inserted:
             logger.debug(
