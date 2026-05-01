@@ -6229,6 +6229,7 @@ async def _run_trader_once_inner(
                             # within a cycle (max 30s) is bounded and safe.
                             if not copy_inventory_loaded:
                                 copy_inventory_loaded = True
+                                _wallet_fetch_started = time.monotonic()
                                 try:
                                     # Use a separate session to prevent
                                     # release_conn inside this function from
@@ -6276,6 +6277,7 @@ async def _run_trader_once_inner(
                                         "error": None,
                                         "fetched_at": utcnow().isoformat(),
                                     }
+                                _accumulate("ps_copy_inventory_fetch", _wallet_fetch_started)
                             copy_inventory_context_for_signal = copy_inventory_context
 
                     _pre_gate_market_id = str(getattr(runtime_signal, "market_id", "") or "").strip()
@@ -6331,6 +6333,7 @@ async def _run_trader_once_inner(
                                 0.1,
                                 min(float(evaluation_timeout_seconds), float(remaining_cycle_budget)),
                             )
+                        _evaluate_started = time.monotonic()
                         decision_future = loop.run_in_executor(
                             _STRATEGY_EVAL_POOL,
                             strategy.evaluate,
@@ -6359,13 +6362,16 @@ async def _run_trader_once_inner(
                             except asyncio.TimeoutError as exc:
                                 if not decision_future.done():
                                     decision_future.cancel()
+                                _accumulate("ps_strategy_evaluate", _evaluate_started)
                                 raise RuntimeError(
                                     f"Strategy evaluation timed out after {evaluation_timeout_seconds:.1f}s"
                                 ) from exc
                             except asyncio.CancelledError:
                                 if not decision_future.done():
                                     decision_future.cancel()
+                                _accumulate("ps_strategy_evaluate", _evaluate_started)
                                 raise
+                        _accumulate("ps_strategy_evaluate", _evaluate_started)
                         checks_payload = _checks_to_payload(decision_obj.checks)
 
                     if live_context:
@@ -6771,6 +6777,7 @@ async def _run_trader_once_inner(
                     )
                     decision_check_count = len(checks_payload)
 
+                    _decision_writes_mono = time.monotonic()
                     decision_row = await create_trader_decision(
                         session,
                         trader_id=trader_id,
@@ -6848,6 +6855,11 @@ async def _run_trader_once_inner(
                             },
                         },
                         commit=False,
+                        # Skip the per-INSERT flush — all per-signal
+                        # writes share one transaction that flushes
+                        # at the final commit.  Saves a Postgres
+                        # round-trip per signal under contention.
+                        flush_on_add=False,
                     )
                     decisions_written += 1
                     if experiment_row is not None:
@@ -6940,12 +6952,15 @@ async def _run_trader_once_inner(
                             cursor_created_at = _signal_cursor_timestamp(signal)
                             cursor_signal_id = signal_id
                             cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
+                        _commit_mono = time.monotonic()
                         await _commit_with_retry(session)
+                        _accumulate("ps_db_commit", _commit_mono)
                         try:
                             await session.reset()
                         except Exception:
                             pass
                         submit_started_at = utcnow()
+                        _submit_mono = time.monotonic()
                         submit_result = await submit_order(
                             trader_id=trader_id,
                             signal=runtime_signal,
@@ -6959,6 +6974,7 @@ async def _run_trader_once_inner(
                             size_usd=size_usd,
                             reason=final_reason,
                         )
+                        _accumulate("ps_submit_order", _submit_mono)
                         submit_completed_at = utcnow()
                         submit_latency_payload = _compute_signal_latency_payload(
                             runtime_signal,
@@ -7327,6 +7343,9 @@ async def _run_trader_once_inner(
                         decision_id=decision_row.id,
                         outcome=order_status or final_decision,
                         reason=final_reason,
+                        # Pass the in-memory updated_at to skip the
+                        # session.get(TradeSignal) lookup inside.
+                        signal_updated_at=getattr(signal, "updated_at", None),
                         commit=False,
                     )
 
@@ -7347,6 +7366,9 @@ async def _run_trader_once_inner(
                             "direction": getattr(runtime_signal, "direction", None),
                         },
                         commit=False,
+                        # Same flush-skip rationale as
+                        # ``create_trader_decision`` above.
+                        flush_on_add=False,
                     )
                     await upsert_trader_signal_cursor(
                         session,
@@ -7355,7 +7377,21 @@ async def _run_trader_once_inner(
                         last_signal_id=signal_id,
                         commit=False,
                     )
+                    # Close the decision-writes bucket: from the
+                    # create_trader_decision call through the cursor
+                    # upsert above.  Captures every per-signal INSERT
+                    # except the commit itself (which has its own
+                    # bucket below).
+                    try:
+                        _accumulate("ps_decision_writes", _decision_writes_mono)
+                    except NameError:
+                        # Iteration took an early branch that bypassed
+                        # the create_trader_decision marker — no bucket
+                        # to close.  Safe to ignore.
+                        pass
+                    _commit_mono = time.monotonic()
                     await _commit_with_retry(session)
+                    _accumulate("ps_db_commit", _commit_mono)
                     try:
                         await session.reset()
                     except Exception:
@@ -7477,7 +7513,9 @@ async def _run_trader_once_inner(
                             },
                             commit=False,
                         )
+                        _commit_mono = time.monotonic()
                         await _commit_with_retry(session)
+                        _accumulate("ps_db_commit", _commit_mono)
                         try:
                             await session.reset()
                         except Exception:
@@ -7601,6 +7639,28 @@ async def _run_trader_once_inner(
     # so the warning shows where inside signal_loop time was spent.
     for _name, _ms in _accumulators.items():
         stage_timings_ms[_name] = round(_ms, 1)
+    # Compute the residual gap inside per_signal_total that isn't
+    # covered by any of the ``ps_*`` buckets.  When this is large,
+    # there's a slow op in the per-signal pipeline that hasn't been
+    # instrumented yet — the operator should add a new ``ps_*`` bucket
+    # around the suspect call (decision row INSERT, signal-consumption
+    # ledger write, audit-log write, etc.).  Negative values indicate
+    # double-counting between buckets and the iteration timer.
+    _per_signal_total = float(_accumulators.get("per_signal_total", 0.0) or 0.0)
+    if _per_signal_total > 0:
+        _instrumented = sum(
+            float(_accumulators.get(name, 0.0) or 0.0)
+            for name in (
+                "ps_strategy_evaluate",
+                "ps_copy_inventory_fetch",
+                "ps_submit_order",
+                "ps_db_commit",
+                "ps_decision_writes",
+            )
+        )
+        stage_timings_ms["ps_unaccounted"] = round(
+            max(0.0, _per_signal_total - _instrumented), 1
+        )
     cycle_duration_s = time.monotonic() - cycle_started_mono
     if cycle_duration_s > 10.0:
         logger.warning(

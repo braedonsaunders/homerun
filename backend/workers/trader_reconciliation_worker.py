@@ -633,18 +633,78 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
 
     Call sites: ``_sync_live_wallet_positions`` (every 30s) and
     bootstrap path.  No direct exposure to the orchestrator hot path.
+
+    Robust bootstrap contract: if ``live_execution_service`` is not yet
+    initialized (e.g. credentials still loading, or a prior init failed
+    silently), this function calls ``ensure_initialized()`` to drive the
+    retry — silent no-ops here would leave the freshness gate refusing
+    every cycle indefinitely.  As a final fallback, if init still
+    refuses but the WalletStateCache already has a wallet pinned (from
+    ``polymarket_user_feed.configure_credentials``), seed against that
+    wallet directly so the freshness gate can clear.
     """
+    from services.wallet_state_cache import get_wallet_state_cache
+
+    cache = get_wallet_state_cache()
+
+    # Try to recover from a stuck init by driving a retry.  This is the
+    # difference between "trading silently blocked for hours" and
+    # "trading recovers within one reseeder tick after creds load".
     if not live_execution_service.is_ready():
-        return
+        try:
+            recovered = await asyncio.wait_for(
+                live_execution_service.ensure_initialized(),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            recovered = False
+        except Exception as exc:
+            logger.warning(
+                "WalletStateCache reseeder: ensure_initialized() raised; "
+                "falling back to cache-pinned wallet if available",
+                exc_info=exc,
+            )
+            recovered = False
+        if not recovered:
+            # Last-resort: use the wallet the cache was pinned to via the
+            # user-channel WS credential wiring.  If that's also empty,
+            # there is genuinely nothing to seed against.
+            cache_wallet = cache._wallet_address  # noqa: SLF001 — internal
+            if not cache_wallet:
+                logger.warning(
+                    "WalletStateCache reseeder skipped: live_execution_service "
+                    "not ready and cache has no pinned wallet; the freshness "
+                    "gate will keep refusing trades.  Last init error: %s",
+                    live_execution_service.get_last_init_error(),
+                )
+                return
+            logger.warning(
+                "WalletStateCache reseeder using cache-pinned wallet=%s "
+                "(live_execution_service not ready, last_init_error=%s)",
+                cache_wallet,
+                live_execution_service.get_last_init_error(),
+            )
+
     wallet_address = (
         getattr(live_execution_service, "_proxy_funder_address", None)
         or getattr(live_execution_service, "_wallet_address", None)
         or getattr(live_execution_service, "_eoa_address", None)
+        # Final fallback: the cache's own pinned wallet, set by
+        # polymarket_user_feed.configure_credentials at startup.
+        or cache._wallet_address  # noqa: SLF001 — internal
     )
     if not wallet_address:
+        logger.warning(
+            "WalletStateCache reseeder skipped: no wallet address resolved "
+            "from live_execution_service or cache.  Trading remains blocked.",
+        )
         return
     wallet_lower = str(wallet_address).strip().lower()
     if not wallet_lower:
+        logger.warning(
+            "WalletStateCache reseeder skipped: wallet address empty after "
+            "normalization.  Trading remains blocked.",
+        )
         return
 
     from services.polymarket import polymarket_client

@@ -5349,6 +5349,7 @@ async def create_trader_event(
     trace_id: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
     commit: bool = True,
+    flush_on_add: bool = True,
 ) -> TraderEvent:
     row = TraderEvent(
         id=_new_id(),
@@ -5364,11 +5365,32 @@ async def create_trader_event(
     )
     session.add(row)
     serialized_row = _serialize_event(row)
-    if not commit:
+
+    async def _publish_event_buses(row_serialized: dict[str, Any]) -> None:
+        # In-process event bus (workers within the same process).
         try:
-            await event_bus.publish("trader_event", serialized_row)
+            await event_bus.publish("trader_event", row_serialized)
         except Exception:
             pass
+        # Cross-process Redis pub/sub — UI subscribers (via API plane
+        # WS bridge) get bot terminal output in <5ms instead of the
+        # previous N-second DB-poll latency.  Soft fail: if Redis is
+        # down, in-process subscribers still get the event.
+        try:
+            from services import redis_client
+            import json as _json
+
+            client = redis_client.get_client_or_none()
+            if client is not None:
+                await client.publish(
+                    redis_client.namespaced("trader_events"),
+                    _json.dumps(row_serialized, default=str),
+                )
+        except Exception:
+            pass
+
+    if not commit:
+        await _publish_event_buses(serialized_row)
     if commit:
         try:
             await _commit_with_retry(session)
@@ -5378,11 +5400,13 @@ async def create_trader_event(
             session.add(row)
             await _commit_with_retry(session)
             serialized_row = _serialize_event(row)
-        try:
-            await event_bus.publish("trader_event", serialized_row)
-        except Exception:
-            pass
-    else:
+        await _publish_event_buses(serialized_row)
+    elif flush_on_add:
+        # Same flush rationale as ``create_trader_decision``: detects
+        # invalid trader_id FK early.  Hot-path callers that already
+        # validated trader_id pass ``flush_on_add=False`` and accept
+        # that any IntegrityError will surface at commit time and
+        # rollback the per-signal transaction.
         try:
             await session.flush()
         except IntegrityError:
@@ -5629,6 +5653,7 @@ async def create_trader_decision(
     payload: Optional[dict[str, Any]] = None,
     trace_id: Optional[str] = None,
     commit: bool = True,
+    flush_on_add: bool = True,
 ) -> TraderDecision:
     row = TraderDecision(
         id=decision_id or _new_id(),
@@ -5660,7 +5685,13 @@ async def create_trader_decision(
             await event_bus.publish("trader_decision", serialized_row)
         except Exception:
             pass
-    else:
+    elif flush_on_add:
+        # Flush exists for early IntegrityError detection (invalid
+        # trader_id FK).  Hot-path callers that already validated the
+        # trader_id pass ``flush_on_add=False`` to skip the round-trip;
+        # any IntegrityError will surface at the eventual commit and
+        # rollback the per-signal transaction, which is the same
+        # outcome with one fewer round-trip on every call.
         await session.flush()
 
     return row
@@ -6561,15 +6592,27 @@ async def record_signal_consumption(
     reason: Optional[str] = None,
     decision_id: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
+    signal_updated_at: Optional[datetime] = None,
     commit: bool = True,
 ) -> None:
+    """Record a per-trader consumption row.
+
+    ``signal_updated_at`` (optional): pass the signal's ``updated_at``
+    if the caller already has it in memory.  Without this hint, we use
+    ``now`` as ``consumed_at`` — which is correct unless the signal was
+    updated *after* we computed ``now`` (clock skew or sub-millisecond
+    update race), in which case the signal harmlessly re-emerges on the
+    next ``list_unconsumed_trade_signals`` call.  Pre-2026-04-30 we did
+    ``await session.get(TradeSignal, signal_id)`` here defensively, but
+    that round-trip dominated the per-signal write cost
+    (``ps_decision_writes`` 1-4s under contention) — and the orchestrator
+    hot path always has the signal object in scope, so passing it via
+    ``signal_updated_at`` is strictly better.
+    """
     now = _now()
     consumed_at = now
-    signal_row = await session.get(TradeSignal, signal_id)
-    if signal_row is not None:
-        signal_ts = signal_row.updated_at or signal_row.created_at
-        if signal_ts is not None and signal_ts > consumed_at:
-            consumed_at = signal_ts
+    if signal_updated_at is not None and signal_updated_at > consumed_at:
+        consumed_at = signal_updated_at
     stmt = pg_insert(TraderSignalConsumption).values(
         id=_new_id(),
         trader_id=trader_id,
@@ -6827,23 +6870,35 @@ async def upsert_trader_signal_cursor(
     last_runtime_sequence: Optional[int] = None,
     commit: bool = True,
 ) -> None:
-    normalized_runtime_sequence = safe_int(last_runtime_sequence, None)
-    row = await session.get(TraderSignalCursor, trader_id)
-    if row is None:
-        row = TraderSignalCursor(
-            trader_id=trader_id,
-            last_signal_created_at=last_signal_created_at,
-            last_signal_id=last_signal_id,
-            last_runtime_sequence=normalized_runtime_sequence,
-            updated_at=_now(),
-        )
-        session.add(row)
-    else:
-        row.last_signal_created_at = last_signal_created_at
-        row.last_signal_id = str(last_signal_id or "") or None
-        row.last_runtime_sequence = normalized_runtime_sequence
-        row.updated_at = _now()
+    """Upsert the per-trader signal cursor.
 
+    Uses ``INSERT ... ON CONFLICT DO UPDATE`` so we issue a single SQL
+    round-trip per call — pre-2026-04-30 we did
+    ``await session.get(TraderSignalCursor, trader_id)`` followed by
+    ``session.add`` or attribute mutation, which doubled the cost on
+    every cursor advance and contributed to the ~1-4s
+    ``ps_decision_writes`` cost in the orchestrator's per-signal
+    pipeline.
+    """
+    normalized_runtime_sequence = safe_int(last_runtime_sequence, None)
+    now = _now()
+    stmt = pg_insert(TraderSignalCursor).values(
+        trader_id=trader_id,
+        last_signal_created_at=last_signal_created_at,
+        last_signal_id=str(last_signal_id or "") or None,
+        last_runtime_sequence=normalized_runtime_sequence,
+        updated_at=now,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[TraderSignalCursor.trader_id],
+        set_={
+            "last_signal_created_at": stmt.excluded.last_signal_created_at,
+            "last_signal_id": stmt.excluded.last_signal_id,
+            "last_runtime_sequence": stmt.excluded.last_runtime_sequence,
+            "updated_at": stmt.excluded.updated_at,
+        },
+    )
+    await session.execute(stmt)
     if commit:
         await _commit_with_retry(session)
 
