@@ -161,6 +161,20 @@ class FeeModel:
     * ``resolution_fee_rate = 0.02`` — 2% on winning proceeds at settlement
     * ``negrisk_conversion_gas_usd = 0.01`` — additional gas when a
       negative-risk multi-outcome leg requires CTF↔NegRisk conversion
+    * ``maker_rebate_bps = 0.0`` — Polymarket-specific liquidity-reward
+      approximation.  Real rewards are paid daily as LP tokens
+      proportional to time-weighted maker depth inside a configurable
+      spread band; modeling that fully requires per-tick time-on-book
+      tracking which is too expensive in backtest.  This bps value is a
+      conservative per-fill PROXY: enable it to estimate the realised
+      maker P&L uplift from rebates, which on top crypto markets has
+      historically been worth ~1-3 bps annualised on notional.  Treat
+      anything over 5 bps as optimistic — real rebate yield erodes as
+      makers compete for the same band.
+    * ``maker_rebate_max_spread_bps = 50.0`` — only count maker fills
+      whose limit price was within this distance of the snapshot mid
+      as eligible for the rebate.  Approximates the actual program's
+      "inside the spread band" requirement.
 
     Pass ``per_fill_gas_usd=0`` to disable gas modeling (unit tests do
     this so partial-fill counts don't get distorted by tx fees).
@@ -171,6 +185,8 @@ class FeeModel:
     per_fill_gas_usd: float = 0.005
     resolution_fee_rate: float = 0.02
     negrisk_conversion_gas_usd: float = 0.01
+    maker_rebate_bps: float = 0.0
+    maker_rebate_max_spread_bps: float = 50.0
 
     def fill_fee(
         self,
@@ -179,8 +195,19 @@ class FeeModel:
         size: float,
         is_maker: bool,
         is_negrisk: bool = False,
+        mid_price: float | None = None,
     ) -> float:
-        """Per-fill fee in USD: bps fee on notional + gas."""
+        """Per-fill fee in USD: bps fee on notional + gas, minus an
+        optional maker rebate when the fill was a maker inside the
+        configured spread band.
+
+        ``mid_price`` is optional; if None, the rebate band check is
+        skipped and the rebate (if configured) applies to every maker
+        fill regardless of distance from mid.  Callers that have a
+        snapshot context (the matching engine does) should pass it so
+        the rebate model better matches the live program's
+        inside-band-only payment.
+        """
         bps = self.maker_bps if is_maker else self.taker_bps
         bps_fee = 0.0
         if bps > 0:
@@ -188,7 +215,18 @@ class FeeModel:
         gas = max(0.0, float(self.per_fill_gas_usd))
         if is_negrisk:
             gas += max(0.0, float(self.negrisk_conversion_gas_usd))
-        return bps_fee + gas
+        rebate_credit = 0.0
+        if is_maker and float(self.maker_rebate_bps or 0.0) > 0:
+            inside_band = True
+            if mid_price is not None and float(mid_price) > 0:
+                # Distance from mid as bps of mid.
+                dist_bps = abs(float(price) - float(mid_price)) / float(mid_price) * 10_000.0
+                inside_band = dist_bps <= float(self.maker_rebate_max_spread_bps or 0.0)
+            if inside_band:
+                rebate_credit = (
+                    float(price) * float(size) * (float(self.maker_rebate_bps) / 10_000.0)
+                )
+        return bps_fee + gas - rebate_credit
 
     def resolution_fee(self, *, gross_winnings_usd: float) -> float:
         """Fee charged at settlement on a position's gross winnings.
@@ -545,7 +583,10 @@ class MatchingEngine:
                 side=side_norm,
                 price=price,
                 size=take,
-                fee_usd=self.fees.fill_fee(price=price, size=take, is_maker=False),
+                fee_usd=self.fees.fill_fee(
+                    price=price, size=take, is_maker=False,
+                    mid_price=book.snapshot.mid if book.snapshot else None,
+                ),
                 occurred_at=order.venue_received_at or self._now or order.submitted_at,
                 fill_index=len(self._fills_by_order[order.order_id]),
                 venue_sequence=book.snapshot.sequence,
@@ -630,7 +671,10 @@ class MatchingEngine:
             side=(order.side or "").upper(),
             price=price,
             size=size,
-            fee_usd=self.fees.fill_fee(price=price, size=size, is_maker=True),
+            fee_usd=self.fees.fill_fee(
+                price=price, size=size, is_maker=True,
+                mid_price=snap.mid if snap else None,
+            ),
             occurred_at=snap.observed_at,
             fill_index=len(self._fills_by_order[order.order_id]),
             venue_sequence=snap.sequence,
