@@ -32,6 +32,7 @@ from config import settings, RUNTIME_SETTINGS_PRECEDENCE
 from api import router, handle_websocket
 from api.routes_simulation import simulation_router
 from api.routes_anomaly import anomaly_router
+from api.routes_fill_model import router as fill_model_router
 from api.routes_orchestrator_live import router as orchestrator_live_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_operator import router as operator_router
@@ -940,6 +941,7 @@ async def inbound_api_rate_limit(request: Request, call_next):
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
+app.include_router(fill_model_router, prefix="/api", tags=["Fill Model"])
 app.include_router(orchestrator_live_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(traders_router, prefix="/api", tags=["Traders"])

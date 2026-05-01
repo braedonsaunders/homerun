@@ -7,9 +7,11 @@ import {
   Database,
   Loader2,
   Rocket,
+  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react'
+import FillModelPanel from './FillModelPanel'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -45,9 +47,10 @@ import {
   type MLDataStats,
 } from '../services/apiMachineLearning'
 
-type TabId = 'data' | 'import' | 'models' | 'adapters' | 'deployments' | 'jobs'
+type TabId = 'fill-model' | 'data' | 'import' | 'models' | 'adapters' | 'deployments' | 'jobs'
 
 const TABS: { id: TabId; label: string; icon: typeof Database }[] = [
+  { id: 'fill-model', label: 'Fill Model', icon: Sparkles },
   { id: 'data', label: 'Data', icon: Database },
   { id: 'import', label: 'Import', icon: Upload },
   { id: 'models', label: 'Models', icon: Brain },
@@ -651,7 +654,7 @@ function JobsTab() {
 }
 
 export default function MLModelsPanel() {
-  const [activeTab, setActiveTab] = useState<TabId>('data')
+  const [activeTab, setActiveTab] = useState<TabId>('fill-model')
   const { data: capabilities } = useQuery<MLCapabilities>({ queryKey: ['ml-capabilities'], queryFn: getMLCapabilities, refetchInterval: 15000 })
   const headerNote = useMemo(() => capabilities?.notes?.[0] ?? 'External models load lazily and only affect trading when you activate a deployment.', [capabilities])
 
@@ -688,6 +691,7 @@ export default function MLModelsPanel() {
         </div>
       </div>
       <ScrollArea className="flex-1 min-h-0">
+        {activeTab === 'fill-model' ? <FillModelPanel /> : null}
         {activeTab === 'data' ? <DataTab /> : null}
         {activeTab === 'import' ? <ImportTab /> : null}
         {activeTab === 'models' ? <ModelsTab /> : null}
