@@ -1036,6 +1036,31 @@ async def submit_execution_leg(
                         f"{str(execution.error_message or '')} | retry_token={fallback_token_id} failed: {retry_error_text}"
                     ).strip(" |")
 
+    # Strategy hook: notify on the live fill (synchronous case — taker
+    # cross or post-only that immediately matched).  Mirrors the shadow
+    # branch dispatch above.  Async fills detected later via wallet
+    # reconciliation are hooked separately in position_lifecycle.py.
+    _live_filled = float(execution.payload.get("filled_size") or 0.0)
+    if execution.status in {"executed", "completed"} and _live_filled > 0:
+        try:
+            strategy_slug = str(payload.get("strategy_key") or getattr(signal, "strategy_key", "") or "")
+            if strategy_slug:
+                from services.strategy_callbacks import dispatch_on_fill
+
+                asyncio.create_task(
+                    dispatch_on_fill(
+                        strategy_slug=strategy_slug,
+                        order=signal,
+                        mode="live",
+                        filled_shares=_live_filled,
+                        average_price=float(execution.effective_price or 0.0),
+                        notional_usd=effective_notional,
+                        ensemble_snapshot=None,  # live has no simulator ensemble
+                    )
+                )
+        except Exception:
+            pass  # never raise from a fill notification
+
     return LegSubmitResult(
         leg_id=leg_id,
         status=execution.status,

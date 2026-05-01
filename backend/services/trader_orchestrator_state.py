@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 import asyncio
+import time
 import copy
 import os
 from collections import defaultdict
@@ -5157,6 +5158,8 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
                     "reason": "force_delete_override",
                     "performed_at": to_iso(now),
                 }
+            _prev_status_for_cb = str(active_row.status or "").strip().lower()
+            _unfilled_for_cb = float(active_row.notional_usd or 0.0)
             active_row.status = "cancelled"
             active_row.updated_at = now
             active_row.payload_json = payload
@@ -5175,6 +5178,28 @@ async def delete_trader(session: AsyncSession, trader_id: str, *, force: bool = 
                 source=str(active_row.source or ""),
                 copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
             )
+
+            # Strategy hook: notify on the cancel.  Skip transitions
+            # that were already cancelled / failed / executed (no new
+            # cancellation event).
+            if _prev_status_for_cb not in {"cancelled", "failed", "rejected", "executed", "closed_win", "closed_loss"}:
+                try:
+                    _slug = str(active_row.strategy_key or "").strip()
+                    if _slug:
+                        import asyncio as _asyncio
+                        from services.strategy_callbacks import dispatch_on_cancel
+
+                        _asyncio.create_task(
+                            dispatch_on_cancel(
+                                strategy_slug=_slug,
+                                order=active_row,
+                                mode=str(active_row.mode or "shadow"),
+                                reason="force_delete_override",
+                                unfilled_shares=_unfilled_for_cb,
+                            )
+                        )
+                except Exception:
+                    pass  # never raise from a cancel notification
         await _commit_with_retry(session)
         await sync_trader_position_inventory(session, trader_id=trader_id)
 
@@ -8169,6 +8194,38 @@ async def sync_trader_position_inventory(
     }
 
 
+# Per-trader cap-count cache.  ``get_open_position_count_for_trader`` and
+# ``get_open_order_count_for_trader`` are called every orchestrator cycle
+# per trader to enforce position caps.  Both fetch full ``TraderOrder``
+# rows including payload_json (~8KB/row × hundreds of rows = several MB
+# transferred + Python dedup) — observed at 2-5s/call in production
+# (pg_stat_statements ``mean_exec_time=2872ms calls=27``).  A 2-second
+# TTL means at most one full computation per cap check per trader per
+# 2 seconds; cap accuracy is preserved within this window because:
+#   * Position counts only increase via the orchestrator's own writes
+#     (which ALSO invalidate this cache via ``invalidate_cap_cache``)
+#   * Position counts decrease via reconcile/exit which run on >5s
+#     cadence — a 2s stale cap is one cycle's worth of slack at worst,
+#     and the staleness biases towards "more open" so caps tighten
+#     conservatively, never loosen.
+_CAP_COUNT_CACHE_TTL_SECONDS = 2.0
+_cap_count_cache: dict[tuple[str, str, str, str], tuple[float, int]] = {}
+_cap_count_cache_lock = asyncio.Lock()
+
+
+def invalidate_cap_count_cache(trader_id: str | None = None) -> None:
+    """Drop cached cap counts.  Called after writes that change position/
+    order state (entry submitted, exit confirmed, etc.) so the next
+    cap check re-reads fresh DB state.  Pass ``None`` to drop all.
+    """
+    if trader_id is None:
+        _cap_count_cache.clear()
+        return
+    keys_to_drop = [k for k in _cap_count_cache if k[0] == str(trader_id)]
+    for key in keys_to_drop:
+        _cap_count_cache.pop(key, None)
+
+
 async def get_open_position_count_for_trader(
     session: AsyncSession,
     trader_id: str,
@@ -8178,6 +8235,11 @@ async def get_open_position_count_for_trader(
     scope = str(position_cap_scope or "market_direction").strip().lower()
     if scope not in {"market_direction", "market", "asset_timeframe"}:
         scope = "market_direction"
+
+    cache_key = ("pos", str(trader_id or ""), str(mode or ""), scope)
+    cached = _cap_count_cache.get(cache_key)
+    if cached is not None and (time.monotonic() - cached[0]) < _CAP_COUNT_CACHE_TTL_SECONDS:
+        return cached[1]
 
     position_query = (
         select(
@@ -8245,7 +8307,9 @@ async def get_open_position_count_for_trader(
         if key is not None:
             active_order_position_keys.add(key)
 
-    return max(len(active_position_keys), len(active_order_position_keys))
+    result = max(len(active_position_keys), len(active_order_position_keys))
+    _cap_count_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 async def get_open_position_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:
@@ -8281,9 +8345,29 @@ async def get_open_order_count_for_trader(
     mode: Optional[str] = None,
     statuses: Optional[set[str]] = None,
 ) -> int:
+    # Same per-cycle-per-trader cap cache as
+    # ``get_open_position_count_for_trader`` — see comment there.
+    # The ``statuses`` override path (rare) bypasses the cache because
+    # cache key would explode for arbitrary status sets.
+    use_cache = statuses is None
+    cache_key = ("ord", str(trader_id or ""), str(mode or ""), "default")
+    if use_cache:
+        cached = _cap_count_cache.get(cache_key)
+        if cached is not None and (time.monotonic() - cached[0]) < _CAP_COUNT_CACHE_TTL_SECONDS:
+            return cached[1]
+
     effective_statuses = statuses if statuses is not None else UNFILLED_ORDER_STATUSES
     status_key_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
-    query = select(TraderOrder).where(TraderOrder.trader_id == trader_id).where(status_key_expr.in_(tuple(effective_statuses)))
+    # Defer ``payload_json`` — we need to walk the rows for the live-
+    # authority dedup, but the dedup logic doesn't read payload_json.
+    # Without this, every per-cycle cap check pulls down all the JSON
+    # blobs for a trader's open orders (several MB per call).
+    query = (
+        select(TraderOrder)
+        .options(defer(TraderOrder.payload_json))
+        .where(TraderOrder.trader_id == trader_id)
+        .where(status_key_expr.in_(tuple(effective_statuses)))
+    )
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
         if mode_key == "other":
@@ -8292,7 +8376,10 @@ async def get_open_order_count_for_trader(
             query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
 
     rows = _dedupe_live_authority_rows(list((await session.execute(query)).scalars().all()))
-    return len(rows)
+    result = len(rows)
+    if use_cache:
+        _cap_count_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:

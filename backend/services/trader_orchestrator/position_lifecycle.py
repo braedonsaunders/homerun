@@ -524,12 +524,50 @@ def _format_exit_error(error: Any) -> str:
     return text or "unknown"
 
 
+def _is_orderbook_gone_error(error_text: str) -> bool:
+    """``the orderbook <token_id> does not exist`` is what Polymarket
+    returns when the market has been resolved/removed and the CLOB no
+    longer accepts orders for it.  No retry will ever succeed — the
+    market is gone.  The position must be settled via the on-chain
+    redemption path (handled by ``redeemer_worker``), not via CLOB.
+    """
+    text = (error_text or "").lower()
+    return "the orderbook" in text and "does not exist" in text
+
+
+def _is_fak_no_match_error(error_text: str) -> bool:
+    """``no orders found to match with FAK order`` means the orderbook
+    has no liquidity at the requested price.  Single occurrences are
+    recoverable (the book changes), but a sustained streak is a strong
+    signal that the bot's price ladder is permanently off-market for
+    this side of this token — retrying just burns 10s/attempt without
+    progress until the 100-attempt hard ceiling.  Treat as
+    "blocked-class" so the 3-strike quarantine fires.
+    """
+    text = (error_text or "").lower()
+    return "no orders found to match with fak order" in text
+
+
 def _apply_failed_exit_state(pending_exit: dict[str, Any], *, error: Any, now: datetime, retry_count: int) -> None:
     error_text = _format_exit_error(error)
     pending_exit["last_error"] = error_text
     pending_exit["last_attempt_at"] = _iso_utc(now)
     if _is_zero_balance_error(error_text):
         pending_exit["status"] = "blocked_no_inventory"
+        pending_exit["retry_count"] = retry_count
+        pending_exit["exhausted_at"] = _iso_utc(now)
+        pending_exit["next_retry_at"] = None
+        pending_exit["consecutive_timeout_count"] = 0
+        pending_exit["consecutive_blocked_failure_count"] = 0
+        return
+    # Hard-terminal: market's orderbook is gone (resolved/removed).
+    # No CLOB retry can succeed — the position settles on-chain
+    # via the redeemer.  Stop the retry loop immediately.  Without
+    # this, we observed exit retries spinning at 10-18s of CPU per
+    # cycle, starving the entire orchestrator (cascading into fast-
+    # trader db_list_signals slowness, WS pong timeouts, etc.).
+    if _is_orderbook_gone_error(error_text):
+        pending_exit["status"] = "blocked_orderbook_gone"
         pending_exit["retry_count"] = retry_count
         pending_exit["exhausted_at"] = _iso_utc(now)
         pending_exit["next_retry_at"] = None
@@ -549,9 +587,18 @@ def _apply_failed_exit_state(pending_exit: dict[str, Any], *, error: Any, now: d
     # changes the wallet state.  Track the streak across both kinds
     # so alternating timeouts and balance errors don't reset the
     # counter and let the order spin forever.
+    #
+    # FAK ``no orders found to match`` is added to the blocked-class
+    # bucket: each FAK rejection costs ~10s on the asyncio.wait_for
+    # budget, and a sustained streak (>3) means our price ladder is
+    # off-market.  Letting it grind to attempt 100 burns ~17 minutes
+    # of orchestrator time; the 3-strike quarantine drops it to ~30s
+    # before the row enters ``blocked_persistent_timeout`` and only
+    # auto-retries on the 5-minute cooldown.
     error_text_lower = (error_text or "").lower()
     is_balance_failure = "not enough balance" in error_text_lower or "not enough balance / allowance" in error_text_lower
-    is_blocked_class = is_timeout or is_balance_failure
+    is_fak_no_match = _is_fak_no_match_error(error_text_lower)
+    is_blocked_class = is_timeout or is_balance_failure or is_fak_no_match
     if is_blocked_class:
         blocked_streak = int(pending_exit.get("consecutive_blocked_failure_count") or 0) + 1
         pending_exit["consecutive_blocked_failure_count"] = blocked_streak
@@ -5397,6 +5444,7 @@ async def reconcile_live_positions(
             if _existing_verification == "wallet_activity" and _is_resolved_status:
                 continue
             if not dry_run:
+                _previous_status = str(canonical_row.status or "").strip().lower()
                 canonical_row.status = "executed"
                 canonical_row.notional_usd = float(wallet_notional)
                 if wallet_entry_price is not None and wallet_entry_price > 0.0:
@@ -5405,6 +5453,32 @@ async def reconcile_live_positions(
                 canonical_row.verification_status = "wallet_position"
                 canonical_row.verification_source = "wallet_positions_api"
                 canonical_row.updated_at = now
+
+                # Strategy hook: fire on_fill for the asynchronously-
+                # discovered live fill.  This is the canonical
+                # ground-truth point — the venue confirmed our order
+                # actually filled and the wallet now holds the
+                # position.  Skip if we're transitioning from an
+                # already-executed status (no new fill event).
+                if _previous_status not in {"executed", "closed_win", "closed_loss", "resolved", "resolved_win", "resolved_loss"}:
+                    try:
+                        _strategy_slug = str(canonical_row.strategy_key or "").strip()
+                        if _strategy_slug:
+                            from services.strategy_callbacks import dispatch_on_fill
+
+                            asyncio.create_task(
+                                dispatch_on_fill(
+                                    strategy_slug=_strategy_slug,
+                                    order=canonical_row,
+                                    mode="live",
+                                    filled_shares=float(wallet_size or 0.0),
+                                    average_price=float(wallet_entry_price or 0.0),
+                                    notional_usd=float(wallet_notional or 0.0),
+                                    ensemble_snapshot=None,
+                                )
+                            )
+                    except Exception:
+                        pass  # never raise from a fill notification
                 provider_reconciliation = canonical_payload.get("provider_reconciliation")
                 provider_reconciliation = provider_reconciliation if isinstance(provider_reconciliation, dict) else {}
                 snapshot = provider_reconciliation.get("snapshot")
@@ -6668,6 +6742,7 @@ async def reconcile_live_positions(
                 "blocked_no_inventory",
                 "blocked_retry_exhausted",
                 "blocked_retry_exhausted_hard",
+                "blocked_orderbook_gone",
             }
             and pending_market_info is not None
             and not pending_market_tradable
@@ -8378,6 +8453,7 @@ async def reconcile_live_positions(
             "blocked_retry_exhausted",
             "blocked_retry_exhausted_hard",
             "blocked_persistent_timeout",
+            "blocked_orderbook_gone",
         }:
             pending_wallet_resolution_confirmed = wallet_settlement_price is not None
             if pending_winning_idx is not None and pending_outcome_idx is not None and pending_wallet_resolution_confirmed:
