@@ -112,21 +112,30 @@ def list_ml_capabilities() -> list[MLCapability]:
 # ----------------------------------------------------------------------
 
 def _bootstrap_builtins() -> None:
-    """Register the migration-path built-ins.
+    """Register fallback built-in capabilities for keys not owned by
+    any strategy.
 
-    For now this is just ``crypto_directional`` so existing models /
-    snapshots / adapters keep working at the same task_key.  When a
-    strategy declares its own ``ml_capability`` with that task_key,
-    the strategy-attached version takes precedence on lookup.
+    ``crypto_directional`` was a built-in here until it migrated onto
+    ``BtcEthDirectionalEdgeStrategy.ml_capability`` (see Item 2 of the
+    Phase-12 cleanup).  The fallback registration below covers the
+    ~1 second window during cold worker boot when strategies haven't
+    been loaded yet — once the StrategyLoader populates instances,
+    the strategy-attached version takes precedence on every lookup.
+
+    Removing this fallback entirely is safe ONLY if every consumer
+    can tolerate "task not registered yet" errors during the boot
+    grace period.  Today the recorder + scanner can tolerate it
+    (they retry next tick), so we keep this minimal-info fallback
+    rather than risking startup races.
     """
     ml_strategy_registry.register(
         MLCapability(
             task_key="crypto_directional",
             label="Crypto Directional",
             description=(
-                "Directional probability for live crypto markets using "
-                "Homerun market features.  Migrated from the legacy "
-                "machine_learning_tasks/crypto_directional task class."
+                "Directional probability for live crypto markets. "
+                "Strategy-attached on BtcEthDirectionalEdgeStrategy; "
+                "this built-in is a cold-boot fallback only."
             ),
             allowed_assets=("btc", "eth", "sol", "xrp"),
             allowed_timeframes=("5m", "15m", "1h", "4h"),

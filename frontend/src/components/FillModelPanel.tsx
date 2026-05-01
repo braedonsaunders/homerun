@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   AlertTriangle,
+  Boxes,
   CheckCircle2,
   Clock,
   Gauge,
@@ -27,6 +28,7 @@ import {
   getEmpiricalConstants,
   getFillModelHistory,
   getLatencyDistribution,
+  listMLCapabilities,
   promoteModel,
   setEmpiricalOverrides,
   triggerRetrain,
@@ -192,6 +194,11 @@ export default function FillModelPanel() {
     queryKey: ['fill-model', 'latency'],
     queryFn: getLatencyDistribution,
     refetchInterval: 15000,
+  })
+  const capabilitiesQuery = useQuery({
+    queryKey: ['ml', 'capabilities'],
+    queryFn: listMLCapabilities,
+    refetchInterval: 60_000,
   })
   const decompQuery = useQuery({
     queryKey: ['fill-model', 'decomposition'],
@@ -496,6 +503,66 @@ export default function FillModelPanel() {
               {(overridesMutation.error as { message?: string })?.message ?? 'Override failed'}
             </div>
           ) : null}
+        </div>
+
+        {/* ML CAPABILITY REGISTRY — strategies that own ML tasks */}
+        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+            <Boxes className="h-3.5 w-3.5 text-violet-300" />
+            ML capabilities registered
+            <span className="ml-auto text-[10px] text-muted-foreground">
+              {capabilitiesQuery.data?.length ?? 0} task{(capabilitiesQuery.data?.length ?? 0) === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="space-y-1">
+            {(capabilitiesQuery.data ?? []).map((cap) => (
+              <div
+                key={cap.task_key}
+                className="rounded-sm border border-border/40 bg-background/40 px-2 py-1.5"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs">{cap.task_key}</span>
+                  {cap.owner_strategy_slug ? (
+                    <Badge className="bg-violet-500/10 text-violet-300 text-[9px]">
+                      strategy: {cap.owner_strategy_slug}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[9px]">
+                      built-in fallback
+                    </Badge>
+                  )}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">
+                  {cap.label}
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1 text-[9px]">
+                  {cap.allowed_assets.slice(0, 8).map((a) => (
+                    <span key={a} className="rounded-sm bg-muted/40 px-1 py-px font-mono">
+                      {a}
+                    </span>
+                  ))}
+                  {cap.allowed_timeframes.slice(0, 6).map((t) => (
+                    <span key={t} className="rounded-sm bg-amber-500/10 px-1 py-px font-mono text-amber-300">
+                      {t}
+                    </span>
+                  ))}
+                  <span className="ml-auto rounded-sm bg-emerald-500/10 px-1 py-px font-mono text-emerald-300">
+                    {cap.feature_names.length} features
+                  </span>
+                </div>
+              </div>
+            ))}
+            {(capabilitiesQuery.data ?? []).length === 0 ? (
+              <div className="text-xs text-muted-foreground">
+                No ML capabilities registered. Declare one on a strategy class via{' '}
+                <code className="rounded-sm bg-muted/40 px-1 font-mono text-[10px]">ml_capability = MLCapability(...)</code>.
+              </div>
+            ) : null}
+          </div>
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            Adding a new ML task is a one-attribute edit on a strategy class — strategies are DB-managed
+            and hot-reload, so it shows up here automatically.
+          </div>
         </div>
 
         {/* MODEL HISTORY (promotion list) */}

@@ -47,6 +47,7 @@ from utils.converters import clamp, coerce_bool as _coerce_bool, safe_float, to_
 from utils.kelly import polymarket_taker_fee as polymarket_fee_curve, polymarket_taker_fee_pct as polymarket_fee_pct
 from utils.signal_helpers import signal_payload
 from services.quality_filter import QualityFilterOverrides
+from services.ml import MLCapability as _MLCapability
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -839,6 +840,23 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
     subscriptions = ["crypto_update"]
     supports_entry_take_profit_exit = True
     default_open_order_timeout_seconds = 45.0
+
+    # Declare the directional-probability ML capability inline. The
+    # strategy_ml_registry picks this up at lookup time, so the
+    # ``crypto_directional`` task is now strategy-owned (no built-in
+    # registration needed).  See services/ml/capabilities.py.
+    ml_capability = _MLCapability(
+        task_key="crypto_directional",
+        label="Crypto Directional",
+        description=(
+            "Directional probability for live crypto markets using "
+            "Homerun market features. Owned by BtcEthDirectionalEdgeStrategy "
+            "(declared via ml_capability class attribute)."
+        ),
+        allowed_assets=("btc", "eth", "sol", "xrp"),
+        allowed_timeframes=("5m", "15m", "1h", "4h"),
+        default_lookback=5,
+    )
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=1.0,

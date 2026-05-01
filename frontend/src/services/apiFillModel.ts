@@ -138,3 +138,19 @@ export async function getTriangulation(strategySlug: string, days = 30): Promise
   })
   return data
 }
+
+export interface MLCapabilitySummary {
+  task_key: string
+  label: string
+  description: string
+  allowed_assets: string[]
+  allowed_timeframes: string[]
+  default_lookback: number
+  owner_strategy_slug: string | null
+  feature_names: string[]
+}
+
+export async function listMLCapabilities(): Promise<MLCapabilitySummary[]> {
+  const { data } = await api.get<{ tasks: MLCapabilitySummary[] }>('/ml/tasks')
+  return data.tasks ?? []
+}
