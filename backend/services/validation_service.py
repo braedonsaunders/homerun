@@ -11,27 +11,17 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import sys
 import time
-import uuid
-
-# 60s TTL for the demoted-strategy-types cache.  Operator/guardrail
-# changes call ``invalidate_demoted_cache`` for immediate effect; the
-# TTL is a safety net so a forgotten invalidation doesn't permanently
-# stale the orchestrator's view.
-_DEMOTED_CACHE_TTL_SECONDS = 60.0
-# Stale-while-revalidate threshold — once the cached set is older than
-# this fraction of TTL, the next reader returns the cached value AND
-# kicks off a background refresh.  Readers never block on the DB.
-_DEMOTED_CACHE_REFRESH_FRACTION = 0.70
-from datetime import datetime, timedelta, timezone
-from utils.utcnow import utcnow
 from typing import Any, Optional
+import uuid
 
 from sqlalchemy import and_, func, select
 from utils.converters import coerce_bool as _coerce_bool
+from utils.utcnow import utcnow
 
 from models.database import (
     AppSettings,
@@ -56,6 +46,10 @@ from utils.logger import get_logger
 # TTL is a safety net so a forgotten invalidation doesn't permanently
 # stale the orchestrator's view.
 _DEMOTED_CACHE_TTL_SECONDS = 60.0
+# Stale-while-revalidate threshold — once the cached set is older than
+# this fraction of TTL, the next reader returns the cached value AND
+# kicks off a background refresh.  Readers never block on the DB.
+_DEMOTED_CACHE_REFRESH_FRACTION = 0.70
 
 logger = get_logger(__name__)
 

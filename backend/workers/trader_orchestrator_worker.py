@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import and_, func, select, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -91,7 +91,6 @@ from services.trader_orchestrator_state import (
     get_gross_exposure as _db_get_gross_exposure,
     get_pending_live_exit_summary_for_trader,
     list_unconsumed_trade_signals as _list_unconsumed_trade_signals_authoritative,
-    list_live_wallet_positions_for_trader,
     list_traders,
     record_signal_consumption as _record_signal_consumption,
     reconcile_live_provider_orders,

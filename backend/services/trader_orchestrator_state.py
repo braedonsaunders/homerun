@@ -21,6 +21,7 @@ from sqlalchemy.orm import defer
 
 from models.database import (
     AppSettings,
+    AsyncSessionLocal,
     ExecutionSession,
     ExecutionSessionEvent,
     ExecutionSessionLeg,

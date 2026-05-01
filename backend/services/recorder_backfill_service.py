@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import select
 
 from models.database import (
     AsyncSessionLocal,
