@@ -1741,46 +1741,16 @@ async def run_execution_backtest(
     tokens: list[str] = []
     try:
         async with AsyncSessionLocal() as session:
-            tokens = list(token_ids or [])
-            if not tokens:
-                stmt = (
-                    select(
-                        MarketMicrostructureSnapshot.token_id,
-                        sa_func.count(MarketMicrostructureSnapshot.id).label("c"),
-                    )
-                    .where(
-                        MarketMicrostructureSnapshot.observed_at >= start_dt,
-                        MarketMicrostructureSnapshot.observed_at <= end_dt,
-                        MarketMicrostructureSnapshot.snapshot_type == "book",
-                    )
-                    .group_by(MarketMicrostructureSnapshot.token_id)
-                    .order_by(sa_func.count(MarketMicrostructureSnapshot.id).desc())
-                    # 25 tokens captures the bulk of the opportunity
-                    # surface for most strategies; 5 was too narrow and
-                    # silently dropped opportunities outside the busiest
-                    # markets.  Operators can pass token_ids explicitly
-                    # to scope further if needed.
-                    .limit(25)
-                )
-                rows = (await session.execute(stmt)).all()
-                tokens = [str(r[0]) for r in rows if r[0]]
-
-            if not tokens:
-                result.runtime_error = (
-                    "No microstructure snapshots in the requested window. "
-                    "Pass token_ids explicitly or expand the time range."
-                )
-                result.total_time_ms = (time.monotonic() - total_start) * 1000
-                return result
-
+            # Always pull the strategy's opportunities first.  Earlier
+            # we picked the token universe by raw microstructure
+            # snapshot count (top 25) and THEN filtered opps to those
+            # tokens — which silently dropped 99%+ of an event-market
+            # strategy's opps because the noisiest microstructure
+            # tokens are crypto perpetuals, not the prediction-market
+            # tokens the strategy actually fires on.  For tail_end_carry
+            # this collapsed 1,523 opps × 653 tokens to 3 intents.
+            # Now: opps drive the universe, microstructure follows.
             try:
-                # Filter by the strategy_type the user picked.  Without
-                # this, the engine pulls every strategy's opportunities
-                # in the window and tries to drive the backtest with
-                # them — which both contaminates the result and wastes
-                # the max_intents budget on unrelated signals.  Slug
-                # is the user-selected strategy ("tail_end_carry",
-                # "btc_eth_directional_edge", etc.).
                 opp_stmt = (
                     select(Opportunity)
                     .where(
@@ -1793,9 +1763,8 @@ async def run_execution_backtest(
                 )
                 opps = (await session.execute(opp_stmt)).scalars().all()
                 # Fallback: if the slug filter found nothing, broaden to
-                # window-only.  This covers the case where a strategy
-                # was renamed (slug changes don't backfill historical
-                # rows) so the operator at least sees something.
+                # window-only.  Covers strategy renames (slug changes
+                # don't backfill historical rows).
                 if not opps:
                     opp_stmt_loose = (
                         select(Opportunity)
@@ -1809,6 +1778,94 @@ async def run_execution_backtest(
                     opps = (await session.execute(opp_stmt_loose)).scalars().all()
             except Exception:
                 opps = []
+
+            tokens = list(token_ids or [])
+            if not tokens:
+                # Derive the token universe from the strategy's own
+                # opportunities.  We then narrow to tokens that
+                # actually have book snapshots in the window so the
+                # matching engine has something to replay against.
+                opp_tokens: dict[str, int] = {}
+                for opp in opps or []:
+                    pdata = getattr(opp, "positions_data", None) or {}
+                    if isinstance(pdata, dict):
+                        ptt = pdata.get("positions_to_take") or []
+                    else:
+                        ptt = []
+                    if not ptt:
+                        legacy = getattr(opp, "positions_to_take", None) or []
+                        if isinstance(legacy, list):
+                            ptt = legacy
+                    for pos in ptt:
+                        if isinstance(pos, dict):
+                            tok = str(pos.get("token_id") or "").strip()
+                            if tok:
+                                opp_tokens[tok] = opp_tokens.get(tok, 0) + 1
+                if opp_tokens:
+                    # Filter to tokens with actual book snapshots in
+                    # window so the engine can replay against them.
+                    candidate_tokens = list(opp_tokens.keys())
+                    have_snap_stmt = (
+                        select(MarketMicrostructureSnapshot.token_id)
+                        .where(
+                            MarketMicrostructureSnapshot.observed_at >= start_dt,
+                            MarketMicrostructureSnapshot.observed_at <= end_dt,
+                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                            MarketMicrostructureSnapshot.token_id.in_(candidate_tokens),
+                        )
+                        .group_by(MarketMicrostructureSnapshot.token_id)
+                    )
+                    snap_rows = (await session.execute(have_snap_stmt)).all()
+                    tokens_with_snaps = {str(r[0]) for r in snap_rows if r[0]}
+                    # Sort opp_tokens by intent-frequency desc, take
+                    # the ones with snapshots, cap at 200 so a
+                    # pathological strategy with 10k tokens doesn't
+                    # blow up the matcher.  No-snap tokens still get
+                    # logged as a warning so the operator knows what
+                    # was skipped.
+                    ranked = sorted(opp_tokens.items(), key=lambda kv: kv[1], reverse=True)
+                    tokens = [t for t, _ in ranked if t in tokens_with_snaps][:200]
+                    skipped = len(opp_tokens) - len(tokens)
+                    if skipped > 0:
+                        result.validation_warnings.append(
+                            f"{skipped} opportunity tokens had no book snapshots in window — skipped"
+                        )
+                # If the strategy has zero opportunities (e.g. a fresh
+                # strategy), fall back to "top tokens by snapshot
+                # volume in window" so the engine still has something
+                # to drive against — same behavior as before but only
+                # as a last resort, not the primary path.
+                if not tokens:
+                    fallback_stmt = (
+                        select(
+                            MarketMicrostructureSnapshot.token_id,
+                            sa_func.count(MarketMicrostructureSnapshot.id).label("c"),
+                        )
+                        .where(
+                            MarketMicrostructureSnapshot.observed_at >= start_dt,
+                            MarketMicrostructureSnapshot.observed_at <= end_dt,
+                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                        )
+                        .group_by(MarketMicrostructureSnapshot.token_id)
+                        .order_by(sa_func.count(MarketMicrostructureSnapshot.id).desc())
+                        .limit(25)
+                    )
+                    rows = (await session.execute(fallback_stmt)).all()
+                    tokens = [str(r[0]) for r in rows if r[0]]
+                    if tokens:
+                        result.validation_warnings.append(
+                            "No strategy opportunities in window — falling back to top-25 microstructure tokens"
+                        )
+
+            if not tokens:
+                result.runtime_error = (
+                    "No tokens to replay against. "
+                    "Strategy has no opportunities AND no microstructure snapshots "
+                    "in the requested window — pass token_ids explicitly or "
+                    "expand the time range."
+                )
+                result.total_time_ms = (time.monotonic() - total_start) * 1000
+                return result
 
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;

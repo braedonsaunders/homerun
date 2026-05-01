@@ -707,10 +707,18 @@ export default function BacktestStudio({
   // Triangulation: backtest vs shadow vs live PnL for THIS strategy
   // over the last 30 days.  Big divergence between any two means the
   // fill model is the prime suspect.  Only loaded when we have a slug.
+  //
+  // Follow the *active run's* strategy_slug, not the static
+  // ``initialSlug`` prop.  Otherwise clicking a recent run in the
+  // sidebar (different strategy from whatever the studio mounted
+  // with) keeps querying triangulation against the original slug
+  // and the panel reads "0 live trades" even when 6,000+ exist for
+  // the run's actual strategy.
+  const triangSlug = activeRun?.strategy_slug || initialSlug || ''
   const triangulationQuery = useQuery({
-    queryKey: ['triangulation', initialSlug],
-    queryFn: () => getTriangulation(initialSlug || '', 30),
-    enabled: Boolean(initialSlug && initialSlug !== '_backtest_unified' && initialSlug !== '_research'),
+    queryKey: ['triangulation', triangSlug],
+    queryFn: () => getTriangulation(triangSlug, 30),
+    enabled: Boolean(triangSlug && triangSlug !== '_backtest_unified' && triangSlug !== '_research'),
     refetchInterval: 60_000,
   })
 
