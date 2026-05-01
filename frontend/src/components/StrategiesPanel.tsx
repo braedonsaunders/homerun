@@ -90,7 +90,7 @@ export default function StrategiesPanel({
           )}
         >
           <Brain className="w-3.5 h-3.5" />
-          ML Models
+          Machine Learning
         </button>
         <button
           onClick={() => setViewMode('validation')}

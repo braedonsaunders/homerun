@@ -98,6 +98,48 @@ class TrainingResult:
     notes: str
 
 
+def _backfill_features_from_legacy_payload(
+    payload: dict[str, Any],
+    row: Any,
+) -> dict[str, Any] | None:
+    """Best-effort feature dict for orders predating Phase 1.
+
+    Pulls what's recoverable (time_to_resolution, book_age_ms,
+    notional, market_type_strata) from ``live_market`` / ``execution_estimate``
+    and leaves the rest as None.  Returns None if there isn't even a
+    notional to anchor the row, which makes the row useless.
+    """
+    if not isinstance(payload, dict):
+        return None
+    live_market = payload.get("live_market") if isinstance(payload, dict) else None
+    live_market = live_market if isinstance(live_market, dict) else {}
+    notional = None
+    raw_notional = getattr(row, "notional_usd", None)
+    if isinstance(raw_notional, (int, float)) and raw_notional > 0:
+        notional = float(raw_notional)
+    if notional is None:
+        return None
+    seconds_left = live_market.get("seconds_left")
+    market_data_age_ms = live_market.get("market_data_age_ms")
+    timeframe = (live_market.get("timeframe") or payload.get("timeframe") or "").strip().lower() if isinstance(live_market.get("timeframe") or payload.get("timeframe"), str) else ""
+    strata = f"crypto_{timeframe}" if "crypto" in str((live_market.get("category") or "")).lower() and timeframe else "pooled"
+    entry_delta_pct = live_market.get("entry_price_delta_pct")
+    return {
+        "queue_ahead_shares": None,
+        "depth_behind_shares": None,
+        "spread_bps": None,
+        "mid_distance_bps": (float(entry_delta_pct) * 100.0) if isinstance(entry_delta_pct, (int, float)) else None,
+        "recent_trade_intensity_per_sec": None,
+        "time_to_resolution_seconds": float(seconds_left) if isinstance(seconds_left, (int, float)) and seconds_left > 0 else None,
+        "side_imbalance": None,
+        "underlying_volatility_bps_per_min": None,
+        "latency_p95_ms": None,
+        "book_age_ms": float(market_data_age_ms) if isinstance(market_data_age_ms, (int, float)) and market_data_age_ms >= 0 else None,
+        "notional_usd": notional,
+        "market_type_strata": strata,
+    }
+
+
 async def fetch_training_rows(
     session: AsyncSession,
     *,
@@ -117,6 +159,7 @@ async def fetch_training_rows(
             TraderOrder.updated_at,
             TraderOrder.status,
             TraderOrder.payload_json,
+            TraderOrder.notional_usd,
         ).where(TraderOrder.created_at >= cutoff)
     )
     rows: list[dict[str, Any]] = []
@@ -141,13 +184,19 @@ async def fetch_training_rows(
         duration_seconds = max(0.001, (ta - ca).total_seconds())
 
         payload = row.payload_json or {}
-        # The feature snapshot lives under shadow_simulation.survival_features
-        # (post-Phase 1).  Fall back to live_context for live orders that
-        # carry similar telemetry under a different key.
+        # Preferred path: shadow_simulation.survival_features (post-Phase 1).
         sim = payload.get("shadow_simulation") or payload.get("paper_simulation") or {}
         sf = sim.get("survival_features") if isinstance(sim, dict) else None
+
+        # Fallback: backfill what we can from legacy live-order payloads
+        # so the trainer has rows even before any post-Phase-1 orders
+        # accumulate.  Missing covariates become NaN; the KM fallback
+        # path doesn't read covariates anyway, and Cox handles missing
+        # via mean imputation in ``_impute_means``.
         if not isinstance(sf, dict):
-            continue
+            sf = _backfill_features_from_legacy_payload(payload, row)
+            if sf is None:
+                continue
         cov_dict: dict[str, Any] = {
             "duration_seconds": duration_seconds,
             "event_observed": event_observed,
@@ -344,7 +393,7 @@ async def train_and_persist(
             family=r.family,
             strata_key=r.strata_key,
             trained_at=datetime.now(timezone.utc),
-            training_window_start=df["duration_seconds"].index.min() if not df.empty else None,
+            training_window_start=datetime.now(timezone.utc) - timedelta(days=window_days),
             training_window_end=datetime.now(timezone.utc),
             n_events=r.n_events,
             n_observations=r.n_observations,
