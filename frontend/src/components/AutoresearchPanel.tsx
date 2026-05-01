@@ -45,6 +45,7 @@ import {
 } from '../services/apiIntelligence'
 
 import { BacktestSuitePanel } from './StrategyBacktestFlyout'
+import BacktestStudio from './BacktestStudio'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -52,7 +53,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { cn } from '../lib/utils'
 
 
-type InnerTab = 'code' | 'backtest'
+type InnerTab = 'code' | 'studio' | 'legacy'
 
 
 export default function AutoresearchPanel() {
@@ -70,7 +71,7 @@ export default function AutoresearchPanel() {
   )
 
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
-  const [innerTab, setInnerTab] = useState<InnerTab>('code')
+  const [innerTab, setInnerTab] = useState<InnerTab>('studio')
 
   // Resolve strategy: deep-link signal → first item in catalog.
   useEffect(() => {
@@ -150,15 +151,27 @@ export default function AutoresearchPanel() {
           </button>
           <button
             type="button"
-            onClick={() => setInnerTab('backtest')}
+            onClick={() => setInnerTab('studio')}
             className={cn(
               'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
-              innerTab === 'backtest'
+              innerTab === 'studio'
+                ? 'border-amber-500 text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Sparkles className="w-3 h-3" /> Backtest Studio
+          </button>
+          <button
+            type="button"
+            onClick={() => setInnerTab('legacy')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
+              innerTab === 'legacy'
                 ? 'border-fuchsia-500 text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
-            <FlaskConical className="w-3 h-3" /> Backtest Suite
+            <FlaskConical className="w-3 h-3" /> Legacy Suite
           </button>
         </div>
       </div>
@@ -178,6 +191,19 @@ export default function AutoresearchPanel() {
           ) : (
             <PanelEmpty message="Pick a strategy to start a code experiment." />
           )
+        ) : innerTab === 'studio' ? (
+          selectedStrategy ? (
+            <BacktestStudio
+              initialSourceCode={(selectedStrategy as any).source_code || ''}
+              initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
+              initialConfig={(selectedStrategy as any).default_params_json || {}}
+            />
+          ) : (
+            <PanelEmpty
+              title={selectedStrategyQuery.isLoading ? 'Loading strategy...' : 'Pick a strategy'}
+              message="Backtest Studio needs a strategy selected. Pick one from the dropdown above."
+            />
+          )
         ) : selectedStrategy ? (
           <BacktestSuitePanel
             sourceCode={(selectedStrategy as any).source_code || ''}
@@ -188,7 +214,7 @@ export default function AutoresearchPanel() {
         ) : (
           <PanelEmpty
             title={selectedStrategyQuery.isLoading ? 'Loading strategy...' : 'Pick a strategy'}
-            message="The Backtest Suite needs a strategy selected. Pick one from the dropdown above."
+            message="The legacy Backtest Suite needs a strategy selected."
           />
         )}
       </div>
