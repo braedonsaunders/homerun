@@ -582,6 +582,164 @@ async def _capture_latency() -> dict[str, Any]:
     }
 
 
+async def _capture_outcome_netting(execution: dict[str, Any]) -> dict[str, Any]:
+    """Outcome-aware netting + capital-lockup report.
+
+    Polymarket markets are not all binary YES/NO — many are
+    multi-outcome (3+ tokens whose prices sum to ~1.0).  When a
+    portfolio holds positions across multiple sibling tokens of the
+    same parent market, the worst-case loss is bounded by
+    ``sum(cost_basis) - 1.0`` (the redemption guarantee), not the
+    gross sum of cost bases.  This report computes both the gross
+    and the netted view so the operator can see how much capital
+    they could free with outcome-aware sizing — without changing
+    the matching engine itself.
+
+    Capital lockup: USDC parked in unresolved markets isn't
+    redeployable.  We report the time-weighted average lockup
+    duration across closed positions plus the still-locked capital
+    of currently-open positions.
+    """
+    from datetime import datetime as _dt
+
+    from services.backtest.outcome_resolver import get_outcome_resolver
+
+    positions = list(execution.get("positions_summary") or [])
+    if not positions:
+        return {
+            "gross_exposure_usd": 0.0,
+            "net_exposure_usd": 0.0,
+            "capital_efficiency_pct": None,
+            "locked_capital_usd": 0.0,
+            "open_positions": 0,
+            "outcome_groups": {"full_coverage": 0, "partial": 0, "single": 0},
+            "avg_lockup_seconds": None,
+            "max_lockup_seconds": None,
+            "by_outcome_count": {},
+        }
+
+    resolver = get_outcome_resolver()
+
+    # Group positions by parent market.  Tokens not in the resolver
+    # index fall under a synthetic "unknown_<token_id>" group of size 1
+    # (treated as single-outcome, no netting available).
+    groups: dict[str, dict[str, Any]] = {}
+    open_positions = 0
+    total_locked_usd = 0.0
+    lockup_durations: list[float] = []
+    now_ts = _dt.now(tz=None).timestamp()
+
+    for pos in positions:
+        token_id = str(pos.get("token_id") or "")
+        cost_basis = float(pos.get("cost_basis_usd") or 0.0)
+        is_open = bool(pos.get("is_open"))
+        if is_open:
+            open_positions += 1
+            total_locked_usd += cost_basis
+
+        # Lockup duration: closed positions use closed - opened; open
+        # positions use now - opened (proxy — the simulator's "now"
+        # is end_iso, but we use wall-clock as a fallback).
+        opened_iso = pos.get("opened_at")
+        closed_iso = pos.get("closed_at")
+        if opened_iso:
+            try:
+                t0 = _dt.fromisoformat(str(opened_iso).replace("Z", "+00:00")).timestamp()
+                t1 = (
+                    _dt.fromisoformat(str(closed_iso).replace("Z", "+00:00")).timestamp()
+                    if closed_iso
+                    else now_ts
+                )
+                if t1 > t0:
+                    lockup_durations.append(t1 - t0)
+            except (ValueError, TypeError):
+                pass
+
+        record = await resolver.market_for_token(token_id)
+        group_key = record.market_id if record is not None else f"unknown_{token_id}"
+        if group_key not in groups:
+            groups[group_key] = {
+                "outcome_count": record.outcome_count if record else 1,
+                "siblings_total": len(record.token_ids) if record else 1,
+                "siblings_held": set(),
+                "gross_cost_basis": 0.0,
+                "is_neg_risk": bool(record.neg_risk) if record else False,
+            }
+        groups[group_key]["siblings_held"].add(token_id.lower())
+        # Netting reasoning relies on long positions across all
+        # complementary outcomes: only BUY-side positions cap collateral
+        # need at the redemption value.  Conservative: only count BUY
+        # cost basis toward the redemption-rebate calculation.
+        if str(pos.get("side") or "").upper() == "BUY":
+            groups[group_key]["gross_cost_basis"] += cost_basis
+
+    # Per-group netting: when all siblings are held BUY, the worst-case
+    # net cost is sum(cost_basis) - $1 per share (redemption guarantee
+    # ≈ 1.0 minus per-leg gas).  We approximate the rebate as
+    # max(0, gross - 1.0 * shares) — but since we don't have shares
+    # here without weighting by sizes, we use the heuristic
+    # ``gross - count_of_outcomes_covered`` to give a conservative
+    # capital-efficiency view (every fully-covered group rebates 1
+    # unit of risk).
+    full_coverage = 0
+    partial = 0
+    single = 0
+    gross_exposure = 0.0
+    rebate_estimate_usd = 0.0
+    by_outcome_count: dict[int, int] = {}
+    for g in groups.values():
+        gross_exposure += g["gross_cost_basis"]
+        held = len(g["siblings_held"])
+        total = g["siblings_total"]
+        oc = g["outcome_count"]
+        by_outcome_count[oc] = by_outcome_count.get(oc, 0) + 1
+        if total == 1:
+            single += 1
+        elif held >= total and total >= 2:
+            full_coverage += 1
+            # Cap the rebate at the gross — full coverage frees up to
+            # 1 unit per share.  Without per-share resolution here,
+            # use 50% of gross as a conservative redemption proxy
+            # (real number depends on entry prices summing close to 1).
+            rebate_estimate_usd += g["gross_cost_basis"] * 0.5
+        elif 0 < held < total:
+            partial += 1
+        else:
+            single += 1
+
+    net_exposure = max(0.0, gross_exposure - rebate_estimate_usd)
+    capital_efficiency_pct = (
+        (1.0 - net_exposure / gross_exposure) * 100.0 if gross_exposure > 0 else None
+    )
+
+    return {
+        "gross_exposure_usd": round(gross_exposure, 2),
+        "net_exposure_usd": round(net_exposure, 2),
+        "rebate_estimate_usd": round(rebate_estimate_usd, 2),
+        "capital_efficiency_pct": (
+            round(capital_efficiency_pct, 2) if capital_efficiency_pct is not None else None
+        ),
+        "locked_capital_usd": round(total_locked_usd, 2),
+        "open_positions": open_positions,
+        "outcome_groups": {
+            "full_coverage": full_coverage,
+            "partial": partial,
+            "single": single,
+            "total": len(groups),
+        },
+        "by_outcome_count": {str(k): v for k, v in sorted(by_outcome_count.items())},
+        "avg_lockup_seconds": (
+            round(sum(lockup_durations) / len(lockup_durations), 1)
+            if lockup_durations
+            else None
+        ),
+        "max_lockup_seconds": (
+            round(max(lockup_durations), 1) if lockup_durations else None
+        ),
+        "n_lockup_samples": len(lockup_durations),
+    }
+
+
 def _capture_data_quality() -> dict[str, Any]:
     """Snapshot the microstructure recorder's data-quality counters.
 
@@ -785,6 +943,7 @@ async def run_unified_backtest(
     latency = await latency_task
     constants = _capture_empirical_constants()
     data_quality = _capture_data_quality()
+    outcome_netting = await _capture_outcome_netting(exec_dict)
 
     # Counterfactual replay for sample fills (best-effort, optional).
     fills_sample = exec_dict.get("fills_sample") or []
@@ -832,6 +991,7 @@ async def run_unified_backtest(
         "counterfactuals": counterfactuals,
         "ensemble_band": ensemble_band,
         "data_quality": data_quality,
+        "outcome_netting": outcome_netting,
     }
     _store_run(out)
     return out

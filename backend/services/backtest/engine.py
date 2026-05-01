@@ -115,6 +115,7 @@ class BacktestResult:
     correlation_matrix: dict[tuple[str, str], float] = field(default_factory=dict)
     fees_per_fill_usd: float = 0.0
     fees_resolution_usd: float = 0.0
+    positions_summary: list[dict[str, Any]] = field(default_factory=list)
     notes: dict[str, Any] = field(default_factory=dict)
 
 
@@ -560,6 +561,29 @@ class BacktestEngine:
             seed=self.config.seed,
         )
 
+        # Build a lightweight per-position summary suitable for the
+        # outcome-netting + capital-lockup analysis.  Each entry has
+        # enough fields for the resolver to group by parent market and
+        # measure how long capital was tied up.
+        positions_summary: list[dict[str, Any]] = []
+        for pos in list(self.portfolio.closed_positions) + list(self.portfolio.positions.values()):
+            positions_summary.append(
+                {
+                    "token_id": pos.token_id,
+                    "side": pos.side,
+                    "strategy_slug": pos.strategy_slug,
+                    "size": float(pos.size),
+                    "entry_price": float(pos.entry_price),
+                    "cost_basis_usd": float(pos.cost_basis_usd),
+                    "realized_pnl_usd": float(pos.realized_pnl_usd),
+                    "fees_paid_usd": float(pos.fees_paid_usd),
+                    "fill_count": int(pos.fill_count),
+                    "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
+                    "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
+                    "is_open": pos.closed_at is None and pos.size > 1e-12,
+                }
+            )
+
         return BacktestResult(
             config=self.config,
             final_equity_usd=self.portfolio.equity_usd(),
@@ -576,6 +600,7 @@ class BacktestEngine:
             correlation_matrix=self.portfolio.correlation_matrix(),
             fees_per_fill_usd=self.portfolio.per_fill_fees_paid_usd(),
             fees_resolution_usd=self.portfolio.resolution_fees_paid_usd,
+            positions_summary=positions_summary,
             notes={"snapshots_processed": self._snapshots_processed},
         )
 

@@ -1605,6 +1605,7 @@ class ExecutionBacktestResult:
     correlation_pairs: list[dict[str, Any]] = field(default_factory=list)
     fills_sample: list[dict[str, Any]] = field(default_factory=list)
     equity_curve_sample: list[dict[str, Any]] = field(default_factory=list)
+    positions_summary: list[dict[str, Any]] = field(default_factory=list)
     load_time_ms: float = 0.0
     data_fetch_time_ms: float = 0.0
     run_time_ms: float = 0.0
@@ -1993,6 +1994,7 @@ async def run_execution_backtest(
     result.equity_curve_sample = [
         {"at": ts.isoformat(), "equity_usd": float(value)} for ts, value in eq
     ]
+    result.positions_summary = list(getattr(bt_result, "positions_summary", []) or [])
 
     try:
         loader.unload(bt_slug)
