@@ -40,9 +40,11 @@ import { cn } from '../lib/utils'
 import {
   type BacktestRunSummary,
   type UnifiedBacktestResult,
+  type WalkForwardResult,
   getBacktestRun,
   listBacktestRuns,
   runUnifiedBacktest,
+  runWalkForward,
 } from '../services/apiBacktest'
 import {
   getActiveFillModel,
@@ -466,6 +468,35 @@ export default function BacktestStudio({
     enabled: Boolean(initialSlug && initialSlug !== '_backtest_unified' && initialSlug !== '_research'),
     refetchInterval: 60_000,
   })
+
+  // Walk-forward: not auto-run.  User triggers via the panel button.
+  const [walkForwardResult, setWalkForwardResult] = useState<WalkForwardResult | null>(null)
+  const [walkForwardMode, setWalkForwardMode] = useState<'anchored' | 'rolling'>('anchored')
+  const [walkForwardFolds, setWalkForwardFolds] = useState<number>(6)
+  const walkForwardMutation = useMutation({
+    mutationFn: runWalkForward,
+    onSuccess: (data) => setWalkForwardResult(data),
+  })
+
+  const handleWalkForward = () => {
+    if (!sourceCode.trim() || sourceCode.trim().length < 10) return
+    // Default test window: last 14 days.
+    const end = new Date()
+    const start = new Date(end.getTime() - 14 * 24 * 60 * 60 * 1000)
+    walkForwardMutation.mutate({
+      source_code: sourceCode,
+      slug: slug,
+      config: initialConfig,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      initial_capital_usd: parseFloat(initialCapital) || 1000,
+      mode: walkForwardMode,
+      n_folds: walkForwardFolds,
+      train_ratio: 0.5,
+      seed: seed ? parseInt(seed, 10) : undefined,
+      concurrency: 2,
+    })
+  }
 
   const loadRunMutation = useMutation({
     mutationFn: getBacktestRun,
@@ -927,6 +958,125 @@ export default function BacktestStudio({
                   </div>
                 </div>
               ) : null}
+
+              {/* WALK-FORWARD ANALYSIS */}
+              <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                  <Activity className="h-3.5 w-3.5 text-violet-300" />
+                  Walk-forward analysis
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <select
+                      value={walkForwardMode}
+                      onChange={(e) => setWalkForwardMode(e.target.value as 'anchored' | 'rolling')}
+                      className="h-6 rounded-sm border border-border/40 bg-background/60 px-1.5 text-[10px]"
+                    >
+                      <option value="anchored">anchored</option>
+                      <option value="rolling">rolling</option>
+                    </select>
+                    <select
+                      value={walkForwardFolds}
+                      onChange={(e) => setWalkForwardFolds(parseInt(e.target.value, 10))}
+                      className="h-6 rounded-sm border border-border/40 bg-background/60 px-1.5 text-[10px]"
+                    >
+                      {[3, 4, 6, 8, 10, 12].map((n) => (
+                        <option key={n} value={n}>
+                          {n} folds
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleWalkForward}
+                      disabled={walkForwardMutation.isPending || sourceCode.trim().length < 10}
+                      className="h-6 text-[10px]"
+                    >
+                      {walkForwardMutation.isPending ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <Play className="mr-1 h-3 w-3" />
+                      )}
+                      Run
+                    </Button>
+                  </div>
+                </div>
+                {walkForwardResult ? (
+                  <>
+                    <div className="grid grid-cols-4 gap-2">
+                      <StatTile
+                        label="Stable folds"
+                        value={`${walkForwardResult.summary.stable_window_pct.toFixed(0)}%`}
+                        hint={`${walkForwardResult.summary.n_windows_succeeded}/${walkForwardResult.summary.n_windows_run} succeeded`}
+                        tone={walkForwardResult.summary.stable_window_pct >= 70 ? 'good' : walkForwardResult.summary.stable_window_pct >= 50 ? 'warn' : 'bad'}
+                      />
+                      <StatTile
+                        label="Mean return"
+                        value={fmtPct(walkForwardResult.summary.mean_return_pct, 2)}
+                        hint={`min ${fmtPct(walkForwardResult.summary.min_return_pct, 1)} · max ${fmtPct(walkForwardResult.summary.max_return_pct, 1)}`}
+                        tone={walkForwardResult.summary.mean_return_pct >= 0 ? 'good' : 'bad'}
+                      />
+                      <StatTile
+                        label="Mean Sharpe"
+                        value={walkForwardResult.summary.mean_sharpe != null ? fmtNum(walkForwardResult.summary.mean_sharpe, 2) : '—'}
+                        hint={
+                          walkForwardResult.summary.min_sharpe != null && walkForwardResult.summary.max_sharpe != null
+                            ? `min ${fmtNum(walkForwardResult.summary.min_sharpe, 2)} · max ${fmtNum(walkForwardResult.summary.max_sharpe, 2)}`
+                            : undefined
+                        }
+                        tone={walkForwardResult.summary.mean_sharpe != null && walkForwardResult.summary.mean_sharpe > 1.0 ? 'good' : 'neutral'}
+                      />
+                      <StatTile
+                        label="Mode"
+                        value={walkForwardResult.mode}
+                        hint={`${walkForwardResult.n_windows_run} folds`}
+                      />
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      {walkForwardResult.windows.map((w) => (
+                        <div
+                          key={w.index}
+                          className={cn(
+                            'grid grid-cols-[60px,1fr,80px,80px,60px,80px] items-center gap-2 rounded-sm border px-2 py-1 text-[10px]',
+                            !w.success
+                              ? 'border-red-500/30 bg-red-500/5'
+                              : w.total_return_pct >= 0
+                                ? 'border-emerald-500/20 bg-emerald-500/5'
+                                : 'border-amber-500/20 bg-amber-500/5',
+                          )}
+                        >
+                          <span className="font-mono text-muted-foreground">fold {w.index}</span>
+                          <span className="truncate text-muted-foreground">
+                            {new Date(w.test_start_iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' })} →{' '}
+                            {new Date(w.test_end_iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' })}
+                          </span>
+                          <span
+                            className={cn(
+                              'text-right font-mono tabular-nums',
+                              w.total_return_pct >= 0 ? 'text-emerald-300' : 'text-red-300',
+                            )}
+                          >
+                            {fmtPct(w.total_return_pct, 1)}
+                          </span>
+                          <span className="text-right font-mono tabular-nums text-muted-foreground">
+                            SR {w.sharpe != null ? fmtNum(w.sharpe, 2) : '—'}
+                          </span>
+                          <span className="text-right font-mono tabular-nums text-muted-foreground">
+                            {w.trade_count}t
+                          </span>
+                          <span className="text-right font-mono tabular-nums text-muted-foreground">
+                            {fmtUsd(w.final_equity_usd)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-[11px] text-muted-foreground italic">
+                    Click <strong>Run</strong> to split the last 14 days into {walkForwardFolds} {walkForwardMode} folds and
+                    backtest each separately. Stable returns across folds = real edge; high variance = overfit.
+                  </div>
+                )}
+              </div>
 
               {/* RUNTIME ERRORS */}
               {exec?.runtime_error ? (

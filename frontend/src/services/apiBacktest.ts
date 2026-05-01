@@ -213,3 +213,69 @@ export async function getBacktestRun(runId: string): Promise<UnifiedBacktestResu
   const { data } = await api.get<UnifiedBacktestResult>(`/backtest/runs/${encodeURIComponent(runId)}`)
   return data
 }
+
+export interface WalkForwardWindow {
+  index: number
+  train_start_iso: string
+  train_end_iso: string
+  test_start_iso: string
+  test_end_iso: string
+  success: boolean
+  runtime_error: string | null
+  initial_capital_usd: number
+  final_equity_usd: number
+  total_return_pct: number
+  sharpe: number | null
+  sortino: number | null
+  hit_rate: number | null
+  trade_count: number
+  total_fills: number
+  rejected_orders: number
+  cancelled_orders: number
+}
+
+export interface WalkForwardSummary {
+  n_windows_run: number
+  n_windows_succeeded: number
+  mean_return_pct: number
+  min_return_pct: number
+  max_return_pct: number
+  stable_window_pct: number
+  mean_sharpe: number | null
+  min_sharpe: number | null
+  max_sharpe: number | null
+}
+
+export interface WalkForwardResult {
+  mode: 'anchored' | 'rolling'
+  n_windows_run: number
+  overall_start_iso: string
+  overall_end_iso: string
+  windows: WalkForwardWindow[]
+  summary: WalkForwardSummary
+}
+
+export interface WalkForwardRequest {
+  source_code: string
+  slug?: string
+  config?: Record<string, unknown>
+  token_ids?: string[]
+  start: string
+  end: string
+  initial_capital_usd?: number
+  mode?: 'anchored' | 'rolling'
+  n_folds?: number
+  train_ratio?: number
+  embargo_seconds?: number
+  submit_p50_ms?: number
+  submit_p95_ms?: number
+  cancel_p50_ms?: number
+  cancel_p95_ms?: number
+  seed?: number
+  concurrency?: number
+}
+
+export async function runWalkForward(req: WalkForwardRequest): Promise<WalkForwardResult> {
+  const { data } = await api.post<WalkForwardResult>('/backtest/walk-forward', req)
+  return data
+}
