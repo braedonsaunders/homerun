@@ -197,6 +197,57 @@ async def run_cpcv_route(req: CPCVRequest):
     return result.to_dict()
 
 
+class MonteCarloLatencyRequest(BaseModel):
+    source_code: str = Field(..., min_length=10)
+    slug: str = Field(default="_backtest_mc_latency", min_length=1)
+    config: dict[str, Any] | None = None
+    token_ids: list[str] | None = None
+    start: datetime
+    end: datetime
+    initial_capital_usd: float = Field(default=1000.0, gt=0.0)
+    base_submit_p50_ms: float = Field(default=350.0, ge=0.0)
+    base_submit_p95_ms: float = Field(default=900.0, ge=0.0)
+    base_cancel_p50_ms: float = Field(default=200.0, ge=0.0)
+    base_cancel_p95_ms: float = Field(default=600.0, ge=0.0)
+    multipliers: list[float] = Field(default=[0.5, 0.75, 1.0, 1.5, 2.0])
+    seed: int | None = 42
+    concurrency: int = Field(default=2, ge=1, le=8)
+
+
+@router.post("/monte-carlo-latency")
+async def run_monte_carlo_latency_route(req: MonteCarloLatencyRequest):
+    """Run the same backtest under multiple latency regimes.
+
+    Returns a Sharpe-vs-latency curve so the operator can see how
+    much their edge depends on the latency assumption.  A strategy
+    with sharpe_slope < 0 erodes under worse network conditions
+    (typical maker behavior); sharpe_slope ≈ 0 is latency-insensitive.
+    """
+    from services.backtest.monte_carlo import run_monte_carlo_latency as _run
+
+    try:
+        result = await _run(
+            source_code=req.source_code,
+            slug=req.slug,
+            config=req.config,
+            token_ids=req.token_ids,
+            start=req.start,
+            end=req.end,
+            initial_capital_usd=req.initial_capital_usd,
+            base_submit_p50_ms=req.base_submit_p50_ms,
+            base_submit_p95_ms=req.base_submit_p95_ms,
+            base_cancel_p50_ms=req.base_cancel_p50_ms,
+            base_cancel_p95_ms=req.base_cancel_p95_ms,
+            multipliers=tuple(req.multipliers),
+            seed=req.seed,
+            concurrency=req.concurrency,
+        )
+    except Exception as exc:
+        logger.exception("Monte-carlo latency run failed")
+        raise HTTPException(status_code=500, detail=f"monte-carlo failed: {exc}") from exc
+    return result.to_dict()
+
+
 @router.post("/walk-forward")
 async def run_walk_forward_route(req: WalkForwardRequest):
     """Run walk-forward analysis: split [start, end] into n_folds and

@@ -740,6 +740,38 @@ async def _capture_outcome_netting(execution: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _capture_trade_order_monte_carlo(execution: dict[str, Any]) -> dict[str, Any]:
+    """In-process trade-order Monte Carlo.
+
+    Pulls the realized trade pnls from the fills sample (or, when
+    closed positions are available, from realized_pnl_usd per
+    closed position) and runs ``trade_order_monte_carlo`` to test
+    sequence sensitivity.  Cheap — no engine re-runs — so it always
+    runs as part of the unified pipeline.
+    """
+    from services.backtest.monte_carlo import trade_order_monte_carlo
+
+    pnls: list[float] = []
+    for pos in execution.get("positions_summary") or []:
+        try:
+            v = float(pos.get("realized_pnl_usd") or 0.0)
+            if v != 0.0:
+                pnls.append(v)
+        except (TypeError, ValueError):
+            continue
+    if len(pnls) < 4:
+        return {
+            "n_resamples": 0,
+            "sharpe_distribution": {},
+            "observed_vs_distribution": None,
+            "n_trades": len(pnls),
+            "skipped_reason": "fewer than 4 closed trades — Monte Carlo not meaningful",
+        }
+    out = trade_order_monte_carlo(trade_pnls_usd=pnls, n_resamples=2000, seed=42)
+    out["n_trades"] = len(pnls)
+    return out
+
+
 def _capture_data_quality() -> dict[str, Any]:
     """Snapshot the microstructure recorder's data-quality counters.
 
@@ -944,6 +976,7 @@ async def run_unified_backtest(
     constants = _capture_empirical_constants()
     data_quality = _capture_data_quality()
     outcome_netting = await _capture_outcome_netting(exec_dict)
+    trade_order_mc = _capture_trade_order_monte_carlo(exec_dict)
 
     # Counterfactual replay for sample fills (best-effort, optional).
     fills_sample = exec_dict.get("fills_sample") or []
@@ -992,6 +1025,7 @@ async def run_unified_backtest(
         "ensemble_band": ensemble_band,
         "data_quality": data_quality,
         "outcome_netting": outcome_netting,
+        "trade_order_monte_carlo": trade_order_mc,
     }
     _store_run(out)
     return out
