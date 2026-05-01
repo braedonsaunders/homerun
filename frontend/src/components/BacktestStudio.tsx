@@ -44,6 +44,12 @@ import {
   listBacktestRuns,
   runUnifiedBacktest,
 } from '../services/apiBacktest'
+import {
+  getActiveFillModel,
+  getDecompositionSummary,
+  getEmpiricalConstants,
+  getLatencyDistribution,
+} from '../services/apiFillModel'
 
 interface BacktestStudioProps {
   initialSourceCode?: string
@@ -369,6 +375,30 @@ export default function BacktestStudio({
     refetchInterval: 5000,
   })
 
+  // Live state — independent of any single run.  Drives the top
+  // ribbon so the workbench shows what the platform is doing RIGHT
+  // NOW, not just what the most-recently-loaded run captured.
+  const liveFillModelQuery = useQuery({
+    queryKey: ['fill-model', 'active', 'pooled'],
+    queryFn: () => getActiveFillModel('pooled'),
+    refetchInterval: 30_000,
+  })
+  const liveLatencyQuery = useQuery({
+    queryKey: ['fill-model', 'latency'],
+    queryFn: getLatencyDistribution,
+    refetchInterval: 15_000,
+  })
+  const liveConstantsQuery = useQuery({
+    queryKey: ['fill-model', 'empirical-constants'],
+    queryFn: getEmpiricalConstants,
+    refetchInterval: 30_000,
+  })
+  const liveDecompositionQuery = useQuery({
+    queryKey: ['fill-model', 'decomposition'],
+    queryFn: () => getDecompositionSummary(24),
+    refetchInterval: 30_000,
+  })
+
   const loadRunMutation = useMutation({
     mutationFn: getBacktestRun,
     onSuccess: (data) => setActiveRun(data),
@@ -404,10 +434,35 @@ export default function BacktestStudio({
   }
 
   const exec = activeRun?.execution
-  const fillModel = activeRun?.fill_model
-  const constants = activeRun?.empirical_constants
-  const latency = activeRun?.latency
-  const decomp = activeRun?.decomposition
+  // Prefer the run's snapshot when a run is loaded (it's the model
+  // that ACTUALLY drove that backtest).  Fall back to the live
+  // platform state so the workbench is informative even pre-run.
+  const liveFillModel = liveFillModelQuery.data
+  const liveLatency = liveLatencyQuery.data
+  const liveConstants = liveConstantsQuery.data
+  const liveDecomp = liveDecompositionQuery.data
+  const fillModel = activeRun?.fill_model ?? (liveFillModel ? {
+    loaded: true,
+    family: liveFillModel.family,
+    strata_key: liveFillModel.strata_key,
+    n_events: liveFillModel.n_events,
+    concordance_index: liveFillModel.concordance_index,
+    coefficients: liveFillModel.coefficients,
+    feature_means: liveFillModel.feature_means,
+    feature_stds: liveFillModel.feature_stds,
+    notes: liveFillModel.notes,
+  } : { loaded: false })
+  const constants = activeRun?.empirical_constants ?? (liveConstants
+    ? {
+        measured: liveConstants.measured,
+        sample_count: liveConstants.sample_count,
+        measured_at_epoch: liveConstants.measured_at_epoch,
+        notes: liveConstants.notes,
+        values: liveConstants.values,
+      }
+    : null)
+  const latency = activeRun?.latency ?? (liveLatency ?? null)
+  const decomp = activeRun?.decomposition ?? (liveDecomp ?? null)
 
   const totalReturnTone =
     exec && exec.total_return_pct >= 5

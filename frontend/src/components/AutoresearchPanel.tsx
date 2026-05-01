@@ -44,7 +44,6 @@ import {
   type AutoresearchSettings,
 } from '../services/apiIntelligence'
 
-import { BacktestSuitePanel } from './StrategyBacktestFlyout'
 import BacktestStudio from './BacktestStudio'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -53,7 +52,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { cn } from '../lib/utils'
 
 
-type InnerTab = 'code' | 'studio' | 'legacy'
+type InnerTab = 'code' | 'studio'
 
 
 export default function AutoresearchPanel() {
@@ -113,7 +112,7 @@ export default function AutoresearchPanel() {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold leading-tight">Strategy Research</p>
             <p className="text-[10px] text-muted-foreground leading-tight">
-              Code evolution + L2-realistic backtests against the historical data plane.
+              Code evolution and L2-realistic backtesting with Cox PH fill model, ensemble PnL bands, and counterfactual queue replay.
             </p>
           </div>
           <div className="shrink-0 flex items-center gap-2">
@@ -159,19 +158,7 @@ export default function AutoresearchPanel() {
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
-            <Sparkles className="w-3 h-3" /> Backtest Studio
-          </button>
-          <button
-            type="button"
-            onClick={() => setInnerTab('legacy')}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
-              innerTab === 'legacy'
-                ? 'border-fuchsia-500 text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <FlaskConical className="w-3 h-3" /> Legacy Suite
+            <FlaskConical className="w-3 h-3" /> Backtest Studio
           </button>
         </div>
       </div>
@@ -191,30 +178,16 @@ export default function AutoresearchPanel() {
           ) : (
             <PanelEmpty message="Pick a strategy to start a code experiment." />
           )
-        ) : innerTab === 'studio' ? (
-          selectedStrategy ? (
-            <BacktestStudio
-              initialSourceCode={(selectedStrategy as any).source_code || ''}
-              initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
-              initialConfig={(selectedStrategy as any).default_params_json || {}}
-            />
-          ) : (
-            <PanelEmpty
-              title={selectedStrategyQuery.isLoading ? 'Loading strategy...' : 'Pick a strategy'}
-              message="Backtest Studio needs a strategy selected. Pick one from the dropdown above."
-            />
-          )
         ) : selectedStrategy ? (
-          <BacktestSuitePanel
-            sourceCode={(selectedStrategy as any).source_code || ''}
-            slug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
-            config={(selectedStrategy as any).default_params_json || {}}
-            variant="trader"
+          <BacktestStudio
+            initialSourceCode={(selectedStrategy as any).source_code || ''}
+            initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
+            initialConfig={(selectedStrategy as any).default_params_json || {}}
           />
         ) : (
           <PanelEmpty
             title={selectedStrategyQuery.isLoading ? 'Loading strategy...' : 'Pick a strategy'}
-            message="The legacy Backtest Suite needs a strategy selected."
+            message="Backtest Studio needs a strategy selected. Pick one from the dropdown above."
           />
         )}
       </div>
