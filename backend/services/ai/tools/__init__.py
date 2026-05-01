@@ -28,6 +28,7 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
     from services.ai.tools import (
         analytics_tools,
         cortex_tools,
+        data_tools,
         market_tools,
         news_tools,
         portfolio_tools,
@@ -49,6 +50,7 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
         web_tools,
         system_tools,
         cortex_tools,
+        data_tools,
     ]
 
     tool_map: dict[str, "AgentTool"] = {}

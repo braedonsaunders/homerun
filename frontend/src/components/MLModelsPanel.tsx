@@ -17,34 +17,26 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
-import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import {
   archiveMLAdapter,
   archiveMLModel,
   deleteMLAdapter,
-  deleteMLData,
   deleteMLModel,
   getMLAdapters,
   getMLCapabilities,
-  getMLDataStats,
   getMLDeployments,
   getMLJobs,
   getMLModels,
-  getMLRecorderConfig,
   importMLModel,
-  pruneMLData,
   trainMLAdapter,
   triggerMLEvaluation,
   updateMLDeployment,
-  updateMLRecorderConfig,
   type MLAdapter,
   type MLCapabilities,
   type MLDeployment,
   type MLJob,
   type MLModel,
-  type MLRecorderStats,
-  type MLDataStats,
 } from '../services/apiMachineLearning'
 
 type TabId = 'fill-model' | 'data' | 'import' | 'models' | 'adapters' | 'deployments' | 'jobs'
@@ -59,15 +51,6 @@ const TABS: { id: TabId; label: string; icon: typeof Database }[] = [
   { id: 'jobs', label: 'Jobs', icon: Activity },
 ]
 
-function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
-  return (
-    <div className="rounded-lg border border-border/50 bg-card/40 p-3">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-base font-semibold">{value}</div>
-      {sub ? <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div> : null}
-    </div>
-  )
-}
 
 function ErrorBanner({ message }: { message: string | null }) {
   if (!message) return null
@@ -99,137 +82,46 @@ function formatMetric(value: number | null | undefined, decimals = 3): string {
 }
 
 function DataTab() {
-  const queryClient = useQueryClient()
-  const { data: capabilities } = useQuery<MLCapabilities>({ queryKey: ['ml-capabilities'], queryFn: getMLCapabilities, refetchInterval: 15000 })
-  const { data: recorder, isLoading } = useQuery<MLRecorderStats>({ queryKey: ['ml-recorder'], queryFn: getMLRecorderConfig, refetchInterval: 10000 })
-  const { data: stats } = useQuery<MLDataStats>({ queryKey: ['ml-data-stats'], queryFn: getMLDataStats, refetchInterval: 30000 })
-  const [intervalSeconds, setIntervalSeconds] = useState('60')
-  const [retentionDays, setRetentionDays] = useState('90')
-  const [assets, setAssets] = useState('')
-  const [timeframes, setTimeframes] = useState('')
-
-  useEffect(() => {
-    if (recorder?.config) {
-      setIntervalSeconds(String(recorder.config.interval_seconds))
-      setRetentionDays(String(recorder.config.retention_days))
-      setAssets((recorder.config.assets ?? []).join(', '))
-      setTimeframes((recorder.config.timeframes ?? []).join(', '))
-    }
-  }, [recorder?.config])
-
-  const updateMutation = useMutation({
-    mutationFn: updateMLRecorderConfig,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ml-recorder'] })
-      queryClient.invalidateQueries({ queryKey: ['ml-data-stats'] })
-    },
-  })
-  const pruneMutation = useMutation({
-    mutationFn: () => pruneMLData(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ml-data-stats'] }),
-  })
-  const deleteMutation = useMutation({
-    mutationFn: deleteMLData,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ml-data-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['ml-recorder'] })
-      queryClient.invalidateQueries({ queryKey: ['ml-jobs'] })
-    },
-  })
-
-  const errorMessage = getErrorMessage(updateMutation.error ?? pruneMutation.error ?? deleteMutation.error)
-
-  if (isLoading) {
-    return <div className="flex items-center justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
-  }
-
+  // Recorder controls + storage stats moved to Research → Data Lab
+  // (Browse for rows, Record for capture).  This tab is now a clear
+  // pointer so existing operator muscle memory still finds the
+  // controls.
   return (
-    <div className="space-y-5 p-4">
-      <ErrorBanner message={errorMessage} />
-      <div className="rounded-lg border border-border/50 bg-card/30 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">Runtime State</div>
-            <div className="text-xs text-muted-foreground">
-              ML runtime stays cold until a deployment is active. Recording can run independently when enabled.
-            </div>
-          </div>
-          <Badge variant="outline" className={cn(capabilities?.runtime_active ? 'border-emerald-500/30 text-emerald-400' : 'border-border/50 text-muted-foreground')}>
-            {capabilities?.runtime_active ? 'runtime active' : 'runtime idle'}
-          </Badge>
+    <div className="space-y-3 p-4">
+      <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-4">
+        <div className="flex items-center gap-2">
+          <Database className="h-4 w-4 text-violet-300" />
+          <span className="text-sm font-semibold">Data controls have moved</span>
         </div>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-4">
-        <StatCard label="Active Deployments" value={capabilities?.active_deployment_count ?? 0} />
-        <StatCard label="Recorded Snapshots" value={stats?.total_snapshots?.toLocaleString() ?? '0'} />
-        <StatCard label="Oldest Snapshot" value={recorder?.oldest_snapshot ? new Date(recorder.oldest_snapshot).toLocaleDateString() : '-'} />
-        <StatCard label="Newest Snapshot" value={recorder?.newest_snapshot ? new Date(recorder.newest_snapshot).toLocaleString() : '-'} />
-      </div>
-
-      <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">Recorder</div>
-            <div className="text-xs text-muted-foreground">Only the live recorder runs when you explicitly enable it.</div>
-          </div>
-          <Switch
-            checked={Boolean(recorder?.config?.is_recording)}
-            onCheckedChange={(checked) => updateMutation.mutate({ is_recording: checked })}
-            disabled={updateMutation.isPending}
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1">
-            <Label className="text-xs">Interval (seconds)</Label>
-            <div className="flex gap-2">
-              <Input className="h-8 text-xs" type="number" min={5} max={3600} value={intervalSeconds} onChange={(event) => setIntervalSeconds(event.target.value)} />
-              <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => updateMutation.mutate({ interval_seconds: Number(intervalSeconds) })} disabled={updateMutation.isPending}>Set</Button>
+        <p className="mt-2 text-[12px] text-muted-foreground">
+          Recorder configuration, storage usage, and dataset browsing now
+          live in <strong className="text-violet-200">Research → Data Lab</strong> —
+          unified into one surface so on-demand capture sessions, the
+          background recorder, and the unified backtester all share the
+          same vocabulary.
+        </p>
+        <div className="mt-3 grid gap-2 text-[11px] md:grid-cols-2">
+          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
+            <div className="flex items-center gap-1 font-medium">
+              <Sparkles className="h-3 w-3 text-violet-300" />
+              Browse mode
+            </div>
+            <div className="text-muted-foreground">
+              Filter and preview microstructure snapshots, book-delta events,
+              opportunities, trader orders, and backtest runs. Export CSVs.
             </div>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Retention (days)</Label>
-            <div className="flex gap-2">
-              <Input className="h-8 text-xs" type="number" min={1} max={365} value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} />
-              <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => updateMutation.mutate({ retention_days: Number(retentionDays) })} disabled={updateMutation.isPending}>Set</Button>
+          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
+            <div className="flex items-center gap-1 font-medium">
+              <Activity className="h-3 w-3 text-violet-300" />
+              Record mode
+            </div>
+            <div className="text-muted-foreground">
+              Storage overview (per-table rows + GB), background recorder
+              (interval / retention / assets / timeframes), and on-demand
+              capture sessions consumable by the unified backtester.
             </div>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Assets</Label>
-            <div className="flex gap-2">
-              <Input className="h-8 text-xs" value={assets} onChange={(event) => setAssets(event.target.value)} />
-              <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => updateMutation.mutate({ assets: parseList(assets) })} disabled={updateMutation.isPending}>Set</Button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Timeframes</Label>
-            <div className="flex gap-2">
-              <Input className="h-8 text-xs" value={timeframes} onChange={(event) => setTimeframes(event.target.value)} />
-              <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => updateMutation.mutate({ timeframes: parseList(timeframes) })} disabled={updateMutation.isPending}>Set</Button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-border/50 bg-card/30 p-4 space-y-3">
-        <div className="text-sm font-medium">Recorded Scope</div>
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-          {stats?.groups?.map((group) => (
-            <div key={`${group.task_key}-${group.asset}-${group.timeframe}`} className="rounded-md border border-border/40 px-3 py-2 text-xs">
-              <div className="font-medium uppercase">{group.asset}/{group.timeframe}</div>
-              <div className="text-muted-foreground">{group.count.toLocaleString()} snapshots</div>
-            </div>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" className="text-xs" onClick={() => pruneMutation.mutate()} disabled={pruneMutation.isPending}>
-            {pruneMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1 h-3 w-3" />}
-            Prune
-          </Button>
-          <Button size="sm" variant="outline" className="text-xs text-red-300" onClick={() => { if (confirm('Delete all recorded ML data?')) deleteMutation.mutate() }} disabled={deleteMutation.isPending}>
-            {deleteMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Trash2 className="mr-1 h-3 w-3" />}
-            Delete All
-          </Button>
         </div>
       </div>
     </div>
