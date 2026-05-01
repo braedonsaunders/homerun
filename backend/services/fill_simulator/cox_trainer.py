@@ -658,11 +658,15 @@ async def train_and_persist(
         session.add(row)
         await session.flush()
 
-        # Promotion: activate if (a) no active model in this strata, or
-        # (b) new c-index beats the active by margin.
+        # Promotion: activate the new model if it materially beats
+        # whatever's currently serving for this strata, regardless of
+        # family.  The previous logic restricted the comparison to the
+        # SAME family — which silently kept a KM baseline active even
+        # when a Cox PH with real covariate discrimination had been
+        # fit, because Cox's c_index could never compare against KM's
+        # NULL c_index.
         active_q = await session.execute(
             select(FillProbabilityModel).where(
-                FillProbabilityModel.family == r.family,
                 FillProbabilityModel.strata_key == r.strata_key,
                 FillProbabilityModel.active.is_(True),
             )
@@ -670,19 +674,38 @@ async def train_and_persist(
         current_active = active_q.scalar_one_or_none()
         should_promote = False
         if current_active is None:
-            # Always activate the very first model for the strata, even
-            # for KM (covariate-free) baselines.  Inference needs *some*
-            # model row to read; better KM than constant.
-            should_promote = (
-                r.concordance_index is None
-                or r.concordance_index >= promote_threshold_c_index
-            )
-        elif (
-            r.concordance_index is not None
-            and current_active.concordance_index is not None
-            and r.concordance_index > current_active.concordance_index + 0.01
-        ):
+            # First model for the strata.  Always promote — inference
+            # needs *some* row to read; even a barely-discriminating
+            # one beats the constant-fill fallback.
             should_promote = True
+        elif current_active.family == "kaplan_meier" and r.family == "cox_ph":
+            # Any Cox PH with measurable discrimination strictly
+            # dominates a covariate-free KM baseline.  ``c_index > 0.50``
+            # means the covariates carry SOME signal (better than
+            # random); ``>= promote_threshold_c_index`` (default 0.55)
+            # would block legitimate models on data-thin strata.  We
+            # accept anything above the coin-flip line here; operators
+            # can manually re-promote KM if a Cox model regresses.
+            if r.concordance_index is not None and r.concordance_index > 0.50:
+                should_promote = True
+        elif r.family == "cox_ph" and current_active.family == "cox_ph":
+            # Cox-vs-Cox: standard "beat by margin" rule.  Both must
+            # have a c_index; missing values fail open (no promotion).
+            if (
+                r.concordance_index is not None
+                and current_active.concordance_index is not None
+                and r.concordance_index > current_active.concordance_index + 0.01
+            ):
+                should_promote = True
+        elif r.family == "kaplan_meier" and current_active.family == "kaplan_meier":
+            # KM-vs-KM: newer fit on fresher data wins (n_events as a
+            # tie-breaker so a KM with more observations beats a stale
+            # one).  Both have None c_index, so we can't compare on
+            # discrimination; freshness + sample size is what we have.
+            if r.n_events >= int(current_active.n_events or 0):
+                should_promote = True
+        # KM-replacing-Cox is intentionally NOT auto-promoted — that's
+        # a regression the operator must accept manually.
 
         if should_promote:
             if current_active is not None:

@@ -1714,7 +1714,13 @@ async def run_execution_backtest(
         result.load_time_ms = (time.monotonic() - load_start) * 1000
 
     end_dt = end or datetime.now(timezone.utc)
-    start_dt = start or (end_dt - _td(hours=24))
+    # 7 days is the right default for "what would my strategy have
+    # done lately": long enough to amass a usable sample for most
+    # strategies, short enough that a single backtest run finishes in
+    # under a minute on the production microstructure_snapshot volume.
+    # The previous 24h default was too narrow — most strategies fire
+    # only a handful of opportunities per day.
+    start_dt = start or (end_dt - _td(days=7))
     if end_dt.tzinfo is None:
         end_dt = end_dt.replace(tzinfo=timezone.utc)
     if start_dt.tzinfo is None:
@@ -1741,7 +1747,12 @@ async def run_execution_backtest(
                     )
                     .group_by(MarketMicrostructureSnapshot.token_id)
                     .order_by(sa_func.count(MarketMicrostructureSnapshot.id).desc())
-                    .limit(5)
+                    # 25 tokens captures the bulk of the opportunity
+                    # surface for most strategies; 5 was too narrow and
+                    # silently dropped opportunities outside the busiest
+                    # markets.  Operators can pass token_ids explicitly
+                    # to scope further if needed.
+                    .limit(25)
                 )
                 rows = (await session.execute(stmt)).all()
                 tokens = [str(r[0]) for r in rows if r[0]]
@@ -1755,16 +1766,39 @@ async def run_execution_backtest(
                 return result
 
             try:
+                # Filter by the strategy_type the user picked.  Without
+                # this, the engine pulls every strategy's opportunities
+                # in the window and tries to drive the backtest with
+                # them — which both contaminates the result and wastes
+                # the max_intents budget on unrelated signals.  Slug
+                # is the user-selected strategy ("tail_end_carry",
+                # "btc_eth_directional_edge", etc.).
                 opp_stmt = (
                     select(Opportunity)
                     .where(
                         Opportunity.detected_at >= start_dt,
                         Opportunity.detected_at <= end_dt,
+                        Opportunity.strategy_type == slug,
                     )
                     .order_by(Opportunity.detected_at.asc())
                     .limit(int(max_intents))
                 )
                 opps = (await session.execute(opp_stmt)).scalars().all()
+                # Fallback: if the slug filter found nothing, broaden to
+                # window-only.  This covers the case where a strategy
+                # was renamed (slug changes don't backfill historical
+                # rows) so the operator at least sees something.
+                if not opps:
+                    opp_stmt_loose = (
+                        select(Opportunity)
+                        .where(
+                            Opportunity.detected_at >= start_dt,
+                            Opportunity.detected_at <= end_dt,
+                        )
+                        .order_by(Opportunity.detected_at.asc())
+                        .limit(int(max_intents))
+                    )
+                    opps = (await session.execute(opp_stmt_loose)).scalars().all()
             except Exception:
                 opps = []
 

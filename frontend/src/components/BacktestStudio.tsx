@@ -653,6 +653,12 @@ export default function BacktestStudio({
   const [seed, setSeed] = useState<string>('')
   const [impactBps, setImpactBps] = useState<string>('')
   const [makerRebateBps, setMakerRebateBps] = useState<string>('')
+  // Date range — defaulted blank so the backend's 7d window applies.
+  // Operator can extend (e.g. "30" for 30 days, "0" for "now").
+  const [windowDays, setWindowDays] = useState<string>('7')
+  // Center-pane subtab.  Three coherent groupings + a small status
+  // ribbon-equivalent so the workbench doesn't scroll-and-pray.
+  const [centerTab, setCenterTab] = useState<'performance' | 'fill_quality' | 'robustness'>('performance')
 
   // Active run.
   const [activeRun, setActiveRun] = useState<UnifiedBacktestResult | null>(null)
@@ -755,11 +761,25 @@ export default function BacktestStudio({
 
   const handleRun = () => {
     if (!sourceCode.trim() || sourceCode.trim().length < 10) return
+    // Window is "last N days" measured from now.  Skip when the
+    // operator left it blank or set to a non-positive number, in
+    // which case the backend's 7d default applies.
+    const days = parseFloat(windowDays || '0')
+    let startIso: string | undefined
+    let endIso: string | undefined
+    if (Number.isFinite(days) && days > 0) {
+      const end = new Date()
+      const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
+      startIso = start.toISOString()
+      endIso = end.toISOString()
+    }
     runMutation.mutate({
       source_code: sourceCode,
       slug,
       config: initialConfig,
       initial_capital_usd: parseFloat(initialCapital) || 1000,
+      start: startIso,
+      end: endIso,
       submit_p50_ms: submitP50 ? parseFloat(submitP50) : undefined,
       submit_p95_ms: submitP95 ? parseFloat(submitP95) : undefined,
       seed: seed ? parseInt(seed, 10) : undefined,
@@ -952,6 +972,17 @@ export default function BacktestStudio({
                 />
               </div>
               <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="How many days of history to backtest against.  7 days is the default; extend for thicker samples, shorten for fast iteration.">
+                  Window (days)
+                </Label>
+                <Input
+                  value={windowDays}
+                  onChange={(e) => setWindowDays(e.target.value)}
+                  placeholder="7"
+                  className="h-7 text-xs"
+                />
+              </div>
+              <div>
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
                   Impact (bps)
                 </Label>
@@ -1035,7 +1066,39 @@ export default function BacktestStudio({
             </div>
           ) : (
             <div className="space-y-4 p-3">
-              {/* HEADLINE KPIS */}
+              {/* SUBTAB STRIP — three coherent groupings so the user
+                  sees the run without scrolling and chooses depth. */}
+              <div className="flex items-center gap-1 border-b border-border/40 pb-1.5">
+                {([
+                  ['performance', 'Performance', TrendingUp],
+                  ['fill_quality', 'Fill quality', Zap],
+                  ['robustness', 'Robustness', Activity],
+                ] as Array<['performance' | 'fill_quality' | 'robustness', string, typeof TrendingUp]>).map(
+                  ([key, label, Icon]) => {
+                    const active = centerTab === key
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setCenterTab(key)}
+                        className={cn(
+                          'flex items-center gap-1.5 rounded-sm px-3 py-1 text-[11px] font-medium transition-colors',
+                          active
+                            ? 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30'
+                            : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground',
+                        )}
+                      >
+                        <Icon className="h-3 w-3" />
+                        {label}
+                      </button>
+                    )
+                  },
+                )}
+              </div>
+
+              {/* HEADLINE KPIS + SECONDARY METRICS — Performance tab. */}
+              {centerTab === 'performance' && (
+              <>
               <div className="grid grid-cols-4 gap-2">
                 <StatTile
                   label="Return"
@@ -1149,8 +1212,11 @@ export default function BacktestStudio({
                   </div>
                 </div>
               </div>
+              </>
+              )}
 
               {/* ENSEMBLE BANDS + COUNTERFACTUALS */}
+              {centerTab === 'fill_quality' && (
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
@@ -1174,9 +1240,10 @@ export default function BacktestStudio({
                   <CounterfactualList rows={activeRun.counterfactuals} />
                 </div>
               </div>
+              )}
 
               {/* TRIANGULATION — backtest vs shadow vs live PnL */}
-              {triangulationQuery.data ? (
+              {centerTab === 'robustness' && triangulationQuery.data ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Activity className="h-3.5 w-3.5 text-amber-300" />
@@ -1248,7 +1315,7 @@ export default function BacktestStudio({
               ) : null}
 
               {/* PARTIAL FILL AGGREGATES */}
-              {activeRun?.partial_fills && activeRun.partial_fills.n_orders > 0 ? (
+              {centerTab === 'fill_quality' && activeRun?.partial_fills && activeRun.partial_fills.n_orders > 0 ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Zap className="h-3.5 w-3.5 text-sky-300" />
@@ -1317,7 +1384,7 @@ export default function BacktestStudio({
               ) : null}
 
               {/* REGIME DECOMPOSITION */}
-              {activeRun?.regime_breakdown ? (
+              {centerTab === 'robustness' && activeRun?.regime_breakdown ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Layers3 className="h-3.5 w-3.5 text-amber-300" />
@@ -1341,6 +1408,7 @@ export default function BacktestStudio({
               ) : null}
 
               {/* WALK-FORWARD ANALYSIS */}
+              {centerTab === 'robustness' && (
               <div className="rounded-md border border-border/50 bg-card/40 p-3">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                   <Activity className="h-3.5 w-3.5 text-violet-300" />
@@ -1458,6 +1526,7 @@ export default function BacktestStudio({
                   </div>
                 )}
               </div>
+              )}
 
               {/* RUNTIME ERRORS */}
               {exec?.runtime_error ? (
