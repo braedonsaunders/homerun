@@ -49,6 +49,8 @@ import { ScrollArea } from './ui/scroll-area'
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import {
+  type BackfillResult,
+  type BackfillScope,
   type CreateRecordingSessionPayload,
   type DatasetColumn,
   type DatasetFilter,
@@ -70,6 +72,7 @@ import {
   listDatasets,
   listRecordingSessions,
   queryDataset,
+  runRecorderBackfill,
   startRecordingSession,
   stopRecordingSession,
 } from '../services/apiDataset'
@@ -933,6 +936,432 @@ function ProactiveCoverageSection() {
 }
 
 
+// ─── Manual REST backfill ──────────────────────────────────────────────
+
+const BACKFILL_INTERVALS: { value: string; label: string }[] = [
+  { value: '1m', label: '1 minute' },
+  { value: '1h', label: '1 hour' },
+  { value: '6h', label: '6 hours' },
+  { value: '1d', label: '1 day' },
+  { value: 'max', label: 'max (full history)' },
+]
+
+const BACKFILL_SCOPE_OPTIONS: { value: BackfillScope; label: string; hint: string }[] = [
+  { value: 'token', label: 'Specific tokens', hint: 'paste clob_token_ids' },
+  { value: 'strategy', label: 'Strategy', hint: 'all tokens this strategy fired on' },
+  { value: 'session', label: 'Recording session', hint: 'a session\'s target tokens' },
+  { value: 'catalog_top_liquid', label: 'Top liquid catalog', hint: 'top N most-liquid markets' },
+]
+
+function BackfillFlyout({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [scope, setScope] = useState<BackfillScope>('strategy')
+  const [tokenText, setTokenText] = useState('')
+  const [strategySlug, setStrategySlug] = useState('')
+  const [sessionId, setSessionId] = useState('')
+  const [startInput, setStartInput] = useState('')
+  const [endInput, setEndInput] = useState('')
+  const [lookbackDays, setLookbackDays] = useState('14')
+  const [interval, setInterval] = useState('1h')
+  const [syntheticSpreadBps, setSyntheticSpreadBps] = useState('50')
+  const [catalogMaxTokens, setCatalogMaxTokens] = useState('500')
+  const [catalogMinLiquidity, setCatalogMinLiquidity] = useState('100')
+  const [maxTokens, setMaxTokens] = useState('1000')
+  const [result, setResult] = useState<BackfillResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Sessions list for the picker
+  const sessionsQuery = useQuery({
+    queryKey: ['data-lab', 'recording-sessions-for-backfill'],
+    queryFn: () => listRecordingSessions(undefined, 50),
+    enabled: open && scope === 'session',
+  })
+
+  const queryClient = useQueryClient()
+  const backfillMutation = useMutation({
+    mutationFn: runRecorderBackfill,
+    onSuccess: (data) => {
+      setResult(data)
+      setError(null)
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'storage'] })
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'query'] })
+    },
+    onError: (err) => setError((err as Error).message || 'backfill failed'),
+  })
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  const submit = () => {
+    setError(null)
+    setResult(null)
+
+    let start: string | undefined
+    let end: string | undefined
+    if (startInput && endInput) {
+      start = new Date(startInput).toISOString()
+      end = new Date(endInput).toISOString()
+    } else {
+      const days = parseInt(lookbackDays, 10) || 14
+      const e = new Date()
+      const s = new Date(e.getTime() - days * 24 * 3600 * 1000)
+      start = s.toISOString()
+      end = e.toISOString()
+    }
+
+    const payload: any = {
+      scope,
+      start,
+      end,
+      interval,
+      synthetic_spread_bps: parseFloat(syntheticSpreadBps) || 50,
+      catalog_max_tokens: parseInt(catalogMaxTokens, 10) || 500,
+      catalog_min_liquidity_usd: parseFloat(catalogMinLiquidity) || 100,
+      max_tokens: parseInt(maxTokens, 10) || 1000,
+      concurrency: 5,
+    }
+    if (scope === 'token') {
+      const tokens = tokenText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+      if (tokens.length === 0) { setError('Provide at least one token'); return }
+      payload.target_values = tokens
+    } else if (scope === 'strategy') {
+      if (!strategySlug.trim()) { setError('Provide a strategy slug'); return }
+      payload.strategy_slug = strategySlug.trim()
+    } else if (scope === 'session') {
+      if (!sessionId) { setError('Pick a session'); return }
+      payload.session_id = sessionId
+    }
+    backfillMutation.mutate(payload)
+  }
+
+  return (
+    <>
+      <div
+        className={cn(
+          'fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity',
+          open ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
+        onClick={onClose}
+      />
+      <div
+        className={cn(
+          'fixed inset-y-0 right-0 z-50 flex w-[520px] max-w-[95vw] flex-col border-l border-border/60 bg-background/95 shadow-2xl backdrop-blur transition-transform duration-200',
+          open ? 'translate-x-0' : 'translate-x-full',
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Download className="h-4 w-4 text-violet-300 rotate-180" />
+            <div>
+              <div className="text-sm font-semibold leading-tight">REST backfill</div>
+              <div className="text-[10px] text-muted-foreground leading-tight">
+                Synthesize book snapshots from Polymarket /prices-history (mid only).
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-sm p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="space-y-4 p-4">
+            {/* Caveat banner */}
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-100">
+              <div className="font-medium">Synthetic data caveat</div>
+              <div className="mt-1 text-amber-200/90">
+                REST gives mid prices only — best_bid/best_ask are reconstructed by centering on
+                the mid with a configurable spread.  Sizes are zero (no depth).  Each row is
+                tagged <code className="font-mono">payload_json.synthetic = true</code> so the
+                backtester / Cox PH trainer can filter or downweight.
+              </div>
+            </div>
+
+            {/* Scope */}
+            <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Scope</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {BACKFILL_SCOPE_OPTIONS.map((o) => {
+                  const active = scope === o.value
+                  return (
+                    <button
+                      key={o.value}
+                      onClick={() => setScope(o.value)}
+                      className={cn(
+                        'rounded-sm border px-2 py-1.5 text-left transition-colors',
+                        active
+                          ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                          : 'border-border/40 text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      <div className="text-[11px] font-medium">{o.label}</div>
+                      <div className="text-[9px] text-muted-foreground/80">{o.hint}</div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {scope === 'token' ? (
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Token IDs (one per line / comma-separated)</Label>
+                  <textarea
+                    value={tokenText}
+                    onChange={(e) => setTokenText(e.target.value)}
+                    placeholder="0x..."
+                    className="min-h-[80px] w-full rounded-sm border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-[11px]"
+                  />
+                </div>
+              ) : null}
+
+              {scope === 'strategy' ? (
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Strategy slug</Label>
+                  <Input
+                    value={strategySlug}
+                    onChange={(e) => setStrategySlug(e.target.value)}
+                    placeholder="tail_end_carry"
+                    className="h-8 text-[12px]"
+                  />
+                  <div className="text-[10px] text-muted-foreground">
+                    Pulls every distinct token from this strategy's OpportunityHistory rows in
+                    the time window.
+                  </div>
+                </div>
+              ) : null}
+
+              {scope === 'session' ? (
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Recording session</Label>
+                  <select
+                    value={sessionId}
+                    onChange={(e) => setSessionId(e.target.value)}
+                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-[11px]"
+                  >
+                    <option value="">— pick a session —</option>
+                    {(sessionsQuery.data ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} · {s.status} · {s.target_token_ids.length} tokens
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {scope === 'catalog_top_liquid' ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">Cap (tokens)</Label>
+                    <Input
+                      type="number"
+                      min={10}
+                      max={5000}
+                      value={catalogMaxTokens}
+                      onChange={(e) => setCatalogMaxTokens(e.target.value)}
+                      className="h-8 text-[12px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">Min liquidity ($)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={catalogMinLiquidity}
+                      onChange={(e) => setCatalogMinLiquidity(e.target.value)}
+                      className="h-8 text-[12px]"
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Window + cadence */}
+            <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Window + cadence
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Lookback (days, blank = use range)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={180}
+                    value={lookbackDays}
+                    onChange={(e) => setLookbackDays(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Interval (fidelity)</Label>
+                  <select
+                    value={interval}
+                    onChange={(e) => setInterval(e.target.value)}
+                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-[11px]"
+                  >
+                    {BACKFILL_INTERVALS.map((i) => (
+                      <option key={i.value} value={i.value}>{i.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Start (overrides lookback)</Label>
+                  <Input
+                    type="datetime-local"
+                    value={startInput}
+                    onChange={(e) => setStartInput(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">End</Label>
+                  <Input
+                    type="datetime-local"
+                    value={endInput}
+                    onChange={(e) => setEndInput(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Synth + caps */}
+            <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Synth + caps
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Synthetic spread (bps)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={syntheticSpreadBps}
+                    onChange={(e) => setSyntheticSpreadBps(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px]">Max tokens (cap)</Label>
+                  <Input
+                    type="number"
+                    min={10}
+                    max={10000}
+                    value={maxTokens}
+                    onChange={(e) => setMaxTokens(e.target.value)}
+                    className="h-8 text-[12px]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {error ? (
+              <div className="rounded-sm bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">{error}</div>
+            ) : null}
+
+            {result ? (
+              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-[11px]">
+                <div className="font-medium text-emerald-200">Backfill complete</div>
+                <div className="mt-1 grid grid-cols-2 gap-1 text-emerald-100">
+                  <div>job: <span className="font-mono">{result.job_id}</span></div>
+                  <div>duration: {result.duration_seconds.toFixed(1)}s</div>
+                  <div>tokens targeted: <strong>{result.target_token_count.toLocaleString()}</strong></div>
+                  <div>tokens with data: {result.tokens_with_data.toLocaleString()}</div>
+                  <div>rows inserted: <strong>{result.rows_inserted_total.toLocaleString()}</strong></div>
+                  <div>points fetched: {result.points_fetched_total.toLocaleString()}</div>
+                  <div>existing skipped: {result.skipped_existing_total.toLocaleString()}</div>
+                  <div>errors: {result.tokens_with_errors}</div>
+                </div>
+                {result.tokens_with_errors > 0 ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-rose-300">
+                      Failed tokens ({result.tokens_with_errors})
+                    </summary>
+                    <div className="mt-1 max-h-[140px] space-y-0.5 overflow-y-auto">
+                      {result.per_token.filter((t) => t.error).slice(0, 50).map((t) => (
+                        <div key={t.token_id} className="font-mono text-[10px] text-rose-300/90">
+                          {t.token_id.slice(0, 14)} — {t.error}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
+
+        <div className="flex items-center justify-between gap-2 border-t border-border/40 px-4 py-3">
+          <span className="text-[10px] text-muted-foreground">
+            Idempotent — already-recorded seconds are skipped.
+          </span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="h-8 text-[11px]" onClick={onClose}>
+              Close
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 gap-1 text-[11px]"
+              onClick={submit}
+              disabled={backfillMutation.isPending}
+            >
+              {backfillMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Download className="h-3 w-3 rotate-180" />
+              )}
+              Run backfill
+            </Button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function BackfillSection() {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <div className="rounded-md border border-border/40 bg-card/30">
+        <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <Download className="h-3.5 w-3.5 rotate-180 text-violet-300" />
+            <span className="text-xs font-semibold">REST backfill</span>
+            <span className="text-[10px] text-muted-foreground">
+              fill historical gaps via Polymarket /prices-history
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 text-[10px]"
+            onClick={() => setOpen(true)}
+          >
+            <Download className="h-3 w-3 rotate-180" />
+            New backfill
+          </Button>
+        </div>
+        <div className="px-3 py-2 text-[10px] text-muted-foreground">
+          Use when WS coverage doesn't reach back far enough.  Pick a scope (token /
+          strategy / recording session / top-liquid catalog), a window, and a fidelity —
+          the service synthesizes book snapshots centered on each mid price and inserts
+          them into the same MarketMicrostructureSnapshot table the live recorder writes
+          to.  Synthetic rows carry a flag the backtester can read.
+        </div>
+      </div>
+      <BackfillFlyout open={open} onClose={() => setOpen(false)} />
+    </>
+  )
+}
+
+
 function CryptoOhlcRecorderSection() {
   const queryClient = useQueryClient()
   const cfgQuery = useQuery({
@@ -1720,6 +2149,7 @@ function RecordView() {
       <StorageOverviewSection />
       <MicrostructureRecorderSection />
       <ProactiveCoverageSection />
+      <BackfillSection />
       <CryptoOhlcRecorderSection />
       <OnDemandSessionsSection />
     </div>

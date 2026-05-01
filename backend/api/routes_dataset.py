@@ -742,6 +742,72 @@ async def delete_recording_session(session_id: str) -> dict[str, Any]:
     return {"deleted": True, "id": session_id}
 
 
+class BackfillRequest(_PydBaseModel):
+    scope: str = "token"  # token | strategy | session | catalog_top_liquid
+    target_values: list[str] | None = None
+    strategy_slug: str | None = None
+    session_id: str | None = None
+    start: datetime | None = None
+    end: datetime | None = None
+    interval: str = "1h"
+    fidelity_minutes: int | None = None
+    synthetic_spread_bps: float = 50.0
+    catalog_max_tokens: int = 2000
+    catalog_min_liquidity_usd: float = 100.0
+    concurrency: int = 5
+    max_tokens: int = 5000
+
+
+@router.post("/recorder/backfill")
+async def run_recorder_backfill(body: BackfillRequest) -> dict[str, Any]:
+    """Manual REST backfill into MarketMicrostructureSnapshot.
+
+    Polymarket REST does not serve full L2 book history — we fetch
+    mid-price points from the ``/prices-history`` endpoint and
+    synthesize single-level book snapshots centered on each mid.
+    Synthetic rows carry ``payload_json["synthetic"] = True``.
+
+    Scope options:
+      * ``token`` — pass token_ids in target_values
+      * ``strategy`` — pass strategy_slug; resolves to every distinct
+        token referenced by that strategy's OpportunityHistory rows
+        in the time window
+      * ``session`` — pass session_id; backfills the recording
+        session's target_token_ids
+      * ``catalog_top_liquid`` — top N most-liquid markets from the
+        live MarketCatalog (mirrors the proactive subscription policy)
+
+    Idempotent: rows already present at the same observed_at second
+    are skipped, so re-running the backfill is safe.
+    """
+    if body.scope not in {"token", "strategy", "session", "catalog_top_liquid"}:
+        raise HTTPException(status_code=400, detail=f"Unknown scope '{body.scope}'")
+    from services.recorder_backfill_service import run_backfill
+
+    try:
+        result = await run_backfill(
+            scope=body.scope,  # type: ignore[arg-type]
+            target_values=body.target_values,
+            strategy_slug=body.strategy_slug,
+            session_id=body.session_id,
+            start=body.start,
+            end=body.end,
+            interval=body.interval,
+            fidelity_minutes=body.fidelity_minutes,
+            synthetic_spread_bps=body.synthetic_spread_bps,
+            catalog_max_tokens=body.catalog_max_tokens,
+            catalog_min_liquidity_usd=body.catalog_min_liquidity_usd,
+            concurrency=body.concurrency,
+            max_tokens=body.max_tokens,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("backfill failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return result.to_dict()
+
+
 @router.get("/recorder/proactive-subscription")
 async def proactive_subscription_status() -> dict[str, Any]:
     """Status of the proactive recorder subscription loop.

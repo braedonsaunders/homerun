@@ -192,6 +192,61 @@ export async function deleteRecordingSession(id: string): Promise<void> {
   await api.delete(`/dataset/sessions/${encodeURIComponent(id)}`)
 }
 
+// ─── Manual REST backfill ──────────────────────────────────────────────
+
+export type BackfillScope = 'token' | 'strategy' | 'session' | 'catalog_top_liquid'
+
+export interface BackfillRequest {
+  scope: BackfillScope
+  target_values?: string[]
+  strategy_slug?: string
+  session_id?: string
+  start?: string
+  end?: string
+  interval?: string
+  fidelity_minutes?: number
+  synthetic_spread_bps?: number
+  catalog_max_tokens?: number
+  catalog_min_liquidity_usd?: number
+  concurrency?: number
+  max_tokens?: number
+}
+
+export interface BackfillTokenResult {
+  token_id: string
+  rows_inserted: number
+  skipped_existing: number
+  points_fetched: number
+  error: string | null
+}
+
+export interface BackfillResult {
+  job_id: string
+  scope: BackfillScope
+  started_at: string
+  completed_at: string
+  duration_seconds: number
+  target_token_count: number
+  tokens_with_data: number
+  tokens_with_errors: number
+  rows_inserted_total: number
+  points_fetched_total: number
+  skipped_existing_total: number
+  interval: string
+  fidelity_minutes: number | null
+  start: string | null
+  end: string | null
+  synthetic_spread_bps: number
+  per_token: BackfillTokenResult[]
+  error: string | null
+}
+
+export async function runRecorderBackfill(req: BackfillRequest): Promise<BackfillResult> {
+  const { data } = await api.post<BackfillResult>('/dataset/recorder/backfill', req)
+  return data
+}
+
+
 export interface ProactiveSubscriptionStatus {
   max_tokens: number
   min_liquidity_usd: number
