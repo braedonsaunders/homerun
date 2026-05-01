@@ -674,6 +674,24 @@ function Start-PostgresDocker {
         return $false
     }
 
+    # Pre-check: if a container by this name exists but is NOT running
+    # (typically "exited" from a previous shutdown), force-remove it
+    # before compose tries to bring it up.  Without this, compose
+    # would silently fail on the "Creating" step with no actionable
+    # error — the existing retry path only triggers on "name already
+    # in use" output, which compose doesn't always produce for stale
+    # exited containers.  Production saw a 2-day-old exited container
+    # block every subsequent launcher invocation; manual ``docker rm
+    # -f homerun-postgres`` was the only escape.
+    $existingState = Invoke-DockerCommand -Arguments @("inspect", "-f", "{{.State.Running}}", $ContainerName)
+    if ($existingState.ExitCode -eq 0) {
+        $isRunningPre = ((($existingState.Output | Out-String).Trim().ToLowerInvariant()) -eq "true")
+        if (-not $isRunningPre) {
+            Write-Host "Removing stale ${ContainerName} container before recreating..." -ForegroundColor Cyan
+            Invoke-DockerCommand -Arguments @("rm", "-f", $ContainerName) | Out-Null
+        }
+    }
+
     $composeAvailable = (Test-Path $script:dockerComposeFilePath) -and (Test-DockerComposeAvailable)
     if ($composeAvailable) {
         $composeResult = Invoke-DockerComposeCommand `
