@@ -603,7 +603,14 @@ async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
     from services.wallet_state_cache import get_wallet_state_cache
 
     cache = get_wallet_state_cache()
+    logger.info(
+        "WalletStateCache reseeder loop started",
+        bootstrap_interval_s=_WALLET_CACHE_RESEED_BOOTSTRAP_INTERVAL_SECONDS,
+        steady_interval_s=_WALLET_CACHE_RESEED_INTERVAL_SECONDS,
+    )
+    cycle = 0
     while not stop_event.is_set():
+        cycle += 1
         if cache._last_rest_seed_succeeded and cache._last_rest_seed_mono is not None:
             interval = _WALLET_CACHE_RESEED_INTERVAL_SECONDS
         else:
@@ -613,7 +620,20 @@ async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
         except Exception as exc:
             logger.warning(
                 "WalletStateCache REST reseed cycle failed",
+                cycle=cycle,
                 exc_info=exc,
+            )
+        # Loud heartbeat for the first few cycles so operators can
+        # confirm the reseeder is alive at boot.  After the first
+        # successful seed we go quiet — the freshness gate itself is
+        # the alarm if reseeds stop.
+        if cycle <= 3 or cycle % 20 == 0:
+            logger.info(
+                "WalletStateCache reseeder heartbeat",
+                cycle=cycle,
+                seed_count=cache._rest_seed_count,
+                last_succeeded=cache._last_rest_seed_succeeded,
+                next_interval_s=interval,
             )
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
@@ -1573,24 +1593,40 @@ async def _run_reconciliation_cycle(
 async def run_worker_loop() -> None:
     logger.info("Starting trader reconciliation worker loop")
 
-    try:
-        async with AsyncSessionLocal() as session:
-            await ensure_all_strategies_seeded(session)
-        await refresh_strategy_runtime_if_needed(source_keys=None, force=True)
-    except Exception as exc:
-        logger.warning("Reconciliation strategy startup sync failed", exc_info=exc)
-
-    # Background WalletStateCache reseeder.  ``live_execution_service.
-    # initialize()`` performs the synchronous bootstrap seed; this loop
-    # provides the periodic drift-correction reseed (5s while the cache
-    # hasn't successfully seeded yet, 30s after).  Decoupled from
-    # ``_sync_live_wallet_positions`` so that worker can have its own
-    # cadence.
+    # Wallet cache reseeder MUST start before any DB-dependent startup
+    # work.  If we hang on ``ensure_all_strategies_seeded`` or any other
+    # slow query at boot, traders block on ``no_rest_seed_yet`` because
+    # the reseeder task was never created.  Decouple the wallet
+    # bootstrap entirely from strategy/DB startup — they are independent
+    # and the wallet path uses HTTP, not the DB pool that may be
+    # contended.
     wallet_cache_reseeder_stop = asyncio.Event()
     wallet_cache_reseeder_task = asyncio.create_task(
         _run_wallet_cache_reseeder_loop(wallet_cache_reseeder_stop),
         name="wallet-cache-reseeder",
     )
+
+    # Strategy seeding/refresh wrapped in a timeout so a slow DB can't
+    # delay the rest of the worker loop indefinitely.  Failure here is
+    # non-fatal — strategies are loaded into runtime by the host
+    # bootstrap path too.
+    try:
+        async with AsyncSessionLocal() as session:
+            await asyncio.wait_for(
+                ensure_all_strategies_seeded(session),
+                timeout=30.0,
+            )
+        await asyncio.wait_for(
+            refresh_strategy_runtime_if_needed(source_keys=None, force=True),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Reconciliation strategy startup sync timed out; "
+            "continuing without — host bootstrap also seeds strategies."
+        )
+    except Exception as exc:
+        logger.warning("Reconciliation strategy startup sync failed", exc_info=exc)
 
     consecutive_db_failures = 0
     wallet_monitor_wallet = ""

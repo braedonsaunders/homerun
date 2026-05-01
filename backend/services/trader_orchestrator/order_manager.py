@@ -823,20 +823,22 @@ async def submit_execution_leg(
         quote_price = estimate.average_price
         effective_shadow_notional = estimate.filled_notional_usd
         shadow_status = _shadow_status_for_estimate(estimate)
-        # Refresh survival features with the realized estimate's
-        # queue_ahead so the persisted snapshot matches what the Cox
-        # trainer will see at training time.
-        survival_features = build_survival_features(
-            estimate=estimate,
-            order_book=book_payload,
-            recent_trades=recent_trades,
-            book_age_ms=book_age_ms,
-            payload=payload,
-            side=order_side,
-            limit_price=float(price or 0.0),
-            notional_usd=float(notional or 0.0),
-            latency_p95_ms=latency.p95_ms,
-            recent_trade_lookback_seconds=30.0,
+        # Update the persisted snapshot's ``queue_ahead_shares`` with the
+        # realized estimate's value so the Cox trainer ETL sees the
+        # realized queue position.  All other features are identical to
+        # the at-placement snapshot — ``dataclasses.replace`` avoids the
+        # cost of rebuilding the full feature struct (book traversal,
+        # recent-trade intensity scan, ttr bucketing) just to swap one
+        # field.
+        from dataclasses import replace as _dc_replace
+
+        survival_features = _dc_replace(
+            survival_features_struct,
+            queue_ahead_shares=(
+                float(estimate.queue_ahead_shares)
+                if estimate.queue_ahead_shares is not None
+                else None
+            ),
         )
         shadow_simulation_payload = {
             "filled": estimate.filled_shares > 0,
