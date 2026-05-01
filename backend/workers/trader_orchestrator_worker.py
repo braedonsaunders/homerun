@@ -466,7 +466,7 @@ async def _pause_until_next_cycle(
 # writes for authoritative execution and audit state.
 
 
-async def record_signal_consumption(session, *, trader_id, signal_id, outcome, reason=None, decision_id=None, payload=None, commit=True):
+async def record_signal_consumption(session, *, trader_id, signal_id, outcome, reason=None, decision_id=None, payload=None, signal_updated_at=None, commit=True):
     await _record_signal_consumption(
         session,
         trader_id=trader_id,
@@ -475,6 +475,7 @@ async def record_signal_consumption(session, *, trader_id, signal_id, outcome, r
         reason=reason,
         decision_id=decision_id,
         payload=payload,
+        signal_updated_at=signal_updated_at,
         commit=commit,
     )
 
@@ -507,7 +508,8 @@ async def upsert_trader_signal_cursor(session, *, trader_id, last_signal_created
 
 async def create_trader_decision(session, *, trader_id, signal, strategy_key, strategy_version=None,
                                   decision, reason=None, score=None, checks_summary=None,
-                                  risk_snapshot=None, payload=None, trace_id=None, commit=True):
+                                  risk_snapshot=None, payload=None, trace_id=None, commit=True,
+                                  flush_on_add=True):
     return await _create_trader_decision(
         session,
         trader_id=trader_id,
@@ -522,6 +524,7 @@ async def create_trader_decision(session, *, trader_id, signal, strategy_key, st
         payload=payload,
         trace_id=trace_id,
         commit=commit,
+        flush_on_add=flush_on_add,
     )
 
 
@@ -577,6 +580,7 @@ async def create_trader_event(
     trace_id=None,
     payload=None,
     commit=True,
+    flush_on_add=True,
 ):
     return await _create_trader_event(
         session,
@@ -589,6 +593,7 @@ async def create_trader_event(
         trace_id=str(trace_id or "") or None,
         payload=dict(payload or {}),
         commit=commit,
+        flush_on_add=flush_on_add,
     )
 
 
