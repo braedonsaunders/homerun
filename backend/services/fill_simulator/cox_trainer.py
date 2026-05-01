@@ -42,8 +42,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import warnings
 from lifelines import CoxPHFitter, KaplanMeierFitter
+from lifelines.exceptions import ConvergenceWarning as _LifelinesConvergenceWarning
 from lifelines.utils import concordance_index
+from scipy.linalg import LinAlgWarning as _ScipyLinAlgWarning
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +57,24 @@ from models.database import (
 
 
 logger = logging.getLogger("cox_trainer")
+
+# Suppress lifelines/numpy/scipy training-noise warnings module-wide.
+# These are advisory messages about the *training data* (low-variance
+# columns, ill-conditioned matrices, divide-by-zero in the partial-
+# likelihood Hessian) — we already pre-screen low-variance columns in
+# ``_impute_means`` and gracefully fall back to Kaplan-Meier on any
+# remaining failure, so the warnings are pure log noise.  Filter at
+# import time so they don't escape ``_warnings.catch_warnings()`` blocks
+# (some lifelines internals re-raise warnings inside threads).
+warnings.filterwarnings("ignore", category=_LifelinesConvergenceWarning)
+warnings.filterwarnings("ignore", category=_ScipyLinAlgWarning)
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, module=r"lifelines\..*"
+)
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, module=r"numpy\..*",
+    message="invalid value encountered in divide",
+)
 
 
 # Covariates we feed Cox.  Names match the keys produced by
@@ -96,6 +117,11 @@ class TrainingResult:
     feature_stds: dict[str, float]
     config: dict[str, Any]
     notes: str
+    # Predicted-vs-observed fill rates bucketed by predicted-probability
+    # decile on the held-out test set.  Drives the UI calibration plot:
+    # if predicted ~= observed across deciles, the model is well
+    # calibrated.  Empty for KM (no covariate-based discrimination).
+    calibration_bins: list[dict[str, float]] | None = None
 
 
 def _backfill_features_from_legacy_payload(
@@ -211,22 +237,45 @@ async def fetch_training_rows(
     return pd.DataFrame(rows)
 
 
-def _impute_means(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], dict[str, float]]:
-    """Mean-impute missing covariates; standardize for Cox numeric stability."""
+# Minimum standard deviation a covariate must have (in raw units, before
+# standardization) to be included in the Cox fit.  Below this the column
+# is treated as constant and DROPPED — feeding it to lifelines triggers
+# a flood of ConvergenceWarning + LinAlgWarning + "delta contains nan"
+# failures because the partial-likelihood Hessian is rank-deficient.
+# Most often this fires for shadow-simulation rows where ``latency_p95_ms``
+# is identically 0.0, or for assets with no recent fills (queue/depth/
+# spread features all zero).
+_MIN_USABLE_STD = 1e-6
+
+
+def _impute_means(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], dict[str, float], list[str]]:
+    """Mean-impute missing covariates; standardize for Cox numeric stability.
+
+    Returns ``(out, means, stds, usable_covariates)`` where
+    ``usable_covariates`` is the subset of ``COVARIATES`` that have
+    non-degenerate variance and are safe to feed to ``CoxPHFitter.fit``.
+    Degenerate columns are kept in ``out`` (as constants) so callers can
+    still reference them, but only ``usable_covariates`` should be passed
+    to the fitter.
+    """
     means: dict[str, float] = {}
     stds: dict[str, float] = {}
+    usable: list[str] = []
     out = df.copy()
     for c in COVARIATES:
         col = out[c].astype(float)
         m = float(col.mean()) if col.notna().any() else 0.0
         s = float(col.std()) if col.notna().any() else 1.0
-        if not math.isfinite(s) or s <= 0:
+        degenerate = (not math.isfinite(s)) or s <= _MIN_USABLE_STD
+        if degenerate:
             s = 1.0
         out[c] = col.fillna(m)
         means[c] = m
         stds[c] = s
         out[c] = (out[c] - m) / s
-    return out, means, stds
+        if not degenerate:
+            usable.append(c)
+    return out, means, stds, usable
 
 
 def _serialize_baseline_survival(baseline: pd.Series, *, max_points: int = 200) -> dict[str, float]:
@@ -279,30 +328,60 @@ def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> T
         # Not enough to train Cox sensibly; fall back to KM on full df.
         return fit_kaplan_meier(df, strata_key=strata_key)
 
-    train_imputed, means, stds = _impute_means(train)
+    train_imputed, means, stds, usable_covariates = _impute_means(train)
 
-    fit_columns = ["duration_seconds", "event_observed", *COVARIATES]
+    # If too few covariates have real variance, the Cox model degenerates
+    # to KM with extra noise — skip it explicitly instead of letting
+    # lifelines emit a wall of ConvergenceWarning + LinAlgWarning before
+    # failing.  Three is the minimum for a meaningful proportional-
+    # hazards model; below that, KM is strictly more honest.
+    if len(usable_covariates) < 3:
+        logger.info(
+            "Cox PH skipped for strata %s: only %d/%d covariates have non-degenerate "
+            "variance (min std=%s) — falling back to KM",
+            strata_key,
+            len(usable_covariates),
+            len(COVARIATES),
+            _MIN_USABLE_STD,
+        )
+        return fit_kaplan_meier(df, strata_key=strata_key)
+
+    fit_columns = ["duration_seconds", "event_observed", *usable_covariates]
     cph = CoxPHFitter(penalizer=0.01)  # small ridge for numeric stability
     try:
-        cph.fit(
-            train_imputed[fit_columns],
-            duration_col="duration_seconds",
-            event_col="event_observed",
-            show_progress=False,
-        )
+        # Suppress lifelines' verbose ConvergenceWarning chatter — we
+        # already filtered the obvious offenders, and any residual warning
+        # would be misleading noise in the worker logs.  Real failures
+        # still raise and are caught by the try/except.
+        import warnings as _warnings
+
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings("ignore", category=UserWarning, module="lifelines.*")
+            _warnings.filterwarnings("ignore", message="Column.*low variance")
+            _warnings.filterwarnings("ignore", message="Column.*high sample correlation")
+            _warnings.filterwarnings("ignore", message="ill-conditioned matrix")
+            cph.fit(
+                train_imputed[fit_columns],
+                duration_col="duration_seconds",
+                event_col="event_observed",
+                show_progress=False,
+            )
     except Exception as exc:
         logger.warning("Cox PH fit failed for strata %s: %s — falling back to KM", strata_key, exc)
         return fit_kaplan_meier(df, strata_key=strata_key)
 
     # Validation on held-out.  Standardize using train means/stds, NOT
-    # recomputed on test, to avoid leakage.
+    # recomputed on test, to avoid leakage.  We only standardize the
+    # covariates that were actually fitted; degenerate columns are left
+    # in their raw zero-std form (the predict_partial_hazard call below
+    # only sees ``usable_covariates``).
     test_imputed = test.copy()
-    for c in COVARIATES:
+    for c in usable_covariates:
         col = test_imputed[c].astype(float).fillna(means.get(c, 0.0))
         test_imputed[c] = (col - means.get(c, 0.0)) / max(stds.get(c, 1.0), 1e-9)
 
     try:
-        partial_hazards = cph.predict_partial_hazard(test_imputed[COVARIATES])
+        partial_hazards = cph.predict_partial_hazard(test_imputed[usable_covariates])
         c_index = float(
             concordance_index(
                 test_imputed["duration_seconds"],
@@ -313,11 +392,61 @@ def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> T
     except Exception as exc:
         logger.warning("C-index calc failed for %s: %s", strata_key, exc)
         c_index = None
+        partial_hazards = None
+
+    # Calibration plot data — bucket the held-out cohort by predicted
+    # P(fill within median-duration), compute observed fill rate per
+    # bucket.  A well-calibrated model has predicted ~= observed across
+    # all deciles.  This is what the UI calibration chart consumes.
+    calibration_bins: list[dict[str, float]] | None = None
+    try:
+        if partial_hazards is not None and len(test_imputed) >= 20:
+            # Predicted fill probability at the median observed time:
+            # P(fill ≤ T_med) = 1 - S0(T_med) ** partial_hazard
+            t_median = float(test_imputed["duration_seconds"].median())
+            try:
+                s0_median = float(cph.baseline_survival_at_times([t_median]).iloc[0, 0])
+            except Exception:
+                s0_median = float(cph.baseline_survival_.iloc[
+                    (cph.baseline_survival_.index - t_median).abs().argmin()
+                ].iloc[0])
+            ph_arr = np.asarray(partial_hazards, dtype=float)
+            # Numerical safety: clamp baseline survival into (eps, 1-eps).
+            s0_clamped = max(min(s0_median, 1.0 - 1e-9), 1e-9)
+            predicted_fill = 1.0 - np.power(s0_clamped, ph_arr)
+            obs_fill = test_imputed["event_observed"].astype(float).to_numpy()
+
+            n_bins = min(10, max(3, len(test_imputed) // 8))
+            quantile_edges = np.quantile(predicted_fill, np.linspace(0.0, 1.0, n_bins + 1))
+            # Make edges strictly increasing (np.digitize wants this).
+            for i in range(1, len(quantile_edges)):
+                if quantile_edges[i] <= quantile_edges[i - 1]:
+                    quantile_edges[i] = quantile_edges[i - 1] + 1e-9
+            bin_idx = np.clip(np.digitize(predicted_fill, quantile_edges[1:-1]), 0, n_bins - 1)
+            bins: list[dict[str, float]] = []
+            for b in range(n_bins):
+                mask = bin_idx == b
+                if not mask.any():
+                    continue
+                bins.append(
+                    {
+                        "bin": int(b),
+                        "n": int(mask.sum()),
+                        "predicted_mean": float(predicted_fill[mask].mean()),
+                        "observed_rate": float(obs_fill[mask].mean()),
+                        "predicted_min": float(predicted_fill[mask].min()),
+                        "predicted_max": float(predicted_fill[mask].max()),
+                    }
+                )
+            calibration_bins = bins or None
+    except Exception as exc:
+        logger.debug("Calibration bin computation failed for %s: %s", strata_key, exc)
+        calibration_bins = None
 
     # Hazard ratios = exp(beta).  Beta is in standardized space.
     coefficients: dict[str, float] = {}
     try:
-        for cov in COVARIATES:
+        for cov in usable_covariates:
             if cov in cph.params_.index:
                 coefficients[cov] = float(math.exp(cph.params_.loc[cov]))
     except Exception:
@@ -354,13 +483,20 @@ def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> T
         feature_means=means,
         feature_stds=stds,
         config={
-            "covariates": list(COVARIATES),
+            # Record the covariates ACTUALLY fitted so inference time
+            # can match the trained-feature set; the original COVARIATES
+            # list may include columns we dropped for low variance.
+            "covariates": list(usable_covariates),
+            "covariates_dropped_low_variance": [
+                c for c in COVARIATES if c not in usable_covariates
+            ],
             "penalizer": 0.01,
             "holdout_days": holdout_days,
             "holdout_n": holdout_n,
             "train_n": int(len(train)),
         },
         notes=f"Cox PH fit on {len(train)} train / {holdout_n} test rows; {n_events} fills total.",
+        calibration_bins=calibration_bins,
     )
 
 
@@ -404,7 +540,7 @@ async def train_and_persist(
             baseline_survival_json=r.baseline_survival,
             feature_means_json=r.feature_means,
             feature_stds_json=r.feature_stds,
-            config_json=r.config,
+            config_json={**r.config, "calibration_bins": r.calibration_bins} if r.calibration_bins else r.config,
             promoted_at=None,
             active=False,
             notes=r.notes,

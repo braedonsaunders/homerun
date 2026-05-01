@@ -251,7 +251,13 @@ async def _probe_once() -> bool:
         return False
 
     probe_key = _ns(_HEALTH_PROBE_KEY_SUFFIX)
-    timeout = float(getattr(settings, "REDIS_SOCKET_TIMEOUT_SECONDS", 1.5))
+    # Probe timeout is intentionally generous (4s, vs the 1.5s socket
+    # timeout for hot-path ops).  The probe runs every 15s on a periodic
+    # background loop — when the worker's asyncio loop is briefly stalled
+    # (e.g. a slow DB cycle), we don't want a flapping "health probe
+    # failed" warning.  The probe is a *liveness* check, not a latency
+    # gate; ops on the hot path use the tighter socket_timeout directly.
+    timeout = max(4.0, float(getattr(settings, "REDIS_SOCKET_TIMEOUT_SECONDS", 1.5)) * 2.5)
     try:
         async with asyncio.timeout(timeout + 0.5):
             pong = await client.ping()
@@ -265,14 +271,24 @@ async def _probe_once() -> bool:
     except (asyncio.TimeoutError, RedisError, OSError) as exc:
         was_healthy = _state.healthy
         _state.healthy = False
-        _state.last_error = f"probe: {exc}"
+        # asyncio.TimeoutError() formats to an empty string — include the
+        # type name so the operator sees "TimeoutError" rather than a
+        # blank "Redis health probe failed: " in the log.
+        exc_text = str(exc) or repr(exc) or type(exc).__name__
+        _state.last_error = f"probe: {type(exc).__name__}: {exc_text}"
         _state.last_error_at = time.time()
         if was_healthy:
-            logger.warning("Redis health probe failed: %s", exc)
+            logger.warning(
+                "Redis health probe failed: %s: %s (timeout=%.2fs)",
+                type(exc).__name__,
+                exc_text,
+                timeout,
+            )
         return False
     except Exception as exc:  # defensive — never let probe crash the loop
         _state.healthy = False
-        _state.last_error = f"probe_unexpected: {exc}"
+        exc_text = str(exc) or repr(exc) or type(exc).__name__
+        _state.last_error = f"probe_unexpected: {type(exc).__name__}: {exc_text}"
         _state.last_error_at = time.time()
         logger.exception("Redis health probe raised unexpected error")
         return False

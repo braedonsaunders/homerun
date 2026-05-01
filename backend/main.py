@@ -27,6 +27,25 @@ os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 # tqdm_asyncio __del__ AttributeError tracebacks during GC.
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+# Silence HF Hub's "unauthenticated request" advisory.  The API process
+# never DOWNLOADS models — it only initializes the cached one (or falls
+# back to TF-IDF).  But sentence-transformers' init still touches HF
+# Hub for cache validation on cold boot, which logs a noisy WARNING.
+# We don't have an HF token (and don't need one for offline-cached
+# models), so suppress the message at the source.  Workers/host.py does
+# the same for its planes; this is the API parallel.
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+import logging as _logging  # noqa: E402
+import warnings as _warnings  # noqa: E402
+
+if not os.environ.get("HF_TOKEN"):
+    _logging.getLogger("huggingface_hub.utils._http").setLevel(_logging.ERROR)
+    _logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
+    _warnings.filterwarnings(
+        "ignore",
+        message=r".*unauthenticated requests to the HF Hub.*",
+    )
 
 from config import settings, RUNTIME_SETTINGS_PRECEDENCE
 from api import router, handle_websocket

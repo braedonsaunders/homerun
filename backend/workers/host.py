@@ -354,13 +354,20 @@ class WorkerHost:
         self._schedule_background_task(_run(), name=f"{self._plane_name}-{task_name}")
 
     async def _run_trade_signal_pruner_loop(self) -> None:
-        """Periodic pruner: deletes terminal trade_signals past the 24h
-        reactivation lookback.  Runs every 30 minutes on the trading
-        plane only.  See the call site in ``_initialize_services``
-        for the full rationale.
+        """Periodic pruner: deletes terminal trade_signals past the
+        reactivation lookback.  Runs every 5 minutes on the trading
+        plane only.
+
+        Pre-2026-04-30: 30-minute cadence + 24h horizon. Under load,
+        terminal signals accumulated faster than they were pruned —
+        ``list_unconsumed_trade_signals`` slowed to 2-4s/cycle (vs
+        the fast trader's 3s budget) and lock contention on the
+        per-row UPDATE spiked to 4s.  Tightened the cadence to 5 min
+        and kept the 24h horizon (the reactivation window for
+        skipped signals; shorter would lose recoverable state).
         """
         # Stagger initial fire so we don't compete with startup queries.
-        await asyncio.sleep(120.0)
+        await asyncio.sleep(60.0)
         while not self._shutting_down:
             try:
                 from services.maintenance import maintenance_service
@@ -384,7 +391,7 @@ class WorkerHost:
                     exc_info=exc,
                 )
             try:
-                await asyncio.sleep(1800.0)  # 30 minutes
+                await asyncio.sleep(300.0)  # 5 minutes
             except asyncio.CancelledError:
                 raise
 

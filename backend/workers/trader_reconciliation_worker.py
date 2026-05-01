@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import time
+import traceback
 from datetime import timedelta
 from typing import Any
 
@@ -1389,12 +1390,19 @@ async def _run_reconciliation_cycle(
                     await asyncio.sleep(_reconcile_retry_delay_seconds(attempt))
                     continue
                 summary["failures"] = int(summary["failures"]) + 1
+                # Capture the full traceback (formatted) inline.  The
+                # structured logger's ``||`` summary line drops most
+                # frames, so for diagnosing async/greenlet issues like
+                # MissingGreenlet we need the file:line of the originating
+                # call site preserved verbatim.
+                traceback_text = traceback.format_exc()
                 logger.warning(
-                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s",
+                    "Live reconciliation failed for trader=%s reason=%s error_type=%s retryable_db=%s traceback=%s",
                     trader_id,
                     reason,
                     type(exc).__name__,
                     retryable_db,
+                    traceback_text,
                     exc_info=exc,
                 )
             break

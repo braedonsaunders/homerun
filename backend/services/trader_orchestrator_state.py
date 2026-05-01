@@ -8358,13 +8358,20 @@ async def get_open_order_count_for_trader(
 
     effective_statuses = statuses if statuses is not None else UNFILLED_ORDER_STATUSES
     status_key_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
-    # Defer ``payload_json`` — we need to walk the rows for the live-
-    # authority dedup, but the dedup logic doesn't read payload_json.
-    # Without this, every per-cycle cap check pulls down all the JSON
-    # blobs for a trader's open orders (several MB per call).
+    # NOTE: do NOT ``defer(TraderOrder.payload_json)`` here.  The earlier
+    # comment ("the dedup logic doesn't read payload_json") was wrong —
+    # ``_live_order_authority_key_from_row`` (called by
+    # ``_dedupe_live_authority_rows`` below) DOES read ``payload_json``
+    # for rows where the direct ``provider_clob_order_id`` /
+    # ``provider_order_id`` columns are NULL.  With defer, that access
+    # triggers a lazy column-load which bypasses SQLAlchemy's async
+    # greenlet bridge and raises ``MissingGreenlet``, breaking
+    # reconciliation for every cycle on every trader that has even one
+    # such row.  Eager-loading the column adds a few KB per row to the
+    # transfer (filtered to one trader's open orders, typically <50
+    # rows) — a tiny price for not silently breaking the lifecycle.
     query = (
         select(TraderOrder)
-        .options(defer(TraderOrder.payload_json))
         .where(TraderOrder.trader_id == trader_id)
         .where(status_key_expr.in_(tuple(effective_statuses)))
     )
