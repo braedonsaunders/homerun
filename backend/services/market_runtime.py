@@ -1545,7 +1545,18 @@ class MarketRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._queue_reactive_token(normalized))
+        # Sync inline append + drain-task ensure.  Production saw
+        # 30+ ``_queue_reactive_*`` tasks parked on the lock as
+        # chainlink/binance feeds delivered updates in bursts —
+        # creating one task per WS tick is pure overhead.  Set.add
+        # is atomic in CPython single-threaded asyncio, no lock
+        # needed for the writer side; the drain side still locks
+        # to snapshot+clear in a single critical section.
+        self._pending_tokens.add(normalized)
+        if self._reactive_task is None or self._reactive_task.done():
+            self._reactive_task = loop.create_task(
+                self._drain_reactive_updates(), name="market-runtime-reactive"
+            )
 
     def _on_reference_update(self, asset: str) -> None:
         if not self._started:
@@ -1557,19 +1568,15 @@ class MarketRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._queue_reactive_asset(normalized))
-
-    async def _queue_reactive_token(self, token_id: str) -> None:
-        async with self._pending_reactive_lock:
-            self._pending_tokens.add(token_id)
+        # Same coalescing pattern as ``_on_token_quote_update``: skip
+        # the per-tick task creation, just add to the set and ensure
+        # the single debounced drain task is scheduled.  Drops peak
+        # task count by ~30 per crypto-feed burst.
+        self._pending_assets.add(normalized)
         if self._reactive_task is None or self._reactive_task.done():
-            self._reactive_task = asyncio.create_task(self._drain_reactive_updates(), name="market-runtime-reactive")
-
-    async def _queue_reactive_asset(self, asset: str) -> None:
-        async with self._pending_reactive_lock:
-            self._pending_assets.add(asset)
-        if self._reactive_task is None or self._reactive_task.done():
-            self._reactive_task = asyncio.create_task(self._drain_reactive_updates(), name="market-runtime-reactive")
+            self._reactive_task = loop.create_task(
+                self._drain_reactive_updates(), name="market-runtime-reactive"
+            )
 
     async def _drain_reactive_updates(self) -> None:
         await asyncio.sleep(_WS_REACTIVE_DEBOUNCE_SECONDS)

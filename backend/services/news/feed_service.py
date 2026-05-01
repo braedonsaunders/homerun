@@ -220,33 +220,52 @@ class NewsFeedService:
             return list((await session.execute(query)).scalars().all())
 
     async def _fetch_articles_from_sources(self, sources: list[DataSource]) -> list[NewsArticle]:
-        sem = asyncio.Semaphore(_MAX_SOURCE_FETCH_CONCURRENCY)
+        # Bounded worker pool — was ``[task for s in sources] + gather``
+        # with a Semaphore.  Production watchdog showed 27-28 concurrent
+        # ``_run`` tasks parked at line 226 waiting on the semaphore;
+        # peak-task count is what matters for the loop, not whether
+        # they're actively executing.  Worker-pool keeps live count at
+        # exactly ``_MAX_SOURCE_FETCH_CONCURRENCY`` regardless of the
+        # number of registered news sources.
+        if not sources:
+            return []
+        queue: asyncio.Queue = asyncio.Queue()
+        for source in sources:
+            queue.put_nowait(source)
+        flattened: list[NewsArticle] = []
 
-        async def _run(source: DataSource) -> list[NewsArticle]:
-            async with sem:
+        async def _worker() -> None:
+            while True:
+                try:
+                    source = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
                 try:
                     rows = await self._fetch_source_rows(source)
                 except Exception as exc:
                     self._inc_ingest_stat("source_fetch_failures")
                     logger.debug("Story source fetch failed for '%s': %s", source.slug, exc)
-                    return []
-
-                out: list[NewsArticle] = []
+                    rows = []
                 for row in rows:
                     article = self._row_to_article(source, row)
                     if article is None:
                         self._inc_ingest_stat("source_rows_skipped")
                         continue
-                    out.append(article)
-                return out
+                    flattened.append(article)
+                queue.task_done()
+                await asyncio.sleep(0)
 
-        results = await asyncio.gather(*[_run(source) for source in sources], return_exceptions=True)
-        flattened: list[NewsArticle] = []
-        for result in results:
-            if isinstance(result, Exception):
-                self._inc_ingest_stat("source_fetch_failures")
-                continue
-            flattened.extend(result)
+        worker_count = max(1, min(_MAX_SOURCE_FETCH_CONCURRENCY, len(sources)))
+        workers = [
+            asyncio.create_task(_worker(), name=f"news-feed-source-{i}")
+            for i in range(worker_count)
+        ]
+        try:
+            await asyncio.gather(*workers, return_exceptions=True)
+        finally:
+            for w in workers:
+                if not w.done():
+                    w.cancel()
         return flattened
 
     async def _fetch_source_rows(self, source: DataSource) -> list[dict[str, Any]]:
