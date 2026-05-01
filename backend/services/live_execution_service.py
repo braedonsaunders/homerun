@@ -502,7 +502,20 @@ class LiveExecutionService:
         # cached signature; pairing them avoids cross-order signature
         # interleaving).
         self._client_balance_io_lock: Optional[asyncio.Lock] = None
+        # Persist locks — split per-table after production saw
+        # ``persist_lock_wait`` of 4-6 s on every call.  All four
+        # consumers (``_persist_orders``, ``_persist_positions``,
+        # ``_persist_runtime_state``, ``_restore_runtime_state``) write
+        # to DIFFERENT tables; serializing them on a single lock
+        # turned independent operations into a queue.  Per-table locks
+        # let the orders write run in parallel with a runtime-state
+        # write, since they touch distinct rows on distinct tables.
+        # ``_persist_lock`` remains defined for back-compat with
+        # ``_get_persist_lock()`` callers (now an alias for the
+        # runtime-state lock).
         self._persist_lock: Optional[asyncio.Lock] = None
+        self._orders_persist_lock: Optional[asyncio.Lock] = None
+        self._positions_persist_lock: Optional[asyncio.Lock] = None
         self._balance_signature_type: Optional[int] = None
         self._runtime_state_loaded_for_wallet: Optional[str] = None
         self._daily_volume = ZERO
@@ -553,9 +566,22 @@ class LiveExecutionService:
         return self._client_balance_io_lock
 
     def _get_persist_lock(self) -> asyncio.Lock:
+        # Back-compat alias; runtime-state callers pick up this lock.
+        # ``_persist_orders`` and ``_persist_positions`` use their own
+        # dedicated locks now (no cross-table serialization).
         if self._persist_lock is None:
             self._persist_lock = asyncio.Lock()
         return self._persist_lock
+
+    def _get_orders_persist_lock(self) -> asyncio.Lock:
+        if self._orders_persist_lock is None:
+            self._orders_persist_lock = asyncio.Lock()
+        return self._orders_persist_lock
+
+    def _get_positions_persist_lock(self) -> asyncio.Lock:
+        if self._positions_persist_lock is None:
+            self._positions_persist_lock = asyncio.Lock()
+        return self._positions_persist_lock
 
     async def _run_client_io(
         self,
@@ -2200,7 +2226,13 @@ class LiveExecutionService:
             )
 
         _stage_started = _time.monotonic()
-        persist_lock = self._get_persist_lock()
+        # Use the orders-specific lock — was the singleton ``_persist
+        # _lock`` until 06/2026, which serialized this against
+        # ``_persist_runtime_state`` and ``_persist_positions`` even
+        # though all three write to DIFFERENT tables.  Per-table locks
+        # let an in-flight runtime-state write not block an order
+        # persist (and vice versa).
+        persist_lock = self._get_orders_persist_lock()
         async with persist_lock:
             _persist_record("persist_lock_wait", _stage_started)
             for attempt in range(_DB_RETRY_ATTEMPTS):
@@ -2322,7 +2354,9 @@ class LiveExecutionService:
         from models.database import AsyncSessionLocal, LiveTradingPosition
 
         positions = list(self._positions.values())
-        persist_lock = self._get_persist_lock()
+        # Positions-specific lock; doesn't block order or runtime
+        # state writes.  See split rationale on ``_persist_orders``.
+        persist_lock = self._get_positions_persist_lock()
         async with persist_lock:
             for attempt in range(_DB_RETRY_ATTEMPTS):
                 needs_retry = False
