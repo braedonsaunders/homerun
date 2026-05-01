@@ -5725,34 +5725,29 @@ async def _run_trader_once_inner(
                         # (trader_decision + decision_checks + trader_event) is
                         # pure noise for occupied markets — the scanner publishes
                         # the same markets repeatedly and we block them repeatedly.
-                        # Previously this burned 6 DB writes per occupied signal;
-                        # under load it dominates the cycle budget.  Keep the two
-                        # writes that matter for dedup (signal status + cursor)
-                        # plus the consumption row so the audit trail is still
-                        # recoverable via trader_signal_consumption.
+                        # All three audit writes routed through hot_state buffers
+                        # (was 3 sync session writes per occupied signal — under
+                        # DB lock contention this hit ps_prefilter_writes=9.4s
+                        # for trader c8851ef7 in production).  audit_flush_loop
+                        # drains in its own short tx with retry.
                         blocked_reason = "Stacking guard: market already occupied"
-                        await set_trade_signal_status(
-                            session,
+                        await hot_state.buffer_signal_status(
                             signal_id=signal_id,
                             status="skipped",
-                            commit=False,
                         )
-                        await record_signal_consumption(
-                            session,
+                        await hot_state.buffer_signal_consumption(
                             trader_id=trader_id,
                             signal_id=signal_id,
                             decision_id=None,
                             outcome="blocked",
                             reason=blocked_reason,
                             payload={"prefilter": "occupied_market", "market_id": signal_market_id},
-                            commit=False,
                         )
-                        await upsert_trader_signal_cursor(
-                            session,
+                        await hot_state.buffer_signal_cursor(
                             trader_id=trader_id,
                             last_signal_created_at=_signal_cursor_timestamp(signal),
                             last_signal_id=signal_id,
-                            commit=False,
+                            last_runtime_sequence=safe_int(_signal_runtime_sequence(signal), None),
                         )
                         cursor_created_at = _signal_cursor_timestamp(signal)
                         cursor_signal_id = signal_id
@@ -5766,31 +5761,25 @@ async def _run_trader_once_inner(
                         _enter_stage("cooldown_writes")
                         _ps_pre_started = time.monotonic()
                         # Same short-circuit as the stacking-guard branch above:
-                        # skip the heavy decision/checks/event writes — keep only
-                        # signal_status + consumption + cursor.
+                        # all audit writes buffered through hot_state.
                         blocked_reason = "Reentry cooldown: market recently closed"
-                        await set_trade_signal_status(
-                            session,
+                        await hot_state.buffer_signal_status(
                             signal_id=signal_id,
                             status="skipped",
-                            commit=False,
                         )
-                        await record_signal_consumption(
-                            session,
+                        await hot_state.buffer_signal_consumption(
                             trader_id=trader_id,
                             signal_id=signal_id,
                             decision_id=None,
                             outcome="blocked",
                             reason=blocked_reason,
                             payload={"prefilter": "reentry_cooldown", "market_id": signal_market_id},
-                            commit=False,
                         )
-                        await upsert_trader_signal_cursor(
-                            session,
+                        await hot_state.buffer_signal_cursor(
                             trader_id=trader_id,
                             last_signal_created_at=_signal_cursor_timestamp(signal),
                             last_signal_id=signal_id,
-                            commit=False,
+                            last_runtime_sequence=safe_int(_signal_runtime_sequence(signal), None),
                         )
                         cursor_created_at = _signal_cursor_timestamp(signal)
                         cursor_signal_id = signal_id
