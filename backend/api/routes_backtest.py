@@ -118,6 +118,26 @@ class WalkForwardRequest(BaseModel):
     concurrency: int = Field(default=2, ge=1, le=8)
 
 
+@router.get("/drift")
+async def drift_monitor_route(window_days: int = 30):
+    """Live-vs-backtest drift report.
+
+    For each strategy, compares the most recent backtest's Sharpe and
+    trade rate against live realized performance over the last
+    ``window_days``.  Flags strategies whose live behavior has
+    materially diverged — the cleanest single signal of model decay
+    or regime shift.
+    """
+    from services.backtest.drift import compute_drift
+
+    try:
+        result = await compute_drift(window_days=int(max(1, min(180, window_days))))
+    except Exception as exc:
+        logger.exception("Drift monitor failed")
+        raise HTTPException(status_code=500, detail=f"drift failed: {exc}") from exc
+    return result.to_dict()
+
+
 @router.get("/portfolio-correlation")
 async def portfolio_correlation_route(
     window_days: int = 30,
