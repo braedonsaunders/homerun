@@ -194,6 +194,57 @@ function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equi
   )
 }
 
+function RegimeBlock({
+  title,
+  rows,
+}: {
+  title: string
+  rows: Array<{ bucket: string; n: number; wins: number; total_pnl_usd: number; win_rate: number; mean_pnl_usd: number }>
+}) {
+  const maxN = rows.reduce((m, r) => Math.max(m, r.n), 1)
+  return (
+    <div className="rounded-sm border border-border/40 bg-background/40 p-2">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
+      {rows.length === 0 ? (
+        <div className="text-[10px] text-muted-foreground italic">no data</div>
+      ) : (
+        <div className="space-y-0.5">
+          {rows
+            .slice()
+            .sort((a, b) => b.n - a.n)
+            .map((r) => {
+              const winPct = r.win_rate * 100
+              const tone =
+                r.n < 3 ? 'text-muted-foreground'
+                  : winPct >= 60 ? 'text-emerald-300'
+                    : winPct >= 40 ? 'text-amber-300'
+                      : 'text-red-300'
+              const widthPct = Math.min(100, (r.n / maxN) * 100)
+              return (
+                <div key={r.bucket} className="grid grid-cols-[60px,1fr,40px] items-center gap-1 text-[10px]">
+                  <span className="truncate font-mono">{r.bucket}</span>
+                  <div className="relative h-2 rounded-sm bg-muted/30">
+                    <div
+                      className={cn(
+                        'absolute inset-y-0 left-0 rounded-sm',
+                        winPct >= 60 ? 'bg-emerald-500/50' : winPct >= 40 ? 'bg-amber-500/50' : 'bg-red-500/50',
+                      )}
+                      style={{ width: `${widthPct}%` }}
+                    />
+                  </div>
+                  <span className={cn('text-right font-mono tabular-nums', tone)}>
+                    {r.n < 1 ? '—' : `${winPct.toFixed(0)}%`}
+                  </span>
+                </div>
+              )
+            })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function CalibrationPlot({ bins }: { bins: Array<{ predicted_mean: number; observed_rate: number; n: number }> }) {
   if (!bins || bins.length === 0) return null
   const w = 220
@@ -955,6 +1006,30 @@ export default function BacktestStudio({
                   <div className="mt-2 text-[10px] text-muted-foreground">
                     Δ &gt; 30% between any two regimes ⇒ the fill model is likely the suspect (latency or queue
                     assumptions). Δ &lt; 10% means the simulator is well-calibrated for this strategy.
+                  </div>
+                </div>
+              ) : null}
+
+              {/* REGIME DECOMPOSITION */}
+              {activeRun?.regime_breakdown ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Layers3 className="h-3.5 w-3.5 text-amber-300" />
+                    Regime decomposition
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      win-rate by slice
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <RegimeBlock title="Hour of day" rows={activeRun.regime_breakdown.by_hour} />
+                    <RegimeBlock title="Day of week" rows={activeRun.regime_breakdown.by_dow} />
+                    <RegimeBlock title="Time to resolution" rows={activeRun.regime_breakdown.by_ttr} />
+                    <RegimeBlock title="Order size" rows={activeRun.regime_breakdown.by_size} />
+                  </div>
+                  <div className="mt-2 text-[10px] text-muted-foreground">
+                    Lopsided win-rate across one slice (e.g. 80% on Tue but 30% Mon-Fri-Sat) ⇒ strategy
+                    works only in one regime. Healthy strategies have flat-ish bars across all four
+                    decompositions.
                   </div>
                 </div>
               ) : null}

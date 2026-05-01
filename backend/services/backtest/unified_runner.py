@@ -83,6 +83,121 @@ def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
     return _RECENT_RUNS.get(str(run_id))
 
 
+def _bucket_label_hour(hour: int) -> str:
+    if 0 <= hour < 6:
+        return "00–06 UTC"
+    if 6 <= hour < 12:
+        return "06–12 UTC"
+    if 12 <= hour < 18:
+        return "12–18 UTC"
+    return "18–24 UTC"
+
+
+def _bucket_label_dow(dow: int) -> str:
+    return ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[max(0, min(6, int(dow)))]
+
+
+def _bucket_label_ttr(seconds: float | None) -> str:
+    if seconds is None or seconds <= 0:
+        return "no_ttr"
+    if seconds < 60:
+        return "<1 min"
+    if seconds < 300:
+        return "1–5 min"
+    if seconds < 1800:
+        return "5–30 min"
+    if seconds < 3600:
+        return "30–60 min"
+    if seconds < 14400:
+        return "1–4 hr"
+    return ">4 hr"
+
+
+def _bucket_label_size(size_usd: float | None) -> str:
+    if size_usd is None or size_usd <= 0:
+        return "no_size"
+    if size_usd < 25:
+        return "<$25"
+    if size_usd < 100:
+        return "$25–100"
+    if size_usd < 500:
+        return "$100–500"
+    if size_usd < 2000:
+        return "$500–2K"
+    return ">$2K"
+
+
+def _compute_regime_breakdown(exec_dict: dict[str, Any]) -> dict[str, Any]:
+    """Bucket the run's fills by hour, day-of-week, time-to-resolution
+    at entry, and notional-size — return per-bucket trade counts and
+    win rates.  This is what desks call "regime decomposition" and what
+    we need to spot when a strategy works in only one slice of time."""
+    fills = exec_dict.get("fills_sample") or []
+    if not isinstance(fills, list) or not fills:
+        return {"by_hour": [], "by_dow": [], "by_ttr": [], "by_size": []}
+
+    from datetime import datetime as _dt
+
+    by_hour: dict[str, dict[str, Any]] = {}
+    by_dow: dict[str, dict[str, Any]] = {}
+    by_ttr: dict[str, dict[str, Any]] = {}
+    by_size: dict[str, dict[str, Any]] = {}
+
+    def _bump(bucket_dict: dict[str, dict[str, Any]], key: str, win: bool, pnl: float) -> None:
+        e = bucket_dict.setdefault(key, {"bucket": key, "n": 0, "wins": 0, "total_pnl_usd": 0.0})
+        e["n"] += 1
+        if win:
+            e["wins"] += 1
+        e["total_pnl_usd"] += float(pnl)
+
+    for fill in fills:
+        if not isinstance(fill, dict):
+            continue
+        ts_iso = fill.get("timestamp") or fill.get("filled_at") or fill.get("placed_at")
+        if not ts_iso:
+            continue
+        try:
+            ts = _dt.fromisoformat(str(ts_iso).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        pnl_raw = fill.get("realized_pnl_usd") or fill.get("pnl_usd") or 0.0
+        if not isinstance(pnl_raw, (int, float)):
+            pnl_raw = 0.0
+        won = float(pnl_raw) > 0
+        size_usd = fill.get("notional_usd") or fill.get("filled_notional_usd") or 0.0
+        try:
+            size_usd = float(size_usd)
+        except Exception:
+            size_usd = 0.0
+        ttr_raw = fill.get("time_to_resolution_seconds")
+        try:
+            ttr = float(ttr_raw) if ttr_raw is not None else None
+        except Exception:
+            ttr = None
+
+        _bump(by_hour, _bucket_label_hour(ts.hour), won, float(pnl_raw))
+        _bump(by_dow, _bucket_label_dow(ts.weekday()), won, float(pnl_raw))
+        _bump(by_ttr, _bucket_label_ttr(ttr), won, float(pnl_raw))
+        _bump(by_size, _bucket_label_size(size_usd), won, float(pnl_raw))
+
+    def _finalize(bucket_dict: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for entry in bucket_dict.values():
+            n = int(entry["n"])
+            wins = int(entry["wins"])
+            entry["win_rate"] = (wins / n) if n > 0 else 0.0
+            entry["mean_pnl_usd"] = (float(entry["total_pnl_usd"]) / n) if n > 0 else 0.0
+            out.append(entry)
+        return out
+
+    return {
+        "by_hour": _finalize(by_hour),
+        "by_dow": _finalize(by_dow),
+        "by_ttr": _finalize(by_ttr),
+        "by_size": _finalize(by_size),
+    }
+
+
 def _compute_deflated_sharpe(exec_dict: dict[str, Any], *, n_trials: int) -> dict[str, Any]:
     """Derive López de Prado's deflated Sharpe from the equity-curve
     sample.  Falls back to zero-noise output when the curve is too
@@ -396,6 +511,7 @@ async def run_unified_backtest(
     # the run's parameter sweep size as n_trials when present (defaults
     # to 1, i.e. no penalty, when the strategy wasn't tuned).
     deflated = _compute_deflated_sharpe(exec_dict, n_trials=1)
+    regime = _compute_regime_breakdown(exec_dict)
 
     out = {
         "run_id": run_id,
@@ -406,6 +522,7 @@ async def run_unified_backtest(
         "strategy_name": exec_dict.get("strategy_name"),
         "execution": exec_dict,
         "deflated_sharpe": deflated,
+        "regime_breakdown": regime,
         "fill_model": fill_model,
         "empirical_constants": constants,
         "latency": latency,

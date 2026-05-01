@@ -153,6 +153,22 @@ export interface EnsembleBandEntry {
   cox_loaded: boolean
 }
 
+export interface RegimeBucket {
+  bucket: string
+  n: number
+  wins: number
+  total_pnl_usd: number
+  win_rate: number
+  mean_pnl_usd: number
+}
+
+export interface RegimeBreakdown {
+  by_hour: RegimeBucket[]
+  by_dow: RegimeBucket[]
+  by_ttr: RegimeBucket[]
+  by_size: RegimeBucket[]
+}
+
 export interface UnifiedBacktestResult {
   run_id: string
   started_at: string
@@ -162,6 +178,7 @@ export interface UnifiedBacktestResult {
   strategy_name: string | null
   execution: ExecutionResult
   deflated_sharpe: DeflatedSharpeResult
+  regime_breakdown: RegimeBreakdown
   fill_model: FillModelInfo
   empirical_constants: EmpiricalConstants
   latency: LatencyDistribution
