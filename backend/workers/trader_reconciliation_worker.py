@@ -599,41 +599,89 @@ async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
     ``trader_reconciliation_worker``.  Aggressive 5s cadence until the
     first successful seed lands so the freshness gate clears as quickly
     as possible after boot; 30s cadence afterwards for drift-correction.
+
+    Robustness contract — production saw ``rest_seed_count`` stuck at 1
+    for 400+ seconds despite the 30s cadence, meaning a cycle hung
+    inside an await that didn't honor its inner ``wait_for`` timeout.
+    Defenses:
+      * OUTER ``wait_for(70s)`` around the whole reseed so ANY hang
+        bails out, even if internals trap cancellation.
+      * Cycle-level logging at WARNING when seed is stale, so a stuck
+        loop surfaces in production logs without spam during healthy
+        operation.
+      * Catches ``BaseException`` (not just ``Exception``) so silent
+        cancels are visible.  Re-raises ``CancelledError`` so the
+        worker host's task-restart can reschedule us.
     """
     from services.wallet_state_cache import get_wallet_state_cache
 
     cache = get_wallet_state_cache()
-    logger.info(
+    logger.warning(
         "WalletStateCache reseeder loop started",
         bootstrap_interval_s=_WALLET_CACHE_RESEED_BOOTSTRAP_INTERVAL_SECONDS,
         steady_interval_s=_WALLET_CACHE_RESEED_INTERVAL_SECONDS,
     )
     cycle = 0
+    # Hard upper bound on a single reseed call.  All internal awaits
+    # already have their own timeouts that sum to ~55s, so 70s gives
+    # them a few seconds of slack.  If we exceed this it means an
+    # await ignored its own timeout — usually because the awaited
+    # coroutine was running CPU-bound C code that didn't yield to
+    # the cancel signal.
+    _RESEED_HARD_BUDGET_SECONDS = 70.0
     while not stop_event.is_set():
         cycle += 1
         if cache._last_rest_seed_succeeded and cache._last_rest_seed_mono is not None:
             interval = _WALLET_CACHE_RESEED_INTERVAL_SECONDS
         else:
             interval = _WALLET_CACHE_RESEED_BOOTSTRAP_INTERVAL_SECONDS
-        try:
-            await _reseed_wallet_state_cache_from_rest()
-        except Exception as exc:
+
+        # Surface degraded state at WARNING so operators see it under
+        # any log filter.  Healthy steady state stays quiet.
+        seed_age_s = (
+            (time.monotonic() - cache._last_rest_seed_mono)
+            if cache._last_rest_seed_mono is not None
+            else None
+        )
+        if cache._rest_seed_count == 0 or (seed_age_s is not None and seed_age_s > 90.0):
             logger.warning(
-                "WalletStateCache REST reseed cycle failed",
-                cycle=cycle,
-                exc_info=exc,
-            )
-        # Loud heartbeat for the first few cycles so operators can
-        # confirm the reseeder is alive at boot.  After the first
-        # successful seed we go quiet — the freshness gate itself is
-        # the alarm if reseeds stop.
-        if cycle <= 3 or cycle % 20 == 0:
-            logger.info(
-                "WalletStateCache reseeder heartbeat",
+                "WalletStateCache reseed cycle starting (degraded state)",
                 cycle=cycle,
                 seed_count=cache._rest_seed_count,
                 last_succeeded=cache._last_rest_seed_succeeded,
+                seed_age_seconds=(round(seed_age_s, 1) if seed_age_s is not None else None),
                 next_interval_s=interval,
+            )
+
+        cycle_start_mono = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                _reseed_wallet_state_cache_from_rest(),
+                timeout=_RESEED_HARD_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "WalletStateCache reseed cycle exceeded hard budget — "
+                "an inner await did not honor its timeout",
+                cycle=cycle,
+                budget_s=_RESEED_HARD_BUDGET_SECONDS,
+                elapsed_s=round(time.monotonic() - cycle_start_mono, 1),
+            )
+        except asyncio.CancelledError:
+            # Surface the cancel so we know if some other code stopped
+            # us, then re-raise so the host's supervisor can restart.
+            logger.warning(
+                "WalletStateCache reseeder cycle cancelled",
+                cycle=cycle,
+                elapsed_s=round(time.monotonic() - cycle_start_mono, 1),
+            )
+            raise
+        except BaseException as exc:
+            logger.warning(
+                "WalletStateCache REST reseed cycle failed",
+                cycle=cycle,
+                elapsed_s=round(time.monotonic() - cycle_start_mono, 1),
+                exc_info=exc,
             )
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
