@@ -42,9 +42,9 @@ import asyncio
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable, Iterator, Literal, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from utils.logger import get_logger
 from utils.utcnow import utcnow

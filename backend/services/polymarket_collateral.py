@@ -59,7 +59,7 @@ import asyncio
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Tuple
+from typing import Any
 
 from utils.logger import get_logger
 

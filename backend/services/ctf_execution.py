@@ -10,7 +10,6 @@ from services.live_execution_service import live_execution_service
 from services.polymarket_collateral import (
     CTF_ADDRESS,
     CollateralKind,
-    CollateralMatch,
     CollateralToken,
     PUSD_ADDRESS,
     USDC_E_ADDRESS,

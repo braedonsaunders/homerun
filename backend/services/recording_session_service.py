@@ -29,14 +29,13 @@ running / scheduled sessions.  See ``host.py`` registration.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import traceback
 from typing import Optional
 
 from utils.logger import get_logger

@@ -17,11 +17,6 @@ import sys
 import time
 import uuid
 
-# 60s TTL for the demoted-strategy-types cache.  Operator/guardrail
-# changes call ``invalidate_demoted_cache`` for immediate effect; the
-# TTL is a safety net so a forgotten invalidation doesn't permanently
-# stale the orchestrator's view.
-_DEMOTED_CACHE_TTL_SECONDS = 60.0
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
@@ -46,6 +41,12 @@ from models.database import (
 from services.param_optimizer import param_optimizer
 from services.simulation.execution_simulator import execution_simulator
 from utils.logger import get_logger
+
+# 60s TTL for the demoted-strategy-types cache.  Operator/guardrail
+# changes call ``invalidate_demoted_cache`` for immediate effect; the
+# TTL is a safety net so a forgotten invalidation doesn't permanently
+# stale the orchestrator's view.
+_DEMOTED_CACHE_TTL_SECONDS = 60.0
 
 logger = get_logger(__name__)
 
