@@ -480,6 +480,27 @@ class WorkerHost:
             except asyncio.CancelledError:
                 raise
 
+    async def _run_recorder_subscription_loop(self) -> None:
+        """Run the proactive recorder subscription service.
+
+        Periodically reads MarketCatalog and subscribes the WebSocket
+        feed to the top liquid markets so the microstructure recorder
+        has book data for every market a strategy might fire on.
+        See ``services.recorder_subscription_service`` for the policy.
+        """
+        try:
+            from services.recorder_subscription_service import run_loop
+
+            await run_loop()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Recorder subscription loop crashed",
+                plane=self._plane_name,
+                exc_info=exc,
+            )
+
     async def _initialize_live_execution_background(self) -> None:
         try:
             trading_initialized = await live_execution_service.initialize()
@@ -883,6 +904,19 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_recording_session_loop(),
                 name="recording-session-manager",
+            ))
+
+        # Proactive recorder subscription — keeps the WebSocket feed
+        # subscribed to the top N liquid markets in MarketCatalog so
+        # the microstructure recorder has book data for every market
+        # a strategy might fire on.  Closes the BacktestStudio coverage
+        # gap (38% no-data + 45% started-late on tail-end-carry's
+        # 657 opp tokens).  Trading plane only — single connection,
+        # single subscription set.
+        if self._plane_name == "trading":
+            self._background_tasks.append(asyncio.create_task(
+                self._run_recorder_subscription_loop(),
+                name="recorder-subscription",
             ))
 
         if self._enabled("load_strategy_registry"):

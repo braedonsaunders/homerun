@@ -56,6 +56,7 @@ import {
   type DatasetQueryResult,
   type DatasetSummary,
   type MicrostructureRecorderStatus,
+  type ProactiveSubscriptionStatus,
   type RecordingCaptureType,
   type RecordingSession,
   type RecordingTargetKind,
@@ -65,6 +66,7 @@ import {
   deleteRecordingSession,
   getDatasetStorageSummary,
   getMicrostructureRecorderStatus,
+  getProactiveSubscriptionStatus,
   listDatasets,
   listRecordingSessions,
   queryDataset,
@@ -782,6 +784,149 @@ function MicrostructureRecorderSection() {
         captures whatever the orchestrator subscribes to.  For targeted
         captures (specific markets, specific windows, specific tick
         intervals), use the on-demand sessions panel below.
+      </div>
+    </div>
+  )
+}
+
+
+function ProactiveCoverageSection() {
+  const queryClient = useQueryClient()
+  const statusQuery = useQuery<ProactiveSubscriptionStatus>({
+    queryKey: ['data-lab', 'proactive-subscription'],
+    queryFn: getProactiveSubscriptionStatus,
+    refetchInterval: 15_000,
+  })
+  const s = statusQuery.data
+  const hasRun = s != null && s.total_runs > 0
+  const subscribed = s?.last_run_subscribed_count ?? 0
+  const target = s?.last_run_target_count ?? 0
+  const coveragePct =
+    target > 0 ? Math.min(100, (subscribed / target) * 100) : 0
+  const ageSec = s?.last_run_age_seconds ?? null
+
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30">
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+          <span className="text-xs font-semibold">Proactive coverage</span>
+          <span className="text-[10px] text-muted-foreground">
+            keeps the WS feed subscribed to liquid catalog markets so backtests have data
+          </span>
+          <Badge
+            variant="outline"
+            className={cn(
+              'text-[9px]',
+              hasRun && (s?.last_error == null)
+                ? 'border-emerald-500/40 text-emerald-300'
+                : hasRun && s?.last_error != null
+                ? 'border-rose-500/40 text-rose-300'
+                : 'border-border/40 text-muted-foreground',
+            )}
+          >
+            {hasRun ? (s?.last_error ? 'error' : 'active') : 'idle'}
+          </Badge>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 gap-1 text-[10px]"
+          onClick={() =>
+            queryClient.invalidateQueries({
+              queryKey: ['data-lab', 'proactive-subscription'],
+            })
+          }
+          disabled={statusQuery.isFetching}
+        >
+          <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-4">
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Subscribed
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {subscribed.toLocaleString()}
+          </div>
+          <div className="text-[9px] text-muted-foreground">
+            of {target.toLocaleString()} target ({coveragePct.toFixed(0)}%)
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Catalog markets
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {(s?.last_run_catalog_market_count ?? 0).toLocaleString()}
+          </div>
+          <div className="text-[9px] text-muted-foreground">
+            {(s?.last_run_catalog_token_count ?? 0).toLocaleString()} tokens
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Cap
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {(s?.max_tokens ?? 0).toLocaleString()}
+          </div>
+          <div className="text-[9px] text-muted-foreground">
+            min liq ${s?.min_liquidity_usd ?? 0}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+            Last run
+          </div>
+          <div className="font-mono text-sm tabular-nums">
+            {ageSec != null ? `${Math.round(ageSec)}s ago` : '—'}
+          </div>
+          <div className="text-[9px] text-muted-foreground">
+            {(s?.last_run_duration_ms ?? 0).toFixed(0)}ms · {s?.total_runs ?? 0} runs
+          </div>
+        </div>
+      </div>
+
+      {hasRun ? (
+        <div className="border-t border-border/30 px-3 py-2 text-[10px]">
+          <div className="mb-1 uppercase tracking-wide text-muted-foreground">Funnel</div>
+          <div className="flex flex-wrap gap-1">
+            <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
+              catalog: {(s?.last_run_catalog_token_count ?? 0).toLocaleString()}
+            </span>
+            <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
+              dropped low-liq: {(s?.last_run_dropped_low_liquidity ?? 0).toLocaleString()}
+            </span>
+            <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
+              dropped over-cap: {(s?.last_run_dropped_over_cap ?? 0).toLocaleString()}
+            </span>
+            <span className="rounded-sm bg-violet-500/15 px-2 py-0.5 font-mono text-violet-200">
+              target: {target.toLocaleString()}
+            </span>
+            <span className="rounded-sm bg-emerald-500/15 px-2 py-0.5 font-mono text-emerald-200">
+              subscribed: {subscribed.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      {s?.last_error ? (
+        <div className="border-t border-border/30 px-3 py-2 text-[10px] text-rose-300">
+          last error: {s.last_error}
+        </div>
+      ) : null}
+
+      <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
+        Pulls top liquid markets from MarketCatalog every {s?.loop_interval_seconds ?? 60}s and
+        subscribes the WS feed proactively — closes the recorder coverage gap that left
+        38–45% of strategy opportunity tokens with no book data.  Cap (
+        {s?.max_tokens ?? 8000}) and floor (${s?.min_liquidity_usd ?? 10}) tunable via{' '}
+        <code className="font-mono">HOMERUN_RECORDER_MAX_TOKENS</code> / {' '}
+        <code className="font-mono">HOMERUN_RECORDER_MIN_LIQUIDITY</code>.
       </div>
     </div>
   )
@@ -1574,6 +1719,7 @@ function RecordView() {
     <div className="flex flex-col gap-3 p-3">
       <StorageOverviewSection />
       <MicrostructureRecorderSection />
+      <ProactiveCoverageSection />
       <CryptoOhlcRecorderSection />
       <OnDemandSessionsSection />
     </div>

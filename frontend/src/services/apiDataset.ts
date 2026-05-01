@@ -192,6 +192,31 @@ export async function deleteRecordingSession(id: string): Promise<void> {
   await api.delete(`/dataset/sessions/${encodeURIComponent(id)}`)
 }
 
+export interface ProactiveSubscriptionStatus {
+  max_tokens: number
+  min_liquidity_usd: number
+  loop_interval_seconds: number
+  last_run_at_epoch: number | null
+  last_run_age_seconds: number | null
+  last_run_duration_ms: number
+  last_run_subscribed_count: number
+  last_run_target_count: number
+  last_run_catalog_market_count: number
+  last_run_catalog_token_count: number
+  last_run_dropped_low_liquidity: number
+  last_run_dropped_over_cap: number
+  last_run_already_subscribed: number
+  last_error: string | null
+  total_runs: number
+}
+
+export async function getProactiveSubscriptionStatus(): Promise<ProactiveSubscriptionStatus> {
+  const { data } = await api.get<ProactiveSubscriptionStatus>(
+    '/dataset/recorder/proactive-subscription',
+  )
+  return data
+}
+
 export interface MicrostructureRecorderStatus {
   running: boolean
   tokens_tracked: number

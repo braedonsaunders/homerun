@@ -742,6 +742,24 @@ async def delete_recording_session(session_id: str) -> dict[str, Any]:
     return {"deleted": True, "id": session_id}
 
 
+@router.get("/recorder/proactive-subscription")
+async def proactive_subscription_status() -> dict[str, Any]:
+    """Status of the proactive recorder subscription loop.
+
+    Surfaces the funnel: catalog markets → candidates → above-liquidity
+    floor → top-N target → subscribed.  When the gap between target and
+    subscribed is large, the WS feed is rejecting subscriptions
+    (connection issue) or the feed manager isn't initialized.
+    """
+    try:
+        from services.recorder_subscription_service import get_status
+
+        return get_status()
+    except Exception as exc:
+        logger.exception("proactive_subscription_status failed")
+        return {"error": str(exc)}
+
+
 @router.get("/recorder/microstructure")
 async def microstructure_recorder_status() -> dict[str, Any]:
     """Live status of the WebSocket-driven microstructure recorder.
