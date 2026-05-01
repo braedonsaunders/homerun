@@ -139,6 +139,15 @@ class _FastTraderTask:
         # Per-stage timings (ms) populated by _run_once and surfaced via the
         # cycle-exceeded-budget warning to pinpoint which stage stalled.
         self._last_stage_timings_ms: dict[str, float] = {}
+        # Per-task cached signal cursor.  The DB-resident cursor only
+        # changes when this trader consumes a signal; the trader task
+        # owns those writes so it knows when its cache is stale.  This
+        # eliminates the two per-cycle cursor SELECTs that the previous
+        # design ran every time hot_state hadn't been seeded yet.
+        self._cached_cursor_runtime_sequence: Optional[int] = None
+        self._cached_cursor_created_at: Optional[Any] = None
+        self._cached_cursor_signal_id: Optional[str] = None
+        self._cached_cursor_loaded: bool = False
 
     @property
     def trader_id(self) -> str:
@@ -718,6 +727,15 @@ class _FastTraderTask:
                 (time.monotonic() - stage_start) * 1000.0, 1
             )
             return
+        # Fall back to task-local cached cursor before paying for a DB
+        # read.  ``self._cached_cursor_*`` is populated the FIRST time
+        # we cold-start through the DB path; from there on we re-use
+        # it across cycles instead of re-reading TraderSignalCursor.
+        if cursor_runtime_sequence is None and self._cached_cursor_loaded:
+            cursor_runtime_sequence = self._cached_cursor_runtime_sequence
+            cursor_created_at = self._cached_cursor_created_at
+            cursor_signal_id = self._cached_cursor_signal_id
+
         if cursor_runtime_sequence is not None:
             if is_db_pressure_active():
                 return
@@ -725,59 +743,111 @@ class _FastTraderTask:
                 None,
                 accepted_sources=accepted_sources,
                 cursor_runtime_sequence=cursor_runtime_sequence,
-                cursor_created_at=None,
-                cursor_signal_id=None,
+                cursor_created_at=cursor_created_at,
+                cursor_signal_id=cursor_signal_id,
             )
             return
 
-        stage_start = time.monotonic()
-        async with FastAsyncSessionLocal() as session:
-            self._last_stage_timings_ms["session_checkout"] = round(
-                (time.monotonic() - stage_start) * 1000.0, 1
+        # In-memory cache is the ONLY hot-path source.  Populated by:
+        #   * Bootstrap-from-DB at trading-plane startup (one shot)
+        #   * Redis ``signal_payloads`` channel for every subsequent
+        #     signal insert / status flip (sub-millisecond push)
+        #   * Bootstrap re-run on every Redis (re)subscribe to
+        #     reconcile publishes dropped during a connection gap
+        #
+        # The cold-start branch below ONLY runs while the cache hasn't
+        # yet been bootstrapped (the brief window before the eager
+        # bootstrap completes) AND this trader has not been seen yet.
+        # In steady state the DB is NEVER touched on this path.
+        from services import signal_cache as _signal_cache
+
+        cache = _signal_cache.get_signal_cache()
+        cache_ready = cache.is_ready()
+        trader_hydrated = cache.is_trader_hydrated(trader_id)
+
+        if cache_ready and trader_hydrated:
+            # FAST PATH — pure in-memory dict lookup, no session
+            # checkout, no DB queries, no event-loop yield points
+            # beyond the one inside the lock.
+            cache_t0 = time.monotonic()
+            signals = cache.get_unconsumed_signals(
+                trader_id=trader_id,
+                sources=accepted_sources,
+                cursor_runtime_sequence=cursor_runtime_sequence,
+                limit=_MAX_SIGNALS_PER_CYCLE,
             )
+            self._last_stage_timings_ms["signal_cache_hit"] = round(
+                (time.monotonic() - cache_t0) * 1000.0, 1
+            )
+            self._last_stage_timings_ms["signal_source"] = "cache"
+
+            if not signals:
+                # Idle: only open a DB session when actual writes are
+                # due (touch every 30s, idle event every 5min).  Most
+                # idle cycles exit here without touching the pool.
+                if is_db_pressure_active():
+                    return
+                touch_due = (
+                    time.monotonic() - self._last_trader_touch_at
+                    >= _TRADER_LAST_RUN_TOUCH_SECONDS
+                )
+                idle_event_due = (
+                    time.monotonic() - self._last_idle_event_at
+                    >= _IDLE_EVENT_INTERVAL_SECONDS
+                )
+                if not touch_due and not idle_event_due:
+                    return
+                idle_t0 = time.monotonic()
+                async with FastAsyncSessionLocal() as session:
+                    touched = await self._touch_trader_run(session, force=False)
+                    emitted = await self._maybe_emit_idle_event(
+                        session,
+                        accepted_sources=accepted_sources,
+                        cursor_runtime_sequence=cursor_runtime_sequence,
+                        cursor_created_at=cursor_created_at,
+                        cursor_signal_id=cursor_signal_id,
+                    )
+                    if touched or emitted:
+                        try:
+                            await asyncio.shield(session.commit())
+                        except Exception as exc:
+                            logger.warning(
+                                "Fast trader idle-cycle commit failed",
+                                trader_id=trader_id,
+                                exc_info=exc,
+                            )
+                self._last_stage_timings_ms["idle_touch_commit"] = round(
+                    (time.monotonic() - idle_t0) * 1000.0, 1
+                )
+                return
+        else:
+            # COLD-START PATH — open a session, read the cursor once,
+            # fetch from DB, seed the cache, hydrate this trader.
+            # Subsequent cycles short-circuit on the FAST PATH above.
             stage_start = time.monotonic()
-            if cursor_runtime_sequence is None:
+            async with FastAsyncSessionLocal() as session:
+                self._last_stage_timings_ms["session_checkout"] = round(
+                    (time.monotonic() - stage_start) * 1000.0, 1
+                )
+                cursor_t0 = time.monotonic()
                 cursor_created_at, cursor_signal_id = await get_trader_signal_cursor(
                     session, trader_id=trader_id
                 )
                 cursor_row = await session.get(TraderSignalCursor, trader_id)
-                cursor_runtime_sequence = safe_int(getattr(cursor_row, "last_runtime_sequence", None), None)
-
-            # In-memory cache is the ONLY hot-path source.  The cache is
-            # populated by:
-            #   * Bootstrap-from-DB at trading-plane startup (one shot)
-            #   * Redis ``signal_payloads`` channel for every subsequent
-            #     signal insert / status flip (sub-millisecond push)
-            #   * Bootstrap re-run on every Redis (re)subscribe to
-            #     reconcile publishes dropped during a connection gap
-            #
-            # The DB fallback below ONLY runs while the cache hasn't yet
-            # been bootstrapped (cold-start window before the eager
-            # bootstrap completes, or extended Redis-down + DB-down
-            # outage).  In steady state the DB is never touched on this
-            # path.
-            from services import signal_cache as _signal_cache
-
-            cache = _signal_cache.get_signal_cache()
-            cache_ready = cache.is_ready()
-            trader_hydrated = cache.is_trader_hydrated(trader_id)
-            signals: list = []
-            cache_authoritative = False
-            if cache_ready and trader_hydrated:
-                signals = cache.get_unconsumed_signals(
-                    trader_id=trader_id,
-                    sources=accepted_sources,
-                    cursor_runtime_sequence=cursor_runtime_sequence,
-                    limit=_MAX_SIGNALS_PER_CYCLE,
+                cursor_runtime_sequence = safe_int(
+                    getattr(cursor_row, "last_runtime_sequence", None), None
                 )
-                cache_authoritative = True
-                self._last_stage_timings_ms["signal_cache_hit"] = round(
-                    (time.monotonic() - stage_start) * 1000.0, 1
+                self._last_stage_timings_ms["coldstart_cursor_read"] = round(
+                    (time.monotonic() - cursor_t0) * 1000.0, 1
                 )
-            else:
-                # Cold-start fallback.  Runs at most a handful of times
-                # per process lifetime — until the bootstrap completes
-                # AND this trader has been seen at least once.
+                # Cache the cursor on the task so future cold-start
+                # cycles (until cache_ready flips on) skip the DB read.
+                self._cached_cursor_runtime_sequence = cursor_runtime_sequence
+                self._cached_cursor_created_at = cursor_created_at
+                self._cached_cursor_signal_id = cursor_signal_id
+                self._cached_cursor_loaded = True
+
+                db_t0 = time.monotonic()
                 signals = await list_unconsumed_trade_signals(
                     session,
                     trader_id=trader_id,
@@ -790,48 +860,47 @@ class _FastTraderTask:
                     # Fast trader never reads payload_json /
                     # strategy_context_json; deferring them turns this
                     # SELECT from a 200-row × 3KB JSON-decode-on-loop
-                    # blocker into a header-only fetch.  See state.py
-                    # for the full rationale.
+                    # blocker into a header-only fetch.
                     defer_heavy_columns=True,
                 )
+                self._last_stage_timings_ms["coldstart_db_list"] = round(
+                    (time.monotonic() - db_t0) * 1000.0, 1
+                )
                 if not trader_hydrated:
-                    # Empty consumed-id ring is fine — ``mark_consumed``
-                    # adds to it on each consumption from now on.  The
-                    # cursor predicate (cursor_runtime_sequence) keeps
-                    # already-processed signals out of the cache read
-                    # in subsequent cycles.
                     cache.hydrate_trader_consumed_ids(trader_id, [])
-                # Seed the cache with anything we just learned about so
-                # the next cycle takes the cache path even if the
-                # bootstrap hasn't completed yet.
+                # Seed the cache so the NEXT cycle takes the fast path
+                # even if the eager bootstrap hasn't completed yet.
                 for db_sig in signals:
                     snap = _snapshot_from_db_row(db_sig)
                     if snap is not None:
                         cache.upsert(snap)
-            self._last_stage_timings_ms["signal_source"] = (
-                "cache" if cache_authoritative else "db_coldstart"
-            )
-            if not signals:
-                if is_db_pressure_active():
+                self._last_stage_timings_ms["signal_source"] = "db_coldstart"
+
+                if not signals:
+                    if is_db_pressure_active():
+                        return
+                    idle_t0 = time.monotonic()
+                    touched = await self._touch_trader_run(session, force=False)
+                    emitted = await self._maybe_emit_idle_event(
+                        session,
+                        accepted_sources=accepted_sources,
+                        cursor_runtime_sequence=cursor_runtime_sequence,
+                        cursor_created_at=cursor_created_at,
+                        cursor_signal_id=cursor_signal_id,
+                    )
+                    if touched or emitted:
+                        try:
+                            await asyncio.shield(session.commit())
+                        except Exception as exc:
+                            logger.warning(
+                                "Fast trader idle-cycle commit failed",
+                                trader_id=trader_id,
+                                exc_info=exc,
+                            )
+                    self._last_stage_timings_ms["idle_touch_commit"] = round(
+                        (time.monotonic() - idle_t0) * 1000.0, 1
+                    )
                     return
-                stage_start = time.monotonic()
-                touched = await self._touch_trader_run(session, force=False)
-                emitted = await self._maybe_emit_idle_event(
-                    session,
-                    accepted_sources=accepted_sources,
-                    cursor_runtime_sequence=cursor_runtime_sequence,
-                    cursor_created_at=cursor_created_at,
-                    cursor_signal_id=cursor_signal_id,
-                )
-                if touched or emitted:
-                    try:
-                        await asyncio.shield(session.commit())
-                    except Exception as exc:
-                        logger.warning("Fast trader idle-cycle commit failed", trader_id=trader_id, exc_info=exc)
-                self._last_stage_timings_ms["idle_touch_commit"] = round(
-                    (time.monotonic() - stage_start) * 1000.0, 1
-                )
-                return
 
         mode = str(self._trader.get("mode", "shadow")).strip().lower() or "shadow"
         risk_limits = dict(self._trader.get("risk_limits") or {})
