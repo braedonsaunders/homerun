@@ -889,6 +889,15 @@ _RUNTIME_TRIGGER_MAX_CONCURRENT_PER_TRADER = 2
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
 _TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 1
 _trader_cycle_heartbeat_last_emitted: dict[str, datetime] = {}
+# Throttle the "Trader cycle skipped: wallet state stale" warning.  We
+# want to know exactly when the gate first refused, but not spam the
+# log every cycle while it stays refusing — orchestrator cycles fire
+# on every signal arrival so the same trader can hit this gate dozens
+# of times per second under runtime triggers.  Map keys to (trader_id,
+# fresh_reason) so a reason flip (e.g. ``no_rest_seed_yet`` →
+# ``rest_seed_stale:120s``) re-logs.
+_trader_wallet_stale_log_state: dict[str, tuple[str, float]] = {}
+_TRADER_WALLET_STALE_LOG_INTERVAL_SECONDS = 30.0
 _LANE_GENERAL = "general"
 _LANE_CRYPTO = "crypto"
 _RUNTIME_TRIGGER_DEFAULT_CYCLE_TIMEOUT_SECONDS = 10.0
@@ -4213,13 +4222,29 @@ async def _run_trader_once_inner(
         fresh, fresh_reason = ws_cache.is_fresh()
         if not fresh:
             # Should never fire after bootstrap — see init contract.
-            logger.warning(
-                "Trader cycle skipped: wallet state stale",
-                trader_id=str(trader.get("id") or ""),
-                reason=fresh_reason,
-                cache_stats=ws_cache.stats_snapshot(),
+            # Throttle to once per 30s per trader (re-logs on reason
+            # transition) so a stuck reseed doesn't fill the log with
+            # identical messages.
+            trader_id_for_log = str(trader.get("id") or "")
+            now_mono = time.monotonic()
+            prior = _trader_wallet_stale_log_state.get(trader_id_for_log)
+            should_log = (
+                prior is None
+                or prior[0] != fresh_reason
+                or now_mono - prior[1] >= _TRADER_WALLET_STALE_LOG_INTERVAL_SECONDS
             )
+            if should_log:
+                logger.warning(
+                    "Trader cycle skipped: wallet state stale",
+                    trader_id=trader_id_for_log,
+                    reason=fresh_reason,
+                    cache_stats=ws_cache.stats_snapshot(),
+                )
+                _trader_wallet_stale_log_state[trader_id_for_log] = (fresh_reason, now_mono)
             return 0, 0, 0
+        # Recovery path: clear the throttle state so the next stale
+        # transition re-logs immediately rather than waiting 30s.
+        _trader_wallet_stale_log_state.pop(str(trader.get("id") or ""), None)
 
     async with AsyncSessionLocal() as session:
         # Bound DB statements inside this cycle without leaking the timeout

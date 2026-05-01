@@ -148,6 +148,15 @@ class _FastTraderTask:
         self._cached_cursor_created_at: Optional[Any] = None
         self._cached_cursor_signal_id: Optional[str] = None
         self._cached_cursor_loaded: bool = False
+        # Throttle the "wallet state stale" warning — under degraded
+        # conditions the fast trader's per-trader 250ms wake loop
+        # would otherwise emit this hundreds of times per minute and
+        # bury the actual diagnostic signal.  Log once when the gate
+        # first refuses, then at most once per 30s per trader while
+        # it stays refusing.  The freshness gate itself still runs
+        # every cycle — only the LOG is throttled.
+        self._last_wallet_stale_log_mono: float = 0.0
+        self._last_wallet_state_was_fresh: bool = True
 
     @property
     def trader_id(self) -> str:
@@ -680,13 +689,34 @@ class _FastTraderTask:
             ws_cache = get_wallet_state_cache()
             fresh, fresh_reason = ws_cache.is_fresh()
             if not fresh:
-                logger.warning(
-                    "Fast trader cycle skipped: wallet state stale",
+                now_mono = time.monotonic()
+                # Log on the transition from fresh→stale, and at most
+                # once per 30s thereafter.  Fast trader cycles hit
+                # this every 250ms when stale; unthrottled it's a
+                # log flood that buries every other diagnostic.
+                should_log = (
+                    self._last_wallet_state_was_fresh
+                    or now_mono - self._last_wallet_stale_log_mono >= 30.0
+                )
+                if should_log:
+                    logger.warning(
+                        "Fast trader cycle skipped: wallet state stale",
+                        trader_id=trader_id,
+                        reason=fresh_reason,
+                        cache_stats=ws_cache.stats_snapshot(),
+                    )
+                    self._last_wallet_stale_log_mono = now_mono
+                self._last_wallet_state_was_fresh = False
+                return
+            if not self._last_wallet_state_was_fresh:
+                # Recovery transition — log once so operators can see
+                # exactly when the gate cleared.
+                logger.info(
+                    "Fast trader wallet state recovered",
                     trader_id=trader_id,
-                    reason=fresh_reason,
                     cache_stats=ws_cache.stats_snapshot(),
                 )
-                return
+                self._last_wallet_state_was_fresh = True
 
         # Per-stage timing so when a cycle blows the 3s hard budget we can
         # see *which* stage stalled (intent_runtime list, db cursor read,
