@@ -84,8 +84,19 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.market_universe_worker",
             "workers.scanner_worker",
             "workers.scanner_slo_worker",
-            "workers.tracked_traders_worker",
-            "workers.discovery_worker",
+            # ``tracked_traders_worker`` and ``discovery_worker`` were
+            # moved to the ``discovery`` plane after a 5h soak showed
+            # ``wallet_discovery._worker x12`` and ``smart_wallet_pool
+            # ._scan_worker x8`` dominating the trading event loop:
+            # every iteration each chained 5-6 Polymarket REST calls,
+            # producing 90+ in-flight ``try_connect`` tasks and
+            # starving the reseeder (whose REST seed couldn't complete
+            # within the 30 s budget) and the orchestrator
+            # (per-cycle stalls > 5 s, ``active_tasks`` p99 = 384).
+            # Keeping them off the trading loop is the cleanest fix —
+            # opportunities still flow to trading via the DB
+            # ``trade_signals`` write path.  See the ``discovery``
+            # plane below.
             "workers.events_worker",
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
@@ -151,6 +162,51 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_market_runtime": False,
         "load_market_cache": False,
         "load_news_feed": True,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+    },
+    "discovery": {
+        # Wallet discovery + smart-pool / confluence work.  Both call
+        # Polymarket REST in fan-out patterns that, when colocated with
+        # the trader orchestrator, produce 90+ in-flight ``try_connect``
+        # tasks and 5-8 s event-loop stalls (5 h soak, 11/2026/05).
+        # Isolating them here trades a small amount of cross-process
+        # event handling (``TradersConfluenceStrategy`` runs in this
+        # plane and its opportunities reach trading via
+        # ``bridge_opportunities_to_signals`` → DB
+        # ``trade_signals``) for keeping the trading event loop
+        # responsive.  No live-execution / intent_runtime / feed_manager
+        # — this plane only reads market data from DB and writes
+        # opportunities back to DB.
+        "worker_modules": (
+            "workers.discovery_worker",
+            "workers.tracked_traders_worker",
+        ),
+        "runtime_names": (),
+        # Load the ``traders`` strategy bucket so
+        # ``TradersConfluenceStrategy`` is registered with this plane's
+        # dispatcher — without it ``tracked_traders_worker``'s
+        # ``trader_activity`` event would have no subscribers.  The
+        # strategy is pure-CPU (no live state), and the resulting
+        # opportunities are bridged to DB so the trading plane still
+        # picks them up.
+        "load_strategy_registry": True,
+        "strategy_source_keys": ("traders",),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": True,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        # Market cache is rebuilt from DB on first access (see
+        # ``scanner.attach_price_history_to_opportunities``'s
+        # subprocess-aware comment); cheap to enable here so
+        # ``tracked_traders_worker`` can hydrate sparkline data.
+        "load_market_cache": True,
+        "load_news_feed": False,
         "initialize_live_execution": False,
         "start_copy_trade_service": False,
         "start_position_monitor": False,

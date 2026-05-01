@@ -223,18 +223,25 @@ def _sigbreak_kill_children() -> None:
 BACKEND_PORT = 8000
 FRONTEND_PORT = 3000
 # Plane separation: trading workers run in one process, news/weather
-# (ML-heavy: sentence-transformers, FAISS) in another.  A 2GB ML heap
-# leak in news can no longer page out the live-money trading hot path.
+# (ML-heavy: sentence-transformers, FAISS) in another, and wallet
+# discovery / smart-pool work in a third.  Discovery is isolated
+# because its Polymarket REST fan-out (5h soak: ``wallet_discovery
+# ._worker x12``, ``smart_wallet_pool._scan_worker x8``, 90+ in-flight
+# ``try_connect``) was producing 5-8 s event-loop stalls in the
+# trading plane and starving the wallet-state reseeder.  See the
+# ``discovery`` plane comment in ``backend/workers/host.py``.
 _WORKER_PLANES = (
     ("WORKERS", "trading"),
     ("NEWS", "news"),
+    ("DISCOVERY", "discovery"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {
     "scanner": "trading", "scanner_slo": "trading", "crypto": "trading",
-    "trader_orchestrator": "trading", "tracked_traders": "trading",
-    "discovery": "trading", "events": "trading",
+    "trader_orchestrator": "trading",
+    "events": "trading",
     "trader_reconciliation": "trading", "redeemer": "trading",
+    "tracked_traders": "discovery", "discovery": "discovery",
     "weather": "news", "news": "news",
 }
 
