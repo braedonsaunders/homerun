@@ -955,6 +955,29 @@ async def submit_execution_leg(
         allow_taker_limit_buy_above_signal=allow_taker_limit_buy_above_signal,
     )
 
+    # Capture the at-submit-time market microstructure snapshot so the
+    # Cox PH trainer has labeled training rows for live orders too.
+    # Read once BEFORE the (possibly slow) live submit so the snapshot
+    # reflects the book the strategy actually decided against, not the
+    # post-fill book.  Survival features are best-effort — failures are
+    # logged via shadow_simulation snapshot path and don't block the order.
+    live_book_payload, live_recent_trades, live_book_age_ms, live_quote_source, _live_quote_err = (
+        await _resolve_shadow_book_and_tape(token_id=token_id, live_context=live_context)
+    )
+    live_latency = measured_latency_cached()
+    live_survival_features = build_survival_features(
+        estimate=None,
+        order_book=live_book_payload,
+        recent_trades=live_recent_trades,
+        book_age_ms=live_book_age_ms,
+        payload=payload,
+        side=order_side,
+        limit_price=float(price or 0.0),
+        notional_usd=float(notional or 0.0),
+        latency_p95_ms=live_latency.p95_ms,
+        recent_trade_lookback_seconds=30.0,
+    )
+
     execution = await execute_live_order(
         token_id=token_id,
         side=order_side,
@@ -1028,6 +1051,16 @@ async def submit_execution_leg(
             "min_live_shares": _MIN_LIVE_SHARES,
             "requested_notional_usd": notional,
             "effective_notional_usd": effective_notional,
+            # Cox PH trainer reads from this key on either shadow or
+            # live orders.  The "shadow_simulation" naming is a slight
+            # misnomer for live (no simulation happened) but keeping it
+            # uniform means the trainer doesn't need a mode branch.
+            "shadow_simulation": {
+                "mode": "live",
+                "survival_features": live_survival_features.to_payload(),
+                "live_book_quote_source": live_quote_source,
+                "live_book_age_ms": live_book_age_ms,
+            },
         },
         provider_order_id=execution.order_id,
         provider_clob_order_id=str(execution.payload.get("clob_order_id") or "").strip() or None,
