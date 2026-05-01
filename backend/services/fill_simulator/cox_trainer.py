@@ -79,6 +79,15 @@ warnings.filterwarnings(
 
 # Covariates we feed Cox.  Names match the keys produced by
 # ``services.fill_simulator.survival_features.SurvivalFeatures``.
+#
+# ``time_to_resolution_seconds`` is the continuous covariate; it captures
+# linear-in-log-hazard time effects.  ``ttr_bucket_*`` are piecewise
+# indicators (one per non-baseline region; baseline is ttr >= 1800s)
+# that capture the non-linear hazard SPIKE near resolution — empirically
+# the Polymarket-specific phenomenon where 60-90% of taker flow hits in
+# the last 5 minutes on 15-minute crypto binaries.  Both ride together
+# so Cox can fit "hazard rises ~linearly with closeness to close, plus
+# extra spikes at <60s and <30s."
 COVARIATES = [
     "queue_ahead_shares",
     "depth_behind_shares",
@@ -86,6 +95,10 @@ COVARIATES = [
     "mid_distance_bps",
     "recent_trade_intensity_per_sec",
     "time_to_resolution_seconds",
+    "ttr_bucket_lt_30s",
+    "ttr_bucket_30_60s",
+    "ttr_bucket_60_300s",
+    "ttr_bucket_300_1800s",
     "side_imbalance",
     "underlying_volatility_bps_per_min",
     "latency_p95_ms",
@@ -150,13 +163,25 @@ def _backfill_features_from_legacy_payload(
     timeframe = (live_market.get("timeframe") or payload.get("timeframe") or "").strip().lower() if isinstance(live_market.get("timeframe") or payload.get("timeframe"), str) else ""
     strata = f"crypto_{timeframe}" if "crypto" in str((live_market.get("category") or "")).lower() and timeframe else "pooled"
     entry_delta_pct = live_market.get("entry_price_delta_pct")
+    ttr = float(seconds_left) if isinstance(seconds_left, (int, float)) and seconds_left > 0 else None
+    # Derive bucket indicators here too so legacy rows participate in
+    # the piecewise-hazard fit.  Mirrors the canonical
+    # ``_time_to_resolution_buckets`` in survival_features.py.
+    from services.fill_simulator.survival_features import (
+        _time_to_resolution_buckets as _ttr_buckets,
+    )
+    ttr_b = _ttr_buckets(ttr)
     return {
         "queue_ahead_shares": None,
         "depth_behind_shares": None,
         "spread_bps": None,
         "mid_distance_bps": (float(entry_delta_pct) * 100.0) if isinstance(entry_delta_pct, (int, float)) else None,
         "recent_trade_intensity_per_sec": None,
-        "time_to_resolution_seconds": float(seconds_left) if isinstance(seconds_left, (int, float)) and seconds_left > 0 else None,
+        "time_to_resolution_seconds": ttr,
+        "ttr_bucket_lt_30s": ttr_b["ttr_bucket_lt_30s"],
+        "ttr_bucket_30_60s": ttr_b["ttr_bucket_30_60s"],
+        "ttr_bucket_60_300s": ttr_b["ttr_bucket_60_300s"],
+        "ttr_bucket_300_1800s": ttr_b["ttr_bucket_300_1800s"],
         "side_imbalance": None,
         "underlying_volatility_bps_per_min": None,
         "latency_p95_ms": None,

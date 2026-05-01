@@ -41,6 +41,35 @@ from services.optimization.execution_estimator import ExecutionEstimate
 from utils.converters import safe_float
 
 
+# Time-to-resolution bucket edges (seconds).  Empirical observation on
+# Polymarket 15-minute crypto binaries: 60-90% of taker flow concentrates
+# in the last 5 minutes, with a sharp acceleration in the last 60s.  A
+# linear-in-log-hazard Cox covariate underfits this — a piecewise-
+# constant hazard via dummy indicators captures the spike.  The omitted
+# baseline is "ttr >= 1800s" (≥ 30 min — the relaxed regime where fill
+# hazard is approximately stationary).
+TTR_BUCKET_EDGES_SECONDS: tuple[tuple[float, float, str], ...] = (
+    (0.0, 30.0, "ttr_bucket_lt_30s"),
+    (30.0, 60.0, "ttr_bucket_30_60s"),
+    (60.0, 300.0, "ttr_bucket_60_300s"),
+    (300.0, 1800.0, "ttr_bucket_300_1800s"),
+)
+
+
+def _time_to_resolution_buckets(ttr_seconds: float | None) -> dict[str, float]:
+    """Emit one binary indicator per bucket; the >= 1800s baseline is
+    encoded by all four indicators being 0 (omitted to avoid the
+    dummy-variable trap)."""
+    out: dict[str, float] = {name: 0.0 for _, _, name in TTR_BUCKET_EDGES_SECONDS}
+    if ttr_seconds is None or not (ttr_seconds > 0):
+        return out
+    for lo, hi, name in TTR_BUCKET_EDGES_SECONDS:
+        if lo <= float(ttr_seconds) < hi:
+            out[name] = 1.0
+            break
+    return out
+
+
 @dataclass
 class SurvivalFeatures:
     queue_ahead_shares: float | None
@@ -49,6 +78,15 @@ class SurvivalFeatures:
     mid_distance_bps: float | None
     recent_trade_intensity_per_sec: float | None
     time_to_resolution_seconds: float | None
+    # Piecewise hazard buckets — one per non-baseline ttr region.  These
+    # ride alongside the continuous time_to_resolution_seconds covariate
+    # so Cox PH can fit both a linear-in-log-hazard slope AND a
+    # non-linear spike near resolution.  Missing ttr ⇒ all zero (the
+    # "no information" baseline).
+    ttr_bucket_lt_30s: float | None
+    ttr_bucket_30_60s: float | None
+    ttr_bucket_60_300s: float | None
+    ttr_bucket_300_1800s: float | None
     side_imbalance: float | None
     underlying_volatility_bps_per_min: float | None
     latency_p95_ms: float | None
@@ -238,6 +276,8 @@ def build_survival_features(
     """Assemble the covariate snapshot.  All fields nullable — the
     trainer handles missingness."""
     payload = payload if isinstance(payload, dict) else {}
+    ttr_seconds = _time_to_resolution_seconds(payload)
+    ttr_buckets = _time_to_resolution_buckets(ttr_seconds)
     return SurvivalFeatures(
         queue_ahead_shares=(
             float(estimate.queue_ahead_shares) if estimate and estimate.queue_ahead_shares is not None else None
@@ -252,7 +292,11 @@ def build_survival_features(
         recent_trade_intensity_per_sec=_recent_trade_intensity(
             recent_trades, recent_trade_lookback_seconds
         ),
-        time_to_resolution_seconds=_time_to_resolution_seconds(payload),
+        time_to_resolution_seconds=ttr_seconds,
+        ttr_bucket_lt_30s=ttr_buckets["ttr_bucket_lt_30s"],
+        ttr_bucket_30_60s=ttr_buckets["ttr_bucket_30_60s"],
+        ttr_bucket_60_300s=ttr_buckets["ttr_bucket_60_300s"],
+        ttr_bucket_300_1800s=ttr_buckets["ttr_bucket_300_1800s"],
         side_imbalance=_side_imbalance(order_book),
         underlying_volatility_bps_per_min=_underlying_vol(payload),
         latency_p95_ms=float(latency_p95_ms) if latency_p95_ms is not None else None,
