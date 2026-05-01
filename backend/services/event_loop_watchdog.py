@@ -104,48 +104,65 @@ class _Watchdog:
                 logger.debug("Event-loop watchdog dump failed", exc_info=exc)
 
     def _dump_tasks(self, *, stall_seconds: float) -> None:
-        """Log running tasks with short stacks so we can see who's hogging the loop.
+        """Log a task census so we can see who's hogging the loop.
 
-        Only the top ``_MAX_TASKS_DUMPED`` tasks are listed; for each
-        we capture the topmost frame (the function actually executing)
-        — which is what we need to identify the culprit, without
-        flooding logs with deep traces.
+        We group ALL active tasks by their topmost stack frame
+        (``file:func``) and report counts.  This is far more useful
+        than dumping the top-N by name: when 400 tasks all sit at the
+        same await point, the previous "top 20 by name" view was
+        dominated by 20 long-lived WS protocol tasks, hiding the
+        actual flood.  Grouping surfaces it as e.g. ``wallet_discovery
+        :_scan_wallet x 380`` in a single line.
+
+        We still list a few representative individual tasks for
+        non-dominant groups so unique stack traces aren't lost.
         """
         try:
             tasks = list(asyncio.all_tasks())
         except RuntimeError:
             return
-        # Don't include the watchdog itself in the dump.
         watchdog_self = self._task
         tasks = [t for t in tasks if t is not watchdog_self and not t.done()]
-        # Sort by name so logs are stable and diff-able across stalls.
-        tasks.sort(key=lambda t: (t.get_name() or "", id(t)))
-        sampled = tasks[:_MAX_TASKS_DUMPED]
-        running_summary: list[str] = []
-        for task in sampled:
-            name = task.get_name() or "<unnamed>"
-            frame_summary = "<no_stack>"
+
+        # Group by topmost frame: short "filename:func" key.
+        groups: dict[str, dict] = {}
+        unknown_count = 0
+        for task in tasks:
             try:
-                stack = task.get_stack(limit=3)
-                if stack:
-                    # Topmost frame (innermost) is the one currently
-                    # executing.  Format as "file:lineno in func".
-                    top = stack[-1]
-                    frame_summary = (
-                        f"{top.f_code.co_filename}:{top.f_lineno}"
-                        f" in {top.f_code.co_name}"
-                    )
+                stack = task.get_stack(limit=1)
+                if not stack:
+                    unknown_count += 1
+                    continue
+                top = stack[-1]
+                # filename:basename only (drop path) so the key is concise.
+                fname = top.f_code.co_filename
+                # Last path component for readability.
+                short_fname = fname.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                key = f"{short_fname}:{top.f_code.co_name}:{top.f_lineno}"
+                bucket = groups.setdefault(
+                    key,
+                    {"count": 0, "first_task_name": task.get_name() or "<unnamed>"},
+                )
+                bucket["count"] += 1
             except Exception:
-                pass
-            running_summary.append(f"{name} -> {frame_summary}")
+                unknown_count += 1
+        # Sort groups by count descending — biggest floods first.
+        ranked = sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+        # Compact summary: top groups inline, with their count.
+        top_summary = [
+            f"{key} x{bucket['count']}"
+            for key, bucket in ranked[:_MAX_TASKS_DUMPED]
+        ]
+        if unknown_count:
+            top_summary.append(f"<no_stack> x{unknown_count}")
         logger.warning(
             "Event-loop stall detected",
             stall_seconds=round(stall_seconds, 3),
             active_tasks=len(tasks),
-            tasks_sampled=len(sampled),
+            unique_locations=len(groups),
             stalls_observed=self._stalls_observed,
             max_stall_seconds=round(self._max_stall_seconds, 3),
-            running_tasks=running_summary,
+            task_groups=top_summary,
         )
 
     def status_snapshot(self) -> dict:
