@@ -851,6 +851,12 @@ class ExecutionSessionEngine:
         execution_events: list[ExecutionSessionEvent] = []
         trader_orders: list[TraderOrder] = []
         leg_execution_records: list[dict[str, Any]] = []
+        # Collected across every submit wave (initial + retry + rescue
+        # waves) so the orchestrator's slow log can name which sub-stage
+        # of place_order owned the time.  Each entry is the breakdown
+        # dict stashed by ``live_execution_service.place_order`` and
+        # propagated via the live_execution_adapter's leg payload.
+        _submit_wave_breakdowns: list[dict[str, Any]] = []
         order_write_inputs: list[dict[str, Any]] = []
         recovery_order_write_inputs: list[dict[str, Any]] = []
         created_order_records: list[dict[str, Any]] = []
@@ -1542,6 +1548,19 @@ class ExecutionSessionEngine:
                 wave_error_message="Execution session cancelled during live order submission.",
             )
 
+            # Append each leg's place_order sub-stage breakdown to the
+            # function-scope ``_submit_wave_breakdowns`` collector so the
+            # orchestrator's cycle-slow log can surface which sub-stage
+            # owned the submit time.  Was opaque before — ps_submit_order
+            # = 39.6s with no path to the offender.
+            for _result in wave_results:
+                _result_payload = getattr(_result, "payload", None)
+                if not isinstance(_result_payload, dict):
+                    continue
+                _breakdown = _result_payload.get("submit_breakdown")
+                if isinstance(_breakdown, dict) and _breakdown:
+                    _submit_wave_breakdowns.append(dict(_breakdown))
+
             for result in wave_results:
                 leg_id = str(result.leg_id)
                 leg_payload = (
@@ -1598,6 +1617,12 @@ class ExecutionSessionEngine:
                                 wave_error_message="Execution session cancelled during live order repricing.",
                             )
                         )[0]
+                        # Surface the retry wave's breakdown too.
+                        _retry_payload = getattr(retry_result, "payload", None)
+                        if isinstance(_retry_payload, dict):
+                            _retry_breakdown = _retry_payload.get("submit_breakdown")
+                            if isinstance(_retry_breakdown, dict) and _retry_breakdown:
+                                _submit_wave_breakdowns.append(dict(_retry_breakdown))
                         normalized_retry = str(retry_result.status or "").strip().lower()
                         if normalized_retry in {"executed", "open", "submitted"}:
                             result = retry_result
@@ -2003,6 +2028,14 @@ class ExecutionSessionEngine:
                     ],
                     wave_error_message="Execution session cancelled during bundle rescue submission.",
                 )
+                # Surface rescue wave breakdowns too.
+                for _rescue_result in rescue_results:
+                    _rescue_payload = getattr(_rescue_result, "payload", None)
+                    if not isinstance(_rescue_payload, dict):
+                        continue
+                    _rescue_breakdown = _rescue_payload.get("submit_breakdown")
+                    if isinstance(_rescue_breakdown, dict) and _rescue_breakdown:
+                        _submit_wave_breakdowns.append(dict(_rescue_breakdown))
 
             for rescue_result, (_, _, item, rescue_price, remaining_shares) in zip(rescue_results, rescue_inputs):
                 rescue_filled_shares = _result_filled_shares(rescue_result)
@@ -2730,6 +2763,7 @@ class ExecutionSessionEngine:
             payload={
                 "execution_plan": plan,
                 "legs": leg_execution_records,
+                "submit_breakdowns": list(_submit_wave_breakdowns),
             },
             created_orders=created_order_records,
         )

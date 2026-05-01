@@ -3571,8 +3571,25 @@ class LiveExecutionService:
         size_usd = _to_decimal(normalized_price) * _to_decimal(normalized_size)
         reserved = False
 
+        # Per-stage breakdown — every async step in this method updates a
+        # bucket so the slow log at the end (and the structured payload
+        # returned to the orchestrator) names which stage ate the budget.
+        # Without this, the orchestrator's ``ps_submit_order`` bucket sees
+        # the whole 35-40s wall time as a single opaque blob — production
+        # soak (5/2026/05) had no way to tell whether the cost was lock
+        # contention, balance fetch fan-out, VPN, or the actual SDK
+        # round-trip.
+        _po_started = _time.monotonic()
+        _po_breakdown: dict[str, float] = {}
+
+        def _po_record(stage: str, started_mono: float) -> None:
+            elapsed_ms = (_time.monotonic() - started_mono) * 1000.0
+            _po_breakdown[stage] = round(_po_breakdown.get(stage, 0.0) + elapsed_ms, 1)
+
+        _stage_started = _time.monotonic()
         # VPN pre-trade check (blocks if VPN required but unreachable)
         vpn_ok, vpn_reason = await pre_trade_vpn_check()
+        _po_record("vpn_check", _stage_started)
         if not vpn_ok:
             order.status = OrderStatus.FAILED
             order.error_message = f"VPN check failed: {vpn_reason}"
@@ -3581,6 +3598,7 @@ class LiveExecutionService:
             logger.error(f"Trade blocked by VPN check: {vpn_reason}")
             return order
 
+        _stage_started = _time.monotonic()
         # Validate and reserve risk budget atomically to prevent async races.
         is_valid, error = await self._validate_and_reserve_order(
             size_usd=size_usd,
@@ -3588,6 +3606,7 @@ class LiveExecutionService:
             token_id=token_key,
             min_order_size_usd=min_order_size_usd,
         )
+        _po_record("validate_reserve", _stage_started)
         if not is_valid:
             order.status = OrderStatus.FAILED
             order.error_message = error
@@ -3598,8 +3617,12 @@ class LiveExecutionService:
         reserved = True
 
         try:
+            _stage_started = _time.monotonic()
             await self._sync_trading_transport()
+            _po_record("sync_transport", _stage_started)
+            _stage_started = _time.monotonic()
             await self._refresh_signature_type()
+            _po_record("refresh_signature_type", _stage_started)
             sell_allowance_retry_used = False
             buy_allowance_retry_used = False
             # One-shot guard so we dump the per-signature_type wallet
@@ -3611,18 +3634,24 @@ class LiveExecutionService:
             # rejecting us.
             balance_snapshot_logged = False
             if side == OrderSide.BUY and not skip_buy_pre_submit_gate:
+                _stage_started = _time.monotonic()
                 buy_gate_ok, buy_gate_error = await self._enforce_buy_pre_submit_gate(
                     token_id=token_key,
                     required_notional_usd=size_usd,
                 )
+                _po_record("buy_pre_submit_gate", _stage_started)
                 if not buy_gate_ok:
                     raise RuntimeError(buy_gate_error or "BUY pre-submit gate failed")
             if side == OrderSide.SELL:
+                _stage_started = _time.monotonic()
                 await self.prepare_sell_balance_allowance(token_key)
+                _po_record("prepare_sell_allowance", _stage_started)
+                _stage_started = _time.monotonic()
                 sell_gate_ok, sell_gate_error = await self._enforce_sell_pre_submit_gate(
                     token_id=token_key,
                     size=normalized_size,
                 )
+                _po_record("sell_pre_submit_gate", _stage_started)
                 if not sell_gate_ok:
                     raise RuntimeError(sell_gate_error or "SELL pre-submit gate failed")
 
@@ -3641,7 +3670,17 @@ class LiveExecutionService:
             for attempt in range(max_attempts + max_transport_retries):
                 order.price = submit_price
                 try:
+                    _po_breakdown["attempts"] = float(attempt + 1)
+                    # Time spent waiting for ``_client_io_lock`` is the
+                    # most common 30+ s offender — every other concurrent
+                    # SDK call (balance refresh, order placement, cancel)
+                    # serializes through this single asyncio.Lock.  Split
+                    # ``io_lock_wait`` from the actual SDK round-trip so
+                    # the slow log can name lock contention vs venue
+                    # latency.
+                    _lock_wait_started = _time.monotonic()
                     async with self._get_client_io_lock():
+                        _po_record("io_lock_wait", _lock_wait_started)
                         if provider_market_order:
                             market_amount = float(normalized_size)
                             if side == OrderSide.BUY:
@@ -3656,10 +3695,12 @@ class LiveExecutionService:
                             if normalized_metadata is not None:
                                 market_order_kwargs["metadata"] = normalized_metadata
                             order_args = MarketOrderArgs(**market_order_kwargs)
+                            _stage_started = _time.monotonic()
                             signed_order = await asyncio.wait_for(
                                 asyncio.to_thread(self._client.create_market_order, order_args),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
+                            _po_record("create_market_order", _stage_started)
                         else:
                             limit_order_kwargs = dict(
                                 price=submit_price,
@@ -3670,10 +3711,13 @@ class LiveExecutionService:
                             if normalized_metadata is not None:
                                 limit_order_kwargs["metadata"] = normalized_metadata
                             order_args = OrderArgs(**limit_order_kwargs)
+                            _stage_started = _time.monotonic()
                             signed_order = await asyncio.wait_for(
                                 asyncio.to_thread(self._client.create_order, order_args),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
+                            _po_record("create_order", _stage_started)
+                        _stage_started = _time.monotonic()
                         response = await asyncio.wait_for(
                             asyncio.to_thread(
                                 self._client.post_order,
@@ -3683,6 +3727,7 @@ class LiveExecutionService:
                             ),
                             timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                         )
+                        _po_record("post_order", _stage_started)
                     if not isinstance(response, dict):
                         raise RuntimeError("Trading provider returned malformed order response")
                 except Exception as exc:
@@ -4028,6 +4073,31 @@ class LiveExecutionService:
         self._remember_order(order)
         await self._persist_orders([order])
         await self._persist_runtime_state()
+
+        # Stash the breakdown on the Order so the orchestrator's
+        # ps_submit_order slow-log can surface it (live_execution_adapter
+        # propagates ``order._submit_breakdown`` into the LiveOrderExecution
+        # payload).  Always log when the wall time exceeds 5 s so we have
+        # data on which sub-stage owns the cost — production saw
+        # ps_submit_order = 39.6 s with no visibility into the breakdown.
+        _po_total_ms = round((_time.monotonic() - _po_started) * 1000.0, 1)
+        _po_breakdown["total_ms"] = _po_total_ms
+        try:
+            order._submit_breakdown = dict(_po_breakdown)
+        except Exception:
+            pass
+        if _po_total_ms >= 5000.0:
+            try:
+                logger.warning(
+                    "place_order slow",
+                    token_id=token_key,
+                    side=side.value if hasattr(side, "value") else str(side),
+                    total_ms=_po_total_ms,
+                    status=str(getattr(order.status, "value", order.status) or ""),
+                    breakdown=_po_breakdown,
+                )
+            except Exception:
+                pass
         return order
 
     async def place_order_with_chase(

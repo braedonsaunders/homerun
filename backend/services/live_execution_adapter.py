@@ -402,5 +402,9 @@ async def execute_live_order(
             "average_fill_price": average_fill,
             "provider_order_type_sent": str(getattr(order, "_provider_order_type_sent", "") or "") or None,
             "submit_method": str(getattr(order, "_submit_method", "") or "") or None,
+            # Sub-stage breakdown stashed by ``place_order`` — surfaced
+            # so the orchestrator's slow log can name which step (lock
+            # wait vs venue round-trip vs balance gate) owned the time.
+            "submit_breakdown": dict(getattr(order, "_submit_breakdown", {}) or {}),
         },
     )

@@ -7118,6 +7118,52 @@ async def _run_trader_once_inner(
                             reason=final_reason,
                         )
                         _accumulate("ps_submit_order", _submit_mono)
+                        # Surface the place_order sub-stage breakdown so
+                        # the cycle-slow log names which step (lock_wait
+                        # vs create_order vs post_order vs buy_gate) ate
+                        # the time.  Without this ps_submit_order is
+                        # opaque — production saw 39.6 s with no path
+                        # to the offender.
+                        try:
+                            # ``submit_result`` is either a SessionExecutionResult
+                            # (live path) or a tuple-shaped fallback for shadow.
+                            # Live path stashes the per-leg place_order
+                            # breakdown under payload["submit_breakdowns"].
+                            _result_payload = getattr(submit_result, "payload", None)
+                            if not isinstance(_result_payload, dict):
+                                _result_payload = {}
+                            _wave_breakdowns = _result_payload.get("submit_breakdowns") or []
+                            if not isinstance(_wave_breakdowns, list):
+                                _wave_breakdowns = []
+                            # Take the slowest leg (by total_ms) — that's
+                            # the one that owned the cycle's submit time.
+                            if _wave_breakdowns:
+                                _slowest = max(
+                                    (b for b in _wave_breakdowns if isinstance(b, dict)),
+                                    key=lambda b: float(b.get("total_ms", 0.0) or 0.0),
+                                    default=None,
+                                )
+                                if _slowest:
+                                    for _stage_name, _stage_ms in _slowest.items():
+                                        if _stage_name == "total_ms" or _stage_name == "attempts":
+                                            continue
+                                        try:
+                                            _ms_val = float(_stage_ms or 0.0)
+                                        except (TypeError, ValueError):
+                                            continue
+                                        if _ms_val <= 0.0:
+                                            continue
+                                        stage_timings_ms[f"submit_{_stage_name}"] = round(_ms_val, 1)
+                                    # Also record attempt count + total
+                                    # so we can spot retry storms.
+                                    if "attempts" in _slowest:
+                                        try:
+                                            stage_timings_ms["submit_attempts"] = float(_slowest["attempts"])
+                                        except (TypeError, ValueError):
+                                            pass
+                        except Exception:
+                            # Diagnostic surfacing must never break the loop.
+                            pass
                         submit_completed_at = utcnow()
                         submit_latency_payload = _compute_signal_latency_payload(
                             runtime_signal,
