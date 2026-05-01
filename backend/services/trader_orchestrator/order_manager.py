@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -505,6 +506,22 @@ async def submit_execution_leg(
     live_context = _safe_live_context(signal, payload)
     metadata = leg.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
+    # Per-leg sub-stage breakdown — captures the work that wraps
+    # ``execute_live_order`` (token-id resolve, orchestrator-level buy
+    # gate, shadow book/tape resolve).  Production soak (5/2026/05)
+    # showed a ~3.6 s gap between the orchestrator's ps_submit_order
+    # bucket and the inner place_order.total_ms; without these buckets
+    # the gap was opaque.  Merged into the LegSubmitResult.payload's
+    # ``submit_breakdown`` dict alongside the inner place_order
+    # breakdown so the orchestrator's cycle-slow log surfaces both.
+    _leg_breakdown: dict[str, float] = {}
+    _leg_started_total = time.monotonic()
+
+    def _leg_record(stage: str, started_mono: float) -> None:
+        elapsed_ms = (time.monotonic() - started_mono) * 1000.0
+        _leg_breakdown[f"leg_{stage}"] = round(
+            _leg_breakdown.get(f"leg_{stage}", 0.0) + elapsed_ms, 1
+        )
     side_key = str(leg.get("side") or "buy").strip().lower()
     ctf_action = str(metadata.get("ctf_action") or side_key).strip().lower()
     order_side = "SELL" if side_key == "sell" else "BUY"
@@ -673,7 +690,9 @@ async def submit_execution_leg(
         market_id_for_lookup = str(leg.get("market_id") or "").strip()
         outcome_for_lookup = str(leg.get("outcome") or "").strip()
         if market_id_for_lookup and outcome_for_lookup:
+            _stage_started = time.monotonic()
             token_id = await _fetch_token_id_from_market(market_id_for_lookup, outcome_for_lookup)
+            _leg_record("token_id_fetch", _stage_started)
             if token_id:
                 token_source = "polymarket_api_fallback"
                 token_attempts.append(token_source)
@@ -697,10 +716,12 @@ async def submit_execution_leg(
 
     skip_buy_pre_submit_gate = False
     if mode_key == "live" and order_side == "BUY":
+        _stage_started = time.monotonic()
         buy_gate_ok, buy_gate_error = await live_execution_service.check_buy_pre_submit_gate(
             token_id=token_id,
             required_notional_usd=effective_notional,
         )
+        _leg_record("orchestrator_buy_gate", _stage_started)
         if not buy_gate_ok:
             return LegSubmitResult(
                 leg_id=leg_id,
@@ -962,9 +983,11 @@ async def submit_execution_leg(
     # reflects the book the strategy actually decided against, not the
     # post-fill book.  Survival features are best-effort — failures are
     # logged via shadow_simulation snapshot path and don't block the order.
+    _stage_started = time.monotonic()
     live_book_payload, live_recent_trades, live_book_age_ms, live_quote_source, _live_quote_err = (
         await _resolve_shadow_book_and_tape(token_id=token_id, live_context=live_context)
     )
+    _leg_record("book_tape_resolve", _stage_started)
     live_latency = measured_latency_cached()
     live_survival_features = build_survival_features(
         estimate=None,
@@ -979,6 +1002,7 @@ async def submit_execution_leg(
         recent_trade_lookback_seconds=30.0,
     )
 
+    _stage_started = time.monotonic()
     execution = await execute_live_order(
         token_id=token_id,
         side=order_side,
@@ -997,6 +1021,7 @@ async def submit_execution_leg(
         skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
         metadata=_clob_metadata_from_leg(leg),
     )
+    _leg_record("execute_live_order", _stage_started)
 
     execution_error_text = str(execution.error_message or "").lower()
     if (
@@ -1062,13 +1087,29 @@ async def submit_execution_leg(
         except Exception:
             pass  # never raise from a fill notification
 
+    # Stamp the wrapper-level total + merge our leg sub-stages INTO
+    # the inner place_order ``submit_breakdown`` dict so the
+    # orchestrator's slow log surfaces both.  ``submit_breakdown``
+    # already exists in execution.payload (set by live_execution
+    # _adapter); we add ``leg_*`` keys to it.
+    _leg_breakdown["leg_total_ms"] = round(
+        (time.monotonic() - _leg_started_total) * 1000.0, 1
+    )
+    _merged_payload: dict[str, Any] = {**execution.payload}
+    _existing_breakdown = _merged_payload.get("submit_breakdown")
+    if not isinstance(_existing_breakdown, dict):
+        _existing_breakdown = {}
+    _merged_breakdown = dict(_existing_breakdown)
+    _merged_breakdown.update(_leg_breakdown)
+    _merged_payload["submit_breakdown"] = _merged_breakdown
+
     return LegSubmitResult(
         leg_id=leg_id,
         status=execution.status,
         effective_price=execution.effective_price,
         error_message=execution.error_message,
         payload={
-            **execution.payload,
+            **_merged_payload,
             "mode": "live",
             "leg": dict(leg),
             "token_id_source": token_source,

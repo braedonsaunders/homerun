@@ -3932,6 +3932,7 @@ class LiveExecutionService:
                         and normalized_order_type in {OrderType.IOC, OrderType.FAK, OrderType.FOK}
                         and hasattr(self._client, "get_order")
                     ):
+                        _stage_started = _time.monotonic()
                         try:
                             detail = await self._run_client_io(
                                 self._client.get_order,
@@ -3954,11 +3955,16 @@ class LiveExecutionService:
                                 order.clob_order_id,
                                 exc,
                             )
+                        _po_record("post_placement_fill_fetch", _stage_started)
+                    _stage_started = _time.monotonic()
                     stats_lock = self._get_stats_lock()
                     async with stats_lock:
                         self._stats.total_trades += 1
                         self._stats.last_trade_at = utcnow()
+                    _po_record("stats_lock_update", _stage_started)
+                    _stage_started = _time.monotonic()
                     await self._persist_runtime_state()
+                    _po_record("persist_runtime_state_inner", _stage_started)
                     self._invalidate_balance_cache()
                     logger.info(f"Order placed successfully: {order.clob_order_id}")
                     break
@@ -4112,8 +4118,12 @@ class LiveExecutionService:
 
         order.updated_at = utcnow()
         self._remember_order(order)
+        _stage_started = _time.monotonic()
         await self._persist_orders([order])
+        _po_record("persist_orders", _stage_started)
+        _stage_started = _time.monotonic()
         await self._persist_runtime_state()
+        _po_record("persist_runtime_state_outer", _stage_started)
 
         # Stash the breakdown on the Order so the orchestrator's
         # ps_submit_order slow-log can surface it (live_execution_adapter
