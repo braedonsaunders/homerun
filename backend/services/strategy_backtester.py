@@ -1674,7 +1674,14 @@ async def run_execution_backtest(
     from models.database import (
         AsyncSessionLocal,
         MarketMicrostructureSnapshot,
-        Opportunity,
+        # Historical opportunities live in the OpportunityHistory ORM
+        # table.  Aliased as ``Opportunity`` here so the SQLAlchemy
+        # query syntax below stays readable; positions are nested in
+        # the ``positions_data`` JSON column rather than a top-level
+        # ``positions_to_take`` attribute.  See the row-shape sample
+        # at services/strategy_backtester.py:_extract_positions for
+        # the canonical key path.
+        OpportunityHistory as Opportunity,
     )
 
     result = ExecutionBacktestResult(
@@ -1762,7 +1769,20 @@ async def run_execution_backtest(
                 opps = []
 
             for opp in opps or []:
-                positions_to_take = getattr(opp, "positions_to_take", None) or []
+                # OpportunityHistory.positions_data is a JSON blob;
+                # positions_to_take lives under the "positions_to_take"
+                # key when present, with a top-level fallback for the
+                # rare row shape where a strategy wrote the legacy
+                # flat schema.
+                pdata = getattr(opp, "positions_data", None) or {}
+                if isinstance(pdata, dict):
+                    positions_to_take = pdata.get("positions_to_take") or []
+                else:
+                    positions_to_take = []
+                if not positions_to_take:
+                    legacy = getattr(opp, "positions_to_take", None) or []
+                    if isinstance(legacy, list):
+                        positions_to_take = legacy
                 if not isinstance(positions_to_take, list):
                     continue
                 for idx, pos in enumerate(positions_to_take):

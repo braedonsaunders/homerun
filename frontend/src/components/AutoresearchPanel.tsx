@@ -185,6 +185,7 @@ export default function AutoresearchPanel() {
             initialSourceCode={(selectedStrategy as any).source_code || ''}
             initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
             initialConfig={(selectedStrategy as any).default_params_json || {}}
+            strategyLabel={String((selectedStrategy as any).label || (selectedStrategy as any).name || (selectedStrategy as any).slug || '')}
           />
         ) : (
           <PanelEmpty

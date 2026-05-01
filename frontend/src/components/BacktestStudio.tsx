@@ -14,7 +14,7 @@
  * follow the FillModelPanel conventions so the two surfaces feel
  * like one product.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -60,6 +60,11 @@ interface BacktestStudioProps {
   initialSourceCode?: string
   initialSlug?: string
   initialConfig?: Record<string, unknown>
+  // Human-readable strategy label shown in the "loaded" indicator so
+  // the operator can verify which strategy is staged when switching
+  // between them in the parent dropdown.  Optional — falls back to
+  // the slug.
+  strategyLabel?: string | null
 }
 
 function fmtNum(value: number | null | undefined, digits = 2): string {
@@ -618,12 +623,30 @@ export default function BacktestStudio({
   initialSourceCode,
   initialSlug,
   initialConfig,
+  strategyLabel,
 }: BacktestStudioProps) {
   const queryClient = useQueryClient()
 
-  // Run controls.
+  // Run controls.  Internal state is initialized from props once at
+  // mount.  Parent prop changes (i.e. operator switches strategies in
+  // the dropdown above) flow into the state via the useEffect below.
   const [sourceCode, setSourceCode] = useState<string>(initialSourceCode || '')
-  const [slug] = useState<string>(initialSlug || '_backtest_unified')
+  const [slug, setSlug] = useState<string>(initialSlug || '_backtest_unified')
+  // Remember the previous slug so we can show a brief "loaded
+  // <slug>" highlight when the strategy actually changes.
+  const [justLoadedSlug, setJustLoadedSlug] = useState<string | null>(null)
+  useEffect(() => {
+    const nextSource = initialSourceCode || ''
+    const nextSlug = initialSlug || '_backtest_unified'
+    setSourceCode(nextSource)
+    setSlug(nextSlug)
+    if (nextSlug && nextSlug !== '_backtest_unified') {
+      setJustLoadedSlug(nextSlug)
+      const t = window.setTimeout(() => setJustLoadedSlug(null), 1600)
+      return () => window.clearTimeout(t)
+    }
+    return undefined
+  }, [initialSourceCode, initialSlug])
   const [initialCapital, setInitialCapital] = useState<string>('1000')
   const [submitP50, setSubmitP50] = useState<string>('')
   const [submitP95, setSubmitP95] = useState<string>('')
@@ -853,15 +876,35 @@ export default function BacktestStudio({
         {/* LEFT RAIL — controls + history */}
         <div className="flex w-[320px] shrink-0 flex-col border-r border-border/50 bg-background/40">
           <div className="border-b border-border/50 px-3 py-3 space-y-2">
-            <div className="flex items-center justify-between rounded-sm border border-border/40 bg-background/40 px-2 py-1.5">
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Strategy source
-              </span>
-              <span className="font-mono text-[10px] text-muted-foreground" title="Source loaded from the selected strategy. Edit it in Code Experiments.">
-                {sourceCode.length > 0
-                  ? `${sourceCode.length.toLocaleString()} chars loaded`
-                  : 'no source — pick a strategy'}
-              </span>
+            <div
+              className={cn(
+                'flex items-center justify-between gap-2 rounded-sm border px-2 py-1.5 transition-colors duration-700',
+                justLoadedSlug
+                  ? 'border-amber-400/60 bg-amber-500/10'
+                  : 'border-border/40 bg-background/40',
+              )}
+              title="Source loaded from the selected strategy. Edit it in Code Experiments."
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Strategy source
+                </div>
+                <div className="truncate font-mono text-[11px] text-foreground">
+                  {strategyLabel || slug || 'no strategy'}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="font-mono text-[10px] text-muted-foreground">
+                  {sourceCode.length > 0
+                    ? `${sourceCode.length.toLocaleString()} chars`
+                    : 'no source'}
+                </div>
+                {justLoadedSlug ? (
+                  <div className="text-[9px] uppercase tracking-wide text-amber-300">
+                    just loaded
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
