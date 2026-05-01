@@ -248,6 +248,39 @@ async def lifespan(app: FastAPI):
         await init_database()
         logger.info("Database initialized")
 
+        # Bring up the Redis client pool.  Soft dependency: failures are
+        # logged but do not abort startup — every consumer falls back to
+        # in-memory state if the bus is unhealthy.  Started here, after
+        # ``init_database`` and before any service that may want to
+        # publish on the bus.
+        try:
+            from services import redis_client
+
+            redis_started = await redis_client.start()
+            logger.info(
+                "Redis client lifecycle started",
+                healthy=redis_started,
+                snapshot=redis_client.status_snapshot(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Redis client start failed (continuing with in-memory fallback)",
+                exc_info=exc,
+            )
+
+        # Wallet-state subscriber: only the trading plane has the
+        # Polymarket user-channel WS, so the API plane learns about
+        # wallet deltas via Redis pub/sub published by that plane.
+        try:
+            from services import wallet_state_bus
+
+            await wallet_state_bus.start_subscriber()
+        except Exception as exc:
+            logger.warning(
+                "wallet_state_bus subscriber start failed",
+                exc_info=exc,
+            )
+
         # Seed builtin AI agents
         try:
             await seed_builtin_agents()
@@ -830,6 +863,21 @@ async def lifespan(app: FastAPI):
             await polymarket_client.close()
         except Exception:
             pass
+
+        try:
+            from services import wallet_state_bus
+
+            await wallet_state_bus.stop_subscriber()
+        except Exception as exc:
+            logger.warning("wallet_state_bus subscriber stop raised", exc_info=exc)
+
+        try:
+            from services import redis_client
+
+            await redis_client.shutdown()
+        except Exception as exc:
+            logger.warning("Redis client shutdown raised", exc_info=exc)
+
         cpu_executor.shutdown(wait=False)
         logger.info("Shutdown complete")
 
@@ -1072,18 +1120,41 @@ async def readiness_check():
     """Readiness probe - is the service ready to accept traffic?"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+    try:
+        from services import redis_client
+
+        redis_snapshot = redis_client.status_snapshot()
+        redis_ok = (not redis_snapshot["enabled"]) or bool(redis_snapshot["healthy"])
+    except Exception:
+        redis_snapshot = {"enabled": True, "healthy": False, "error": "import_failed"}
+        redis_ok = False
+
+    try:
+        from services import wallet_state_bus
+
+        wallet_state_snapshot = wallet_state_bus.status_snapshot()
+    except Exception:
+        wallet_state_snapshot = {"error": "import_failed"}
+
     checks = {
         "scanner": scanner_status.get("running", False),
         "database": True,
         "ws_feeds": bool(_get_ws_feeds_status(scanner_status).get("healthy", False)) if settings.WS_FEED_ENABLED else True,
         "polymarket_api": True,
+        # Redis is a soft dependency: not gated as required for readiness,
+        # but surfaced so the GUI / monitoring can observe degradation.
+        "redis": redis_ok,
     }
 
-    all_ready = all(checks.values())
+    all_ready = all(
+        checks[k] for k in ("scanner", "database", "ws_feeds", "polymarket_api")
+    )
 
     return {
         "status": "ready" if all_ready else "not_ready",
         "checks": checks,
+        "redis": redis_snapshot,
+        "wallet_state_bus": wallet_state_snapshot,
         "api_rate_limit": inbound_api_rate_limiter.status(),
         "timestamp": utcnow().isoformat(),
     }
@@ -1130,6 +1201,15 @@ def _build_gui_health_response(db: dict) -> dict:
     scanner_status = db.get("scanner_status", {})
     worker_status_rows = db.get("worker_status_rows", [])
     orchestrator_snapshot = db.get("orchestrator_snapshot", {})
+    try:
+        from services import redis_client as _rc
+        from services import wallet_state_bus as _wsb
+
+        redis_snapshot = _rc.status_snapshot()
+        wallet_state_bus_snapshot = _wsb.status_snapshot()
+    except Exception:
+        redis_snapshot = {"enabled": True, "healthy": False, "error": "import_failed"}
+        wallet_state_bus_snapshot = {"error": "import_failed"}
     worker_status = {
         str(row.get("worker_name") or ""): {
             "worker_name": row.get("worker_name"),
@@ -1153,7 +1233,16 @@ def _build_gui_health_response(db: dict) -> dict:
         "workers": worker_status,
         "checks": {
             "database": db.get("database", False),
+            # Redis is a soft dependency: report as healthy when disabled
+            # OR when the in-process pool says so.  The GUI surfaces this
+            # in the platform-status panel.
+            "redis": (
+                (not bool(redis_snapshot.get("enabled", True)))
+                or bool(redis_snapshot.get("healthy", False))
+            ),
         },
+        "redis": redis_snapshot,
+        "wallet_state_bus": wallet_state_bus_snapshot,
         "services": {
             "scanner": {
                 "running": scanner_status.get("running", False),

@@ -16,6 +16,7 @@ Setup:
 """
 
 import asyncio
+import os
 import re
 import time as _time
 from collections import OrderedDict
@@ -1724,6 +1725,124 @@ class LiveExecutionService:
             return False
         return await self.initialize()
 
+    async def _bootstrap_wallet_state_cache(self, wallet_address: Optional[str]) -> None:
+        """Synchronous WalletStateCache REST seed at init time.
+
+        ARCHITECTURAL CONTRACT: when ``initialize()`` returns ``True`` on
+        the trading plane, every dependency the orchestrator hot path
+        reads MUST already be populated.  That includes the cache's
+        wallet positions snapshot — without it, the orchestrator's
+        freshness gate refuses every cycle until the reconciliation
+        worker's first 30s tick.
+
+        This method blocks the init path on the REST fetch (with a
+        bounded timeout) so success here means the cache is ready to
+        serve hot-path reads.  Failure here is also a valid outcome —
+        the cache records a failed-seed state, and the freshness gate
+        keeps refusing trades until the reconciliation worker eventually
+        succeeds.  Either way, no trading happens on stale state.
+        """
+        if not wallet_address:
+            return
+        wallet_lower = str(wallet_address).strip().lower()
+        if not wallet_lower:
+            return
+        try:
+            from services.polymarket import polymarket_client
+            from services.wallet_state_cache import get_wallet_state_cache
+        except Exception as imp_exc:
+            logger.warning(
+                "WalletStateCache bootstrap import failed (non-fatal)",
+                exc_info=imp_exc,
+            )
+            return
+        cache = get_wallet_state_cache()
+        # Open positions: REST fetch with a tight 15s budget — cache
+        # seed is on the critical bootstrap path, can't dawdle.
+        bootstrap_timeout_s = 15.0
+        try:
+            open_positions = await asyncio.wait_for(
+                polymarket_client.get_wallet_positions(wallet_lower),
+                timeout=bootstrap_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "WalletStateCache bootstrap open-positions REST timed out after %.0fs; "
+                "cache will not be fresh until reconciliation worker reseeds",
+                bootstrap_timeout_s,
+                extra={"wallet": wallet_lower},
+            )
+            cache.seed_from_rest(
+                wallet_address=wallet_lower,
+                positions=[],
+                closed_positions=[],
+                succeeded=False,
+            )
+            return
+        except Exception as exc:
+            logger.warning(
+                "WalletStateCache bootstrap open-positions REST failed",
+                wallet=wallet_lower,
+                exc_info=exc,
+            )
+            cache.seed_from_rest(
+                wallet_address=wallet_lower,
+                positions=[],
+                closed_positions=[],
+                succeeded=False,
+            )
+            return
+        if not isinstance(open_positions, list):
+            open_positions = []
+        # Closed positions are larger and less time-critical — fetch
+        # with a generous budget but don't fail bootstrap if they're
+        # slow.  An empty closed list at boot is acceptable; the
+        # reconciliation worker's slower cadence (every 5 min) will
+        # populate it later.
+        closed_positions: list[dict[str, Any]] = []
+        try:
+            closed_positions_raw = await asyncio.wait_for(
+                polymarket_client.get_closed_positions_paginated(
+                    wallet_lower,
+                    max_positions=2000,
+                ),
+                timeout=15.0,
+            )
+            if isinstance(closed_positions_raw, list):
+                closed_positions = closed_positions_raw
+        except Exception as exc:
+            logger.debug(
+                "WalletStateCache bootstrap closed-positions fetch failed (non-fatal)",
+                wallet=wallet_lower,
+                exc_info=exc,
+            )
+        result = cache.seed_from_rest(
+            wallet_address=wallet_lower,
+            positions=open_positions,
+            closed_positions=closed_positions,
+            succeeded=True,
+        )
+        # Replay user-channel WS subscription set with whatever
+        # condition_ids the REST seed populated.  Keeps the option (a)
+        # contract: subscribe to every market the wallet has held.
+        try:
+            from services.ws_feeds import get_feed_manager
+
+            condition_ids = cache.iter_tracked_condition_ids()
+            if condition_ids:
+                await get_feed_manager().ensure_user_subscribed(condition_ids)
+        except Exception as sub_exc:
+            logger.debug(
+                "Bootstrap user-channel WS subscription refresh failed (non-fatal)",
+                exc_info=sub_exc,
+            )
+        logger.info(
+            "WalletStateCache bootstrap complete",
+            wallet=wallet_lower,
+            open_positions=result.get("open_seeded", 0),
+            closed_positions=result.get("closed_seeded", 0),
+        )
+
     async def initialize(self) -> bool:
         """
         Initialize the trading client with API credentials.
@@ -1845,6 +1964,67 @@ class LiveExecutionService:
                 except Exception as _bal_exc:
                     logger.warning("Balance probe during init failed (non-fatal): %s", _bal_exc)
                 self._schedule_restored_reconciliations()
+                # Wire the wallet's API credentials into the user-channel
+                # WS feed so it can subscribe to the wallet's own
+                # order/trade events — but ONLY in the trading worker
+                # plane.  Polymarket's user channel rejects a second
+                # concurrent connection from the same wallet, so we
+                # must not start it in both the API process and the
+                # trading plane.  ``HOMERUN_WORKER_PLANE=trading`` is
+                # set by ``workers.host.main`` on the trading plane;
+                # the API process leaves it unset and skips this.
+                worker_plane = os.environ.get("HOMERUN_WORKER_PLANE", "")
+                if worker_plane == "trading":
+                    user_feed_wallet = (
+                        self._proxy_funder_address
+                        or self._wallet_address
+                        or eoa_address
+                    )
+                    # ARCHITECTURAL CONTRACT: when ``initialize()`` returns
+                    # ``True`` on the trading plane, the orchestrator may
+                    # immediately begin trading.  That requires:
+                    #   (1) Polymarket user-channel WS credentials wired
+                    #   (2) WalletStateCache seeded from REST (open
+                    #       positions + closed positions snapshot)
+                    # Both must complete BEFORE initialize() returns,
+                    # otherwise the freshness gate refuses every cycle
+                    # until the reconciliation worker's first 30s tick
+                    # — that's seconds of forced idle on every restart,
+                    # and a flood of "stale" warnings from the fast
+                    # trader.  We do them synchronously here.
+                    try:
+                        from services.ws_feeds import get_feed_manager
+
+                        user_feed_configured = get_feed_manager().configure_user_feed_credentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                            api_passphrase=api_passphrase,
+                            wallet_address=user_feed_wallet,
+                        )
+                        if user_feed_configured:
+                            logger.info(
+                                "Polymarket user-channel WS credentials configured",
+                                wallet=user_feed_wallet,
+                                plane=worker_plane,
+                            )
+                    except Exception as user_feed_exc:
+                        logger.warning(
+                            "Failed to configure Polymarket user-channel WS credentials (non-fatal)",
+                            exc_info=user_feed_exc,
+                        )
+
+                    # Synchronous WalletStateCache bootstrap.  Block until
+                    # we have a fresh REST snapshot or a clear failure
+                    # signal — both are valid outcomes that establish the
+                    # cache's freshness state.
+                    await self._bootstrap_wallet_state_cache(user_feed_wallet)
+                else:
+                    logger.debug(
+                        "Skipping Polymarket user-channel WS credential wiring "
+                        "(only the trading worker plane runs the feed)",
+                        process_role=os.environ.get("HOMERUN_PROCESS_ROLE", ""),
+                        plane=worker_plane,
+                    )
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
                 self._last_init_error = None
                 self._init_retry_not_before = None

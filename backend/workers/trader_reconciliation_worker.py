@@ -550,27 +550,20 @@ async def _pg_notify_position_changes(
 
 
 async def _sync_live_wallet_positions() -> None:
-    """Periodically refresh ``live_execution_service`` in-memory position snapshot.
+    """Periodically refresh ``live_execution_service`` in-memory positions.
 
-    The ``LiveExecutionService._positions`` dict is the authoritative
-    source for wallet share holdings used by exit-size computation.  It
-    is rebuilt from the Polymarket positions API only at service init
-    and on rare reconciliation paths (an order going "not found").
-    Without a periodic refresh, off-app activity (manual sells via the
-    UI, transfers, redemptions) is invisible to the orchestrator until
-    the next worker restart — producing exit attempts sized against
-    the original wallet state and CLOB ``balance is not enough``
-    rejections (see live_execution_service share-balance shortage path).
-    Calling ``sync_positions()`` on a sane interval closes that gap.
+    Throttled to ``_LIVE_WALLET_POSITIONS_SYNC_INTERVAL_SECONDS``.
+    Independent of the WalletStateCache reseeder (see
+    ``_run_wallet_cache_reseeder_loop`` for that).
     """
     global _last_live_wallet_positions_sync_at
     now = time.monotonic()
     if (now - _last_live_wallet_positions_sync_at) < _LIVE_WALLET_POSITIONS_SYNC_INTERVAL_SECONDS:
         return
     _last_live_wallet_positions_sync_at = now
+    if not live_execution_service.is_ready():
+        return
     try:
-        if not live_execution_service.is_ready():
-            return
         await asyncio.wait_for(
             live_execution_service.sync_positions(),
             timeout=_LIVE_WALLET_POSITIONS_SYNC_TIMEOUT_SECONDS,
@@ -582,6 +575,171 @@ async def _sync_live_wallet_positions() -> None:
         )
     except Exception as exc:
         logger.warning("live wallet positions sync failed", exc_info=exc)
+
+
+# ---------------------------------------------------------------------------
+# WalletStateCache reseeder
+# ---------------------------------------------------------------------------
+# Independent loop with its own cadence: aggressive (5s) until first
+# successful seed, then settles to ``_WALLET_CACHE_RESEED_INTERVAL_SECONDS``.
+# Decoupling from ``_sync_live_wallet_positions`` matters because the
+# freshness gate in the orchestrator's hot path blocks live trading until
+# the first successful seed lands — getting that seed out as fast as
+# possible is the difference between "trader idle for 30s on boot" and
+# "trader idle for 5s on boot".
+_WALLET_CACHE_RESEED_INTERVAL_SECONDS = 30.0
+_WALLET_CACHE_RESEED_BOOTSTRAP_INTERVAL_SECONDS = 5.0
+
+
+async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
+    """Continuously seed ``WalletStateCache`` from REST.
+
+    Started by the trading-plane worker host alongside
+    ``trader_reconciliation_worker``.  Aggressive 5s cadence until the
+    first successful seed lands so the freshness gate clears as quickly
+    as possible after boot; 30s cadence afterwards for drift-correction.
+    """
+    from services.wallet_state_cache import get_wallet_state_cache
+
+    cache = get_wallet_state_cache()
+    while not stop_event.is_set():
+        if cache._last_rest_seed_succeeded and cache._last_rest_seed_mono is not None:
+            interval = _WALLET_CACHE_RESEED_INTERVAL_SECONDS
+        else:
+            interval = _WALLET_CACHE_RESEED_BOOTSTRAP_INTERVAL_SECONDS
+        try:
+            await _reseed_wallet_state_cache_from_rest()
+        except Exception as exc:
+            logger.warning(
+                "WalletStateCache REST reseed cycle failed",
+                exc_info=exc,
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            return  # stop signaled
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _reseed_wallet_state_cache_from_rest() -> None:
+    """Pull a fresh open-positions + closed-positions snapshot from
+    Polymarket and feed it to ``WalletStateCache.seed_from_rest``.
+
+    The user-channel WS handles real-time deltas; this function exists
+    purely to:
+      * Bootstrap the cache at startup (before any WS event has fired)
+      * Audit and correct drift periodically (~30s)
+
+    Call sites: ``_sync_live_wallet_positions`` (every 30s) and
+    bootstrap path.  No direct exposure to the orchestrator hot path.
+    """
+    if not live_execution_service.is_ready():
+        return
+    wallet_address = (
+        getattr(live_execution_service, "_proxy_funder_address", None)
+        or getattr(live_execution_service, "_wallet_address", None)
+        or getattr(live_execution_service, "_eoa_address", None)
+    )
+    if not wallet_address:
+        return
+    wallet_lower = str(wallet_address).strip().lower()
+    if not wallet_lower:
+        return
+
+    from services.polymarket import polymarket_client
+    from services.wallet_state_cache import get_wallet_state_cache
+
+    cache = get_wallet_state_cache()
+
+    # Open positions (real-time) — small list (~tens to a few hundred).
+    try:
+        open_positions = await asyncio.wait_for(
+            polymarket_client.get_wallet_positions(wallet_lower),
+            timeout=_LIVE_WALLET_POSITIONS_SYNC_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "WalletStateCache open-positions REST seed failed",
+            wallet=wallet_lower,
+            exc_info=exc,
+        )
+        cache.seed_from_rest(
+            wallet_address=wallet_lower,
+            positions=[],
+            closed_positions=[],
+            succeeded=False,
+        )
+        return
+
+    if not isinstance(open_positions, list):
+        open_positions = []
+
+    # Closed (held-to-resolution) positions are larger and slower; we
+    # don't need them every cycle.  Skip them most of the time and
+    # only refresh on a slower cadence.  When we skip, pass an empty
+    # list — seed_from_rest preserves existing closed-position state
+    # because the merge logic only adds/updates, never removes resolved.
+    closed_positions: list[dict[str, Any]] = []
+    if _should_refresh_closed_positions():
+        try:
+            closed_positions_raw = await asyncio.wait_for(
+                polymarket_client.get_closed_positions_paginated(
+                    wallet_lower,
+                    max_positions=2000,
+                ),
+                timeout=20.0,
+            )
+            if isinstance(closed_positions_raw, list):
+                closed_positions = closed_positions_raw
+        except Exception as exc:
+            logger.debug(
+                "WalletStateCache closed-positions REST seed failed (non-fatal)",
+                wallet=wallet_lower,
+                exc_info=exc,
+            )
+
+    result = cache.seed_from_rest(
+        wallet_address=wallet_lower,
+        positions=open_positions,
+        closed_positions=closed_positions,
+        succeeded=True,
+    )
+    logger.debug(
+        "WalletStateCache REST seed complete",
+        wallet=wallet_lower,
+        open_seeded=result.get("open_seeded", 0),
+        closed_seeded=result.get("closed_seeded", 0),
+        removed_stale=result.get("removed_stale", 0),
+    )
+
+    # Replay the full subscription set on the user-channel WS so it
+    # covers every market we've ever held a position in (per the
+    # architectural mandate, option a).  Idempotent — already-subscribed
+    # condition_ids are no-ops.
+    try:
+        from services.ws_feeds import get_feed_manager
+
+        condition_ids = cache.iter_tracked_condition_ids()
+        if condition_ids:
+            await get_feed_manager().ensure_user_subscribed(condition_ids)
+    except Exception as sub_exc:
+        logger.debug(
+            "User-channel WS subscription refresh failed (non-fatal)",
+            exc_info=sub_exc,
+        )
+
+
+_last_closed_positions_refresh_at_mono: float = 0.0
+_CLOSED_POSITIONS_REFRESH_INTERVAL_SECONDS = 300.0  # 5 minutes
+
+
+def _should_refresh_closed_positions() -> bool:
+    global _last_closed_positions_refresh_at_mono
+    now_mono = time.monotonic()
+    if (now_mono - _last_closed_positions_refresh_at_mono) < _CLOSED_POSITIONS_REFRESH_INTERVAL_SECONDS:
+        return False
+    _last_closed_positions_refresh_at_mono = now_mono
+    return True
 
 
 async def _scan_stuck_positions_throttled() -> None:
@@ -1354,6 +1512,18 @@ async def run_worker_loop() -> None:
     except Exception as exc:
         logger.warning("Reconciliation strategy startup sync failed", exc_info=exc)
 
+    # Background WalletStateCache reseeder.  ``live_execution_service.
+    # initialize()`` performs the synchronous bootstrap seed; this loop
+    # provides the periodic drift-correction reseed (5s while the cache
+    # hasn't successfully seeded yet, 30s after).  Decoupled from
+    # ``_sync_live_wallet_positions`` so that worker can have its own
+    # cadence.
+    wallet_cache_reseeder_stop = asyncio.Event()
+    wallet_cache_reseeder_task = asyncio.create_task(
+        _run_wallet_cache_reseeder_loop(wallet_cache_reseeder_stop),
+        name="wallet-cache-reseeder",
+    )
+
     consecutive_db_failures = 0
     wallet_monitor_wallet = ""
     wallet_monitor_refresh_at = 0.0
@@ -1656,6 +1826,16 @@ async def run_worker_loop() -> None:
     finally:
         for event_type in sorted(_RECONCILE_TRIGGER_EVENTS):
             event_bus.unsubscribe(event_type, _on_runtime_event)
+        # Stop the wallet-cache reseeder cleanly so it doesn't outlive
+        # the worker process.  The signal is idempotent.
+        wallet_cache_reseeder_stop.set()
+        if not wallet_cache_reseeder_task.done():
+            try:
+                await asyncio.wait_for(wallet_cache_reseeder_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                wallet_cache_reseeder_task.cancel()
+            except Exception:
+                pass
 
 
 async def start_loop() -> None:

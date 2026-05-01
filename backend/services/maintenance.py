@@ -651,6 +651,82 @@ LIMIT 20
             "source": source,
         }
 
+    # Terminal signals (executed/skipped/expired/failed/filtered) past
+    # the reactivation lookback are dead weight in the hot table.  The
+    # 30-day ``cleanup_trade_signals`` runs only via the API/manual
+    # path; without a hot pruner the table grows to 100K+ rows / 6+ GB
+    # and ``list_unconsumed_trade_signals`` slows to 3+ seconds per
+    # cycle, blowing the fast-trader 2.5s ``statement_timeout`` and
+    # corrupting asyncpg's protocol state with cancelled-mid-flight
+    # queries.
+    _TERMINAL_SIGNAL_STATUSES: tuple[str, ...] = (
+        "expired",
+        "filtered",
+        "skipped",
+        "failed",
+    )
+
+    async def cleanup_terminal_trade_signals(
+        self,
+        older_than_hours: int = 24,
+    ) -> dict:
+        """Aggressively prune terminal ``trade_signals`` past the
+        reactivation lookback (default 24h).  Keeps ``executed``,
+        ``pending``, and recent terminal rows; deletes the rest.
+        Designed to run on a fast cadence (every 30-60 minutes).
+        """
+        if older_than_hours <= 0:
+            return {
+                "status": "disabled",
+                "trade_signals_deleted": 0,
+                "older_than_hours": int(older_than_hours),
+            }
+
+        cutoff = utcnow() - timedelta(hours=older_than_hours)
+        batch_size = 500
+        deleted_count = 0
+        terminal_statuses = list(self._TERMINAL_SIGNAL_STATUSES)
+        while True:
+            async with AsyncSessionLocal() as session:
+                # Pruning the hot table can take several seconds when
+                # the backlog is large; allow it.  ``SET LOCAL`` is
+                # transaction-scoped.
+                await session.execute(text("SET LOCAL statement_timeout = '120000'"))
+                batch_ids = (
+                    await session.execute(
+                        select(TradeSignal.id)
+                        .where(TradeSignal.status.in_(terminal_statuses))
+                        .where(TradeSignal.created_at < cutoff)
+                        .limit(batch_size)
+                    )
+                ).scalars().all()
+                if not batch_ids:
+                    break
+                await session.execute(
+                    delete(TradeSignalEmission).where(
+                        TradeSignalEmission.signal_id.in_(batch_ids)
+                    )
+                )
+                result = await session.execute(
+                    delete(TradeSignal).where(TradeSignal.id.in_(batch_ids))
+                )
+                await session.commit()
+                deleted_count += int(result.rowcount or 0)
+                if int(result.rowcount or 0) < batch_size:
+                    break
+        if deleted_count > 0:
+            logger.info(
+                "Pruned terminal trade signals",
+                deleted_count=deleted_count,
+                older_than_hours=older_than_hours,
+            )
+        return {
+            "status": "success",
+            "trade_signals_deleted": deleted_count,
+            "cutoff": cutoff.isoformat(),
+            "older_than_hours": int(older_than_hours),
+        }
+
     async def cleanup_trade_signals(
         self,
         older_than_days: int = DEFAULT_TRADE_SIGNAL_AGE,

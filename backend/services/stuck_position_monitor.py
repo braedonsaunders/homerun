@@ -87,7 +87,7 @@ import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from models.database import AsyncSessionLocal, TraderOrder
 from services.ctf_execution import ctf_execution_service
@@ -105,6 +105,9 @@ _BLOCKED_TERMINAL_STATES = frozenset(
         "blocked_no_inventory",
         "blocked_retry_exhausted",
         "blocked_retry_exhausted_hard",
+        # Market resolved/removed from CLOB; position settles on-chain
+        # via the redeemer.  See position_lifecycle._is_orderbook_gone_error.
+        "blocked_orderbook_gone",
     }
 )
 
@@ -263,12 +266,28 @@ async def scan_stuck_positions(
     cutoff = utcnow() - timedelta(hours=max(0.0, float(age_hours)))
     factory = session_factory if session_factory is not None else AsyncSessionLocal
 
+    # Push every static filter into SQL.  The previous unbounded
+    # ``WHERE mode='live' AND created_at <= cutoff`` returned ALL old
+    # live orders + their full payload_json, then filtered in Python.
+    # Pre-fix observed ``mean_exec_time=18s, max=30s`` for this query
+    # in pg_stat_statements (the dominant offender after my catalog +
+    # signal fixes), with each call burning a worker connection for
+    # the full ~30s — long enough to starve the event loop and miss
+    # WS heartbeat pings.
+    #
+    # Open-lifecycle filter goes into SQL directly.  Pending-exit
+    # blocked-status check still runs in Python because it's nested
+    # inside payload_json (cheap once the row count is bounded; a
+    # JSON-path predicate would be marginally faster but the index
+    # we'd need doesn't exist).
+    open_status_lower = list(_OPEN_LIFECYCLE_STATUSES)
     async with factory() as session:
         rows = list(
             (
                 await session.execute(
                     select(TraderOrder)
                     .where(TraderOrder.mode == "live")
+                    .where(func.lower(TraderOrder.status).in_(open_status_lower))
                     # Use ``created_at`` as the age anchor — the lifecycle
                     # touches ``updated_at`` on every retry, so an
                     # updated_at-based filter would EXCLUDE exactly the
@@ -277,6 +296,11 @@ async def scan_stuck_positions(
                     # system", which is the right signal for "has this
                     # been around long enough to be stuck?".
                     .where(TraderOrder.created_at <= cutoff)
+                    # Belt-and-suspenders: the pending-exit blocked
+                    # check below filters again, but a hard LIMIT
+                    # prevents a single pathological scan from
+                    # holding a worker connection for >30s.
+                    .limit(500)
                 )
             )
             .scalars()
@@ -285,6 +309,9 @@ async def scan_stuck_positions(
 
     out: list[dict[str, Any]] = []
     for row in rows:
+        # Status already filtered by SQL but defensive recheck —
+        # ``_OPEN_LIFECYCLE_STATUSES`` may evolve and we'd rather drop
+        # a stragger than alert on it.
         if str(row.status or "").strip().lower() not in _OPEN_LIFECYCLE_STATUSES:
             continue
         payload = dict(row.payload_json or {})

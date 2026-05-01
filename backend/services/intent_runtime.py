@@ -486,6 +486,23 @@ def _coerce_runtime_signal(snapshot: dict[str, Any]) -> Any:
 
 
 class IntentRuntime:
+    # Hard ceiling on the in-memory signal table.  Hydrate-from-db only
+    # loads ~12K signals (active + 24h of terminal); the cap protects
+    # against unbounded growth from runtime inserts when downstream
+    # persistence falls behind.  When exceeded, the periodic pruner
+    # drops oldest terminal signals first.
+    _MAX_SIGNALS_IN_MEMORY: int = 50_000
+    # Cadence for the periodic terminal-signal pruner.  Terminal signals
+    # past 24h are no longer reactivatable, so they're dead weight in
+    # the dedup table and the in-memory map.
+    _PRUNE_INTERVAL_SECONDS: float = 300.0
+    # Cap on the WS hot-seed retry-cooldown table.  Each entry is a
+    # token_id → monotonic-time pair that's never cleaned up after the
+    # token leaves the active universe.  ~14K active markets × 2
+    # tokens = ~28K, with churn over time → set 64K to leave generous
+    # headroom before the LRU-style trim kicks in.
+    _MAX_HOT_SEED_RETRIES: int = 64_000
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._started = False
@@ -501,6 +518,7 @@ class IntentRuntime:
         self._projection_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5000)
         self._projection_task: asyncio.Task[None] | None = None
         self._deferred_timeout_task: asyncio.Task[None] | None = None
+        self._signal_pruner_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._hot_seed_retry_not_before: dict[str, float] = {}
 
@@ -540,6 +558,10 @@ class IntentRuntime:
             self._run_deferred_timeout_loop(),
             name="intent-runtime-deferred-timeout",
         )
+        self._signal_pruner_task = self._start_task(
+            self._run_signal_pruner_loop(),
+            name="intent-runtime-signal-pruner",
+        )
         self._register_ws_callback()
         await self.hydrate_from_db()
 
@@ -549,11 +571,12 @@ class IntentRuntime:
             for task in self._background_tasks
             if task is not self._projection_task
             and task is not self._deferred_timeout_task
+            and task is not self._signal_pruner_task
             and not task.done()
         ]
         for task in background_tasks:
             task.cancel()
-        for managed_task in (self._projection_task, self._deferred_timeout_task):
+        for managed_task in (self._projection_task, self._deferred_timeout_task, self._signal_pruner_task):
             if managed_task is not None and not managed_task.done():
                 managed_task.cancel()
                 try:
@@ -564,6 +587,7 @@ class IntentRuntime:
             await asyncio.gather(*background_tasks, return_exceptions=True)
         self._projection_task = None
         self._deferred_timeout_task = None
+        self._signal_pruner_task = None
         self._loop = None
         self._started = False
 
@@ -1231,6 +1255,99 @@ class IntentRuntime:
                 raise
             except Exception as exc:
                 logger.debug("Deferred timeout sweep error", exc_info=exc)
+
+    async def _run_signal_pruner_loop(self) -> None:
+        """Periodic terminal-signal pruner.
+
+        Removes terminal signals (executed/skipped/expired/failed) past
+        the 24h reactivation lookback from the in-memory map.  Without
+        this loop, every signal the runtime ever sees stays resident
+        forever — a steady leak proportional to signal throughput.
+        Also enforces ``_MAX_SIGNALS_IN_MEMORY`` and
+        ``_MAX_HOT_SEED_RETRIES`` ceilings as a safety net.
+        """
+        while True:
+            await asyncio.sleep(self._PRUNE_INTERVAL_SECONDS)
+            try:
+                await self._prune_in_memory_signals()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Intent runtime signal prune error", exc_info=exc)
+
+    async def _prune_in_memory_signals(self) -> None:
+        now = utcnow()
+        cutoff = now - timedelta(hours=_BOOTSTRAP_REACTIVATABLE_LOOKBACK_HOURS)
+        removed_terminal = 0
+        removed_overflow = 0
+        async with self._lock:
+            terminal_to_drop: list[tuple[datetime, str]] = []
+            for signal_id, snapshot in self._signals_by_id.items():
+                status = str(snapshot.get("status") or "").strip().lower()
+                if status not in _SIGNAL_TERMINAL_STATUSES:
+                    continue
+                updated_at = _normalize_datetime(snapshot.get("updated_at")) or _normalize_datetime(
+                    snapshot.get("created_at")
+                )
+                if updated_at is None or updated_at < cutoff:
+                    # Treat undated terminals as ancient — they're
+                    # effectively unreactivatable and should be evicted.
+                    terminal_to_drop.append((updated_at or datetime.min.replace(tzinfo=timezone.utc), signal_id))
+            for _, signal_id in terminal_to_drop:
+                self._drop_signal_locked(signal_id)
+                removed_terminal += 1
+
+            # Hard cap fallback: if the table is still oversized after
+            # pruning expired terminals (e.g. high-frequency runtime
+            # adds outpacing the prune cadence), drop oldest-by-
+            # updated_at terminal signals until under the ceiling.
+            overflow = len(self._signals_by_id) - self._MAX_SIGNALS_IN_MEMORY
+            if overflow > 0:
+                terminal_candidates: list[tuple[datetime, str]] = []
+                for signal_id, snapshot in self._signals_by_id.items():
+                    status = str(snapshot.get("status") or "").strip().lower()
+                    if status not in _SIGNAL_TERMINAL_STATUSES:
+                        continue
+                    updated_at = _normalize_datetime(snapshot.get("updated_at")) or _normalize_datetime(
+                        snapshot.get("created_at")
+                    ) or datetime.min.replace(tzinfo=timezone.utc)
+                    terminal_candidates.append((updated_at, signal_id))
+                terminal_candidates.sort()
+                for _, signal_id in terminal_candidates[:overflow]:
+                    self._drop_signal_locked(signal_id)
+                    removed_overflow += 1
+
+            # Bound the WS hot-seed retry-cooldown table.  Entries are
+            # never removed when a token leaves the active universe;
+            # the simplest cap is to clear the whole table when over
+            # the ceiling (next subscription cycle re-seeds the tokens
+            # that are still active).  Cheaper than tracking liveness.
+            if len(self._hot_seed_retry_not_before) > self._MAX_HOT_SEED_RETRIES:
+                self._hot_seed_retry_not_before.clear()
+        if removed_terminal or removed_overflow:
+            logger.info(
+                "Intent runtime pruned in-memory signals",
+                terminal_aged_out=removed_terminal,
+                overflow_dropped=removed_overflow,
+                signals_remaining=len(self._signals_by_id),
+            )
+
+    def _drop_signal_locked(self, signal_id: str) -> None:
+        """Remove a signal from all secondary indices.  Caller holds ``self._lock``."""
+        snapshot = self._signals_by_id.pop(signal_id, None)
+        if snapshot is None:
+            return
+        dedupe_key = str(snapshot.get("dedupe_key") or "")
+        if dedupe_key and self._signal_ids_by_dedupe_key.get(dedupe_key) == signal_id:
+            self._signal_ids_by_dedupe_key.pop(dedupe_key, None)
+        source = str(snapshot.get("source") or "")
+        if source:
+            source_ids = self._source_signal_ids.get(source)
+            if source_ids is not None:
+                source_ids.discard(signal_id)
+                if not source_ids:
+                    self._source_signal_ids.pop(source, None)
+        self._clear_deferred_state_locked(signal_id)
 
     async def _release_stale_deferred_signals(self) -> None:
         max_age = max(5.0, float(getattr(settings, "INTENT_RUNTIME_DEFERRED_MAX_AGE_SECONDS", 15.0) or 15.0))

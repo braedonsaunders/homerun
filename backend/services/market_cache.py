@@ -207,12 +207,23 @@ class MarketCacheService:
                     markets=len(self._market_cache),
                     usernames=len(self._username_cache),
                 )
-                try:
-                    hygiene = await self.run_hygiene_if_due(force=True)
-                    if int(hygiene.get("markets_deleted", 0)) > 0:
-                        logger.info("Market cache hygiene removed stale entries", **hygiene)
-                except Exception as e:
-                    logger.warning("Market cache hygiene failed after load", error=str(e))
+                # Hygiene used to run synchronously here with ``force=True``,
+                # which scheduled a ``SELECT DISTINCT market_id FROM
+                # wallet_activity_rollups`` that routinely blew the 30s
+                # statement_timeout at startup and blocked the trading
+                # plane's intent_runtime hydrate.  Defer it to a
+                # background task on the natural ``MARKET_CACHE_HYGIENE_
+                # INTERVAL`` cadence — the first periodic run cleans
+                # stale entries without paying the latency tax on boot.
+                async def _run_initial_hygiene() -> None:
+                    try:
+                        hygiene = await self.run_hygiene_if_due(force=False)
+                        if int(hygiene.get("markets_deleted", 0)) > 0:
+                            logger.info("Market cache hygiene removed stale entries", **hygiene)
+                    except Exception as exc:
+                        logger.warning("Market cache hygiene failed after load", error=str(exc))
+
+                asyncio.create_task(_run_initial_hygiene(), name="market-cache-hygiene-bg")
             except Exception as e:
                 self._load_error = str(e)
                 self._load_finished_at = utcnow()
@@ -594,6 +605,12 @@ class MarketCacheService:
         reasons: dict[str, int] = {}
 
         async with AsyncSessionLocal() as session:
+            # Hygiene scans 2M+ row ``wallet_activity_rollups`` with
+            # ``DISTINCT market_id`` over a 45-day window — even with
+            # the ``idx_war_traded_wallet_market`` index this routinely
+            # exceeds the regular 30s ``statement_timeout`` on a busy
+            # DB.  ``SET LOCAL`` raises only this transaction's cap.
+            await session.execute(text("SET LOCAL statement_timeout = '180000'"))
             rows = (await session.execute(select(CachedMarket))).scalars().all()
 
             referenced_ids: set[str] = set()

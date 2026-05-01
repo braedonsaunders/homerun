@@ -934,6 +934,80 @@ class ArbitrageScanner:
         return True
 
     @staticmethod
+    def _is_market_tradable(market: object) -> bool:
+        """Strict tradability check applied at the catalog-fetch boundary.
+
+        Polymarket's gamma API returns ~250K markets where ``active=true``,
+        but ~94% are resolved sports parlay legs and dead micro-markets
+        (``accepting_orders=null``, ``volume=0``) that consume ~3GB of
+        worker heap with zero trading utility.  This filter rejects them.
+
+        Stricter than ``_is_market_active`` — requires:
+          * ``accepting_orders is True`` (not None) — venue accepts orders
+          * ``volume > MARKET_UNIVERSE_MIN_VOLUME`` — has real activity
+          * Polymarket: condition_id AND clob_token_ids set
+
+        Used only by ``refresh_catalog`` and ``_hydrate_catalog_from_db``;
+        per-cycle scan logic continues to use ``_is_market_active`` so a
+        market that loses ``accepting_orders`` mid-cycle is still scanned
+        out cleanly.
+        """
+        platform = str(getattr(market, "platform", "polymarket") or "polymarket").strip().lower()
+        if platform == "polymarket":
+            if getattr(market, "accepting_orders", None) is not True:
+                return False
+            condition_id = str(getattr(market, "condition_id", "") or "").strip()
+            if not condition_id:
+                return False
+            clob_token_ids = ArbitrageScanner._coerce_market_token_ids(
+                getattr(market, "clob_token_ids", None)
+            )
+            if not clob_token_ids:
+                return False
+        try:
+            volume = float(getattr(market, "volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            volume = 0.0
+        try:
+            min_volume = float(getattr(settings, "MARKET_UNIVERSE_MIN_VOLUME", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            min_volume = 0.0
+        if volume <= min_volume:
+            return False
+        return True
+
+    @staticmethod
+    def _filter_tradable_markets(events: list, markets: list) -> tuple[list, list]:
+        """Apply ``MARKET_UNIVERSE_TRADABLE_ONLY`` gate to a (events, markets) pair.
+
+        Returns the filtered pair; mutates each event's ``markets`` list to
+        drop non-tradable children.  Events with no tradable children are
+        themselves dropped.
+        """
+        if not bool(getattr(settings, "MARKET_UNIVERSE_TRADABLE_ONLY", True)):
+            return events, markets
+        pre_count = len(markets)
+        kept_markets = [m for m in markets if ArbitrageScanner._is_market_tradable(m)]
+        kept_market_ids = {str(getattr(m, "id", "") or "") for m in kept_markets if getattr(m, "id", None)}
+        kept_events: list = []
+        for event in events:
+            event_kept = [
+                m for m in list(getattr(event, "markets", None) or [])
+                if str(getattr(m, "id", "") or "") in kept_market_ids
+            ]
+            if event_kept:
+                event.markets = event_kept
+                kept_events.append(event)
+        if pre_count and pre_count != len(kept_markets):
+            logger.info(
+                "Catalog tradable-only filter: %d → %d markets (%d events kept)",
+                pre_count,
+                len(kept_markets),
+                len(kept_events),
+            )
+        return kept_events, kept_markets
+
+    @staticmethod
     def _overlay_event_market_context(target_market: object, source_market: object, event_key: str) -> None:
         event_slug = str(getattr(source_market, "event_slug", "") or event_key or "").strip()
         if event_slug and not str(getattr(target_market, "event_slug", "") or "").strip():
@@ -2750,8 +2824,11 @@ class ArbitrageScanner:
                 except Exception as e:
                     logger.info(f"  Kalshi fetch failed (non-fatal): {e}")
 
-            # Phase 2b — prune closed/resolved/expired, then enforce hard caps.
+            # Phase 2b — prune closed/resolved/expired, hard-gate tradability,
+            # then enforce caps.  Tradable-only is the dominant heap-saver
+            # (cuts 250K → ~14K active universe); see ``MARKET_UNIVERSE_TRADABLE_ONLY``.
             events, markets = self._prune_active_catalog(events, markets, now)
+            events, markets = self._filter_tradable_markets(events, markets)
             events, markets = self._enforce_catalog_caps(events, markets)
             dedup_msg = f" (+{extra_from_events} from events)" if extra_from_events else ""
             logger.info(f"  Fetched {len(events)} events and {len(markets)} active markets{dedup_msg}")
@@ -3074,6 +3151,7 @@ class ArbitrageScanner:
         merged_events = list(event_map.values())
         def _prune_and_cap(scanner, evts, mkts, ts):
             evts, mkts = scanner._prune_active_catalog(evts, mkts, ts)
+            evts, mkts = scanner._filter_tradable_markets(evts, mkts)
             evts, mkts = scanner._enforce_catalog_caps(evts, mkts)
             return evts, mkts
 
@@ -3193,6 +3271,7 @@ class ArbitrageScanner:
 
         def _hydrate_sync(scanner, evts, mkts, ts):
             evts, mkts = scanner._prune_active_catalog(evts, mkts, ts)
+            evts, mkts = scanner._filter_tradable_markets(evts, mkts)
             evts, mkts = scanner._enforce_catalog_caps(evts, mkts)
             scanner._cached_events = evts
             scanner._cached_markets = mkts
@@ -3271,6 +3350,10 @@ class ArbitrageScanner:
                             scanner._cached_events,
                             scanner._cached_markets,
                             ts,
+                        )
+                        scanner._cached_events, scanner._cached_markets = scanner._filter_tradable_markets(
+                            scanner._cached_events,
+                            scanner._cached_markets,
                         )
                         scanner._cached_events, scanner._cached_markets = scanner._enforce_catalog_caps(
                             scanner._cached_events,

@@ -15,6 +15,41 @@ _TEST_WALLET_PREFIXES = ("0x1234567890abcdef", "0xdeadbeef", "0x0000000000000000
 
 
 @pytest.fixture(autouse=True)
+def _seed_wallet_state_cache_for_tests(monkeypatch):
+    """Pre-seed the WalletStateCache so the orchestrator's hot-path
+    freshness gate doesn't refuse to trade in tests.
+
+    Production behavior: the orchestrator's ``_run_trader_once`` checks
+    ``WalletStateCache.is_fresh()`` and skips the cycle when the cache
+    has no REST seed yet OR the user-channel WS isn't connected.  In
+    tests we don't run the reconciliation worker or the WS feed, so
+    without this fixture every orchestrator test would skip cleanly
+    with ``Trader cycle skipped: wallet state stale``.
+
+    The fixture marks the cache as freshly seeded with no positions
+    (idle wallet → ``is_fresh() == True``).  Tests that exercise
+    position-related logic can override by adding rows to the cache.
+    """
+    try:
+        from services.wallet_state_cache import (
+            get_wallet_state_cache,
+            reset_wallet_state_cache,
+        )
+    except Exception:
+        return
+    reset_wallet_state_cache()
+    cache = get_wallet_state_cache()
+    cache.seed_from_rest(
+        wallet_address="0x0000000000000000000000000000000000000000",
+        positions=[],
+        closed_positions=[],
+        succeeded=True,
+    )
+    yield
+    reset_wallet_state_cache()
+
+
+@pytest.fixture(autouse=True)
 def _block_test_wallet_db_writes(monkeypatch):
     # Defense-in-depth: tests that exercise LiveExecutionService with a
     # placeholder wallet (e.g. ``0x1234...5678``) used to leak failed-order

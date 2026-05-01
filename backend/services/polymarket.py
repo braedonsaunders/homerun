@@ -140,7 +140,13 @@ class PolymarketClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._trading_client: Optional[httpx.AsyncClient] = None  # Proxy-aware for trading
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
-        self._market_cache_max_size: int = 20_000
+        # 35K cap accommodates ~14K active markets × ~2-3 keys
+        # (condition_id, normalized condition_id, ``token:<token_id>``)
+        # under MARKET_UNIVERSE_TRADABLE_ONLY=True, with headroom for
+        # transient lookup churn.  Was 20K but trimming was too lazy
+        # in practice; coupled with the duplicate-seeding bug, the
+        # dict had grown to 65K entries by the time of memory_dump #2.
+        self._market_cache_max_size: int = 35_000
         self._market_lookup_cooldown_until: dict[str, float] = {}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._username_cache_max_size: int = 10_000
@@ -198,7 +204,16 @@ class PolymarketClient:
         }
 
     async def _get_persistent_cache(self):
-        """Lazy-load the persistent market cache service."""
+        """Lazy-load the persistent market cache service.
+
+        ``MarketCacheService`` is the canonical store (~14K active
+        markets after MARKET_UNIVERSE_TRADABLE_ONLY filter).  Reads
+        fall through to it via :meth:`_lookup_persistent_market_info`
+        on local miss; we deliberately do NOT bulk-seed our own dict
+        with its contents — that was the 65K duplicate-cache leak
+        observed in memory_dump #2 (every call to this method was
+        reseeding the local map, and the LRU trim never caught up).
+        """
         if self._persistent_cache is None:
             try:
                 from services.market_cache import market_cache_service
@@ -208,16 +223,19 @@ class PolymarketClient:
                 self._persistent_cache = market_cache_service
             except Exception:
                 pass  # Graceful degradation: in-memory only
-        cache = self._persistent_cache
-        if cache is not None:
-            try:
-                if cache._market_cache:
-                    self._market_cache.update(cache._market_cache)
-                if cache._username_cache:
-                    self._username_cache.update(cache._username_cache)
-            except Exception:
-                pass
-        return cache
+        return self._persistent_cache
+
+    async def _lookup_persistent_market_info(self, condition_id: str) -> Optional[dict]:
+        """Read-through to MarketCacheService keyed by condition_id."""
+        if not condition_id:
+            return None
+        cache = await self._get_persistent_cache()
+        if cache is None:
+            return None
+        try:
+            return await cache.get_market(condition_id)
+        except Exception:
+            return None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -770,6 +788,14 @@ class PolymarketClient:
         force_refresh = bool(kwargs.get("force_refresh", False))
         if not force_refresh:
             cached = self._market_cache.get(condition_id) or self._market_cache.get(requested)
+            if cached is None:
+                # Fall through to the persistent MarketCacheService rather
+                # than re-fetching from the gamma API.  Avoids the
+                # duplicate-cache leak fixed when we stopped bulk-seeding
+                # this dict from MarketCacheService on every call.
+                persistent = await self._lookup_persistent_market_info(requested)
+                if persistent is not None:
+                    cached = persistent
             if cached:
                 cached_cid = self._normalize_identifier(cached.get("condition_id"))
                 has_payload = bool(str(cached.get("question") or "").strip() or str(cached.get("slug") or "").strip())
@@ -871,6 +897,7 @@ class PolymarketClient:
 
     async def get_market_by_token_id(self, token_id: str, **kwargs) -> Optional[dict]:
         """Look up a market by CLOB token ID (asset_id), using cache when available."""
+        self._trim_caches()
         requested = self._normalize_identifier(token_id)
         if not self._looks_like_token_id(requested):
             return None
@@ -2000,9 +2027,12 @@ class PolymarketClient:
 
         cache = await self._get_persistent_cache()
         if cache:
+            # Reverse-lookup walks the persistent username cache by value.
+            # Read-only iteration — do NOT copy into self._username_cache,
+            # that was the same auto-seeding bug that quadrupled the
+            # market cache.  The persistent dict is the source of truth.
             for addr, uname in cache._username_cache.items():
                 if str(uname or "").strip().lower() == target_username and _ETH_ADDRESS_RE.match(addr):
-                    self._username_cache[addr.lower()] = uname
                     return {"address": addr.lower(), "username": uname}
 
         profile_url = f"https://polymarket.com/@{quote(candidate)}"
@@ -2063,12 +2093,14 @@ class PolymarketClient:
                 "address": address,
             }
 
-        # Check persistent SQL cache
+        # Check persistent SQL cache (canonical username store).  Don't
+        # mirror the result into self._username_cache — every fall-through
+        # would otherwise duplicate the entry locally, which is the
+        # pattern that produced the 65K shadow market_cache leak.
         cache = await self._get_persistent_cache()
         if cache:
             cached_username = await cache.get_username(address_lower)
             if cached_username:
-                self._username_cache[address_lower] = cached_username
                 return {"username": cached_username, "address": address}
 
         # Try the leaderboard API - search both PNL and VOL sorted, multiple pages

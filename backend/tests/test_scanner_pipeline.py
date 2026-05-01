@@ -278,6 +278,10 @@ class TestScanPipeline:
             slug="timeout-fallback",
             clob_token_ids=["fallback-yes-token", "fallback-no-token"],
             outcome_prices=[0.52, 0.48],
+            # Required by MARKET_UNIVERSE_TRADABLE_ONLY tradable filter
+            # applied at the catalog-fetch boundary.
+            accepting_orders=True,
+            volume=100.0,
         )
         mock_polymarket_client.get_all_events.side_effect = asyncio.TimeoutError()
         mock_polymarket_client.get_all_markets.return_value = [market]

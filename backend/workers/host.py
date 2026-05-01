@@ -730,6 +730,28 @@ class WorkerHost:
     async def _initialize_services(self) -> None:
         logger.info("Worker plane database pool ready", plane=self._plane_name)
 
+        # Bring up the Redis pool early so any subsequent service
+        # initialization can opportunistically use the bus.  Soft-fail:
+        # ``redis_client.start()`` returns False if Redis is disabled or
+        # unreachable, and every consumer treats ``get_client_or_none()``
+        # returning None as "use in-memory fallback".
+        try:
+            from services import redis_client
+
+            redis_started = await redis_client.start()
+            logger.info(
+                "Redis client lifecycle started",
+                plane=self._plane_name,
+                healthy=redis_started,
+                snapshot=redis_client.status_snapshot(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Redis client start failed (continuing with in-memory fallback)",
+                plane=self._plane_name,
+                exc_info=exc,
+            )
+
         from models.database import start_pool_watchdog
 
         self._background_tasks.append(start_pool_watchdog())
@@ -928,6 +950,47 @@ class WorkerHost:
                 started_check=_fill_monitor_started,
             )
 
+        # Wallet-state heartbeat publisher: only the trading plane runs
+        # the Polymarket user-channel WS, so only it has authoritative
+        # wallet deltas.  Publish a periodic snapshot to Redis so the API
+        # plane (and any future consumer) can surface cross-process
+        # wallet freshness without running its own WS feed.
+        if self._plane_name == "trading":
+            try:
+                from services import wallet_state_bus
+
+                self._schedule_background_startup(
+                    task_name="wallet-state-bus-publisher",
+                    starter=wallet_state_bus.start_publisher,
+                    failure_message="wallet_state_bus publisher start failed",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to schedule wallet_state_bus publisher",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
+        # Cross-plane trade-signal arrival bridge: subscribe to the Redis
+        # signal channels and re-publish on the local event_bus so the
+        # orchestrator + fast trader wake within ~1ms of a signal being
+        # written by the news plane (instead of the 60s DB-poll fallback).
+        if self._plane_name == "trading":
+            try:
+                from services import signal_bus_redis_bridge
+
+                self._schedule_background_startup(
+                    task_name="signal-bus-redis-bridge",
+                    starter=signal_bus_redis_bridge.start,
+                    failure_message="signal_bus_redis_bridge start failed",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to schedule signal_bus_redis_bridge",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
     async def _start_plane(self) -> None:
         loop = asyncio.get_running_loop()
         cpu_count = os.cpu_count() or 4
@@ -1076,6 +1139,39 @@ class WorkerHost:
         if self._event_bus_started:
             await event_bus.stop()
             self._event_bus_started = False
+
+        if self._plane_name == "trading":
+            try:
+                from services import wallet_state_bus
+
+                await wallet_state_bus.stop_publisher()
+            except Exception as exc:
+                logger.warning(
+                    "wallet_state_bus publisher stop raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                from services import signal_bus_redis_bridge
+
+                await signal_bus_redis_bridge.stop()
+            except Exception as exc:
+                logger.warning(
+                    "signal_bus_redis_bridge stop raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
+        try:
+            from services import redis_client
+
+            await redis_client.shutdown()
+        except Exception as exc:
+            logger.warning(
+                "Redis client shutdown raised",
+                plane=self._plane_name,
+                exc_info=exc,
+            )
 
         if self._cpu_executor is not None:
             self._cpu_executor.shutdown(wait=False, cancel_futures=True)

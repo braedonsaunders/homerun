@@ -9,6 +9,7 @@ from typing import Any, Optional
 from config import settings
 from services.market_runtime import get_market_runtime
 from services.polymarket import polymarket_client
+from services.trader_orchestrator.hot_path import allow_polymarket_rest_call
 from services.ws_feeds import get_feed_manager
 from utils.converters import coerce_bool as _coerce_bool, normalize_identifier as _normalize_identifier, safe_float
 from utils.logger import get_logger
@@ -1069,6 +1070,12 @@ async def _fetch_market_info(
     if not normalized:
         return None
 
+    # Hot-path gate: never fetch market metadata from REST when in
+    # the orchestrator no-REST scope.  market_runtime / market_cache
+    # are the in-memory sources for hot reads.
+    if not allow_polymarket_rest_call("live_market_metadata"):
+        return None
+
     timeout = max(0.1, float(timeout_seconds))
     try:
         if _is_condition_id(normalized):
@@ -1482,30 +1489,34 @@ async def build_live_signal_contexts(
                 )
 
         unresolved = [token_id for token_id in token_list if token_id not in live_prices]
+        batch: dict[str, Any] = {}
         if unresolved and not strict_ws_only:
-            batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
-            try:
-                batch = await asyncio.wait_for(
-                    polymarket_client.get_prices_batch(unresolved),
-                    timeout=batch_timeout,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "HTTP batch price fetch failed",
-                    token_count=len(unresolved),
-                    timeout_seconds=batch_timeout,
-                    exc_info=exc,
-                )
-                batch = {}
-            for token_id, payload in (batch or {}).items():
-                if not isinstance(payload, dict):
-                    continue
-                _record_live_price(
-                    token_id,
-                    mid=payload.get("mid"),
-                    source="http_batch",
-                    observed_at_s=now_epoch,
-                )
+            if allow_polymarket_rest_call("prices_batch_fallback"):
+                batch_timeout = max(0.1, float(prices_batch_timeout_seconds))
+                try:
+                    batch = await asyncio.wait_for(
+                        polymarket_client.get_prices_batch(unresolved),
+                        timeout=batch_timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "HTTP batch price fetch failed",
+                        token_count=len(unresolved),
+                        timeout_seconds=batch_timeout,
+                        exc_info=exc,
+                    )
+                    batch = {}
+            # else: hot-path scope; no REST.  ``batch`` stays {} and
+            # the orchestrator gets the live WS prices it already has.
+        for token_id, payload in (batch or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            _record_live_price(
+                token_id,
+                mid=payload.get("mid"),
+                source="http_batch",
+                observed_at_s=now_epoch,
+            )
 
     history_sem = asyncio.Semaphore(max(1, int(max_history_concurrency)))
     now_s = int(time.time())
@@ -1563,6 +1574,12 @@ async def build_live_signal_contexts(
             return
 
         if strict_ws_only:
+            history_points_by_token[token_id] = []
+            return
+
+        # Hot-path gate: skip the HTTP history fallback.  WS price
+        # history is what the orchestrator should rely on.
+        if not allow_polymarket_rest_call("prices_history_fallback"):
             history_points_by_token[token_id] = []
             return
 

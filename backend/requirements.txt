@@ -11,6 +11,11 @@ asyncpg==0.30.0
 greenlet>=3.0.0
 cryptography>=42.0.0
 
+# Redis (cross-process bus + ephemeral cache).  See backend/services/redis_client.py.
+# 5.x is the first major to ship redis.asyncio with stable connection-pool
+# semantics + native socket_timeout / health_check_interval kwargs.
+redis>=5.0,<8.0
+
 # urllib3 is pulled in transitively by requests (via sentence-transformers /
 # huggingface-hub). v2 requires OpenSSL 1.1.1+ which is available on
 # Python 3.9+ from Homebrew/python.org (macOS) and all Windows installs.

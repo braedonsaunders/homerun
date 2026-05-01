@@ -85,6 +85,78 @@ def _copy_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+# Hot-tier projection: fields that the event-catalog lookup path actually
+# consumes (via ``_build_event_market_snapshot`` / ``get_market_snapshot``
+# / ``get_token_mid_price``).  Anything outside this set is dropped before
+# storage in ``_event_catalog_markets`` to keep the runtime heap small.
+# Heavy excluded fields: ``description`` (~hundreds of bytes per market),
+# ``tags`` (list of dicts), ``events`` (back-reference to parent event),
+# ``image`` / ``icon`` (URLs), ``outcomes`` (rarely consulted at lookup).
+# If a downstream consumer needs one of those, fetch from the canonical
+# Market source (DB / catalog) rather than relying on the runtime cache.
+_HOT_MARKET_FIELDS: frozenset[str] = frozenset({
+    "id",
+    "market_id",
+    "condition_id",
+    "conditionId",
+    "slug",
+    "question",
+    "group_item_title",
+    "category",
+    "platform",
+    "active",
+    "closed",
+    "archived",
+    "resolved",
+    "accepting_orders",
+    "enable_order_book",
+    "status",
+    "neg_risk",
+    "sports_market_type",
+    "asset",
+    "timeframe",
+    "line",
+    "volume",
+    "liquidity",
+    "yes_price",
+    "no_price",
+    "up_price",
+    "down_price",
+    "outcome_prices",
+    "clob_token_ids",
+    "token_ids",
+    "end_date",
+    "end_time",
+    "start_date",
+    "start_time",
+    "game_start_time",
+    "expires_at",
+    "is_current",
+    "is_live",
+    "fetched_at",
+    "event_id",
+    "event_slug",
+    "event_title",
+    "event_category",
+    "seconds_left",
+    "price_to_beat",
+    "combined",
+})
+
+
+def _project_hot_market(value: Any) -> dict[str, Any]:
+    """Project a market dict down to fields the runtime hot path consumes.
+
+    Slims the stored row from ~30+ fields (~2KB) to ~15-20 fields
+    (~600 bytes), saving ~60% per ``_event_catalog_markets`` entry.
+    Used only for the in-memory lookup cache; full Market rows still
+    flow through the boundary code (DB writes, API responses) untouched.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if k in _HOT_MARKET_FIELDS}
+
+
 def _parse_iso_utc(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -933,7 +1005,10 @@ class MarketRuntime:
             )
         lookup: dict[str, dict[str, Any]] = {}
         for market in markets:
-            row = _copy_dict(market)
+            # Project to the hot-tier field set before storing — drops
+            # ~60% of per-row bytes (description, tags, events, etc.)
+            # that the runtime lookup path never reads.
+            row = _project_hot_market(market)
             market_id = _normalize_market_id(row.get("id"))
             condition_id = _normalize_market_id(row.get("condition_id") or row.get("conditionId"))
             token_ids = [

@@ -137,6 +137,19 @@ class Settings(BaseSettings):
     MARKET_FETCH_ORDER: str = "volume"  # volume, updatedAt, createdAt, or empty for default
     MIN_LIQUIDITY: float = 1000.0  # Minimum liquidity in USD
     SCANNER_FORCE_FULL_UNIVERSE: bool = True  # Ignore market/event caps for full-coverage discovery
+    # Hard gate at the catalog-fetch boundary: only persist markets that
+    # are *actually tradable* (accepting_orders=True AND volume>0 AND
+    # has CLOB token IDs).  Polymarket's gamma API returns ~250K markets
+    # with ``active=true``, but ~94% are resolved sports parlay legs and
+    # dead micro-markets (accepting_orders=null, volume=0).  Without this
+    # filter the worker carries ~3GB of dead market metadata in
+    # MarketRuntime._event_catalog_markets / scanner indices.  Disable
+    # only if you need the full historical universe (e.g. analytics).
+    MARKET_UNIVERSE_TRADABLE_ONLY: bool = True
+    # Optional minimum-volume floor for catalog inclusion.  0.0 = any
+    # volume > 0 qualifies.  Raise to e.g. 100.0 to drop micro-volume
+    # noise that's tradable on paper but never actually trades.
+    MARKET_UNIVERSE_MIN_VOLUME: float = 0.0
 
     # Opportunity Quality Filters (hard rejection thresholds)
     MIN_LIQUIDITY_HARD: float = 1000.0  # Reject opportunities below this liquidity ($)
@@ -195,6 +208,25 @@ class Settings(BaseSettings):
     # the per-cycle budget.  Failing fast turns lock contention into a
     # quick clean retryable error rather than a 30-second silence.
     DATABASE_LOCK_TIMEOUT_MS: int = 5000
+
+    # Redis (cross-process bus + ephemeral cache).  Local-only by default;
+    # the GUI launches a docker-compose container at 127.0.0.1:6379.  All
+    # consumers MUST treat Redis as a soft-fail dependency: a healthy
+    # in-memory fallback exists for every use, so a Redis outage degrades
+    # cross-process freshness but does not stop the worker.  Streams (XADD/
+    # XREAD with consumer groups) and pub/sub channels both flow through
+    # this single connection pool — no separate URLs.
+    REDIS_URL: str = "redis://127.0.0.1:6379/0"
+    REDIS_ENABLED: bool = True  # Master kill-switch; set False to skip Redis entirely
+    REDIS_CONNECT_TIMEOUT_SECONDS: float = 2.0  # Hard cap on initial connect
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 1.5  # Per-op timeout for individual commands
+    REDIS_HEALTH_CHECK_INTERVAL_SECONDS: float = 15.0  # Pool-level liveness ping cadence
+    REDIS_MAX_CONNECTIONS: int = 64  # Pool ceiling — enough for 4 worker procs × ~16 streams
+    REDIS_NAMESPACE: str = "homerun"  # Key prefix for all app keys (collision-safe + easy FLUSH)
+    # Stream caps — each XADD uses MAXLEN ~ to bound memory.  These are
+    # generous; the consumer groups read at producer rate so trim mostly
+    # protects against a stalled consumer accumulating unbounded backlog.
+    REDIS_STREAM_MAXLEN_DEFAULT: int = 10000
 
     ORCHESTRATOR_MAINTENANCE_INTERVAL_SECONDS: float = 5.0
     MARKET_REENTRY_COOLDOWN_SECONDS: float = 600.0

@@ -521,7 +521,24 @@ def _write_market_catalog_file(
                 separators=(",", ":"),
                 default=str,
             )
-        os.replace(tmp_path, path)
+        # Windows raises ``PermissionError`` (WinError 5) on
+        # ``os.replace`` when ANY other process has an open handle on
+        # the destination file — including a concurrent reader that's
+        # mid-``json.load``.  The API + multiple workers all read this
+        # catalog blob, so collisions are routine, not exceptional.
+        # Retry with backoff; reader handles complete in milliseconds
+        # so a few hundred ms is enough to win the race.
+        last_exc: OSError | None = None
+        for attempt in range(8):
+            try:
+                os.replace(tmp_path, path)
+                last_exc = None
+                break
+            except PermissionError as exc:
+                last_exc = exc
+                time.sleep(0.05 * (1 << min(attempt, 4)))  # 50ms..800ms
+        if last_exc is not None:
+            raise last_exc
     finally:
         try:
             if tmp_path.exists():

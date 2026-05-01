@@ -44,6 +44,8 @@ from services.strategy_loader import strategy_loader
 import services.trader_hot_state as hot_state
 from services.trader_hot_state import get_signal_sequence_cursor as _hot_get_signal_sequence_cursor
 from services.trader_orchestrator.decision_gates import enrich_final_reason
+from services.trader_orchestrator.hot_path import hot_path_no_rest
+from services.wallet_state_cache import get_wallet_state_cache
 from services.trader_orchestrator.fast_submit import (
     execute_fast_signal,
 )
@@ -623,6 +625,35 @@ class _FastTraderTask:
         if not accepted_sources:
             return
 
+        # ARCHITECTURAL CONTRACT: fast trader hot path MUST NOT call
+        # Polymarket REST APIs.  Wallet state is push-driven via the
+        # CLOB user-channel WS into ``WalletStateCache``.  See
+        # ``services.trader_orchestrator.hot_path`` for the contextvar
+        # gate that enforces this.
+        with hot_path_no_rest():
+            await self._run_once_inner(trader_id, accepted_sources)
+
+    async def _run_once_inner(self, trader_id: str, accepted_sources: list[str]) -> None:
+        # Freshness gate: refuse to trade on stale wallet state in live
+        # mode.  This should NEVER fire after bootstrap completes —
+        # ``live_execution_service.initialize()`` performs a synchronous
+        # REST seed before returning success, and the user-channel WS
+        # is connected by then.  If we hit this gate after bootstrap it
+        # indicates a real problem (WS dropped, reconciliation worker
+        # dead, etc.) and the warning is signal, not noise.
+        mode = str(self._trader.get("mode", "shadow")).strip().lower() or "shadow"
+        if mode == "live":
+            ws_cache = get_wallet_state_cache()
+            fresh, fresh_reason = ws_cache.is_fresh()
+            if not fresh:
+                logger.warning(
+                    "Fast trader cycle skipped: wallet state stale",
+                    trader_id=trader_id,
+                    reason=fresh_reason,
+                    cache_stats=ws_cache.stats_snapshot(),
+                )
+                return
+
         # Per-stage timing so when a cycle blows the 3s hard budget we can
         # see *which* stage stalled (intent_runtime list, db cursor read,
         # parallel processing, idle-touch commit). Captured into
@@ -695,6 +726,12 @@ class _FastTraderTask:
                 cursor_created_at=cursor_created_at,
                 cursor_signal_id=cursor_signal_id,
                 limit=_MAX_SIGNALS_PER_CYCLE,
+                # Fast trader never reads payload_json /
+                # strategy_context_json; deferring them turns this
+                # SELECT from a 200-row × 3KB JSON-decode-on-loop
+                # blocker into a header-only fetch.  See state.py
+                # for the full rationale.
+                defer_heavy_columns=True,
             )
             self._last_stage_timings_ms["db_list_signals"] = round(
                 (time.monotonic() - stage_start) * 1000.0, 1

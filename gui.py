@@ -222,13 +222,20 @@ def _sigbreak_kill_children() -> None:
 # ---------------------------------------------------------------------------
 BACKEND_PORT = 8000
 FRONTEND_PORT = 3000
-_WORKER_PLANES = (("WORKERS", "all"),)
+# Plane separation: trading workers run in one process, news/weather
+# (ML-heavy: sentence-transformers, FAISS) in another.  A 2GB ML heap
+# leak in news can no longer page out the live-money trading hot path.
+_WORKER_PLANES = (
+    ("WORKERS", "trading"),
+    ("NEWS", "news"),
+)
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {
-    "scanner": "all", "scanner_slo": "all", "crypto": "all",
-    "trader_orchestrator": "all", "tracked_traders": "all",
-    "discovery": "all", "weather": "all", "news": "all",
-    "events": "all", "trader_reconciliation": "all", "redeemer": "all",
+    "scanner": "trading", "scanner_slo": "trading", "crypto": "trading",
+    "trader_orchestrator": "trading", "tracked_traders": "trading",
+    "discovery": "trading", "events": "trading",
+    "trader_reconciliation": "trading", "redeemer": "trading",
+    "weather": "news", "news": "news",
 }
 
 HEALTH_URL = f"http://127.0.0.1:{BACKEND_PORT}/health/gui"
@@ -723,6 +730,7 @@ class HomerunApp:
         self._svc_labels: dict[str, tk.Label] = {}
         for svc_id, svc_name in [
             ("svc-backend", "BACKEND"), ("svc-database", "DATABASE"),
+            ("svc-redis", "REDIS"),
             ("svc-frontend", "FRONTEND"), ("svc-wsfeeds", "WS FEEDS"),
         ]:
             lbl = tk.Label(platform, text=f"● {svc_name:<8} OFFLINE", font=self._font,
@@ -1088,7 +1096,7 @@ class HomerunApp:
         direct = WORKER_TAG_TO_NAME.get(source_upper)
         if direct:
             return direct
-        if source_upper not in {"BACKEND", "WORKERS"}:
+        if source_upper not in {"BACKEND", "WORKERS", "NEWS"}:
             return None
         lowered = text.lower()
         for hint, worker_name in WORKER_BACKEND_HINTS:
@@ -1352,6 +1360,166 @@ class HomerunApp:
         host = str(self._database_target_from_url(database_url)["host"]).lower()
         return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
+    # ------------------------------------------------------------------
+    # Redis lifecycle (parallels Postgres helpers above).  Local-only by
+    # default; the GUI starts the docker-compose ``redis`` service before
+    # spawning the backend so worker boot can rely on a healthy bus.
+    # ------------------------------------------------------------------
+    def _resolve_runtime_redis_url(self) -> str:
+        raw_value = str(os.environ.get("REDIS_URL", "")).lstrip("﻿").strip().strip('"').strip("'")
+        if raw_value:
+            return raw_value.rstrip("/")
+        return "redis://127.0.0.1:6379/0"
+
+    def _redis_target_from_url(self, redis_url: str) -> dict[str, str | int]:
+        parsed = urlsplit(redis_url)
+        return {
+            "host": parsed.hostname or "127.0.0.1",
+            "port": int(parsed.port or 6379),
+            "db": (parsed.path.lstrip("/") or "0"),
+            "password": parsed.password or "",
+        }
+
+    def _is_local_redis_target(self, redis_url: str) -> bool:
+        host = str(self._redis_target_from_url(redis_url)["host"]).lower()
+        return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+    def _probe_redis_ready(
+        self,
+        venv_python: Path,
+        redis_url: str,
+        *,
+        retries: int,
+        retry_delay_seconds: float,
+    ) -> tuple[bool, str]:
+        probe_env = self._build_runtime_env(process_role="api")
+        probe_env["REDIS_URL"] = redis_url
+        result = subprocess.run(
+            [
+                str(venv_python),
+                str(PROJECT_ROOT / "scripts" / "infra" / "ensure_redis_ready.py"),
+                "--redis-url",
+                redis_url,
+                "--retries",
+                str(retries),
+                "--retry-delay-seconds",
+                str(retry_delay_seconds),
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            env=probe_env,
+            timeout=max(15, int(retries * max(retry_delay_seconds, 0.25) * 4)),
+            **_windows_subprocess_kwargs(),
+        )
+        output = "\n".join(
+            part.strip()
+            for part in ((result.stdout or "").strip(), (result.stderr or "").strip())
+            if part and part.strip()
+        ).strip()
+        return result.returncode == 0, output
+
+    def _start_local_redis_runtime(self, redis_url: str) -> tuple[bool, str]:
+        target = self._redis_target_from_url(redis_url)
+        docker_bin = shutil.which("docker") or "docker"
+        compose_file = PROJECT_ROOT / "scripts" / "infra" / "docker-compose.infra.yml"
+        runtime_env = os.environ.copy()
+        runtime_env["REDIS_HOST"] = str(target["host"])
+        runtime_env["REDIS_PORT"] = str(target["port"])
+        runtime_env.setdefault("REDIS_CONTAINER_NAME", "homerun-redis")
+        runtime_env.setdefault("REDIS_IMAGE", "redis:7-alpine")
+
+        # Prefer compose (writes the same flags / healthcheck as our YAML);
+        # fall back to ``docker start`` (existing container) and a bare
+        # ``docker run`` so a partial install — e.g. the user blew away the
+        # compose project but the named container is still on disk — still
+        # boots.  Mirror the postgres pattern verbatim.
+        commands: list[list[str]] = [
+            [docker_bin, "compose", "-f", str(compose_file), "up", "-d", "redis"],
+            [docker_bin, "start", runtime_env["REDIS_CONTAINER_NAME"]],
+            [
+                docker_bin,
+                "run",
+                "--name",
+                runtime_env["REDIS_CONTAINER_NAME"],
+                "--detach",
+                "--publish",
+                f"{runtime_env['REDIS_HOST']}:{runtime_env['REDIS_PORT']}:6379",
+                runtime_env["REDIS_IMAGE"],
+                "redis-server",
+                "--save",
+                "",
+                "--appendonly",
+                "no",
+                "--maxmemory",
+                "1gb",
+                "--maxmemory-policy",
+                "volatile-lru",
+            ],
+        ]
+
+        outputs: list[str] = []
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(PROJECT_ROOT),
+                    capture_output=True,
+                    text=True,
+                    env=runtime_env,
+                    timeout=120,
+                    **_windows_subprocess_kwargs(),
+                )
+            except Exception as exc:
+                outputs.append(f"{' '.join(command[:3])}: {exc}")
+                continue
+            combined = "\n".join(
+                part.strip()
+                for part in ((result.stdout or "").strip(), (result.stderr or "").strip())
+                if part and part.strip()
+            ).strip()
+            if result.returncode == 0:
+                return True, combined
+            outputs.append(combined or f"{' '.join(command)} exited with code {result.returncode}")
+        return False, "\n".join(entry for entry in outputs if entry)
+
+    def _ensure_redis_ready(self, venv_python: Path) -> tuple[bool, str]:
+        """Ensure the Redis runtime is reachable.  Soft dependency: a
+        failure here is logged but does not abort startup — every consumer
+        treats Redis as a cache + bus with an in-memory fallback."""
+        redis_url = self._resolve_runtime_redis_url()
+
+        ready, output = self._probe_redis_ready(
+            venv_python, redis_url, retries=2, retry_delay_seconds=0.25
+        )
+        if ready:
+            return True, redis_url
+
+        if not self._is_local_redis_target(redis_url):
+            if output:
+                self._enqueue_log(output, source="SYSTEM", level="WARNING")
+            return False, redis_url
+
+        self._enqueue_log(">>> Starting Redis runtime...", source="SYSTEM", level="INFO")
+        started, start_output = self._start_local_redis_runtime(redis_url)
+        if start_output:
+            self._enqueue_log(
+                start_output,
+                source="SYSTEM",
+                level="INFO" if started else "WARNING",
+            )
+        if not started:
+            return False, redis_url
+
+        ready, output = self._probe_redis_ready(
+            venv_python, redis_url, retries=120, retry_delay_seconds=0.5
+        )
+        if output:
+            self._enqueue_log(
+                output, source="SYSTEM", level="INFO" if ready else "WARNING"
+            )
+        return ready, redis_url
+
     def _probe_database_ready(self, venv_python: Path, database_url: str, *, retries: int, retry_delay_seconds: float) -> tuple[bool, str]:
         probe_env = self._build_runtime_env(process_role="api")
         probe_env["DATABASE_URL"] = database_url
@@ -1501,8 +1669,27 @@ class HomerunApp:
             self._enqueue_log(f"FATAL: Database is not reachable at {database_url}.", source="BACKEND", level="ERROR")
             return
 
+        # Redis is a soft dependency — log + continue if unavailable.  The
+        # backend's redis_client treats a missing pool as "use in-memory
+        # fallback" everywhere, so failure here degrades freshness across
+        # processes but does not stop trading.  Propagate via os.environ
+        # so every subsequently-spawned worker / backend inherits it via
+        # ``_build_runtime_env`` (which does ``os.environ.copy()``).
+        self._enqueue_log(">>> Ensuring Redis runtime is ready...", source="SYSTEM", level="INFO")
+        redis_ready, redis_url = self._ensure_redis_ready(venv_python)
+        os.environ["REDIS_URL"] = redis_url
+        os.environ["REDIS_ENABLED"] = "true" if redis_ready else "false"
+        if not redis_ready:
+            self._enqueue_log(
+                f"WARNING: Redis is not reachable at {redis_url}; running with in-memory fallback.",
+                source="SYSTEM",
+                level="WARNING",
+            )
+
         env = self._build_runtime_env(process_role="api")
         env["DATABASE_URL"] = database_url
+        env["REDIS_URL"] = redis_url
+        env["REDIS_ENABLED"] = "true" if redis_ready else "false"
 
         self._enqueue_log(">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO")
         try:
@@ -1760,9 +1947,11 @@ class HomerunApp:
 
         ws = services.get("ws_feeds", {})
         database_healthy = self._resolve_database_health(data, services)
+        redis_healthy = self._resolve_redis_health(data)
 
         self._update_platform_item("svc-backend", "BACKEND", True)
         self._update_platform_item("svc-database", "DATABASE", database_healthy)
+        self._update_platform_item("svc-redis", "REDIS", redis_healthy)
         if not self._frontend_alive():
             self._request_frontend_start("backend health ready")
         self._update_platform_item("svc-frontend", "FRONTEND", self._frontend_alive())
@@ -1787,6 +1976,7 @@ class HomerunApp:
         self.backend_healthy = False
         self._update_platform_item("svc-backend", "BACKEND", False)
         self._update_platform_item("svc-database", "DATABASE", False)
+        self._update_platform_item("svc-redis", "REDIS", False)
         self._update_platform_item("svc-frontend", "FRONTEND", self._frontend_alive())
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", False)
         self._update_workers_from_processes()
@@ -1804,6 +1994,29 @@ class HomerunApp:
                 if key in db_status:
                     return bool(db_status.get(key))
         return True
+
+    def _resolve_redis_health(self, data: dict) -> bool:
+        """Read Redis health from the /health/gui payload.
+
+        Backend reports Redis under both ``checks.redis`` (boolean roll-up
+        used by the dashboard) and ``redis`` (full status snapshot).
+        Prefer the snapshot when present so we can tell "disabled by
+        config" from "configured but unreachable" in future surfaces;
+        for the ON/OFFLINE pill we just need the boolean.
+        """
+        checks = data.get("checks")
+        if isinstance(checks, dict) and "redis" in checks:
+            return bool(checks.get("redis"))
+        snapshot = data.get("redis")
+        if isinstance(snapshot, dict):
+            if "healthy" in snapshot:
+                if not bool(snapshot.get("enabled", True)):
+                    # Disabled by config — surface as ONLINE so the GUI
+                    # doesn't flap a healthy box.  The user can flip
+                    # REDIS_ENABLED=true to re-enable.
+                    return True
+                return bool(snapshot.get("healthy"))
+        return False
 
     def _normalize_workers_payload(self, workers: object, services: dict) -> dict[str, dict]:
         by_name: dict[str, dict] = {}

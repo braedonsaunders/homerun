@@ -391,6 +391,31 @@ class TradersCopyTradeSignalService:
         for key in stale_keys:
             self._recent_events.pop(key, None)
 
+    def _prune_token_cache(self, now: datetime) -> None:
+        """Drop ``_token_cache`` entries older than the TTL when the
+        cache exceeds its soft size limit.  The cache is keyed by
+        token_id and only writes on successful gamma lookups, so it's
+        bounded by the active token universe — but without a periodic
+        sweep, stale entries linger until next access.  Pruning at
+        access time keeps the dict bounded with no extra task overhead.
+        """
+        if len(self._token_cache) <= 5_000:
+            return
+        cutoff = now - timedelta(seconds=self._token_cache_ttl_seconds)
+        stale_keys = [
+            key for key, (cached_at, _) in self._token_cache.items()
+            if cached_at < cutoff
+        ]
+        for key in stale_keys:
+            self._token_cache.pop(key, None)
+        # If still oversized after dropping stale entries, evict
+        # oldest-first until under the cap.
+        if len(self._token_cache) > 5_000:
+            ordered = sorted(self._token_cache.items(), key=lambda kv: kv[1][0])
+            excess = len(self._token_cache) - 5_000 // 2
+            for key, _ in ordered[:excess]:
+                self._token_cache.pop(key, None)
+
     def _is_duplicate_event(self, event: WalletTradeEvent) -> bool:
         now = utcnow()
         event_key = self._event_dedupe_key(event)
@@ -653,6 +678,7 @@ class TradersCopyTradeSignalService:
 
     async def _resolve_market_snapshot(self, token_id: str) -> _TokenMarketSnapshot:
         now = utcnow()
+        self._prune_token_cache(now)
         cached = self._token_cache.get(token_id)
         if cached is not None:
             cached_at, payload = cached

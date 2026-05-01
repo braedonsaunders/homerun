@@ -30,7 +30,10 @@ from services.event_bus import event_bus
 from services.market_roster import build_market_roster, ensure_market_roster_payload
 from models.opportunity import Opportunity
 from services.market_tradability import get_market_tradability_map
+from utils.logger import get_logger
 from utils.signal_helpers import normalize_position_side
+
+logger = get_logger("signal_bus")
 
 
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
@@ -1075,26 +1078,70 @@ async def _record_signal_emission(
     )
 
 
+# Redis channel names for cross-process signal arrival notifications.
+# See ``services/wallet_state_bus.py`` for the analogous pattern.
+SIGNAL_EMISSION_CHANNEL = "trade_signals:emission"
+SIGNAL_BATCH_CHANNEL = "trade_signals:batch"
+
+
+async def _publish_redis(channel: str, payload: dict[str, Any]) -> None:
+    """Best-effort Redis publish for cross-plane signal arrival.
+
+    Emissions are published in-process via ``event_bus`` (which wakes the
+    fast_trader_runtime + main orchestrator running in the trading
+    plane).  But when a signal is emitted from a *different* process —
+    e.g. the news plane writes a signal via the strategy bridge — the
+    trading plane's in-process event_bus never sees it, so without this
+    Redis hop the trading plane has to wait for the orchestrator's 60s
+    polling fallback.  This publish closes that gap to <1ms.
+    """
+    try:
+        from services import redis_client
+
+        client = redis_client.get_client_or_none()
+        if client is None:
+            return
+        import json as _json
+
+        await client.publish(
+            redis_client.namespaced(channel),
+            _json.dumps(payload, default=str),
+        )
+    except Exception:
+        # Soft-fail: in-process event_bus already woke local subscribers.
+        # Cross-plane is a nice-to-have but not load-bearing.
+        pass
+
+
 async def _publish_trade_signal_emission(
     *,
     row: TradeSignal,
     event_type: str,
     reason: str | None = None,
 ) -> None:
+    payload = {
+        "signal_id": str(row.id or ""),
+        "source": str(row.source or ""),
+        "status": str(row.status or ""),
+        "event_type": str(event_type),
+        "reason": reason,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+    # Record this signal_id as locally-emitted BEFORE publishing to Redis
+    # so the trading plane's bridge subscriber correctly dedups when the
+    # Redis broadcast loops back.
     try:
-        await event_bus.publish(
-            "trade_signal_emission",
-            {
-                "signal_id": str(row.id or ""),
-                "source": str(row.source or ""),
-                "status": str(row.status or ""),
-                "event_type": str(event_type),
-                "reason": reason,
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            },
-        )
+        from services import signal_bus_redis_bridge
+
+        await signal_bus_redis_bridge.mark_locally_emitted(payload["signal_id"])
     except Exception:
         pass
+    try:
+        await event_bus.publish("trade_signal_emission", payload)
+    except Exception:
+        pass
+    # Cross-plane wakeup.
+    await _publish_redis(SIGNAL_EMISSION_CHANNEL, payload)
 
 
 async def _publish_trade_signal_batch(
@@ -1118,10 +1165,19 @@ async def _publish_trade_signal_batch(
         "emitted_at": emitted_at_iso,
         "trigger": "signal_bus",
     }
+    # Pre-mark these IDs so the cross-plane bridge dedups correctly.
+    try:
+        from services import signal_bus_redis_bridge
+
+        await signal_bus_redis_bridge.mark_locally_emitted(payload["signal_ids"])
+    except Exception:
+        pass
     try:
         await event_bus.publish("trade_signal_batch", payload)
     except Exception:
         pass
+    # Cross-plane wakeup.
+    await _publish_redis(SIGNAL_BATCH_CHANNEL, payload)
 
 
 def make_dedupe_key(*parts: Any) -> str:
@@ -1153,7 +1209,33 @@ async def upsert_trade_signal(
     runtime_sequence: Any = _RUNTIME_SEQUENCE_UNSET,
     commit: bool = True,
 ) -> TradeSignal:
-    """Idempotently upsert a normalized trade signal by ``(source, dedupe_key)``."""
+    """Idempotently upsert a normalized trade signal by ``(source, dedupe_key)``.
+
+    Architectural note: every signal published here must have a live
+    user-channel WS subscription in place BEFORE the orchestrator can
+    pick it up — otherwise the orchestrator's freshness gate will
+    refuse to trade.  We ensure that subscription synchronously at
+    publish time below.  ``ensure_user_subscribed()`` is idempotent
+    and sub-millisecond when the condition is already in the set.
+    """
+    # Strategy-side subscription handoff.  The market_id passed here
+    # is the Polymarket condition_id (hex address).  Adding it to the
+    # user-channel WS subscription set guarantees that by the time the
+    # orchestrator consumes this signal, the wallet's order/fill
+    # events for this market will flow into ``WalletStateCache``.
+    # Failures are logged but never blocking — the freshness gate
+    # provides the safety net downstream.
+    if market_id and isinstance(market_id, str) and market_id.startswith("0x"):
+        try:
+            from services.ws_feeds import get_feed_manager
+
+            await get_feed_manager().ensure_user_subscribed([market_id])
+        except Exception as _sub_exc:
+            logger.debug(
+                "User-channel WS subscribe at signal publish failed (non-fatal)",
+                extra={"market_id": market_id, "error": str(_sub_exc)},
+            )
+
     normalized_payload_json = ensure_market_roster_payload(
         payload_json,
         market_id=market_id,

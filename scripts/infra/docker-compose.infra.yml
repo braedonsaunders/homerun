@@ -91,6 +91,49 @@ services:
     volumes:
       - homerun-postgres-data:/var/lib/postgresql/data
 
+  redis:
+    # Single-user local trading app: Redis is used as a low-latency
+    # cross-process bus for wallet-state pub/sub, signal/order streams,
+    # and lightweight ephemeral caches.  Persistence is intentionally
+    # OFF — every consumer can rebuild from Postgres or REST seed on
+    # boot, so we trade durability for the latency of pure in-memory
+    # ops.  ``volatile-lru`` only evicts keys that have an explicit
+    # TTL; persistent keys (stream consumer-group offsets) are
+    # protected from eviction.
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: ${REDIS_CONTAINER_NAME:-homerun-redis}
+    command:
+      - redis-server
+      # Persistence OFF: no RDB snapshots, no AOF.  Cold-boot state
+      # comes from Postgres + REST reseed (see WalletStateCache,
+      # trader_reconciliation_worker).
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      # Memory cap and eviction.  1 GB is well above the working set
+      # of the streams + caches we use (typical residency <100 MB);
+      # the cap exists so a runaway producer can't OOM the host.
+      - --maxmemory
+      - "1gb"
+      - --maxmemory-policy
+      - "volatile-lru"
+      # Slowlog: capture any command >100us so we can spot ops that
+      # could stall the hot path.  256 entries ring-buffered.
+      - --slowlog-log-slower-than
+      - "100"
+      - --slowlog-max-len
+      - "256"
+    ports:
+      - "${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+    restart: unless-stopped
+
 volumes:
   homerun-postgres-data:
     # Pin to the actual volume that contains the user's database.
