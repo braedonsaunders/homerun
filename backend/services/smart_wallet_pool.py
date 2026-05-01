@@ -1033,58 +1033,58 @@ class SmartWalletPoolService:
                 )
                 return 0
 
-                inserted = 0
-                for trade in trades:
-                    if not isinstance(trade, dict):
-                        continue
+            inserted = 0
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
 
-                    market_id = str(
-                        trade.get("market")
-                        or trade.get("condition_id")
-                        or trade.get("conditionId")
-                        or trade.get("asset_id")
-                        or trade.get("assetId")
-                        or trade.get("asset")
-                        or trade.get("token_id")
-                        or trade.get("tokenId")
-                        or ""
-                    ).strip()
-                    if not market_id:
-                        continue
+                market_id = str(
+                    trade.get("market")
+                    or trade.get("condition_id")
+                    or trade.get("conditionId")
+                    or trade.get("asset_id")
+                    or trade.get("assetId")
+                    or trade.get("asset")
+                    or trade.get("token_id")
+                    or trade.get("tokenId")
+                    or ""
+                ).strip()
+                if not market_id:
+                    continue
 
-                    side = self._normalize_trade_side(
-                        trade.get("side"),
-                        trade.get("outcome"),
+                side = self._normalize_trade_side(
+                    trade.get("side"),
+                    trade.get("outcome"),
+                )
+                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+                price = float(trade.get("price", 0) or 0)
+                traded_at = self._parse_timestamp(
+                    trade.get("match_time")
+                    or trade.get("timestamp_iso")
+                    or trade.get("timestamp")
+                    or trade.get("created_at")
+                    or trade.get("createdAt")
+                    or trade.get("time")
+                )
+                if traded_at is None:
+                    continue
+
+                candidates[address]["wallet_trades"] = True
+                events.append(
+                    self._event_record(
+                        wallet=address,
+                        market_id=market_id,
+                        side=side,
+                        size=size,
+                        price=price,
+                        traded_at=traded_at,
+                        source="wallet_trades_api",
+                        tx_hash=trade.get("transactionHash") or trade.get("tx_hash"),
                     )
-                    size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
-                    price = float(trade.get("price", 0) or 0)
-                    traded_at = self._parse_timestamp(
-                        trade.get("match_time")
-                        or trade.get("timestamp_iso")
-                        or trade.get("timestamp")
-                        or trade.get("created_at")
-                        or trade.get("createdAt")
-                        or trade.get("time")
-                    )
-                    if traded_at is None:
-                        continue
+                )
+                inserted += 1
 
-                    candidates[address]["wallet_trades"] = True
-                    events.append(
-                        self._event_record(
-                            wallet=address,
-                            market_id=market_id,
-                            side=side,
-                            size=size,
-                            price=price,
-                            traded_at=traded_at,
-                            source="wallet_trades_api",
-                            tx_hash=trade.get("transactionHash") or trade.get("tx_hash"),
-                        )
-                    )
-                    inserted += 1
-
-                return inserted
+            return inserted
 
         counts: list[int] = []
         scan_queue: asyncio.Queue = asyncio.Queue()
