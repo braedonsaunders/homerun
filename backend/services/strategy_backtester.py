@@ -1598,6 +1598,10 @@ class ExecutionBacktestResult:
     cancelled_orders: int = 0
     closed_position_count: int = 0
     open_position_count: int = 0
+    expected_shortfall_5pct: dict[str, Any] = field(default_factory=dict)
+    expected_shortfall_1pct: dict[str, Any] = field(default_factory=dict)
+    tail_ratio: dict[str, Any] = field(default_factory=dict)
+    gain_to_pain: dict[str, Any] = field(default_factory=dict)
     correlation_pairs: list[dict[str, Any]] = field(default_factory=list)
     fills_sample: list[dict[str, Any]] = field(default_factory=list)
     equity_curve_sample: list[dict[str, Any]] = field(default_factory=list)
@@ -1945,6 +1949,10 @@ async def run_execution_backtest(
     result.cancelled_orders = int(bt_result.cancelled_orders)
     result.closed_position_count = int(bt_result.closed_position_count)
     result.open_position_count = int(bt_result.open_position_count)
+    result.expected_shortfall_5pct = _exec_ci_to_dict(getattr(m, "expected_shortfall_5pct", None))
+    result.expected_shortfall_1pct = _exec_ci_to_dict(getattr(m, "expected_shortfall_1pct", None))
+    result.tail_ratio = _exec_ci_to_dict(getattr(m, "tail_ratio", None))
+    result.gain_to_pain = _exec_ci_to_dict(getattr(m, "gain_to_pain", None))
     result.correlation_pairs = [
         {"token_a": a, "token_b": b, "correlation": rho}
         for (a, b), rho in (bt_result.correlation_matrix or {}).items()

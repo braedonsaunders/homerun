@@ -70,6 +70,15 @@ class BacktestMetrics:
     fees_paid_usd: float = 0.0
     final_equity_usd: float = 0.0
     initial_capital_usd: float = 0.0
+    # Tail-risk metrics — Lopez de Prado / Cornish-Fisher style.  CVaR
+    # answers "in the worst 5% of periods, what's my average return?";
+    # tail_ratio answers "is the upside fatter than the downside?";
+    # gain_to_pain measures aggregate gains vs aggregate pains and is
+    # robust to outliers compared to profit_factor.
+    expected_shortfall_5pct: MetricCI = field(default_factory=lambda: MetricCI(0.0))
+    expected_shortfall_1pct: MetricCI = field(default_factory=lambda: MetricCI(0.0))
+    tail_ratio: MetricCI = field(default_factory=lambda: MetricCI(0.0))
+    gain_to_pain: MetricCI = field(default_factory=lambda: MetricCI(0.0))
 
 
 def bootstrap_ci(
@@ -280,6 +289,71 @@ def expectancy_of(trades: Sequence[TradeOutcome]) -> float:
     return _mean([t.pnl_usd for t in trades])
 
 
+def _percentile(xs: Sequence[float], p: float) -> float:
+    """Linear-interpolation percentile.  ``p`` is in [0, 1]."""
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    if len(s) == 1:
+        return s[0]
+    pos = max(0.0, min(1.0, p)) * (len(s) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    frac = pos - lo
+    return s[lo] * (1 - frac) + s[hi] * frac
+
+
+def expected_shortfall(returns: Sequence[float], *, alpha: float = 0.05) -> float:
+    """Conditional VaR / Expected Shortfall.
+
+    Mean of the worst ``alpha`` fraction of period returns — answers
+    "in a bad period, how bad is bad on average?".  Reported as a
+    negative number when the strategy actually has losing tail
+    returns.  Returns 0.0 when the sample is too thin to support a
+    meaningful tail (under 1/alpha observations).
+    """
+    n = len(returns)
+    if n == 0:
+        return 0.0
+    cutoff_count = max(1, int(math.floor(n * max(1e-6, alpha))))
+    if n < int(math.ceil(1.0 / alpha)):
+        # Not enough samples for a meaningful tail estimate.
+        return 0.0
+    worst = sorted(returns)[:cutoff_count]
+    return _mean(worst)
+
+
+def tail_ratio(returns: Sequence[float], *, alpha: float = 0.05) -> float:
+    """Right-tail / left-tail magnitude ratio.
+
+    ``|p_{1-alpha}| / |p_alpha|`` of period returns.  >1 means the
+    upside tail is fatter than the downside (positively skewed
+    payouts); <1 means downside dominates.  A common Sharpe-style
+    sanity check: a strategy with Sharpe 2 but tail_ratio 0.4 is
+    quietly carrying lottery-ticket-style left-tail risk.
+    """
+    if len(returns) < int(math.ceil(2.0 / alpha)):
+        return 0.0
+    upside = abs(_percentile(returns, 1.0 - alpha))
+    downside = abs(_percentile(returns, alpha))
+    if downside <= 0:
+        return float("inf") if upside > 0 else 0.0
+    return upside / downside
+
+
+def gain_to_pain(returns: Sequence[float]) -> float:
+    """Schwager's gain-to-pain ratio: sum of positive returns over
+    absolute sum of negative returns.  Outlier-robust alternative to
+    the trade-level profit_factor; defined on equity returns so it
+    captures sustained drawdowns even when individual trades win.
+    """
+    gains = sum(r for r in returns if r > 0)
+    pains = -sum(r for r in returns if r < 0)
+    if pains <= 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / pains
+
+
 # ── Equity curve helpers ────────────────────────────────────────────────
 
 
@@ -435,6 +509,29 @@ def compute_metrics(
         pnls, _mean, n_resamples=bootstrap_resamples, seed=seed,
     )
 
+    # Tail-risk metrics on equity returns (CVaR / tail ratio / gain-to-
+    # pain).  All bootstrap CIs use the same trade-outcome resampler
+    # mechanism, with the statistic functions defined in this module.
+    es_5_pt = expected_shortfall(rets, alpha=0.05)
+    es_1_pt = expected_shortfall(rets, alpha=0.01)
+    tail_pt = tail_ratio(rets, alpha=0.05)
+    g2p_pt = gain_to_pain(rets)
+    es_5_lo, es_5_hi = bootstrap_ci(
+        rets, lambda r: expected_shortfall(r, alpha=0.05),
+        n_resamples=bootstrap_resamples, seed=seed,
+    )
+    es_1_lo, es_1_hi = bootstrap_ci(
+        rets, lambda r: expected_shortfall(r, alpha=0.01),
+        n_resamples=bootstrap_resamples, seed=seed,
+    )
+    tail_lo, tail_hi = bootstrap_ci(
+        rets, lambda r: tail_ratio(r, alpha=0.05),
+        n_resamples=bootstrap_resamples, seed=seed,
+    )
+    g2p_lo, g2p_hi = bootstrap_ci(
+        rets, gain_to_pain, n_resamples=bootstrap_resamples, seed=seed,
+    )
+
     return BacktestMetrics(
         total_return_usd=total_usd,
         total_return_pct=total_pct,
@@ -454,6 +551,10 @@ def compute_metrics(
         fees_paid_usd=fees_paid_usd,
         final_equity_usd=final_equity_usd,
         initial_capital_usd=initial_capital_usd,
+        expected_shortfall_5pct=MetricCI(es_5_pt, es_5_lo, es_5_hi),
+        expected_shortfall_1pct=MetricCI(es_1_pt, es_1_lo, es_1_hi),
+        tail_ratio=MetricCI(tail_pt, tail_lo, tail_hi),
+        gain_to_pain=MetricCI(g2p_pt, g2p_lo, g2p_hi),
     )
 
 
@@ -471,4 +572,7 @@ __all__ = [
     "expectancy_of",
     "max_drawdown",
     "equity_returns",
+    "expected_shortfall",
+    "tail_ratio",
+    "gain_to_pain",
 ]
