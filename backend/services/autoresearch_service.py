@@ -6,7 +6,7 @@ Supports two modes:
 
 Reuses:
     - param_optimizer._replay_opportunities()      for param evaluation
-    - strategy_backtester.run_strategy_backtest()   for code evaluation
+    - backtest.unified_runner.run_unified_backtest() for code evaluation
     - strategy_versioning                           for code version management
     - strategy_tune_agent tools                     for context gathering
 """
@@ -1201,7 +1201,7 @@ class AutoresearchService:
         instead of the trader id. Trader-scoped runs preserve legacy
         behavior so the existing per-bot Tune flows are unaffected.
         """
-        from services.strategy_backtester import run_strategy_backtest
+        from services.backtest.unified_runner import run_unified_backtest
         from services.strategy_loader import validate_strategy_source, ALLOWED_IMPORT_PREFIXES
         from services.strategy_versioning import create_strategy_version_snapshot
         from services.strategy_runtime import bump_strategy_runtime_revisions
@@ -1253,9 +1253,16 @@ class AutoresearchService:
                     yield {"event": "error", "data": {"error": f"Trader '{trader_id}' not found"}}
                     return
 
-        # Baseline backtest
+        # Baseline backtest — UNIFIED runner (Cox-aware fill simulation,
+        # ensemble bands, deflated Sharpe, regime decomposition).  This
+        # is the same pipeline BacktestStudio shows, so the score the
+        # LLM optimizes against is the score a human would see.
         try:
-            baseline_result = await run_strategy_backtest(strategy_source, strategy_slug, strategy_config)
+            baseline_result = await run_unified_backtest(
+                source_code=strategy_source,
+                slug=strategy_slug,
+                config=strategy_config,
+            )
             baseline_score = _code_evolution_score(baseline_result)
         except Exception as exc:
             yield {"event": "error", "data": {"error": f"Baseline backtest failed: {exc}"}}
@@ -1441,22 +1448,20 @@ class AutoresearchService:
                             reasoning = "No meaningful code changes detected"
                             reverted_count += 1
                         else:
-                            # Backtest new code
+                            # Backtest new code — UNIFIED runner.
                             try:
-                                bt_result = await run_strategy_backtest(
-                                    proposed_source, strategy_slug, strategy_config
+                                bt_result = await run_unified_backtest(
+                                    source_code=proposed_source,
+                                    slug=strategy_slug,
+                                    config=strategy_config,
                                 )
                                 new_score = _code_evolution_score(bt_result)
                                 score_delta = round(new_score - best_score, 4)
-                                backtest_result_dict = bt_result.to_dict()
-                                last_backtest_summary = {
-                                    "success": bt_result.success,
-                                    "num_opportunities": bt_result.num_opportunities,
-                                    "validation_errors": bt_result.validation_errors,
-                                    "runtime_error": bt_result.runtime_error,
-                                }
+                                backtest_result_dict = bt_result
+                                last_backtest_summary = _summarize_unified_for_prompt(bt_result)
 
-                                if new_score > best_score and bt_result.success:
+                                bt_success = bool((bt_result.get("execution") or {}).get("success"))
+                                if new_score > best_score and bt_success:
                                     decision = "kept"
                                     current_source = proposed_source
                                     best_score = new_score
@@ -1598,56 +1603,56 @@ class AutoresearchService:
 # ---------------------------------------------------------------------------
 
 
-def _code_evolution_score(result) -> float:
-    """Compute composite score from a strategy BacktestResult.
+def _code_evolution_score(
+    result: dict,
+    *,
+    walk_forward_stability_pct: float | None = None,
+) -> float:
+    """Risk-adjusted iteration score for the unified backtest result.
 
-    Weights: opportunity count (0.3), avg ROI (0.3),
-    quality pass rate (0.25), diversity (0.15).
+    Returns a single float that the autoresearch loop compares against
+    the running best to decide keep-vs-revert.  The current shape is
+    intentionally trivial — it just returns the observed annualized
+    Sharpe — because the full risk-adjusted formula and the walk-forward
+    gate are being staged across separate commits.  Commit 2 swaps in
+    the institutional formula; commit 4 wires in walk-forward stability.
     """
-    if not getattr(result, "success", True):
+    if not isinstance(result, dict):
         return -1.0
-
-    opps = getattr(result, "opportunities", []) or []
-    n_opps = len(opps)
-    opp_score = min(n_opps / 20.0, 1.0) * 10.0
-
-    # Average ROI from opportunities
-    rois = []
-    for o in opps:
-        roi = 0.0
-        if isinstance(o, dict):
-            roi = float(o.get("roi_percent", 0) or o.get("expected_roi", 0) or 0)
-        elif hasattr(o, "roi_percent"):
-            roi = float(getattr(o, "roi_percent", 0) or 0)
-        rois.append(roi)
-    avg_roi = sum(rois) / max(len(rois), 1)
-    roi_score = min(max(avg_roi, 0) / 10.0, 1.0) * 10.0
-
-    # Quality pass rate
-    quality_reports = getattr(result, "quality_reports", []) or []
-    if quality_reports:
-        passed = sum(1 for r in quality_reports if (r.get("passed") if isinstance(r, dict) else False))
-        quality_score = (passed / len(quality_reports)) * 10.0
+    execution = result.get("execution") or {}
+    if not execution.get("success"):
+        return -1.0
+    sharpe = execution.get("sharpe") or {}
+    if isinstance(sharpe, dict):
+        v = sharpe.get("value")
     else:
-        quality_score = 5.0  # neutral if no quality data
+        v = sharpe
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
-    # Diversity (unique events/markets)
-    unique_ids = set()
-    for o in opps:
-        if isinstance(o, dict):
-            uid = o.get("event_id") or o.get("stable_id") or o.get("id")
-        elif hasattr(o, "stable_id"):
-            uid = getattr(o, "stable_id", None) or getattr(o, "id", None)
-        else:
-            uid = None
-        if uid:
-            unique_ids.add(uid)
-    diversity_score = min(len(unique_ids) / max(n_opps * 0.5, 1), 1.0) * 10.0 if n_opps > 0 else 0.0
 
-    return round(
-        opp_score * 0.3 + roi_score * 0.3 + quality_score * 0.25 + diversity_score * 0.15,
-        4,
-    )
+def _summarize_unified_for_prompt(result: dict) -> dict:
+    """Compact summary of a unified backtest result for the LLM prompt.
+
+    Commit 3 enriches this with Cox C-index, ensemble band, regime
+    breakdown, etc.; here we just keep the prompt readable by stripping
+    the noisy nested arrays.
+    """
+    if not isinstance(result, dict):
+        return {}
+    execution = result.get("execution") or {}
+    sharpe = execution.get("sharpe") or {}
+    return {
+        "success": execution.get("success"),
+        "trade_count": execution.get("trade_count"),
+        "total_return_pct": execution.get("total_return_pct"),
+        "sharpe": sharpe.get("value") if isinstance(sharpe, dict) else sharpe,
+        "max_drawdown_pct": execution.get("max_drawdown_pct"),
+        "validation_errors": execution.get("validation_errors"),
+        "runtime_error": execution.get("runtime_error"),
+    }
 
 
 # ---------------------------------------------------------------------------
