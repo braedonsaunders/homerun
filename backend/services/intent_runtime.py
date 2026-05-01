@@ -50,7 +50,14 @@ _PREWARM_SOURCES = {"scanner"}
 _PREWARM_WAIT_TIMEOUT_SECONDS = 0.5
 _PREWARM_WAIT_POLL_SECONDS = 0.01
 _SIGNAL_PUBLICATION_BATCH_SIZE = 200
-_BOOTSTRAP_REACTIVATABLE_LOOKBACK_HOURS = 24.0
+# Lookback for terminal-signal reactivation.  Was 24h, but production
+# (5 h soak, 5/2026/05) hit 5 GB RSS — terminal signals lingered for a
+# day each, accumulating ~50k entries × ~30KB = ~1.5 GB just for the
+# in-memory ``_signals_by_id`` map, with most of those being dead
+# terminals.  4h is enough to recover from a worker restart while
+# bounding memory: signals older than 4h are functionally never
+# reactivated.
+_BOOTSTRAP_REACTIVATABLE_LOOKBACK_HOURS = 4.0
 _UNCHANGED_SCANNER_TERMINAL_REACTIVATION_COOLDOWN_SECONDS = 180.0
 _HOT_SUBSCRIPTION_SEED_CONCURRENCY = 8
 _HOT_SUBSCRIPTION_SEED_RETRY_SECONDS = 30.0
@@ -487,15 +494,18 @@ def _coerce_runtime_signal(snapshot: dict[str, Any]) -> Any:
 
 class IntentRuntime:
     # Hard ceiling on the in-memory signal table.  Hydrate-from-db only
-    # loads ~12K signals (active + 24h of terminal); the cap protects
-    # against unbounded growth from runtime inserts when downstream
-    # persistence falls behind.  When exceeded, the periodic pruner
-    # drops oldest terminal signals first.
-    _MAX_SIGNALS_IN_MEMORY: int = 50_000
-    # Cadence for the periodic terminal-signal pruner.  Terminal signals
-    # past 24h are no longer reactivatable, so they're dead weight in
-    # the dedup table and the in-memory map.
-    _PRUNE_INTERVAL_SECONDS: float = 300.0
+    # Cap on in-memory signal map.  Was 50k (giving ~1.5 GB worst case
+    # at ~30KB/snapshot); production saw 5 GB RSS leaks.  15k bounds
+    # signals at ~450 MB worst case while still leaving headroom for
+    # active + recent-terminal across 4h.  When exceeded, the pruner
+    # drops oldest terminals first, then oldest non-terminals as a
+    # last-resort guard against stuck signals (stuck = orchestrator
+    # never finished processing them, e.g. during event-loop stalls).
+    _MAX_SIGNALS_IN_MEMORY: int = 15_000
+    # Cadence for the periodic pruner.  Was 300s (5 min); halved to
+    # 60s so memory pressure is relieved sooner under high signal
+    # throughput.
+    _PRUNE_INTERVAL_SECONDS: float = 60.0
     # Cap on the WS hot-seed retry-cooldown table.  Each entry is a
     # token_id → monotonic-time pair that's never cleaned up after the
     # token leaves the active universe.  ~14K active markets × 2
@@ -521,6 +531,18 @@ class IntentRuntime:
         self._signal_pruner_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._hot_seed_retry_not_before: dict[str, float] = {}
+        # Coalesced reactivation drain — replaces the per-WS-update
+        # ``asyncio.create_task(_reactivate_deferred_signals_for_token)``
+        # that produced 48 concurrent tasks during a 41.6 s event-loop
+        # stall in production (5 h soak, 5/2026/05).  WS price updates
+        # arrive at hundreds per second across all subscribed tokens;
+        # spawning a task per update is unscalable, and they all
+        # contend on ``self._lock``.  The drain coalesces pending
+        # token IDs into a set and processes them in one pass under
+        # the same lock.
+        self._pending_reactivation_tokens: set[str] = set()
+        self._reactivation_drain_task: asyncio.Task[None] | None = None
+        self._reactivation_drain_event: asyncio.Event | None = None
 
     def _track_task(self, task: asyncio.Task[Any], *, name: str) -> asyncio.Task[Any]:
         self._background_tasks.add(task)
@@ -1165,6 +1187,12 @@ class IntentRuntime:
         _ingest_ts: float,
         _sequence: int,
     ) -> None:
+        # Coalesced reactivation: add the token to a pending-set and
+        # wake the single drain task.  Pre-coalesce production saw
+        # 48 concurrent ``_reactivate_deferred_signals_for_token``
+        # tasks during a 41.6 s event-loop stall — one task per WS
+        # price update, each contending on ``self._lock``.  The drain
+        # processes the entire pending set in one lock acquisition.
         normalized_token = str(token_id or "").strip().lower()
         if not normalized_token:
             return
@@ -1176,15 +1204,70 @@ class IntentRuntime:
         except RuntimeError:
             running_loop = None
         if running_loop is loop:
-            self._start_task(
-                self._reactivate_deferred_signals_for_token(normalized_token),
-                name=f"intent-runtime-deferred-{normalized_token}",
-            )
+            self._enqueue_reactivation_locked_or_loop(normalized_token)
             return
-        asyncio.run_coroutine_threadsafe(
-            self._reactivate_deferred_signals_for_token(normalized_token),
-            loop,
+        loop.call_soon_threadsafe(
+            self._enqueue_reactivation_locked_or_loop, normalized_token
         )
+
+    def _enqueue_reactivation_locked_or_loop(self, normalized_token: str) -> None:
+        """Add a token to the pending-reactivation set and wake the
+        drain task.  Called either directly from the event loop
+        (synchronous WS callback path) or from
+        ``call_soon_threadsafe``.  Idempotent — repeated calls for
+        the same token before the drain runs collapse into one."""
+        self._pending_reactivation_tokens.add(normalized_token)
+        # Lazy-create the drain event + task on first use so we don't
+        # need an explicit start hook.
+        if self._reactivation_drain_event is None:
+            self._reactivation_drain_event = asyncio.Event()
+        self._reactivation_drain_event.set()
+        if self._reactivation_drain_task is None or self._reactivation_drain_task.done():
+            self._reactivation_drain_task = self._start_task(
+                self._reactivation_drain_loop(),
+                name="intent-runtime-reactivation-drain",
+            )
+
+    async def _reactivation_drain_loop(self) -> None:
+        """Single long-lived task that drains the pending-reactivation
+        set.  Wakes on the drain event, snapshots the pending set
+        under no-lock (set ops are atomic in CPython), processes each
+        token, then sleeps until the next set."""
+        while True:
+            event = self._reactivation_drain_event
+            if event is None:
+                # Should not happen — the event is created by the
+                # enqueue path before the task is spawned.  Defensive.
+                return
+            try:
+                await event.wait()
+            except asyncio.CancelledError:
+                return
+            # Snapshot + clear in one step so concurrent enqueues during
+            # the drain re-arm the event for the next iteration.
+            pending = self._pending_reactivation_tokens
+            self._pending_reactivation_tokens = set()
+            event.clear()
+            if not pending:
+                continue
+            # Process each token sequentially.  Was 48 concurrent
+            # tasks contending on ``self._lock``; now one task pulls
+            # the lock once per token in series.  Token count per
+            # drain cycle is bounded by the WS update rate within
+            # one event-loop tick — typically 1-5 tokens, occasionally
+            # spiking to dozens.  Sequential is fine; the lock would
+            # serialize them anyway.
+            for token in pending:
+                try:
+                    await self._reactivate_deferred_signals_for_token(token)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Deferred-signal reactivation failed token=%s: %s",
+                        token,
+                        exc,
+                    )
 
     async def _reactivate_deferred_signals_for_token(self, token_id: str) -> None:
         normalized_token = str(token_id or "").strip().lower()
@@ -1347,6 +1430,42 @@ class IntentRuntime:
                 for _, signal_id in terminal_candidates[:overflow]:
                     self._drop_signal_locked(signal_id)
                     removed_overflow += 1
+
+            # Last-resort: if STILL oversized after dropping every
+            # eligible terminal, drop the oldest non-terminals too.
+            # This handles the pathological case where signals are
+            # stuck in pending/deferred because the orchestrator
+            # couldn't process them in time (e.g. during event-loop
+            # stalls in production 5/2026/05 — 41 s loop freezes
+            # backed up the deferred queue).  Dropping them here is
+            # a memory-safety guard: the canonical signal still
+            # lives in trade_signals on DB, and a worker restart
+            # will reload the recent ones via bootstrap.  Logged as
+            # a warning so this branch firing surfaces in audit.
+            removed_non_terminal_overflow = 0
+            still_overflow = len(self._signals_by_id) - self._MAX_SIGNALS_IN_MEMORY
+            if still_overflow > 0:
+                non_terminal_candidates: list[tuple[datetime, str]] = []
+                for signal_id, snapshot in self._signals_by_id.items():
+                    status = str(snapshot.get("status") or "").strip().lower()
+                    if status in _SIGNAL_TERMINAL_STATUSES:
+                        continue
+                    updated_at = _normalize_datetime(snapshot.get("updated_at")) or _normalize_datetime(
+                        snapshot.get("created_at")
+                    ) or datetime.min.replace(tzinfo=timezone.utc)
+                    non_terminal_candidates.append((updated_at, signal_id))
+                non_terminal_candidates.sort()
+                for _, signal_id in non_terminal_candidates[:still_overflow]:
+                    self._drop_signal_locked(signal_id)
+                    removed_non_terminal_overflow += 1
+                if removed_non_terminal_overflow:
+                    logger.warning(
+                        "Intent runtime evicted non-terminal signals to "
+                        "stay under memory cap (orchestrator may be "
+                        "falling behind on signal processing)",
+                        non_terminal_evicted=removed_non_terminal_overflow,
+                        signals_remaining=len(self._signals_by_id),
+                    )
 
             # Bound the WS hot-seed retry-cooldown table.  Entries are
             # never removed when a token leaves the active universe;

@@ -2035,31 +2035,62 @@ class ArbitrageScanner:
             return self._coerce_polymarket_token_ids(inferred_ids)
 
         if missing_polymarket_candidates:
-            resolver_semaphore = asyncio.Semaphore(max(1, self._market_history_backfill_concurrency))
+            # Bounded worker pool — was ``[task for x in items] +
+            # asyncio.gather()`` with a Semaphore.  Production soak
+            # (5/2026/05) saw this fan-out flood the asyncio task
+            # registry: every parked task contributes to the
+            # 41-second event-loop stalls that caused the OS to
+            # become unresponsive.  Worker-pool keeps live tasks at
+            # exactly N regardless of input size.  Same pattern as
+            # ``services/wallet_discovery.py:_run_with_bounded_workers``
+            # and ``services/market_tradability.py:get_market
+            # _tradability_map``.
+            queue: asyncio.Queue = asyncio.Queue()
+            for mid in missing_polymarket_candidates:
+                queue.put_nowait(mid)
+            resolution_lookup: dict[str, bool] = {}
 
-            async def _resolve_missing_token_ids(market_id: str) -> bool:
-                async with resolver_semaphore:
+            async def _resolver_worker() -> None:
+                while True:
                     try:
-                        market_payload = await polymarket_client.get_market_by_condition_id(market_id)
-                    except Exception:
-                        market_payload = None
+                        market_id = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    try:
+                        try:
+                            market_payload = await polymarket_client.get_market_by_condition_id(market_id)
+                        except Exception:
+                            market_payload = None
 
-                    token_ids = _extract_token_ids_from_market_payload(market_payload)
-                    if token_ids is None:
-                        self._market_history_backfill_attempt_ms[market_id] = now_ms
-                        return False
+                        token_ids = _extract_token_ids_from_market_payload(market_payload)
+                        if token_ids is None:
+                            self._market_history_backfill_attempt_ms[market_id] = now_ms
+                            resolution_lookup[market_id] = False
+                            continue
 
-                    self._market_outcome_token_ids[market_id] = token_ids
-                    self._market_token_ids[market_id] = (token_ids[0], token_ids[1])
-                    return True
+                        self._market_outcome_token_ids[market_id] = token_ids
+                        self._market_token_ids[market_id] = (token_ids[0], token_ids[1])
+                        resolution_lookup[market_id] = True
+                    finally:
+                        queue.task_done()
+                        await asyncio.sleep(0)
 
-            resolution_results = await asyncio.gather(
-                *[_resolve_missing_token_ids(mid) for mid in missing_polymarket_candidates],
-                return_exceptions=True,
-            )
-            for market_id, resolved in zip(missing_polymarket_candidates, resolution_results):
+            workers = [
+                asyncio.create_task(
+                    _resolver_worker(),
+                    name=f"scanner-token-resolver-{i}",
+                )
+                for i in range(max(1, self._market_history_backfill_concurrency))
+            ]
+            try:
+                await asyncio.gather(*workers, return_exceptions=True)
+            finally:
+                for w in workers:
+                    if not w.done():
+                        w.cancel()
+            for market_id in missing_polymarket_candidates:
                 if (
-                    resolved is True
+                    resolution_lookup.get(market_id) is True
                     and len(polymarket_candidates) + len(kalshi_candidates) < self._market_history_backfill_max_markets
                 ):
                     polymarket_candidates.append(market_id)
