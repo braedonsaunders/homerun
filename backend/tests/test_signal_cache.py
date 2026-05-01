@@ -363,12 +363,23 @@ async def test_bootstrap_from_db_marks_ready_and_seeds():
 def test_from_db_row_handles_naive_datetimes():
     """ORM rows expose naive UTC datetimes; from_db_row must normalize."""
     class _Row:
-        id = "x"; source = "scanner"; source_item_id = None
-        signal_type = "entry"; strategy_type = None
-        market_id = "m"; market_question = None; direction = None
-        entry_price = None; effective_price = None; edge_percent = None
-        confidence = None; liquidity = None; expires_at = None
-        status = "pending"; quality_passed = None; dedupe_key = "k"
+        id = "x"
+        source = "scanner"
+        source_item_id = None
+        signal_type = "entry"
+        strategy_type = None
+        market_id = "m"
+        market_question = None
+        direction = None
+        entry_price = None
+        effective_price = None
+        edge_percent = None
+        confidence = None
+        liquidity = None
+        expires_at = None
+        status = "pending"
+        quality_passed = None
+        dedupe_key = "k"
         runtime_sequence = None
         # Naive datetime — what SQLAlchemy returns for a DateTime column.
         created_at = datetime(2026, 4, 30, 12, 0, 0)

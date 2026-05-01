@@ -11,8 +11,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-import pytest
-
 from services.data_events import DataEvent, EventType
 from services.strategies.base import (
     BaseStrategy,

@@ -41,7 +41,6 @@ _CHECK_CONSTRAINT_NAME = "{table}_mode_shadow_or_live_chk"
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
     for table, column in _TABLES_WITH_MODE:
         # 1. Backfill any historical paper rows -> shadow.
         op.execute(

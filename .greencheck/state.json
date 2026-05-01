@@ -1,11 +1,11 @@
 {
-  "runId": 1777466811707,
-  "workflowRunId": 25109150142,
+  "runId": 1777614973366,
+  "workflowRunId": 25204083298,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25109150142",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25204083298",
   "branch": "main",
-  "headSha": "e934aaa67ca518794046bf2ebe6435e777caad3c",
+  "headSha": "f3fd8debc80efedc4b66ba0760f94619add6b002",
   "prNumber": null,
   "passes": [
     {
@@ -13,60 +13,800 @@
       "cluster": {
         "type": "lint",
         "files": [
-          "backend/utils/memory_diagnostic.py"
+          "backend/services/ctf_execution.py",
+          "backend/services/event_loop_watchdog.py",
+          "backend/services/polymarket_collateral.py",
+          "backend/services/recording_session_service.py",
+          "backend/services/validation_service.py",
+          "backend/services/wallet_state_cache.py"
         ],
         "failures": [
           {
             "type": "lint",
-            "file": "backend/utils/memory_diagnostic.py",
-            "line": 37,
-            "column": 20,
-            "message": "[*] `typing.Any` imported but unused",
+            "file": "backend/services/ctf_execution.py",
+            "line": 13,
+            "column": 5,
+            "message": "[*] `services.polymarket_collateral.CollateralMatch` imported but unused",
             "rule": "F401",
-            "rawLog": "F401 [*] `typing.Any` imported but unused\n  --> utils/memory_diagnostic.py:37:20",
+            "rawLog": "F401 [*] `services.polymarket_collateral.CollateralMatch` imported but unused\n  --> services/ctf_execution.py:13:5",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/event_loop_watchdog.py",
+            "line": 23,
+            "column": 8,
+            "message": "[*] `traceback` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `traceback` imported but unused\n  --> services/event_loop_watchdog.py:23:8",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/polymarket_collateral.py",
+            "line": 62,
+            "column": 25,
+            "message": "[*] `typing.Tuple` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `typing.Tuple` imported but unused\n  --> services/polymarket_collateral.py:62:25",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/recording_session_service.py",
+            "line": 32,
+            "column": 8,
+            "message": "[*] `asyncio` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `asyncio` imported but unused\n  --> services/recording_session_service.py:32:8",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/recording_session_service.py",
+            "line": 36,
+            "column": 32,
+            "message": "[*] `datetime.timedelta` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `datetime.timedelta` imported but unused\n  --> services/recording_session_service.py:36:32",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/recording_session_service.py",
+            "line": 39,
+            "column": 44,
+            "message": "[*] `sqlalchemy.update` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `sqlalchemy.update` imported but unused\n  --> services/recording_session_service.py:39:44",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 25,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:25:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 26,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:26:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 27,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:27:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 29,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:29:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 30,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:30:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 32,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:32:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 46,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:46:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 47,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:47:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/validation_service.py",
+            "line": 48,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:48:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/wallet_state_cache.py",
+            "line": 45,
+            "column": 36,
+            "message": "[*] `dataclasses.field` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `dataclasses.field` imported but unused\n  --> services/wallet_state_cache.py:45:36",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/wallet_state_cache.py",
+            "line": 47,
+            "column": 35,
+            "message": "[*] `typing.Iterator` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `typing.Iterator` imported but unused\n  --> services/wallet_state_cache.py:47:35",
             "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "b50d5ae33df0d7260ea63ff13d2433f9a58e3c4b",
+      "commitSha": "5d3c934cbf037c6c233303c6376d1aa7f2fda702",
       "filesChanged": [
-        "backend/utils/memory_diagnostic.py"
+        "backend/services/ctf_execution.py",
+        "backend/services/event_loop_watchdog.py",
+        "backend/services/polymarket_collateral.py",
+        "backend/services/recording_session_service.py",
+        "backend/services/validation_service.py",
+        "backend/services/wallet_state_cache.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 31919
+      "durationMs": 82885
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-04-29T12:46:51.707Z",
+  "startedAt": "2026-05-01T05:56:13.366Z",
   "result": null,
   "commits": [
-    "b50d5ae33df0d7260ea63ff13d2433f9a58e3c4b"
+    "5d3c934cbf037c6c233303c6376d1aa7f2fda702"
   ],
   "latestFailures": [
     {
+      "type": "type-error",
+      "file": "##[error]src/components/BacktestStudio.tsx",
+      "line": 2378,
+      "column": 77,
+      "message": "TS2550: Property 'replaceAll' does not exist on type 'string'. Do you need to change your target library? Try changing the 'lib' compiler option to 'es2021' or later.",
+      "rule": "TS2550",
+      "rawLog": "##[error]src/components/BacktestStudio.tsx(2378,77): error TS2550: Property 'replaceAll' does not exist on type 'string'. Do you need to change your target library? Try changing the 'lib' compiler option to 'es2021' or later.",
+      "confidence": 0.95
+    },
+    {
       "type": "test-failure",
-      "file": "backend/tests/test_workers_host.py",
+      "file": "backend/tests/test_routes_trader_delete_safety.py",
       "line": null,
       "column": null,
-      "message": "Failed: Timeout (>60.0s) from pytest-timeout.",
+      "message": "fastapi.exceptions.HTTPException: 409: {'code': 'open_live_exposure', 'message': 'Trader has active exposure. Choose disable to pause safely, or action=force_delete to permanently delete now.', 'trader_id': 'trader-route-delete-safe', 'open_live_positions': 0, 'open_shadow_positions': 2, 'open_other_positions': 0, 'open_live_orders': 0, 'open_shadow_orders': 2, 'open_other_orders': 0, 'suggested_action': 'force_delete', 'safe_action': 'disable'}",
       "rule": null,
-      "rawLog": "FAILED tests/test_workers_host.py::test_initialize_services_schedules_live_execution_in_background - Failed: Timeout (>60.0s) from pytest-timeout.",
+      "rawLog": "FAILED tests/test_routes_trader_delete_safety.py::test_delete_route_writes_deleted_event_without_trader_fk - fastapi.exceptions.HTTPException: 409: {'code': 'open_live_exposure', 'message': 'Trader has active exposure. Choose disable to pause safely, or action=force_delete to permanently delete now.', 'trader_id': 'trader-route-delete-safe', 'open_live_positions': 0, 'open_shadow_positions': 2, 'open_other_positions': 0, 'open_live_orders': 0, 'open_shadow_orders': 2, 'open_other_orders': 0, 'suggested_action': 'force_delete', 'safe_action': 'disable'}",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_routes_trader_positions_cleanup.py",
+      "line": null,
+      "column": null,
+      "message": "assert 0 == 1",
+      "rule": null,
+      "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert 'consumption:blocked' in []",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_persists_blocked_decision_when_db_stacking_verification_hits - AssertionError: assert 'consumption:blocked' in []",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "line": null,
+      "column": null,
+      "message": "assert False",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_records_buy_gate_skip_on_selected_live_decision - assert False",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_signal_cursor_scanning.py",
+      "line": null,
+      "column": null,
+      "message": "assert [<models.data...7ff800021490>] == []",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_signal_cursor_scanning.py::test_unconsumed_signals_default_to_pending_and_use_cursor - assert [<models.data...7ff800021490>] == []",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_signal_cursor_scanning.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert ['76f7320e211...be46b47b9cc2'] == ['76f7320e211...dcc67cc85d0f']",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_signal_cursor_scanning.py::test_pending_unconsumed_signals_bypass_runtime_and_created_cursor_filters - AssertionError: assert ['76f7320e211...be46b47b9cc2'] == ['76f7320e211...dcc67cc85d0f']",
       "confidence": 0.7
     },
     {
       "type": "lint",
-      "file": "backend/utils/memory_diagnostic.py",
-      "line": 37,
+      "file": "backend/alembic/versions/202604300002_drop_paper_mode.py",
+      "line": 44,
+      "column": 5,
+      "message": "Local variable `bind` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `bind` is assigned to but never used\n  --> alembic/versions/202604300002_drop_paper_mode.py:44:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/api/routes_dataset.py",
+      "line": 36,
+      "column": 36,
+      "message": "[*] `sqlalchemy.ext.asyncio.AsyncSession` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy.ext.asyncio.AsyncSession` imported but unused\n  --> api/routes_dataset.py:36:36",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/api/routes_dataset.py",
+      "line": 608,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n   --> api/routes_dataset.py:608:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/api/routes_dataset.py",
+      "line": 794,
+      "column": 35,
+      "message": "[*] `sqlalchemy.engine.Inspector` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy.engine.Inspector` imported but unused\n   --> api/routes_dataset.py:794:35",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/api/routes_fill_model.py",
+      "line": 23,
+      "column": 32,
+      "message": "[*] `fastapi.Body` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `fastapi.Body` imported but unused\n  --> api/routes_fill_model.py:23:32",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/backtest/portfolio_correlation.py",
+      "line": 17,
+      "column": 22,
+      "message": "[*] `datetime.date` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `datetime.date` imported but unused\n  --> services/backtest/portfolio_correlation.py:17:22",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/backtest/walk_forward.py",
+      "line": 189,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n   --> services/backtest/walk_forward.py:189:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/backtest/walk_forward.py",
+      "line": 190,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n   --> services/backtest/walk_forward.py:190:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/backtest/walk_forward.py",
+      "line": 191,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n   --> services/backtest/walk_forward.py:191:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/backtest/walk_forward.py",
+      "line": 192,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n   --> services/backtest/walk_forward.py:192:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/ctf_execution.py",
+      "line": 13,
+      "column": 5,
+      "message": "[*] `services.polymarket_collateral.CollateralMatch` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `services.polymarket_collateral.CollateralMatch` imported but unused\n  --> services/ctf_execution.py:13:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/event_loop_watchdog.py",
+      "line": 23,
+      "column": 8,
+      "message": "[*] `traceback` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `traceback` imported but unused\n  --> services/event_loop_watchdog.py:23:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/fill_simulator/counterfactual_replay.py",
+      "line": 44,
+      "column": 36,
+      "message": "[*] `dataclasses.field` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `dataclasses.field` imported but unused\n  --> services/fill_simulator/counterfactual_replay.py:44:36",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/fill_simulator/cox_inference.py",
+      "line": 26,
+      "column": 17,
+      "message": "[*] `numpy` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `numpy` imported but unused\n  --> services/fill_simulator/cox_inference.py:26:17",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/fill_simulator/empirical_constants.py",
+      "line": 21,
+      "column": 8,
+      "message": "[*] `math` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `math` imported but unused\n  --> services/fill_simulator/empirical_constants.py:21:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/fill_simulator/empirical_constants.py",
+      "line": 25,
       "column": 20,
       "message": "[*] `typing.Any` imported but unused",
       "rule": "F401",
-      "rawLog": "F401 [*] `typing.Any` imported but unused\n  --> utils/memory_diagnostic.py:37:20",
+      "rawLog": "F401 [*] `typing.Any` imported but unused\n  --> services/fill_simulator/empirical_constants.py:25:20",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/ml/strategy_ml_registry.py",
+      "line": 24,
+      "column": 20,
+      "message": "[*] `typing.Any` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `typing.Any` imported but unused\n  --> services/ml/strategy_ml_registry.py:24:20",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/polymarket_collateral.py",
+      "line": 62,
+      "column": 25,
+      "message": "[*] `typing.Tuple` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `typing.Tuple` imported but unused\n  --> services/polymarket_collateral.py:62:25",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/recording_session_service.py",
+      "line": 32,
+      "column": 8,
+      "message": "[*] `asyncio` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `asyncio` imported but unused\n  --> services/recording_session_service.py:32:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/recording_session_service.py",
+      "line": 36,
+      "column": 32,
+      "message": "[*] `datetime.timedelta` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `datetime.timedelta` imported but unused\n  --> services/recording_session_service.py:36:32",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/recording_session_service.py",
+      "line": 39,
+      "column": 44,
+      "message": "[*] `sqlalchemy.update` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy.update` imported but unused\n  --> services/recording_session_service.py:39:44",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/trader_orchestrator/order_manager.py",
+      "line": 15,
+      "column": 5,
+      "message": "[*] `services.optimization.execution_estimator.ExecutionEstimatorConfig` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `services.optimization.execution_estimator.ExecutionEstimatorConfig` imported but unused\n  --> services/trader_orchestrator/order_manager.py:15:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 25,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:25:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 26,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:26:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 27,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:27:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 29,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:29:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 30,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:30:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 32,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:32:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 46,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:46:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 47,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:47:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/validation_service.py",
+      "line": 48,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/validation_service.py:48:1",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/wallet_state_cache.py",
+      "line": 45,
+      "column": 36,
+      "message": "[*] `dataclasses.field` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `dataclasses.field` imported but unused\n  --> services/wallet_state_cache.py:45:36",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/wallet_state_cache.py",
+      "line": 47,
+      "column": 35,
+      "message": "[*] `typing.Iterator` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `typing.Iterator` imported but unused\n  --> services/wallet_state_cache.py:47:35",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_redis_client.py",
+      "line": 16,
+      "column": 8,
+      "message": "[*] `asyncio` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `asyncio` imported but unused\n  --> tests/test_redis_client.py:16:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_bus_redis_bridge.py",
+      "line": 20,
+      "column": 8,
+      "message": "[*] `json` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `json` imported but unused\n  --> tests/test_signal_bus_redis_bridge.py:20:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 366,
+      "column": 17,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:366:17",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 367,
+      "column": 30,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:367:30",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 368,
+      "column": 24,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:368:24",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 369,
+      "column": 27,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:369:27",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 370,
+      "column": 26,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:370:26",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_signal_cache.py",
+      "line": 371,
+      "column": 27,
+      "message": "Multiple statements on one line (semicolon)",
+      "rule": "E702",
+      "rawLog": "E702 Multiple statements on one line (semicolon)\n   --> tests/test_signal_cache.py:371:27",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_strategy_base_timeframe_close.py",
+      "line": 14,
+      "column": 8,
+      "message": "[*] `pytest` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `pytest` imported but unused\n  --> tests/test_strategy_base_timeframe_close.py:14:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_trader_events_bridge.py",
+      "line": 17,
+      "column": 8,
+      "message": "[*] `json` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `json` imported but unused\n  --> tests/test_trader_events_bridge.py:17:8",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_wallet_state_cache.py",
+      "line": 9,
+      "column": 22,
+      "message": "[*] `datetime.datetime` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `datetime.datetime` imported but unused\n  --> tests/test_wallet_state_cache.py:9:22",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_wallet_state_cache.py",
+      "line": 9,
+      "column": 32,
+      "message": "[*] `datetime.timedelta` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `datetime.timedelta` imported but unused\n  --> tests/test_wallet_state_cache.py:9:32",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_wallet_state_cache.py",
+      "line": 9,
+      "column": 43,
+      "message": "[*] `datetime.timezone` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `datetime.timezone` imported but unused\n  --> tests/test_wallet_state_cache.py:9:43",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4141,
+      "column": 5,
+      "message": "Local variable `decisions_written` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `decisions_written` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4141:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4142,
+      "column": 5,
+      "message": "Local variable `orders_written` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `orders_written` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4142:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4143,
+      "column": 5,
+      "message": "Local variable `processed_signals` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `processed_signals` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4143:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4144,
+      "column": 5,
+      "message": "Local variable `prefiltered_signals` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `prefiltered_signals` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4144:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4145,
+      "column": 5,
+      "message": "Local variable `prefiltered_by_reason` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `prefiltered_by_reason` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4145:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 4146,
+      "column": 5,
+      "message": "Local variable `crypto_scope_prefiltered_dimensions` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `crypto_scope_prefiltered_dimensions` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:4146:5",
       "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25109150142.log"
+  "latestParserUsed": "typescript, pytest, ruff",
+  "latestLogPath": ".greencheck/logs/workflow-run-25204083298.log"
 }

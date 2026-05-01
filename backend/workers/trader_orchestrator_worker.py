@@ -4138,12 +4138,6 @@ async def _run_trader_once(
     trigger_signal_snapshots_by_source: dict[str, dict[str, dict[str, Any]]] | None = None,
     cycle_timeout_seconds: float = 0.0,
 ) -> tuple[int, int, int]:
-    decisions_written = 0
-    orders_written = 0
-    processed_signals = 0
-    prefiltered_signals = 0
-    prefiltered_by_reason: dict[str, int] = {}
-    crypto_scope_prefiltered_dimensions: dict[str, int] = {}
     cycle_started_mono = time.monotonic()
     # Per-stage timings populated at major checkpoints below. Logged at
     # exit if the cycle exceeded the soft threshold so we can tell which

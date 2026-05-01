@@ -23,7 +23,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

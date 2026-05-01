@@ -15,9 +15,11 @@ single train/test split.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal, Optional
 
 from services.backtest.metrics import BacktestMetrics, MetricCI
 
@@ -185,11 +187,6 @@ __all__ = [
 # N actual BacktestEngine runs and aggregates their metrics.  This is
 # what the new BacktestStudio walk-forward panel calls.
 # ---------------------------------------------------------------------
-
-import asyncio
-import logging
-from datetime import timezone
-from typing import Any, Literal
 
 logger = logging.getLogger("backtest.walk_forward.runner")
 

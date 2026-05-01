@@ -32,8 +32,8 @@ from typing import Any, Iterable
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel as _PydBaseModel
 from sqlalchemy import and_, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AsyncSessionLocal,
@@ -605,9 +605,6 @@ async def export_dataset_csv(
 # ── Recording sessions (on-demand captures) ────────────────────────────
 
 
-from pydantic import BaseModel as _PydBaseModel
-
-
 class RecordingSessionCreate(_PydBaseModel):
     name: str
     description: str | None = None
@@ -791,7 +788,6 @@ async def storage_summary() -> dict[str, Any]:
     pg_total_relation_size — size will be reported as null.
     """
     from sqlalchemy import text
-    from sqlalchemy.engine import Inspector
 
     out: list[dict[str, Any]] = []
     async with AsyncSessionLocal() as session:

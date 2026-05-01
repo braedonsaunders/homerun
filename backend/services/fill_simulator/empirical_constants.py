@@ -18,11 +18,9 @@ setting the override to None reverts to "use measured".
 from __future__ import annotations
 
 import logging
-import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession

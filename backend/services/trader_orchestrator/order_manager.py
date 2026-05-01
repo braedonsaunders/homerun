@@ -12,7 +12,6 @@ from services.trader_orchestrator.hot_path import allow_polymarket_rest_call
 from services.optimization.execution_estimator import (
     ExecutionEstimate,
     ExecutionEstimator,
-    ExecutionEstimatorConfig,
 )
 from services.fill_simulator import (
     build_survival_features,

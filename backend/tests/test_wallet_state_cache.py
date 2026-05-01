@@ -6,7 +6,6 @@ cleanly in any environment.
 """
 
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]

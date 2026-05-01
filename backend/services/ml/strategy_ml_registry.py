@@ -21,7 +21,6 @@ Resolution precedence on lookup:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from services.ml.capabilities import MLCapability
 
