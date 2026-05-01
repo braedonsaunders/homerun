@@ -7339,12 +7339,14 @@ async def _run_trader_once_inner(
                         elif isinstance(final_reason, str) and final_reason.startswith("Signal stale:"):
                             status_update = "skipped"
                         if status_update is not None:
+                            _ps_dw_set_status_mono = time.monotonic()
                             await set_trade_signal_status(
                                 session,
                                 signal_id=signal_id,
                                 status=status_update,
                                 commit=False,
                             )
+                            _accumulate("ps_dw_set_status", _ps_dw_set_status_mono)
                         # If the block reason is signal staleness, also mark
                         # the signal as expired so the scanner's continuous
                         # re-publishes cannot reactivate it through
@@ -7354,11 +7356,13 @@ async def _run_trader_once_inner(
                         # the decision log with "Signal stale" blocks.
                         if isinstance(final_reason, str) and final_reason.startswith("Signal stale:"):
                             try:
+                                _ps_dw_expire_mono = time.monotonic()
                                 await session.execute(
                                     sa_update(TradeSignal)
                                     .where(TradeSignal.id == signal_id)
                                     .values(expires_at=utcnow().replace(tzinfo=None))
                                 )
+                                _accumulate("ps_dw_expire_stale", _ps_dw_expire_mono)
                             except Exception as _exp_exc:
                                 logger.debug(
                                     "Failed to expire stale signal",
@@ -7366,6 +7370,7 @@ async def _run_trader_once_inner(
                                     exc_info=_exp_exc,
                                 )
 
+                    _ps_dw_record_mono = time.monotonic()
                     await record_signal_consumption(
                         session,
                         trader_id=trader_id,
@@ -7378,7 +7383,9 @@ async def _run_trader_once_inner(
                         signal_updated_at=getattr(signal, "updated_at", None),
                         commit=False,
                     )
+                    _accumulate("ps_dw_record_consumption", _ps_dw_record_mono)
 
+                    _ps_dw_event_mono = time.monotonic()
                     await create_trader_event(
                         session,
                         trader_id=trader_id,
@@ -7400,6 +7407,8 @@ async def _run_trader_once_inner(
                         # ``create_trader_decision`` above.
                         flush_on_add=False,
                     )
+                    _accumulate("ps_dw_create_event", _ps_dw_event_mono)
+                    _ps_dw_cursor_mono = time.monotonic()
                     await upsert_trader_signal_cursor(
                         session,
                         trader_id=trader_id,
@@ -7407,6 +7416,7 @@ async def _run_trader_once_inner(
                         last_signal_id=signal_id,
                         commit=False,
                     )
+                    _accumulate("ps_dw_upsert_cursor", _ps_dw_cursor_mono)
                     # Close the decision-writes bucket: from the
                     # create_trader_decision call through the cursor
                     # upsert above.  Captures every per-signal INSERT
