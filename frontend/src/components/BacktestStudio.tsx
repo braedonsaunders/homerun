@@ -1010,6 +1010,75 @@ export default function BacktestStudio({
                 </div>
               ) : null}
 
+              {/* PARTIAL FILL AGGREGATES */}
+              {activeRun?.partial_fills && activeRun.partial_fills.n_orders > 0 ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Zap className="h-3.5 w-3.5 text-sky-300" />
+                    Partial-fill aggregation
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      child fills per parent order
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <StatTile
+                      label="Instant fills"
+                      value={`${(activeRun.partial_fills.instant_fill_rate * 100).toFixed(0)}%`}
+                      hint={`${activeRun.partial_fills.n_instant_fills}/${activeRun.partial_fills.n_orders}`}
+                      tone={activeRun.partial_fills.instant_fill_rate >= 0.7 ? 'good' : activeRun.partial_fills.instant_fill_rate >= 0.4 ? 'warn' : 'bad'}
+                    />
+                    <StatTile
+                      label="Avg children"
+                      value={fmtNum(activeRun.partial_fills.mean_children_per_order, 2)}
+                      hint={`max ${activeRun.partial_fills.max_children_per_order}`}
+                    />
+                    <StatTile
+                      label="Intra-order span"
+                      value={activeRun.partial_fills.mean_intra_order_seconds > 0 ? fmtMs(activeRun.partial_fills.mean_intra_order_seconds * 1000) : '—'}
+                      hint="mean across partials"
+                    />
+                    <StatTile
+                      label="VWAP dispersion"
+                      value={`${fmtNum(activeRun.partial_fills.mean_vwap_dispersion_bps, 1)} bps`}
+                      hint="price std / VWAP"
+                      tone={activeRun.partial_fills.mean_vwap_dispersion_bps > 50 ? 'warn' : 'neutral'}
+                    />
+                  </div>
+                  {activeRun.partial_fills.child_count_distribution.length > 1 ? (
+                    <div className="mt-2">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        child-count distribution
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {activeRun.partial_fills.child_count_distribution.map((d) => {
+                          const pct = activeRun.partial_fills.n_orders > 0
+                            ? (d.n_orders / activeRun.partial_fills.n_orders) * 100
+                            : 0
+                          return (
+                            <div
+                              key={d.children}
+                              className={cn(
+                                'rounded-sm border px-1.5 py-0.5 font-mono text-[10px]',
+                                d.children === 1 ? 'border-emerald-500/30 text-emerald-300' :
+                                d.children <= 3 ? 'border-amber-500/30 text-amber-300' :
+                                'border-red-500/30 text-red-300',
+                              )}
+                            >
+                              {d.children}× → {d.n_orders} ord ({pct.toFixed(0)}%)
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="mt-2 text-[10px] text-muted-foreground">
+                    Low instant-fill rate ⇒ orders walk the book or queue-decay before completing.
+                    High VWAP dispersion ⇒ price moved during the partial fill (slippage cost beyond
+                    the headline number).
+                  </div>
+                </div>
+              ) : null}
+
               {/* REGIME DECOMPOSITION */}
               {activeRun?.regime_breakdown ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">

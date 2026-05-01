@@ -83,6 +83,116 @@ def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
     return _RECENT_RUNS.get(str(run_id))
 
 
+def _compute_partial_fill_aggregates(exec_dict: dict[str, Any]) -> dict[str, Any]:
+    """Group child Fills by parent order_id and report aggregate
+    metrics: how many ticks each order took to fill, VWAP variance
+    across children, instant-fill rate, average intra-order delay.
+
+    The matching engine already tracks fill_index per parent order,
+    but the existing fills_sample lists each child atomic.  This view
+    answers the operator question "do my orders typically fill in
+    one tick or get walked across the book?"
+    """
+    fills = exec_dict.get("fills_sample") or []
+    if not isinstance(fills, list) or not fills:
+        return {
+            "n_orders": 0,
+            "n_instant_fills": 0,
+            "n_partial_fills": 0,
+            "instant_fill_rate": 0.0,
+            "mean_children_per_order": 0.0,
+            "max_children_per_order": 0,
+            "mean_intra_order_seconds": 0.0,
+            "mean_vwap_dispersion_bps": 0.0,
+            "child_count_distribution": [],
+        }
+
+    from datetime import datetime as _dt
+
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for f in fills:
+        if not isinstance(f, dict):
+            continue
+        oid = str(f.get("order_id") or "")
+        if not oid:
+            continue
+        by_parent.setdefault(oid, []).append(f)
+
+    n_orders = len(by_parent)
+    if n_orders == 0:
+        return {
+            "n_orders": 0,
+            "n_instant_fills": 0,
+            "n_partial_fills": 0,
+            "instant_fill_rate": 0.0,
+            "mean_children_per_order": 0.0,
+            "max_children_per_order": 0,
+            "mean_intra_order_seconds": 0.0,
+            "mean_vwap_dispersion_bps": 0.0,
+            "child_count_distribution": [],
+        }
+
+    instant = 0
+    partials = 0
+    children_counts: list[int] = []
+    intra_durations: list[float] = []
+    vwap_dispersions_bps: list[float] = []
+    for oid, children in by_parent.items():
+        c = len(children)
+        children_counts.append(c)
+        if c == 1:
+            instant += 1
+            continue
+        partials += 1
+        # Time between first and last fill.
+        try:
+            ts = []
+            for ch in children:
+                t = ch.get("occurred_at")
+                if t:
+                    ts.append(_dt.fromisoformat(str(t).replace("Z", "+00:00")))
+            if len(ts) >= 2:
+                ts.sort()
+                intra_durations.append((ts[-1] - ts[0]).total_seconds())
+        except Exception:
+            pass
+        # VWAP dispersion: 1e4 * std(prices) / VWAP.
+        try:
+            sizes = [float(ch.get("size") or 0.0) for ch in children]
+            prices = [float(ch.get("price") or 0.0) for ch in children]
+            total_size = sum(sizes)
+            if total_size > 0:
+                vwap = sum(s * p for s, p in zip(sizes, prices)) / total_size
+                if vwap > 0 and len(prices) >= 2:
+                    mean_p = sum(prices) / len(prices)
+                    variance = sum((p - mean_p) ** 2 for p in prices) / (len(prices) - 1)
+                    std = variance ** 0.5
+                    vwap_dispersions_bps.append(std / vwap * 10_000.0)
+        except Exception:
+            pass
+
+    # Distribution histogram of child counts (top 6 distinct values).
+    dist_map: dict[int, int] = {}
+    for c in children_counts:
+        dist_map[c] = dist_map.get(c, 0) + 1
+    distribution = sorted(
+        [{"children": k, "n_orders": v} for k, v in dist_map.items()],
+        key=lambda x: x["children"],
+    )[:8]
+
+    return {
+        "n_orders": n_orders,
+        "n_instant_fills": instant,
+        "n_partial_fills": partials,
+        "instant_fill_rate": instant / n_orders if n_orders else 0.0,
+        "mean_children_per_order": float(sum(children_counts) / len(children_counts)) if children_counts else 0.0,
+        "max_children_per_order": int(max(children_counts)) if children_counts else 0,
+        "mean_intra_order_seconds": float(sum(intra_durations) / len(intra_durations)) if intra_durations else 0.0,
+        "mean_vwap_dispersion_bps": float(sum(vwap_dispersions_bps) / len(vwap_dispersions_bps)) if vwap_dispersions_bps else 0.0,
+        "child_count_distribution": distribution,
+    }
+
+
 def _bucket_label_hour(hour: int) -> str:
     if 0 <= hour < 6:
         return "00–06 UTC"
@@ -153,7 +263,12 @@ def _compute_regime_breakdown(exec_dict: dict[str, Any]) -> dict[str, Any]:
     for fill in fills:
         if not isinstance(fill, dict):
             continue
-        ts_iso = fill.get("timestamp") or fill.get("filled_at") or fill.get("placed_at")
+        ts_iso = (
+            fill.get("occurred_at")
+            or fill.get("timestamp")
+            or fill.get("filled_at")
+            or fill.get("placed_at")
+        )
         if not ts_iso:
             continue
         try:
@@ -512,6 +627,7 @@ async def run_unified_backtest(
     # to 1, i.e. no penalty, when the strategy wasn't tuned).
     deflated = _compute_deflated_sharpe(exec_dict, n_trials=1)
     regime = _compute_regime_breakdown(exec_dict)
+    partial_fills = _compute_partial_fill_aggregates(exec_dict)
 
     out = {
         "run_id": run_id,
@@ -523,6 +639,7 @@ async def run_unified_backtest(
         "execution": exec_dict,
         "deflated_sharpe": deflated,
         "regime_breakdown": regime,
+        "partial_fills": partial_fills,
         "fill_model": fill_model,
         "empirical_constants": constants,
         "latency": latency,

@@ -169,6 +169,18 @@ export interface RegimeBreakdown {
   by_size: RegimeBucket[]
 }
 
+export interface PartialFillAggregates {
+  n_orders: number
+  n_instant_fills: number
+  n_partial_fills: number
+  instant_fill_rate: number
+  mean_children_per_order: number
+  max_children_per_order: number
+  mean_intra_order_seconds: number
+  mean_vwap_dispersion_bps: number
+  child_count_distribution: Array<{ children: number; n_orders: number }>
+}
+
 export interface UnifiedBacktestResult {
   run_id: string
   started_at: string
@@ -179,6 +191,7 @@ export interface UnifiedBacktestResult {
   execution: ExecutionResult
   deflated_sharpe: DeflatedSharpeResult
   regime_breakdown: RegimeBreakdown
+  partial_fills: PartialFillAggregates
   fill_model: FillModelInfo
   empirical_constants: EmpiricalConstants
   latency: LatencyDistribution
