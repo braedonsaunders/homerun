@@ -78,7 +78,20 @@ _CLOB_READ_FAILURE_LOG_INTERVAL = 30.0  # seconds between repeated failure logs
 _SNAPSHOT_SINGLE_LOOKUP_BUDGET_SECONDS = 6.0  # cap the per-call single-order fallback loop
 _SNAPSHOT_SINGLE_LOOKUP_MAX = 8  # cap how many single-order fetches we attempt per call
 _OPEN_ORDER_SNAPSHOT_CACHE_TTL_SECONDS = 2.0
-_BALANCE_CACHE_TTL_SECONDS = 5.0  # short-lived cache to deduplicate calls within one order pipeline
+# Balance cache TTL — was 5s, but the production soak (5/2026/05)
+# showed every cycle paying a 6-SDK-call ``get_balance`` round trip
+# (3 sig types × 2 ops each, all serialized on ``_client_io_lock``)
+# whenever consecutive cycles fell outside the 5s window.  Each
+# individual SDK call has a 10s timeout, so a worst-case fan-out under
+# lock contention can eat 30+ s of ``ps_submit_order`` budget.
+# Balance only changes when WE place an order (we know about that
+# locally — ``_validate_and_reserve_order`` reserves against
+# ``_daily_volume_usd`` and the per-trade gate computes
+# ``post_trade_available`` deterministically) or when an external
+# transfer funds the wallet (rare; the next cycle just past TTL
+# will pick it up).  30s is a safe window that eliminates almost all
+# the repeat fetches in normal operation.
+_BALANCE_CACHE_TTL_SECONDS = 30.0
 
 
 def _to_decimal(value) -> Decimal:
@@ -478,6 +491,17 @@ class LiveExecutionService:
         self._stats_lock: Optional[asyncio.Lock] = None
         self._init_lock: Optional[asyncio.Lock] = None
         self._client_io_lock: Optional[asyncio.Lock] = None
+        # Split off balance / read-only SDK calls to a separate lock so
+        # they don't queue behind in-flight order submissions.  Pre-split
+        # production saw ``_client_io_lock`` serialize ALL SDK calls — a
+        # buy gate's 6 ``update_balance_allowance`` round-trips (3 sig
+        # types × 2 ops each) would block any concurrent ``post_order``,
+        # contributing to ``ps_submit_order`` blowing past 30 s.  The
+        # order-creation lock still serializes ``create_order`` +
+        # ``post_order`` pairs (the SDK signs once and submits with the
+        # cached signature; pairing them avoids cross-order signature
+        # interleaving).
+        self._client_balance_io_lock: Optional[asyncio.Lock] = None
         self._persist_lock: Optional[asyncio.Lock] = None
         self._balance_signature_type: Optional[int] = None
         self._runtime_state_loaded_for_wallet: Optional[str] = None
@@ -523,6 +547,11 @@ class LiveExecutionService:
             self._client_io_lock = asyncio.Lock()
         return self._client_io_lock
 
+    def _get_client_balance_io_lock(self) -> asyncio.Lock:
+        if self._client_balance_io_lock is None:
+            self._client_balance_io_lock = asyncio.Lock()
+        return self._client_balance_io_lock
+
     def _get_persist_lock(self) -> asyncio.Lock:
         if self._persist_lock is None:
             self._persist_lock = asyncio.Lock()
@@ -533,8 +562,20 @@ class LiveExecutionService:
         func: Any,
         *args: Any,
         timeout: float | None = _CLIENT_IO_TIMEOUT_SECONDS,
+        lock: str = "order",
     ) -> Any:
-        async with self._get_client_io_lock():
+        # ``lock="order"`` is the default — protects create/post/cancel
+        # order pairings.  ``lock="balance"`` uses the dedicated balance/
+        # read-only lock so concurrent get-balance / update-allowance
+        # calls don't queue behind an in-flight order submission (and
+        # vice versa).  The two SDK call families don't share mutable
+        # client state on the py-clob-client-v2 side; only the in-flight
+        # serialization expectation differs.
+        if lock == "balance":
+            target_lock = self._get_client_balance_io_lock()
+        else:
+            target_lock = self._get_client_io_lock()
+        async with target_lock:
             task = asyncio.to_thread(func, *args)
             if timeout is None:
                 return await task
@@ -858,7 +899,7 @@ class LiveExecutionService:
 
         if refresh:
             try:
-                await self._run_client_io(self._client.update_balance_allowance, params)
+                await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
             except Exception as exc:
                 logger.debug(
                     "Conditional balance-allowance refresh failed",
@@ -868,7 +909,7 @@ class LiveExecutionService:
                 )
 
         try:
-            payload = await self._run_client_io(self._client.get_balance_allowance, params)
+            payload = await self._run_client_io(self._client.get_balance_allowance, params, lock="balance")
         except Exception as exc:
             logger.debug(
                 "Conditional balance-allowance fetch failed",
@@ -1142,7 +1183,7 @@ class LiveExecutionService:
                     continue
                 try:
                     params = build_params(sig_type)
-                    await self._run_client_io(self._client.update_balance_allowance, params)
+                    await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
                 except Exception as exc:
                     logger.debug(
                         "CLOB balance-allowance cache refresh failed for sig_type=%d: %s",
@@ -1178,7 +1219,7 @@ class LiveExecutionService:
                 token_id=token_key,
                 signature_type=signature_type,
             )
-            await self._run_client_io(self._client.update_balance_allowance, params)
+            await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
             return True
         except Exception as exc:
             logger.warning(
@@ -1362,14 +1403,14 @@ class LiveExecutionService:
 
                 try:
                     await self._run_client_io(
-                        self._client.update_balance_allowance, params
+                        self._client.update_balance_allowance, params, lock="balance"
                     )
                 except Exception as exc:
                     err = f"refresh_failed:{type(exc).__name__}:{str(exc)[:80]}"
 
                 try:
                     payload = await self._run_client_io(
-                        self._client.get_balance_allowance, params
+                        self._client.get_balance_allowance, params, lock="balance"
                     )
                 except Exception as exc:
                     err = (err + " | " if err else "") + (
@@ -1447,7 +1488,7 @@ class LiveExecutionService:
                 asset_type=AssetType.COLLATERAL,
                 signature_type=signature_type,
             )
-            await self._run_client_io(self._client.update_balance_allowance, params)
+            await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
             self._invalidate_balance_cache()
             return True
         except Exception as exc:
@@ -4802,11 +4843,11 @@ class LiveExecutionService:
             async def fetch_balance_snapshot(signature_type: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
                 params = build_balance_params(signature_type)
                 try:
-                    await self._run_client_io(self._client.update_balance_allowance, params)
+                    await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
                 except Exception as exc:
                     self._clob_read_record_failure(exc, "Balance allowance refresh")
                 try:
-                    payload = await self._run_client_io(self._client.get_balance_allowance, params)
+                    payload = await self._run_client_io(self._client.get_balance_allowance, params, lock="balance")
                 except Exception as exc:
                     self._clob_read_record_failure(exc, "Balance allowance fetch")
                     return None, None
