@@ -1608,29 +1608,63 @@ def _code_evolution_score(
     *,
     walk_forward_stability_pct: float | None = None,
 ) -> float:
-    """Risk-adjusted iteration score for the unified backtest result.
+    """Institutional risk-adjusted iteration score.
 
-    Returns a single float that the autoresearch loop compares against
-    the running best to decide keep-vs-revert.  The current shape is
-    intentionally trivial — it just returns the observed annualized
-    Sharpe — because the full risk-adjusted formula and the walk-forward
-    gate are being staged across separate commits.  Commit 2 swaps in
-    the institutional formula; commit 4 wires in walk-forward stability.
+    Formula::
+
+        score = sharpe                                # observed annualized Sharpe
+              * deflated_sharpe_probability           # >=0.95 ~ 1.0; 0.5 = strong overfit penalty
+              * walk_forward_stability_fraction       # 0..1, fraction of folds with non-negative return
+              - max(0, max_drawdown_pct - 15) * 0.05  # mild DD penalty above 15%
+
+    The intent is that an iteration that pumps in-sample Sharpe but
+    fails the deflated-Sharpe overfit test, or fails to generalize across
+    walk-forward folds, gets crushed.  ``walk_forward_stability_pct`` is
+    plumbed through from commit 4 (the per-iteration WF gate); when it's
+    None the term is treated as 1.0 (no penalty) so this commit is safe
+    to merge before the gate lands.
+
+    Failed runs return -1.0 — the loop's keep test (``new_score > best``)
+    rejects them deterministically.
     """
     if not isinstance(result, dict):
         return -1.0
     execution = result.get("execution") or {}
     if not execution.get("success"):
         return -1.0
-    sharpe = execution.get("sharpe") or {}
-    if isinstance(sharpe, dict):
-        v = sharpe.get("value")
-    else:
-        v = sharpe
+
+    sharpe_obj = execution.get("sharpe") or {}
+    sharpe = sharpe_obj.get("value") if isinstance(sharpe_obj, dict) else sharpe_obj
     try:
-        return float(v) if v is not None else 0.0
+        sharpe_value = float(sharpe) if sharpe is not None else 0.0
     except (TypeError, ValueError):
-        return 0.0
+        sharpe_value = 0.0
+
+    deflated = result.get("deflated_sharpe") or {}
+    try:
+        dsr_prob = float(deflated.get("deflated_sharpe") or 0.0)
+    except (TypeError, ValueError):
+        dsr_prob = 0.0
+    # The DSR is a probability in [0, 1].  Clamp to handle the rare
+    # numerical case where the CDF integration overshoots.
+    dsr_prob = max(0.0, min(1.0, dsr_prob))
+
+    if walk_forward_stability_pct is None:
+        stability_fraction = 1.0
+    else:
+        try:
+            stability_fraction = max(0.0, min(1.0, float(walk_forward_stability_pct) / 100.0))
+        except (TypeError, ValueError):
+            stability_fraction = 1.0
+
+    try:
+        max_dd_pct = float(execution.get("max_drawdown_pct") or 0.0)
+    except (TypeError, ValueError):
+        max_dd_pct = 0.0
+    drawdown_penalty = max(0.0, max_dd_pct - 15.0) * 0.05
+
+    score = sharpe_value * dsr_prob * stability_fraction - drawdown_penalty
+    return round(score, 4)
 
 
 def _summarize_unified_for_prompt(result: dict) -> dict:
