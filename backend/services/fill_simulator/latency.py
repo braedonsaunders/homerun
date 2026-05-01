@@ -27,6 +27,66 @@ _FALLBACK_P50 = 200.0
 _FALLBACK_P95 = 600.0
 _FALLBACK_P99 = 1500.0
 
+# Operator-overridable fallback values, refreshed from AppSettings on a
+# 30 s TTL.  Read both inline (sync, from the cached values) and async
+# (refresh hook).  Falls back to the module constants when the settings
+# row is absent or the columns are NULL — matches existing behavior on
+# fresh deployments.
+_OVERRIDE_TTL_SECONDS = 30.0
+_overrides: tuple[float, float, float, float] = (
+    0.0, _FALLBACK_P50, _FALLBACK_P95, _FALLBACK_P99,
+)
+
+
+def _current_fallbacks() -> tuple[float, float, float]:
+    """Return the active (p50, p95, p99) fallback values.
+
+    Reads from the cached AppSettings overrides if fresh, else from
+    the module constants.  Refresh happens out-of-band via
+    ``refresh_fallback_overrides()``.
+    """
+    ts, p50, p95, p99 = _overrides
+    if ts <= 0:
+        return _FALLBACK_P50, _FALLBACK_P95, _FALLBACK_P99
+    if time.monotonic() - ts > _OVERRIDE_TTL_SECONDS:
+        # Stale — keep using the values but signal a refresh on next
+        # async hop.  Not a hard error; the values are sane defaults.
+        pass
+    return p50, p95, p99
+
+
+async def refresh_fallback_overrides() -> None:
+    """Pull the latest AppSettings row and cache its latency fallbacks.
+
+    Called from ``measured_latency_async()`` opportunistically; safe
+    to call directly from a background task.  Silently no-ops if the
+    settings row doesn't exist or the columns are NULL.
+    """
+    global _overrides
+    try:
+        from sqlalchemy import select
+        from models.database import AsyncSessionLocal, AppSettings
+
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(select(AppSettings).limit(1))
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            p50 = getattr(row, "latency_fallback_p50_ms", None)
+            p95 = getattr(row, "latency_fallback_p95_ms", None)
+            p99 = getattr(row, "latency_fallback_p99_ms", None)
+            _overrides = (
+                time.monotonic(),
+                float(p50) if isinstance(p50, (int, float)) and p50 > 0 else _FALLBACK_P50,
+                float(p95) if isinstance(p95, (int, float)) and p95 > 0 else _FALLBACK_P95,
+                float(p99) if isinstance(p99, (int, float)) and p99 > 0 else _FALLBACK_P99,
+            )
+    except Exception:
+        # Settings table may not be migrated yet on a fresh DB; fall
+        # through to module constants.
+        pass
+
 
 @dataclass
 class LatencyDistribution:
@@ -63,15 +123,19 @@ def _from_snapshot(snapshot: dict[str, Any]) -> LatencyDistribution:
     p50 = rt.get("p50")
     p95 = rt.get("p95")
     p99 = rt.get("p99")
+    fp50, fp95, fp99 = _current_fallbacks()
     return LatencyDistribution(
-        p50_ms=float(p50) if isinstance(p50, (int, float)) else _FALLBACK_P50,
-        p95_ms=float(p95) if isinstance(p95, (int, float)) else _FALLBACK_P95,
-        p99_ms=float(p99) if isinstance(p99, (int, float)) else _FALLBACK_P99,
+        p50_ms=float(p50) if isinstance(p50, (int, float)) else fp50,
+        p95_ms=float(p95) if isinstance(p95, (int, float)) else fp95,
+        p99_ms=float(p99) if isinstance(p99, (int, float)) else fp99,
         sample_count=int(snapshot.get("sample_count") or 0),
     )
 
 
 async def measured_latency_async() -> LatencyDistribution:
+    # Refresh the operator overrides opportunistically — once per call
+    # is fine because the cache itself has a 30s TTL.
+    await refresh_fallback_overrides()
     snapshot = await execution_latency_metrics.snapshot()
     dist = _from_snapshot(snapshot)
     global _cached
@@ -82,20 +146,22 @@ async def measured_latency_async() -> LatencyDistribution:
 def measured_latency_cached() -> LatencyDistribution:
     """Sync read of the most-recent cached latency distribution.
 
-    Returns the fallback (200/600/1500 ms) if no async refresh has
-    populated the cache yet.  Callers on the order hot path call
-    this in-line; a separate background task can call
-    ``measured_latency_async()`` periodically to keep the cache warm.
+    Returns the fallback (configurable via AppSettings, defaults
+    200/600/1500 ms) if no async refresh has populated the cache yet.
+    Callers on the order hot path call this in-line; a separate
+    background task can call ``measured_latency_async()`` periodically
+    to keep the cache warm.
     """
     now = time.monotonic()
     ts, dist = _cached
     if dist is not None and now - ts < _CACHE_TTL_SECONDS:
         return dist
     if dist is None:
+        fp50, fp95, fp99 = _current_fallbacks()
         return LatencyDistribution(
-            p50_ms=_FALLBACK_P50,
-            p95_ms=_FALLBACK_P95,
-            p99_ms=_FALLBACK_P99,
+            p50_ms=fp50,
+            p95_ms=fp95,
+            p99_ms=fp99,
             sample_count=0,
         )
     return dist

@@ -32,6 +32,7 @@ import {
   promoteModel,
   setEmpiricalOverrides,
   triggerRetrain,
+  updateLatencyFallbacks,
 } from '../services/apiFillModel'
 
 const COVARIATE_LABELS: Record<string, string> = {
@@ -115,6 +116,184 @@ function HazardRatioBar({ hr, label }: { hr: number; label: string }) {
     </div>
   )
 }
+
+// Latency card with editable fallbacks.  When sample_count == 0 the
+// values shown are operator-tunable defaults; clicking "Edit" turns
+// the three quantiles into number inputs and exposes a Save button.
+// Saved overrides go to AppSettings via /fill-model/latency/fallbacks
+// and the values immediately reflect in /fill-model/latency.
+function LatencyCard({
+  latency,
+}: {
+  latency:
+    | {
+        p50_ms: number
+        p95_ms: number
+        p99_ms: number
+        sample_count: number
+        fallback_p50_ms?: number
+        fallback_p95_ms?: number
+        fallback_p99_ms?: number
+      }
+    | undefined
+}) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<{ p50: string; p95: string; p99: string }>({
+    p50: '',
+    p95: '',
+    p99: '',
+  })
+
+  const saveMutation = useMutation({
+    mutationFn: updateLatencyFallbacks,
+    onSuccess: () => {
+      setEditing(false)
+      queryClient.invalidateQueries({ queryKey: ['fill-model', 'latency'] })
+    },
+  })
+
+  const isFallback = latency != null && latency.sample_count === 0
+  const fallbackHint =
+    latency != null && latency.fallback_p50_ms != null
+      ? `defaults: p50=${Math.round(latency.fallback_p50_ms)}ms · p95=${Math.round(
+          latency.fallback_p95_ms ?? 0,
+        )}ms · p99=${Math.round(latency.fallback_p99_ms ?? 0)}ms`
+      : ''
+
+  return (
+    <div className="rounded-md border border-border/50 bg-card/40 p-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+        <Clock className="h-3.5 w-3.5 text-sky-300" />
+        {latency && latency.sample_count > 0
+          ? 'Measured latency (rolling 15 min)'
+          : 'Latency (defaults — no samples)'}
+        {isFallback ? (
+          <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
+            fallback
+          </span>
+        ) : null}
+        {isFallback && !editing ? (
+          <button
+            type="button"
+            onClick={() => {
+              setDraft({
+                p50: String(Math.round(latency?.fallback_p50_ms ?? latency?.p50_ms ?? 200)),
+                p95: String(Math.round(latency?.fallback_p95_ms ?? latency?.p95_ms ?? 600)),
+                p99: String(Math.round(latency?.fallback_p99_ms ?? latency?.p99_ms ?? 1500)),
+              })
+              setEditing(true)
+            }}
+            className="rounded-sm border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/40"
+          >
+            Edit
+          </button>
+        ) : null}
+      </div>
+      {latency ? (
+        editing ? (
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <Label className="text-[9px] text-muted-foreground">p50 (ms)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={60000}
+                value={draft.p50}
+                onChange={(e) => setDraft({ ...draft, p50: e.target.value })}
+                className="h-7 text-xs"
+              />
+            </div>
+            <div>
+              <Label className="text-[9px] text-muted-foreground">p95 (ms)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={60000}
+                value={draft.p95}
+                onChange={(e) => setDraft({ ...draft, p95: e.target.value })}
+                className="h-7 text-xs"
+              />
+            </div>
+            <div>
+              <Label className="text-[9px] text-muted-foreground">p99 (ms)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={60000}
+                value={draft.p99}
+                onChange={(e) => setDraft({ ...draft, p99: e.target.value })}
+                className="h-7 text-xs"
+              />
+            </div>
+          </div>
+        ) : (
+          <div className={`grid grid-cols-3 gap-2 ${isFallback ? 'opacity-70' : ''}`}>
+            <StatPill label="p50" value={`${Math.round(latency.p50_ms)} ms`} tone="neutral" />
+            <StatPill
+              label="p95"
+              value={`${Math.round(latency.p95_ms)} ms`}
+              tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'}
+            />
+            <StatPill
+              label="p99"
+              value={`${Math.round(latency.p99_ms)} ms`}
+              tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'}
+            />
+          </div>
+        )
+      ) : (
+        <div className="text-xs text-muted-foreground">loading…</div>
+      )}
+      {editing ? (
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            size="sm"
+            className="h-6 text-[10px]"
+            onClick={() =>
+              saveMutation.mutate({
+                p50_ms: parseFloat(draft.p50) || undefined,
+                p95_ms: parseFloat(draft.p95) || undefined,
+                p99_ms: parseFloat(draft.p99) || undefined,
+              })
+            }
+            disabled={saveMutation.isPending}
+          >
+            {saveMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px]"
+            onClick={() => setEditing(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px] text-muted-foreground"
+            onClick={() => saveMutation.mutate({ p50_ms: 0, p95_ms: 0, p99_ms: 0 })}
+            disabled={saveMutation.isPending}
+            title="Reset all three to module defaults (200/600/1500 ms)"
+          >
+            Reset to defaults
+          </Button>
+          {saveMutation.error ? (
+            <span className="text-[10px] text-red-300">save failed</span>
+          ) : null}
+        </div>
+      ) : latency ? (
+        <div className="mt-2 text-[10px] text-muted-foreground">
+          {latency.sample_count > 0
+            ? `Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2. ${latency.sample_count.toLocaleString()} samples in window.`
+            : `No measured submit/cancel latencies in the last 15 min — using ${fallbackHint}. Click Edit to override; values will be replaced once orders flow through.`}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 
 function BaselineSurvivalChart({ baseline }: { baseline: Record<string, number> }) {
   const points = Object.entries(baseline)
@@ -342,43 +521,7 @@ export default function FillModelPanel() {
 
         {/* LATENCY + DECOMPOSITION */}
         <div className="grid gap-2 md:grid-cols-2">
-          <div className="rounded-md border border-border/50 bg-card/40 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-              <Clock className="h-3.5 w-3.5 text-sky-300" />
-              {latency && latency.sample_count > 0
-                ? 'Measured latency (rolling 15 min)'
-                : 'Latency (defaults — no samples)'}
-              {latency && latency.sample_count === 0 ? (
-                <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
-                  fallback
-                </span>
-              ) : null}
-            </div>
-            {latency ? (
-              <div className={`grid grid-cols-3 gap-2 ${latency.sample_count === 0 ? 'opacity-60' : ''}`}>
-                <StatPill label="p50" value={`${Math.round(latency.p50_ms)} ms`} tone="neutral" />
-                <StatPill
-                  label="p95"
-                  value={`${Math.round(latency.p95_ms)} ms`}
-                  tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'}
-                />
-                <StatPill
-                  label="p99"
-                  value={`${Math.round(latency.p99_ms)} ms`}
-                  tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'}
-                />
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">loading…</div>
-            )}
-            {latency ? (
-              <div className="mt-2 text-[10px] text-muted-foreground">
-                {latency.sample_count > 0
-                  ? `Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2. ${latency.sample_count.toLocaleString()} samples in window.`
-                  : `No measured submit/cancel latencies in the last 15 min — values shown are hardcoded fallbacks (p50=200ms, p95=600ms, p99=1500ms). Will be replaced once orders flow through.`}
-              </div>
-            ) : null}
-          </div>
+          <LatencyCard latency={latency} />
 
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">

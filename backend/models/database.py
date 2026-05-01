@@ -1367,6 +1367,15 @@ class AppSettings(Base):
     # from chain math regardless of this value (see alembic 202604300004).
     polymarket_default_collateral = Column(String, nullable=True)
 
+    # Operator-tunable latency fallbacks for the fill simulator + the
+    # BacktestStudio "Latency (defaults)" panel.  When no real submit/
+    # cancel latencies have been measured in the last 15 min, these
+    # values are used as the conservative envelope.  NULL columns
+    # fall back to the module-level constants (200/600/1500 ms).
+    latency_fallback_p50_ms = Column(Float, nullable=True)
+    latency_fallback_p95_ms = Column(Float, nullable=True)
+    latency_fallback_p99_ms = Column(Float, nullable=True)
+
     # Search Settings (which platforms to query, result limits)
     search_polymarket_enabled = Column(Boolean, default=True)
     search_kalshi_enabled = Column(Boolean, default=False)

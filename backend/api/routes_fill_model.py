@@ -236,6 +236,11 @@ async def get_latency_route():
     from services.fill_simulator.latency import measured_latency_async
 
     dist = await measured_latency_async()
+    # Surface the active fallback values so the UI can render them
+    # alongside the (possibly fallback) p50/p95/p99 it just received.
+    from services.fill_simulator.latency import _current_fallbacks
+
+    fp50, fp95, fp99 = _current_fallbacks()
     return {
         "p50_ms": dist.p50_ms,
         "p95_ms": dist.p95_ms,
@@ -244,7 +249,58 @@ async def get_latency_route():
         "pessimistic_ms": dist.pessimistic_ms,
         "realistic_ms": dist.realistic_ms,
         "optimistic_ms": dist.optimistic_ms,
+        "fallback_p50_ms": fp50,
+        "fallback_p95_ms": fp95,
+        "fallback_p99_ms": fp99,
     }
+
+
+@router.put("/latency/fallbacks")
+async def update_latency_fallbacks(
+    p50_ms: float | None = None,
+    p95_ms: float | None = None,
+    p99_ms: float | None = None,
+):
+    """Operator-tunable latency fallback envelope.
+
+    Pass any subset; null fields preserve the existing value.  Pass 0
+    to reset that quantile to the module default (200/600/1500 ms).
+    These values are used by the fill simulator + BacktestStudio
+    "Latency (defaults)" panel whenever no real submit/cancel
+    latencies have been measured in the last 15 minutes.
+    """
+    from sqlalchemy import select
+    from models.database import AsyncSessionLocal, AppSettings
+    from services.fill_simulator.latency import refresh_fallback_overrides
+
+    def _coerce(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if f <= 0:
+            return None  # reset to default
+        return min(60_000.0, f)  # 60s hard cap — anything bigger is a typo
+
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(select(AppSettings))).scalar_one_or_none()
+        if row is None:
+            row = AppSettings(id="default")
+            session.add(row)
+        if p50_ms is not None:
+            row.latency_fallback_p50_ms = _coerce(p50_ms)
+        if p95_ms is not None:
+            row.latency_fallback_p95_ms = _coerce(p95_ms)
+        if p99_ms is not None:
+            row.latency_fallback_p99_ms = _coerce(p99_ms)
+        await session.commit()
+    await refresh_fallback_overrides()
+    from services.fill_simulator.latency import _current_fallbacks
+
+    fp50, fp95, fp99 = _current_fallbacks()
+    return {"p50_ms": fp50, "p95_ms": fp95, "p99_ms": fp99}
 
 
 # ---------------------------------------------------------------------

@@ -48,6 +48,9 @@ export interface LatencyDistribution {
   pessimistic_ms: number
   realistic_ms: number
   optimistic_ms: number
+  fallback_p50_ms?: number
+  fallback_p95_ms?: number
+  fallback_p99_ms?: number
 }
 
 export interface DecompositionSummary {
@@ -122,6 +125,21 @@ export async function setEmpiricalOverrides(
 
 export async function getLatencyDistribution(): Promise<LatencyDistribution> {
   const { data } = await api.get<LatencyDistribution>('/fill-model/latency')
+  return data
+}
+
+export async function updateLatencyFallbacks(
+  values: { p50_ms?: number | null; p95_ms?: number | null; p99_ms?: number | null },
+): Promise<{ p50_ms: number; p95_ms: number; p99_ms: number }> {
+  const params: Record<string, number> = {}
+  if (values.p50_ms != null) params.p50_ms = values.p50_ms
+  if (values.p95_ms != null) params.p95_ms = values.p95_ms
+  if (values.p99_ms != null) params.p99_ms = values.p99_ms
+  const { data } = await api.put<{ p50_ms: number; p95_ms: number; p99_ms: number }>(
+    '/fill-model/latency/fallbacks',
+    null,
+    { params },
+  )
   return data
 }
 

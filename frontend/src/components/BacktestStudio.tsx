@@ -1077,6 +1077,40 @@ export default function BacktestStudio({
         {/* CENTER — results */}
         <ScrollArea className="flex-1 min-h-0">
           <div className="space-y-4 p-3">
+            {/* CURRENTLY-VIEWING BANNER — clearly indicates which run
+                populates the subtabs below.  Shows the strategy slug,
+                the run id (short), the return %, and the started_at
+                timestamp.  Visible whenever there's an active run.
+                Loading state shows a subtle pulse while a run is
+                being fetched after a click in the recent-runs list. */}
+            {activeRun ? (
+              <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-[11px]">
+                <Activity className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                <span className="text-muted-foreground">Viewing run</span>
+                <span className="font-mono text-amber-200">{activeRun.run_id.slice(0, 8)}</span>
+                <span className="text-muted-foreground">·</span>
+                <span className="truncate font-medium text-foreground">
+                  {activeRun.strategy_name || activeRun.strategy_slug || 'unknown'}
+                </span>
+                <span
+                  className={cn(
+                    'shrink-0 font-mono tabular-nums',
+                    (activeRun.execution?.total_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300',
+                  )}
+                >
+                  {fmtPct(activeRun.execution?.total_return_pct, 2)}
+                </span>
+                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                  {new Date(activeRun.started_at).toLocaleString()}
+                </span>
+              </div>
+            ) : loadRunMutation.isPending ? (
+              <div className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-3 py-1.5 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                Loading run data…
+              </div>
+            ) : null}
+
             {/* SUBTAB STRIP — always visible.  Performance / Fill
                 quality / Robustness require an active run to populate;
                 Portfolio is run-independent (live cross-strategy

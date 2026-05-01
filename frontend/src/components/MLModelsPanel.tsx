@@ -660,17 +660,21 @@ export default function MLModelsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-border/50 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">Machine Learning</div>
-            <div className="text-xs text-muted-foreground">{headerNote}</div>
+      {/* Header — match ValidationPanel / AutoresearchPanel sizing
+          (px-4 py-2 + leading-tight text + 10px subtitle) so ML tab
+          doesn't visually "zoom in" relative to its siblings. */}
+      <div className="border-b border-border/40 shrink-0">
+        <div className="flex items-center gap-3 px-4 py-2">
+          <Brain className="w-4 h-4 text-violet-400 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold leading-tight">Machine Learning</p>
+            <p className="text-[10px] text-muted-foreground leading-tight">{headerNote}</p>
           </div>
-          <Badge variant="outline" className={cn(capabilities?.runtime_active ? 'border-emerald-500/30 text-emerald-400' : 'text-muted-foreground')}>
+          <Badge variant="outline" className={cn('shrink-0', capabilities?.runtime_active ? 'border-emerald-500/30 text-emerald-400' : 'text-muted-foreground')}>
             {capabilities?.runtime_active ? 'active deployment' : 'idle'}
           </Badge>
         </div>
-        <div className="mt-3 flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1 px-4 pb-2">
           {TABS.map((tab) => {
             const Icon = tab.icon
             const active = activeTab === tab.id
