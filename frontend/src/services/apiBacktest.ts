@@ -309,3 +309,29 @@ export async function runWalkForward(req: WalkForwardRequest): Promise<WalkForwa
   const { data } = await api.post<WalkForwardResult>('/backtest/walk-forward', req)
   return data
 }
+
+export interface PortfolioCorrelationResult {
+  window_days: number
+  strategies: string[]
+  pnl_series_by_strategy: Record<string, Record<string, number>>
+  correlation_matrix: number[][]
+  summary: {
+    n_strategies: number
+    n_days: number
+    mean_pairwise_correlation: number
+    mean_abs_pairwise_correlation: number
+    max_pairwise_correlation: number
+    min_pairwise_correlation: number
+    diversification_ratio: number
+  }
+}
+
+export async function getPortfolioCorrelation(
+  windowDays = 30,
+  minStrategyTrades = 5,
+): Promise<PortfolioCorrelationResult> {
+  const { data } = await api.get<PortfolioCorrelationResult>('/backtest/portfolio-correlation', {
+    params: { window_days: windowDays, min_strategy_trades: minStrategyTrades },
+  })
+  return data
+}

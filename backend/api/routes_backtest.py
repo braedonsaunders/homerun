@@ -110,6 +110,27 @@ class WalkForwardRequest(BaseModel):
     concurrency: int = Field(default=2, ge=1, le=8)
 
 
+@router.get("/portfolio-correlation")
+async def portfolio_correlation_route(
+    window_days: int = 30,
+    min_strategy_trades: int = 5,
+):
+    """Cross-strategy daily-PnL correlation matrix over the last
+    ``window_days``.  Surfaces the portfolio-level question: even if
+    each strategy looks fine alone, do they drown together?"""
+    from services.backtest.portfolio_correlation import compute_portfolio_correlation
+
+    try:
+        result = await compute_portfolio_correlation(
+            window_days=int(max(1, min(365, window_days))),
+            min_strategy_trades=int(max(1, min_strategy_trades)),
+        )
+    except Exception as exc:
+        logger.exception("Portfolio correlation failed")
+        raise HTTPException(status_code=500, detail=f"correlation failed: {exc}") from exc
+    return result.to_dict()
+
+
 @router.post("/walk-forward")
 async def run_walk_forward_route(req: WalkForwardRequest):
     """Run walk-forward analysis: split [start, end] into n_folds and

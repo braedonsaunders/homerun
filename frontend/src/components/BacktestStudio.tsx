@@ -39,9 +39,11 @@ import { ScrollArea } from './ui/scroll-area'
 import { cn } from '../lib/utils'
 import {
   type BacktestRunSummary,
+  type PortfolioCorrelationResult,
   type UnifiedBacktestResult,
   type WalkForwardResult,
   getBacktestRun,
+  getPortfolioCorrelation,
   listBacktestRuns,
   runUnifiedBacktest,
   runWalkForward,
@@ -193,6 +195,112 @@ function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equi
     </div>
   )
 }
+
+function CorrelationHeatmap({ result }: { result: PortfolioCorrelationResult }) {
+  const { strategies, correlation_matrix, summary } = result
+  if (!strategies || strategies.length === 0) {
+    return (
+      <div className="text-[11px] text-muted-foreground italic">
+        No strategies have ≥ 5 terminal trades in the last {result.window_days} days. Cross-strategy
+        correlation needs daily PnL series to compute.
+      </div>
+    )
+  }
+  const cellSize = Math.min(36, Math.max(20, Math.floor(280 / strategies.length)))
+  const labelMaxLen = 12
+  const truncate = (s: string) => (s.length > labelMaxLen ? s.slice(0, labelMaxLen - 1) + '…' : s)
+  const colorFor = (r: number): string => {
+    // Diverging palette: -1 blue, 0 neutral, +1 red.  Reds are the
+    // worry colour because high cross-correlation = concentrated risk.
+    if (r >= 0.7) return 'rgba(239, 68, 68, 0.8)'
+    if (r >= 0.4) return 'rgba(249, 115, 22, 0.6)'
+    if (r >= 0.1) return 'rgba(245, 158, 11, 0.4)'
+    if (r >= -0.1) return 'rgba(120, 120, 120, 0.25)'
+    if (r >= -0.4) return 'rgba(34, 197, 94, 0.4)'
+    if (r >= -0.7) return 'rgba(16, 185, 129, 0.6)'
+    return 'rgba(34, 197, 94, 0.85)'
+  }
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-2">
+        <StatTile
+          label="Diversification"
+          value={`${(summary.diversification_ratio * 100).toFixed(0)}%`}
+          hint="1 - mean(|ρ|), higher = better"
+          tone={summary.diversification_ratio >= 0.7 ? 'good' : summary.diversification_ratio >= 0.4 ? 'warn' : 'bad'}
+        />
+        <StatTile
+          label="Mean |ρ|"
+          value={summary.mean_abs_pairwise_correlation.toFixed(2)}
+          hint={`min ${summary.min_pairwise_correlation.toFixed(2)} · max ${summary.max_pairwise_correlation.toFixed(2)}`}
+          tone={summary.mean_abs_pairwise_correlation >= 0.5 ? 'bad' : summary.mean_abs_pairwise_correlation >= 0.3 ? 'warn' : 'good'}
+        />
+        <StatTile
+          label="Strategies"
+          value={`${summary.n_strategies}`}
+          hint={`${summary.n_days} days of PnL`}
+        />
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="border-collapse">
+          <thead>
+            <tr>
+              <th />
+              {strategies.map((s) => (
+                <th
+                  key={s}
+                  title={s}
+                  style={{ width: cellSize, height: cellSize }}
+                  className="text-[8px] text-muted-foreground"
+                >
+                  <div className="origin-bottom-left -translate-y-1 translate-x-2 -rotate-45 whitespace-nowrap font-mono">
+                    {truncate(s)}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {strategies.map((rowStrat, i) => (
+              <tr key={rowStrat}>
+                <td
+                  title={rowStrat}
+                  className="pr-1 text-right text-[9px] font-mono text-muted-foreground"
+                  style={{ height: cellSize }}
+                >
+                  {truncate(rowStrat)}
+                </td>
+                {strategies.map((_, j) => {
+                  const r = correlation_matrix[i]?.[j] ?? 0
+                  return (
+                    <td
+                      key={`${i}-${j}`}
+                      title={`${rowStrat} ↔ ${strategies[j]}: ρ = ${r.toFixed(2)}`}
+                      style={{
+                        width: cellSize,
+                        height: cellSize,
+                        backgroundColor: colorFor(r),
+                        border: '1px solid rgba(120,120,120,0.15)',
+                      }}
+                      className="text-center font-mono text-[8px] text-foreground/80"
+                    >
+                      {r.toFixed(2)}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2 text-[10px] text-muted-foreground">
+        Red cells (ρ &gt; 0.4) ⇒ strategies that drew down together. Green (ρ &lt; -0.4) ⇒ natural
+        hedge pair. Diversification ratio above 70% = healthy portfolio.
+      </div>
+    </div>
+  )
+}
+
 
 function RegimeBlock({
   title,
@@ -520,6 +628,14 @@ export default function BacktestStudio({
     refetchInterval: 60_000,
   })
 
+  // Portfolio correlation: pulls live cross-strategy PnL correlation
+  // matrix over the last 30 days.  Auto-refresh every 5 minutes.
+  const portfolioCorrelationQuery = useQuery({
+    queryKey: ['portfolio-correlation', 30],
+    queryFn: () => getPortfolioCorrelation(30, 5),
+    refetchInterval: 300_000,
+  })
+
   // Walk-forward: not auto-run.  User triggers via the panel button.
   const [walkForwardResult, setWalkForwardResult] = useState<WalkForwardResult | null>(null)
   const [walkForwardMode, setWalkForwardMode] = useState<'anchored' | 'rolling'>('anchored')
@@ -785,6 +901,23 @@ export default function BacktestStudio({
 
         {/* CENTER — results */}
         <ScrollArea className="flex-1 min-h-0">
+          {/* Portfolio correlation always shows — it's a global view
+              that doesn't depend on any single run. */}
+          {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
+            <div className="space-y-4 p-3">
+              <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                  <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
+                  Portfolio correlation (live, last 30 days)
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    cross-strategy daily PnL
+                  </span>
+                </div>
+                <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
+              </div>
+            </div>
+          ) : null}
+
           {!activeRun ? (
             <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-2 px-6 py-12 text-center">
               <Flame className="h-8 w-8 text-amber-300/50" />
