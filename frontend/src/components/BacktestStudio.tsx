@@ -192,6 +192,63 @@ function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equi
   )
 }
 
+function CalibrationPlot({ bins }: { bins: Array<{ predicted_mean: number; observed_rate: number; n: number }> }) {
+  if (!bins || bins.length === 0) return null
+  const w = 220
+  const h = 110
+  const pad = 8
+  const innerW = w - pad * 2
+  const innerH = h - pad * 2
+  const points = bins
+    .slice()
+    .sort((a, b) => a.predicted_mean - b.predicted_mean)
+  // Diagonal y=x reference (perfect calibration).
+  const diag = `M${pad},${h - pad} L${w - pad},${pad}`
+  // Observed rate trace.
+  const trace = points
+    .map((p, i) => {
+      const x = pad + Math.max(0, Math.min(1, p.predicted_mean)) * innerW
+      const y = h - pad - Math.max(0, Math.min(1, p.observed_rate)) * innerH
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
+  // Per-bin sample-size circles.
+  const maxN = Math.max(...points.map((p) => p.n)) || 1
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 p-2">
+      <svg width={w} height={h}>
+        <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="rgb(120,120,120)" strokeOpacity={0.3} strokeWidth={0.5} />
+        <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="rgb(120,120,120)" strokeOpacity={0.3} strokeWidth={0.5} />
+        <path d={diag} fill="none" stroke="rgb(120,120,120)" strokeOpacity={0.4} strokeDasharray="2,2" strokeWidth={0.6} />
+        <path d={trace} fill="none" stroke="hsl(160, 80%, 55%)" strokeWidth={1.5} />
+        {points.map((p, i) => {
+          const x = pad + Math.max(0, Math.min(1, p.predicted_mean)) * innerW
+          const y = h - pad - Math.max(0, Math.min(1, p.observed_rate)) * innerH
+          const r = 2 + (p.n / maxN) * 3
+          return (
+            <circle
+              key={i}
+              cx={x}
+              cy={y}
+              r={r}
+              fill="hsl(160, 80%, 55%)"
+              fillOpacity={0.7}
+              stroke="hsl(160, 80%, 65%)"
+              strokeWidth={0.5}
+            />
+          )
+        })}
+      </svg>
+      <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+        <span>0 predicted</span>
+        <span>diagonal = perfect</span>
+        <span>1</span>
+      </div>
+    </div>
+  )
+}
+
+
 function HazardBar({ label, hr }: { label: string; hr: number }) {
   const clamped = Math.max(0.2, Math.min(2.5, hr))
   const isPos = clamped >= 1.0
@@ -707,6 +764,45 @@ export default function BacktestStudio({
                   <MetricRow label="Hit rate" m={exec?.hit_rate} />
                   <MetricRow label="Profit factor" m={exec?.profit_factor} />
                   <MetricRow label="Expectancy ($)" m={exec?.expectancy_usd} />
+                  {activeRun?.deflated_sharpe ? (
+                    <div className="mt-2 border-t border-border/40 pt-2">
+                      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <span>Deflated Sharpe (López de Prado)</span>
+                        <span>{activeRun.deflated_sharpe.n_trials} trial{activeRun.deflated_sharpe.n_trials === 1 ? '' : 's'}</span>
+                      </div>
+                      <div className="mt-1 grid grid-cols-2 gap-1 text-[11px]">
+                        <div className="flex items-center justify-between rounded-sm bg-muted/40 px-1.5 py-0.5">
+                          <span className="text-muted-foreground">P(true SR &gt; 0)</span>
+                          <span className={cn(
+                            'font-mono tabular-nums',
+                            activeRun.deflated_sharpe.probabilistic_sharpe >= 0.95 ? 'text-emerald-300'
+                              : activeRun.deflated_sharpe.probabilistic_sharpe >= 0.7 ? 'text-amber-300'
+                              : 'text-red-300',
+                          )}>
+                            {(activeRun.deflated_sharpe.probabilistic_sharpe * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between rounded-sm bg-muted/40 px-1.5 py-0.5">
+                          <span className="text-muted-foreground">P(SR &gt; SR₀ overfit)</span>
+                          <span className={cn(
+                            'font-mono tabular-nums',
+                            activeRun.deflated_sharpe.deflated_sharpe >= 0.95 ? 'text-emerald-300'
+                              : activeRun.deflated_sharpe.deflated_sharpe >= 0.7 ? 'text-amber-300'
+                              : 'text-red-300',
+                          )}>
+                            {(activeRun.deflated_sharpe.deflated_sharpe * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        SR₀ {activeRun.deflated_sharpe.sr_zero.toFixed(2)} (max-of-N noise floor) ·
+                        observed {activeRun.deflated_sharpe.observed_sharpe.toFixed(2)} ·
+                        {activeRun.deflated_sharpe.deflated_sharpe < 0.95 && activeRun.deflated_sharpe.n_trials > 1
+                          ? ' likely overfit ⇒ run holdout'
+                          : ' overfit-aware OK'}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
@@ -899,6 +995,15 @@ export default function BacktestStudio({
                         with full survival_features.
                       </div>
                     )}
+                    {fillModel.calibration_bins && fillModel.calibration_bins.length >= 3 ? (
+                      <div className="mt-2">
+                        <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+                          <span>calibration (predicted vs observed)</span>
+                          <span>{fillModel.calibration_bins.length} bins</span>
+                        </div>
+                        <CalibrationPlot bins={fillModel.calibration_bins} />
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <div className="text-[11px] text-muted-foreground italic">

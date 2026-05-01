@@ -227,6 +227,11 @@ async def fetch_training_rows(
             "duration_seconds": duration_seconds,
             "event_observed": event_observed,
             "market_type_strata": str(sf.get("market_type_strata") or "pooled"),
+            # Carry created_at so the train/test split can be
+            # chronological — sorting by duration biases the test
+            # cohort toward long-duration cancels and produces
+            # meaningless C-index numbers.
+            "_created_at_epoch": float(ca.timestamp()) if ca else 0.0,
         }
         for c in COVARIATES:
             v = sf.get(c)
@@ -247,34 +252,92 @@ async def fetch_training_rows(
 # spread features all zero).
 _MIN_USABLE_STD = 1e-6
 
+# Maximum fraction of NaN values a covariate can have BEFORE imputation
+# while still being included in the Cox fit.  Above this threshold the
+# imputation is essentially injecting a constant (the column mean) into
+# most rows, which destroys the partial-likelihood numerical conditioning
+# even when the post-imputation std passes the floor above.  Empirically,
+# 0.5 is the sweet spot — stricter rejects useful covariates from
+# moderately-sparse cohorts; looser triggers the "delta contains nan"
+# convergence failure during legacy-payload backfill.
+_MAX_NAN_FRACTION = 0.5
+
+# Maximum |Pearson r| between two covariates before we drop the
+# higher-index one.  Perfect collinearity is a Cox killer; near-perfect
+# collinearity (|r| > 0.98) makes the Hessian numerically singular.
+_MAX_PAIRWISE_CORRELATION = 0.98
+
 
 def _impute_means(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float], dict[str, float], list[str]]:
     """Mean-impute missing covariates; standardize for Cox numeric stability.
 
+    Three-stage screen, in order:
+      1. Drop columns whose pre-imputation NaN fraction exceeds
+         ``_MAX_NAN_FRACTION`` — imputing a constant into most rows
+         crashes the partial-likelihood Hessian even when the column's
+         observed values would otherwise have variance.
+      2. Drop columns whose POST-imputation standard deviation falls
+         under ``_MIN_USABLE_STD`` — these are effectively constant and
+         contribute no signal.
+      3. Drop one of any pair of columns with |Pearson r| above
+         ``_MAX_PAIRWISE_CORRELATION`` — near-perfect collinearity
+         silently produces NaN gradients in lifelines.
+
     Returns ``(out, means, stds, usable_covariates)`` where
-    ``usable_covariates`` is the subset of ``COVARIATES`` that have
-    non-degenerate variance and are safe to feed to ``CoxPHFitter.fit``.
-    Degenerate columns are kept in ``out`` (as constants) so callers can
-    still reference them, but only ``usable_covariates`` should be passed
-    to the fitter.
+    ``usable_covariates`` is the subset of ``COVARIATES`` that survives
+    all three screens.  Dropped columns are still imputed/standardized
+    in ``out`` (as constants) so callers can reference them; only
+    ``usable_covariates`` should be passed to the fitter.
     """
     means: dict[str, float] = {}
     stds: dict[str, float] = {}
     usable: list[str] = []
     out = df.copy()
+    n = max(1, len(df))
     for c in COVARIATES:
         col = out[c].astype(float)
+        nan_fraction = float(col.isna().sum()) / n
         m = float(col.mean()) if col.notna().any() else 0.0
         s = float(col.std()) if col.notna().any() else 1.0
+        too_sparse = nan_fraction > _MAX_NAN_FRACTION
         degenerate = (not math.isfinite(s)) or s <= _MIN_USABLE_STD
-        if degenerate:
-            s = 1.0
         out[c] = col.fillna(m)
         means[c] = m
-        stds[c] = s
-        out[c] = (out[c] - m) / s
-        if not degenerate:
-            usable.append(c)
+        stds[c] = max(s, 1.0) if degenerate else s
+        out[c] = (out[c] - m) / stds[c]
+        if too_sparse or degenerate:
+            if too_sparse:
+                logger.debug(
+                    "Cox covariate %s dropped: %.1f%% NaN before imputation",
+                    c, nan_fraction * 100,
+                )
+            continue
+        usable.append(c)
+
+    # Pairwise collinearity screen on the surviving columns.
+    if len(usable) >= 2:
+        try:
+            corr = out[usable].corr().abs()
+            to_drop: set[str] = set()
+            for i, ci in enumerate(usable):
+                if ci in to_drop:
+                    continue
+                for cj in usable[i + 1:]:
+                    if cj in to_drop:
+                        continue
+                    r = float(corr.loc[ci, cj]) if ci in corr.index and cj in corr.columns else 0.0
+                    if math.isfinite(r) and r >= _MAX_PAIRWISE_CORRELATION:
+                        to_drop.add(cj)
+                        logger.debug(
+                            "Cox covariate %s dropped: |r|=%.3f with %s (>%.2f)",
+                            cj, r, ci, _MAX_PAIRWISE_CORRELATION,
+                        )
+            usable = [c for c in usable if c not in to_drop]
+        except Exception:
+            # Correlation computation failure shouldn't block the fit —
+            # keep the existing usable set and let the fitter try.
+            pass
+
     return out, means, stds, usable
 
 
@@ -316,9 +379,16 @@ def fit_kaplan_meier(df: pd.DataFrame, *, strata_key: str) -> TrainingResult:
 
 
 def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> TrainingResult:
-    """Fit Cox PH with held-out validation.  Returns a TrainingResult."""
-    # Hold out the most recent ``holdout_days`` for validation.
-    df = df.sort_values("duration_seconds").reset_index(drop=True)
+    """Fit Cox PH with chronologically-held-out validation.
+
+    The split is by ``_created_at_epoch`` so the test cohort is
+    "later" orders the model has never seen — which is the right
+    out-of-sample test for a fill predictor.  Sorting by duration
+    biases the test set toward long-duration censored events and
+    produces near-zero C-index even on legitimate models.
+    """
+    sort_col = "_created_at_epoch" if "_created_at_epoch" in df.columns else "duration_seconds"
+    df = df.sort_values(sort_col).reset_index(drop=True)
     n_total = len(df)
     holdout_n = max(1, int(n_total * 0.2))
     train = df.iloc[: n_total - holdout_n].copy()
@@ -405,11 +475,26 @@ def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> T
             # P(fill ≤ T_med) = 1 - S0(T_med) ** partial_hazard
             t_median = float(test_imputed["duration_seconds"].median())
             try:
-                s0_median = float(cph.baseline_survival_at_times([t_median]).iloc[0, 0])
+                bs = cph.baseline_survival_at_times([t_median])
+                # ``baseline_survival_at_times`` may return either a
+                # DataFrame (newer lifelines) or a Series (older).
+                if hasattr(bs, "iloc"):
+                    if getattr(bs, "ndim", 1) == 2:
+                        s0_median = float(bs.iloc[0, 0])
+                    else:
+                        s0_median = float(bs.iloc[0])
+                else:
+                    s0_median = float(bs[0])
             except Exception:
-                s0_median = float(cph.baseline_survival_.iloc[
-                    (cph.baseline_survival_.index - t_median).abs().argmin()
-                ].iloc[0])
+                # Older lifelines path: nearest-neighbour lookup on the
+                # cumulative ``baseline_survival_`` index.  Coerce the
+                # index to a numpy array so .abs() / .argmin() work
+                # regardless of whether it's a Float64Index or a
+                # generic Index.
+                idx = np.asarray(cph.baseline_survival_.index, dtype=float)
+                near = int(np.abs(idx - t_median).argmin())
+                row = cph.baseline_survival_.iloc[near]
+                s0_median = float(row.iloc[0]) if hasattr(row, "iloc") else float(row)
             ph_arr = np.asarray(partial_hazards, dtype=float)
             # Numerical safety: clamp baseline survival into (eps, 1-eps).
             s0_clamped = max(min(s0_median, 1.0 - 1e-9), 1e-9)

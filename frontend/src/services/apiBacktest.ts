@@ -53,6 +53,15 @@ export interface ExecutionResult {
   runtime_traceback: string | null
 }
 
+export interface CalibrationBin {
+  bin: number
+  n: number
+  predicted_mean: number
+  observed_rate: number
+  predicted_min: number
+  predicted_max: number
+}
+
 export interface FillModelInfo {
   loaded: boolean
   family?: string
@@ -65,7 +74,17 @@ export interface FillModelInfo {
   feature_means?: Record<string, number>
   feature_stds?: Record<string, number>
   baseline_survival_points?: Array<{ t_seconds: number; survival: number }>
+  calibration_bins?: CalibrationBin[] | null
   notes?: string
+}
+
+export interface DeflatedSharpeResult {
+  observed_sharpe: number
+  sr_zero: number
+  probabilistic_sharpe: number
+  deflated_sharpe: number
+  n_observations: number
+  n_trials: number
 }
 
 export interface EmpiricalConstants {
@@ -142,6 +161,7 @@ export interface UnifiedBacktestResult {
   strategy_slug: string
   strategy_name: string | null
   execution: ExecutionResult
+  deflated_sharpe: DeflatedSharpeResult
   fill_model: FillModelInfo
   empirical_constants: EmpiricalConstants
   latency: LatencyDistribution

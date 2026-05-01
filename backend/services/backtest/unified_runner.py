@@ -83,10 +83,63 @@ def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
     return _RECENT_RUNS.get(str(run_id))
 
 
+def _compute_deflated_sharpe(exec_dict: dict[str, Any], *, n_trials: int) -> dict[str, Any]:
+    """Derive López de Prado's deflated Sharpe from the equity-curve
+    sample.  Falls back to zero-noise output when the curve is too
+    short for a meaningful return distribution."""
+    from services.backtest.metrics import deflated_sharpe_ratio
+
+    curve = exec_dict.get("equity_curve_sample") or []
+    equities: list[float] = []
+    for point in curve:
+        if isinstance(point, dict):
+            v = point.get("equity_usd")
+            if isinstance(v, (int, float)):
+                equities.append(float(v))
+    if len(equities) < 4:
+        return {
+            "observed_sharpe": float(exec_dict.get("sharpe", {}).get("value") or 0.0),
+            "sr_zero": 0.0,
+            "probabilistic_sharpe": 0.0,
+            "deflated_sharpe": 0.0,
+            "n_observations": len(equities),
+            "n_trials": int(max(1, n_trials)),
+        }
+    returns = []
+    prev = equities[0]
+    for v in equities[1:]:
+        if prev > 0:
+            returns.append((v - prev) / prev)
+        prev = v
+    return deflated_sharpe_ratio(returns, n_trials=n_trials, periods_per_year=252)
+
+
 async def _capture_fill_model_snapshot() -> dict[str, Any]:
     snap: FillModelSnapshot | None = await load_active_fill_model(strata_key="pooled")
     if snap is None:
         return {"loaded": False}
+    # Pull the active row's config_json directly to surface the
+    # calibration_bins computed at training time.  cox_inference's
+    # FillModelSnapshot doesn't carry config; one extra DB query is
+    # cheap (cached above by load_active_fill_model anyway).
+    calibration_bins: list[dict[str, Any]] | None = None
+    try:
+        from sqlalchemy import select
+        from models.database import AsyncSessionLocal, FillProbabilityModel
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(FillProbabilityModel.config_json)
+                .where(FillProbabilityModel.active.is_(True))
+                .where(FillProbabilityModel.strata_key == "pooled")
+                .order_by(FillProbabilityModel.trained_at.desc())
+                .limit(1)
+            )
+            row = result.first()
+            if row is not None and isinstance(row[0], dict):
+                calibration_bins = row[0].get("calibration_bins") or None
+    except Exception:
+        calibration_bins = None
     return {
         "loaded": True,
         "family": snap.family,
@@ -101,6 +154,7 @@ async def _capture_fill_model_snapshot() -> dict[str, Any]:
         "baseline_survival_points": [
             {"t_seconds": float(t), "survival": float(s)} for t, s in snap.baseline_survival[:200]
         ],
+        "calibration_bins": calibration_bins,
         "notes": snap.notes,
     }
 
@@ -338,6 +392,11 @@ async def run_unified_backtest(
     completed_at = datetime.now(timezone.utc).isoformat()
     total_time_ms = (time.perf_counter() - started_perf) * 1000.0
 
+    # Deflated Sharpe — derive from the equity-curve sample, treat
+    # the run's parameter sweep size as n_trials when present (defaults
+    # to 1, i.e. no penalty, when the strategy wasn't tuned).
+    deflated = _compute_deflated_sharpe(exec_dict, n_trials=1)
+
     out = {
         "run_id": run_id,
         "started_at": started_at,
@@ -346,6 +405,7 @@ async def run_unified_backtest(
         "strategy_slug": exec_dict.get("strategy_slug") or slug,
         "strategy_name": exec_dict.get("strategy_name"),
         "execution": exec_dict,
+        "deflated_sharpe": deflated,
         "fill_model": fill_model,
         "empirical_constants": constants,
         "latency": latency,

@@ -138,6 +138,118 @@ def sharpe_of_returns(returns: Sequence[float], *, periods_per_year: int = 252) 
     return mu / sigma * math.sqrt(periods_per_year)
 
 
+def _skewness(xs: Sequence[float]) -> float:
+    if len(xs) < 3:
+        return 0.0
+    m = _mean(xs)
+    s = _std(xs)
+    if s <= 0:
+        return 0.0
+    n = len(xs)
+    return (n / ((n - 1) * (n - 2))) * sum(((x - m) / s) ** 3 for x in xs)
+
+
+def _kurtosis(xs: Sequence[float]) -> float:
+    """Excess kurtosis (kurtosis - 3 ⇒ 0 for normal)."""
+    if len(xs) < 4:
+        return 0.0
+    m = _mean(xs)
+    s = _std(xs)
+    if s <= 0:
+        return 0.0
+    n = len(xs)
+    g2 = sum(((x - m) / s) ** 4 for x in xs) / n - 3.0
+    return g2
+
+
+def deflated_sharpe_ratio(
+    returns: Sequence[float],
+    *,
+    n_trials: int,
+    periods_per_year: int = 252,
+) -> dict[str, float]:
+    """López de Prado's Deflated Sharpe Ratio.
+
+    Adjusts the observed Sharpe for (a) the number of independent
+    parameter trials that were searched and (b) the non-normality of
+    the return distribution (skewness + kurtosis).  Returns the
+    probability that the TRUE Sharpe exceeds the SR0 floor of 0
+    after the multiple-comparisons correction.
+
+    Reference: ``The Sharpe Ratio Efficient Frontier'', JoR 2012.
+
+    Returns a dict with:
+      observed_sharpe: raw annualized Sharpe.
+      sr_zero: theoretical max Sharpe across n_trials of pure noise.
+      probabilistic_sharpe: P(true SR > 0) ignoring trial count.
+      deflated_sharpe: P(true SR > sr_zero) — the over-fit-aware metric.
+
+    A deflated_sharpe < 0.95 with n_trials > 1 means you can't
+    confidently distinguish the strategy from luck given how many
+    knobs you tuned.
+    """
+    n = len(returns)
+    if n < 4:
+        return {
+            "observed_sharpe": 0.0,
+            "sr_zero": 0.0,
+            "probabilistic_sharpe": 0.0,
+            "deflated_sharpe": 0.0,
+            "n_observations": n,
+            "n_trials": int(max(1, n_trials)),
+        }
+    n_trials = max(1, int(n_trials))
+    sr = sharpe_of_returns(returns, periods_per_year=periods_per_year)
+    skew = _skewness(returns)
+    excess_kurt = _kurtosis(returns)
+
+    # SR0: expected max of n_trials draws from N(0, 1) annualised SR.
+    # López de Prado eq. 9: SR0 = sqrt(V) * ((1 - γ)·Φ⁻¹(1-1/N) + γ·Φ⁻¹(1-1/(N·e)))
+    # where V is the variance of trial Sharpes (assumed = 1/T if not
+    # estimated) and γ ≈ 0.5772 (Euler-Mascheroni).  We approximate
+    # V = 1.0 and use a simpler form widely used in practice:
+    # SR0 ≈ Φ⁻¹(1 - 1/N) / sqrt(T)  scaled to the annualisation.
+    from math import sqrt as _sqrt
+    from statistics import NormalDist as _Normal
+
+    normal = _Normal()
+    # Quantile of the max of N normal draws — Bonferroni-style.
+    if n_trials == 1:
+        sr_zero = 0.0
+    else:
+        emc = 0.5772156649015329
+        z_max = (1 - emc) * normal.inv_cdf(1.0 - 1.0 / n_trials) + emc * normal.inv_cdf(
+            1.0 - 1.0 / (n_trials * math.e)
+        )
+        # Convert per-period SR0 to annualised.
+        sr_zero = z_max / _sqrt(max(1, n)) * _sqrt(periods_per_year)
+
+    # Standard error of the observed Sharpe (Mertens 2002):
+    sr_var = (1.0 - skew * sr + (excess_kurt / 4.0) * sr * sr) / max(1, n - 1)
+    if sr_var <= 0:
+        return {
+            "observed_sharpe": float(sr),
+            "sr_zero": float(sr_zero),
+            "probabilistic_sharpe": 1.0 if sr > 0 else 0.0,
+            "deflated_sharpe": 1.0 if sr > sr_zero else 0.0,
+            "n_observations": n,
+            "n_trials": n_trials,
+        }
+    sr_se = _sqrt(sr_var)
+    # PSR: probability that the true SR exceeds 0.
+    psr = float(normal.cdf((sr - 0.0) / sr_se))
+    # DSR: probability that the true SR exceeds SR0 (the max-of-N floor).
+    dsr = float(normal.cdf((sr - sr_zero) / sr_se))
+    return {
+        "observed_sharpe": float(sr),
+        "sr_zero": float(sr_zero),
+        "probabilistic_sharpe": psr,
+        "deflated_sharpe": dsr,
+        "n_observations": n,
+        "n_trials": n_trials,
+    }
+
+
 def sortino_of_returns(returns: Sequence[float], *, periods_per_year: int = 252) -> float:
     if len(returns) < 2:
         return 0.0
@@ -351,6 +463,7 @@ __all__ = [
     "BacktestMetrics",
     "bootstrap_ci",
     "compute_metrics",
+    "deflated_sharpe_ratio",
     "sharpe_of_returns",
     "sortino_of_returns",
     "hit_rate_of",
