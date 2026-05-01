@@ -1254,16 +1254,27 @@ class AutoresearchService:
                     return
 
         # Baseline backtest — UNIFIED runner (Cox-aware fill simulation,
-        # ensemble bands, deflated Sharpe, regime decomposition).  This
-        # is the same pipeline BacktestStudio shows, so the score the
-        # LLM optimizes against is the score a human would see.
+        # ensemble bands, deflated Sharpe, regime decomposition) plus a
+        # 3-fold walk-forward gate.  This is the same pipeline
+        # BacktestStudio shows; the score the LLM optimizes is the
+        # score a human would see, with overfit + generalization
+        # penalties baked in.
         try:
             baseline_result = await run_unified_backtest(
                 source_code=strategy_source,
                 slug=strategy_slug,
                 config=strategy_config,
             )
-            baseline_score = _code_evolution_score(baseline_result)
+            baseline_result = await _augment_with_walk_forward_gate(
+                result=baseline_result,
+                source_code=strategy_source,
+                slug=strategy_slug,
+                config=strategy_config,
+            )
+            baseline_score = _code_evolution_score(
+                baseline_result,
+                walk_forward_stability_pct=(baseline_result.get("walk_forward") or {}).get("stable_window_pct"),
+            )
         except Exception as exc:
             yield {"event": "error", "data": {"error": f"Baseline backtest failed: {exc}"}}
             return
@@ -1448,14 +1459,27 @@ class AutoresearchService:
                             reasoning = "No meaningful code changes detected"
                             reverted_count += 1
                         else:
-                            # Backtest new code — UNIFIED runner.
+                            # Backtest new code — UNIFIED runner + 3-fold
+                            # walk-forward gate.  An iteration that
+                            # beats baseline in-sample but degrades
+                            # across folds is rejected via the score.
                             try:
                                 bt_result = await run_unified_backtest(
                                     source_code=proposed_source,
                                     slug=strategy_slug,
                                     config=strategy_config,
                                 )
-                                new_score = _code_evolution_score(bt_result)
+                                bt_result = await _augment_with_walk_forward_gate(
+                                    result=bt_result,
+                                    source_code=proposed_source,
+                                    slug=strategy_slug,
+                                    config=strategy_config,
+                                )
+                                wf_stability = (bt_result.get("walk_forward") or {}).get("stable_window_pct")
+                                new_score = _code_evolution_score(
+                                    bt_result,
+                                    walk_forward_stability_pct=wf_stability,
+                                )
                                 score_delta = round(new_score - best_score, 4)
                                 backtest_result_dict = bt_result
                                 last_backtest_summary = _summarize_unified_for_prompt(bt_result)
@@ -1665,6 +1689,72 @@ def _code_evolution_score(
 
     score = sharpe_value * dsr_prob * stability_fraction - drawdown_penalty
     return round(score, 4)
+
+
+async def _augment_with_walk_forward_gate(
+    *,
+    result: dict,
+    source_code: str,
+    slug: str,
+    config: dict | None,
+    n_folds: int = 3,
+    window_days: int = 14,
+) -> dict:
+    """Run a per-iteration walk-forward and attach the summary to the
+    unified result.  Mutates and returns ``result``.
+
+    The institutional gate: every iteration runs N-fold walk-forward
+    (default 3 folds, anchored, over the trailing window_days) and
+    folds the stability fraction into the score.  An iteration that
+    beats baseline only in one window but degrades in others is
+    rejected by ``_code_evolution_score``.
+
+    Best-effort: if walk-forward fails (e.g. data sparsity) we attach
+    nothing and the score falls back to the no-gate path
+    (stability=1.0, no penalty).  Run failures shouldn't crash the
+    iteration loop — the LLM still gets the unified result, just
+    without WF triangulation that round.
+    """
+    from services.backtest.walk_forward import run_walk_forward
+    from datetime import timedelta
+
+    end = utcnow()
+    start = end - timedelta(days=window_days)
+    try:
+        wf = await run_walk_forward(
+            source_code=source_code,
+            slug=slug,
+            config=config,
+            start=start,
+            end=end,
+            mode="anchored",
+            n_folds=n_folds,
+            train_ratio=0.5,
+            embargo_seconds=0.0,
+            concurrency=2,
+        )
+    except Exception as exc:
+        result["walk_forward_error"] = str(exc)
+        return result
+
+    summary = wf.summary if hasattr(wf, "summary") else {}
+    fold_returns = [
+        round(float(w.total_return_pct), 4)
+        for w in (wf.windows if hasattr(wf, "windows") else [])
+        if getattr(w, "success", False)
+    ]
+    result["walk_forward"] = {
+        "n_windows_run": summary.get("n_windows_run"),
+        "n_windows_succeeded": summary.get("n_windows_succeeded"),
+        "stable_window_pct": summary.get("stable_window_pct"),
+        "mean_return_pct": summary.get("mean_return_pct"),
+        "min_return_pct": summary.get("min_return_pct"),
+        "max_return_pct": summary.get("max_return_pct"),
+        "mean_sharpe": summary.get("mean_sharpe"),
+        "min_sharpe": summary.get("min_sharpe"),
+        "fold_returns_pct": fold_returns,
+    }
+    return result
 
 
 def _summarize_unified_for_prompt(result: dict) -> dict:
