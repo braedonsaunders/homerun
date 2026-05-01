@@ -53,6 +53,11 @@ from services.fill_simulator.ensemble import (
     EnsembleScenario,
     ensemble_estimate,
 )
+from services.fill_simulator.counterfactual_replay import (
+    CounterfactualOrder,
+    CounterfactualResult,
+    replay_counterfactual_order,
+)
 
 __all__ = [
     "SurvivalFeatures",
@@ -73,4 +78,7 @@ __all__ = [
     "EnsembleResult",
     "EnsembleScenario",
     "ensemble_estimate",
+    "CounterfactualOrder",
+    "CounterfactualResult",
+    "replay_counterfactual_order",
 ]

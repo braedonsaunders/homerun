@@ -291,6 +291,45 @@ async def get_decomposition_summary(hours: int = Query(default=24, ge=1, le=168)
 # ---------------------------------------------------------------------
 
 
+class CounterfactualRequest(BaseModel):
+    token_id: str
+    side: str = Field(pattern="^(buy|sell)$")
+    price: float = Field(gt=0.0, lt=1.0)
+    size_shares: float = Field(gt=0.0)
+    placed_at: datetime
+    time_in_force_seconds: float = Field(default=60.0, gt=0.0, le=3600.0)
+
+
+@router.post("/counterfactual")
+async def run_counterfactual(req: CounterfactualRequest):
+    """Replay a hypothetical order against historical book + tape.
+
+    Asks: if I had placed (token, side, price, size) at time T with TIF
+    seconds, would it have filled?  Returns realized fills, time to
+    fill, and queue behavior.  Used by the UI's "what if" panel and
+    by the Cox trainer when bootstrapping synthetic labels.
+    """
+    from services.fill_simulator import (
+        CounterfactualOrder,
+        replay_counterfactual_order,
+    )
+
+    placed_at = req.placed_at
+    if placed_at.tzinfo is None:
+        placed_at = placed_at.replace(tzinfo=timezone.utc)
+    result = await replay_counterfactual_order(
+        CounterfactualOrder(
+            token_id=req.token_id,
+            side=req.side,
+            price=req.price,
+            size_shares=req.size_shares,
+            placed_at=placed_at,
+            time_in_force_seconds=req.time_in_force_seconds,
+        )
+    )
+    return result.to_dict()
+
+
 @router.get("/triangulation/{strategy_slug}")
 async def get_triangulation(
     strategy_slug: str = Path(..., min_length=1),

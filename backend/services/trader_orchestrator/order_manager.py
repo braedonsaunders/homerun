@@ -888,6 +888,30 @@ async def submit_execution_leg(
                 notional_usd=0.0,
             )
 
+        # Strategy hook: notify on the shadow fill so a strategy can
+        # update its own priors / calibrate its fill model.  Fire-and-
+        # forget — failures are logged in the dispatcher, never block
+        # the leg result.
+        if estimate.filled_shares > 0:
+            try:
+                strategy_slug = str(payload.get("strategy_key") or getattr(signal, "strategy_key", "") or "")
+                if strategy_slug:
+                    from services.strategy_callbacks import dispatch_on_fill
+
+                    asyncio.create_task(
+                        dispatch_on_fill(
+                            strategy_slug=strategy_slug,
+                            order=signal,
+                            mode="shadow",
+                            filled_shares=estimate.filled_shares,
+                            average_price=quote_price or 0.0,
+                            notional_usd=effective_shadow_notional,
+                            ensemble_snapshot=ensemble.to_dict(),
+                        )
+                    )
+            except Exception:
+                pass  # never raise from a fill notification
+
         return LegSubmitResult(
             leg_id=leg_id,
             status=shadow_status,

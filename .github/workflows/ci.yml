@@ -34,6 +34,10 @@ jobs:
       - name: Lint with ruff
         run: python -m ruff check .
 
+      - name: Guard against hardcoded fill-simulator constants
+        working-directory: ${{ github.workspace }}
+        run: python scripts/ci/check_no_hardcoded_fill_constants.py
+
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest

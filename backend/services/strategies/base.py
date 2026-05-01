@@ -909,6 +909,61 @@ class BaseStrategy(ABC):
             reason: Human-readable reason for the cap.
         """
 
+    def on_fill(
+        self,
+        order: Any,
+        *,
+        mode: str,
+        filled_shares: float,
+        average_price: float,
+        notional_usd: float,
+        ensemble_snapshot: dict | None = None,
+    ) -> None:
+        """Notification hook called when a strategy's order fills.
+
+        Called by the position lifecycle worker after an order transitions
+        to ``executed`` (shadow microstructure-simulated or live CLOB).
+        Use this to update strategy priors, calibrate the fill model, or
+        emit derived signals.  Return value is ignored — this is a pure
+        notification, not a control hook.
+
+        ``ensemble_snapshot`` is the ``shadow_simulation.ensemble`` dict
+        captured at placement time (pessimistic / realistic / optimistic
+        scenarios), so a strategy can compare predicted vs realized fill
+        and feed back into its own model.
+
+        Default impl is no-op.  Subclass and override to react.
+        """
+
+    def on_partial_fill(
+        self,
+        order: Any,
+        *,
+        mode: str,
+        filled_shares: float,
+        remaining_shares: float,
+        average_price: float,
+    ) -> None:
+        """Notification hook called when an order partially fills.
+
+        Default impl is no-op.
+        """
+
+    def on_cancel(
+        self,
+        order: Any,
+        *,
+        mode: str,
+        reason: str,
+        unfilled_shares: float,
+    ) -> None:
+        """Notification hook called when an order is cancelled or expires
+        without filling.  ``reason`` is a short string from the runtime
+        ("user_cancel", "expired", "timed_out", "venue_rejected", etc.).
+
+        Default impl is no-op.
+        """
+
     def configure(self, config: dict) -> None:
         """Apply merged config. Called by the loader after instantiation.
 
