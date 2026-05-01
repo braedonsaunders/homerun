@@ -4204,6 +4204,12 @@ async def _run_trader_once_inner(
     prefiltered_signals = 0
     prefiltered_by_reason: dict[str, int] = {}
     crypto_scope_prefiltered_dimensions: dict[str, int] = {}
+    # Hoisted to function scope so the post-loop cleanup is safe on any
+    # early-return path that bypasses the inner declaration block.  The
+    # nested live-context setup at the start of the per-signal loop
+    # overwrites these with the real task / state when it runs.
+    live_contexts_task: asyncio.Task[dict[str, dict[str, Any]]] | None = None
+    live_contexts_loaded: bool = True
 
     # Freshness gate: refuse to trade on stale wallet state.  When the
     # WS disconnects or the reconciliation worker's REST seed lapses,
@@ -5173,6 +5179,7 @@ async def _run_trader_once_inner(
             else:
                 if stream_trigger_mode:
                     break
+                _sl_fetch_started = time.monotonic()
                 signals = await list_unconsumed_trade_signals(
                     session,
                     trader_id=trader_id,
@@ -5184,6 +5191,7 @@ async def _run_trader_once_inner(
                     cursor_signal_id=cursor_signal_id,
                     limit=batch_limit,
                 )
+                _accumulate("sl_fetch_signals", _sl_fetch_started)
             if not signals:
                 if process_signals and not stream_trigger_mode and processed_signals == 0:
                     no_signal_payload: dict[str, Any] = {
@@ -5210,6 +5218,7 @@ async def _run_trader_once_inner(
 
             scoped_signals: list[Any] = []
             prefiltered = 0
+            _sl_prefilter_started = time.monotonic()
             for signal in signals:
                 signal_source = normalize_source_key(getattr(signal, "source", ""))
                 source_config = source_configs.get(signal_source)
@@ -5217,20 +5226,26 @@ async def _run_trader_once_inner(
                 signal_ts = _signal_cursor_timestamp(signal)
                 if source_config is not None:
                     if not source_entry_modes.get(signal_source, True):
-                        await record_signal_consumption(
-                            session,
+                        # Buffered audit writes — was 2 sync DB writes
+                        # per filtered signal followed by a single
+                        # ``_commit_with_retry`` at the bottom of this
+                        # prefilter loop.  Production soak (5/2026/05)
+                        # showed 4-7s of ``signal_loop`` time hidden in
+                        # this prefilter when 20+ signals failed the
+                        # strategy filter.  Hot-state audit_flush_loop
+                        # drains these in its own short tx, off the hot
+                        # path, with retry.
+                        await hot_state.buffer_signal_consumption(
                             trader_id=trader_id,
                             signal_id=signal_id,
                             outcome="skipped",
                             reason="Signal excluded: strategy is manage-existing-only (new entries disabled)",
-                            commit=False,
                         )
-                        await upsert_trader_signal_cursor(
-                            session,
+                        await hot_state.buffer_signal_cursor(
                             trader_id=trader_id,
                             last_signal_created_at=signal_ts,
                             last_signal_id=signal_id,
-                            commit=False,
+                            last_runtime_sequence=safe_int(_signal_runtime_sequence(signal), None),
                         )
                         cursor_created_at = signal_ts
                         cursor_signal_id = signal_id
@@ -5252,8 +5267,7 @@ async def _run_trader_once_inner(
                     )
                     if strategy_mismatch:
                         allowed_label = ", ".join(sorted(allowed_strategy_types)) or expected_strategy_key
-                        await record_signal_consumption(
-                            session,
+                        await hot_state.buffer_signal_consumption(
                             trader_id=trader_id,
                             signal_id=signal_id,
                             outcome="skipped",
@@ -5261,14 +5275,12 @@ async def _run_trader_once_inner(
                                 "Signal excluded by source strategy filter "
                                 f"(signal={signal_strategy_type or 'unknown'}, allowed={allowed_label})"
                             ),
-                            commit=False,
                         )
-                        await upsert_trader_signal_cursor(
-                            session,
+                        await hot_state.buffer_signal_cursor(
                             trader_id=trader_id,
                             last_signal_created_at=signal_ts,
                             last_signal_id=signal_id,
-                            commit=False,
+                            last_runtime_sequence=safe_int(_signal_runtime_sequence(signal), None),
                         )
                         cursor_created_at = signal_ts
                         cursor_signal_id = signal_id
@@ -5283,20 +5295,17 @@ async def _run_trader_once_inner(
                 if signal_source != "crypto" or source_config is None or _crypto_signal_in_scope(signal, source_config):
                     scoped_signals.append(signal)
                     continue
-                await record_signal_consumption(
-                    session,
+                await hot_state.buffer_signal_consumption(
                     trader_id=trader_id,
                     signal_id=signal_id,
                     outcome="skipped",
                     reason="Signal excluded by crypto scope filters",
-                    commit=False,
                 )
-                await upsert_trader_signal_cursor(
-                    session,
+                await hot_state.buffer_signal_cursor(
                     trader_id=trader_id,
                     last_signal_created_at=signal_ts,
                     last_signal_id=signal_id,
-                    commit=False,
+                    last_runtime_sequence=safe_int(_signal_runtime_sequence(signal), None),
                 )
                 cursor_created_at = signal_ts
                 cursor_signal_id = signal_id
@@ -5310,12 +5319,13 @@ async def _run_trader_once_inner(
                     crypto_scope_prefiltered_dimensions.get(dimension_key, 0) + 1
                 )
                 prefiltered += 1
-            if prefiltered > 0:
-                await _commit_with_retry(session)
-                try:
-                    await session.reset()
-                except Exception:
-                    pass
+            # No commit / reset needed: the prefilter writes above are
+            # all routed through ``hot_state.buffer_*`` which drains
+            # via the audit_flush_loop in its own short transactions.
+            # Was ``await _commit_with_retry(session); session.reset()``
+            # which under DB lock contention added 4-7s of dead time
+            # to the ``signal_loop`` bucket per cycle.
+            _accumulate("sl_prefilter_loop", _sl_prefilter_started)
             if not scoped_signals:
                 if prefiltered_signals > 0 and decisions_written == 0 and orders_written == 0 and process_signals:
                     payload = {
@@ -5349,6 +5359,7 @@ async def _run_trader_once_inner(
                     for signal in signals
                     if str(getattr(signal, "market_id", "") or "").strip() in reentry_cooldown_market_ids
                 }
+            _sl_runtime_state_started = time.monotonic()
             await _ensure_prefetched_source_runtime_state(
                 session,
                 trader_id=trader_id,
@@ -5361,11 +5372,15 @@ async def _run_trader_once_inner(
                 },
                 source_runtime_state=source_runtime_state_cache,
             )
+            _accumulate("sl_prefetched_runtime_state", _sl_runtime_state_started)
 
             live_contexts: dict[str, dict[str, Any]] = {}
+            live_contexts_task: asyncio.Task[dict[str, dict[str, Any]]] | None = None
+            live_contexts_loaded = not enable_live_market_context
+            live_context_timeout_seconds: Optional[float] = None
+            context_candidates: list[Any] = []
+            fallback_candidates: list[Any] = []
             if enable_live_market_context:
-                context_candidates: list[Any] = []
-                fallback_candidates: list[Any] = []
                 for sig in signals:
                     if str(sig.id) in occupied_signal_ids or str(sig.id) in cooldown_signal_ids:
                         continue
@@ -5414,44 +5429,77 @@ async def _run_trader_once_inner(
                     cycle_timeout_seconds=cycle_timeout_seconds,
                     reserve_seconds=2.0,
                 )
-                async with release_conn(session):
-                    try:
-                        if live_context_timeout_seconds is not None:
-                            if live_context_timeout_seconds < 0.25:
-                                live_contexts = {}
-                            else:
-                                live_contexts = await asyncio.wait_for(
-                                    _load_live_contexts(),
-                                    timeout=live_context_timeout_seconds,
-                                )
-                        else:
-                            live_contexts = await _load_live_contexts()
-                    except asyncio.TimeoutError:
-                        live_contexts = {}
-                        logger.warning(
-                            "Live market context refresh timed out for trader=%s timeout=%.2fs",
-                            trader_id,
-                            max(0.25, float(live_context_timeout_seconds or 0.0)),
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        try:
-                            live_contexts = await build_cached_live_signal_contexts(
-                                context_candidates,
-                                max_history_points=max_history_points,
-                                strict_ws_only=strict_ws_pricing_enforced,
-                            )
-                        except Exception as cache_exc:
-                            logger.debug("Failed to load cached live market contexts after refresh failure", exc_info=cache_exc)
+                # Run the batch live-context fetch concurrent with the
+                # per-signal loop's prefilter + setup work.  The previous
+                # implementation awaited this sequentially BEFORE the
+                # loop, so every cycle paid the full fetch cost as
+                # outside-per-signal overhead.  ``build_cached_live_signal_contexts``
+                # is pure-memory (no DB / HTTP) so we don't need
+                # ``release_conn``; the task simply runs while the loop
+                # walks occupied/cooldown signals, resolves strategy
+                # versions, runs validation, etc.  The first iteration
+                # that needs ``live_context`` awaits the task via
+                # ``_ensure_live_contexts_resolved``.
+                live_contexts_task = asyncio.create_task(
+                    _load_live_contexts(),
+                    name=f"live-contexts-{trader_id}",
+                )
+
+            async def _ensure_live_contexts_resolved() -> dict[str, dict[str, Any]]:
+                nonlocal live_contexts, live_contexts_loaded, live_contexts_task
+                if live_contexts_loaded:
+                    return live_contexts
+                task = live_contexts_task
+                if task is None:
+                    live_contexts_loaded = True
+                    return live_contexts
+                try:
+                    if live_context_timeout_seconds is not None:
+                        if live_context_timeout_seconds < 0.25:
+                            task.cancel()
                             live_contexts = {}
-                        if not live_contexts:
-                            exc_name = type(exc).__name__
-                            exc_message = str(exc).strip()
-                            if exc_message:
-                                logger.warning("Live market context refresh failed (%s): %s", exc_name, exc_message)
-                            else:
-                                logger.warning("Live market context refresh failed (%s)", exc_name)
+                        else:
+                            live_contexts = await asyncio.wait_for(
+                                asyncio.shield(task),
+                                timeout=live_context_timeout_seconds,
+                            )
+                    else:
+                        live_contexts = await task
+                except asyncio.TimeoutError:
+                    live_contexts = {}
+                    logger.warning(
+                        "Live market context refresh timed out for trader=%s timeout=%.2fs",
+                        trader_id,
+                        max(0.25, float(live_context_timeout_seconds or 0.0)),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    try:
+                        live_contexts = await build_cached_live_signal_contexts(
+                            context_candidates,
+                            max_history_points=max_history_points,
+                            strict_ws_only=strict_ws_pricing_enforced,
+                        )
+                    except Exception as cache_exc:
+                        logger.debug(
+                            "Failed to load cached live market contexts after refresh failure",
+                            exc_info=cache_exc,
+                        )
+                        live_contexts = {}
+                    if not live_contexts:
+                        exc_name = type(exc).__name__
+                        exc_message = str(exc).strip()
+                        if exc_message:
+                            logger.warning(
+                                "Live market context refresh failed (%s): %s", exc_name, exc_message
+                            )
+                        else:
+                            logger.warning("Live market context refresh failed (%s)", exc_name)
+                finally:
+                    live_contexts_loaded = True
+                    live_contexts_task = None
+                return live_contexts
 
             deferred_signals = 0
             deferred_by_reason: dict[str, int] = {}
@@ -5459,16 +5507,61 @@ async def _run_trader_once_inner(
             expired_by_reason: dict[str, int] = {}
             defer_signal_processing = False
             _last_per_signal_started: float | None = None
+            # Tracks which sub-stage the current iteration is inside.  When
+            # an iteration burns >= ``_per_signal_slow_log_seconds`` we log
+            # the offender — strategy / source / market_id / stage — so the
+            # outlier trader (production: c8851ef7…) is identifiable from
+            # the log alone instead of requiring a fresh soak with
+            # speculative instrumentation.
+            _current_signal_stage: str = "init"
+            _current_signal_stage_started: float = time.monotonic()
+            _per_signal_slow_log_seconds: float = 8.0
+
+            def _enter_stage(stage_name: str) -> None:
+                nonlocal _current_signal_stage, _current_signal_stage_started
+                _current_signal_stage = stage_name
+                _current_signal_stage_started = time.monotonic()
+
             for signal in signals:
                 _now = time.monotonic()
                 if _last_per_signal_started is not None:
                     # Cumulative per-signal cost — captured regardless of
                     # which `continue` branch the prior iteration took.
+                    _per_signal_elapsed = (_now - _last_per_signal_started) * 1000.0
                     _accumulators["per_signal_total"] = (
                         _accumulators.get("per_signal_total", 0.0)
-                        + (_now - _last_per_signal_started) * 1000.0
+                        + _per_signal_elapsed
                     )
+                    if _per_signal_elapsed >= _per_signal_slow_log_seconds * 1000.0:
+                        # Capture the exact pre-strategy stage that ate
+                        # the budget — nothing else in the orchestrator
+                        # tells us which stage was running when the slow
+                        # iteration finished.
+                        try:
+                            logger.warning(
+                                "Per-signal iteration slow",
+                                trader_id=trader_id,
+                                mode=run_mode,
+                                signal_id=str(getattr(signal, "id", "")),
+                                signal_source=normalize_source_key(
+                                    getattr(signal, "source", "")
+                                ),
+                                strategy_key=str(getattr(signal, "strategy_key", "") or ""),
+                                market_id=str(getattr(signal, "market_id", "") or ""),
+                                runtime_sequence=safe_int(
+                                    getattr(signal, "runtime_sequence", None), None
+                                ),
+                                elapsed_ms=round(_per_signal_elapsed, 1),
+                                last_stage=_current_signal_stage,
+                                last_stage_age_ms=round(
+                                    (_now - _current_signal_stage_started) * 1000.0, 1
+                                ),
+                            )
+                        except Exception:
+                            # Diagnostic log must never break the loop.
+                            pass
                 _last_per_signal_started = _now
+                _enter_stage("loop_top")
                 # Budget-based bail: if the cycle has consumed enough of
                 # its timeout that we likely cannot process another
                 # signal cleanly, defer the rest to the next cycle.
@@ -5506,8 +5599,13 @@ async def _run_trader_once_inner(
                 assignment_source = "pinned_config"
 
                 try:
+                    _enter_stage("signal_persist")
+                    _ps_persist_started = time.monotonic()
                     await _ensure_runtime_signal_persisted(session, signal)
+                    _accumulate("ps_signal_persist", _ps_persist_started)
                     if source_config is None:
+                        _enter_stage("no_source_config_skip")
+                        _ps_skipwrite_started = time.monotonic()
                         await record_signal_consumption(
                             session,
                             trader_id=trader_id,
@@ -5523,6 +5621,7 @@ async def _run_trader_once_inner(
                             last_signal_id=signal_id,
                             commit=False,
                         )
+                        _accumulate("ps_skip_writes", _ps_skipwrite_started)
                         cursor_created_at = _signal_cursor_timestamp(signal)
                         cursor_signal_id = signal_id
                         cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
@@ -5569,6 +5668,8 @@ async def _run_trader_once_inner(
                                 int((signal_wake_started_at - signal_emitted_at).total_seconds() * 1000),
                             )
                             if signal_release_age_ms > strict_release_age_budget_ms:
+                                _enter_stage("strict_ws_release_stale")
+                                _ps_strict_started = time.monotonic()
                                 runtime = get_intent_runtime()
                                 if run_mode == "live" and hasattr(runtime, "update_signal_status"):
                                     await runtime.update_signal_status(
@@ -5608,6 +5709,7 @@ async def _run_trader_once_inner(
                                     expired_by_reason["strict_ws_pricing_signal_release_stale"] = (
                                         expired_by_reason.get("strict_ws_pricing_signal_release_stale", 0) + 1
                                     )
+                                _accumulate("ps_strict_ws_writes", _ps_strict_started)
                                 defer_signal_processing = True
                                 continue
                     requested_strategy_version = prefetched_source_runtime.get("requested_strategy_version")
@@ -5615,7 +5717,10 @@ async def _run_trader_once_inner(
                         str(prefetched_source_runtime.get("requested_strategy_version_error") or "").strip() or None
                     )
                     signal_market_id = str(getattr(signal, "market_id", "") or "").strip()
+                    _enter_stage("prefilter_check")
                     if signal_id in occupied_signal_ids:
+                        _enter_stage("occupied_writes")
+                        _ps_pre_started = time.monotonic()
                         # Stacking-guard short-circuit: the heavy write path
                         # (trader_decision + decision_checks + trader_event) is
                         # pure noise for occupied markets — the scanner publishes
@@ -5655,8 +5760,11 @@ async def _run_trader_once_inner(
                         processed_signals += 1
                         prefiltered_signals += 1
                         prefiltered_by_reason["occupied_market"] = prefiltered_by_reason.get("occupied_market", 0) + 1
+                        _accumulate("ps_prefilter_writes", _ps_pre_started)
                         continue
                     if signal_id in cooldown_signal_ids:
+                        _enter_stage("cooldown_writes")
+                        _ps_pre_started = time.monotonic()
                         # Same short-circuit as the stacking-guard branch above:
                         # skip the heavy decision/checks/event writes — keep only
                         # signal_status + consumption + cursor.
@@ -5692,7 +5800,13 @@ async def _run_trader_once_inner(
                         prefiltered_by_reason["reentry_cooldown"] = (
                             prefiltered_by_reason.get("reentry_cooldown", 0) + 1
                         )
+                        _accumulate("ps_prefilter_writes", _ps_pre_started)
                         continue
+                    if not live_contexts_loaded:
+                        _enter_stage("live_context_await")
+                        _ps_lc_started = time.monotonic()
+                        await _ensure_live_contexts_resolved()
+                        _accumulate("ps_live_context_await", _ps_lc_started)
                     live_context = live_contexts.get(signal_id, {})
                     payload_live_context = _payload_live_market_context(signal)
                     if not live_context and payload_live_context:
@@ -5725,6 +5839,8 @@ async def _run_trader_once_inner(
                             and live_age_ms <= effective_max_age_ms
                         )
                         if not strict_context_ok:
+                            _enter_stage("strict_ws_live_context_unavailable")
+                            _ps_strict_ctx_started = time.monotonic()
                             live_reason_parts: list[str] = []
                             live_reason_parts.append(f"source={live_source or 'unknown'}")
                             live_reason_parts.append(
@@ -5771,6 +5887,7 @@ async def _run_trader_once_inner(
                                 expired_by_reason["strict_ws_pricing_live_context_unavailable"] = (
                                     expired_by_reason.get("strict_ws_pricing_live_context_unavailable", 0) + 1
                                 )
+                            _accumulate("ps_strict_ws_writes", _ps_strict_ctx_started)
                             defer_signal_processing = True
                             continue
                     context_ready_at = utcnow()
@@ -5826,6 +5943,8 @@ async def _run_trader_once_inner(
                                 },
                             }
                         ]
+                        _enter_stage("decision_skip_strategy_version")
+                        _ps_skip_decision_started = time.monotonic()
                         decision_row = await create_trader_decision(
                             session,
                             trader_id=trader_id,
@@ -5917,6 +6036,7 @@ async def _run_trader_once_inner(
                         cursor_signal_id = signal_id
                         cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
                         processed_signals += 1
+                        _accumulate("ps_decision_skip_writes", _ps_skip_decision_started)
                         continue
 
                     resolved_strategy_key = (
@@ -5976,6 +6096,8 @@ async def _run_trader_once_inner(
                                 },
                             }
                         ]
+                        _enter_stage("decision_skip_strategy_unavailable")
+                        _ps_skip_decision_started = time.monotonic()
                         decision_row = await create_trader_decision(
                             session,
                             trader_id=trader_id,
@@ -6066,16 +6188,20 @@ async def _run_trader_once_inner(
                         cursor_signal_id = signal_id
                         cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
                         processed_signals += 1
+                        _accumulate("ps_decision_skip_writes", _ps_skip_decision_started)
                         continue
 
                     if signal_source == "traders":
                         if traders_scope_context is None:
+                            _enter_stage("traders_scope_context_build")
+                            _ps_scope_started = time.monotonic()
                             traders_params = dict(source_config.get("strategy_params") or {})
                             async with AsyncSessionLocal() as _scope_session:
                                 traders_scope_context = await _build_traders_scope_context(
                                     _scope_session,
                                     traders_params.get("traders_scope"),
                                 )
+                            _accumulate("ps_traders_scope_build", _ps_scope_started)
                         scope_ok, scope_payload = _signal_matches_traders_scope(runtime_signal, traders_scope_context)
                         traders_scope_payload = scope_payload
                         if not scope_ok:
@@ -6089,6 +6215,8 @@ async def _run_trader_once_inner(
                                     "payload": scope_payload,
                                 }
                             ]
+                            _enter_stage("decision_skip_traders_scope")
+                            _ps_skip_decision_started = time.monotonic()
                             decision_row = await create_trader_decision(
                                 session,
                                 trader_id=trader_id,
@@ -6178,6 +6306,7 @@ async def _run_trader_once_inner(
                             cursor_signal_id = signal_id
                             cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
                             processed_signals += 1
+                            _accumulate("ps_decision_skip_writes", _ps_skip_decision_started)
                             continue
 
                     copy_risk_context: dict[str, Any] = {}
@@ -6219,6 +6348,8 @@ async def _run_trader_once_inner(
                             "configured_daily_loss_cap_usd": configured_daily_loss_cap_usd,
                         }
 
+                        _enter_stage("copy_exposure_lookup")
+                        _ps_copy_exposure_started = time.monotonic()
                         current_source_exposure_usd = await get_trader_source_exposure(
                             session,
                             trader_id=trader_id,
@@ -6235,6 +6366,7 @@ async def _run_trader_once_inner(
                             if source_wallet
                             else 0.0
                         )
+                        _accumulate("ps_copy_exposure_lookup", _ps_copy_exposure_started)
                         copy_allocation_context = {
                             "source_wallet": source_wallet,
                             "current_source_exposure_usd": float(current_source_exposure_usd),
@@ -6254,51 +6386,43 @@ async def _run_trader_once_inner(
                             if not copy_inventory_loaded:
                                 copy_inventory_loaded = True
                                 _wallet_fetch_started = time.monotonic()
+                                # Inventory now sourced from the in-memory
+                                # WS-driven wallet_state_cache instead of
+                                # ``list_live_wallet_positions_for_trader``.
+                                # Production saw 1-5s on the DB path; cache
+                                # read is a sub-microsecond dict snapshot.
+                                # Freshness is enforced by the same gate the
+                                # rest of the hot path uses (REST seed +
+                                # WS connectivity); a stale cache yields
+                                # ``available=False`` so strategy code falls
+                                # through to its existing safe-default branch
+                                # rather than acting on lies.
                                 try:
-                                    # Use a separate session to prevent
-                                    # release_conn inside this function from
-                                    # rolling back uncommitted data on the
-                                    # main session (signal upsert, emissions,
-                                    # strategy version rows, etc.).
-                                    async with AsyncSessionLocal() as _inv_session:
-                                        wallet_snapshot = await list_live_wallet_positions_for_trader(
-                                            _inv_session,
-                                            trader_id=trader_id,
-                                            include_managed=True,
-                                        )
+                                    ws_cache = get_wallet_state_cache()
+                                    fresh, fresh_reason = ws_cache.is_fresh()
+                                    if not fresh:
+                                        copy_inventory_context = {
+                                            "available": False,
+                                            "wallet_address": ws_cache.wallet_address(),
+                                            "token_inventory": {},
+                                            "error": f"wallet_state_cache_stale:{fresh_reason}",
+                                            "fetched_at": utcnow().isoformat(),
+                                        }
+                                    else:
+                                        token_inventory = ws_cache.to_token_inventory()
+                                        copy_inventory_context = {
+                                            "available": bool(token_inventory),
+                                            "wallet_address": ws_cache.wallet_address(),
+                                            "token_inventory": token_inventory,
+                                            "error": None,
+                                            "fetched_at": utcnow().isoformat(),
+                                        }
                                 except Exception as exc:
                                     copy_inventory_context = {
                                         "available": False,
                                         "wallet_address": None,
                                         "token_inventory": {},
                                         "error": str(exc),
-                                        "fetched_at": utcnow().isoformat(),
-                                    }
-                                else:
-                                    token_inventory: dict[str, dict[str, Any]] = {}
-                                    for raw_position in wallet_snapshot.get("positions") or []:
-                                        if not isinstance(raw_position, dict):
-                                            continue
-                                        token_key = str(raw_position.get("token_id") or "").strip().lower()
-                                        if not token_key:
-                                            continue
-                                        size = max(0.0, safe_float(raw_position.get("size"), 0.0))
-                                        existing_token = token_inventory.get(token_key)
-                                        if existing_token is None:
-                                            token_inventory[token_key] = {
-                                                "size": size,
-                                                "market_id": str(raw_position.get("market_id") or "").strip(),
-                                                "outcome": str(raw_position.get("outcome") or "").strip().upper() or None,
-                                                "direction": str(raw_position.get("direction") or "").strip().lower() or None,
-                                                "current_price": safe_float(raw_position.get("current_price"), None),
-                                            }
-                                        else:
-                                            existing_token["size"] = float(existing_token.get("size", 0.0) or 0.0) + size
-                                    copy_inventory_context = {
-                                        "available": bool(token_inventory),
-                                        "wallet_address": wallet_snapshot.get("wallet_address"),
-                                        "token_inventory": token_inventory,
-                                        "error": None,
                                         "fetched_at": utcnow().isoformat(),
                                     }
                                 _accumulate("ps_copy_inventory_fetch", _wallet_fetch_started)
@@ -6357,6 +6481,7 @@ async def _run_trader_once_inner(
                                 0.1,
                                 min(float(evaluation_timeout_seconds), float(remaining_cycle_budget)),
                             )
+                        _enter_stage("strategy_evaluate")
                         _evaluate_started = time.monotonic()
                         decision_future = loop.run_in_executor(
                             _STRATEGY_EVAL_POOL,
@@ -6462,12 +6587,15 @@ async def _run_trader_once_inner(
                     portfolio_allocator = None
                     portfolio_runtime_payload: dict[str, Any] = {}
                     if not _skip_strategy_evaluation and decision_obj.decision == "selected" and trading_schedule_ok:
+                        _enter_stage("risk_eval_setup")
+                        _ps_risk_started = time.monotonic()
                         gross_exposure = await get_gross_exposure(session, mode=run_mode)
                         market_exposure = await get_market_exposure(
                             session,
                             str(signal.market_id),
                             mode=run_mode,
                         )
+                        _accumulate("ps_risk_eval_setup", _ps_risk_started)
                         adjusted_global_daily_pnl = global_daily_pnl - intra_cycle_committed_usd
                         adjusted_trader_daily_pnl = trader_daily_pnl - intra_cycle_committed_usd
                         risk_snapshot_base = {
@@ -6801,6 +6929,7 @@ async def _run_trader_once_inner(
                     )
                     decision_check_count = len(checks_payload)
 
+                    _enter_stage("decision_write_main")
                     _decision_writes_mono = time.monotonic()
                     decision_row = await create_trader_decision(
                         session,
@@ -6984,6 +7113,7 @@ async def _run_trader_once_inner(
                         except Exception:
                             pass
                         submit_started_at = utcnow()
+                        _enter_stage("submit_order")
                         _submit_mono = time.monotonic()
                         submit_result = await submit_order(
                             trader_id=trader_id,
@@ -7643,6 +7773,7 @@ async def _run_trader_once_inner(
                             message=_no_signal_message,
                             payload=_no_signal_payload,
                         )
+            _sl_post_loop_started = time.monotonic()
             if stream_trigger_mode and prefetched_signals:
                 deferred_signal_ids_by_source: dict[str, list[str]] = {}
                 deferred_seen_ids_by_source: dict[str, set[str]] = {}
@@ -7667,8 +7798,18 @@ async def _run_trader_once_inner(
                     )
                 prefetched_signals = None
             await _persist_trader_cycle_heartbeat(session, trader_id)
+            _accumulate("sl_post_loop", _sl_post_loop_started)
             if defer_signal_processing or stream_trigger_mode:
                 break
+
+    # Clean up the prefetched live-context task if no signal ever
+    # consumed it (all prefiltered, empty signals batch, etc.).  The
+    # task is cheap (pure-memory build) so cancel + don't await — we
+    # just don't want it lingering as a leaked task.
+    if live_contexts_task is not None and not live_contexts_loaded:
+        live_contexts_task.cancel()
+        live_contexts_task = None
+        live_contexts_loaded = True
 
     _checkpoint("signal_loop")
     # Surface cumulative buckets (e.g. live_context) alongside checkpoints
@@ -7692,6 +7833,17 @@ async def _run_trader_once_inner(
                 "ps_submit_order",
                 "ps_db_commit",
                 "ps_decision_writes",
+                # Pre-strategy buckets (added when ps_unaccounted ate
+                # 55-66s with zero ps_* coverage in production soak).
+                "ps_signal_persist",
+                "ps_skip_writes",
+                "ps_strict_ws_writes",
+                "ps_prefilter_writes",
+                "ps_live_context_await",
+                "ps_decision_skip_writes",
+                "ps_traders_scope_build",
+                "ps_copy_exposure_lookup",
+                "ps_risk_eval_setup",
             )
         )
         stage_timings_ms["ps_unaccounted"] = round(
