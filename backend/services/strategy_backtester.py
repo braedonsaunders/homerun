@@ -1644,7 +1644,14 @@ async def run_execution_backtest(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     initial_capital_usd: float = 1000.0,
-    max_intents: int = 1000,
+    # Lifted from 1000 → 25k.  Event-market strategies fan out across
+    # hundreds of low-volume markets; a 7-day window legitimately
+    # produces 5-10k opportunities for slugs like ``stat_arb`` and
+    # ``holding_reward_yield``.  Capping at 1000 silently dropped
+    # half their opps before the matching engine ever saw them.
+    # 25k is the upper bound the matcher can chew through in a
+    # reasonable wall-clock budget; operators can pass higher.
+    max_intents: int = 25000,
     submit_latency_p50_ms: float = 350.0,
     submit_latency_p95_ms: float = 900.0,
     cancel_latency_p50_ms: float = 200.0,
@@ -1750,6 +1757,23 @@ async def run_execution_backtest(
             # tokens the strategy actually fires on.  For tail_end_carry
             # this collapsed 1,523 opps × 653 tokens to 3 intents.
             # Now: opps drive the universe, microstructure follows.
+            # Funnel diagnostics — surface the count at each stage so
+            # the operator can see where opps are lost (recorder
+            # coverage gap vs matching-engine throughput vs cap).
+            opps_total_in_window = 0
+            try:
+                opps_total_in_window = int(
+                    (await session.execute(
+                        select(sa_func.count(Opportunity.id)).where(
+                            Opportunity.detected_at >= start_dt,
+                            Opportunity.detected_at <= end_dt,
+                            Opportunity.strategy_type == slug,
+                        )
+                    )).scalar_one() or 0
+                )
+            except Exception:
+                opps_total_in_window = 0
+
             try:
                 opp_stmt = (
                     select(Opportunity)
@@ -1824,11 +1848,34 @@ async def run_execution_backtest(
                     # logged as a warning so the operator knows what
                     # was skipped.
                     ranked = sorted(opp_tokens.items(), key=lambda kv: kv[1], reverse=True)
-                    tokens = [t for t, _ in ranked if t in tokens_with_snaps][:200]
-                    skipped = len(opp_tokens) - len(tokens)
-                    if skipped > 0:
+                    tokens = [t for t, _ in ranked if t in tokens_with_snaps][:500]
+                    no_snap_token_count = len(opp_tokens) - len(tokens_with_snaps)
+                    capped_universe = len(tokens_with_snaps) > len(tokens)
+                    # Funnel summary the operator can read at a glance.
+                    funnel_msg = (
+                        f"intent funnel — opps_in_window={opps_total_in_window} · "
+                        f"opps_pulled={len(opps)} (cap={int(max_intents)}) · "
+                        f"opp_tokens={len(opp_tokens)} · "
+                        f"with_book_snapshots={len(tokens_with_snaps)} · "
+                        f"universe={len(tokens)}"
+                        + (" (cap=500)" if capped_universe else "")
+                    )
+                    result.validation_warnings.append(funnel_msg)
+                    if no_snap_token_count > 0:
+                        pct = (
+                            no_snap_token_count / len(opp_tokens) * 100.0
+                            if opp_tokens else 0.0
+                        )
                         result.validation_warnings.append(
-                            f"{skipped} opportunity tokens had no book snapshots in window — skipped"
+                            f"{no_snap_token_count} of {len(opp_tokens)} opp tokens "
+                            f"had no book snapshots in window ({pct:.0f}% — recorder "
+                            f"didn't capture these markets); their opps were skipped"
+                        )
+                    if opps_total_in_window > len(opps):
+                        result.validation_warnings.append(
+                            f"{opps_total_in_window - len(opps)} opportunities "
+                            f"exceeded max_intents cap ({int(max_intents)}) — "
+                            f"raise max_intents to capture them"
                         )
                 # If the strategy has zero opportunities (e.g. a fresh
                 # strategy), fall back to "top tokens by snapshot
