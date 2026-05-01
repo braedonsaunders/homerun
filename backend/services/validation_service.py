@@ -17,6 +17,15 @@ import sys
 import time
 import uuid
 
+# 60s TTL for the demoted-strategy-types cache.  Operator/guardrail
+# changes call ``invalidate_demoted_cache`` for immediate effect; the
+# TTL is a safety net so a forgotten invalidation doesn't permanently
+# stale the orchestrator's view.
+_DEMOTED_CACHE_TTL_SECONDS = 60.0
+# Stale-while-revalidate threshold — once the cached set is older than
+# this fraction of TTL, the next reader returns the cached value AND
+# kicks off a background refresh.  Readers never block on the DB.
+_DEMOTED_CACHE_REFRESH_FRACTION = 0.70
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
@@ -1533,21 +1542,58 @@ class ValidationService:
         # an operator manually demotes a strategy or the auto-demotion
         # guardrail fires; both paths can call ``invalidate_demoted_cache``
         # if sub-TTL freshness matters.  60s TTL is a good default.
+        #
+        # Stale-while-revalidate: once we cross 70 % of TTL we return
+        # the cached set AND fire a background refresh, so the next
+        # caller after the refresh lands also reads from cache.  The
+        # TTL boundary itself never causes a synchronous DB hit on the
+        # orchestrator hot path.
         now_mono = time.monotonic()
         cached = getattr(self, "_demoted_cache", None)
         if cached is not None:
             cached_at, cached_set = cached
-            if now_mono - cached_at < _DEMOTED_CACHE_TTL_SECONDS:
+            age = now_mono - cached_at
+            if age < _DEMOTED_CACHE_TTL_SECONDS:
+                if age >= _DEMOTED_CACHE_TTL_SECONDS * _DEMOTED_CACHE_REFRESH_FRACTION:
+                    self._schedule_demoted_bg_refresh()
                 return cached_set
+        result = await self._query_demoted_strategy_types()
+        self._demoted_cache = (time.monotonic(), result)
+        return result
+
+    async def _query_demoted_strategy_types(self) -> set[str]:
         async with AsyncSessionLocal() as session:
             rows = (
                 await session.execute(
                     select(StrategyValidationProfile.strategy_type).where(StrategyValidationProfile.status == "demoted")
                 )
             ).all()
-        result = {r[0] for r in rows}
-        self._demoted_cache = (now_mono, result)
-        return result
+        return {r[0] for r in rows}
+
+    def _schedule_demoted_bg_refresh(self) -> None:
+        existing = getattr(self, "_demoted_refresh_task", None)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _runner() -> None:
+            try:
+                refreshed = await self._query_demoted_strategy_types()
+                self._demoted_cache = (time.monotonic(), refreshed)
+            except Exception:
+                # Refresh failures must not crash the loop; the stale
+                # value remains cached and the next reader retries.
+                pass
+
+        try:
+            task = loop.create_task(_runner(), name="demoted-strategy-types-bg-refresh")
+        except RuntimeError:
+            return
+        self._demoted_refresh_task = task
+        task.add_done_callback(lambda _t: setattr(self, "_demoted_refresh_task", None))
 
     def invalidate_demoted_cache(self) -> None:
         """Drop the demoted-strategy-types cache.

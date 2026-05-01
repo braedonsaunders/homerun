@@ -9,7 +9,7 @@ import copy
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from config import settings
 from services.execution_latency_metrics import execution_latency_metrics, snapshot_from_events as _latency_snapshot_from_events
@@ -9318,9 +9318,18 @@ async def get_realized_pnl(
 _DAILY_PNL_CACHE_TTL_SECONDS = 30.0
 _LOSS_STREAK_CACHE_TTL_SECONDS = 30.0
 _LAST_LOSS_CACHE_TTL_SECONDS = 30.0
+# Stale-while-revalidate: once an entry is older than this fraction of
+# its TTL, the next reader returns the cached value AND kicks off a
+# background refresh.  By the time the entry would have expired the
+# cache has already been replaced — readers never block on the DB.
+_REALIZED_PNL_REFRESH_FRACTION = 0.70
 _daily_pnl_cache: dict[tuple, tuple[float, float]] = {}
 _loss_streak_cache: dict[tuple, tuple[float, int]] = {}
 _last_loss_cache: dict[tuple, tuple[float, Optional[datetime]]] = {}
+# In-flight bg refresh tracking — one task per (cache_name, key) so
+# multiple cycles don't pile up duplicate refreshes for the same
+# trader.  Keys clear themselves via a done callback.
+_realized_pnl_refresh_tasks: dict[tuple, asyncio.Task] = {}
 
 
 def invalidate_realized_pnl_cache(
@@ -9343,6 +9352,153 @@ def invalidate_realized_pnl_cache(
             cache.pop(key, None)
 
 
+def _schedule_realized_pnl_bg_refresh(
+    *,
+    cache_name: str,
+    cache_key: tuple,
+    coro_factory: Callable[[], Awaitable[Any]],
+) -> None:
+    """Fire-and-forget refresh — readers never await this.
+
+    Soft-fail: if no asyncio loop is running (sync entry point / tests)
+    or task creation fails, we silently skip; the cached value is still
+    returned and the next read past TTL pays the DB cost normally.
+    """
+    task_key = (cache_name, cache_key)
+    existing = _realized_pnl_refresh_tasks.get(task_key)
+    if existing is not None and not existing.done():
+        return  # one refresh per key in flight at a time
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _runner() -> None:
+        try:
+            await coro_factory()
+        except Exception:
+            # Refresh failures must not crash the loop; the stale value
+            # remains cached and the next reader will retry.
+            pass
+
+    try:
+        task = loop.create_task(_runner(), name=f"realized-pnl-bg-refresh-{cache_name}")
+    except RuntimeError:
+        return
+    _realized_pnl_refresh_tasks[task_key] = task
+    task.add_done_callback(lambda _t, k=task_key: _realized_pnl_refresh_tasks.pop(k, None))
+
+
+async def _refresh_daily_pnl(
+    *,
+    trader_id: Optional[str],
+    mode: Optional[str],
+    cache_key: tuple,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await get_realized_pnl(
+            session,
+            trader_id=trader_id,
+            mode=mode,
+            since=today_start,
+        )
+    _daily_pnl_cache[cache_key] = (time.monotonic(), result)
+
+
+async def _query_loss_streak(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str],
+    limit: int,
+    since: Optional[datetime] = None,
+) -> int:
+    query = (
+        select(TraderOrder.status, TraderOrder.updated_at)
+        .where(TraderOrder.trader_id == trader_id)
+        .where(TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)))
+        .where(_visible_trader_order_query_clause())
+        .order_by(desc(TraderOrder.updated_at), desc(TraderOrder.id))
+        .limit(max(1, min(int(limit or 100), 1000)))
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    if since is not None:
+        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
+        query = query.where(TraderOrder.updated_at >= since_utc)
+    rows = (await session.execute(query)).all()
+    losses = 0
+    for row in rows:
+        status = _normalize_status_key(row.status)
+        if status in REALIZED_LOSS_ORDER_STATUSES:
+            losses += 1
+            continue
+        if status in REALIZED_WIN_ORDER_STATUSES:
+            break
+    return losses
+
+
+async def _refresh_loss_streak(
+    *,
+    trader_id: str,
+    mode: Optional[str],
+    limit: int,
+    cache_key: tuple,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        losses = await _query_loss_streak(
+            session,
+            trader_id=trader_id,
+            mode=mode,
+            limit=limit,
+        )
+    _loss_streak_cache[cache_key] = (time.monotonic(), losses)
+
+
+async def _query_last_loss(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str],
+    since: Optional[datetime] = None,
+) -> Optional[datetime]:
+    query = select(func.max(TraderOrder.updated_at)).where(
+        TraderOrder.trader_id == trader_id,
+        TraderOrder.status.in_(tuple(REALIZED_LOSS_ORDER_STATUSES)),
+        _visible_trader_order_query_clause(),
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    if since is not None:
+        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
+        query = query.where(TraderOrder.updated_at >= since_utc)
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def _refresh_last_loss(
+    *,
+    trader_id: str,
+    mode: Optional[str],
+    cache_key: tuple,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        result = await _query_last_loss(
+            session,
+            trader_id=trader_id,
+            mode=mode,
+        )
+    _last_loss_cache[cache_key] = (time.monotonic(), result)
+
+
 async def get_daily_realized_pnl(
     session: AsyncSession,
     *,
@@ -9351,8 +9507,20 @@ async def get_daily_realized_pnl(
 ) -> float:
     cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
     cached = _daily_pnl_cache.get(cache_key)
-    if cached is not None and (time.monotonic() - cached[0]) < _DAILY_PNL_CACHE_TTL_SECONDS:
-        return cached[1]
+    if cached is not None:
+        age = time.monotonic() - cached[0]
+        if age < _DAILY_PNL_CACHE_TTL_SECONDS:
+            if age >= _DAILY_PNL_CACHE_TTL_SECONDS * _REALIZED_PNL_REFRESH_FRACTION:
+                _schedule_realized_pnl_bg_refresh(
+                    cache_name="daily_pnl",
+                    cache_key=cache_key,
+                    coro_factory=lambda: _refresh_daily_pnl(
+                        trader_id=trader_id,
+                        mode=mode,
+                        cache_key=cache_key,
+                    ),
+                )
+            return cached[1]
     today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
     result = await get_realized_pnl(
         session,
@@ -9482,35 +9650,28 @@ async def get_consecutive_loss_count(
     if since is None:
         cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None, int(limit or 100))
         cached = _loss_streak_cache.get(cache_key)
-        if cached is not None and (time.monotonic() - cached[0]) < _LOSS_STREAK_CACHE_TTL_SECONDS:
-            return cached[1]
-    query = (
-        select(TraderOrder.status, TraderOrder.updated_at)
-        .where(TraderOrder.trader_id == trader_id)
-        .where(TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)))
-        .where(_visible_trader_order_query_clause())
-        .order_by(desc(TraderOrder.updated_at), desc(TraderOrder.id))
-        .limit(max(1, min(int(limit or 100), 1000)))
+        if cached is not None:
+            age = time.monotonic() - cached[0]
+            if age < _LOSS_STREAK_CACHE_TTL_SECONDS:
+                if age >= _LOSS_STREAK_CACHE_TTL_SECONDS * _REALIZED_PNL_REFRESH_FRACTION:
+                    _schedule_realized_pnl_bg_refresh(
+                        cache_name="loss_streak",
+                        cache_key=cache_key,
+                        coro_factory=lambda: _refresh_loss_streak(
+                            trader_id=trader_id,
+                            mode=mode,
+                            limit=int(limit or 100),
+                            cache_key=cache_key,
+                        ),
+                    )
+                return cached[1]
+    losses = await _query_loss_streak(
+        session,
+        trader_id=trader_id,
+        mode=mode,
+        limit=int(limit or 100),
+        since=since,
     )
-    if mode is not None:
-        mode_key = _normalize_mode_key(mode)
-        if mode_key == "other":
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
-        else:
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
-    if since is not None:
-        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
-        query = query.where(TraderOrder.updated_at >= since_utc)
-
-    rows = (await session.execute(query)).all()
-    losses = 0
-    for row in rows:
-        status = _normalize_status_key(row.status)
-        if status in REALIZED_LOSS_ORDER_STATUSES:
-            losses += 1
-            continue
-        if status in REALIZED_WIN_ORDER_STATUSES:
-            break
     if since is None:
         cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None, int(limit or 100))
         _loss_streak_cache[cache_key] = (time.monotonic(), losses)
@@ -9527,23 +9688,26 @@ async def get_last_resolved_loss_at(
     if since is None:
         cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
         cached = _last_loss_cache.get(cache_key)
-        if cached is not None and (time.monotonic() - cached[0]) < _LAST_LOSS_CACHE_TTL_SECONDS:
-            return cached[1]
-    query = select(func.max(TraderOrder.updated_at)).where(
-        TraderOrder.trader_id == trader_id,
-        TraderOrder.status.in_(tuple(REALIZED_LOSS_ORDER_STATUSES)),
-        _visible_trader_order_query_clause(),
+        if cached is not None:
+            age = time.monotonic() - cached[0]
+            if age < _LAST_LOSS_CACHE_TTL_SECONDS:
+                if age >= _LAST_LOSS_CACHE_TTL_SECONDS * _REALIZED_PNL_REFRESH_FRACTION:
+                    _schedule_realized_pnl_bg_refresh(
+                        cache_name="last_loss",
+                        cache_key=cache_key,
+                        coro_factory=lambda: _refresh_last_loss(
+                            trader_id=trader_id,
+                            mode=mode,
+                            cache_key=cache_key,
+                        ),
+                    )
+                return cached[1]
+    result = await _query_last_loss(
+        session,
+        trader_id=trader_id,
+        mode=mode,
+        since=since,
     )
-    if mode is not None:
-        mode_key = _normalize_mode_key(mode)
-        if mode_key == "other":
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
-        else:
-            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
-    if since is not None:
-        since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
-        query = query.where(TraderOrder.updated_at >= since_utc)
-    result = (await session.execute(query)).scalar_one_or_none()
     if since is None:
         cache_key = (trader_id, _normalize_mode_key(mode) if mode is not None else None)
         _last_loss_cache[cache_key] = (time.monotonic(), result)

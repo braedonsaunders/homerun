@@ -644,6 +644,41 @@ class WalletStateCache:
                 if pos.is_resolved
             }
 
+    def to_token_inventory(self) -> dict[str, dict[str, Any]]:
+        """Snapshot in the orchestrator's copy-trade inventory shape.
+
+        Replaces the per-cycle ``list_live_wallet_positions_for_trader``
+        DB hit. The mapping convention (outcome_index 0 = YES / buy_yes,
+        1 = NO / buy_no) matches ``polymarket_trade_verifier
+        ._direction_to_outcome_index``.
+        """
+        inventory: dict[str, dict[str, Any]] = {}
+        with self._lock:
+            for token_id, pos in self._positions.items():
+                if pos.size <= 0.0:
+                    continue
+                key = str(token_id or "").strip().lower()
+                if not key:
+                    continue
+                if pos.outcome_index == 1:
+                    outcome = "NO"
+                    direction = "buy_no"
+                else:
+                    outcome = "YES"
+                    direction = "buy_yes"
+                inventory[key] = {
+                    "size": float(pos.size),
+                    "market_id": pos.condition_id or "",
+                    "outcome": outcome,
+                    "direction": direction,
+                    "current_price": pos.last_rest_mark_price,
+                }
+        return inventory
+
+    def wallet_address(self) -> Optional[str]:
+        with self._lock:
+            return self._wallet_address
+
     def get_open_orders(self) -> list[WalletOrder]:
         with self._lock:
             return [o for o in self._orders.values() if not o.is_terminal]
