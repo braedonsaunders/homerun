@@ -116,6 +116,49 @@ class SignalSnapshot:
     _cached_at_mono: float = field(default_factory=time.monotonic)
 
     @classmethod
+    def from_db_row(cls, row: Any) -> Optional["SignalSnapshot"]:
+        """Build a snapshot from a ``TradeSignal`` ORM row.
+
+        Used by the safety-net DB sweep to seed the cache when the
+        publisher dropped a publish (Redis briefly down, restart race).
+        Reads only the columns the fast trader needs — heavy JSON
+        columns are skipped so this is safe to call on a row loaded
+        with ``defer_heavy_columns=True``.
+        """
+        try:
+            signal_id = str(getattr(row, "id", "") or "").strip()
+            if not signal_id:
+                return None
+            source = str(getattr(row, "source", "") or "").strip()
+            if not source:
+                return None
+            return cls(
+                id=signal_id,
+                source=source,
+                source_item_id=_str_or_none(getattr(row, "source_item_id", None)),
+                signal_type=str(getattr(row, "signal_type", "") or "").strip(),
+                strategy_type=_str_or_none(getattr(row, "strategy_type", None)),
+                market_id=str(getattr(row, "market_id", "") or "").strip(),
+                market_question=_str_or_none(getattr(row, "market_question", None)),
+                direction=_str_or_none(getattr(row, "direction", None)),
+                entry_price=_float_or_none(getattr(row, "entry_price", None)),
+                effective_price=_float_or_none(getattr(row, "effective_price", None)),
+                edge_percent=_float_or_none(getattr(row, "edge_percent", None)),
+                confidence=_float_or_none(getattr(row, "confidence", None)),
+                liquidity=_float_or_none(getattr(row, "liquidity", None)),
+                expires_at=_dt_or_none(getattr(row, "expires_at", None)),
+                status=str(getattr(row, "status", "pending") or "pending").strip().lower(),
+                quality_passed=_bool_or_none(getattr(row, "quality_passed", None)),
+                dedupe_key=str(getattr(row, "dedupe_key", "") or "").strip(),
+                runtime_sequence=_int_or_none(getattr(row, "runtime_sequence", None)),
+                created_at=_dt_or_none(getattr(row, "created_at", None)) or utcnow(),
+                updated_at=_dt_or_none(getattr(row, "updated_at", None)),
+            )
+        except Exception as exc:
+            logger.debug("SignalSnapshot.from_db_row failed: %s", exc)
+            return None
+
+    @classmethod
     def from_redis_payload(cls, payload: dict[str, Any]) -> Optional["SignalSnapshot"]:
         """Build a snapshot from the JSON dict published over Redis.
 
