@@ -300,6 +300,45 @@ async def lifespan(app: FastAPI):
                 exc_info=exc,
             )
 
+        # Trader-events Redis → WebSocket bridge: bot worker plane
+        # publishes ``trader_event`` rows to the Redis ``trader_events``
+        # channel; this bridge subscribes and fans them out to every
+        # connected UI WebSocket client.  Closes the loop:
+        #   bot fires event → Redis (~1ms) → bridge → manager.broadcast
+        #   → UI WebSocket (<5ms total).
+        # Replaces the previous N-second DB poll on /api/traders/events/all
+        # for realtime bot terminal output.
+        try:
+            from services import trader_events_bridge
+            from api.websocket import manager as _ws_manager
+
+            async def _forward_trader_event(payload: dict) -> None:
+                # The payload is the same shape ``_serialize_event``
+                # produces in trader_orchestrator_state.create_trader_event,
+                # which the existing ``_message_channel`` mapping already
+                # routes to the "trading" WS channel — clients subscribed
+                # to that channel get it automatically.
+                try:
+                    await _ws_manager.broadcast(
+                        {"type": "trader_event", "data": payload}
+                    )
+                except Exception as broadcast_exc:
+                    logger.debug(
+                        "trader_event WS broadcast failed: %s",
+                        broadcast_exc,
+                    )
+
+            await trader_events_bridge.start(_forward_trader_event)
+            logger.info(
+                "trader_events Redis → WebSocket bridge started",
+            )
+        except Exception as exc:
+            logger.warning(
+                "trader_events_bridge start failed (UI will fall back to "
+                "DB polling for bot terminal events)",
+                exc_info=exc,
+            )
+
         # Seed builtin AI agents
         try:
             await seed_builtin_agents()
@@ -891,6 +930,13 @@ async def lifespan(app: FastAPI):
             logger.warning("wallet_state_bus subscriber stop raised", exc_info=exc)
 
         try:
+            from services import trader_events_bridge
+
+            await trader_events_bridge.stop()
+        except Exception as exc:
+            logger.warning("trader_events_bridge stop raised", exc_info=exc)
+
+        try:
             from services import redis_client
 
             await redis_client.shutdown()
@@ -1155,6 +1201,13 @@ async def readiness_check():
     except Exception:
         wallet_state_snapshot = {"error": "import_failed"}
 
+    try:
+        from services import trader_events_bridge
+
+        trader_events_snapshot = trader_events_bridge.status_snapshot()
+    except Exception:
+        trader_events_snapshot = {"error": "import_failed"}
+
     checks = {
         "scanner": scanner_status.get("running", False),
         "database": True,
@@ -1174,6 +1227,7 @@ async def readiness_check():
         "checks": checks,
         "redis": redis_snapshot,
         "wallet_state_bus": wallet_state_snapshot,
+        "trader_events_bridge": trader_events_snapshot,
         "api_rate_limit": inbound_api_rate_limiter.status(),
         "timestamp": utcnow().isoformat(),
     }
