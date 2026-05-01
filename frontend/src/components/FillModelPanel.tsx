@@ -345,20 +345,27 @@ export default function FillModelPanel() {
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">
               <Clock className="h-3.5 w-3.5 text-sky-300" />
-              Measured latency (rolling 15 min)
+              {latency && latency.sample_count > 0
+                ? 'Measured latency (rolling 15 min)'
+                : 'Latency (defaults — no samples)'}
+              {latency && latency.sample_count === 0 ? (
+                <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
+                  fallback
+                </span>
+              ) : null}
             </div>
             {latency ? (
-              <div className="grid grid-cols-3 gap-2">
+              <div className={`grid grid-cols-3 gap-2 ${latency.sample_count === 0 ? 'opacity-60' : ''}`}>
                 <StatPill label="p50" value={`${Math.round(latency.p50_ms)} ms`} tone="neutral" />
                 <StatPill
                   label="p95"
                   value={`${Math.round(latency.p95_ms)} ms`}
-                  tone={latency.p95_ms > 800 ? 'warn' : 'neutral'}
+                  tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'}
                 />
                 <StatPill
                   label="p99"
                   value={`${Math.round(latency.p99_ms)} ms`}
-                  tone={latency.p99_ms > 1500 ? 'bad' : 'neutral'}
+                  tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'}
                 />
               </div>
             ) : (
@@ -366,8 +373,9 @@ export default function FillModelPanel() {
             )}
             {latency ? (
               <div className="mt-2 text-[10px] text-muted-foreground">
-                Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2.{' '}
-                {latency.sample_count.toLocaleString()} samples in window.
+                {latency.sample_count > 0
+                  ? `Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2. ${latency.sample_count.toLocaleString()} samples in window.`
+                  : `No measured submit/cancel latencies in the last 15 min — values shown are hardcoded fallbacks (p50=200ms, p95=600ms, p99=1500ms). Will be replaced once orders flow through.`}
               </div>
             ) : null}
           </div>

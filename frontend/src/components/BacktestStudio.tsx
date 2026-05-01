@@ -1648,15 +1648,22 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <Clock className="h-3.5 w-3.5 text-sky-300" />
-                    Measured latency
+                    {latency.sample_count > 0 ? 'Measured latency' : 'Latency (defaults)'}
+                    {latency.sample_count === 0 ? (
+                      <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
+                        no samples
+                      </span>
+                    ) : null}
                   </div>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className={`grid grid-cols-3 gap-1.5 ${latency.sample_count === 0 ? 'opacity-60' : ''}`}>
                     <StatTile label="p50" value={`${Math.round(latency.p50_ms)}ms`} />
-                    <StatTile label="p95" value={`${Math.round(latency.p95_ms)}ms`} tone={latency.p95_ms > 800 ? 'warn' : 'neutral'} />
-                    <StatTile label="p99" value={`${Math.round(latency.p99_ms)}ms`} tone={latency.p99_ms > 1500 ? 'bad' : 'neutral'} />
+                    <StatTile label="p95" value={`${Math.round(latency.p95_ms)}ms`} tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'} />
+                    <StatTile label="p99" value={`${Math.round(latency.p99_ms)}ms`} tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'} />
                   </div>
                   <div className="mt-1 text-[10px] text-muted-foreground">
-                    {latency.sample_count.toLocaleString()} samples · ensemble uses pessimistic={Math.round(latency.pessimistic_ms)}ms / realistic={Math.round(latency.realistic_ms)}ms / optimistic={Math.round(latency.optimistic_ms)}ms
+                    {latency.sample_count > 0
+                      ? `${latency.sample_count.toLocaleString()} samples · ensemble uses pessimistic=${Math.round(latency.pessimistic_ms)}ms / realistic=${Math.round(latency.realistic_ms)}ms / optimistic=${Math.round(latency.optimistic_ms)}ms`
+                      : `No measured fills yet — values shown are hardcoded fallbacks. Run a strategy long enough to capture submit/cancel timestamps to replace these.`}
                   </div>
                 </div>
               ) : null}

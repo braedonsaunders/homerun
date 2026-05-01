@@ -127,7 +127,21 @@ class BookDeltaDecomposer:
         self._queue = None
 
     def record_trade(self, *, token_id: str, trade: Any) -> None:
-        """Note a trade print.  Must be called BEFORE the post-trade book."""
+        """Note a trade print.  Must be called BEFORE the post-trade book.
+
+        Critically, the trade's timestamp here is the LOCAL RECEIPT
+        time (``time.time()`` at the moment we got the message), NOT
+        the venue's reported timestamp.  ``record_book`` matches
+        against ``observed_ts``, which is also local-clock
+        (``ingest_ts``); using two different clocks introduces network/
+        processing skew up to several hundred milliseconds, which
+        consistently ages every trade out of the buffer before any
+        book diff can match against it — observed in production as
+        100% of book delta events being labelled "cancel".  Local
+        receipt is what's actually comparable across both feeds.
+        The venue timestamp is preserved by ``MicrostructureRecorder``
+        for downstream analytics.
+        """
         normalized_token = str(token_id or "").strip().lower()
         if not normalized_token:
             return
@@ -135,16 +149,13 @@ class BookDeltaDecomposer:
             price = _coerce_float(trade.get("price"), 0.0)
             size = _coerce_float(trade.get("size"), 0.0)
             side = str(trade.get("side") or "").strip().upper()
-            timestamp = _coerce_float(trade.get("timestamp"), 0.0)
         else:
             price = _coerce_float(getattr(trade, "price", 0.0), 0.0)
             size = _coerce_float(getattr(trade, "size", 0.0), 0.0)
             side = str(getattr(trade, "side", "") or "").strip().upper()
-            timestamp = _coerce_float(getattr(trade, "timestamp", 0.0), 0.0)
         if price <= 0 or size <= 0:
             return
-        if timestamp <= 0:
-            timestamp = datetime.now(timezone.utc).timestamp()
+        timestamp = datetime.now(timezone.utc).timestamp()
         state = self._states.setdefault(normalized_token, _TokenState())
         state.recent_trades.append(
             _RecentTrade(
