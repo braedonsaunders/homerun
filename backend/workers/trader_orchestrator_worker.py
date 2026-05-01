@@ -7339,12 +7339,15 @@ async def _run_trader_once_inner(
                         elif isinstance(final_reason, str) and final_reason.startswith("Signal stale:"):
                             status_update = "skipped"
                         if status_update is not None:
+                            # Off-path: buffered into trader_hot_state's
+                            # audit-flush loop instead of await-on-DB.
+                            # Hot-path drops from ~1s/UPDATE under
+                            # contention to microseconds (lock-protected
+                            # list append).
                             _ps_dw_set_status_mono = time.monotonic()
-                            await set_trade_signal_status(
-                                session,
+                            await hot_state.buffer_signal_status(
                                 signal_id=signal_id,
                                 status=status_update,
-                                commit=False,
                             )
                             _accumulate("ps_dw_set_status", _ps_dw_set_status_mono)
                         # If the block reason is signal staleness, also mark
@@ -7370,24 +7373,21 @@ async def _run_trader_once_inner(
                                     exc_info=_exp_exc,
                                 )
 
+                    # Buffered: append-only consumption row.  Was
+                    # 250-2641ms per call under contention; now sub-ms.
                     _ps_dw_record_mono = time.monotonic()
-                    await record_signal_consumption(
-                        session,
+                    await hot_state.buffer_signal_consumption(
                         trader_id=trader_id,
                         signal_id=signal_id,
                         decision_id=decision_row.id,
                         outcome=order_status or final_decision,
                         reason=final_reason,
-                        # Pass the in-memory updated_at to skip the
-                        # session.get(TradeSignal) lookup inside.
-                        signal_updated_at=getattr(signal, "updated_at", None),
-                        commit=False,
                     )
                     _accumulate("ps_dw_record_consumption", _ps_dw_record_mono)
 
+                    # Buffered: append-only trader_event row.
                     _ps_dw_event_mono = time.monotonic()
-                    await create_trader_event(
-                        session,
+                    await hot_state.buffer_trader_event(
                         trader_id=trader_id,
                         event_type="decision",
                         severity="error" if final_decision == "failed" else "info",
@@ -7402,19 +7402,21 @@ async def _run_trader_once_inner(
                             "market_question": getattr(runtime_signal, "market_question", None),
                             "direction": getattr(runtime_signal, "direction", None),
                         },
-                        commit=False,
-                        # Same flush-skip rationale as
-                        # ``create_trader_decision`` above.
-                        flush_on_add=False,
                     )
                     _accumulate("ps_dw_create_event", _ps_dw_event_mono)
+                    # Buffered: cursor UPSERT.  Was 516-4782ms per call
+                    # under pool contention; now sub-ms.  The flush
+                    # loop deduplicates runs with the same key so a
+                    # burst of cursor advances collapses to a single
+                    # UPSERT — strict net win.
                     _ps_dw_cursor_mono = time.monotonic()
-                    await upsert_trader_signal_cursor(
-                        session,
+                    await hot_state.buffer_signal_cursor(
                         trader_id=trader_id,
                         last_signal_created_at=_signal_cursor_timestamp(signal),
                         last_signal_id=signal_id,
-                        commit=False,
+                        last_runtime_sequence=safe_int(
+                            getattr(signal, "runtime_sequence", None), None
+                        ),
                     )
                     _accumulate("ps_dw_upsert_cursor", _ps_dw_cursor_mono)
                     # Close the decision-writes bucket: from the
