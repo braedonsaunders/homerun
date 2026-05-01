@@ -1,12 +1,12 @@
 /**
  * BacktestStudio — institutional-grade backtest workbench.
  *
- * Single-path successor to the legacy StrategyBacktestFlyout (which
- * stays mounted as a fallback for now).  Pulls every advanced datum
- * the platform has — Cox PH fill model state, ensemble PnL bands,
- * empirical constants, latency distribution, trade-vs-cancel
- * decomposition, counterfactual replay diagnostics — into one
- * coherent multi-pane workbench.
+ * The single backtest surface in the Research subview.  Pulls every
+ * advanced datum the platform has — Cox PH fill model state,
+ * ensemble PnL bands, empirical constants, latency distribution,
+ * trade-vs-cancel decomposition, counterfactual replay diagnostics,
+ * triangulation against shadow + live PnL — into one coherent
+ * multi-pane workbench.
  *
  * Layout: 3-pane split — left rail (run controls + history),
  * center (results + equity curve + trades), right rail

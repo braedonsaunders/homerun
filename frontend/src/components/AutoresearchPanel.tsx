@@ -1,16 +1,18 @@
 /**
  * AutoresearchPanel — strategy-scoped Research subview.
  *
- * Lives in the Strategies tab next to "Strategies" and "ML Models". Has
- * two inner subtabs:
+ * Lives in the Strategies tab next to "Strategies" and "Machine
+ * Learning". Has two inner subtabs:
  *
- *   * **Code Experiments** — LLM-driven strategy code evolution against
- *     the backtest data plane. No bot involved. Hits the new
- *     ``/autoresearch/strategy/{strategy_id}/*`` endpoints which key off
- *     ``strategy_id`` only and persist code versions on the Strategy
- *     record itself.
- *   * **Backtest Suite** — full Detect/Evaluate/Exit + L2 execution
- *     backtest, mounted via ``BacktestSuitePanel``.
+ *   * **Code Experiments** — LLM-driven strategy code evolution
+ *     against the backtest data plane. No bot involved. Hits the
+ *     ``/autoresearch/strategy/{strategy_id}/*`` endpoints which key
+ *     off ``strategy_id`` only and persist code versions on the
+ *     Strategy record itself.
+ *   * **Backtest Studio** — institutional-grade L2-replay workbench
+ *     wired to the Cox PH fill model, ensemble PnL bands,
+ *     counterfactual queue replay, and triangulation. Mounted via
+ *     ``BacktestStudio``.
  *
  * Per-bot live parameter tuning lives in TradingPanel/Tune (separate
  * surface, separate concept).
