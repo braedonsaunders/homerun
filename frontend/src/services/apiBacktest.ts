@@ -41,8 +41,13 @@ export interface ExecutionResult {
   cancelled_orders: number
   closed_position_count: number
   open_position_count: number
+  expected_shortfall_5pct: MetricCI
+  expected_shortfall_1pct: MetricCI
+  tail_ratio: MetricCI
+  gain_to_pain: MetricCI
   fills_sample: Array<Record<string, unknown>>
   equity_curve_sample: Array<{ timestamp?: string; equity_usd?: number }>
+  positions_summary: Array<Record<string, unknown>>
   load_time_ms: number
   data_fetch_time_ms: number
   run_time_ms: number
@@ -181,6 +186,58 @@ export interface PartialFillAggregates {
   child_count_distribution: Array<{ children: number; n_orders: number }>
 }
 
+export interface DataQualityStats {
+  accepted_books: number
+  total_attempts: number
+  accept_rate: number | null
+  rejects_by_reason: Record<string, number>
+  sequence_gaps_observed: number
+  tokens_tracked: number
+  queue_dropped: number
+}
+
+export interface OutcomeNettingReport {
+  gross_exposure_usd: number
+  net_exposure_usd: number
+  rebate_estimate_usd: number
+  capital_efficiency_pct: number | null
+  locked_capital_usd: number
+  open_positions: number
+  outcome_groups: {
+    full_coverage: number
+    partial: number
+    single: number
+    total: number
+  }
+  by_outcome_count: Record<string, number>
+  avg_lockup_seconds: number | null
+  max_lockup_seconds: number | null
+  n_lockup_samples: number
+}
+
+export interface TradeOrderMonteCarlo {
+  n_resamples: number
+  realized_sharpe?: number
+  n_trades?: number
+  skipped_reason?: string
+  sharpe_distribution: {
+    mean?: number
+    stdev?: number
+    p5?: number
+    p25?: number
+    p50?: number
+    p75?: number
+    p95?: number
+    min?: number
+    max?: number
+  }
+  observed_vs_distribution: {
+    position_pct: number
+    z_score: number
+    interpretation: 'sequence-driven' | 'robust-to-sequence'
+  } | null
+}
+
 export interface UnifiedBacktestResult {
   run_id: string
   started_at: string
@@ -198,6 +255,9 @@ export interface UnifiedBacktestResult {
   decomposition: DecompositionSummary
   counterfactuals: CounterfactualEntry[]
   ensemble_band: EnsembleBandEntry[]
+  data_quality?: DataQualityStats
+  outcome_netting?: OutcomeNettingReport
+  trade_order_monte_carlo?: TradeOrderMonteCarlo
 }
 
 export interface BacktestRunSummary {
@@ -232,8 +292,11 @@ export interface RunBacktestRequest {
   ensemble_sample_size?: number
   // Phase 12f/g operator overrides
   impact_strength_bps?: number
+  impact_capacity_threshold?: number
+  impact_capacity_exponent?: number
   maker_rebate_bps?: number
   maker_rebate_max_spread_bps?: number
+  latency_correlation_window_ms?: number
 }
 
 export async function runUnifiedBacktest(req: RunBacktestRequest): Promise<UnifiedBacktestResult> {
@@ -339,6 +402,182 @@ export async function getPortfolioCorrelation(
 ): Promise<PortfolioCorrelationResult> {
   const { data } = await api.get<PortfolioCorrelationResult>('/backtest/portfolio-correlation', {
     params: { window_days: windowDays, min_strategy_trades: minStrategyTrades },
+  })
+  return data
+}
+
+// ─── CPCV (Combinatorial Purged Cross-Validation) ───────────────────────────
+
+export interface CPCVPath {
+  path_index: number
+  test_fold_indices: number[]
+  test_start_iso: string
+  test_end_iso: string
+  n_intents: number
+  trade_count: number
+  total_fills: number
+  success: boolean
+  runtime_error: string | null
+  total_return_pct: number
+  sharpe: number | null
+  sortino: number | null
+  max_drawdown_pct: number
+}
+
+export interface CPCVSummary {
+  n_paths_run: number
+  n_paths_succeeded: number
+  sharpe_mean: number | null
+  sharpe_median: number | null
+  sharpe_p10: number | null
+  sharpe_p90: number | null
+  sharpe_min: number | null
+  sharpe_max: number | null
+  return_mean_pct: number | null
+  return_min_pct: number | null
+  return_max_pct: number | null
+  max_dd_mean_pct: number | null
+  max_dd_worst_pct: number | null
+  pbo: number | null
+  stable_path_pct: number
+}
+
+export interface CPCVResult {
+  n_folds: number
+  k_test_folds: number
+  embargo_seconds: number
+  n_paths: number
+  paths: CPCVPath[]
+  summary: CPCVSummary
+}
+
+export interface CPCVRequest {
+  source_code: string
+  slug?: string
+  config?: Record<string, unknown>
+  token_ids?: string[]
+  start: string
+  end: string
+  initial_capital_usd?: number
+  n_folds?: number
+  k_test_folds?: number
+  embargo_seconds?: number
+  submit_p50_ms?: number
+  submit_p95_ms?: number
+  cancel_p50_ms?: number
+  cancel_p95_ms?: number
+  seed?: number
+  concurrency?: number
+  max_paths?: number
+}
+
+export async function runCPCV(req: CPCVRequest): Promise<CPCVResult> {
+  const { data } = await api.post<CPCVResult>('/backtest/cpcv', req)
+  return data
+}
+
+// ─── Monte Carlo latency perturbation ───────────────────────────────────────
+
+export interface LatencyPerturbationRun {
+  p95_multiplier: number
+  submit_p50_ms: number
+  submit_p95_ms: number
+  cancel_p50_ms: number
+  cancel_p95_ms: number
+  success: boolean
+  runtime_error: string | null
+  trade_count: number
+  total_return_pct: number
+  sharpe: number | null
+  max_drawdown_pct: number
+  fees_paid_usd: number
+}
+
+export interface MonteCarloLatencySummary {
+  n_runs: number
+  n_runs_succeeded: number
+  sharpe_slope_per_x_latency?: number
+  sharpe_at_baseline?: number | null
+  sharpe_at_worst_latency?: number
+  sharpe_at_best_latency?: number
+  sharpe_range?: number
+}
+
+export interface MonteCarloLatencyResult {
+  base_submit_p50_ms: number
+  base_submit_p95_ms: number
+  base_cancel_p50_ms: number
+  base_cancel_p95_ms: number
+  runs: LatencyPerturbationRun[]
+  summary: MonteCarloLatencySummary
+}
+
+export interface MonteCarloLatencyRequest {
+  source_code: string
+  slug?: string
+  config?: Record<string, unknown>
+  token_ids?: string[]
+  start: string
+  end: string
+  initial_capital_usd?: number
+  base_submit_p50_ms?: number
+  base_submit_p95_ms?: number
+  base_cancel_p50_ms?: number
+  base_cancel_p95_ms?: number
+  multipliers?: number[]
+  seed?: number
+  concurrency?: number
+}
+
+export async function runMonteCarloLatency(
+  req: MonteCarloLatencyRequest,
+): Promise<MonteCarloLatencyResult> {
+  const { data } = await api.post<MonteCarloLatencyResult>('/backtest/monte-carlo-latency', req)
+  return data
+}
+
+// ─── Live-vs-backtest drift ─────────────────────────────────────────────────
+
+export interface StrategyDriftReport {
+  strategy_slug: string
+  strategy_name: string | null
+  severity: 'stable' | 'degraded' | 'improved' | 'stale'
+  reason: string
+  backtest_run_id: string | null
+  backtest_completed_at: string | null
+  backtest_window_days: number | null
+  backtest_trade_count: number
+  backtest_sharpe: number | null
+  backtest_total_return_pct: number | null
+  backtest_trades_per_day: number | null
+  live_window_days: number
+  live_trade_count: number
+  live_sharpe: number | null
+  live_total_pnl_usd: number
+  live_hit_rate: number | null
+  live_trades_per_day: number | null
+  sharpe_delta: number | null
+  trade_rate_ratio: number | null
+}
+
+export interface DriftMonitorResult {
+  window_days: number
+  generated_at: string
+  strategies: StrategyDriftReport[]
+  summary: {
+    n_strategies: number
+    by_severity: Record<string, number>
+    worst_offender: {
+      strategy_slug: string
+      sharpe_delta: number | null
+      reason: string
+    } | null
+  }
+}
+
+export async function getDriftMonitor(windowDays = 30): Promise<DriftMonitorResult> {
+  const { data } = await api.get<DriftMonitorResult>('/backtest/drift', {
+    params: { window_days: windowDays },
   })
   return data
 }

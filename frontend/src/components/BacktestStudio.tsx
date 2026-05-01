@@ -39,12 +39,17 @@ import { ScrollArea } from './ui/scroll-area'
 import { cn } from '../lib/utils'
 import {
   type BacktestRunSummary,
+  type CPCVResult,
+  type MonteCarloLatencyResult,
   type PortfolioCorrelationResult,
   type UnifiedBacktestResult,
   type WalkForwardResult,
   getBacktestRun,
+  getDriftMonitor,
   getPortfolioCorrelation,
   listBacktestRuns,
+  runCPCV,
+  runMonteCarloLatency,
   runUnifiedBacktest,
   runWalkForward,
 } from '../services/apiBacktest'
@@ -711,6 +716,31 @@ export default function BacktestStudio({
     refetchInterval: 300_000,
   })
 
+  // Live-vs-backtest drift monitor: surfaces strategies whose live
+  // performance has materially diverged from their most recent
+  // backtest.  Refreshes every 5 minutes.
+  const driftQuery = useQuery({
+    queryKey: ['backtest-drift', 30],
+    queryFn: () => getDriftMonitor(30),
+    refetchInterval: 300_000,
+  })
+
+  // CPCV: opt-in, user-triggered.  Heavy (15+ backtest runs).
+  const [cpcvResult, setCpcvResult] = useState<CPCVResult | null>(null)
+  const [cpcvNFolds, setCpcvNFolds] = useState<number>(6)
+  const [cpcvKTest, setCpcvKTest] = useState<number>(2)
+  const cpcvMutation = useMutation({
+    mutationFn: runCPCV,
+    onSuccess: (data) => setCpcvResult(data),
+  })
+
+  // Latency Monte Carlo: opt-in, user-triggered.
+  const [latencyMcResult, setLatencyMcResult] = useState<MonteCarloLatencyResult | null>(null)
+  const latencyMcMutation = useMutation({
+    mutationFn: runMonteCarloLatency,
+    onSuccess: (data) => setLatencyMcResult(data),
+  })
+
   // Walk-forward: not auto-run.  User triggers via the panel button.
   const [walkForwardResult, setWalkForwardResult] = useState<WalkForwardResult | null>(null)
   const [walkForwardMode, setWalkForwardMode] = useState<'anchored' | 'rolling'>('anchored')
@@ -1100,28 +1130,227 @@ export default function BacktestStudio({
 
             {/* PORTFOLIO TAB — always renders, never gated on activeRun. */}
             {centerTab === 'portfolio' ? (
-              portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
-                <div className="rounded-md border border-border/50 bg-card/40 p-3">
-                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                    <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
-                    Portfolio correlation (live, last 30 days)
-                    <span className="ml-auto text-[10px] text-muted-foreground">
-                      cross-strategy daily PnL
-                    </span>
+              <>
+                {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
+                  <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                    <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                      <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
+                      Portfolio correlation (live, last 30 days)
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        cross-strategy daily PnL
+                      </span>
+                    </div>
+                    <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
                   </div>
-                  <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
-                  <Layers3 className="h-7 w-7 text-emerald-300/40" />
-                  <div className="text-sm font-medium">No portfolio data yet</div>
-                  <div className="max-w-[420px] text-xs text-muted-foreground">
-                    The portfolio correlation matrix needs at least 2 strategies with ≥ 5
-                    terminal trades each in the last 30 days. As trades resolve, this view
-                    populates automatically.
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
+                    <Layers3 className="h-7 w-7 text-emerald-300/40" />
+                    <div className="text-sm font-medium">No portfolio data yet</div>
+                    <div className="max-w-[420px] text-xs text-muted-foreground">
+                      The portfolio correlation matrix needs at least 2 strategies with ≥ 5
+                      terminal trades each in the last 30 days. As trades resolve, this view
+                      populates automatically.
+                    </div>
                   </div>
-                </div>
-              )
+                )}
+
+                {/* OUTCOME NETTING + CAPITAL LOCKUP */}
+                {activeRun?.outcome_netting ? (
+                  <div className="mt-2 rounded-md border border-border/50 bg-card/40 p-3">
+                    <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                      <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+                      Outcome-token netting + capital lockup
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        multi-outcome aware
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      <StatTile
+                        label="Gross exposure"
+                        value={fmtUsd(activeRun.outcome_netting.gross_exposure_usd)}
+                        hint="sum of cost basis"
+                      />
+                      <StatTile
+                        label="Net exposure"
+                        value={fmtUsd(activeRun.outcome_netting.net_exposure_usd)}
+                        hint={
+                          activeRun.outcome_netting.rebate_estimate_usd > 0
+                            ? `${fmtUsd(activeRun.outcome_netting.rebate_estimate_usd)} redemption rebate`
+                            : 'no netting available'
+                        }
+                        tone={
+                          activeRun.outcome_netting.rebate_estimate_usd > 0 ? 'good' : 'neutral'
+                        }
+                      />
+                      <StatTile
+                        label="Capital efficiency"
+                        value={
+                          activeRun.outcome_netting.capital_efficiency_pct != null
+                            ? `${fmtNum(activeRun.outcome_netting.capital_efficiency_pct, 1)}%`
+                            : '—'
+                        }
+                        hint="freed by netting"
+                        tone={
+                          (activeRun.outcome_netting.capital_efficiency_pct ?? 0) >= 20 ? 'good'
+                            : (activeRun.outcome_netting.capital_efficiency_pct ?? 0) >= 5 ? 'warn'
+                            : 'neutral'
+                        }
+                      />
+                      <StatTile
+                        label="Locked capital"
+                        value={fmtUsd(activeRun.outcome_netting.locked_capital_usd)}
+                        hint={`${activeRun.outcome_netting.open_positions} open positions`}
+                      />
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      <div className="rounded-sm bg-emerald-500/10 px-2 py-1 text-[11px]">
+                        <div className="text-[9px] uppercase tracking-wide text-emerald-300">Full coverage</div>
+                        <div className="font-mono tabular-nums text-emerald-200">
+                          {activeRun.outcome_netting.outcome_groups.full_coverage}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground">all sibling outcomes held</div>
+                      </div>
+                      <div className="rounded-sm bg-amber-500/10 px-2 py-1 text-[11px]">
+                        <div className="text-[9px] uppercase tracking-wide text-amber-300">Partial</div>
+                        <div className="font-mono tabular-nums text-amber-200">
+                          {activeRun.outcome_netting.outcome_groups.partial}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground">some siblings held</div>
+                      </div>
+                      <div className="rounded-sm bg-muted/40 px-2 py-1 text-[11px]">
+                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Single</div>
+                        <div className="font-mono tabular-nums">
+                          {activeRun.outcome_netting.outcome_groups.single}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground">one outcome only</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="rounded-sm bg-muted/30 px-2 py-1">
+                        <span className="text-muted-foreground">Avg lockup: </span>
+                        <span className="font-mono tabular-nums">
+                          {activeRun.outcome_netting.avg_lockup_seconds != null
+                            ? `${(activeRun.outcome_netting.avg_lockup_seconds / 86400).toFixed(1)} days`
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="rounded-sm bg-muted/30 px-2 py-1">
+                        <span className="text-muted-foreground">Max lockup: </span>
+                        <span className="font-mono tabular-nums">
+                          {activeRun.outcome_netting.max_lockup_seconds != null
+                            ? `${(activeRun.outcome_netting.max_lockup_seconds / 86400).toFixed(1)} days`
+                            : '—'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-[10px] text-muted-foreground">
+                      Polymarket markets sum to ~$1 per share at resolution; holding all sibling outcomes of a
+                      market caps worst-case loss at the redemption guarantee.  Rebate shown is conservative
+                      (50% of gross of fully-covered groups). Increasing &quot;full coverage&quot; via outcome-aware
+                      sizing is how multi-leg strategies scale capital efficiency.
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* DRIFT MONITOR */}
+                {driftQuery.data && driftQuery.data.strategies.length > 0 ? (
+                  <div className="mt-2 rounded-md border border-border/50 bg-card/40 p-3">
+                    <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                      <Activity className="h-3.5 w-3.5 text-rose-300" />
+                      Live-vs-backtest drift (last {driftQuery.data.window_days} days)
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        {driftQuery.data.summary.n_strategies} strategies tracked
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {(['stable', 'improved', 'degraded', 'stale'] as const).map((sev) => (
+                        <div
+                          key={sev}
+                          className={cn(
+                            'rounded-sm px-2 py-1 text-[11px]',
+                            sev === 'stable'
+                              ? 'bg-emerald-500/10 text-emerald-200'
+                              : sev === 'improved'
+                              ? 'bg-sky-500/10 text-sky-200'
+                              : sev === 'degraded'
+                              ? 'bg-rose-500/15 text-rose-200'
+                              : 'bg-muted/40 text-muted-foreground',
+                          )}
+                        >
+                          <div className="text-[9px] uppercase tracking-wide">{sev}</div>
+                          <div className="font-mono tabular-nums text-base">
+                            {driftQuery.data.summary.by_severity[sev] ?? 0}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {driftQuery.data.summary.worst_offender ? (
+                      <div className="mt-2 rounded-sm bg-rose-500/10 px-2 py-1.5 text-[11px] text-rose-100">
+                        <span className="font-semibold">Worst offender: </span>
+                        <span className="font-mono">{driftQuery.data.summary.worst_offender.strategy_slug}</span>
+                        <span className="ml-2 text-rose-200/80">{driftQuery.data.summary.worst_offender.reason}</span>
+                      </div>
+                    ) : null}
+                    <div className="mt-2 max-h-[280px] overflow-y-auto">
+                      <table className="w-full text-[10px]">
+                        <thead className="sticky top-0 bg-card/95 text-muted-foreground">
+                          <tr>
+                            <th className="text-left">Strategy</th>
+                            <th className="text-right">BT Sharpe</th>
+                            <th className="text-right">Live Sharpe</th>
+                            <th className="text-right">Δ</th>
+                            <th className="text-right">Live PnL</th>
+                            <th className="text-right">Live trades</th>
+                            <th className="text-left">Severity</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {driftQuery.data.strategies.map((s) => (
+                            <tr key={s.strategy_slug} className="border-t border-border/20">
+                              <td className="font-mono">{s.strategy_slug}</td>
+                              <td className="text-right font-mono tabular-nums">
+                                {s.backtest_sharpe != null ? s.backtest_sharpe.toFixed(2) : '—'}
+                              </td>
+                              <td className="text-right font-mono tabular-nums">
+                                {s.live_sharpe != null ? s.live_sharpe.toFixed(2) : '—'}
+                              </td>
+                              <td
+                                className={cn(
+                                  'text-right font-mono tabular-nums',
+                                  (s.sharpe_delta ?? 0) < -0.5 ? 'text-rose-300'
+                                    : (s.sharpe_delta ?? 0) > 0.5 ? 'text-emerald-300'
+                                    : '',
+                                )}
+                              >
+                                {s.sharpe_delta != null ? (s.sharpe_delta >= 0 ? '+' : '') + s.sharpe_delta.toFixed(2) : '—'}
+                              </td>
+                              <td className="text-right font-mono tabular-nums">{fmtUsd(s.live_total_pnl_usd)}</td>
+                              <td className="text-right font-mono tabular-nums">{s.live_trade_count}</td>
+                              <td>
+                                <span
+                                  className={cn(
+                                    'rounded-sm px-1.5 py-0.5 text-[9px] uppercase',
+                                    s.severity === 'stable' ? 'bg-emerald-500/15 text-emerald-200'
+                                      : s.severity === 'improved' ? 'bg-sky-500/15 text-sky-200'
+                                      : s.severity === 'degraded' ? 'bg-rose-500/15 text-rose-200'
+                                      : 'bg-muted/40 text-muted-foreground',
+                                  )}
+                                >
+                                  {s.severity}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-2 text-[10px] text-muted-foreground">
+                      Drift = live realized minus backtest expectation.  Degraded strategies should be
+                      re-backtested or paused; improved strategies suggest the simulator is conservative.
+                    </div>
+                  </div>
+                ) : null}
+              </>
             ) : null}
 
             {activeRun ? (
@@ -1176,6 +1405,29 @@ export default function BacktestStudio({
                   <MetricRow label="Hit rate" m={exec?.hit_rate} />
                   <MetricRow label="Profit factor" m={exec?.profit_factor} />
                   <MetricRow label="Expectancy ($)" m={exec?.expectancy_usd} />
+                  {(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) ? (
+                    <div className="mt-2 border-t border-border/40 pt-2">
+                      <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <span>Tail risk (equity returns)</span>
+                        <span>worst 5% / 1% periods</span>
+                      </div>
+                      <MetricRow label="ES 5% (CVaR)" m={exec?.expected_shortfall_5pct} tone={(exec?.expected_shortfall_5pct?.value ?? 0) < -0.05 ? 'bad' : undefined} />
+                      <MetricRow label="ES 1% (CVaR)" m={exec?.expected_shortfall_1pct} />
+                      <MetricRow
+                        label="Tail ratio"
+                        m={exec?.tail_ratio}
+                        tone={
+                          (exec?.tail_ratio?.value ?? 0) >= 1.5 ? 'good'
+                            : (exec?.tail_ratio?.value ?? 0) < 0.7 ? 'bad'
+                            : undefined
+                        }
+                      />
+                      <MetricRow label="Gain-to-pain" m={exec?.gain_to_pain} tone={(exec?.gain_to_pain?.value ?? 0) >= 1.5 ? 'good' : undefined} />
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        ES = mean of worst-tail returns; tail ratio &lt; 1 ⇒ downside-heavy payouts.
+                      </div>
+                    </div>
+                  ) : null}
                   {activeRun?.deflated_sharpe ? (
                     <div className="mt-2 border-t border-border/40 pt-2">
                       <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -1557,6 +1809,373 @@ export default function BacktestStudio({
                 )}
               </div>
               )}
+
+              {/* TRADE-ORDER MONTE CARLO — auto-populated from active run */}
+              {centerTab === 'robustness' && activeRun?.trade_order_monte_carlo ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Activity className="h-3.5 w-3.5 text-amber-300" />
+                    Trade-order Monte Carlo
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      sequence sensitivity
+                    </span>
+                  </div>
+                  {activeRun.trade_order_monte_carlo.skipped_reason ? (
+                    <div className="text-[11px] text-muted-foreground italic">
+                      {activeRun.trade_order_monte_carlo.skipped_reason}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-4 gap-2">
+                        <StatTile
+                          label="Realized Sharpe"
+                          value={fmtNum(activeRun.trade_order_monte_carlo.realized_sharpe, 2)}
+                          hint={`${activeRun.trade_order_monte_carlo.n_trades} closed trades`}
+                        />
+                        <StatTile
+                          label="Shuffle median"
+                          value={fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p50 ?? 0, 2)}
+                          hint={`p5 ${fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p5 ?? 0, 2)} · p95 ${fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p95 ?? 0, 2)}`}
+                        />
+                        <StatTile
+                          label="Shuffle stdev"
+                          value={fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.stdev ?? 0, 2)}
+                          hint={`${activeRun.trade_order_monte_carlo.n_resamples} shuffles`}
+                        />
+                        <StatTile
+                          label="Position percentile"
+                          value={
+                            activeRun.trade_order_monte_carlo.observed_vs_distribution
+                              ? `${activeRun.trade_order_monte_carlo.observed_vs_distribution.position_pct.toFixed(0)}%`
+                              : '—'
+                          }
+                          hint={
+                            activeRun.trade_order_monte_carlo.observed_vs_distribution?.interpretation ?? ''
+                          }
+                          tone={
+                            activeRun.trade_order_monte_carlo.observed_vs_distribution?.interpretation ===
+                            'sequence-driven'
+                              ? 'warn'
+                              : 'good'
+                          }
+                        />
+                      </div>
+                      <div className="mt-2 text-[10px] text-muted-foreground">
+                        Same trade set, randomized ordering.  Realized Sharpe at p99+ ⇒ a few well-placed trades did
+                        all the work; near p50 ⇒ the edge is robust to sequence.
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : null}
+
+              {/* CPCV (Combinatorial Purged Cross-Validation) */}
+              {centerTab === 'robustness' && (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Activity className="h-3.5 w-3.5 text-emerald-300" />
+                    CPCV — combinatorial purged cross-validation
+                    <div className="ml-auto flex items-center gap-1.5">
+                      <Label className="text-[10px] text-muted-foreground">N folds</Label>
+                      <Input
+                        type="number"
+                        min={3}
+                        max={12}
+                        value={cpcvNFolds}
+                        onChange={(e) => setCpcvNFolds(parseInt(e.target.value, 10))}
+                        className="h-6 w-14 text-[10px]"
+                      />
+                      <Label className="text-[10px] text-muted-foreground">K test</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={6}
+                        value={cpcvKTest}
+                        onChange={(e) => setCpcvKTest(parseInt(e.target.value, 10))}
+                        className="h-6 w-12 text-[10px]"
+                      />
+                      <Button
+                        size="sm"
+                        className="h-6 text-[10px]"
+                        onClick={() => {
+                          if (sourceCode.trim().length < 10) return
+                          const end = new Date()
+                          const start = new Date(end.getTime() - 14 * 24 * 3600_000)
+                          cpcvMutation.mutate({
+                            source_code: sourceCode,
+                            slug: slug || '_backtest_cpcv',
+                            start: start.toISOString(),
+                            end: end.toISOString(),
+                            n_folds: cpcvNFolds,
+                            k_test_folds: cpcvKTest,
+                            embargo_seconds: 3600,
+                          })
+                        }}
+                        disabled={cpcvMutation.isPending || sourceCode.trim().length < 10}
+                      >
+                        {cpcvMutation.isPending ? 'Running…' : 'Run CPCV'}
+                      </Button>
+                    </div>
+                  </div>
+                  {cpcvResult ? (
+                    <>
+                      <div className="grid grid-cols-4 gap-2">
+                        <StatTile
+                          label="Stable paths"
+                          value={`${cpcvResult.summary.stable_path_pct.toFixed(0)}%`}
+                          hint={`${cpcvResult.summary.n_paths_succeeded}/${cpcvResult.summary.n_paths_run} paths`}
+                          tone={
+                            cpcvResult.summary.stable_path_pct >= 70 ? 'good'
+                              : cpcvResult.summary.stable_path_pct >= 50 ? 'warn'
+                              : 'bad'
+                          }
+                        />
+                        <StatTile
+                          label="Sharpe median"
+                          value={fmtNum(cpcvResult.summary.sharpe_median ?? 0, 2)}
+                          hint={
+                            cpcvResult.summary.sharpe_p10 != null && cpcvResult.summary.sharpe_p90 != null
+                              ? `p10 ${cpcvResult.summary.sharpe_p10.toFixed(2)} · p90 ${cpcvResult.summary.sharpe_p90.toFixed(2)}`
+                              : ''
+                          }
+                        />
+                        <StatTile
+                          label="Mean return"
+                          value={fmtPct(cpcvResult.summary.return_mean_pct ?? 0, 2)}
+                          hint={`min ${fmtPct(cpcvResult.summary.return_min_pct ?? 0, 1)} · max ${fmtPct(cpcvResult.summary.return_max_pct ?? 0, 1)}`}
+                        />
+                        <StatTile
+                          label="PBO"
+                          value={cpcvResult.summary.pbo != null ? `${(cpcvResult.summary.pbo * 100).toFixed(0)}%` : '—'}
+                          hint="overfit prob"
+                          tone={
+                            cpcvResult.summary.pbo == null ? 'neutral'
+                              : cpcvResult.summary.pbo > 0.5 ? 'bad'
+                              : cpcvResult.summary.pbo > 0.3 ? 'warn'
+                              : 'good'
+                          }
+                        />
+                      </div>
+                      <div className="mt-2 max-h-[180px] overflow-y-auto">
+                        <table className="w-full text-[10px]">
+                          <thead className="sticky top-0 bg-card/95 text-muted-foreground">
+                            <tr>
+                              <th className="text-left">Path</th>
+                              <th className="text-left">Test folds</th>
+                              <th className="text-right">Trades</th>
+                              <th className="text-right">Return</th>
+                              <th className="text-right">Sharpe</th>
+                              <th className="text-right">Max DD</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cpcvResult.paths.map((p) => (
+                              <tr key={p.path_index} className="border-t border-border/20">
+                                <td className="font-mono">#{p.path_index}</td>
+                                <td className="font-mono text-muted-foreground">
+                                  {`{${p.test_fold_indices.join(',')}}`}
+                                </td>
+                                <td className="text-right font-mono tabular-nums">{p.trade_count}</td>
+                                <td className={cn('text-right font-mono tabular-nums', p.total_return_pct >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
+                                  {fmtPct(p.total_return_pct, 1)}
+                                </td>
+                                <td className="text-right font-mono tabular-nums">
+                                  {p.sharpe != null ? p.sharpe.toFixed(2) : '—'}
+                                </td>
+                                <td className="text-right font-mono tabular-nums">{fmtPct(p.max_drawdown_pct, 1)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="mt-2 text-[10px] text-muted-foreground">
+                        PBO &gt; 50% ⇒ observed Sharpe likely overfit; PBO &lt; 30% ⇒ edge generalizes across path
+                        permutations.  Embargo {cpcvResult.embargo_seconds.toFixed(0)}s.
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[11px] text-muted-foreground italic">
+                      Click <strong>Run CPCV</strong> to evaluate every C({cpcvNFolds},{cpcvKTest}) ={' '}
+                      {(() => {
+                        const f = (n: number): number => (n <= 1 ? 1 : n * f(n - 1))
+                        return Math.round(f(cpcvNFolds) / (f(cpcvKTest) * f(cpcvNFolds - cpcvKTest)))
+                      })()}{' '}
+                      combination of test folds.  More rigorous than walk-forward — catches edges that hold up
+                      against arbitrary subsets of history, not just one chronological path.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* LATENCY MONTE CARLO */}
+              {centerTab === 'robustness' && (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Clock className="h-3.5 w-3.5 text-sky-300" />
+                    Latency Monte Carlo
+                    <Button
+                      size="sm"
+                      className="ml-auto h-6 text-[10px]"
+                      onClick={() => {
+                        if (sourceCode.trim().length < 10) return
+                        const end = new Date()
+                        const start = new Date(end.getTime() - 7 * 24 * 3600_000)
+                        latencyMcMutation.mutate({
+                          source_code: sourceCode,
+                          slug: slug || '_backtest_mc_latency',
+                          start: start.toISOString(),
+                          end: end.toISOString(),
+                          multipliers: [0.5, 0.75, 1.0, 1.5, 2.0],
+                        })
+                      }}
+                      disabled={latencyMcMutation.isPending || sourceCode.trim().length < 10}
+                    >
+                      {latencyMcMutation.isPending ? 'Running…' : 'Run latency MC'}
+                    </Button>
+                  </div>
+                  {latencyMcResult ? (
+                    <>
+                      <div className="grid grid-cols-4 gap-2">
+                        <StatTile
+                          label="Sharpe @ baseline"
+                          value={fmtNum(latencyMcResult.summary.sharpe_at_baseline ?? 0, 2)}
+                          hint="1.0× p50/p95"
+                        />
+                        <StatTile
+                          label="Sharpe @ best"
+                          value={fmtNum(latencyMcResult.summary.sharpe_at_best_latency ?? 0, 2)}
+                          hint="0.5× latency"
+                          tone="good"
+                        />
+                        <StatTile
+                          label="Sharpe @ worst"
+                          value={fmtNum(latencyMcResult.summary.sharpe_at_worst_latency ?? 0, 2)}
+                          hint="2.0× latency"
+                          tone="warn"
+                        />
+                        <StatTile
+                          label="Slope per ×"
+                          value={fmtNum(latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0, 2)}
+                          hint={
+                            (latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0) < -0.3
+                              ? 'latency-sensitive'
+                              : 'latency-robust'
+                          }
+                          tone={
+                            (latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0) < -0.5 ? 'bad'
+                              : (latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0) < -0.2 ? 'warn'
+                              : 'good'
+                          }
+                        />
+                      </div>
+                      <div className="mt-2 max-h-[140px] overflow-y-auto">
+                        <table className="w-full text-[10px]">
+                          <thead className="sticky top-0 bg-card/95 text-muted-foreground">
+                            <tr>
+                              <th className="text-left">×</th>
+                              <th className="text-right">Submit p95</th>
+                              <th className="text-right">Trades</th>
+                              <th className="text-right">Return</th>
+                              <th className="text-right">Sharpe</th>
+                              <th className="text-right">Max DD</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {latencyMcResult.runs.map((r, i) => (
+                              <tr key={i} className="border-t border-border/20">
+                                <td className="font-mono">{r.p95_multiplier.toFixed(2)}×</td>
+                                <td className="text-right font-mono tabular-nums">{r.submit_p95_ms.toFixed(0)} ms</td>
+                                <td className="text-right font-mono tabular-nums">{r.trade_count}</td>
+                                <td className={cn('text-right font-mono tabular-nums', r.total_return_pct >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
+                                  {fmtPct(r.total_return_pct, 1)}
+                                </td>
+                                <td className="text-right font-mono tabular-nums">
+                                  {r.sharpe != null ? r.sharpe.toFixed(2) : '—'}
+                                </td>
+                                <td className="text-right font-mono tabular-nums">{fmtPct(r.max_drawdown_pct, 1)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="mt-2 text-[10px] text-muted-foreground">
+                        Negative slope = edge erodes under worse latency (typical maker behavior).  Slope ≈ 0 = strategy is
+                        latency-insensitive.
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[11px] text-muted-foreground italic">
+                      Click <strong>Run latency MC</strong> to backtest at 0.5×, 0.75×, 1×, 1.5×, 2× latency multipliers.
+                      Reveals how much your edge depends on the latency assumption — and how a network regression in
+                      production would erode it.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* DATA QUALITY (Fill quality subtab) */}
+              {centerTab === 'fill_quality' && activeRun?.data_quality ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <AlertTriangle className="h-3.5 w-3.5 text-rose-300" />
+                    Data quality (microstructure recorder)
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      validation gate before persistence
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <StatTile
+                      label="Accept rate"
+                      value={
+                        activeRun.data_quality.accept_rate != null
+                          ? `${(activeRun.data_quality.accept_rate * 100).toFixed(1)}%`
+                          : '—'
+                      }
+                      hint={`${activeRun.data_quality.accepted_books.toLocaleString()}/${activeRun.data_quality.total_attempts.toLocaleString()} books`}
+                      tone={
+                        (activeRun.data_quality.accept_rate ?? 1) >= 0.99 ? 'good'
+                          : (activeRun.data_quality.accept_rate ?? 1) >= 0.95 ? 'warn'
+                          : 'bad'
+                      }
+                    />
+                    <StatTile
+                      label="Sequence gaps"
+                      value={activeRun.data_quality.sequence_gaps_observed.toLocaleString()}
+                      hint={`${activeRun.data_quality.tokens_tracked} tokens tracked`}
+                      tone={activeRun.data_quality.sequence_gaps_observed > 100 ? 'warn' : 'neutral'}
+                    />
+                    <StatTile
+                      label="Queue dropped"
+                      value={activeRun.data_quality.queue_dropped.toLocaleString()}
+                      hint="recorder backpressure"
+                      tone={activeRun.data_quality.queue_dropped > 0 ? 'warn' : 'good'}
+                    />
+                    <StatTile
+                      label="Total rejects"
+                      value={Object.values(activeRun.data_quality.rejects_by_reason || {})
+                        .reduce((a, b) => a + b, 0)
+                        .toLocaleString()}
+                      hint="across all reasons"
+                    />
+                  </div>
+                  {Object.entries(activeRun.data_quality.rejects_by_reason || {}).some(([, n]) => n > 0) ? (
+                    <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] md:grid-cols-3">
+                      {Object.entries(activeRun.data_quality.rejects_by_reason || {})
+                        .filter(([, n]) => n > 0)
+                        .map(([reason, n]) => (
+                          <div key={reason} className="flex items-center justify-between rounded-sm bg-rose-500/10 px-1.5 py-0.5">
+                            <span className="text-rose-200">{reason}</span>
+                            <span className="font-mono tabular-nums text-rose-300">{n.toLocaleString()}</span>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 rounded-sm bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200">
+                      ✓ no structural rejects — books pass price-bound, ordering, and sequence checks
+                    </div>
+                  )}
+                </div>
+              ) : null}
 
               {/* RUNTIME ERRORS */}
               {exec?.runtime_error ? (
