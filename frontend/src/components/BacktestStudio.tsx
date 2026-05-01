@@ -508,6 +508,46 @@ function CounterfactualList({ rows }: { rows: UnifiedBacktestResult['counterfact
   )
 }
 
+function Sparkline({ values, isUp }: { values: number[]; isUp: boolean }) {
+  if (!values || values.length < 2) {
+    // Render an empty placeholder strip so the row layout stays
+    // consistent across runs that didn't produce an equity curve.
+    return <div className="h-4 w-full opacity-30" />
+  }
+  const w = 80
+  const h = 16
+  const xs = values.map((_, i) => (i / (values.length - 1)) * (w - 2) + 1)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = Math.max(1e-6, max - min)
+  const ys = values.map((v) => h - 2 - ((v - min) / range) * (h - 4))
+  const path = xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ')
+  // Baseline reference: the "zero-drift" line at the start equity.
+  const baselineY = h - 2 - ((0 - min) / range) * (h - 4)
+  const stroke = isUp ? 'hsl(150, 80%, 60%)' : 'hsl(0, 80%, 65%)'
+  const lastX = xs[xs.length - 1]
+  const lastY = ys[ys.length - 1]
+  return (
+    <svg width={w} height={h} className="block">
+      {Number.isFinite(baselineY) ? (
+        <line
+          x1={1}
+          y1={baselineY}
+          x2={w - 1}
+          y2={baselineY}
+          stroke="rgb(120,120,120)"
+          strokeOpacity={0.25}
+          strokeDasharray="2,2"
+          strokeWidth={0.5}
+        />
+      ) : null}
+      <path d={path} fill="none" stroke={stroke} strokeWidth={1.2} strokeLinejoin="round" />
+      <circle cx={lastX} cy={lastY} r={1.5} fill={stroke} />
+    </svg>
+  )
+}
+
+
 function RunHistory({
   runs,
   activeId,
@@ -540,13 +580,17 @@ function RunHistory({
                 : 'border-border/30 bg-card/40 hover:border-border/60 hover:bg-card/60',
             )}
           >
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-muted-foreground">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-muted-foreground shrink-0">
                 {run.run_id.slice(0, 6)}
               </span>
+              <Sparkline
+                values={run.sparkline_pct ?? []}
+                isUp={run.total_return_pct >= 0}
+              />
               <span
                 className={cn(
-                  'tabular-nums',
+                  'shrink-0 tabular-nums',
                   tone === 'good' && 'text-emerald-300',
                   tone === 'bad' && 'text-red-300',
                 )}
@@ -809,21 +853,16 @@ export default function BacktestStudio({
         {/* LEFT RAIL — controls + history */}
         <div className="flex w-[320px] shrink-0 flex-col border-r border-border/50 bg-background/40">
           <div className="border-b border-border/50 px-3 py-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            <div className="flex items-center justify-between rounded-sm border border-border/40 bg-background/40 px-2 py-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 Strategy source
               </span>
-              <span className="text-[10px] text-muted-foreground">
-                {sourceCode.length.toLocaleString()} chars
+              <span className="font-mono text-[10px] text-muted-foreground" title="Source loaded from the selected strategy. Edit it in Code Experiments.">
+                {sourceCode.length > 0
+                  ? `${sourceCode.length.toLocaleString()} chars loaded`
+                  : 'no source — pick a strategy'}
               </span>
             </div>
-            <textarea
-              value={sourceCode}
-              onChange={(e) => setSourceCode(e.target.value)}
-              placeholder="# Paste your strategy class source here…"
-              className="h-32 w-full rounded-sm border border-border/40 bg-background/60 p-2 font-mono text-[10px] leading-tight text-foreground"
-              spellCheck={false}
-            />
 
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -927,33 +966,29 @@ export default function BacktestStudio({
 
         {/* CENTER — results */}
         <ScrollArea className="flex-1 min-h-0">
-          {/* Portfolio correlation always shows — it's a global view
-              that doesn't depend on any single run. */}
-          {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
-            <div className="space-y-4 p-3">
-              <div className="rounded-md border border-border/50 bg-card/40 p-3">
-                <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                  <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
-                  Portfolio correlation (live, last 30 days)
-                  <span className="ml-auto text-[10px] text-muted-foreground">
-                    cross-strategy daily PnL
-                  </span>
-                </div>
-                <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
-              </div>
-            </div>
-          ) : null}
-
           {!activeRun ? (
-            <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-              <Flame className="h-8 w-8 text-amber-300/50" />
-              <div className="text-sm font-medium">No run loaded</div>
-              <div className="max-w-[420px] text-xs text-muted-foreground">
-                Paste a strategy in the left panel and click <strong>Run backtest</strong>. Results
-                will include execution-realistic L2 replay, ensemble PnL bands at p10/p50/p90,
-                counterfactual queue replay against the live trade tape, and the active Cox PH fill
-                model snapshot.
+            <div className="space-y-4 p-3">
+              <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
+                <Flame className="h-7 w-7 text-amber-300/50" />
+                <div className="text-sm font-medium">No run loaded</div>
+                <div className="max-w-[420px] text-xs text-muted-foreground">
+                  Pick a strategy and click <strong>Run backtest</strong>. Results will include
+                  L2 replay, ensemble PnL bands at p10/p50/p90, counterfactual queue replay,
+                  walk-forward cross-validation, and the active Cox PH fill model snapshot.
+                </div>
               </div>
+              {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
+                    <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
+                    Portfolio correlation (live, last 30 days)
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      cross-strategy daily PnL
+                    </span>
+                  </div>
+                  <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="space-y-4 p-3">

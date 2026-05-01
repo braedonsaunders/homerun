@@ -63,6 +63,31 @@ def _store_run(run: dict[str, Any]) -> None:
 def list_recent_runs() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for run in reversed(_RECENT_RUNS.values()):
+        # Subsample the equity curve to a fixed-length sparkline (16
+        # points), normalized as % drift from the run's starting
+        # equity.  This gives the run-history list a tiny visual
+        # signature per row without bloating the response.
+        curve = run.get("execution", {}).get("equity_curve_sample") or []
+        sparkline_pct: list[float] = []
+        try:
+            equities = [
+                float(p.get("equity_usd"))
+                for p in curve
+                if isinstance(p, dict) and isinstance(p.get("equity_usd"), (int, float))
+            ]
+            if len(equities) >= 2:
+                target_n = 16
+                if len(equities) > target_n:
+                    step = max(1, len(equities) // target_n)
+                    sampled = equities[::step][:target_n]
+                else:
+                    sampled = equities
+                base = sampled[0] or 1.0
+                sparkline_pct = [
+                    (v - base) / base * 100.0 if base else 0.0 for v in sampled
+                ]
+        except Exception:
+            sparkline_pct = []
         out.append(
             {
                 "run_id": run["run_id"],
@@ -74,6 +99,7 @@ def list_recent_runs() -> list[dict[str, Any]]:
                 "status": "ok" if run.get("execution", {}).get("success") else "failed",
                 "trade_count": run.get("execution", {}).get("trade_count", 0),
                 "total_return_pct": run.get("execution", {}).get("total_return_pct", 0.0),
+                "sparkline_pct": sparkline_pct,
             }
         )
     return out

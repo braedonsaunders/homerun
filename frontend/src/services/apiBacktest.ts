@@ -210,6 +210,9 @@ export interface BacktestRunSummary {
   status: 'ok' | 'failed'
   trade_count: number
   total_return_pct: number
+  // Up-to-16-point equity-curve % drift from the run's start.  Empty
+  // when the run produced no equity samples (e.g. instant failure).
+  sparkline_pct?: number[]
 }
 
 export interface RunBacktestRequest {
