@@ -1047,6 +1047,28 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
+            # Event-loop watchdog: detects asyncio stalls and dumps the
+            # task list with stack frames so we can see exactly which
+            # coroutine was monopolizing the loop.  Critical diagnostic
+            # for "hot path is mysteriously slow" symptoms — sync code
+            # on the loop or a non-yielding C-extension call shows up
+            # in the dumped frame.  Trading plane only — that's where
+            # the latency-sensitive work runs.
+            try:
+                from services import event_loop_watchdog
+
+                self._schedule_background_startup(
+                    task_name="event-loop-watchdog",
+                    starter=event_loop_watchdog.start,
+                    failure_message="event-loop watchdog start failed",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to schedule event-loop watchdog",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
     async def _start_plane(self) -> None:
         loop = asyncio.get_running_loop()
         cpu_count = os.cpu_count() or 4
@@ -1224,6 +1246,16 @@ class WorkerHost:
             except Exception as exc:
                 logger.warning(
                     "signal_cache subscriber stop raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                from services import event_loop_watchdog
+
+                await event_loop_watchdog.stop()
+            except Exception as exc:
+                logger.warning(
+                    "event-loop watchdog stop raised",
                     plane=self._plane_name,
                     exc_info=exc,
                 )
