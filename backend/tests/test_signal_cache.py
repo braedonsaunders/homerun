@@ -291,3 +291,90 @@ async def test_subscriber_softfails_when_redis_down():
     # Subscriber must be running but unable to receive.
     assert signal_cache._subscriber._task is not None
     await signal_cache.stop_subscriber()
+
+
+def test_cache_not_ready_until_marked():
+    cache = signal_cache.get_signal_cache()
+    assert cache.is_ready() is False
+    cache.mark_ready()
+    assert cache.is_ready() is True
+    s = cache.status_snapshot()
+    assert s["ready"] is True
+    assert s["bootstraps_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_from_db_marks_ready_and_seeds():
+    """Bootstrap pulls pending TradeSignal rows into the cache and marks ready.
+
+    Drives the loader with a stub session_factory that returns a fake
+    ORM-shaped row — exercises the from_db_row adapter and the
+    mark_ready hand-off without needing a Postgres instance.
+    """
+    cache = signal_cache.get_signal_cache()
+    assert cache.is_ready() is False
+
+    class _FakeRow:
+        id = "boot-1"
+        source = "scanner"
+        source_item_id = None
+        signal_type = "entry"
+        strategy_type = None
+        market_id = "m1"
+        market_question = None
+        direction = "buy_yes"
+        entry_price = 0.5
+        effective_price = None
+        edge_percent = 2.0
+        confidence = 0.7
+        liquidity = 1000.0
+        expires_at = None
+        status = "pending"
+        quality_passed = True
+        dedupe_key = "k1"
+        runtime_sequence = 1
+        created_at = datetime(2026, 4, 30, tzinfo=timezone.utc)
+        updated_at = None
+
+    class _FakeResult:
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [_FakeRow()]
+            return _S()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def execute(self, query):
+            return _FakeResult()
+
+    def _factory():
+        return _FakeSession()
+
+    upserted = await signal_cache.bootstrap_from_db(session_factory=_factory)
+    assert upserted == 1
+    assert cache.is_ready() is True
+    assert cache.get_signal("boot-1") is not None
+
+
+def test_from_db_row_handles_naive_datetimes():
+    """ORM rows expose naive UTC datetimes; from_db_row must normalize."""
+    class _Row:
+        id = "x"; source = "scanner"; source_item_id = None
+        signal_type = "entry"; strategy_type = None
+        market_id = "m"; market_question = None; direction = None
+        entry_price = None; effective_price = None; edge_percent = None
+        confidence = None; liquidity = None; expires_at = None
+        status = "pending"; quality_passed = None; dedupe_key = "k"
+        runtime_sequence = None
+        # Naive datetime — what SQLAlchemy returns for a DateTime column.
+        created_at = datetime(2026, 4, 30, 12, 0, 0)
+        updated_at = None
+
+    snap = signal_cache.SignalSnapshot.from_db_row(_Row())
+    assert snap is not None
+    assert snap.created_at.tzinfo is not None
+    assert snap.created_at.tzinfo.utcoffset(None) == timedelta(0)

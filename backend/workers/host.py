@@ -1000,21 +1000,49 @@ class WorkerHost:
 
             # Signal cache: full-payload Redis subscriber that
             # eliminates the fast trader's per-cycle
-            # ``list_unconsumed_trade_signals`` DB query.  When the
-            # cache has the signals (steady state), the fast trader
-            # reads from in-memory in microseconds; on miss, it falls
-            # back to the DB safety net.
+            # ``list_unconsumed_trade_signals`` DB query.  Architecture:
+            #   * One-shot bootstrap from DB at startup seeds the cache
+            #     with all currently-pending signals.  Marks the cache
+            #     ready — fast trader trusts empty results from here on.
+            #   * Subscriber receives every subsequent signal payload
+            #     via the ``signal_payloads`` Redis channel.
+            #   * On Redis reconnect the subscriber re-bootstraps once
+            #     to reconcile any publishes dropped during the gap.
+            #   * Hot path: pure in-memory dict lookup, NO DB.
             try:
                 from services import signal_cache
 
+                async def _start_cache_pipeline() -> None:
+                    # Bootstrap FIRST so the cache is hot before the
+                    # subscriber starts forwarding live updates.  The
+                    # subscriber also re-bootstraps on every connect,
+                    # so this is "best-effort eager seed" — if it
+                    # fails (DB unreachable), the subscriber-side
+                    # bootstrap will catch up once the connection is
+                    # established.
+                    try:
+                        upserted = await signal_cache.bootstrap_from_db()
+                        logger.info(
+                            "signal_cache eager bootstrap complete",
+                            plane=self._plane_name,
+                            upserted=upserted,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "signal_cache eager bootstrap failed; subscriber will retry on connect",
+                            plane=self._plane_name,
+                            exc_info=exc,
+                        )
+                    await signal_cache.start_subscriber()
+
                 self._schedule_background_startup(
-                    task_name="signal-cache-subscriber",
-                    starter=signal_cache.start_subscriber,
-                    failure_message="signal_cache subscriber start failed",
+                    task_name="signal-cache-pipeline",
+                    starter=_start_cache_pipeline,
+                    failure_message="signal_cache pipeline start failed",
                 )
             except Exception as exc:
                 logger.warning(
-                    "Failed to schedule signal_cache subscriber",
+                    "Failed to schedule signal_cache pipeline",
                     plane=self._plane_name,
                     exc_info=exc,
                 )

@@ -82,12 +82,6 @@ _FAST_TASK_STALE_SECONDS = 30.0
 _MAX_SIGNALS_PER_CYCLE = 4
 _TRADER_LAST_RUN_TOUCH_SECONDS = 30.0
 _IDLE_EVENT_INTERVAL_SECONDS = 300.0
-# Periodic safety-net DB sweep when the in-memory signal_cache is the
-# primary source.  Catches signals that bypassed the publisher (e.g.
-# Redis briefly down, restart race) and reconciles them into the cache.
-# At 30s, a worst-case dropped-publish signal is picked up within half
-# a minute — well inside any tradable horizon.
-_SIGNAL_DB_SWEEP_INTERVAL_SECONDS = 30.0
 
 # Events that should wake up a fast trader.  Anything that adds a new
 # signal row or changes signal state belongs here.
@@ -145,11 +139,6 @@ class _FastTraderTask:
         # Per-stage timings (ms) populated by _run_once and surfaced via the
         # cycle-exceeded-budget warning to pinpoint which stage stalled.
         self._last_stage_timings_ms: dict[str, float] = {}
-        # Monotonic timestamp of the last DB safety-net sweep.  When the
-        # signal_cache is hydrated and authoritative we trust empty
-        # results, but every _SIGNAL_DB_SWEEP_INTERVAL_SECONDS we run a
-        # DB query and reconcile any signals the cache may have missed.
-        self._last_signal_db_sweep_mono: float = 0.0
 
     @property
     def trader_id(self) -> str:
@@ -754,56 +743,42 @@ class _FastTraderTask:
                 cursor_row = await session.get(TraderSignalCursor, trader_id)
                 cursor_runtime_sequence = safe_int(getattr(cursor_row, "last_runtime_sequence", None), None)
 
-            # Cache-first read: the in-memory signal_cache is hydrated
-            # by ``signal_bus`` publishing full signal payloads on the
-            # ``signal_payloads`` Redis channel.  Under steady state
-            # (publisher healthy, cache populated, trader's consumed
-            # set hydrated) this is a microsecond dict lookup vs the
-            # 1-7s DB query that previously dominated the fast tier.
+            # In-memory cache is the ONLY hot-path source.  The cache is
+            # populated by:
+            #   * Bootstrap-from-DB at trading-plane startup (one shot)
+            #   * Redis ``signal_payloads`` channel for every subsequent
+            #     signal insert / status flip (sub-millisecond push)
+            #   * Bootstrap re-run on every Redis (re)subscribe to
+            #     reconcile publishes dropped during a connection gap
             #
-            # When the trader is hydrated the cache is AUTHORITATIVE —
-            # an empty result means "no work to do" and we skip the DB
-            # entirely.  A periodic safety-net DB sweep below catches
-            # any signals that may have bypassed the publisher (Redis
-            # briefly down, etc.) and reconciles them into the cache.
+            # The DB fallback below ONLY runs while the cache hasn't yet
+            # been bootstrapped (cold-start window before the eager
+            # bootstrap completes, or extended Redis-down + DB-down
+            # outage).  In steady state the DB is never touched on this
+            # path.
+            from services import signal_cache as _signal_cache
+
+            cache = _signal_cache.get_signal_cache()
+            cache_ready = cache.is_ready()
+            trader_hydrated = cache.is_trader_hydrated(trader_id)
             signals: list = []
-            cache_hit = False
             cache_authoritative = False
-            try:
-                from services import signal_cache as _signal_cache
-
-                cache = _signal_cache.get_signal_cache()
-                if cache.is_trader_hydrated(trader_id):
-                    signals = cache.get_unconsumed_signals(
-                        trader_id=trader_id,
-                        sources=accepted_sources,
-                        cursor_runtime_sequence=cursor_runtime_sequence,
-                        limit=_MAX_SIGNALS_PER_CYCLE,
-                    )
-                    cache_hit = True
-                    cache_authoritative = True
-                    self._last_stage_timings_ms["signal_cache_hit"] = round(
-                        (time.monotonic() - stage_start) * 1000.0, 1
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "signal_cache read failed; falling back to DB",
+            if cache_ready and trader_hydrated:
+                signals = cache.get_unconsumed_signals(
                     trader_id=trader_id,
-                    exc_info=exc,
+                    sources=accepted_sources,
+                    cursor_runtime_sequence=cursor_runtime_sequence,
+                    limit=_MAX_SIGNALS_PER_CYCLE,
                 )
-
-            now_mono = time.monotonic()
-            sweep_due = (
-                now_mono - self._last_signal_db_sweep_mono
-                >= _SIGNAL_DB_SWEEP_INTERVAL_SECONDS
-            )
-            if not cache_authoritative or sweep_due:
-                # DB path: cold start (trader not yet hydrated) OR the
-                # periodic safety-net reconcile.  When the cache is
-                # already authoritative we still merge the DB result
-                # in so any signals the publisher dropped are picked
-                # up.  When it isn't, the DB is the source of truth.
-                db_signals = await list_unconsumed_trade_signals(
+                cache_authoritative = True
+                self._last_stage_timings_ms["signal_cache_hit"] = round(
+                    (time.monotonic() - stage_start) * 1000.0, 1
+                )
+            else:
+                # Cold-start fallback.  Runs at most a handful of times
+                # per process lifetime — until the bootstrap completes
+                # AND this trader has been seen at least once.
+                signals = await list_unconsumed_trade_signals(
                     session,
                     trader_id=trader_id,
                     sources=accepted_sources,
@@ -819,73 +794,23 @@ class _FastTraderTask:
                     # for the full rationale.
                     defer_heavy_columns=True,
                 )
-                self._last_signal_db_sweep_mono = now_mono
-                if not cache_authoritative:
-                    signals = db_signals
-                    # Hydrate the trader's consumed-id ring so the next
-                    # cycle takes the cache path.  Empty hydration is
-                    # fine — ``mark_consumed`` adds to the set on each
-                    # consumption.
-                    try:
-                        from services import signal_cache as _signal_cache
-
-                        cache = _signal_cache.get_signal_cache()
-                        if not cache.is_trader_hydrated(trader_id):
-                            cache.hydrate_trader_consumed_ids(trader_id, [])
-                        # Seed the cache with these DB-fetched signals
-                        # so the cache is warm on the next cycle.
-                        for db_sig in db_signals:
-                            snap = _snapshot_from_db_row(db_sig)
-                            if snap is not None:
-                                cache.upsert(snap)
-                    except Exception:
-                        pass
-                else:
-                    # Cache was authoritative; reconcile any DB rows
-                    # the cache didn't have.  Merge missing signals
-                    # into the cache and into ``signals`` for this
-                    # cycle so we don't lose work.
-                    try:
-                        from services import signal_cache as _signal_cache
-
-                        cache = _signal_cache.get_signal_cache()
-                        cached_ids = {getattr(s, "id", None) for s in signals}
-                        missed = [
-                            s for s in db_signals
-                            if getattr(s, "id", None) not in cached_ids
-                        ]
-                        if missed:
-                            for db_sig in missed:
-                                snap = _snapshot_from_db_row(db_sig)
-                                if snap is not None:
-                                    cache.upsert(snap)
-                            # Re-read so the merged set is sorted and
-                            # bounded correctly.
-                            signals = cache.get_unconsumed_signals(
-                                trader_id=trader_id,
-                                sources=accepted_sources,
-                                cursor_runtime_sequence=cursor_runtime_sequence,
-                                limit=_MAX_SIGNALS_PER_CYCLE,
-                            )
-                            logger.info(
-                                "signal_cache reconcile picked up missed signals",
-                                trader_id=trader_id,
-                                missed_count=len(missed),
-                            )
-                    except Exception as exc:
-                        logger.debug(
-                            "signal_cache reconcile failed",
-                            trader_id=trader_id,
-                            exc_info=exc,
-                        )
-            self._last_stage_timings_ms["db_list_signals"] = round(
-                (time.monotonic() - stage_start) * 1000.0, 1
-            )
+                if not trader_hydrated:
+                    # Empty consumed-id ring is fine — ``mark_consumed``
+                    # adds to it on each consumption from now on.  The
+                    # cursor predicate (cursor_runtime_sequence) keeps
+                    # already-processed signals out of the cache read
+                    # in subsequent cycles.
+                    cache.hydrate_trader_consumed_ids(trader_id, [])
+                # Seed the cache with anything we just learned about so
+                # the next cycle takes the cache path even if the
+                # bootstrap hasn't completed yet.
+                for db_sig in signals:
+                    snap = _snapshot_from_db_row(db_sig)
+                    if snap is not None:
+                        cache.upsert(snap)
             self._last_stage_timings_ms["signal_source"] = (
-                "cache" if cache_authoritative else "db"
+                "cache" if cache_authoritative else "db_coldstart"
             )
-            if cache_authoritative and sweep_due:
-                self._last_stage_timings_ms["signal_source"] = "cache+sweep"
             if not signals:
                 if is_db_pressure_active():
                     return

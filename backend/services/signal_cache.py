@@ -300,6 +300,15 @@ class SignalCache:
         # Whether the per-trader consumption sets have been hydrated
         # from DB.  Bootstrap path sets this to True once done.
         self._consumed_hydrated: set[str] = set()
+        # Whether the cache itself has been bootstrapped at least once
+        # from the DB.  Hot-path consumers should ONLY trust the cache
+        # (i.e. accept empty results as authoritative) when this is
+        # True.  Set by ``bootstrap_from_db`` after a successful seed.
+        self._ready: bool = False
+        # Monotonic timestamp of the last successful bootstrap.  Surfaced
+        # in status_snapshot for operator visibility.
+        self._last_bootstrap_mono: Optional[float] = None
+        self._bootstraps_total: int = 0
 
     # ---------- Mutation (subscriber side) ----------
 
@@ -365,6 +374,24 @@ class SignalCache:
     def is_trader_hydrated(self, trader_id: str) -> bool:
         with self._lock:
             return trader_id in self._consumed_hydrated
+
+    def is_ready(self) -> bool:
+        """True once the cache has been bootstrapped from DB at least once.
+
+        Hot-path readers should treat empty cache results as authoritative
+        ONLY when this is True.  Until the first bootstrap completes the
+        cache may be missing currently-pending signals that pre-existed
+        the subscriber, so trusting an empty result would silently skip
+        legitimate work.
+        """
+        with self._lock:
+            return self._ready
+
+    def mark_ready(self) -> None:
+        with self._lock:
+            self._ready = True
+            self._last_bootstrap_mono = time.monotonic()
+            self._bootstraps_total += 1
 
     # ---------- Read (fast-trader side) ----------
 
@@ -448,6 +475,11 @@ class SignalCache:
                 if self._lookups_total > 0
                 else None
             )
+            bootstrap_age = (
+                None
+                if self._last_bootstrap_mono is None
+                else round(time.monotonic() - self._last_bootstrap_mono, 3)
+            )
             return {
                 "size": len(self._signals),
                 "max_entries": self._max_entries,
@@ -459,6 +491,9 @@ class SignalCache:
                 "hit_rate": hit_rate,
                 "last_received_age_seconds": age,
                 "traders_hydrated": len(self._consumed_hydrated),
+                "ready": self._ready,
+                "bootstraps_total": self._bootstraps_total,
+                "last_bootstrap_age_seconds": bootstrap_age,
                 "channel": SIGNAL_PAYLOADS_CHANNEL,
             }
 
@@ -475,6 +510,105 @@ def get_signal_cache() -> SignalCache:
             if _cache is None:
                 _cache = SignalCache()
     return _cache
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap loader.
+# ---------------------------------------------------------------------------
+
+
+# Bootstrap pulls all currently-pending TradeSignal rows that haven't
+# expired, plus a small window of recently-updated rows so status flips
+# (executed/skipped) the cache may have missed during a Redis gap are
+# reconciled.  At a typical ~few hundred pending signals, this is a
+# tens-of-millisecond DB query — done once at process start and once
+# per Redis reconnect, NEVER on the per-cycle hot path.
+_BOOTSTRAP_RECENT_UPDATE_WINDOW_SECONDS = 600.0
+_BOOTSTRAP_MAX_ROWS = 10_000
+
+
+async def bootstrap_from_db(
+    session_factory: Any | None = None,
+) -> int:
+    """Seed the in-memory cache from DB pending signals.
+
+    Called:
+      * once at trading-plane startup, BEFORE traders begin cycling
+      * once on every successful Redis (re)subscribe — handles publishes
+        dropped during a connection blip
+
+    Returns the number of signals upserted.  Soft-fails by returning 0
+    if the DB isn't reachable; the cache simply isn't marked ready and
+    the hot path falls back to per-cycle DB reads until a future
+    bootstrap succeeds.
+    """
+    cache = get_signal_cache()
+    try:
+        # Late imports keep this module free of DB layer dependencies
+        # at import time (matters for the test fixture).
+        from sqlalchemy import select, or_
+        from models.database import AsyncSessionLocal, TradeSignal
+
+        factory = session_factory or AsyncSessionLocal
+    except Exception as exc:
+        logger.debug("signal_cache bootstrap unavailable: %s", exc)
+        return 0
+    now = utcnow()
+    cutoff_naive = (
+        now.replace(tzinfo=None)
+        if now.tzinfo is not None
+        else now
+    )
+    from datetime import timedelta as _timedelta
+    recent_cutoff = (now - _timedelta(seconds=_BOOTSTRAP_RECENT_UPDATE_WINDOW_SECONDS))
+    recent_cutoff_naive = (
+        recent_cutoff.replace(tzinfo=None)
+        if recent_cutoff.tzinfo is not None
+        else recent_cutoff
+    )
+    rows: list = []
+    try:
+        async with factory() as session:
+            # Pending + non-expired, OR recently-updated (any status).
+            # The recently-updated branch makes the bootstrap reconcile
+            # status flips after a Redis blip without scanning the
+            # whole table.
+            query = (
+                select(TradeSignal)
+                .where(
+                    or_(
+                        # Currently actionable.
+                        TradeSignal.status == "pending",
+                        # Status flips we may have missed on Redis.
+                        TradeSignal.updated_at >= recent_cutoff_naive,
+                    )
+                )
+                .where(
+                    or_(
+                        TradeSignal.expires_at.is_(None),
+                        TradeSignal.expires_at >= cutoff_naive,
+                    )
+                )
+                .limit(_BOOTSTRAP_MAX_ROWS)
+            )
+            result = await session.execute(query)
+            rows = list(result.scalars().all())
+    except Exception as exc:
+        logger.warning("signal_cache bootstrap DB read failed", exc_info=exc)
+        return 0
+    upserted = 0
+    for row in rows:
+        snap = SignalSnapshot.from_db_row(row)
+        if snap is not None:
+            cache.upsert(snap)
+            upserted += 1
+    cache.mark_ready()
+    logger.info(
+        "signal_cache bootstrap complete",
+        upserted=upserted,
+        cache_size=cache.status_snapshot()["size"],
+    )
+    return upserted
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +662,21 @@ class _Subscriber:
                 await pubsub.subscribe(channel)
                 logger.info("signal_cache subscribed", channel=channel)
                 backoff = 1.0
+                # Reconcile after every successful (re)subscribe.  The
+                # subscribe-then-bootstrap order matters: any signal
+                # inserted between subscribe and bootstrap-completion
+                # arrives via the channel AND is in the DB read, so
+                # upsert is just idempotent — no missed signals.
+                try:
+                    asyncio.create_task(
+                        bootstrap_from_db(),
+                        name="signal_cache_bootstrap_on_connect",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "signal_cache bootstrap-on-connect schedule failed: %s",
+                        exc,
+                    )
                 while not stop_event.is_set():
                     try:
                         message = await pubsub.get_message(
