@@ -280,10 +280,21 @@ class PolymarketClient:
             await rate_limiter.acquire(endpoint)
 
             try:
-                response = await client.get(url, **kwargs)
-                # Read the body inside the retry loop so chunked/stream read
-                # failures are retried instead of escaping at response.json().
-                await response.aread()
+                # Hold a global in-flight slot for the wire portion of the
+                # request only.  The token bucket above caps RATE; this
+                # caps CONCURRENCY.  Without it, fan-out callers (e.g.
+                # get_events_by_slugs's per-call Semaphore(12), or
+                # per-trader-cycle prices_history loops) can stack 30+
+                # simultaneous HTTP requests, exhausting OS thread/lock
+                # resources (the "can't allocate lock" error observed in
+                # the backtest meltdown was the smoking gun).
+                async with rate_limiter.inflight_slot():
+                    response = await client.get(url, **kwargs)
+                    # Read the body inside the slot so chunked/stream read
+                    # failures are retried instead of escaping at
+                    # response.json(), AND so the connection isn't held
+                    # past the slot release.
+                    await response.aread()
             except Exception as exc:
                 if not isinstance(exc, httpx.TransportError) and not self._is_retryable_closed_client_error(exc):
                     raise

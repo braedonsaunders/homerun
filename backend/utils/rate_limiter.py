@@ -51,7 +51,23 @@ class TokenBucket:
 
 
 class RateLimiter:
-    """Rate limiter using token bucket algorithm"""
+    """Rate limiter using token bucket algorithm + in-flight concurrency cap.
+
+    The token bucket handles RATE (requests per second).  A separate
+    global semaphore caps CONCURRENCY (simultaneous in-flight requests).
+
+    Without the concurrency cap, fan-out callers like
+    ``polymarket.get_events_by_slugs`` (per-call Semaphore(12)) and
+    ``trader_orchestrator.live_market_context.get_prices_history``
+    (called per-signal across N traders) can stack 30+ simultaneous
+    HTTP requests on the event loop.  Each httpx request keeps a
+    socket + asyncio task + thread-pool slot live; at peak the
+    "can't allocate lock" OS error fires (observed in the backtest
+    meltdown log at 02:47:30).
+
+    The semaphore is created lazily on first acquire so module
+    imports happen before the asyncio loop exists.
+    """
 
     # Polymarket API rate limits (from docs.polymarket.com)
     LIMITS = {
@@ -68,9 +84,16 @@ class RateLimiter:
         "data_positions": RateLimitConfig(requests_per_window=60, window_seconds=10),
     }
 
+    # Cap on simultaneous in-flight Polymarket HTTP requests across all
+    # callers and endpoints.  24 leaves comfortable headroom under
+    # every individual endpoint's per-second budget while bounding
+    # the asyncio task fan-out the event-loop watchdog observed.
+    GLOBAL_INFLIGHT_LIMIT = 24
+
     def __init__(self):
         self._buckets: Dict[str, TokenBucket] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
+        self._inflight_semaphore: Optional[asyncio.Semaphore] = None
 
     def _get_bucket(self, endpoint: str) -> TokenBucket:
         """Get or create a token bucket for an endpoint"""
@@ -86,6 +109,20 @@ class RateLimiter:
         if endpoint not in self._locks:
             self._locks[endpoint] = asyncio.Lock()
         return self._locks[endpoint]
+
+    def _get_inflight_semaphore(self) -> asyncio.Semaphore:
+        """Lazy global in-flight semaphore (binds to the active loop)."""
+        if self._inflight_semaphore is None:
+            self._inflight_semaphore = asyncio.Semaphore(self.GLOBAL_INFLIGHT_LIMIT)
+        return self._inflight_semaphore
+
+    def inflight_slot(self):
+        """Return an awaitable context manager that holds an in-flight
+        slot for the duration of the actual HTTP request.  Callers wrap
+        the network leg with ``async with rate_limiter.inflight_slot():``
+        so the slot is held only across the wire, not across cache
+        lookups or post-processing."""
+        return self._get_inflight_semaphore()
 
     async def acquire(self, endpoint: str, tokens: int = 1) -> float:
         """
