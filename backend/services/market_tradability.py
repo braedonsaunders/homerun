@@ -14,6 +14,25 @@ from utils.converters import normalize_market_id
 _CACHE_TTL = timedelta(minutes=3)
 _CACHE_MAX_SIZE = 5000
 _cache: dict[str, tuple[datetime, bool]] = {}
+
+# Global concurrency cap across ALL get_market_tradability_map callers.
+# The function is invoked from 4 unrelated paths (scanner shared_state,
+# news shared_state, signal_bus, tracked_traders_worker) each defaulting
+# to per-call concurrency=12.  Without this cap, 2-3 concurrent calls
+# spawn 24-36 simultaneous Polymarket HTTP fetches, observed during a
+# crypto-backtest run as ``polymarket._fetch:722 x12 + _fetch:720 x10``
+# parked on the event loop.  The semaphore is created lazily on the
+# first call to bind it to the active asyncio loop (modules can be
+# imported before any loop exists).
+_GLOBAL_CONCURRENCY_LIMIT = 12
+_global_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_global_semaphore() -> asyncio.Semaphore:
+    global _global_semaphore
+    if _global_semaphore is None:
+        _global_semaphore = asyncio.Semaphore(_GLOBAL_CONCURRENCY_LIMIT)
+    return _global_semaphore
 _POLYMARKET_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _POLYMARKET_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _POLYMARKET_HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
@@ -118,6 +137,8 @@ async def get_market_tradability_map(
         queue.put_nowait(mid)
     result: dict[str, bool] = {}
 
+    sem = _get_global_semaphore()
+
     async def _worker() -> None:
         while True:
             try:
@@ -125,7 +146,13 @@ async def get_market_tradability_map(
             except asyncio.QueueEmpty:
                 return
             try:
-                result[mid] = await is_market_tradable(mid, now=ref_now)
+                # Hold the global semaphore only across the actual
+                # Polymarket I/O.  Cache hits inside is_market_tradable
+                # short-circuit before any HTTP call, so the semaphore
+                # window is just the network leg — no point queuing
+                # cache hits behind in-flight HTTP requests.
+                async with sem:
+                    result[mid] = await is_market_tradable(mid, now=ref_now)
             except Exception:
                 pass
             finally:
