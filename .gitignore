@@ -81,7 +81,3 @@ output/
 secrets.json
 .claude/worktrees/
 .cutover-snapshots/
-
-# Strategy iteration snapshots (scratch copies used by
-# scripts/strategy_iter.py for A/B diff against earlier versions).
-scripts/iter_snapshots/
