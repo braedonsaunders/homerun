@@ -1644,32 +1644,111 @@ def _backtest_evaluate_opportunity(
         return None
     try:
         # Synthesize a signal-view that quacks like a TradeSignal so
-        # base.py's _base_evaluate / scoring pipeline reads the right
-        # fields.  We pull edge/confidence/direction from the
-        # opportunity row.
+        # the strategy's evaluate() reads the right fields.  Strategies
+        # reach into many TradeSignal columns (source, strategy_type,
+        # liquidity, edge_percent, confidence, entry_price, market_id,
+        # payload_json, strategy_context_json) — we populate every one
+        # of them faithfully from the OpportunityHistory row + the
+        # nested positions_to_take payload.  Missing fields cause
+        # evaluate() to silently reject, which the user hit with 1323
+        # of 1323 opps skipped on tail_end_carry.
+        opp_strategy_type = str(getattr(opp, "strategy_type", "") or "").strip().lower()
+        first_pos = (pdata.get("positions_to_take") or [{}])[0]
+        if not isinstance(first_pos, dict):
+            first_pos = {}
+
+        # Build an enriched payload that mirrors the live TradeSignal's
+        # payload_json contract.  Strategies fall back to
+        # ``payload.get("strategy_type")`` / ``payload.get("strategy")``
+        # when ``signal.strategy_type`` is missing — make sure both work.
+        enriched_payload = dict(pdata)
+        enriched_payload.setdefault("strategy_type", opp_strategy_type)
+        enriched_payload.setdefault("strategy", opp_strategy_type)
+        enriched_payload.setdefault("source", "scanner")
+        # Surface market_question / market_id at top level too — some
+        # strategies inspect those for keyword-block filters.
+        if "market_id" not in enriched_payload and first_pos.get("market_id"):
+            enriched_payload["market_id"] = first_pos["market_id"]
+        if "market_question" not in enriched_payload and first_pos.get("market_question"):
+            enriched_payload["market_question"] = first_pos["market_question"]
+
+        # Resolution date — utils/signal_helpers.days_to_resolution()
+        # reads ``payload.resolution_date`` and computes against
+        # ``datetime.now()``.  In backtest the opp was detected days
+        # ago; using the real ``resolution_date`` would give a
+        # negative DTR (past resolution) and reject every opp on the
+        # resolution-window gate.  Reconstruct a synthetic
+        # resolution_date such that ``(resolution_date - now)`` equals
+        # the ORIGINAL detect-time DTR.  This makes evaluate()'s DTR
+        # computation produce the same number it would have at
+        # detect-time, which is the right semantic for backtest replay.
+        from datetime import timedelta as _td_eval
+        tail_block = first_pos.get("_tail_end") if isinstance(first_pos.get("_tail_end"), dict) else {}
+        original_dtr = tail_block.get("days_to_resolution") if isinstance(tail_block, dict) else None
+        if isinstance(original_dtr, (int, float)) and original_dtr > 0:
+            synthetic_resolution = (
+                datetime.now(timezone.utc) + _td_eval(seconds=float(original_dtr) * 86400.0)
+            )
+            enriched_payload["resolution_date"] = synthetic_resolution.isoformat()
+        elif "resolution_date" not in enriched_payload:
+            # Fall back to the OpportunityHistory column if the
+            # _tail_end block didn't carry it.
+            opp_res = getattr(opp, "resolution_date", None)
+            if opp_res is not None:
+                enriched_payload["resolution_date"] = (
+                    opp_res.isoformat() if hasattr(opp_res, "isoformat") else str(opp_res)
+                )
+
+        # Liquidity: OpportunityHistory doesn't store the dollar
+        # liquidity, but the strategy ALREADY verified it passed its
+        # min_liquidity floor at detect-time — that's why the opp is
+        # in the history at all.  ``_tail_end.liquidity_ok`` (or any
+        # equivalent flag in the position) records that gate's verdict.
+        # Use a high default that satisfies any reasonable floor when
+        # liquidity_ok was True; let it stay at zero (and re-fail) only
+        # if the original detect explicitly rejected it.  This mirrors
+        # the live re-evaluate semantics: between detect and execute
+        # is microseconds in backtest, so any check that detect passed
+        # should still pass at execute-time absent a market move.
+        tail_block = first_pos.get("_tail_end") if isinstance(first_pos.get("_tail_end"), dict) else {}
+        liq_ok_flag = bool(tail_block.get("liquidity_ok", True))
+        # Provide a generous synthetic liquidity number — strategy
+        # configs cap their min_liquidity around $1k-$10k; 1M ensures
+        # we don't double-fail a check detect already passed.
+        synthetic_liquidity = 1_000_000.0 if liq_ok_flag else 0.0
+
         class _SignalView:
-            def __init__(self, opp_obj: Any, pdata_obj: dict[str, Any]):
+            def __init__(self, opp_obj: Any, pdata_obj: dict[str, Any], enriched: dict[str, Any]):
                 self.id = str(getattr(opp_obj, "id", "") or "")
-                self.strategy_key = str(getattr(opp_obj, "strategy_type", "") or "")
+                # The TradeSignal contract uses ``strategy_type``, not
+                # ``strategy_key`` — strategies read the former.
+                self.strategy_type = opp_strategy_type
+                self.strategy_key = opp_strategy_type  # alias for back-compat
+                self.source = "scanner"
+                self.signal_type = "trade"
                 # Edge: prefer expected_roi (already a percent).
                 self.edge_percent = float(getattr(opp_obj, "expected_roi", 0) or 0)
                 conf_raw = pdata_obj.get("confidence")
                 self.confidence = (
                     float(conf_raw) if isinstance(conf_raw, (int, float)) else 0.5
                 )
-                first_pos = (pdata_obj.get("positions_to_take") or [{}])[0]
-                if not isinstance(first_pos, dict):
-                    first_pos = {}
                 self.direction = str(
                     first_pos.get("action") or first_pos.get("side") or "BUY"
                 ).upper()
                 self.entry_price = float(first_pos.get("price") or 0.5)
+                self.effective_price = self.entry_price
                 self.market_id = str(first_pos.get("market_id") or "")
+                self.market_question = str(first_pos.get("market_question") or "")
                 self.token_id = str(first_pos.get("token_id") or "")
-                self.payload_json = pdata_obj
-                self.strategy_context = pdata_obj.get("strategy_context") or {}
+                self.liquidity = synthetic_liquidity
+                self.risk_score = float(getattr(opp_obj, "risk_score", 0) or 0)
+                # Both names exist on TradeSignal — set both.
+                self.payload_json = enriched
+                self.strategy_context_json = pdata_obj.get("strategy_context") or {}
+                self.strategy_context = self.strategy_context_json
+                self.status = "pending"
 
-        signal = _SignalView(opp, pdata)
+        signal = _SignalView(opp, pdata, enriched_payload)
 
         # Minimal EvaluateContext.  ``params`` are the strategy's
         # default config (we already loaded it via StrategyLoader so
