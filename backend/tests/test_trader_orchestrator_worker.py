@@ -2023,6 +2023,9 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
         consumptions.append(kwargs)
         return None
 
+    async def _buffer_consumption(**kwargs):
+        consumptions.append(kwargs)
+
     async def _reconcile_active_sessions(self, *, mode, trader_id=None):
         return {"active_seen": 0, "expired": 0, "completed": 0, "failed": 0}
 
