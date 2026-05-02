@@ -1907,8 +1907,28 @@ async def run_worker_loop() -> None:
                 if cooldown_seconds > 0.0:
                     await asyncio.sleep(cooldown_seconds)
 
-                # Sync position marks and exit registry for event-driven updates
-                await _sync_position_marks_and_exit_registry()
+                # Sync position marks and exit registry for event-driven updates.
+                # Cycle 4 of the perf-harness loop showed a 360s heartbeat-stale
+                # incident with the activity stuck on "Reconciled 9/9 traders" —
+                # i.e. the cycle tail or next cycle's pre-trader phase hung past
+                # the 180s watchdog.  Each unbounded await below is now wrapped
+                # in a hard timeout so a single hung call (e.g. a stuck WS
+                # subscribe in feed_manager) cannot trip the watchdog and force
+                # a worker restart.  Per-call timeouts sum to <180s so the full
+                # post-cycle phase always completes inside the watchdog budget.
+                try:
+                    await asyncio.wait_for(
+                        _sync_position_marks_and_exit_registry(), timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "post-cycle: _sync_position_marks_and_exit_registry timed out after 30s"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "post-cycle: _sync_position_marks_and_exit_registry failed",
+                        exc_info=exc,
+                    )
                 # Refresh the live wallet position snapshot from the data API
                 # so the in-memory ledger does not silently drift from chain
                 # state when off-app activity touches the wallet.  Spawn as
@@ -1922,9 +1942,17 @@ async def run_worker_loop() -> None:
                 )
                 # Cancel CLOB orders that are clearly abandoned (old + far
                 # off-market or below the Polymarket per-order minimum so they
-                # cannot fill).  Throttled internally to ~5 minutes.
+                # cannot fill).  Throttled internally to ~5 minutes.  The
+                # function's internal call sites already wrap Polymarket I/O
+                # in asyncio.wait_for, but wrap the whole thing in a
+                # belt-and-suspenders 30s outer timeout so a missed inner
+                # timeout cannot stall the cycle tail.
                 try:
-                    await _sweep_stale_open_orders()
+                    await asyncio.wait_for(_sweep_stale_open_orders(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "post-cycle: _sweep_stale_open_orders timed out after 30s"
+                    )
                 except Exception as exc:
                     logger.warning("stale-order sweep failed", exc_info=exc)
                 # Surveillance pass: scan for orders in
@@ -1935,7 +1963,13 @@ async def run_worker_loop() -> None:
                 # or verifier will recover automatically are silent.
                 # Throttled internally to once per scan interval.
                 try:
-                    await _scan_stuck_positions_throttled()
+                    await asyncio.wait_for(
+                        _scan_stuck_positions_throttled(), timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "post-cycle: _scan_stuck_positions_throttled timed out after 60s"
+                    )
                 except Exception as exc:
                     logger.warning("stuck-position monitor failed", exc_info=exc)
                 # Reconcile reported realized P&L against Polymarket truth.
@@ -1946,7 +1980,19 @@ async def run_worker_loop() -> None:
                 # source of truth for realized P&L (covers bot SELLs,
                 # manual user sells via the Polymarket UI, and any other
                 # on-chain exit that touches the proxy wallet).
-                await _verify_realized_pnl_against_wallet_trades()
+                try:
+                    await asyncio.wait_for(
+                        _verify_realized_pnl_against_wallet_trades(), timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "post-cycle: _verify_realized_pnl_against_wallet_trades timed out after 60s"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "post-cycle: _verify_realized_pnl_against_wallet_trades failed",
+                        exc_info=exc,
+                    )
                 last_open_positions = int(cycle_summary.get("inventory_open_positions", 0) or 0)
                 if provider_pass:
                     last_provider_pass_at = time.monotonic()
