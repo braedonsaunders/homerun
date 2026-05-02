@@ -41,6 +41,8 @@ interface AICommandBarProps {
   onClose: () => void
   onNavigateToAI?: (section: string) => void
   onOpenCopilot?: (contextType?: string, contextId?: string, label?: string) => void
+  /** Open the dedicated full-page unified search results view. */
+  onOpenSearchPage?: (query: string) => void
 }
 
 type CommandMode = 'global' | 'ask' | 'commands'
@@ -255,6 +257,7 @@ export default function AICommandBar({
   onClose,
   onNavigateToAI,
   onOpenCopilot,
+  onOpenSearchPage,
 }: AICommandBarProps) {
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<CommandMode>('global')
@@ -470,10 +473,25 @@ export default function AICommandBar({
     setSelectedIndex(0)
   }
 
+  const openSearchPageForCurrentQuery = useCallback(() => {
+    const q = input.trim()
+    if (!q) return
+    persistRecentQuery(q)
+    onOpenSearchPage?.(q)
+    onClose()
+  }, [input, onOpenSearchPage, onClose])
+
   // ---------- keyboard ----------
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (mode === 'global') {
       const items = flatResults
+      // Cmd/Ctrl+Enter always jumps straight to the full search page
+      // for the current query, regardless of which result is selected.
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        openSearchPageForCurrentQuery()
+        return
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSelectedIndex((i) => Math.min(i + 1, items.length - 1))
@@ -482,7 +500,13 @@ export default function AICommandBar({
         setSelectedIndex((i) => Math.max(i - 1, 0))
       } else if (e.key === 'Enter') {
         e.preventDefault()
-        if (items[selectedIndex]) handleResultSelect(items[selectedIndex])
+        if (items.length === 0 && input.trim()) {
+          // No specific result to open — jump to the full page so the
+          // user always has a productive Enter.
+          openSearchPageForCurrentQuery()
+        } else if (items[selectedIndex]) {
+          handleResultSelect(items[selectedIndex])
+        }
       } else if (e.key === 'Tab') {
         e.preventDefault()
         setMode('commands')
@@ -735,6 +759,23 @@ export default function AICommandBar({
                     </div>
                   )
                 })}
+
+              {/* View all → opens the full unified search results page */}
+              {searchData && onOpenSearchPage && (
+                <button
+                  onClick={openSearchPageForCurrentQuery}
+                  className="mt-2 w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left bg-gradient-to-r from-purple-500/10 to-blue-500/10 hover:from-purple-500/20 hover:to-blue-500/20 border border-purple-500/20 transition-colors"
+                >
+                  <span className="flex items-center gap-2 text-sm text-foreground">
+                    <Search className="w-4 h-4 text-purple-400" />
+                    View all {searchData.total} {searchData.total === 1 ? 'result' : 'results'} for
+                    <span className="font-medium">"{input.trim()}"</span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <kbd className="px-1.5 py-0.5 bg-background/60 rounded border border-border/60">⌘↵</kbd>
+                  </span>
+                </button>
+              )}
             </div>
           )}
 

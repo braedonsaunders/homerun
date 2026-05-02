@@ -113,6 +113,7 @@ interface AICopilotLaunchOptions {
 }
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
+import SearchResultsView from './components/SearchResultsView'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 import LiveTickerTape from './components/LiveTickerTape'
@@ -428,6 +429,13 @@ function App() {
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
   const [copilotSeedPrompt, setCopilotSeedPrompt] = useState<CopilotSeedPrompt | null>(null)
   const [commandBarOpen, setCommandBarOpen] = useState(false)
+  // Top-level unified search overlay.  When non-null, renders the
+  // dedicated SearchResultsView on top of whatever tab is active.
+  // Powered by /search/global (GIN/tsvector + pg_trgm), spans every
+  // searchable entity in the system — markets, traders, strategies,
+  // wallets, news, alerts, etc.  Supersedes the old "search" subtab
+  // under Opportunities, which was markets-only.
+  const [globalSearchQuery, setGlobalSearchQuery] = useState<string | null>(null)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
   const [cryptoSettingsOpen, setCryptoSettingsOpen] = useState(false)
@@ -666,11 +674,12 @@ function App() {
       setActiveTab('traders')
       setTradersSubTab('analysis')
     }
-    // Default: search markets
+    // Default: open the unified global search results page.  This
+    // replaces the old Opportunities → "search" subtab which was
+    // markets-only — the new view spans every entity type in the
+    // system and ranks by FTS + liquidity + recency.
     else {
-      setActiveTab('opportunities')
-      setOpportunitiesView('search')
-      setPolymarketSearchSubmitted(trimmed)
+      setGlobalSearchQuery(trimmed)
     }
 
     setHeaderSearchQuery('')
@@ -2098,7 +2107,21 @@ function App() {
           </nav>
 
           {/* Content Area */}
-          <main className="flex-1 overflow-hidden flex flex-col">
+          <main className="flex-1 overflow-hidden flex flex-col relative">
+            {/* Unified global search results — full-page overlay over
+                the main content area only.  Stays *inside* ``main`` so
+                the left sidebar and top header remain visible and
+                interactive.  When dismissed, the underlying active
+                tab is still mounted (cheap re-show, no remount). */}
+            {globalSearchQuery !== null && (
+              <div className="absolute inset-0 z-20 bg-background flex flex-col overflow-hidden">
+                <SearchResultsView
+                  query={globalSearchQuery}
+                  onClose={() => setGlobalSearchQuery(null)}
+                  onQueryChange={(next) => setGlobalSearchQuery(next)}
+                />
+              </div>
+            )}
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
               <div className="flex-1 section-enter overflow-y-auto">
@@ -3125,7 +3148,9 @@ function App() {
           onClose={() => setCommandBarOpen(false)}
           onNavigateToAI={handleNavigateToAI}
           onOpenCopilot={handleOpenCopilot}
+          onOpenSearchPage={(q) => setGlobalSearchQuery(q)}
         />
+
 
         {/* Keyboard Shortcuts Help Modal */}
         <KeyboardShortcutsHelp
