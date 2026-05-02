@@ -1657,6 +1657,21 @@ def _backtest_evaluate_opportunity(
         if not isinstance(first_pos, dict):
             first_pos = {}
 
+        # Source is per-strategy.  BaseStrategy declares it as a class
+        # attribute (``source_key`` ∈ {scanner, crypto, news, weather,
+        # traders, manual}); each strategy subclass picks the right
+        # data pipeline.  Hard-coding "scanner" for every strategy
+        # was wrong — crypto / news / traders strategies would all
+        # fail the ``signal.source`` gate that lives in their
+        # evaluate() (e.g., btc_eth_directional_edge requires
+        # source=crypto).  Read from the loaded strategy class so the
+        # backtest mirrors live source-routing exactly.
+        strategy_source = str(
+            getattr(strategy, "source_key", None)
+            or getattr(strategy.__class__, "source_key", None)
+            or "scanner"
+        ).strip().lower()
+
         # Build an enriched payload that mirrors the live TradeSignal's
         # payload_json contract.  Strategies fall back to
         # ``payload.get("strategy_type")`` / ``payload.get("strategy")``
@@ -1664,7 +1679,7 @@ def _backtest_evaluate_opportunity(
         enriched_payload = dict(pdata)
         enriched_payload.setdefault("strategy_type", opp_strategy_type)
         enriched_payload.setdefault("strategy", opp_strategy_type)
-        enriched_payload.setdefault("source", "scanner")
+        enriched_payload.setdefault("source", strategy_source)
         # Surface market_question / market_id at top level too — some
         # strategies inspect those for keyword-block filters.
         if "market_id" not in enriched_payload and first_pos.get("market_id"):
@@ -1724,7 +1739,7 @@ def _backtest_evaluate_opportunity(
                 # ``strategy_key`` — strategies read the former.
                 self.strategy_type = opp_strategy_type
                 self.strategy_key = opp_strategy_type  # alias for back-compat
-                self.source = "scanner"
+                self.source = strategy_source
                 self.signal_type = "trade"
                 # Edge: prefer expected_roi (already a percent).
                 self.edge_percent = float(getattr(opp_obj, "expected_roi", 0) or 0)
