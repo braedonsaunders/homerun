@@ -20,12 +20,16 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Flame,
   Layers3,
   LineChart as LineChartIcon,
   Loader2,
   Play,
+  RotateCcw,
+  Sliders,
   Sparkles,
   TrendingDown,
   TrendingUp,
@@ -36,7 +40,13 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { cn } from '../lib/utils'
+import StrategyConfigForm from './StrategyConfigForm'
+import {
+  groupStrategyParamFields,
+  type StrategyParamGroup,
+} from '../lib/strategyParams'
 import {
   type BacktestRunSummary,
   type CPCVResult,
@@ -65,6 +75,14 @@ interface BacktestStudioProps {
   initialSourceCode?: string
   initialSlug?: string
   initialConfig?: Record<string, unknown>
+  // Param schema (``{ param_fields: [...] }``) declared by the
+  // strategy.  Drives the dynamic "Strategy parameters" panel in
+  // the left rail so the operator can override the strategy's
+  // declared knobs FOR THIS RUN — same machinery the bot
+  // orchestrator's tune subtab uses.  Optional: when absent (or
+  // when the strategy declares no fields) the panel is hidden and
+  // the run uses ``initialConfig`` verbatim.
+  initialParamSchema?: { param_fields?: Array<Record<string, unknown>> } | null
   // Human-readable strategy label shown in the "loaded" indicator so
   // the operator can verify which strategy is staged when switching
   // between them in the parent dropdown.  Optional — falls back to
@@ -634,6 +652,7 @@ export default function BacktestStudio({
   initialSourceCode,
   initialSlug,
   initialConfig,
+  initialParamSchema,
   strategyLabel,
 }: BacktestStudioProps) {
   const queryClient = useQueryClient()
@@ -646,18 +665,83 @@ export default function BacktestStudio({
   // Remember the previous slug so we can show a brief "loaded
   // <slug>" highlight when the strategy actually changes.
   const [justLoadedSlug, setJustLoadedSlug] = useState<string | null>(null)
+
+  // Per-run strategy-parameter overrides.  Initialized from the
+  // strategy's declared default_config (``initialConfig``) and
+  // edited in-place via the dynamic "Strategy parameters" panel.
+  // The panel shows the SAME field schema the bot orchestrator's
+  // tune subtab renders — every dynamic knob declared in
+  // ``param_fields`` is editable for this run.  When the operator
+  // changes strategies via the parent dropdown, overrides reset
+  // back to the new strategy's defaults (see useEffect below).
+  const [paramOverrides, setParamOverrides] = useState<Record<string, unknown>>(
+    () => ({ ...(initialConfig || {}) })
+  )
+  // Whether the dynamic-params panel is expanded.  Defaults to
+  // collapsed so the rail stays compact for operators who just
+  // want to run the strategy with declared defaults.
+  const [paramsPanelOpen, setParamsPanelOpen] = useState<boolean>(false)
+  // Track which group (Signal / Entry / Sizing / Exit / Risk /
+  // Advanced / etc.) is active in the inner tabs.  Reset when
+  // the strategy changes.
+  const [paramGroupTab, setParamGroupTab] = useState<string>('')
+
   useEffect(() => {
     const nextSource = initialSourceCode || ''
     const nextSlug = initialSlug || '_backtest_unified'
     setSourceCode(nextSource)
     setSlug(nextSlug)
+    // Reset param overrides to the new strategy's declared defaults
+    // when the parent swaps the strategy.  Otherwise overrides set
+    // for ``stat_arb`` would carry into a backtest of
+    // ``tail_end_carry``, which would silently re-key by name and
+    // blow up the run.
+    setParamOverrides({ ...(initialConfig || {}) })
+    setParamGroupTab('')
     if (nextSlug && nextSlug !== '_backtest_unified') {
       setJustLoadedSlug(nextSlug)
       const t = window.setTimeout(() => setJustLoadedSlug(null), 1600)
       return () => window.clearTimeout(t)
     }
     return undefined
-  }, [initialSourceCode, initialSlug])
+  }, [initialSourceCode, initialSlug, initialConfig])
+
+  // Build the field-group structure the StrategyConfigForm consumes.
+  // Empty groups list ⇒ panel renders the empty-state message.
+  // Computed every render — cheap (the schema is small) and always
+  // tracks the active strategy.
+  const paramFieldGroups: StrategyParamGroup[] = useMemo(() => {
+    const fields = Array.isArray(initialParamSchema?.param_fields)
+      ? (initialParamSchema!.param_fields as Array<Record<string, unknown>>)
+      : []
+    return groupStrategyParamFields(fields)
+  }, [initialParamSchema])
+
+  // Sync the active group tab to the first available group when
+  // the schema (or its grouping) changes.
+  useEffect(() => {
+    if (paramFieldGroups.length === 0) return
+    if (paramFieldGroups.some((g) => g.key === paramGroupTab)) return
+    setParamGroupTab(paramFieldGroups[0].key)
+  }, [paramFieldGroups, paramGroupTab])
+
+  // Detect when the operator has actually moved a knob away from
+  // the strategy's declared default — drives the "modified" badge
+  // + the Reset button's disabled state.
+  const paramsDirty = useMemo(() => {
+    const base = initialConfig || {}
+    const baseKeys = Object.keys(base)
+    const overrideKeys = Object.keys(paramOverrides)
+    if (baseKeys.length !== overrideKeys.length) return true
+    for (const key of baseKeys) {
+      if (JSON.stringify(base[key]) !== JSON.stringify(paramOverrides[key])) return true
+    }
+    return false
+  }, [initialConfig, paramOverrides])
+
+  const handleResetParams = () => {
+    setParamOverrides({ ...(initialConfig || {}) })
+  }
   const [initialCapital, setInitialCapital] = useState<string>('1000')
   const [submitP50, setSubmitP50] = useState<string>('')
   const [submitP95, setSubmitP95] = useState<string>('')
@@ -772,7 +856,10 @@ export default function BacktestStudio({
     walkForwardMutation.mutate({
       source_code: sourceCode,
       slug: slug,
-      config: initialConfig,
+      // ``paramOverrides`` is initialized from ``initialConfig`` and
+      // edited in-place by the dynamic Strategy parameters panel; it
+      // is the single source of truth for run-time strategy config.
+      config: paramOverrides,
       start: start.toISOString(),
       end: end.toISOString(),
       initial_capital_usd: parseFloat(initialCapital) || 1000,
@@ -820,7 +907,15 @@ export default function BacktestStudio({
     runMutation.mutate({
       source_code: sourceCode,
       slug,
-      config: initialConfig,
+      // ``paramOverrides`` carries any in-rail edits to the strategy's
+      // declared knobs (default-merged at mount in initialConfig).  It
+      // lands on ``run_execution_backtest(config=...)`` which feeds it
+      // into the StrategyLoader, which calls strategy.configure() —
+      // the same path the live trader takes when a tune-subtab edit
+      // is saved.  Every gate in apply_platform_decision_gates +
+      // strategy.evaluate() reads from strategy.config so overrides
+      // genuinely drive the backtest run.
+      config: paramOverrides,
       initial_capital_usd: parseFloat(initialCapital) || 1000,
       start: startIso,
       end: endIso,
@@ -1049,6 +1144,104 @@ export default function BacktestStudio({
                 />
               </div>
             </div>
+
+            {/* ───────── Strategy parameters (dynamic) ─────────
+                Renders the SAME field schema the bot orchestrator's
+                tune subtab does — every dynamic knob the strategy
+                declared in its ``param_fields`` schema is editable
+                here for THIS backtest run.  Overrides feed into
+                ``run_execution_backtest(config=...)`` and the
+                StrategyLoader merges them on top of the strategy's
+                ``default_config`` before instantiation, so every
+                gate + evaluate() + should_exit() reads them via
+                ``strategy.config`` exactly as live does after a
+                tune-save.  Hidden when the strategy declares no
+                fields (legacy strategies without param_schema_json). */}
+            {paramFieldGroups.length > 0 ? (
+              <div className="rounded-md border border-border/50 bg-background/60">
+                <button
+                  type="button"
+                  onClick={() => setParamsPanelOpen((v) => !v)}
+                  className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-muted/30 transition-colors rounded-t-md"
+                  title="Override the strategy's declared parameters for this run.  Same fields the bot's tune subtab edits."
+                >
+                  <span className="flex items-center gap-1.5 font-medium text-foreground">
+                    {paramsPanelOpen ? (
+                      <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                    )}
+                    <Sliders className="h-3 w-3 text-cyan-400" />
+                    Strategy parameters
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    {paramsDirty ? (
+                      <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-amber-300 border-amber-400/40">
+                        modified
+                      </Badge>
+                    ) : null}
+                    <span className="text-[9px] text-muted-foreground">
+                      {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)} fields
+                    </span>
+                  </span>
+                </button>
+
+                {paramsPanelOpen ? (
+                  <div className="border-t border-border/40 p-2 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-muted-foreground">
+                        Edits apply to this run only · backend merges over the
+                        strategy's <code className="font-mono text-foreground">default_config</code>.
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={!paramsDirty}
+                        onClick={handleResetParams}
+                        className="h-6 gap-1 px-1.5 text-[10px]"
+                        title="Restore the strategy's declared default values"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Reset
+                      </Button>
+                    </div>
+                    <Tabs value={paramGroupTab} onValueChange={setParamGroupTab}
+                      className="flex min-h-0 flex-col">
+                      <div className="overflow-x-auto pb-1">
+                        <TabsList className="h-auto w-max min-w-full justify-start gap-1 rounded-md border border-border/50 bg-background/60 p-1">
+                          {paramFieldGroups.map((group) => (
+                            <TabsTrigger
+                              key={group.key}
+                              value={group.key}
+                              className="h-6 gap-1 px-2 text-[10px]"
+                            >
+                              <span>{group.label}</span>
+                              <span className="text-[9px] text-muted-foreground">
+                                {group.fields.length}
+                              </span>
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                      </div>
+                      {paramFieldGroups.map((group) => (
+                        <TabsContent
+                          key={`panel:${group.key}`}
+                          value={group.key}
+                          className="mt-0 max-h-[420px] overflow-auto rounded-md border border-border/50 bg-background/65 p-2"
+                        >
+                          <StrategyConfigForm
+                            schema={{ param_fields: group.fields as any[] }}
+                            values={paramOverrides}
+                            onChange={(next) => setParamOverrides(next)}
+                          />
+                        </TabsContent>
+                      ))}
+                    </Tabs>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <Button
               onClick={handleRun}

@@ -200,7 +200,20 @@ export default function AutoresearchPanel() {
           <BacktestStudio
             initialSourceCode={(selectedStrategy as any).source_code || ''}
             initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
-            initialConfig={(selectedStrategy as any).default_params_json || {}}
+            initialConfig={(selectedStrategy as any).default_params_json || (selectedStrategy as any).config || {}}
+            // Pass the strategy's declared param schema so the studio
+            // can render the dynamic Strategy parameters panel — the
+            // SAME field schema the bot orchestrator's tune subtab
+            // uses.  Either of the two field names is acceptable
+            // (apiTraders.getTraderStrategy normalizes both):
+            // ``param_schema_json`` is the canonical wire shape from
+            // /strategy-manager/{id}; ``config_schema`` is the legacy
+            // shape some callers still pass through.
+            initialParamSchema={
+              (selectedStrategy as any).param_schema_json
+              || (selectedStrategy as any).config_schema
+              || null
+            }
             strategyLabel={String((selectedStrategy as any).label || (selectedStrategy as any).name || (selectedStrategy as any).slug || '')}
           />
         ) : (
