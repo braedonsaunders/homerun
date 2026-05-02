@@ -1090,6 +1090,18 @@ app.include_router(cortex_router, prefix="/api", tags=["Cortex"])
 app.include_router(autoresearch_router, prefix="/api", tags=["Autoresearch"])
 app.include_router(search_router, prefix="/api", tags=["Global Search"])
 
+# Mount the MCP HTTP/SSE transport at /mcp.  External agents
+# (Claude Code, Cursor, Continue, etc.) connect here when they need
+# to drive backtests + iteration over the network.  Bearer-token
+# auth via the HOMERUN_MCP_API_KEY env var (loopback dev runs
+# without auth).  The tool surface is the existing AgentTool
+# registry, filtered to remote-safe categories by default.
+try:
+    from services.mcp.http_app import mount_mcp_http
+    mount_mcp_http(app)
+except Exception as _mcp_exc:  # pragma: no cover — MCP is optional
+    logger.warning("MCP HTTP transport not mounted: %s", _mcp_exc)
+
 
 # WebSocket endpoint
 @app.websocket("/ws")

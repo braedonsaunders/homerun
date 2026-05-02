@@ -29,6 +29,7 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
         analytics_tools,
         cortex_tools,
         data_tools,
+        iteration_tools,
         market_tools,
         news_tools,
         portfolio_tools,
@@ -51,6 +52,11 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
         system_tools,
         cortex_tools,
         data_tools,
+        # Strategy-scoped param iteration + advanced backtest tools.
+        # Provides start/poll/stop iteration, walk-forward, drift report,
+        # recent opportunities, and run_id-keyed backtest cache lookups —
+        # the surface the MCP server bridge surfaces to external agents.
+        iteration_tools,
     ]
 
     tool_map: dict[str, "AgentTool"] = {}
