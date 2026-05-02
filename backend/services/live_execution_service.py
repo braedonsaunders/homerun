@@ -84,7 +84,16 @@ _OPEN_ORDER_SNAPSHOT_CACHE_TTL_SECONDS = 2.0
 # 1.4s avg under DB pressure (5/2026/05 cycle 1 harness report).
 # The result feeds the runtime_state snapshot row only — no
 # decision logic depends on it, so 30s staleness is safe.
-_PNL_COUNTERS_TTL_SECONDS = 30.0
+_PNL_COUNTERS_TTL_SECONDS = 300.0  # was 30s; cycle 7 of the perf-harness
+# loop verified the underlying SQL is 1ms in isolation, so the 3.5s avg
+# cache-miss latency observed under DB pressure is pool contention, not
+# query speed.  Reducing miss FREQUENCY is therefore the right lever
+# (an index can't help when the wait is for a connection).  300s is
+# safe because the PnL counters power only the runtime_state snapshot
+# row — they are informational telemetry, not decisional inputs.  The
+# verifier writes ``actual_profit`` whenever an exit is matched on-chain,
+# so a 5-min stale total_pnl/winning_trades count never miscounts a
+# trader's actual position state.
 
 
 # Balance cache TTL — was 5s, but the production soak (5/2026/05)
