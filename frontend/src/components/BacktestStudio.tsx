@@ -14,7 +14,7 @@
  * follow the FillModelPanel conventions so the two surfaces feel
  * like one product.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -31,8 +31,11 @@ import {
   RotateCcw,
   Sliders,
   Sparkles,
+  Square,
+  Target,
   TrendingDown,
   TrendingUp,
+  Wand2,
   Zap,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
@@ -47,6 +50,11 @@ import {
   groupStrategyParamFields,
   type StrategyParamGroup,
 } from '../lib/strategyParams'
+import {
+  streamStrategyParamsAutoresearchExperiment,
+  stopStrategyParamsAutoresearchExperiment,
+  type StrategyParamsStartBody,
+} from '../services/apiIntelligence'
 import {
   type BacktestRunSummary,
   type CPCVResult,
@@ -74,6 +82,11 @@ import {
 interface BacktestStudioProps {
   initialSourceCode?: string
   initialSlug?: string
+  // Strategy database UUID — required by the param-iteration endpoint
+  // ``/autoresearch/strategy/{id}/params/stream`` which keys on the
+  // Strategy primary key.  When omitted, the "Iterate params" button
+  // is hidden (the studio degrades gracefully to manual backtests).
+  initialStrategyId?: string
   initialConfig?: Record<string, unknown>
   // Param schema (``{ param_fields: [...] }``) declared by the
   // strategy.  Drives the dynamic "Strategy parameters" panel in
@@ -651,6 +664,7 @@ function RunHistory({
 export default function BacktestStudio({
   initialSourceCode,
   initialSlug,
+  initialStrategyId,
   initialConfig,
   initialParamSchema,
   strategyLabel,
@@ -741,6 +755,172 @@ export default function BacktestStudio({
 
   const handleResetParams = () => {
     setParamOverrides({ ...(initialConfig || {}) })
+  }
+
+  // ───────── Param iteration (LLM-driven autoresearch loop) ─────────
+  // Streams iterations of the unified backtest with the LLM proposing
+  // overrides against the strategy's declared param_schema.  Drives
+  // the same autoresearch service the /api/autoresearch/strategy/{id}
+  // /params/stream SSE endpoint exposes, displayed inline below the
+  // params panel so the operator never leaves the studio.
+  type IterationDecision = {
+    iteration: number
+    decision: string
+    new_score?: number
+    score_delta?: number
+    best_score?: number
+    changed_params?: Record<string, unknown> | null
+    reasoning?: string
+    duration_seconds?: number
+    no_improve_streak?: number
+  }
+  type IterationProposal = {
+    iteration: number
+    proposed_changes: Record<string, unknown>
+    reasoning: string
+    confidence: number
+  }
+  const [iterRunning, setIterRunning] = useState(false)
+  const [iterStarted, setIterStarted] = useState(false)
+  const [iterError, setIterError] = useState<string | null>(null)
+  const [iterBaselineScore, setIterBaselineScore] = useState<number | null>(null)
+  const [iterBestScore, setIterBestScore] = useState<number | null>(null)
+  const [iterIteration, setIterIteration] = useState(0)
+  const [iterMaxIterations, setIterMaxIterations] = useState(50)
+  const [iterTargetScore, setIterTargetScore] = useState<string>('')
+  const [iterMaxNoImprove, setIterMaxNoImprove] = useState<string>('10')
+  const [iterMandate, setIterMandate] = useState<string>('')
+  const [iterAutoApply, setIterAutoApply] = useState<boolean>(false)
+  const [iterDecisions, setIterDecisions] = useState<IterationDecision[]>([])
+  const [iterLastProposal, setIterLastProposal] = useState<IterationProposal | null>(null)
+  const [iterEarlyStopReason, setIterEarlyStopReason] = useState<string | null>(null)
+  const [iterDoneSummary, setIterDoneSummary] = useState<{
+    total_iterations: number
+    best_score: number
+    baseline_score: number
+    improvement: number
+    target_reached: boolean
+    early_stop_reason: string | null
+  } | null>(null)
+  const iterAbortRef = useRef<AbortController | null>(null)
+
+  const iterAvailable = paramFieldGroups.length > 0 && Boolean(initialStrategyId)
+
+  const handleStartIteration = () => {
+    if (!initialStrategyId) {
+      setIterError('Strategy ID missing — pick a real strategy from the dropdown')
+      return
+    }
+    // Reset run state.
+    setIterDecisions([])
+    setIterLastProposal(null)
+    setIterError(null)
+    setIterBaselineScore(null)
+    setIterBestScore(null)
+    setIterIteration(0)
+    setIterEarlyStopReason(null)
+    setIterDoneSummary(null)
+    setIterRunning(true)
+    setIterStarted(true)
+
+    const body: StrategyParamsStartBody = {
+      max_iterations: Math.max(1, Math.min(500, parseInt(String(iterMaxIterations), 10) || 50)),
+      auto_apply: iterAutoApply,
+    }
+    const target = parseFloat(iterTargetScore)
+    if (Number.isFinite(target)) body.target_score = target
+    const noImp = parseInt(iterMaxNoImprove, 10)
+    if (Number.isFinite(noImp) && noImp > 0) body.max_no_improvement = noImp
+    if (iterMandate.trim()) body.mandate = iterMandate.trim()
+
+    const ctrl = new AbortController()
+    iterAbortRef.current = ctrl
+
+    streamStrategyParamsAutoresearchExperiment(
+      initialStrategyId,
+      (evt) => {
+        const data = (evt.data || {}) as Record<string, unknown>
+        switch (evt.event) {
+          case 'experiment_start':
+            setIterBaselineScore(typeof data.baseline_score === 'number' ? data.baseline_score : null)
+            setIterBestScore(typeof data.baseline_score === 'number' ? data.baseline_score : null)
+            break
+          case 'iteration_start':
+            setIterIteration(typeof data.iteration === 'number' ? data.iteration : 0)
+            break
+          case 'proposal':
+            setIterLastProposal({
+              iteration: Number(data.iteration ?? 0),
+              proposed_changes: (data.proposed_changes as Record<string, unknown>) || {},
+              reasoning: String(data.reasoning || ''),
+              confidence: Number(data.confidence ?? 0),
+            })
+            break
+          case 'decision': {
+            const dec: IterationDecision = {
+              iteration: Number(data.iteration ?? 0),
+              decision: String(data.decision || 'reverted'),
+              new_score: typeof data.new_score === 'number' ? data.new_score : undefined,
+              score_delta: typeof data.score_delta === 'number' ? data.score_delta : undefined,
+              best_score: typeof data.best_score === 'number' ? data.best_score : undefined,
+              changed_params: (data.changed_params as Record<string, unknown> | null) ?? null,
+              reasoning: String(data.reasoning || ''),
+              duration_seconds: typeof data.duration_seconds === 'number' ? data.duration_seconds : undefined,
+              no_improve_streak: typeof data.no_improve_streak === 'number' ? data.no_improve_streak : undefined,
+            }
+            setIterDecisions((prev) => [dec, ...prev].slice(0, 100))
+            if (typeof dec.best_score === 'number') setIterBestScore(dec.best_score)
+            // If auto_apply landed a kept change AND we read it back
+            // into our local override panel, the user sees the new
+            // values immediately.
+            if (dec.decision === 'kept' && iterAutoApply && dec.changed_params) {
+              setParamOverrides((prev) => ({ ...prev, ...dec.changed_params! }))
+            }
+            break
+          }
+          case 'done':
+            setIterDoneSummary({
+              total_iterations: Number(data.total_iterations ?? 0),
+              best_score: Number(data.best_score ?? 0),
+              baseline_score: Number(data.baseline_score ?? 0),
+              improvement: Number(data.improvement ?? 0),
+              target_reached: Boolean(data.target_reached),
+              early_stop_reason: (data.early_stop_reason as string | null) ?? null,
+            })
+            setIterEarlyStopReason((data.early_stop_reason as string | null) ?? null)
+            setIterRunning(false)
+            iterAbortRef.current = null
+            break
+          case 'error':
+            setIterError(String(data.error || 'unknown error'))
+            setIterRunning(false)
+            iterAbortRef.current = null
+            break
+        }
+      },
+      () => {
+        setIterRunning(false)
+        iterAbortRef.current = null
+      },
+      (err) => {
+        setIterError(err)
+        setIterRunning(false)
+        iterAbortRef.current = null
+      },
+      ctrl.signal,
+      body,
+    )
+  }
+
+  const handleStopIteration = () => {
+    iterAbortRef.current?.abort()
+    iterAbortRef.current = null
+    if (initialStrategyId) {
+      // Server-side stop signal — the loop checks this between
+      // iterations so the in-flight backtest still completes.
+      stopStrategyParamsAutoresearchExperiment(initialStrategyId).catch(() => undefined)
+    }
+    setIterRunning(false)
   }
   const [initialCapital, setInitialCapital] = useState<string>('1000')
   const [submitP50, setSubmitP50] = useState<string>('')
@@ -1206,6 +1386,240 @@ export default function BacktestStudio({
                         Reset
                       </Button>
                     </div>
+
+                    {/* ───────── Iterate (LLM-driven param search) ─────────
+                        Streams iterations of the unified backtest with
+                        the LLM proposing overrides against the
+                        strategy's declared param_schema.  Same engine
+                        as a manual run + the same
+                        ``apply_platform_decision_gates`` pipeline; the
+                        loop just automates the propose-evaluate-decide
+                        cycle and surfaces a structured stop condition
+                        ("until best_score >= target_score").  Results
+                        persist on Strategy.config when ``auto_apply``
+                        is on; otherwise the run only mutates the
+                        in-memory paramOverrides state. */}
+                    {iterAvailable ? (
+                      <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5 text-[10px] font-medium text-cyan-300">
+                            <Wand2 className="h-3 w-3" />
+                            Iterate params (LLM-driven)
+                          </span>
+                          {iterRunning ? (
+                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-cyan-300 border-cyan-400/40 animate-pulse">
+                              running · iter {iterIteration}/{iterMaxIterations}
+                            </Badge>
+                          ) : iterDoneSummary ? (
+                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-emerald-300 border-emerald-400/40">
+                              done · {iterDoneSummary.target_reached ? 'target' : 'completed'}
+                            </Badge>
+                          ) : null}
+                        </div>
+
+                        {/* Run config inputs.  These map 1:1 onto the
+                            structured stop conditions the autoresearch
+                            service consumes. */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <div>
+                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                              Target score
+                            </Label>
+                            <Input
+                              value={iterTargetScore}
+                              onChange={(e) => setIterTargetScore(e.target.value)}
+                              placeholder="e.g. 1.5"
+                              disabled={iterRunning}
+                              className="h-6 text-[11px] font-mono"
+                              title="Stop when best_score (Sharpe × DSR × WF − DD penalty) reaches this. Empty = no target, runs until max_iterations."
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                              Max iters
+                            </Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={500}
+                              value={iterMaxIterations}
+                              onChange={(e) => setIterMaxIterations(parseInt(e.target.value, 10) || 50)}
+                              disabled={iterRunning}
+                              className="h-6 text-[11px] font-mono"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                              Stop after N no-improve
+                            </Label>
+                            <Input
+                              value={iterMaxNoImprove}
+                              onChange={(e) => setIterMaxNoImprove(e.target.value)}
+                              placeholder="10"
+                              disabled={iterRunning}
+                              className="h-6 text-[11px] font-mono"
+                              title="Exit early after this many consecutive non-improving iterations"
+                            />
+                          </div>
+                          <div className="flex items-end pb-0.5">
+                            <label className="flex items-center gap-1.5 cursor-pointer text-[10px]">
+                              <input
+                                type="checkbox"
+                                checked={iterAutoApply}
+                                onChange={(e) => setIterAutoApply(e.target.checked)}
+                                disabled={iterRunning}
+                                className="h-3 w-3"
+                              />
+                              <span title="Persist kept overrides to Strategy.config so future runs use them by default">
+                                Auto-apply kept
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                            Mandate (optional)
+                          </Label>
+                          <Input
+                            value={iterMandate}
+                            onChange={(e) => setIterMandate(e.target.value)}
+                            placeholder="e.g. minimize drawdown without sacrificing Sharpe"
+                            disabled={iterRunning}
+                            className="h-6 text-[11px]"
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {iterRunning ? (
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={handleStopIteration}
+                              className="h-6 flex-1 gap-1 text-[10px]"
+                            >
+                              <Square className="h-3 w-3" />
+                              Stop iteration
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              onClick={handleStartIteration}
+                              className="h-6 flex-1 gap-1 text-[10px] bg-cyan-600 hover:bg-cyan-700 text-white"
+                              disabled={!initialStrategyId}
+                            >
+                              <Wand2 className="h-3 w-3" />
+                              {iterDoneSummary ? 'Iterate again' : 'Start iteration'}
+                            </Button>
+                          )}
+                        </div>
+
+                        {iterError ? (
+                          <div className="flex items-start gap-1 text-[10px] text-red-300">
+                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                            <span>{iterError}</span>
+                          </div>
+                        ) : null}
+
+                        {iterStarted ? (
+                          <div className="rounded-sm border border-border/40 bg-background/40 p-1.5 space-y-1">
+                            <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                              <div>
+                                <div className="text-muted-foreground">Baseline</div>
+                                <div className="font-mono">
+                                  {iterBaselineScore !== null ? iterBaselineScore.toFixed(4) : '—'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-muted-foreground">Best</div>
+                                <div className="font-mono text-emerald-400">
+                                  {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-muted-foreground flex items-center gap-1">
+                                  <Target className="h-2.5 w-2.5" />
+                                  Target
+                                </div>
+                                <div className="font-mono">
+                                  {iterTargetScore || '—'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {iterLastProposal ? (
+                              <div className="text-[10px] border-t border-border/30 pt-1">
+                                <div className="text-muted-foreground">
+                                  Last proposal · iter {iterLastProposal.iteration} · conf {iterLastProposal.confidence.toFixed(2)}
+                                </div>
+                                <div className="text-foreground italic line-clamp-2">
+                                  {iterLastProposal.reasoning || '<no reasoning>'}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {/* Decision log — most recent first. */}
+                            {iterDecisions.length > 0 ? (
+                              <div className="max-h-40 overflow-y-auto border-t border-border/30 pt-1 space-y-0.5">
+                                {iterDecisions.map((d, idx) => (
+                                  <div
+                                    key={`${d.iteration}-${idx}`}
+                                    className={cn(
+                                      'flex items-start gap-1 text-[10px] font-mono px-1 py-0.5 rounded',
+                                      d.decision === 'kept'
+                                        ? 'bg-emerald-500/10 text-emerald-200'
+                                        : 'text-muted-foreground'
+                                    )}
+                                  >
+                                    <span className="w-8 shrink-0">#{d.iteration}</span>
+                                    <span className="w-12 shrink-0">{d.decision}</span>
+                                    <span className="w-14 shrink-0">
+                                      {typeof d.new_score === 'number' ? d.new_score.toFixed(4) : '—'}
+                                    </span>
+                                    <span className="w-14 shrink-0">
+                                      {typeof d.score_delta === 'number'
+                                        ? (d.score_delta > 0 ? '+' : '') + d.score_delta.toFixed(4)
+                                        : ''}
+                                    </span>
+                                    <span className="truncate">
+                                      {d.changed_params && Object.keys(d.changed_params).length > 0
+                                        ? Object.keys(d.changed_params).slice(0, 3).join(', ')
+                                        : (d.reasoning || '').slice(0, 60)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            {iterDoneSummary ? (
+                              <div className="border-t border-border/30 pt-1 text-[10px]">
+                                <div className="flex items-center gap-2">
+                                  <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                                  <span className="text-foreground">
+                                    {iterDoneSummary.total_iterations} iterations · improvement{' '}
+                                    <span className={iterDoneSummary.improvement > 0 ? 'text-emerald-400' : 'text-muted-foreground'}>
+                                      {iterDoneSummary.improvement >= 0 ? '+' : ''}
+                                      {iterDoneSummary.improvement.toFixed(4)}
+                                    </span>
+                                  </span>
+                                </div>
+                                {iterEarlyStopReason ? (
+                                  <div className="text-muted-foreground italic mt-0.5">
+                                    early stop: {iterEarlyStopReason}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {!initialStrategyId && paramFieldGroups.length > 0 ? (
+                      <div className="text-[10px] text-muted-foreground italic">
+                        Iteration unavailable — select a strategy from the dropdown
+                        (the panel needs the strategy's database UUID).
+                      </div>
+                    ) : null}
                     <Tabs value={paramGroupTab} onValueChange={setParamGroupTab}
                       className="flex min-h-0 flex-col">
                       <div className="overflow-x-auto pb-1">

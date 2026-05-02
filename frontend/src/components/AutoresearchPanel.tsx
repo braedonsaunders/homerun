@@ -199,6 +199,10 @@ export default function AutoresearchPanel() {
         ) : selectedStrategy ? (
           <BacktestStudio
             initialSourceCode={(selectedStrategy as any).source_code || ''}
+            // Strategy UUID (NOT slug) — required for the param-iteration
+            // endpoint /api/autoresearch/strategy/{id}/params/stream which
+            // looks up Strategy by primary key, not slug.
+            initialStrategyId={String((selectedStrategy as any).id || '')}
             initialSlug={String((selectedStrategy as any).slug || (selectedStrategy as any).strategy_key || '_research')}
             initialConfig={(selectedStrategy as any).default_params_json || (selectedStrategy as any).config || {}}
             // Pass the strategy's declared param schema so the studio

@@ -1925,6 +1925,95 @@ export async function createAbExperimentFromAutoresearch(experimentId: string): 
   return data
 }
 
+// ── Strategy-scoped PARAMS iteration (the missing diagonal — runs the
+// LLM-driven loop over the strategy's declared param_schema against the
+// unified backtest engine, distinct from the code-evolution loop above). ──
+
+export async function getStrategyParamsAutoresearchStatus(
+  strategyId: string,
+): Promise<AutoresearchExperimentStatus> {
+  const { data } = await api.get(`/autoresearch/strategy/${strategyId}/params/status`)
+  return data
+}
+
+export async function getStrategyParamsAutoresearchHistory(
+  strategyId: string,
+  limit = 50,
+): Promise<{ iterations: AutoresearchIteration[] }> {
+  const { data } = await api.get(`/autoresearch/strategy/${strategyId}/params/history`, { params: { limit } })
+  return data
+}
+
+export async function stopStrategyParamsAutoresearchExperiment(
+  strategyId: string,
+): Promise<{ stopped: boolean; experiment_id: string | null }> {
+  const { data } = await api.post(`/autoresearch/strategy/${strategyId}/params/stop`)
+  return data
+}
+
+export interface StrategyParamsStartBody {
+  model?: string
+  max_iterations?: number
+  mandate?: string
+  auto_apply?: boolean
+  // Stop conditions — exit early once best_score >= target_score, or
+  // after max_no_improvement consecutive non-improving iterations.
+  target_score?: number
+  max_no_improvement?: number
+}
+
+export function streamStrategyParamsAutoresearchExperiment(
+  strategyId: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  onDone: () => void,
+  onError: (error: string) => void,
+  signal?: AbortSignal,
+  body?: StrategyParamsStartBody,
+): void {
+  fetch(`/api/autoresearch/strategy/${strategyId}/params/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+  }).then(response => {
+    if (!response.ok) {
+      response.text().then(text => onError(text || `HTTP ${response.status}`))
+      return
+    }
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+    if (!reader) { onError('No response body'); return }
+
+    let buffer = ''
+    const read = (): void => {
+      reader.read().then(({ done, value }) => {
+        if (done) { onDone(); return }
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(line.slice(6))
+              onEvent({ event: parsed.type, data: parsed.data || {} })
+              if (parsed.type === 'done' || parsed.type === 'error') {
+                onDone()
+                return
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+        read()
+      }).catch(err => {
+        if (err.name !== 'AbortError') onError(String(err))
+      })
+    }
+    read()
+  }).catch(err => {
+    if (err.name !== 'AbortError') onError(String(err))
+  })
+}
+
 export function streamAutoresearchExperiment(
   traderId: string,
   onEvent: (event: ChatStreamEvent) => void,
