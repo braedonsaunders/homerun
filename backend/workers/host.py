@@ -7,6 +7,7 @@ import importlib
 import logging
 import os
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
