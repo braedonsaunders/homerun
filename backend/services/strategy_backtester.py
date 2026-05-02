@@ -1821,6 +1821,45 @@ async def run_execution_backtest(
     finally:
         result.load_time_ms = (time.monotonic() - load_start) * 1000
 
+    # Pull risk caps from the loaded strategy's config so the backtest
+    # applies the same gates live does at trade-decision time.  The
+    # Portfolio's own ``can_submit`` already enforces these — they
+    # were just defaulting to None (unlimited) because run_execution_
+    # backtest never populated PortfolioConfig with them.  Defined
+    # HERE (right after strategy load) so the intent-loop platform
+    # gates can read them too.
+    strategy_cfg = dict(getattr(strategy, "config", {}) or {})
+
+    def _safe_float_cfg(key: str, default: float | None) -> float | None:
+        v = strategy_cfg.get(key)
+        if v is None:
+            return default
+        try:
+            f = float(v)
+            return f if f > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    # max_size_usd is the strategy's per-trade notional cap (see
+    # tail_end_carry config).  Map it to per-market AND per-strategy
+    # notional caps — Portfolio enforces both, neither stricter than
+    # the other on a single-market submission, but per-strategy is
+    # the right place for "this strategy may not exceed N at once".
+    per_trade_cap = _safe_float_cfg("max_size_usd", None)
+    # If a strategy declares max_open_positions, honor it; otherwise
+    # leave unlimited.  Live's default is 50 per trader (not per
+    # strategy); we use the strategy-level value when present.
+    open_pos_cap = strategy_cfg.get("max_open_positions")
+    if isinstance(open_pos_cap, (int, float)) and open_pos_cap > 0:
+        open_pos_cap = int(open_pos_cap)
+    else:
+        open_pos_cap = None
+    # Gross exposure: cap at 50% of capital by default — sane risk
+    # ceiling that the live RiskManager would also apply.  Strategies
+    # that explicitly want higher exposure can override.
+    gross_cap = _safe_float_cfg("max_gross_exposure_usd",
+                                 float(initial_capital_usd) * 0.5)
+
     end_dt = end or datetime.now(timezone.utc)
     # 7 days is the right default for "what would my strategy have
     # done lately": long enough to amass a usable sample for most
@@ -2287,43 +2326,6 @@ async def run_execution_backtest(
         return result
     finally:
         result.data_fetch_time_ms = (time.monotonic() - data_start) * 1000
-
-    # Pull risk caps from the loaded strategy's config so the backtest
-    # applies the same gates live does at trade-decision time.  The
-    # Portfolio's own ``can_submit`` already enforces these — they
-    # were just defaulting to None (unlimited) because run_execution_
-    # backtest never populated PortfolioConfig with them.
-    strategy_cfg = dict(getattr(strategy, "config", {}) or {})
-
-    def _safe_float_cfg(key: str, default: float | None) -> float | None:
-        v = strategy_cfg.get(key)
-        if v is None:
-            return default
-        try:
-            f = float(v)
-            return f if f > 0 else default
-        except (TypeError, ValueError):
-            return default
-
-    # max_size_usd is the strategy's per-trade notional cap (see
-    # tail_end_carry config).  Map it to per-market AND per-strategy
-    # notional caps — Portfolio enforces both, neither stricter than
-    # the other on a single-market submission, but per-strategy is
-    # the right place for "this strategy may not exceed N at once".
-    per_trade_cap = _safe_float_cfg("max_size_usd", None)
-    # If a strategy declares max_open_positions, honor it; otherwise
-    # leave unlimited.  Live's default is 50 per trader (not per
-    # strategy); we use the strategy-level value when present.
-    open_pos_cap = strategy_cfg.get("max_open_positions")
-    if isinstance(open_pos_cap, (int, float)) and open_pos_cap > 0:
-        open_pos_cap = int(open_pos_cap)
-    else:
-        open_pos_cap = None
-    # Gross exposure: cap at 50% of capital by default — sane risk
-    # ceiling that the live RiskManager would also apply.  Strategies
-    # that explicitly want higher exposure can override.
-    gross_cap = _safe_float_cfg("max_gross_exposure_usd",
-                                 float(initial_capital_usd) * 0.5)
 
     engine_config = BacktestConfig(
         portfolio=PortfolioConfig(
