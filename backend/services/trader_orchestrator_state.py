@@ -8284,7 +8284,7 @@ def invalidate_cap_count_cache(trader_id: str | None = None) -> None:
     if trader_id is None:
         _cap_count_cache.clear()
         return
-    keys_to_drop = [k for k in _cap_count_cache if k[0] == str(trader_id)]
+    keys_to_drop = [k for k in _cap_count_cache if k[1] == str(trader_id)]
     for key in keys_to_drop:
         _cap_count_cache.pop(key, None)
 

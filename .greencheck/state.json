@@ -1,171 +1,73 @@
 {
-  "runId": 1777680213766,
-  "workflowRunId": 25238745169,
+  "runId": 1777738214342,
+  "workflowRunId": 25255942118,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25238408083",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25255942118",
   "branch": "main",
-  "headSha": "3f9c2bddd48d37f6b04b6db7a2776c6bc5eb64da",
+  "headSha": "65130090e7643d8e9c0a888c93e92bb0e62d100d",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "lint",
+        "type": "test-failure",
         "files": [
-          "backend/workers/host.py"
+          "backend/tests/test_routes_trader_positions_cleanup.py"
         ],
         "failures": [
           {
-            "type": "lint",
-            "file": "backend/workers/host.py",
-            "line": 60,
-            "column": 24,
-            "message": "Undefined name `sys`",
-            "rule": "F821",
-            "rawLog": "F821 Undefined name `sys`\n  --> workers/host.py:60:24",
-            "confidence": 0.95
-          },
-          {
-            "type": "lint",
-            "file": "backend/workers/host.py",
-            "line": 61,
-            "column": 19,
-            "message": "Undefined name `sys`",
-            "rule": "F821",
-            "rawLog": "F821 Undefined name `sys`\n  --> workers/host.py:61:19",
-            "confidence": 0.95
+            "type": "test-failure",
+            "file": "backend/tests/test_routes_trader_positions_cleanup.py",
+            "line": null,
+            "column": null,
+            "message": "assert 0 == 1",
+            "rule": null,
+            "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
+            "confidence": 0.7
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "e8cd0705477ce5ce0eb12e09eb5a3c2e5d3433a8",
+      "commitSha": "b46806a28c2c2248724d7f8012d1a3d93564dd29",
       "filesChanged": [
-        "backend/workers/host.py"
+        "backend/services/live_execution_service.py",
+        "backend/services/trader_orchestrator_state.py"
       ],
-      "result": "regression",
-      "newFailures": [
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_routes_trader_delete_safety.py",
-          "line": null,
-          "column": null,
-          "message": "fastapi.exceptions.HTTPException: 409: {'code': 'open_live_exposure', 'message': 'Trader has active exposure. Choose disable to pause safely, or action=force_delete to permanently delete now.', 'trader_id': 'trader-route-delete-safe', 'open_live_positions': 0, 'open_shadow_positions': 2, 'open_other_positions': 0, 'open_live_orders': 0, 'open_shadow_orders': 2, 'open_other_orders': 0, 'suggested_action': 'force_delete', 'safe_action': 'disable'}",
-          "rule": null,
-          "rawLog": "FAILED tests/test_routes_trader_delete_safety.py::test_delete_route_writes_deleted_event_without_trader_fk - fastapi.exceptions.HTTPException: 409: {'code': 'open_live_exposure', 'message': 'Trader has active exposure. Choose disable to pause safely, or action=force_delete to permanently delete now.', 'trader_id': 'trader-route-delete-safe', 'open_live_positions': 0, 'open_shadow_positions': 2, 'open_other_positions': 0, 'open_live_orders': 0, 'open_shadow_orders': 2, 'open_other_orders': 0, 'suggested_action': 'force_delete', 'safe_action': 'disable'}",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_routes_trader_positions_cleanup.py",
-          "line": null,
-          "column": null,
-          "message": "assert 0 == 1",
-          "rule": null,
-          "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_trader_orchestrator_worker.py",
-          "line": null,
-          "column": null,
-          "message": "assert False",
-          "rule": null,
-          "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_prefilters_mismatched_source_strategy_type - assert False",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_trader_orchestrator_worker.py",
-          "line": null,
-          "column": null,
-          "message": "AssertionError: assert 'consumption:blocked' in []",
-          "rule": null,
-          "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_persists_blocked_decision_when_db_stacking_verification_hits - AssertionError: assert 'consumption:blocked' in []",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_trader_signal_cursor_scanning.py",
-          "line": null,
-          "column": null,
-          "message": "assert [<models.data...7f5faf3417c0>] == []",
-          "rule": null,
-          "rawLog": "FAILED tests/test_trader_signal_cursor_scanning.py::test_unconsumed_signals_default_to_pending_and_use_cursor - assert [<models.data...7f5faf3417c0>] == []",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_trader_signal_cursor_scanning.py",
-          "line": null,
-          "column": null,
-          "message": "AssertionError: assert ['47e33039730...f47edf912a57'] == ['47e33039730...5c697f808fb7']",
-          "rule": null,
-          "rawLog": "FAILED tests/test_trader_signal_cursor_scanning.py::test_pending_unconsumed_signals_bypass_runtime_and_created_cursor_filters - AssertionError: assert ['47e33039730...f47edf912a57'] == ['47e33039730...5c697f808fb7']",
-          "confidence": 0.7
-        },
-        {
-          "type": "test-failure",
-          "file": "backend/tests/test_trading_service_balance.py",
-          "line": null,
-          "column": null,
-          "message": "UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
-          "rule": null,
-          "rawLog": "FAILED tests/test_trading_service_balance.py::test_place_sell_order_fails_before_submit_when_pre_submit_gate_fails - UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
-          "confidence": 0.7
-        }
-      ],
+      "result": "fixed",
+      "newFailures": [],
       "costCents": 1,
-      "durationMs": 32097
+      "durationMs": 459306
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-02T00:03:33.766Z",
+  "startedAt": "2026-05-02T16:10:14.342Z",
   "result": null,
-  "commits": [],
+  "commits": [
+    "b46806a28c2c2248724d7f8012d1a3d93564dd29"
+  ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_workers_host.py",
+      "file": "backend/tests/test_routes_trader_positions_cleanup.py",
       "line": null,
       "column": null,
-      "message": "NameError: name 'sys' is not defined. Did you forget to import 'sys'",
+      "message": "assert 0 == 1",
       "rule": null,
-      "rawLog": "ERROR tests/test_workers_host.py - NameError: name 'sys' is not defined. Did you forget to import 'sys'",
+      "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_workers_host_lock.py",
+      "file": "backend/tests/test_trading_service_balance.py",
       "line": null,
       "column": null,
-      "message": "NameError: name 'sys' is not defined. Did you forget to import 'sys'",
+      "message": "UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
       "rule": null,
-      "rawLog": "ERROR tests/test_workers_host_lock.py - NameError: name 'sys' is not defined. Did you forget to import 'sys'",
+      "rawLog": "FAILED tests/test_trading_service_balance.py::test_place_sell_order_fails_before_submit_when_pre_submit_gate_fails - UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
       "confidence": 0.7
-    },
-    {
-      "type": "lint",
-      "file": "backend/workers/host.py",
-      "line": 60,
-      "column": 24,
-      "message": "Undefined name `sys`",
-      "rule": "F821",
-      "rawLog": "F821 Undefined name `sys`\n  --> workers/host.py:60:24",
-      "confidence": 0.95
-    },
-    {
-      "type": "lint",
-      "file": "backend/workers/host.py",
-      "line": 61,
-      "column": 19,
-      "message": "Undefined name `sys`",
-      "rule": "F821",
-      "rawLog": "F821 Undefined name `sys`\n  --> workers/host.py:61:19",
-      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25238745169.log"
+  "latestParserUsed": "pytest",
+  "latestLogPath": ".greencheck/logs/workflow-run-25255942118.log"
 }
