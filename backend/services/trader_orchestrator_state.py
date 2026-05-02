@@ -8243,7 +8243,6 @@ async def sync_trader_position_inventory(
     if commit:
         if inserts > 0 or updates > 0 or closures > 0:
             await _commit_with_retry(session)
-            invalidate_cap_count_cache(trader_id)
         elif session.in_transaction():
             await session.rollback()
 
