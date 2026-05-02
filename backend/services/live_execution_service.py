@@ -2211,6 +2211,7 @@ class LiveExecutionService:
             return
 
         from models.database import AsyncSessionLocal, LiveTradingOrder, TradeSignal
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         unique_orders: dict[str, Order] = {}
         for order in orders:
@@ -2219,12 +2220,19 @@ class LiveExecutionService:
         if not order_ids:
             return
 
-        # Per-stage breakdown for slow-log diagnosis.  Production saw
-        # ``persist_orders`` = 8047ms with no visibility into whether
-        # the cost was the persist_lock acquire, the AsyncSessionLocal
-        # checkout, the SELECT existence-check, the SELECT signal-
-        # resolve, or the COMMIT itself.  Every stage is timed; if
-        # total >= 2s we log a structured warning naming the offender.
+        # Per-stage breakdown for slow-log diagnosis.  Cycle 2 of the
+        # perf-harness loop showed ``persist_lock_wait=884ms`` avg
+        # and ``select_existing=1262ms`` avg dominating the cost.
+        # The fix here:
+        #  - Drop ``_orders_persist_lock`` entirely.  Each call writes
+        #    distinct order_ids (UUIDs from the calling submission);
+        #    same-id concurrent writes are race-safe via
+        #    ``ON CONFLICT DO UPDATE``.  Concurrent persists can now
+        #    parallelize through the asyncpg pool (200 max conns).
+        #  - Replace the SELECT-then-UPDATE pattern with a single
+        #    ``INSERT ... ON CONFLICT DO UPDATE``.  Saves one network
+        #    round-trip per call (the ``select_existing`` SELECT)
+        #    and halves the DB-side parse + planner work.
         _persist_started = _time.monotonic()
         _persist_breakdown: dict[str, float] = {"orders": len(order_ids)}
 
@@ -2234,126 +2242,131 @@ class LiveExecutionService:
                 _persist_breakdown.get(stage, 0.0) + elapsed_ms, 1
             )
 
-        _stage_started = _time.monotonic()
-        # Use the orders-specific lock — was the singleton ``_persist
-        # _lock`` until 06/2026, which serialized this against
-        # ``_persist_runtime_state`` and ``_persist_positions`` even
-        # though all three write to DIFFERENT tables.  Per-table locks
-        # let an in-flight runtime-state write not block an order
-        # persist (and vice versa).
-        persist_lock = self._get_orders_persist_lock()
-        async with persist_lock:
-            _persist_record("persist_lock_wait", _stage_started)
-            for attempt in range(_DB_RETRY_ATTEMPTS):
-                needs_retry = False
-                _persist_breakdown["attempts"] = float(attempt + 1)
-                _stage_started = _time.monotonic()
-                async with AsyncSessionLocal() as session:
-                    _persist_record("session_checkout", _stage_started)
-                    try:
+        for attempt in range(_DB_RETRY_ATTEMPTS):
+            needs_retry = False
+            _persist_breakdown["attempts"] = float(attempt + 1)
+            _stage_started = _time.monotonic()
+            async with AsyncSessionLocal() as session:
+                _persist_record("session_checkout", _stage_started)
+                try:
+                    # Resolve market_id from the opportunity_id → trade
+                    # _signals lookup ONCE per call (still need it
+                    # because ``order.market_id`` may be unset on
+                    # newly-placed orders).  Cheap PK SELECT.
+                    signal_ids = sorted(
+                        {
+                            str(order.opportunity_id or "").strip()
+                            for order in unique_orders.values()
+                            if str(order.opportunity_id or "").strip()
+                        }
+                    )
+                    market_ids_by_signal_id: dict[str, str] = {}
+                    if signal_ids:
                         _stage_started = _time.monotonic()
-                        existing_result = await session.execute(
-                            select(LiveTradingOrder).where(LiveTradingOrder.id.in_(order_ids))
+                        signal_result = await session.execute(
+                            select(TradeSignal.id, TradeSignal.market_id).where(TradeSignal.id.in_(signal_ids))
                         )
-                        existing_rows = {row.id: row for row in existing_result.scalars().all()}
-                        _persist_record("select_existing", _stage_started)
-                        signal_ids = sorted(
-                            {
-                                str(order.opportunity_id or "").strip()
-                                for order in unique_orders.values()
-                                if str(order.opportunity_id or "").strip()
-                            }
-                        )
-                        market_ids_by_signal_id: dict[str, str] = {}
-                        if signal_ids:
-                            _stage_started = _time.monotonic()
-                            signal_result = await session.execute(
-                                select(TradeSignal.id, TradeSignal.market_id).where(TradeSignal.id.in_(signal_ids))
+                        market_ids_by_signal_id = {
+                            str(signal_id): str(market_id)
+                            for signal_id, market_id in signal_result.all()
+                            if str(signal_id or "").strip() and str(market_id or "").strip()
+                        }
+                        _persist_record("select_signals", _stage_started)
+
+                    # Build row-values list for the UPSERT.
+                    values_list: list[dict[str, Any]] = []
+                    for order in unique_orders.values():
+                        token_key = str(order.token_id or "").strip()
+                        authoritative_market_question = order.market_question
+                        authoritative_market_id = str(getattr(order, "market_id", "") or "").strip() or None
+                        if token_key:
+                            position = self._positions.get(token_key)
+                            if position is not None:
+                                position_market_id = str(position.market_id or "").strip() or None
+                                if position_market_id:
+                                    authoritative_market_id = position_market_id
+                                    order.market_id = position_market_id
+                                position_market_question = str(position.market_question or "").strip()
+                                if position_market_question:
+                                    authoritative_market_question = position_market_question
+                                    order.market_question = position_market_question
+                        if authoritative_market_id is None:
+                            resolved_market_id = (
+                                market_ids_by_signal_id.get(str(order.opportunity_id or "").strip()) or None
                             )
-                            market_ids_by_signal_id = {
-                                str(signal_id): str(market_id)
-                                for signal_id, market_id in signal_result.all()
-                                if str(signal_id or "").strip() and str(market_id or "").strip()
-                            }
-                            _persist_record("select_signals", _stage_started)
-                        for order in unique_orders.values():
-                            row = existing_rows.get(order.id)
-                            if row is None:
-                                row = LiveTradingOrder(id=order.id, wallet_address=wallet)
-                                session.add(row)
-                            token_key = str(order.token_id or "").strip()
-                            authoritative_market_question = order.market_question
-                            authoritative_market_id = str(getattr(order, "market_id", "") or "").strip() or None
-                            if token_key:
-                                position = self._positions.get(token_key)
-                                if position is not None:
-                                    position_market_id = str(position.market_id or "").strip() or None
-                                    if position_market_id:
-                                        authoritative_market_id = position_market_id
-                                        order.market_id = position_market_id
-                                    position_market_question = str(position.market_question or "").strip()
-                                    if position_market_question:
-                                        authoritative_market_question = position_market_question
-                                        order.market_question = position_market_question
-                            if authoritative_market_id is None:
-                                resolved_market_id = (
-                                    market_ids_by_signal_id.get(str(order.opportunity_id or "").strip()) or None
-                                )
-                                if resolved_market_id:
-                                    authoritative_market_id = resolved_market_id
-                                    order.market_id = resolved_market_id
-                            created_at = _normalize_utc_datetime(order.created_at) or utcnow()
-                            updated_at = _normalize_utc_datetime(order.updated_at) or utcnow()
-                            row.wallet_address = wallet
-                            row.market_id = authoritative_market_id
-                            row.clob_order_id = str(order.clob_order_id or "").strip() or None
-                            row.token_id = token_key
-                            row.side = order.side.value
-                            row.price = float(order.price)
-                            row.size = float(order.size)
-                            row.order_type = order.order_type.value
-                            row.status = order.status.value
-                            row.filled_size = float(order.filled_size)
-                            row.average_fill_price = float(order.average_fill_price)
-                            row.market_question = authoritative_market_question
-                            row.opportunity_id = order.opportunity_id
-                            row.error_message = order.error_message
-                            row.created_at = created_at
-                            row.updated_at = updated_at
-                        _stage_started = _time.monotonic()
-                        await session.commit()
-                        _persist_record("commit", _stage_started)
-                        _persist_breakdown["total_ms"] = round(
-                            (_time.monotonic() - _persist_started) * 1000.0, 1
+                            if resolved_market_id:
+                                authoritative_market_id = resolved_market_id
+                                order.market_id = resolved_market_id
+                        created_at = _normalize_utc_datetime(order.created_at) or utcnow()
+                        updated_at = _normalize_utc_datetime(order.updated_at) or utcnow()
+                        values_list.append({
+                            "id": order.id,
+                            "wallet_address": wallet,
+                            "market_id": authoritative_market_id,
+                            "clob_order_id": str(order.clob_order_id or "").strip() or None,
+                            "token_id": token_key,
+                            "side": order.side.value,
+                            "price": float(order.price),
+                            "size": float(order.size),
+                            "order_type": order.order_type.value,
+                            "status": order.status.value,
+                            "filled_size": float(order.filled_size),
+                            "average_fill_price": float(order.average_fill_price),
+                            "market_question": authoritative_market_question,
+                            "opportunity_id": order.opportunity_id,
+                            "error_message": order.error_message,
+                            "created_at": created_at,
+                            "updated_at": updated_at,
+                        })
+
+                    # Single UPSERT — the ``DO UPDATE SET`` covers
+                    # every column except ``id`` and ``created_at``
+                    # (insert-only).  ``excluded`` is the candidate
+                    # row's values.
+                    _stage_started = _time.monotonic()
+                    stmt = pg_insert(LiveTradingOrder).values(values_list)
+                    update_cols = {
+                        col: stmt.excluded[col]
+                        for col in (
+                            "wallet_address", "market_id", "clob_order_id", "token_id",
+                            "side", "price", "size", "order_type", "status",
+                            "filled_size", "average_fill_price", "market_question",
+                            "opportunity_id", "error_message", "updated_at",
                         )
-                        if _persist_breakdown["total_ms"] >= 2000.0:
-                            try:
-                                logger.warning(
-                                    "_persist_orders slow",
-                                    breakdown=_persist_breakdown,
-                                )
-                            except Exception:
-                                pass
-                        return
-                    except (OperationalError, InterfaceError) as exc:
-                        await session.rollback()
-                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
-                        if not _is_retryable_db_error(exc) or is_last:
-                            logger.error("Failed to persist live trading orders", exc_info=exc)
-                            return
-                        # Sleep happens AFTER the async with closes the
-                        # session — keeping it inside the block held the
-                        # connection across the retry wait, and a cancel
-                        # arriving during sleep tore the session __aexit__
-                        # in half.  GC then reaped the orphaned asyncpg
-                        # connection ("non-checked-in connection" warning).
-                        needs_retry = True
-                    except Exception as exc:
-                        await session.rollback()
+                    }
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["id"], set_=update_cols
+                    )
+                    await session.execute(stmt)
+                    _persist_record("upsert", _stage_started)
+                    _stage_started = _time.monotonic()
+                    await session.commit()
+                    _persist_record("commit", _stage_started)
+                    _persist_breakdown["total_ms"] = round(
+                        (_time.monotonic() - _persist_started) * 1000.0, 1
+                    )
+                    if _persist_breakdown["total_ms"] >= 2000.0:
+                        try:
+                            logger.warning(
+                                "_persist_orders slow",
+                                breakdown=_persist_breakdown,
+                            )
+                        except Exception:
+                            pass
+                    return
+                except (OperationalError, InterfaceError) as exc:
+                    await session.rollback()
+                    is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
+                    if not _is_retryable_db_error(exc) or is_last:
                         logger.error("Failed to persist live trading orders", exc_info=exc)
                         return
-                if needs_retry:
-                    await asyncio.sleep(_db_retry_delay(attempt))
+                    needs_retry = True
+                except Exception as exc:
+                    await session.rollback()
+                    logger.error("Failed to persist live trading orders", exc_info=exc)
+                    return
+            if needs_retry:
+                await asyncio.sleep(_db_retry_delay(attempt))
 
     async def _persist_positions(self) -> None:
         wallet = self._wallet_for_persistence()
