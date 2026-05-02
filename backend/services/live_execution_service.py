@@ -3897,6 +3897,7 @@ class LiveExecutionService:
             # fetch + apply) so spamming it on every retry would amplify
             # gateway pressure exactly when the venue is already
             # rejecting us.
+            runtime_state_persisted_inline = False
             balance_snapshot_logged = False
             if side == OrderSide.BUY and not skip_buy_pre_submit_gate:
                 _stage_started = _time.monotonic()
@@ -3932,14 +3933,6 @@ class LiveExecutionService:
             transport_retries_used = 0
             max_transport_retries = 2
             max_attempts = 3 if side == OrderSide.SELL else 2
-            # Tracks whether the success branch's ``_persist_runtime_state``
-            # already ran inside the for-loop.  When True, the outer
-            # post-loop call is redundant — was costing 3-10s of dead
-            # time per successful order under DB pool pressure (see
-            # production breakdown: persist_runtime_state_inner=3625
-            # ms, persist_runtime_state_outer=9688 ms for the SAME
-            # function call moments apart).
-            runtime_state_persisted_inline = False
             for attempt in range(max_attempts + max_transport_retries):
                 order.price = submit_price
                 try:
