@@ -6602,21 +6602,24 @@ async def record_signal_consumption(
     """Record a per-trader consumption row.
 
     ``signal_updated_at`` (optional): pass the signal's ``updated_at``
-    if the caller already has it in memory.  Without this hint, we use
-    ``now`` as ``consumed_at`` — which is correct unless the signal was
-    updated *after* we computed ``now`` (clock skew or sub-millisecond
-    update race), in which case the signal harmlessly re-emerges on the
-    next ``list_unconsumed_trade_signals`` call.  Pre-2026-04-30 we did
-    ``await session.get(TradeSignal, signal_id)`` here defensively, but
-    that round-trip dominated the per-signal write cost
-    (``ps_decision_writes`` 1-4s under contention) — and the orchestrator
-    hot path always has the signal object in scope, so passing it via
-    ``signal_updated_at`` is strictly better.
+    if the caller already has it in memory.  When provided, consumed_at
+    is set to max(now, signal_updated_at) so the signal registers as
+    consumed immediately.  When omitted, a SQL scalar subquery resolves
+    GREATEST(now, signal.updated_at) at INSERT time — no extra round-trip,
+    but the DB still guarantees consumed_at >= signal_sort_ts.
     """
     now = _now()
-    consumed_at = now
-    if signal_updated_at is not None and signal_updated_at > consumed_at:
-        consumed_at = signal_updated_at
+    if signal_updated_at is not None:
+        consumed_at: Any = signal_updated_at if signal_updated_at > now else now
+    else:
+        # Resolve consumed_at in SQL so it is always >= signal_sort_ts
+        # (coalesce(updated_at, created_at)) without a Python round-trip.
+        consumed_at = func.greatest(
+            now,
+            select(func.coalesce(TradeSignal.updated_at, TradeSignal.created_at, now))
+            .where(TradeSignal.id == signal_id)
+            .scalar_subquery(),
+        )
     stmt = pg_insert(TraderSignalConsumption).values(
         id=_new_id(),
         trader_id=trader_id,
