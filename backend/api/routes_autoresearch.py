@@ -222,6 +222,119 @@ async def stop_strategy_autoresearch_experiment(strategy_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Strategy-scoped PARAM iteration — the missing diagonal of the autoresearch
+# matrix.  Iterates the strategy's declared param_fields against the unified
+# backtest engine (Cox fills + walk-forward gate + deflated Sharpe).  Distinct
+# from /strategy/{id}/stream (code) and /stream/{trader_id} (trader-scoped
+# params over OpportunityHistory) so clients can run all three concurrently.
+# ---------------------------------------------------------------------------
+
+
+class StrategyParamsStartRequest(BaseModel):
+    """Strategy-scoped param iteration request.
+
+    Includes structured stop-conditions so an MCP agent or human can
+    say "iterate until target_score" instead of just "max_iterations".
+    """
+
+    model: Optional[str] = None
+    max_iterations: Optional[int] = Field(default=None, ge=1, le=500)
+    mandate: Optional[str] = None
+    auto_apply: Optional[bool] = None
+    # Stop conditions
+    target_score: Optional[float] = Field(
+        default=None,
+        description="Exit early once best_score >= this value",
+    )
+    max_no_improvement: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Exit after N consecutive non-improving iterations (default 10)",
+    )
+
+
+@router.get("/strategy/{strategy_id}/params/status")
+async def get_strategy_params_autoresearch_status(strategy_id: str) -> dict:
+    """Latest strategy_params experiment status."""
+    from services.autoresearch_service import autoresearch_service
+    return await autoresearch_service.get_strategy_params_experiment_status(strategy_id)
+
+
+@router.get("/strategy/{strategy_id}/params/history")
+async def get_strategy_params_autoresearch_history(
+    strategy_id: str,
+    experiment_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """Iteration log for a strategy_params experiment."""
+    from services.autoresearch_service import autoresearch_service
+    iterations = await autoresearch_service.get_strategy_params_experiment_history(
+        strategy_id, experiment_id=experiment_id, limit=limit
+    )
+    return {"iterations": iterations}
+
+
+@router.post("/strategy/{strategy_id}/params/stream")
+async def stream_strategy_params_autoresearch_experiment(
+    strategy_id: str,
+    request: Optional[StrategyParamsStartRequest] = None,
+):
+    """Start a strategy-scoped PARAM iteration experiment with SSE.
+
+    The LLM proposes overrides against the strategy's declared
+    ``config_schema.param_fields``; each candidate is evaluated via
+    ``run_unified_backtest`` and scored with the same risk-adjusted
+    composite the code-evolution loop uses (Sharpe × DSR × WF
+    stability − DD penalty).  Kept iterations persist their merged
+    config back to ``Strategy.config`` when ``auto_apply=true``.
+    """
+    from services.autoresearch_service import autoresearch_service
+
+    settings_override: dict = {}
+    if request:
+        if request.model is not None:
+            settings_override["model"] = request.model
+        if request.max_iterations is not None:
+            settings_override["max_iterations"] = request.max_iterations
+        if request.mandate is not None:
+            settings_override["mandate"] = request.mandate
+        if request.auto_apply is not None:
+            settings_override["auto_apply"] = request.auto_apply
+        # Stop conditions are not in the persisted settings table —
+        # they live only on the experiment-id-keyed dict and steer
+        # the in-progress loop.
+        if request.target_score is not None:
+            settings_override["target_score"] = request.target_score
+        if request.max_no_improvement is not None:
+            settings_override["max_no_improvement"] = request.max_no_improvement
+
+    async def event_stream():
+        try:
+            async for event_dict in autoresearch_service.run_strategy_params_stream(
+                strategy_id=strategy_id,
+                settings_override=settings_override or None,
+            ):
+                event_type = event_dict.get("event", "progress")
+                data = event_dict.get("data", {})
+                payload = json.dumps({"type": event_type, "data": data}, default=str)
+                yield f"event: {event_type}\ndata: {payload}\n\n"
+        except Exception as exc:
+            logger.exception("Strategy params autoresearch stream error: %s", exc)
+            error_payload = json.dumps({"type": "error", "data": {"error": str(exc)}})
+            yield f"event: error\ndata: {error_payload}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/strategy/{strategy_id}/params/stop")
+async def stop_strategy_params_autoresearch_experiment(strategy_id: str) -> dict:
+    """Stop a running strategy_params experiment."""
+    from services.autoresearch_service import autoresearch_service
+    return await autoresearch_service.stop_strategy_params_experiment(strategy_id)
+
+
+# ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
 
