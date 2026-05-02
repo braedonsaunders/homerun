@@ -1144,10 +1144,27 @@ async def _persist_incremental_state(
             incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
             row.last_updated_at = completed_at
 
-        row.opportunity_json = incoming_item
-        row.last_seen_at = completed_at
-        row.last_run_id = run.id
-        row.is_active = True
+        # Lock-contention fix: only mutate the ORM row when something
+        # genuinely changed.  The previous unconditional reassignments
+        # (``row.opportunity_json = ...; row.last_seen_at = ...; ...``)
+        # marked SQLAlchemy's instance as dirty for EVERY row in the
+        # current scan, even when ``changed=False``.  With 1000+
+        # opportunities per scan, the resulting commit emitted 1000+
+        # row UPDATEs in a single transaction, holding 1000+ row locks
+        # for the duration.  Concurrent transactions queued behind
+        # them, observed in production as repeated:
+        #    LOCK CONTENTION ... wait=Lock/transactionid query='UPDATE
+        #    opportunity_state SET opportunity_json=$1::JSON, ...'
+        # followed by ``Connection invalidated after 35.5s checked
+        # out`` and ``Scanner opportunity-state projection failed``.
+        # The expiration logic uses ``current_ids`` set membership,
+        # not ``last_seen_at`` freshness, so skipping the UPDATE on
+        # unchanged active rows is safe.
+        if changed or not was_active:
+            row.opportunity_json = incoming_item
+            row.last_seen_at = completed_at
+            row.last_run_id = run.id
+            row.is_active = True
 
         if not was_active:
             event_type = "reactivated"
