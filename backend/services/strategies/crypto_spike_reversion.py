@@ -19,7 +19,6 @@ from services.quality_filter import QualityFilterOverrides
 from services.strategies._firehose import (
     GateResult,
     MURMUR,
-    VOICE,
     WHISPER,
     emit_emit_nowait,
     emit_evaluation_nowait,

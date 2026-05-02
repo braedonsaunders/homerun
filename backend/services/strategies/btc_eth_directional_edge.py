@@ -35,7 +35,6 @@ from config import settings as _cfg
 from ._firehose import (
     GateResult,
     MURMUR,
-    VOICE,
     WHISPER,
     emit_emit_nowait,
     emit_evaluation_nowait,
