@@ -1,5 +1,5 @@
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.31.1
 
 # MCP server SDK — exposes homerun's backtest + iteration tools to
 # external agents (Claude Code, Cursor, etc.) over stdio and HTTP/SSE.
@@ -10,8 +10,8 @@ python-multipart>=0.0.27
 
 httpx[socks]>=0.27.0,<1.0
 websockets==12.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic>=2.7.0
+pydantic-settings>=2.5.2
 jsonschema>=4.20.0
 sqlalchemy[asyncio]==2.0.25
 alembic==1.13.2
