@@ -69,6 +69,7 @@ output/
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Windows reserved-name artifact
 /nul
