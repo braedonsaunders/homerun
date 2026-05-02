@@ -2107,6 +2107,7 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
         "reconcile_active_sessions",
         _reconcile_active_sessions,
     )
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_consumption", _buffer_consumption)
 
     decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
         trader_payload,
@@ -2153,6 +2154,9 @@ async def test_run_trader_once_emits_filtered_heartbeat_for_crypto_scope_prefilt
     async def _record_consumption(_session, **kwargs):
         consumptions.append(kwargs)
         return None
+
+    async def _buffer_consumption(**kwargs):
+        consumptions.append(kwargs)
 
     async def _reconcile_active_sessions(self, *, mode, trader_id=None):
         return {"active_seen": 0, "expired": 0, "completed": 0, "failed": 0}
@@ -2233,6 +2237,7 @@ async def test_run_trader_once_emits_filtered_heartbeat_for_crypto_scope_prefilt
         "reconcile_active_sessions",
         _reconcile_active_sessions,
     )
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_consumption", _buffer_consumption)
 
     trader_orchestrator_worker._trader_cycle_heartbeat_last_emitted.clear()
     try:
@@ -3862,6 +3867,10 @@ async def test_run_trader_once_persists_blocked_decision_when_db_stacking_verifi
         del session, signal_id, kwargs
         call_log.append(f"consumption:{outcome}")
 
+    async def _buffer_consumption(*, outcome, **kwargs):
+        del kwargs
+        call_log.append(f"consumption:{outcome}")
+
     async def _set_status(session, *, signal_id, status, **kwargs):
         del session, signal_id, kwargs
         call_log.append(f"status:{status}")
@@ -3989,6 +3998,7 @@ async def test_run_trader_once_persists_blocked_decision_when_db_stacking_verifi
         "execution_latency_metrics",
         SimpleNamespace(record=AsyncMock(return_value=None)),
     )
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_consumption", _buffer_consumption)
 
     decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
         _base_trader_payload(allow_averaging=False),
@@ -4403,6 +4413,9 @@ async def test_run_trader_once_records_buy_gate_skip_on_selected_live_decision(m
         consumptions.append(kwargs)
         return None
 
+    async def _buffer_consumption(**kwargs):
+        consumptions.append(kwargs)
+
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
     monkeypatch.setattr(
@@ -4487,6 +4500,7 @@ async def test_run_trader_once_records_buy_gate_skip_on_selected_live_decision(m
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "upsert_trader_signal_cursor", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "_persist_trader_cycle_heartbeat", AsyncMock(return_value=None))
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_consumption", _buffer_consumption)
 
     decisions_written, orders_written, _processed_signals = await trader_orchestrator_worker._run_trader_once(
         _base_trader_payload(allow_averaging=True),
@@ -4533,9 +4547,15 @@ async def test_run_trader_once_marks_signal_skipped_when_strategy_skips(monkeypa
         statuses.append((str(signal_id), str(status)))
         return True
 
+    async def _buffer_status(*, signal_id, status, **_kwargs):
+        statuses.append((str(signal_id), str(status)))
+
     async def _record_consumption(_session, **kwargs):
         consumptions.append(kwargs)
         return None
+
+    async def _buffer_consumption(**kwargs):
+        consumptions.append(kwargs)
 
     monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _DummySessionContext())
     monkeypatch.setattr(trader_orchestrator_worker, "_query_sources_for_configs", lambda *_: ["crypto"])
@@ -4628,6 +4648,8 @@ async def test_run_trader_once_marks_signal_skipped_when_strategy_skips(monkeypa
     monkeypatch.setattr(trader_orchestrator_worker, "record_signal_consumption", _record_consumption)
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", AsyncMock(return_value=None))
     monkeypatch.setattr(trader_orchestrator_worker, "upsert_trader_signal_cursor", AsyncMock(return_value=None))
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_consumption", _buffer_consumption)
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_signal_status", _buffer_status)
 
     decisions_written, orders_written, _processed_signals = await trader_orchestrator_worker._run_trader_once(
         _base_trader_payload(allow_averaging=True),
