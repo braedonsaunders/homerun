@@ -2584,14 +2584,29 @@ class IntentRuntime:
             if not chunk:
                 break
             async with AsyncSessionLocal() as session:
+                # Mirrors Fix J's unmute in shared_state: if SET LOCAL
+                # silently fails (e.g. session not yet in transaction or
+                # connection in error state) the server-side timeouts
+                # never apply and slow queries can hang for minutes
+                # before the asyncio outer wait_for / pool watchdog
+                # recovers.  Log the failure so we can diagnose if this
+                # ever happens in production.
                 try:
                     await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 try:
                     await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        _PROJECTION_LOCK_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 chunk_dedupe_keys = [
                     str(snapshot.get("dedupe_key") or "").strip()
                     for snapshot in chunk
@@ -2682,22 +2697,50 @@ class IntentRuntime:
                     if desired_status and desired_status != str(getattr(row, "status", "") or "").strip().lower():
                         row.status = desired_status
                         row.updated_at = _normalize_datetime(snapshot.get("updated_at")) or utcnow()
-                    row.runtime_sequence = _normalize_runtime_sequence(snapshot.get("runtime_sequence"))
+                    # Lock-contention fix (mirrors Fix O for opportunity_state):
+                    # only assign these attributes when the new value differs
+                    # from the existing one.  SQLAlchemy marks the row dirty
+                    # on EVERY assignment even when the value is equal, which
+                    # was emitting redundant UPDATE statements per snapshot
+                    # and stretching the per-batch transaction's lock-hold
+                    # time.  Observed in the overnight log as recurring
+                    # ``LOCK CONTENTION ... UPDATE trade_signals SET
+                    # edge_percent=..., expires_at=..., payload_json=...,
+                    # strategy_context_json=..., runtime_sequence=...``
+                    # cascading into projection_queue_size=5000.
+                    new_runtime_sequence = _normalize_runtime_sequence(snapshot.get("runtime_sequence"))
+                    if new_runtime_sequence != getattr(row, "runtime_sequence", None):
+                        row.runtime_sequence = new_runtime_sequence
                     effective_price = snapshot.get("effective_price")
-                    if effective_price is not None:
+                    if effective_price is not None and effective_price != getattr(row, "effective_price", None):
                         row.effective_price = effective_price
                 await session.commit()
 
         if sweep_missing:
             async with AsyncSessionLocal() as session:
+                # Mirrors Fix J's unmute in shared_state: if SET LOCAL
+                # silently fails (e.g. session not yet in transaction or
+                # connection in error state) the server-side timeouts
+                # never apply and slow queries can hang for minutes
+                # before the asyncio outer wait_for / pool watchdog
+                # recovers.  Log the failure so we can diagnose if this
+                # ever happens in production.
                 try:
                     await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 try:
                     await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        _PROJECTION_LOCK_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 await expire_source_signals_except(
                     session,
                     source=source,
@@ -2736,14 +2779,29 @@ class IntentRuntime:
         for chunk_start in range(0, len(items), _STATUS_CHUNK_SIZE):
             chunk = items[chunk_start:chunk_start + _STATUS_CHUNK_SIZE]
             async with AsyncSessionLocal() as session:
+                # Mirrors Fix J's unmute in shared_state: if SET LOCAL
+                # silently fails (e.g. session not yet in transaction or
+                # connection in error state) the server-side timeouts
+                # never apply and slow queries can hang for minutes
+                # before the asyncio outer wait_for / pool watchdog
+                # recovers.  Log the failure so we can diagnose if this
+                # ever happens in production.
                 try:
                     await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 try:
                     await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        _PROJECTION_LOCK_TIMEOUT_MS,
+                        exc_info=exc,
+                    )
                 signal_ids = [str(item.get("signal_id") or "").strip() for item in chunk if str(item.get("signal_id") or "").strip()]
                 if not signal_ids:
                     continue
