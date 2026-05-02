@@ -1619,6 +1619,99 @@ class ExecutionBacktestResult:
         return asdict(self)
 
 
+def _backtest_evaluate_opportunity(
+    *,
+    strategy: Any,
+    opp: Any,
+    pdata: dict[str, Any],
+    initial_capital_usd: float,
+) -> dict[str, Any] | None:
+    """Run ``strategy.evaluate()`` on a backtest opportunity row.
+
+    Mirrors the live orchestrator's gate at trader_orchestrator_worker
+    line 6474 — the strategy's own ``evaluate()`` decides whether the
+    intent should fire RIGHT NOW given current portfolio + market
+    context.  Without this call, backtests run a fundamentally
+    different strategy variant: ``detect()`` only, no execution-time
+    re-validation, no adaptive sizing, no custom_checks.
+
+    Returns the evaluate decision as a plain dict (or None if
+    evaluate() raised — fall back to "passthrough" so a bug in
+    evaluate() doesn't tank the entire backtest).  Caller treats
+    decision == "selected" as accept, anything else as skip.
+    """
+    if not hasattr(strategy, "evaluate"):
+        return None
+    try:
+        # Synthesize a signal-view that quacks like a TradeSignal so
+        # base.py's _base_evaluate / scoring pipeline reads the right
+        # fields.  We pull edge/confidence/direction from the
+        # opportunity row.
+        class _SignalView:
+            def __init__(self, opp_obj: Any, pdata_obj: dict[str, Any]):
+                self.id = str(getattr(opp_obj, "id", "") or "")
+                self.strategy_key = str(getattr(opp_obj, "strategy_type", "") or "")
+                # Edge: prefer expected_roi (already a percent).
+                self.edge_percent = float(getattr(opp_obj, "expected_roi", 0) or 0)
+                conf_raw = pdata_obj.get("confidence")
+                self.confidence = (
+                    float(conf_raw) if isinstance(conf_raw, (int, float)) else 0.5
+                )
+                first_pos = (pdata_obj.get("positions_to_take") or [{}])[0]
+                if not isinstance(first_pos, dict):
+                    first_pos = {}
+                self.direction = str(
+                    first_pos.get("action") or first_pos.get("side") or "BUY"
+                ).upper()
+                self.entry_price = float(first_pos.get("price") or 0.5)
+                self.market_id = str(first_pos.get("market_id") or "")
+                self.token_id = str(first_pos.get("token_id") or "")
+                self.payload_json = pdata_obj
+                self.strategy_context = pdata_obj.get("strategy_context") or {}
+
+        signal = _SignalView(opp, pdata)
+
+        # Minimal EvaluateContext.  ``params`` are the strategy's
+        # default config (we already loaded it via StrategyLoader so
+        # strategy.config carries the merged config).  ``trader``
+        # gets a minimal stand-in with risk_limits derived from the
+        # backtest's portfolio cap; ``mode`` is "shadow" to mirror
+        # what the simulator does.
+        ctx: dict[str, Any] = {
+            "params": dict(getattr(strategy, "config", {}) or {}),
+            "trader": {
+                "id": "backtest",
+                "mode": "shadow",
+                "risk_limits": {
+                    "max_trade_notional_usd": float(initial_capital_usd) * 0.10,
+                    "max_open_positions": 50,
+                },
+            },
+            "mode": "shadow",
+            "live_market": {
+                "best_bid": signal.entry_price,
+                "best_ask": signal.entry_price,
+                "mid": signal.entry_price,
+            },
+            "source_config": {},
+        }
+        decision = strategy.evaluate(signal, ctx)
+        # The decision may be a StrategyDecision dataclass or a plain
+        # dict (back-compat).  Normalize to dict.
+        if hasattr(decision, "decision"):
+            return {
+                "decision": getattr(decision, "decision", "selected"),
+                "size_usd": float(getattr(decision, "size_usd", 0) or 0),
+                "reason": getattr(decision, "reason", None),
+            }
+        if isinstance(decision, dict):
+            return decision
+    except Exception as exc:
+        logger.debug("backtest evaluate() raised — passthrough: %s", exc)
+        return None
+    return None
+
+
 def _exec_ci_to_dict(metric: Any) -> dict[str, Any]:
     return {
         "value": float(getattr(metric, "value", 0.0) or 0.0),
@@ -1956,6 +2049,27 @@ async def run_execution_backtest(
                 result.total_time_ms = (time.monotonic() - total_start) * 1000
                 return result
 
+            # Strategy-level evaluate() is the canonical execution
+            # gate live uses (trader_orchestrator_worker:6474).  Skipping
+            # it in backtest is the single biggest reason backtest
+            # results diverge from live: the strategy's own custom
+            # checks (capital sizing, market-state filters, edge/
+            # confidence thresholds) never run.
+            #
+            # We construct a minimal EvaluateContext built from the
+            # backtest's portfolio + the historical opportunity payload,
+            # so each intent is evaluated against the same gate live
+            # would apply at submission time.  When evaluate() returns
+            # a decision != "selected" we count it as a skip and surface
+            # the reasons in the funnel warnings.
+            #
+            # NOTE: this calls evaluate() against the strategy instance
+            # already loaded by the StrategyLoader above (line 1701).
+            # Same code path live uses; same custom_checks execute.
+            evaluate_skips: dict[str, int] = {}
+            evaluate_total = 0
+            evaluate_selected = 0
+
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
                 # positions_to_take lives under the "positions_to_take"
@@ -1973,23 +2087,64 @@ async def run_execution_backtest(
                         positions_to_take = legacy
                 if not isinstance(positions_to_take, list):
                     continue
+
+                # Run strategy.evaluate() once per opportunity (mirrors
+                # live: one TradeSignal → one evaluate() call → one
+                # decision that applies to the whole positions_to_take
+                # list).  Build a synthetic signal-view from the opp.
+                detected = getattr(opp, "detected_at", None)
+                if detected is None:
+                    continue
+                if detected.tzinfo is None:
+                    detected = detected.replace(tzinfo=timezone.utc)
+
+                evaluate_total += 1
+                eval_decision = _backtest_evaluate_opportunity(
+                    strategy=strategy,
+                    opp=opp,
+                    pdata=pdata if isinstance(pdata, dict) else {},
+                    initial_capital_usd=initial_capital_usd,
+                )
+                if eval_decision is not None:
+                    eval_status = str(eval_decision.get("decision") or "selected").lower()
+                    if eval_status != "selected":
+                        evaluate_skips[eval_status] = evaluate_skips.get(eval_status, 0) + 1
+                        continue
+                evaluate_selected += 1
+
                 for idx, pos in enumerate(positions_to_take):
                     if not isinstance(pos, dict):
                         continue
                     tok = str(pos.get("token_id") or "")
                     if not tok or tok not in tokens:
                         continue
-                    detected = getattr(opp, "detected_at", None)
-                    if detected is None:
-                        continue
-                    if detected.tzinfo is None:
-                        detected = detected.replace(tzinfo=timezone.utc)
                     side = str(pos.get("action") or pos.get("side") or "BUY").upper()
                     if side not in {"BUY", "SELL"}:
                         side = "BUY"
                     price = float(pos.get("price") or 0.5)
                     size_usd = float(pos.get("notional_usd") or 50.0)
                     size = size_usd / max(0.01, price)
+
+                    # Pull TIF / post_only from the strategy's emitted
+                    # position (was hardcoded IOC).  Tail-end-carry's
+                    # ``aggressive_limit_buy_submit_as_gtc`` flag flips
+                    # IOC buys above the signal price into GTC — match
+                    # that here so the matcher actually sees the
+                    # strategy's intended order behavior.
+                    tif_raw = str(pos.get("time_in_force") or pos.get("tif") or "GTC").upper()
+                    if tif_raw not in {"IOC", "GTC", "FOK", "FAK"}:
+                        tif_raw = "GTC"
+                    if (
+                        tif_raw == "IOC"
+                        and side == "BUY"
+                        and bool(pos.get("aggressive_limit_buy_submit_as_gtc"))
+                    ):
+                        tif_raw = "GTC"
+                    price_policy = str(pos.get("price_policy") or "").lower()
+                    post_only = bool(pos.get("post_only"))
+                    if not post_only and price_policy in {"maker", "post_only", "passive"}:
+                        post_only = True
+
                     intents.append(
                         TradeIntent(
                             intent_id=f"opp_{opp.id}_{idx}",
@@ -1998,12 +2153,33 @@ async def run_execution_backtest(
                             side=side,
                             size=size,
                             limit_price=price,
-                            tif="IOC",
-                            post_only=False,
+                            tif=tif_raw,
+                            post_only=post_only,
                             strategy_slug=str(getattr(opp, "strategy", "") or slug),
-                            meta={"source": "opportunity", "opportunity_id": str(opp.id)},
+                            meta={
+                                "source": "opportunity",
+                                "opportunity_id": str(opp.id),
+                                "max_execution_price": pos.get("max_execution_price"),
+                                "price_policy": price_policy or None,
+                                "evaluate_decision": (
+                                    str(eval_decision.get("decision"))
+                                    if eval_decision else "passthrough"
+                                ),
+                            },
                         )
                     )
+
+            if evaluate_total > 0:
+                # Surface the evaluate funnel so the operator can see
+                # the gate's effect (matches the live orchestrator's
+                # rejection breakdown).
+                eval_msg_parts = [
+                    f"strategy.evaluate() — selected={evaluate_selected}",
+                    f"total={evaluate_total}",
+                ]
+                for st, n in sorted(evaluate_skips.items(), key=lambda kv: -kv[1]):
+                    eval_msg_parts.append(f"{st}={n}")
+                result.validation_warnings.append(" · ".join(eval_msg_parts))
 
             if not intents and tokens:
                 intents.append(

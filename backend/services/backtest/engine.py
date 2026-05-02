@@ -219,6 +219,35 @@ class BacktestEngine:
             if order is None:
                 continue
             self.portfolio.apply_fill(fill, strategy_slug=order.strategy_slug)
+            # Fire strategy.on_fill / on_partial_fill notifications so
+            # strategies that update internal state on fills (running
+            # priors, calibration, etc.) see the same hook flow as
+            # live.  Live calls these from position_lifecycle when an
+            # order transitions to ``executed``.  Errors are swallowed
+            # — the hook is informational; a strategy bug shouldn't
+            # crash the backtest.
+            if self.strategy is not None:
+                try:
+                    is_partial = bool(getattr(order, "remaining_size", 0) > 1e-12)
+                    if is_partial and hasattr(self.strategy, "on_partial_fill"):
+                        self.strategy.on_partial_fill(
+                            order,
+                            mode="shadow",
+                            filled_shares=float(fill.size),
+                            remaining_shares=float(getattr(order, "remaining_size", 0) or 0),
+                            average_price=float(fill.price),
+                        )
+                    elif hasattr(self.strategy, "on_fill"):
+                        self.strategy.on_fill(
+                            order,
+                            mode="shadow",
+                            filled_shares=float(fill.size),
+                            average_price=float(fill.price),
+                            notional_usd=float(fill.size) * float(fill.price),
+                            ensemble_snapshot=None,
+                        )
+                except Exception:
+                    pass
 
         # 4. Mark portfolio at the new mid (if available).
         self._latest_book[snapshot.token_id] = snapshot
