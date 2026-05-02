@@ -103,6 +103,11 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.market_universe_worker",
             "workers.scanner_worker",
             "workers.scanner_slo_worker",
+            # Keeps ``search_index`` fresh for Cmd+K global search.
+            # Lives on the trading plane because its primary corpus
+            # is the live opportunity / market snapshot — colocating
+            # avoids cross-process state plumbing.
+            "workers.search_index_worker",
             # ``tracked_traders_worker`` and ``discovery_worker`` were
             # moved to the ``discovery`` plane after a 5h soak showed
             # ``wallet_discovery._worker x12`` and ``smart_wallet_pool
@@ -238,6 +243,7 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.market_universe_worker",
             "workers.scanner_worker",
             "workers.scanner_slo_worker",
+            "workers.search_index_worker",
             "workers.tracked_traders_worker",
             "workers.discovery_worker",
             "workers.events_worker",

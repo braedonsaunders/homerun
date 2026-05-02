@@ -15,6 +15,7 @@ def register_all_models() -> None:
     from services.sport_classifier import SportTokenClassification  # noqa: F401
     from services.token_circuit_breaker import TokenTrip  # noqa: F401
     from services.wallet_ws_monitor import WalletMonitorEvent  # noqa: F401
+    from services.search.models import SearchIndex, SearchQueryLog  # noqa: F401
 
     _ = (
         CategoryBufferLog,
@@ -30,4 +31,6 @@ def register_all_models() -> None:
         SportTokenClassification,
         TokenTrip,
         WalletMonitorEvent,
+        SearchIndex,
+        SearchQueryLog,
     )
