@@ -1828,40 +1828,82 @@ async def run_execution_backtest(
                 if opp_tokens:
                     # Filter to tokens with actual book snapshots in
                     # window so the engine can replay against them.
+                    # IMPORTANT: chunk the IN-list.  A 400+ token IN-
+                    # clause against the (token_id, snapshot_type,
+                    # observed_at) index forces 400+ index seeks +
+                    # GROUP BY work that blows past the Postgres
+                    # statement_timeout for crypto strategies that fan
+                    # out across many markets.  Chunks of 50 keep each
+                    # query predictable.
                     candidate_tokens = list(opp_tokens.keys())
-                    have_snap_stmt = (
-                        select(MarketMicrostructureSnapshot.token_id)
-                        .where(
-                            MarketMicrostructureSnapshot.observed_at >= start_dt,
-                            MarketMicrostructureSnapshot.observed_at <= end_dt,
-                            MarketMicrostructureSnapshot.snapshot_type == "book",
-                            MarketMicrostructureSnapshot.token_id.in_(candidate_tokens),
+                    tokens_with_snaps: set[str] = set()
+                    snap_filter_failed = False
+                    CHUNK_SIZE = 50
+                    try:
+                        for i in range(0, len(candidate_tokens), CHUNK_SIZE):
+                            chunk = candidate_tokens[i : i + CHUNK_SIZE]
+                            chunk_stmt = (
+                                select(MarketMicrostructureSnapshot.token_id)
+                                .where(
+                                    MarketMicrostructureSnapshot.observed_at >= start_dt,
+                                    MarketMicrostructureSnapshot.observed_at <= end_dt,
+                                    MarketMicrostructureSnapshot.snapshot_type == "book",
+                                    MarketMicrostructureSnapshot.token_id.in_(chunk),
+                                )
+                                .group_by(MarketMicrostructureSnapshot.token_id)
+                            )
+                            chunk_rows = (await session.execute(chunk_stmt)).all()
+                            for r in chunk_rows:
+                                if r[0]:
+                                    tokens_with_snaps.add(str(r[0]))
+                    except Exception as exc:
+                        # Fall back to "trust all opp_tokens" rather
+                        # than failing the entire backtest.  The
+                        # matching engine handles missing tokens
+                        # gracefully — they just produce no fills.
+                        logger.warning(
+                            "Snap-availability check failed; trusting opp_tokens universe: %s",
+                            exc,
                         )
-                        .group_by(MarketMicrostructureSnapshot.token_id)
-                    )
-                    snap_rows = (await session.execute(have_snap_stmt)).all()
-                    tokens_with_snaps = {str(r[0]) for r in snap_rows if r[0]}
+                        snap_filter_failed = True
+                        tokens_with_snaps = set(candidate_tokens)
                     # Sort opp_tokens by intent-frequency desc, take
-                    # the ones with snapshots, cap at 200 so a
+                    # the ones with snapshots, cap at 500 so a
                     # pathological strategy with 10k tokens doesn't
                     # blow up the matcher.  No-snap tokens still get
                     # logged as a warning so the operator knows what
                     # was skipped.
                     ranked = sorted(opp_tokens.items(), key=lambda kv: kv[1], reverse=True)
                     tokens = [t for t, _ in ranked if t in tokens_with_snaps][:500]
-                    no_snap_token_count = len(opp_tokens) - len(tokens_with_snaps)
+                    no_snap_token_count = (
+                        0 if snap_filter_failed
+                        else len(opp_tokens) - len(tokens_with_snaps)
+                    )
                     capped_universe = len(tokens_with_snaps) > len(tokens)
                     # Funnel summary the operator can read at a glance.
+                    snap_label = (
+                        "with_book_snapshots=unknown(filter timed out)"
+                        if snap_filter_failed
+                        else f"with_book_snapshots={len(tokens_with_snaps)}"
+                    )
                     funnel_msg = (
                         f"intent funnel — opps_in_window={opps_total_in_window} · "
                         f"opps_pulled={len(opps)} (cap={int(max_intents)}) · "
                         f"opp_tokens={len(opp_tokens)} · "
-                        f"with_book_snapshots={len(tokens_with_snaps)} · "
+                        f"{snap_label} · "
                         f"universe={len(tokens)}"
                         + (" (cap=500)" if capped_universe else "")
                     )
                     result.validation_warnings.append(funnel_msg)
-                    if no_snap_token_count > 0:
+                    if snap_filter_failed:
+                        result.validation_warnings.append(
+                            "Snap-availability check timed out — using all opp tokens "
+                            "as the universe.  Tokens with no book data will produce "
+                            "zero fills (engine handles them gracefully).  Tighten the "
+                            "time window or scope to fewer tokens to restore the "
+                            "diagnostic."
+                        )
+                    elif no_snap_token_count > 0:
                         pct = (
                             no_snap_token_count / len(opp_tokens) * 100.0
                             if opp_tokens else 0.0
