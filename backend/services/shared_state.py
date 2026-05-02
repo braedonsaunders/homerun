@@ -70,7 +70,14 @@ _pending_targeted_condition_ids_lock = Lock()
 _scanner_projection_lock = Lock()
 _scanner_projection_task: asyncio.Task | None = None
 _scanner_projection_pending: dict[str, Any] | None = None
-_SCANNER_STATE_PROJECTION_TIMEOUT_SECONDS = 15.0
+_SCANNER_STATE_PROJECTION_TIMEOUT_SECONDS = 10.0  # was 15s; cycle 8 of the
+# perf-harness loop hit a 181s zombie-backend incident on
+# opportunity_state UPDATE.  SET LOCAL statement_timeout (8s) should
+# have aborted that server-side, but evidently didn't apply (now
+# logged via _apply_local_db_timeouts).  Tightening the asyncio
+# wait_for to 10s caps the worst-case clock-time-to-cancel even when
+# the per-statement timeout misfires.  10s = 8s statement budget +
+# 2s margin for asyncpg cancel propagation.
 _NONCRITICAL_LOCK_TIMEOUT_MS = 1000
 _SCANNER_SNAPSHOT_WRITE_STATEMENT_TIMEOUT_MS = 4000
 _SCANNER_ACTIVITY_WRITE_STATEMENT_TIMEOUT_MS = 2500
@@ -142,14 +149,29 @@ async def _apply_local_db_timeouts(
 ) -> None:
     statement_timeout = max(250, int(statement_timeout_ms))
     lock_timeout = max(250, int(lock_timeout_ms))
+    # Cycle 8 of the perf-harness loop hit a zombie-backend incident
+    # where an opportunity_state UPDATE ran for 181s before the pool
+    # watchdog force-killed the backend.  The SET LOCAL timeouts here
+    # MUST apply for postgres to abort blocked queries server-side; if
+    # they fail silently the only recovery is the 180s watchdog.
+    # Promote both calls from silent except-pass to logged warnings so
+    # we can diagnose if the SET LOCAL ever fails on production.
     try:
         await session.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout}ms'"))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "SET LOCAL statement_timeout=%dms failed; backend will rely on outer wait_for",
+            statement_timeout,
+            exc_info=exc,
+        )
     try:
         await session.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}ms'"))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "SET LOCAL lock_timeout=%dms failed; row-lock waits will fall back to outer wait_for",
+            lock_timeout,
+            exc_info=exc,
+        )
 
 
 async def _project_scanner_state(
