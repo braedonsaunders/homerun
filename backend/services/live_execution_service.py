@@ -78,6 +78,15 @@ _CLOB_READ_FAILURE_LOG_INTERVAL = 30.0  # seconds between repeated failure logs
 _SNAPSHOT_SINGLE_LOOKUP_BUDGET_SECONDS = 6.0  # cap the per-call single-order fallback loop
 _SNAPSHOT_SINGLE_LOOKUP_MAX = 8  # cap how many single-order fetches we attempt per call
 _OPEN_ORDER_SNAPSHOT_CACHE_TTL_SECONDS = 2.0
+# PnL counters cache — 30s TTL.  ``_derive_pnl_counters_from_orders``
+# runs a double-aggregate scan on ``trader_orders`` inside EVERY
+# ``_persist_runtime_state`` call.  Production soak showed it hit
+# 1.4s avg under DB pressure (5/2026/05 cycle 1 harness report).
+# The result feeds the runtime_state snapshot row only — no
+# decision logic depends on it, so 30s staleness is safe.
+_PNL_COUNTERS_TTL_SECONDS = 30.0
+
+
 # Balance cache TTL — was 5s, but the production soak (5/2026/05)
 # showed every cycle paying a 6-SDK-call ``get_balance`` round trip
 # (3 sig types × 2 ops each, all serialized on ``_client_io_lock``)
@@ -2476,6 +2485,26 @@ class LiveExecutionService:
     async def _derive_pnl_counters_from_orders(
         self, session: Any, wallet: str
     ) -> dict[str, Any]:
+        # 30s TTL cache.  This function runs inside EVERY
+        # ``_persist_runtime_state`` call (which fires after every
+        # successful order), and the underlying double-aggregate
+        # query (sum/count per profit-sign + daily window) cost
+        # ~1.4s avg under DB pressure in production (5h soak,
+        # 5/2026/05).  PnL counters are only used for the
+        # runtime_state snapshot row — they don't gate any
+        # decision logic, so 30s staleness is safe and saves the
+        # double-aggregate scan on every persist.
+        cache = getattr(self, "_pnl_counters_cache", None)
+        if cache is None:
+            cache = {}
+            self._pnl_counters_cache = cache
+        wallet_key = (wallet or "").lower()
+        cached = cache.get(wallet_key)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
+                return cached_result
+
         # ``TraderOrder.actual_profit`` is the verified-truth ledger maintained
         # by ``polymarket_trade_verifier``; aggregating it here keeps the
         # runtime-state row honest without inventing a parallel accumulator.
@@ -2526,12 +2555,14 @@ class LiveExecutionService:
             )
         ).scalar() or 0.0
 
-        return {
+        result = {
             "total_pnl": float(totals[0] or 0.0),
             "winning_trades": int(totals[1] or 0),
             "losing_trades": int(totals[2] or 0),
             "daily_pnl": float(daily_pnl),
         }
+        cache[wallet_key] = (_time.monotonic(), result)
+        return result
 
     async def _persist_runtime_state(self) -> None:
         wallet = self._wallet_for_persistence()
