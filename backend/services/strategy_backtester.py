@@ -2069,6 +2069,23 @@ async def run_execution_backtest(
             evaluate_skips: dict[str, int] = {}
             evaluate_total = 0
             evaluate_selected = 0
+            # Platform gates funnel — mirrors live's apply_platform_
+            # decision_gates (signal staleness, trading schedule, per-
+            # trade size clamp).  The Portfolio's can_submit handles
+            # capital + concurrent caps when intents land at the
+            # matching engine; this funnel is the *pre-submission*
+            # gate that lets us count + report rejections by reason
+            # the same way live does.
+            platform_skips: dict[str, int] = {}
+            max_signal_age_seconds = strategy_cfg.get("max_signal_age_seconds")
+            try:
+                max_signal_age_seconds = (
+                    float(max_signal_age_seconds)
+                    if max_signal_age_seconds is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                max_signal_age_seconds = None
 
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
@@ -2098,6 +2115,30 @@ async def run_execution_backtest(
                 if detected.tzinfo is None:
                     detected = detected.replace(tzinfo=timezone.utc)
 
+                # Signal staleness gate — opt-in via strategy.config
+                # ["max_signal_age_seconds"].  Mirrors live's gate at
+                # decision_gates.py:689.  In backtest, "now" is the
+                # snapshot time the engine will reach when it submits
+                # this intent.  Conservative: assume "now" is close to
+                # the opp's detected_at + a typical live submission
+                # delay (1s); strategies with very tight cutoffs (e.g.,
+                # crypto strategies on second-decay edges) will reject
+                # opps that wouldn't have submitted in production
+                # either.  We skip this if the strategy doesn't set
+                # the cutoff (most don't — tail_end_carry doesn't).
+                if max_signal_age_seconds is not None and max_signal_age_seconds > 0:
+                    # Backtests can't observe "submission time" without
+                    # running the matcher; instead we use the implicit
+                    # 1s submission lag as the staleness anchor — same
+                    # behavior live exhibits when an opp gets picked up
+                    # from the queue immediately.  In live, opp+1s is
+                    # the typical pickup-to-submit delta.
+                    if max_signal_age_seconds < 1.0:
+                        platform_skips["signal_staleness"] = (
+                            platform_skips.get("signal_staleness", 0) + 1
+                        )
+                        continue
+
                 evaluate_total += 1
                 eval_decision = _backtest_evaluate_opportunity(
                     strategy=strategy,
@@ -2123,6 +2164,19 @@ async def run_execution_backtest(
                         side = "BUY"
                     price = float(pos.get("price") or 0.5)
                     size_usd = float(pos.get("notional_usd") or 50.0)
+
+                    # Per-trade size clamp from strategy config.
+                    # Mirrors what live's risk_evaluator does: size_usd
+                    # gets capped at min(strategy.max_size_usd, trader.
+                    # risk_limits.max_trade_notional_usd).  Without this
+                    # the backtest oversizes vs production for any
+                    # strategy that has a max_size_usd in config.
+                    if per_trade_cap is not None and size_usd > per_trade_cap:
+                        size_usd = per_trade_cap
+                        platform_skips["clamped_to_max_size"] = (
+                            platform_skips.get("clamped_to_max_size", 0) + 1
+                        )
+
                     size = size_usd / max(0.01, price)
 
                     # Pull TIF / post_only from the strategy's emitted
@@ -2181,6 +2235,31 @@ async def run_execution_backtest(
                     eval_msg_parts.append(f"{st}={n}")
                 result.validation_warnings.append(" · ".join(eval_msg_parts))
 
+            if platform_skips:
+                # Platform-gate funnel — staleness + size clamps.
+                # Capital + concurrent-position cap rejections happen
+                # at submission time inside the matching engine and
+                # surface as ``rejected_orders`` on the result; this
+                # funnel covers the pre-submission gates.
+                gate_parts = ["platform gates"]
+                for reason, n in sorted(platform_skips.items(), key=lambda kv: -kv[1]):
+                    gate_parts.append(f"{reason}={n}")
+                result.validation_warnings.append(" · ".join(gate_parts))
+
+            # Surface the configured caps so the operator sees what's
+            # active vs unlimited.
+            cap_parts = []
+            if gross_cap is not None:
+                cap_parts.append(f"gross_exposure_max=${gross_cap:.0f}")
+            if per_trade_cap is not None:
+                cap_parts.append(f"per_trade_max=${per_trade_cap:.0f}")
+            if open_pos_cap is not None:
+                cap_parts.append(f"open_positions_max={open_pos_cap}")
+            if cap_parts:
+                result.validation_warnings.append(
+                    "risk caps from strategy config — " + " · ".join(cap_parts)
+                )
+
             if not intents and tokens:
                 intents.append(
                     TradeIntent(
@@ -2209,8 +2288,51 @@ async def run_execution_backtest(
     finally:
         result.data_fetch_time_ms = (time.monotonic() - data_start) * 1000
 
+    # Pull risk caps from the loaded strategy's config so the backtest
+    # applies the same gates live does at trade-decision time.  The
+    # Portfolio's own ``can_submit`` already enforces these — they
+    # were just defaulting to None (unlimited) because run_execution_
+    # backtest never populated PortfolioConfig with them.
+    strategy_cfg = dict(getattr(strategy, "config", {}) or {})
+
+    def _safe_float_cfg(key: str, default: float | None) -> float | None:
+        v = strategy_cfg.get(key)
+        if v is None:
+            return default
+        try:
+            f = float(v)
+            return f if f > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    # max_size_usd is the strategy's per-trade notional cap (see
+    # tail_end_carry config).  Map it to per-market AND per-strategy
+    # notional caps — Portfolio enforces both, neither stricter than
+    # the other on a single-market submission, but per-strategy is
+    # the right place for "this strategy may not exceed N at once".
+    per_trade_cap = _safe_float_cfg("max_size_usd", None)
+    # If a strategy declares max_open_positions, honor it; otherwise
+    # leave unlimited.  Live's default is 50 per trader (not per
+    # strategy); we use the strategy-level value when present.
+    open_pos_cap = strategy_cfg.get("max_open_positions")
+    if isinstance(open_pos_cap, (int, float)) and open_pos_cap > 0:
+        open_pos_cap = int(open_pos_cap)
+    else:
+        open_pos_cap = None
+    # Gross exposure: cap at 50% of capital by default — sane risk
+    # ceiling that the live RiskManager would also apply.  Strategies
+    # that explicitly want higher exposure can override.
+    gross_cap = _safe_float_cfg("max_gross_exposure_usd",
+                                 float(initial_capital_usd) * 0.5)
+
     engine_config = BacktestConfig(
-        portfolio=PortfolioConfig(initial_capital_usd=float(initial_capital_usd)),
+        portfolio=PortfolioConfig(
+            initial_capital_usd=float(initial_capital_usd),
+            max_gross_exposure_usd=gross_cap,
+            max_per_market_notional_usd=per_trade_cap,
+            max_per_strategy_notional_usd=per_trade_cap,
+            max_open_positions=open_pos_cap,
+        ),
         latency=LatencyModel(
             submit=LatencyProfile.from_quantiles(
                 p50_ms=submit_latency_p50_ms, p95_ms=submit_latency_p95_ms

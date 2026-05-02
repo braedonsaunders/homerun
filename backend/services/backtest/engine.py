@@ -157,6 +157,11 @@ class BacktestEngine:
         # Snapshot of the "current best" book per token, used by the
         # exit-decision hook to feed market_state into should_exit().
         self._latest_book: dict[str, BookSnapshot] = {}
+        # Order IDs we've already fired ``strategy.on_cancel`` for.
+        # See _advance_one_snapshot step 6 — we scan once per tick for
+        # newly-cancelled orders since the matching engine has multiple
+        # cancel paths and threading a callback through each is brittle.
+        self._cancelled_notified: set[str] = set()
         # Indexed view of pending intents, keyed by emitted_at, drained
         # as time advances.
         self._pending_intents: list[TradeIntent] = []
@@ -264,6 +269,36 @@ class BacktestEngine:
         #    if appropriate (matches live behavior).
         if self.strategy is not None:
             self._evaluate_exits_for_token(snapshot)
+
+        # 6. Fire strategy.on_cancel for newly-cancelled orders.  The
+        #    matching engine has multiple cancel paths (post_only-
+        #    rejected, IOC-leftover, FOK-failed, GTC-cancel-on-cancel)
+        #    and rather than thread a callback through each we scan
+        #    once per tick for orders that have transitioned to
+        #    CANCELLED and we haven't yet notified about.  Live calls
+        #    on_cancel from position_lifecycle when an order ends up
+        #    cancelled without filling.
+        if self.strategy is not None and hasattr(self.strategy, "on_cancel"):
+            try:
+                for o in self.matching.all_orders():
+                    if o.state != OrderState.CANCELLED:
+                        continue
+                    if o.order_id in self._cancelled_notified:
+                        continue
+                    self._cancelled_notified.add(o.order_id)
+                    unfilled = float(getattr(o, "remaining_size", 0) or 0)
+                    reason = "expired" if getattr(o, "tif", "GTC") in {"IOC", "FAK"} else "user_cancel"
+                    try:
+                        self.strategy.on_cancel(
+                            o,
+                            mode="shadow",
+                            reason=reason,
+                            unfilled_shares=unfilled,
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def _submit_entry(self, intent: TradeIntent, snapshot: BookSnapshot) -> None:
         ok, reason = self.portfolio.can_submit(
