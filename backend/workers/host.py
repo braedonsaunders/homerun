@@ -49,7 +49,25 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 register_all_models()
-setup_logging(level=os.environ.get("LOG_LEVEL", "INFO"))
+# Optional debug log file — when ``HOMERUN_DEBUG_LOG_FILE`` (or the
+# per-plane override ``HOMERUN_DEBUG_LOG_FILE_<PLANE>``) is set,
+# every log record is also persisted to that file (in addition to
+# stdout).  The launcher's ``-Debug`` flag sets this per-plane so a
+# perf monitoring harness (``tools/perf_harness.py``) can tail the
+# JSON output without having to spawn its own copy of the worker
+# stack.  Empty / unset → stdout-only as before.
+def _resolve_debug_log_file() -> str | None:
+    plane_arg_index = (sys.argv.index("--plane") + 1) if "--plane" in sys.argv else 1
+    plane_token = sys.argv[plane_arg_index] if len(sys.argv) > plane_arg_index else ""
+    plane_token = (plane_token or "").strip().lower()
+    if plane_token:
+        per_plane = os.environ.get(f"HOMERUN_DEBUG_LOG_FILE_{plane_token.upper()}", "").strip()
+        if per_plane:
+            return per_plane
+    generic = os.environ.get("HOMERUN_DEBUG_LOG_FILE", "").strip()
+    return generic or None
+_debug_log_file = _resolve_debug_log_file()
+setup_logging(level=os.environ.get("LOG_LEVEL", "INFO"), log_file=_debug_log_file)
 if not os.environ.get("HF_TOKEN"):
     logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
 logger = get_logger("workers.host")

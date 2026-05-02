@@ -7,13 +7,27 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)))
 
 $runServiceSmokeTest = $false
+$debugLogTee = $false
 $guiArgs = @()
 foreach ($arg in $args) {
     if ($arg -eq "--services-smoke-test") {
         $runServiceSmokeTest = $true
+    } elseif ($arg -eq "-Debug" -or $arg -eq "--debug") {
+        # Debug log teeing — every spawned worker plane will also
+        # write its full JSON log stream to ``tools/.harness/<plane>
+        # .log``.  Used by ``tools/perf_harness.py --tail`` to
+        # aggregate WARNING/ERROR signal across a run without having
+        # to spawn its own worker stack.  Adds a per-line file write
+        # on top of stdout — overhead is negligible vs. the existing
+        # network IO.
+        $debugLogTee = $true
     } else {
         $guiArgs += $arg
     }
+}
+if ($debugLogTee) {
+    $env:HOMERUN_DEBUG = "1"
+    Write-Host "Debug log teeing enabled — workers will write to tools/.harness/<plane>.log" -ForegroundColor Cyan
 }
 
 $postgresHost = if ($env:POSTGRES_HOST) { $env:POSTGRES_HOST } else { "127.0.0.1" }

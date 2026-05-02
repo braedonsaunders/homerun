@@ -1614,10 +1614,33 @@ class HomerunApp:
 
     def _spawn_worker_plane(self, plane_name: str, *, reason: str) -> subprocess.Popen:
         source_tag = _WORKER_SOURCE_TAG_BY_PLANE[plane_name]
+        env = self._build_runtime_env(process_role="worker")
+        # Debug log-file teeing: when ``HOMERUN_DEBUG=1`` is set
+        # (typically by the ``-Debug`` flag on the launcher), the
+        # worker also writes its full JSON log stream to a per-plane
+        # file under ``tools/.harness/<plane>.log``.  ``perf_harness
+        # .py --tail`` consumes those files for offline analysis.
+        # The stdout pipe to the GUI is unaffected — file is
+        # additive, not a replacement.
+        if env.get("HOMERUN_DEBUG", "").strip() in {"1", "true", "TRUE", "yes"}:
+            harness_dir = PROJECT_ROOT / "tools" / ".harness"
+            try:
+                harness_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            log_path = harness_dir / f"{plane_name}.log"
+            env[f"HOMERUN_DEBUG_LOG_FILE_{plane_name.upper()}"] = str(log_path)
+            # Also clear the file at spawn time so each launch has a
+            # clean tail boundary — important so the harness doesn't
+            # double-count lines from a prior run.
+            try:
+                log_path.write_text("", encoding="utf-8")
+            except Exception:
+                pass
         worker_proc = subprocess.Popen(
             [str(self._venv_python_path()), "-m", "workers.host", plane_name],
             cwd=str(BACKEND_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env=self._build_runtime_env(process_role="worker"),
+            env=env,
             **_windows_subprocess_kwargs(),
         )
         _assign_to_job(worker_proc)

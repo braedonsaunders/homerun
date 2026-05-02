@@ -1,0 +1,13 @@
+# Runtime artifacts written by Homerun.bat -Debug + tools/perf_harness.py.
+# These are large, machine-specific, and regenerated on every run.
+*.log
+*.log.tmp
+report.json
+report.json.tmp
+live.log
+
+# Keep .gitkeep + this .gitignore so the directory ships with the repo
+# (otherwise the launcher's mkdir-on-spawn race could fight git on
+# fresh clones).
+!.gitkeep
+!.gitignore
