@@ -23,7 +23,7 @@ from typing import Any
 
 from config import apply_runtime_settings_overrides, settings
 from models.database import AsyncSessionLocal
-from services.live_pressure import backpressure_extra_sleep_seconds
+from services.live_pressure import backpressure_extra_sleep_seconds, is_db_pressure_active
 from services.search import COLLECTORS, reindex_one
 from services.worker_state import (
     clear_worker_run_request,
@@ -36,8 +36,23 @@ from utils.utcnow import utcnow
 logger = get_logger("search_index_worker")
 
 
-_DEFAULT_INTERVAL_SECONDS = 30
+_DEFAULT_INTERVAL_SECONDS = 120  # was 30s.  A live capture during a
+# crypto-backtest run showed search reindex taking 57s and contending
+# with the DB pool: 6 worker_snapshot UPSERTs hit
+# QueryCanceledError (statement_timeout) and the trader-orchestrator
+# cycles slowed to 10s because the connection pool was tied up by
+# the search collector queries.  The previous 30s interval meant the
+# next reindex started almost immediately after the prior one
+# finished — a near-continuous DB load.  120s is well within the
+# product freshness budget (newly created strategies/traders appear
+# in search within 2 minutes) and gives other workers ample
+# uncontended pool capacity between reindex passes.
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
+# Yield slice between consecutive collectors.  100ms × 11 collectors
+# = 1.1s of extra wall-clock per reindex, but it lets the event loop
+# tick and other workers checkout connections instead of starving
+# behind an 11-collector burst.
+_INTER_COLLECTOR_YIELD_SECONDS = 0.1
 
 
 async def _run_loop() -> None:
@@ -145,6 +160,27 @@ async def _run_loop() -> None:
             n_types = max(1, len(COLLECTORS))
             try:
                 for idx, entity_type in enumerate(COLLECTORS, start=1):
+                    # In-loop backpressure check.  If a separate worker
+                    # has flagged DB pressure (worker_snapshot writes
+                    # cancelled, persist_orders thrashing, etc.)
+                    # bail out of the remaining collectors and let the
+                    # next 120s interval pick them up.  The freshness
+                    # cost of a delayed reindex is acceptable; the
+                    # cost of stacking on top of a stressed DB pool
+                    # is a cascade of QueryCanceledError across half
+                    # a dozen workers (observed in the 02:48:27
+                    # cascade during the backtest run).
+                    if is_db_pressure_active():
+                        state["activity"] = (
+                            f"Search reindex paused under DB pressure "
+                            f"({idx-1}/{n_types} collectors processed)"
+                        )
+                        logger.warning(
+                            "Search reindex deferring remaining collectors under DB pressure",
+                            processed=idx - 1,
+                            total=n_types,
+                        )
+                        break
                     state["activity"] = f"Reindexing {entity_type}..."
                     state["progress"] = idx / n_types
                     try:
@@ -167,6 +203,11 @@ async def _run_loop() -> None:
                             entity_type,
                             exc,
                         )
+                    # Yield to the event loop and release the DB pool
+                    # slot before grabbing the next collector's session.
+                    # Without this, an 11-collector reindex hogs the
+                    # pool back-to-back.
+                    await asyncio.sleep(_INTER_COLLECTOR_YIELD_SECONDS)
 
                 state["total_upserted"] = total_upserted
                 state["total_deleted"] = total_deleted
