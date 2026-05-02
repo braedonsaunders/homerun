@@ -1625,7 +1625,7 @@ def _backtest_evaluate_opportunity(
     opp: Any,
     pdata: dict[str, Any],
     initial_capital_usd: float,
-) -> dict[str, Any] | None:
+) -> tuple[Any, Any] | None:
     """Run ``strategy.evaluate()`` on a backtest opportunity row.
 
     Mirrors the live orchestrator's gate at trader_orchestrator_worker
@@ -1635,10 +1635,15 @@ def _backtest_evaluate_opportunity(
     different strategy variant: ``detect()`` only, no execution-time
     re-validation, no adaptive sizing, no custom_checks.
 
-    Returns the evaluate decision as a plain dict (or None if
-    evaluate() raised — fall back to "passthrough" so a bug in
-    evaluate() doesn't tank the entire backtest).  Caller treats
-    decision == "selected" as accept, anything else as skip.
+    Returns ``(decision_obj, signal_view)`` so the caller can hand both
+    to ``apply_platform_decision_gates`` for the post-strategy
+    orchestrator gates (signal staleness, trading schedule, risk
+    evaluator, occupied market guard, demoted-strategies, etc.) — that
+    pipeline is what live runs at trader_orchestrator_worker:6474.
+    Returns None if evaluate() raised — fall back to "passthrough" so
+    a bug in evaluate() doesn't tank the entire backtest.  Caller
+    treats decision_obj.decision == "selected" as accept, anything
+    else as skip.
     """
     if not hasattr(strategy, "evaluate"):
         return None
@@ -1790,16 +1795,28 @@ def _backtest_evaluate_opportunity(
             "source_config": {},
         }
         decision = strategy.evaluate(signal, ctx)
-        # The decision may be a StrategyDecision dataclass or a plain
-        # dict (back-compat).  Normalize to dict.
+        # Normalize to a StrategyDecision-like object so the caller can
+        # feed it into apply_platform_decision_gates (which reads
+        # ``.decision`` / ``.reason`` / ``.score`` / ``.size_usd``
+        # attributes, not dict keys).  When the strategy returned a
+        # plain dict (back-compat shape), wrap it in a tiny shim with
+        # the same attribute interface; we don't want to materialize
+        # a real StrategyDecision dataclass here because some legacy
+        # strategies return a dict that *omits* the ``checks`` field.
         if hasattr(decision, "decision"):
-            return {
-                "decision": getattr(decision, "decision", "selected"),
-                "size_usd": float(getattr(decision, "size_usd", 0) or 0),
-                "reason": getattr(decision, "reason", None),
-            }
+            return (decision, signal)
         if isinstance(decision, dict):
-            return decision
+            class _DecisionView:
+                __slots__ = ("decision", "reason", "score", "size_usd", "checks", "payload")
+
+                def __init__(self, d: dict[str, Any]):
+                    self.decision = str(d.get("decision") or "selected")
+                    self.reason = str(d.get("reason") or "")
+                    self.score = d.get("score")
+                    self.size_usd = float(d.get("size_usd") or 0.0)
+                    self.checks = list(d.get("checks") or [])
+                    self.payload = dict(d.get("payload") or {})
+            return (_DecisionView(decision), signal)
     except Exception as exc:
         logger.debug("backtest evaluate() raised — passthrough: %s", exc)
         return None
@@ -1872,6 +1889,11 @@ async def run_execution_backtest(
         TradeIntent,
     )
     from services.backtest.matching_engine import FeeModel, ImpactModel
+    from services.trader_orchestrator.decision_gates import (
+        apply_platform_decision_gates,
+        is_within_trading_schedule_utc,
+    )
+    from services.trader_orchestrator.risk_manager import evaluate_risk
     from sqlalchemy import select, func as sa_func
     from models.database import (
         AsyncSessionLocal,
@@ -2202,23 +2224,54 @@ async def run_execution_backtest(
             evaluate_skips: dict[str, int] = {}
             evaluate_total = 0
             evaluate_selected = 0
-            # Platform gates funnel — mirrors live's apply_platform_
-            # decision_gates (signal staleness, trading schedule, per-
-            # trade size clamp).  The Portfolio's can_submit handles
-            # capital + concurrent caps when intents land at the
-            # matching engine; this funnel is the *pre-submission*
-            # gate that lets us count + report rejections by reason
-            # the same way live does.
+            # Platform gates funnel — accumulated from the orchestrator's
+            # ``apply_platform_decision_gates`` (the canonical decision
+            # pipeline live runs at trader_orchestrator_worker:6474).
+            # Counts each blocking gate so the operator can read the
+            # exact same rejection breakdown the live trader would
+            # produce on this signal stream.
             platform_skips: dict[str, int] = {}
-            max_signal_age_seconds = strategy_cfg.get("max_signal_age_seconds")
-            try:
-                max_signal_age_seconds = (
-                    float(max_signal_age_seconds)
-                    if max_signal_age_seconds is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                max_signal_age_seconds = None
+
+            # Backtest-mode portfolio state for the orchestrator's
+            # risk evaluator + stacking guard.  Updated as intents
+            # accumulate so each subsequent opp sees the realistic
+            # gross exposure / occupied markets the previous intents
+            # consumed — same way live does cycle accounting before
+            # submission.
+            bt_gross_exposure_usd = 0.0
+            bt_open_positions = 0
+            bt_cycle_orders = 0
+            bt_occupied_market_ids: set[str] = set()
+            bt_per_market_exposure: dict[str, float] = {}
+
+            global_limits = {
+                "max_gross_exposure_usd": (
+                    float(gross_cap) if gross_cap is not None else float(initial_capital_usd) * 0.5
+                ),
+                "max_daily_loss_usd": (
+                    float(strategy_cfg["max_daily_loss_usd"])
+                    if isinstance(strategy_cfg.get("max_daily_loss_usd"), (int, float))
+                    else 500.0
+                ),
+            }
+            effective_risk_limits = {
+                "max_trade_notional_usd": (
+                    float(per_trade_cap) if per_trade_cap is not None else float(initial_capital_usd) * 0.10
+                ),
+                "max_open_positions": (
+                    int(open_pos_cap) if open_pos_cap is not None else 50
+                ),
+                # Backtests fire the entire opp stream as one ``cycle`` —
+                # raise the per-cycle order cap so we don't trip it on
+                # benign multi-thousand-opp runs.
+                "max_orders_per_cycle": int(strategy_cfg.get("max_orders_per_cycle", 100000)),
+            }
+            allow_averaging = bool(strategy_cfg.get("allow_averaging", False))
+            trading_schedule_cfg = (
+                dict(strategy_cfg.get("trading_schedule_utc"))
+                if isinstance(strategy_cfg.get("trading_schedule_utc"), dict)
+                else {}
+            )
 
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
@@ -2248,43 +2301,183 @@ async def run_execution_backtest(
                 if detected.tzinfo is None:
                     detected = detected.replace(tzinfo=timezone.utc)
 
-                # Signal staleness gate — opt-in via strategy.config
-                # ["max_signal_age_seconds"].  Mirrors live's gate at
-                # decision_gates.py:689.  In backtest, "now" is the
-                # snapshot time the engine will reach when it submits
-                # this intent.  Conservative: assume "now" is close to
-                # the opp's detected_at + a typical live submission
-                # delay (1s); strategies with very tight cutoffs (e.g.,
-                # crypto strategies on second-decay edges) will reject
-                # opps that wouldn't have submitted in production
-                # either.  We skip this if the strategy doesn't set
-                # the cutoff (most don't — tail_end_carry doesn't).
-                if max_signal_age_seconds is not None and max_signal_age_seconds > 0:
-                    # Backtests can't observe "submission time" without
-                    # running the matcher; instead we use the implicit
-                    # 1s submission lag as the staleness anchor — same
-                    # behavior live exhibits when an opp gets picked up
-                    # from the queue immediately.  In live, opp+1s is
-                    # the typical pickup-to-submit delta.
-                    if max_signal_age_seconds < 1.0:
-                        platform_skips["signal_staleness"] = (
-                            platform_skips.get("signal_staleness", 0) + 1
-                        )
-                        continue
-
                 evaluate_total += 1
-                eval_decision = _backtest_evaluate_opportunity(
+                eval_pair = _backtest_evaluate_opportunity(
                     strategy=strategy,
                     opp=opp,
                     pdata=pdata if isinstance(pdata, dict) else {},
                     initial_capital_usd=initial_capital_usd,
                 )
-                if eval_decision is not None:
-                    eval_status = str(eval_decision.get("decision") or "selected").lower()
+                # When evaluate() raised or produced an unknown shape,
+                # ``eval_pair`` is None — fall back to passthrough so
+                # a buggy strategy doesn't tank the whole backtest.
+                if eval_pair is None:
+                    decision_obj = None
+                    signal_view = None
+                else:
+                    decision_obj, signal_view = eval_pair
+                    eval_status = str(getattr(decision_obj, "decision", "selected") or "selected").lower()
                     if eval_status != "selected":
                         evaluate_skips[eval_status] = evaluate_skips.get(eval_status, 0) + 1
                         continue
+
+                # ----------------------------------------------------------
+                # Orchestrator decision-gate pipeline (mirrors live).
+                # ----------------------------------------------------------
+                # ``apply_platform_decision_gates`` is the SAME function
+                # the live trader calls at trader_orchestrator_worker:6474
+                # right after strategy.evaluate() returns ``selected``.
+                # Driving it here means the backtest applies the exact
+                # same downstream gates: signal staleness, trading
+                # schedule, size cap from effective_risk_limits, the
+                # min-exit-notional guard, the stop-loss-vs-upside guard,
+                # the risk evaluator (daily loss, gross exposure, open-
+                # position counts), occupied-market stacking guard, etc.
+                #
+                # Backtest-specific knobs:
+                #   * ``execution_mode="backtest"`` short-circuits the
+                #     live-only gates (strict_ws_pricing, live_market_
+                #     revalidation, market_data_freshness, single-market
+                #     guard) — those depend on a live WS subscription
+                #     that doesn't exist in replay.
+                #   * ``invoke_hooks=True`` so the strategy still gets
+                #     ``on_blocked`` / ``on_size_capped`` callbacks just
+                #     like live, letting strategy-side bookkeeping
+                #     (e.g., demote-on-block heuristics) exercise its
+                #     real code path.
+                #   * Risk evaluator + stacking guard read accumulating
+                #     bt_* state, so each gate respects the realistic
+                #     portfolio shape that prior intents in this run
+                #     have already consumed.
+                gate_blocked = False
+                size_after_gates: float | None = None
+                if decision_obj is not None and signal_view is not None:
+                    # Total opp-level economic notional — the orchestrator
+                    # gates' size_cap / risk_evaluator / portfolio
+                    # checks operate on this single number.  Most opps
+                    # carry a single position; multi-position opps fold
+                    # into one signal in live too.
+                    opp_total_size_usd = 0.0
+                    for pos in positions_to_take:
+                        if isinstance(pos, dict):
+                            opp_total_size_usd += float(pos.get("notional_usd") or 0.0)
+                    if opp_total_size_usd <= 0.0:
+                        opp_total_size_usd = 50.0
+                    # Seed decision_obj.size_usd if the strategy didn't
+                    # already do so — gates clamp this as their primary
+                    # input.
+                    if (
+                        getattr(decision_obj, "size_usd", None) is None
+                        or float(getattr(decision_obj, "size_usd", 0.0) or 0.0) <= 0.0
+                    ):
+                        try:
+                            decision_obj.size_usd = float(opp_total_size_usd)
+                        except Exception:
+                            pass
+
+                    def _bt_risk_evaluator(size_for_eval: float, _opp=opp):
+                        risk_result = evaluate_risk(
+                            size_usd=float(size_for_eval),
+                            gross_exposure_usd=float(bt_gross_exposure_usd),
+                            trader_open_positions=int(bt_open_positions),
+                            trader_open_orders=int(bt_open_positions),
+                            market_exposure_usd=float(
+                                bt_per_market_exposure.get(
+                                    str(getattr(signal_view, "market_id", "") or ""),
+                                    0.0,
+                                )
+                            ),
+                            global_limits=global_limits,
+                            trader_limits=effective_risk_limits,
+                            global_daily_realized_pnl_usd=0.0,
+                            trader_daily_realized_pnl_usd=0.0,
+                            global_unrealized_pnl_usd=0.0,
+                            trader_unrealized_pnl_usd=0.0,
+                            trader_consecutive_losses=0,
+                            cycle_orders_placed=int(bt_cycle_orders),
+                            cooldown_active=False,
+                            mode="backtest",
+                        )
+                        return risk_result, {
+                            "global_daily_realized_pnl_usd": 0.0,
+                            "trader_daily_realized_pnl_usd": 0.0,
+                            "global_unrealized_pnl_usd": 0.0,
+                            "trader_unrealized_pnl_usd": 0.0,
+                            "intra_cycle_committed_usd": float(bt_gross_exposure_usd),
+                            "trader_open_positions": int(bt_open_positions),
+                            "trader_open_orders": int(bt_open_positions),
+                            "cooldown_active": False,
+                        }
+
+                    gate_checks: list[dict[str, Any]] = []
+                    try:
+                        gate_result = apply_platform_decision_gates(
+                            decision_obj=decision_obj,
+                            runtime_signal=signal_view,
+                            strategy=strategy,
+                            checks_payload=gate_checks,
+                            trading_schedule_ok=is_within_trading_schedule_utc(
+                                {"trading_schedule_utc": trading_schedule_cfg},
+                                detected,
+                            ),
+                            trading_schedule_config=trading_schedule_cfg,
+                            global_limits=global_limits,
+                            effective_risk_limits=effective_risk_limits,
+                            allow_averaging=allow_averaging,
+                            occupied_market_ids=set(bt_occupied_market_ids),
+                            portfolio_allocator=None,
+                            risk_evaluator=_bt_risk_evaluator,
+                            invoke_hooks=True,
+                            strategy_params=strategy_cfg,
+                            execution_mode="backtest",
+                        )
+                    except Exception as exc:
+                        # Don't tank the run on a gate-pipeline bug; log
+                        # and proceed as if the gates passed.  This
+                        # mirrors how the live worker also catches any
+                        # unhandled gate exceptions and falls forward.
+                        logger.warning("backtest decision_gates raised: %s", exc)
+                        gate_result = None
+
+                    if gate_result is not None:
+                        gate_decision = str(gate_result.get("final_decision") or "selected").lower()
+                        if gate_decision != "selected":
+                            # Find the first blocking gate so the funnel
+                            # tag matches what the operator would see in
+                            # live's audit trail.
+                            blocking_gate = "platform_gate"
+                            for g in gate_result.get("platform_gates") or []:
+                                if str(g.get("status") or "").lower() == "blocked":
+                                    blocking_gate = str(g.get("gate") or "platform_gate")
+                                    break
+                            platform_skips[blocking_gate] = platform_skips.get(blocking_gate, 0) + 1
+                            gate_blocked = True
+                        else:
+                            size_after_gates = float(gate_result.get("size_usd") or opp_total_size_usd)
+                            # Track size-cap events in the funnel even
+                            # when the gate ultimately allowed the trade.
+                            if size_after_gates + 1e-9 < opp_total_size_usd:
+                                platform_skips["size_capped"] = (
+                                    platform_skips.get("size_capped", 0) + 1
+                                )
+
+                if gate_blocked:
+                    continue
                 evaluate_selected += 1
+
+                # Compute the proportional shrink factor when the gate
+                # capped the opp's economic notional.  Each position's
+                # original notional gets scaled by this so the relative
+                # mix the strategy emitted is preserved.
+                shrink = 1.0
+                if size_after_gates is not None:
+                    opp_total_size_usd_check = sum(
+                        float(p.get("notional_usd") or 0.0)
+                        for p in positions_to_take
+                        if isinstance(p, dict)
+                    )
+                    if opp_total_size_usd_check > 0.0:
+                        shrink = max(0.0, min(1.0, size_after_gates / opp_total_size_usd_check))
 
                 for idx, pos in enumerate(positions_to_take):
                     if not isinstance(pos, dict):
@@ -2296,19 +2489,9 @@ async def run_execution_backtest(
                     if side not in {"BUY", "SELL"}:
                         side = "BUY"
                     price = float(pos.get("price") or 0.5)
-                    size_usd = float(pos.get("notional_usd") or 50.0)
-
-                    # Per-trade size clamp from strategy config.
-                    # Mirrors what live's risk_evaluator does: size_usd
-                    # gets capped at min(strategy.max_size_usd, trader.
-                    # risk_limits.max_trade_notional_usd).  Without this
-                    # the backtest oversizes vs production for any
-                    # strategy that has a max_size_usd in config.
-                    if per_trade_cap is not None and size_usd > per_trade_cap:
-                        size_usd = per_trade_cap
-                        platform_skips["clamped_to_max_size"] = (
-                            platform_skips.get("clamped_to_max_size", 0) + 1
-                        )
+                    size_usd = float(pos.get("notional_usd") or 50.0) * shrink
+                    if size_usd <= 0.0:
+                        continue
 
                     size = size_usd / max(0.01, price)
 
@@ -2349,12 +2532,34 @@ async def run_execution_backtest(
                                 "max_execution_price": pos.get("max_execution_price"),
                                 "price_policy": price_policy or None,
                                 "evaluate_decision": (
-                                    str(eval_decision.get("decision"))
-                                    if eval_decision else "passthrough"
+                                    str(getattr(decision_obj, "decision", "selected"))
+                                    if decision_obj is not None else "passthrough"
+                                ),
+                                "gate_size_capped": (
+                                    bool(size_after_gates is not None and shrink < 1.0 - 1e-9)
+                                ),
+                                "size_after_gates_usd": (
+                                    float(size_after_gates)
+                                    if size_after_gates is not None else None
                                 ),
                             },
                         )
                     )
+
+                    # Update accumulating backtest portfolio state so
+                    # the NEXT opp's gate pass sees realistic gross
+                    # exposure / open-position / occupied-market
+                    # numbers.  Mirrors how the live cycle accumulator
+                    # increments before the next signal in the queue.
+                    market_id = str(pos.get("market_id") or "")
+                    bt_gross_exposure_usd += size_usd
+                    bt_open_positions += 1
+                    bt_cycle_orders += 1
+                    if market_id:
+                        bt_occupied_market_ids.add(market_id)
+                        bt_per_market_exposure[market_id] = (
+                            bt_per_market_exposure.get(market_id, 0.0) + size_usd
+                        )
 
             if evaluate_total > 0:
                 # Surface the evaluate funnel so the operator can see
@@ -2369,12 +2574,18 @@ async def run_execution_backtest(
                 result.validation_warnings.append(" · ".join(eval_msg_parts))
 
             if platform_skips:
-                # Platform-gate funnel — staleness + size clamps.
-                # Capital + concurrent-position cap rejections happen
-                # at submission time inside the matching engine and
-                # surface as ``rejected_orders`` on the result; this
-                # funnel covers the pre-submission gates.
-                gate_parts = ["platform gates"]
+                # Platform-gate funnel — emitted directly from the
+                # orchestrator's ``apply_platform_decision_gates``
+                # output.  Each entry is a real gate name from
+                # decision_gates.py (signal_staleness, trading_schedule,
+                # size_cap, min_exit_notional, stop_loss_settlement_
+                # upside, risk, stacking_guard, etc.) so the operator
+                # can read the rejection breakdown using the same
+                # vocabulary the live audit trail uses.  Capital +
+                # concurrent-position cap rejections that slip through
+                # this layer still surface as ``rejected_orders`` on
+                # the matching engine result.
+                gate_parts = ["orchestrator gates"]
                 for reason, n in sorted(platform_skips.items(), key=lambda kv: -kv[1]):
                     gate_parts.append(f"{reason}={n}")
                 result.validation_warnings.append(" · ".join(gate_parts))
