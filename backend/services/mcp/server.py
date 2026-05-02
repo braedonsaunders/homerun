@@ -15,14 +15,20 @@ Two transports:
 * ``http_app.py`` mounts ``streamable_http_app()`` at ``/mcp`` on the
   main FastAPI app.
 
-Tool selection: every registered AgentTool is exposed.  An optional
-``HOMERUN_MCP_ALLOWED_CATEGORIES`` env var (csv, e.g. ``"strategies,
-backtest,iteration,diagnostics"``) restricts the surface — useful for
-locking external agents to read-only or backtest-only categories.
+Auth: none.  Homerun is a single-user, locally-run application; both
+transports run open.  The optional category-scoping env vars below
+are user-controlled — they let the operator opt OUT of exposing
+particular tool categories (e.g. ``trading``) to MCP clients during
+exploratory sessions.  They are not security boundaries.
 
-Auth: stdio trusts the launching process.  HTTP authentication via
-``HOMERUN_MCP_API_KEY`` env var (bearer token) — when set, clients
-must present ``Authorization: Bearer <key>`` to call tools.
+Tool selection (env-var hooks, optional):
+
+  ``HOMERUN_MCP_ALLOWED_CATEGORIES`` — csv whitelist.  When set, only
+        tools in the listed categories are exposed.
+  ``HOMERUN_MCP_DENIED_CATEGORIES``  — csv blocklist.  Takes
+        precedence over the whitelist.
+
+When neither is set, every registered AgentTool is exposed.
 """
 from __future__ import annotations
 
@@ -63,22 +69,9 @@ Typical workflow for "iterate strategy X until target_score Y":
                                             → optional overfit double-check on
                                               the kept params before going live
 
-Mutating tools (``create_strategy``, ``update_strategy_config``,
-``place_order``, etc.) are gated by category — the server admin can
-restrict the exposed surface via ``HOMERUN_MCP_ALLOWED_CATEGORIES``.
-
 Strategies created or edited via MCP land at ``enabled=false``;
 flipping them live still requires the trader-side switch in the UI.
 """
-
-
-_DEFAULT_DENIED_CATEGORIES_FOR_REMOTE = {
-    # When ``HOMERUN_MCP_REMOTE_SAFE_MODE=1`` (the default for HTTP
-    # transport in production), these categories are filtered out
-    # so a leaked bearer token can't place orders.  Override with
-    # ``HOMERUN_MCP_ALLOWED_CATEGORIES`` to be explicit.
-    "trading",
-}
 
 
 def _allowed_categories_from_env() -> set[str] | None:
@@ -90,13 +83,12 @@ def _allowed_categories_from_env() -> set[str] | None:
     return cats or None
 
 
-def _denied_categories(*, remote_safe_mode: bool) -> set[str]:
+def _denied_categories_from_env() -> set[str]:
+    """Parse ``HOMERUN_MCP_DENIED_CATEGORIES`` into a set."""
     raw = os.getenv("HOMERUN_MCP_DENIED_CATEGORIES", "").strip()
-    if raw:
-        return {c.strip().lower() for c in raw.split(",") if c.strip()}
-    if remote_safe_mode:
-        return set(_DEFAULT_DENIED_CATEGORIES_FOR_REMOTE)
-    return set()
+    if not raw:
+        return set()
+    return {c.strip().lower() for c in raw.split(",") if c.strip()}
 
 
 def _filter_tools(
@@ -134,25 +126,22 @@ def _coerce_result_to_text(result: Any) -> str:
         return str(result)
 
 
-def build_mcp_server(
-    *,
-    name: str = "homerun",
-    remote_safe_mode: bool = False,
-) -> Server:
+def build_mcp_server(*, name: str = "homerun") -> Server:
     """Return a configured MCP ``Server`` instance.
 
     Args:
         name: Server identity advertised to clients.
-        remote_safe_mode: When True, additionally filter out
-            higher-risk tool categories (currently: ``trading``) so a
-            leaked HTTP bearer token can't place orders.  stdio
-            transport defaults to False; HTTP transport defaults to
-            True (set by ``http_app.py``).
+
+    The full AgentTool registry is exposed.  The operator can scope the
+    surface via ``HOMERUN_MCP_ALLOWED_CATEGORIES`` /
+    ``HOMERUN_MCP_DENIED_CATEGORIES`` env vars, but that's an opt-in
+    convenience — there's no auth boundary, since the platform is
+    single-user / locally-run.
     """
     server: Server = Server(name=name, instructions=HOMERUN_MCP_INSTRUCTIONS)
 
     allowed = _allowed_categories_from_env()
-    denied = _denied_categories(remote_safe_mode=remote_safe_mode)
+    denied = _denied_categories_from_env()
 
     # Resolve once at server-build time.  The agent-tool registry is
     # itself process-cached, so this is a fast dict lookup.
@@ -163,11 +152,10 @@ def build_mcp_server(
         denied_categories=denied,
     )
     logger.info(
-        "MCP server '%s' surface: %d tools (allowed=%s, denied=%s, remote_safe=%s)",
+        "MCP server '%s' surface: %d tools (allowed=%s, denied=%s)",
         name, len(surface),
         sorted(allowed) if allowed else "ALL",
         sorted(denied) if denied else [],
-        remote_safe_mode,
     )
 
     @server.list_tools()
@@ -198,14 +186,3 @@ def build_mcp_server(
         return [mtypes.TextContent(type="text", text=_coerce_result_to_text(result))]
 
     return server
-
-
-def get_required_bearer_token() -> str | None:
-    """Return the bearer token clients must present, or None for no-auth.
-
-    Resolved from the ``HOMERUN_MCP_API_KEY`` env var.  When unset (or
-    empty), the HTTP transport runs without authentication — fine for
-    loopback dev, dangerous on a public interface.
-    """
-    token = (os.getenv("HOMERUN_MCP_API_KEY") or "").strip()
-    return token or None

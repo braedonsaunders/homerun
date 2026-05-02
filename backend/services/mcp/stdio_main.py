@@ -8,11 +8,11 @@ Or register with Claude Code:
 
     claude mcp add homerun -- python -m services.mcp.stdio_main
 
-stdio transport trusts the launching process — no bearer-token check.
-The server connects to the same Postgres + Redis that the live
-backend uses, so backtests + iterations run against real data.
+The server connects to the same Postgres + Redis the live backend
+uses, so backtests + iterations run against real data.  No auth —
+homerun is a single-user, locally-run app.
 
-Environment knobs:
+Environment knobs (optional, opt-in scoping):
 
   HOMERUN_MCP_ALLOWED_CATEGORIES  csv whitelist (e.g. "backtest,iteration,
                                   diagnostics,strategies").  Omit to expose
@@ -20,9 +20,7 @@ Environment knobs:
   HOMERUN_MCP_DENIED_CATEGORIES   csv blocklist; takes precedence over
                                   whitelist.
 
-stdio defaults to the FULL surface — including ``trading`` and
-``cortex`` mutating tools — because the launching CLI is trusted.
-For remote / HTTP transport those categories default to denied.
+Both default to None — full tool surface exposed.
 """
 from __future__ import annotations
 
@@ -39,7 +37,7 @@ async def _run_async() -> None:
     """Build the server and run it on the stdio transport."""
     from mcp.server.stdio import stdio_server
 
-    server = build_mcp_server(name="homerun", remote_safe_mode=False)
+    server = build_mcp_server(name="homerun")
 
     init_options = server.create_initialization_options()
 

@@ -3,25 +3,26 @@
 Two transports:
 
 * **stdio**: ``python -m services.mcp.stdio_main`` — for agents that spawn
-  the server as a subprocess (Claude Code, Cursor, Continue, etc.).  No
-  authentication; trusts the launching process.
+  the server as a subprocess (Claude Code, Cursor, Continue, etc.).
 
-* **streamable HTTP** (``/mcp`` mounted on the main FastAPI app): for remote
-  agents.  Optional bearer-token auth via ``HOMERUN_MCP_API_KEY`` env var
-  (or the ``mcp_api_key`` row in AppSettings) — when set the token must
-  appear in the ``Authorization: Bearer <token>`` header.
+* **streamable HTTP** (``/mcp`` mounted on the main FastAPI app): for any
+  agent that can reach the backend over HTTP.
 
-Tool surface (12 tools, see ``services.mcp.tools``):
+Auth: none.  Homerun is a single-user, locally-run app; both transports
+run open.  Bind the FastAPI server to localhost (the default) and the
+MCP surface is implicitly local-only.
 
-  Discovery     list_strategies, get_strategy, validate_strategy_source
-  Backtest      run_backtest, get_backtest_run, list_backtest_runs,
-                run_walk_forward
-  Iteration     start_param_iteration, get_iteration_status, stop_iteration
-  Diagnostics   get_drift_report, get_recent_opportunities
+Tool surface: the existing ``services/ai/tools/`` AgentTool registry,
+exposed verbatim.  No tool re-implementation.  Optional category-scoping
+env vars (``HOMERUN_MCP_ALLOWED_CATEGORIES`` / ``HOMERUN_MCP_DENIED_
+CATEGORIES``) let the operator opt out of exposing particular tool
+categories during exploratory sessions.
 
-The tool implementations are thin async wrappers over existing services
-(unified_runner, autoresearch_service, strategy_loader, etc.) so the same
-code paths the UI uses also drive MCP-driven agent runs.
+The 9 missing tools the MCP surface needed (start/poll/stop param
+iteration, walk-forward, drift report, recent opportunities,
+backtest-run cache lookups) were added to the registry as
+``services/ai/tools/iteration_tools.py`` — also visible to the
+internal ReAct agent.
 """
 
 from .server import build_mcp_server

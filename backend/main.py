@@ -1092,10 +1092,11 @@ app.include_router(search_router, prefix="/api", tags=["Global Search"])
 
 # Mount the MCP HTTP/SSE transport at /mcp.  External agents
 # (Claude Code, Cursor, Continue, etc.) connect here when they need
-# to drive backtests + iteration over the network.  Bearer-token
-# auth via the HOMERUN_MCP_API_KEY env var (loopback dev runs
-# without auth).  The tool surface is the existing AgentTool
-# registry, filtered to remote-safe categories by default.
+# to drive backtests + iteration over HTTP rather than spawning the
+# stdio server.  No auth — homerun is a single-user, locally-run app
+# and the FastAPI server binds to localhost by default.  The tool
+# surface is the full existing AgentTool registry; the operator can
+# scope it via HOMERUN_MCP_ALLOWED_CATEGORIES / DENIED_CATEGORIES.
 try:
     from services.mcp.http_app import mount_mcp_http
     mount_mcp_http(app)
