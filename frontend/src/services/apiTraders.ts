@@ -1136,6 +1136,16 @@ export interface TraderEvent {
   trader_id: string | null
   event_type: string
   severity: string
+  /**
+   * Firehose volume tier — orthogonal to severity.  Only set for
+   * events emitted by the strategy firehose; null/undefined for the
+   * existing trader-orchestrator event stream.
+   *
+   * Tiers (lowest → loudest): whisper < murmur < voice < shout.
+   * The Terminal UI's volume dial shows everything at-or-louder than
+   * the selected tier, plus all warnings/errors regardless.
+   */
+  verbosity?: 'whisper' | 'murmur' | 'voice' | 'shout' | null
   source: string | null
   operator: string | null
   message: string | null

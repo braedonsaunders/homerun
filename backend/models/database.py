@@ -4099,6 +4099,10 @@ class TraderEvent(Base):
     )
     event_type = Column(String, nullable=False, index=True)
     severity = Column(String, nullable=False, default="info")
+    # Verbosity (whisper|murmur|voice|shout) is the firehose volume tier —
+    # orthogonal to severity. Only meaningful for severity='info' rows;
+    # warnings/errors render regardless of the user's volume setting.
+    verbosity = Column(String, nullable=True, index=True)
     source = Column(String, nullable=True, index=True)
     operator = Column(String, nullable=True)
     message = Column(Text, nullable=True)

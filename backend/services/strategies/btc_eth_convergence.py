@@ -24,6 +24,14 @@ import math
 
 from models import Market, Event, Opportunity
 from config import settings as _cfg
+from ._firehose import (
+    GateResult,
+    MURMUR,
+    VOICE,
+    WHISPER,
+    emit_emit_nowait,
+    emit_evaluation_nowait,
+)
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, _trader_size_limits
 from services.strategy_helpers.crypto_strategy_utils import (
     parse_datetime_utc,
@@ -4774,8 +4782,24 @@ class BtcEthConvergenceStrategy(BaseStrategy):
         defaults = {**self.default_config, **(self.config or {})}
 
         for market in markets:
+            gates: list[GateResult] = []
+
+            def _emit_reject(verbosity: str = MURMUR, _gates=gates, _m=market) -> None:
+                emit_evaluation_nowait(
+                    strategy_slug="btc_eth_convergence",
+                    market=_m,
+                    gates=_gates,
+                    outcome="rejected",
+                    verbosity=verbosity,
+                )
+
             market_id = str(market.get("condition_id") or market.get("id") or "")
+            gates.append(GateResult(
+                "market_id", "Market id present", bool(market_id),
+                detail="condition_id or id required",
+            ))
             if not market_id:
+                _emit_reject(WHISPER)
                 continue
             typed_market = self._market_from_crypto_dict(market)
             asset = self._detect_asset(typed_market) or _normalize_asset(
@@ -4787,9 +4811,21 @@ class BtcEthConvergenceStrategy(BaseStrategy):
 
             up_price = self._float(market.get("up_price"))
             down_price = self._float(market.get("down_price"))
-            if up_price is None or down_price is None:
+            prices_present = up_price is not None and down_price is not None
+            gates.append(GateResult(
+                "prices_present", "Up/down prices present", prices_present,
+                detail=f"up={up_price} down={down_price}",
+            ))
+            if not prices_present:
+                _emit_reject(WHISPER)
                 continue
-            if not (0.0 <= up_price <= 1.0 and 0.0 <= down_price <= 1.0):
+            prices_in_range = 0.0 <= up_price <= 1.0 and 0.0 <= down_price <= 1.0
+            gates.append(GateResult(
+                "prices_in_range", "Prices in [0, 1]", prices_in_range,
+                detail=f"up={up_price:.4f} down={down_price:.4f}",
+            ))
+            if not prices_in_range:
+                _emit_reject(WHISPER)
                 continue
 
             # Read enriched fields stamped by market_runtime.  When a raw
@@ -4837,7 +4873,13 @@ class BtcEthConvergenceStrategy(BaseStrategy):
                 _crypto_hf_param_value(defaults, "min_oracle_move_pct", timeframe),
                 _coerce_float(self._default_param("min_oracle_move_pct", timeframe), 0.30, 0.0, 100.0),
             )
-            if oracle_move_pct < min_oracle_move:
+            oracle_move_ok = oracle_move_pct >= min_oracle_move
+            gates.append(GateResult(
+                "oracle_move", "Min oracle move", oracle_move_ok,
+                score=float(oracle_move_pct),
+                detail=f"move={oracle_move_pct:.4f}% min={min_oracle_move:.4f}% has_oracle={has_oracle}",
+            ))
+            if not oracle_move_ok:
                 rejection_detail: dict[str, Any] = {
                     "market": market.get("slug") or market_id,
                     "asset": asset or "?",
@@ -4852,6 +4894,7 @@ class BtcEthConvergenceStrategy(BaseStrategy):
                     rejection_detail["oracle_price"] = oracle_price
                     rejection_detail["price_to_beat"] = price_to_beat
                 rejections.append(rejection_detail)
+                _emit_reject(MURMUR)
                 continue
 
             # Gate 2: Price lag detection — only enter when Polymarket hasn't
@@ -4868,6 +4911,11 @@ class BtcEthConvergenceStrategy(BaseStrategy):
             )
             repricing_ceiling = round(0.50 + max_repricing, 3)
             if diff_pct > 0 and up_price > repricing_ceiling:
+                gates.append(GateResult(
+                    "not_repriced", "Polymarket hasn't repriced (YES)", False,
+                    score=float(up_price),
+                    detail=f"up_price={up_price:.4f} ceiling={repricing_ceiling:.4f}",
+                ))
                 rejections.append({
                     "market": market.get("slug") or market_id,
                     "asset": asset or "?",
@@ -4878,8 +4926,14 @@ class BtcEthConvergenceStrategy(BaseStrategy):
                     "max_price": repricing_ceiling,
                     "oracle_move_pct": round(oracle_move_pct, 4),
                 })
+                _emit_reject(MURMUR)
                 continue  # YES side already repriced — no lag
             if diff_pct < 0 and down_price > repricing_ceiling:
+                gates.append(GateResult(
+                    "not_repriced", "Polymarket hasn't repriced (NO)", False,
+                    score=float(down_price),
+                    detail=f"down_price={down_price:.4f} ceiling={repricing_ceiling:.4f}",
+                ))
                 rejections.append({
                     "market": market.get("slug") or market_id,
                     "asset": asset or "?",
@@ -4890,7 +4944,13 @@ class BtcEthConvergenceStrategy(BaseStrategy):
                     "max_price": repricing_ceiling,
                     "oracle_move_pct": round(oracle_move_pct, 4),
                 })
+                _emit_reject(MURMUR)
                 continue  # NO side already repriced — no lag
+            gates.append(GateResult(
+                "not_repriced", "Polymarket hasn't repriced", True,
+                score=float(up_price if diff_pct > 0 else down_price),
+                detail=f"side={'YES' if diff_pct > 0 else 'NO'} price={up_price if diff_pct > 0 else down_price:.4f} ceiling={repricing_ceiling:.4f}",
+            ))
 
             spread = clamp(self._float(market.get("spread")) or 0.0, 0.0, 0.10)
             liquidity = max(0.0, self._float(market.get("liquidity")) or 0.0)
@@ -4953,7 +5013,42 @@ class BtcEthConvergenceStrategy(BaseStrategy):
                 signal_family="crypto_maker", token_id=position_token_id,
             )
             if opp is not None:
+                emit_emit_nowait(
+                    strategy_slug="btc_eth_convergence",
+                    market=market,
+                    detail=(
+                        f"{side} @ {entry_price:.4f} • {asset} {timeframe} • "
+                        f"oracle_move={oracle_move_pct:.3f}% • edge={edge_percent:.3f}% • "
+                        f"conf={confidence:.2f}"
+                    ),
+                    extra={
+                        "side": side,
+                        "asset": asset,
+                        "timeframe": timeframe,
+                        "entry_price": entry_price,
+                        "oracle_move_pct": oracle_move_pct,
+                        "edge_percent": edge_percent,
+                        "confidence": confidence,
+                    },
+                )
+                gates.append(GateResult(
+                    "build_opportunity", "Build opportunity", True,
+                    detail=f"side={side} entry={entry_price:.4f}",
+                ))
+                emit_evaluation_nowait(
+                    strategy_slug="btc_eth_convergence",
+                    market=market,
+                    gates=gates,
+                    outcome="emitted",
+                    verbosity=WHISPER,
+                )
                 opportunities.append(opp)
+            else:
+                gates.append(GateResult(
+                    "build_opportunity", "Build opportunity", False,
+                    detail="_build_detect_opportunity returned None",
+                ))
+                _emit_reject(MURMUR)
 
         oracle_rejections = [r for r in rejections if r["gate"] == "oracle_move"]
         max_oracle_move = max((r["oracle_move_pct"] for r in oracle_rejections), default=0.0)

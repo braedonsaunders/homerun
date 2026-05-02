@@ -16,6 +16,14 @@ from typing import Any
 from models import Market, Opportunity
 from services.data_events import DataEvent, EventType
 from services.quality_filter import QualityFilterOverrides
+from services.strategies._firehose import (
+    GateResult,
+    MURMUR,
+    VOICE,
+    WHISPER,
+    emit_emit_nowait,
+    emit_evaluation_nowait,
+)
 from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, StrategyDecision, _trader_size_limits
 from services.strategy_helpers.crypto_strategy_utils import (
     build_binary_crypto_market,
@@ -101,23 +109,53 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def _score_market(self, row: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
+        gates: list[GateResult] = []
+
+        def _emit_reject(verbosity: str = MURMUR) -> None:
+            emit_evaluation_nowait(
+                strategy_slug="crypto_spike_reversion",
+                market=row,
+                gates=gates,
+                outcome="rejected",
+                verbosity=verbosity,
+            )
+
         up_price = safe_float(row.get("up_price"), None)
         down_price = safe_float(row.get("down_price"), None)
-        if up_price is None or down_price is None:
+        prices_ok = up_price is not None and down_price is not None
+        gates.append(GateResult(
+            "prices_present", "Up/down prices present", prices_ok,
+            detail=f"up={up_price} down={down_price}",
+        ))
+        if not prices_ok:
+            _emit_reject(WHISPER)
             return None
 
         move_5m = safe_float(row.get("move_5m_percent"), safe_float(row.get("move_5m_pct"), None))
         move_30m = safe_float(row.get("move_30m_percent"), safe_float(row.get("move_30m_pct"), None))
         move_2h = safe_float(row.get("move_2h_percent"), safe_float(row.get("move_2h_pct"), None))
 
-        if move_5m is None:
+        move_5m_ok = move_5m is not None
+        gates.append(GateResult(
+            "move_5m_present", "5m move present", move_5m_ok,
+            detail=f"move_5m={move_5m}",
+        ))
+        if not move_5m_ok:
+            _emit_reject(WHISPER)
             return None
 
         min_abs_move_5m = max(0.2, to_float(cfg.get("min_abs_move_5m", 1.8), 1.8))
         max_abs_move_2h = max(min_abs_move_5m, to_float(cfg.get("max_abs_move_2h", 14.0), 14.0))
         require_reversion_shape = bool(cfg.get("require_reversion_shape", True))
 
-        if abs(move_5m) < min_abs_move_5m:
+        move_5m_threshold_ok = abs(move_5m) >= min_abs_move_5m
+        gates.append(GateResult(
+            "move_5m_threshold", "|5m move| >= threshold", move_5m_threshold_ok,
+            score=float(move_5m),
+            detail=f"|move_5m|={abs(move_5m):.3f}% min={min_abs_move_5m:.3f}%",
+        ))
+        if not move_5m_threshold_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Reversion shape: short-horizon impulse dominates the 30m trend
@@ -129,7 +167,13 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             max_abs_move_2h=max_abs_move_2h,
         )
 
+        shape_gate_passed = (not require_reversion_shape) or shape_ok
+        gates.append(GateResult(
+            "reversion_shape", "Reversion shape valid", shape_gate_passed,
+            detail=f"shape_ok={shape_ok} require={require_reversion_shape} 30m={move_30m} 2h={move_2h} max_2h={max_abs_move_2h:.2f}",
+        ))
         if require_reversion_shape and not shape_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Direction OPPOSES the spike: spike up -> buy_no, spike down -> buy_yes
@@ -143,7 +187,14 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             selected_price = float(up_price)
 
         max_entry_price = clamp(to_float(cfg.get("max_entry_price", 0.92), 0.92), 0.05, 0.99)
-        if selected_price <= 0.0 or selected_price >= 1.0 or selected_price > max_entry_price:
+        entry_price_ok = 0.0 < selected_price < 1.0 and selected_price <= max_entry_price
+        gates.append(GateResult(
+            "entry_price", "Entry price within bounds", entry_price_ok,
+            score=selected_price,
+            detail=f"price={selected_price:.4f} max={max_entry_price:.4f} outcome={outcome}",
+        ))
+        if not entry_price_ok:
+            _emit_reject(MURMUR)
             return None
 
         # ---- Resolution-boundary safety: refuse to enter when there's not
@@ -164,7 +215,14 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             if configured_min_secs is not None
             else default_min_seconds_left_for_entry(timeframe_value)
         )
-        if seconds_left < min_seconds_left:
+        seconds_left_ok = seconds_left >= min_seconds_left
+        gates.append(GateResult(
+            "min_seconds_left", "Seconds left for entry", seconds_left_ok,
+            score=float(seconds_left) if seconds_left != float("inf") else None,
+            detail=f"left={seconds_left:.1f}s min={min_seconds_left:.1f}s",
+        ))
+        if not seconds_left_ok:
+            _emit_reject(MURMUR)
             return None
 
         # ---- Worker-snapshot freshness: avoid trading on a stale row.
@@ -175,7 +233,14 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             else default_max_market_data_age_ms(timeframe_value)
         )
         market_data_age_ms = safe_float(row.get("market_data_age_ms"), None)
-        if market_data_age_ms is not None and market_data_age_ms > max_market_data_age_ms:
+        md_age_ok = market_data_age_ms is None or market_data_age_ms <= max_market_data_age_ms
+        gates.append(GateResult(
+            "market_data_age", "Worker snapshot fresh", md_age_ok,
+            score=market_data_age_ms,
+            detail=f"age_ms={market_data_age_ms} max={max_market_data_age_ms:.0f}",
+        ))
+        if not md_age_ok:
+            _emit_reject(MURMUR)
             return None
 
         # ---- Oracle: prefer the freshest source (typically binance_direct
@@ -236,12 +301,26 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         )
 
         min_confidence = to_confidence(cfg.get("min_confidence", 0.44), 0.44)
-        if confidence < min_confidence:
+        confidence_ok = confidence >= min_confidence
+        gates.append(GateResult(
+            "min_confidence", "Min confidence", confidence_ok,
+            score=float(confidence),
+            detail=f"conf={confidence:.3f} min={min_confidence:.3f}",
+        ))
+        if not confidence_ok:
+            _emit_reject(MURMUR)
             return None
 
         liquidity = max(0.0, float(safe_float(row.get("liquidity"), 0.0) or 0.0))
         min_liquidity_usd = max(0.0, to_float(cfg.get("min_liquidity_usd", 2000.0), 2000.0))
-        if liquidity < min_liquidity_usd:
+        liquidity_ok = liquidity >= min_liquidity_usd
+        gates.append(GateResult(
+            "min_liquidity", "Min liquidity", liquidity_ok,
+            score=float(liquidity),
+            detail=f"liq=${liquidity:.0f} min=${min_liquidity_usd:.0f}",
+        ))
+        if not liquidity_ok:
+            _emit_reject(MURMUR)
             return None
 
         risk_score = clamp(
@@ -271,12 +350,30 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         # Hard fee-clearance gate: refuse trades whose raw edge can't clear
         # the taker fee by ``min_fee_clearance_x``×.
         min_fee_clearance_x = max(1.0, to_float(cfg.get("min_fee_clearance_x", 2.0), 2.0))
-        if edge < fee_aware_min_edge_pct(selected_price, min_fee_clearance_x):
+        min_edge_required = fee_aware_min_edge_pct(selected_price, min_fee_clearance_x)
+        fee_clearance_ok = edge >= min_edge_required
+        gates.append(GateResult(
+            "fee_clearance", "Edge clears fee threshold", fee_clearance_ok,
+            score=float(edge),
+            detail=f"edge={edge:.3f}% min={min_edge_required:.3f}% (taker_fee={taker_fee_pct_value:.3f}% × {min_fee_clearance_x:.1f})",
+        ))
+        if not fee_clearance_ok:
+            _emit_reject(MURMUR)
             return None
 
         target_exit_price = clamp(selected_price + (net_edge_percent / 100.0), selected_price + 0.0001, 0.999)
 
+        # All gates in _score_market passed.  Record success here; the
+        # final VOICE-tier emit fires when _build_opportunity actually
+        # produces an Opportunity.
+        gates.append(GateResult(
+            "score_market_all", "All scoring gates passed", True,
+            score=float(edge),
+            detail=f"net_edge={net_edge_percent:.3f}% conf={confidence:.3f}",
+        ))
+
         return {
+            "_firehose_gates": list(gates),
             "direction": direction,
             "outcome": outcome,
             "selected_price": selected_price,
@@ -483,10 +580,49 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
                 reason = self._rejection_reason(row, cfg)
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
+            firehose_gates = signal.get("_firehose_gates") or []
             opp = self._build_opportunity(row, signal)
             if opp is None:
                 rejection_counts["invalid_opportunity"] = rejection_counts.get("invalid_opportunity", 0) + 1
+                if firehose_gates:
+                    firehose_gates.append(GateResult(
+                        "build_opportunity", "Build opportunity", False,
+                        detail="_build_opportunity returned None",
+                    ))
+                    emit_evaluation_nowait(
+                        strategy_slug="crypto_spike_reversion",
+                        market=row,
+                        gates=firehose_gates,
+                        outcome="rejected",
+                        verbosity=MURMUR,
+                    )
                 continue
+            # Opportunity emitted — VOICE tier.
+            emit_emit_nowait(
+                strategy_slug="crypto_spike_reversion",
+                market=row,
+                detail=(
+                    f"{signal['outcome']} @ {signal['selected_price']:.4f} • "
+                    f"5m={signal['move_5m']:+.2f}% • edge={signal['edge']:.2f}% • "
+                    f"net={signal['net_edge_percent']:.2f}% • conf={signal['confidence']:.2f}"
+                ),
+                extra={
+                    "outcome": signal["outcome"],
+                    "selected_price": signal["selected_price"],
+                    "move_5m": signal["move_5m"],
+                    "edge": signal["edge"],
+                    "net_edge_percent": signal["net_edge_percent"],
+                    "confidence": signal["confidence"],
+                },
+            )
+            if firehose_gates:
+                emit_evaluation_nowait(
+                    strategy_slug="crypto_spike_reversion",
+                    market=row,
+                    gates=firehose_gates,
+                    outcome="emitted",
+                    verbosity=WHISPER,
+                )
             candidates.append((float(signal["score"]), opp))
 
         top_rejections = sorted(rejection_counts.items(), key=lambda item: item[1], reverse=True)[:4]

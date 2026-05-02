@@ -15,6 +15,14 @@ from typing import Any
 from models import Market, Opportunity
 from services.data_events import DataEvent, EventType
 from services.quality_filter import QualityFilterOverrides
+from services.strategies._firehose import (
+    GateResult,
+    MURMUR,
+    VOICE,
+    WHISPER,
+    emit_emit_nowait,
+    emit_evaluation_nowait,
+)
 from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, StrategyDecision, _trader_size_limits
 from services.strategy_helpers.crypto_strategy_utils import (
     build_binary_crypto_market,
@@ -109,11 +117,34 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         return build_binary_crypto_market(row)
 
     def _score_market(self, row: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
+        gates: list[GateResult] = []
+
+        def _emit_reject(verbosity: str = MURMUR) -> None:
+            emit_evaluation_nowait(
+                strategy_slug="crypto_entropy_maker",
+                market=row,
+                gates=gates,
+                outcome="rejected",
+                verbosity=verbosity,
+            )
+
         up_price = safe_float(row.get("up_price"), None)
         down_price = safe_float(row.get("down_price"), None)
-        if up_price is None or down_price is None:
+        prices_present = up_price is not None and down_price is not None
+        gates.append(GateResult(
+            "prices_present", "Up/down prices present", prices_present,
+            detail=f"up={up_price} down={down_price}",
+        ))
+        if not prices_present:
+            _emit_reject(WHISPER)
             return None
-        if not (0.0 < up_price < 1.0 and 0.0 < down_price < 1.0):
+        prices_in_range = 0.0 < up_price < 1.0 and 0.0 < down_price < 1.0
+        gates.append(GateResult(
+            "prices_in_range", "Prices in (0, 1)", prices_in_range,
+            detail=f"up={up_price:.4f} down={down_price:.4f}",
+        ))
+        if not prices_in_range:
+            _emit_reject(WHISPER)
             return None
 
         # ---- Resolution-boundary + freshness gates (mirrors spike strategy)
@@ -135,7 +166,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         if bool(cfg.get("maker_rest_includes_timeout", True)):
             timeout_seconds = float(self.default_open_order_timeout_seconds or 0.0)
             min_seconds_left += max(0.0, timeout_seconds)
-        if seconds_left < min_seconds_left:
+        seconds_left_ok = seconds_left >= min_seconds_left
+        gates.append(GateResult(
+            "min_seconds_left", "Seconds left for entry", seconds_left_ok,
+            score=float(seconds_left) if seconds_left != float("inf") else None,
+            detail=f"left={seconds_left:.1f}s min={min_seconds_left:.1f}s",
+        ))
+        if not seconds_left_ok:
+            _emit_reject(MURMUR)
             return None
 
         configured_max_md_age = cfg.get("max_market_data_age_ms")
@@ -145,7 +183,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             else default_max_market_data_age_ms(timeframe_value)
         )
         market_data_age_ms = safe_float(row.get("market_data_age_ms"), None)
-        if market_data_age_ms is not None and market_data_age_ms > max_market_data_age_ms:
+        md_age_ok = market_data_age_ms is None or market_data_age_ms <= max_market_data_age_ms
+        gates.append(GateResult(
+            "market_data_age", "Worker snapshot fresh", md_age_ok,
+            score=market_data_age_ms,
+            detail=f"age_ms={market_data_age_ms} max={max_market_data_age_ms:.0f}",
+        ))
+        if not md_age_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Binary entropy
@@ -154,25 +199,53 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         entropy = _probability_entropy(prob_yes)
 
         min_entropy = max(0.0, min(1.0, to_float(cfg.get("min_entropy", 0.82), 0.82)))
-        if entropy < min_entropy:
+        entropy_ok = entropy >= min_entropy
+        gates.append(GateResult(
+            "min_entropy", "Min binary entropy", entropy_ok,
+            score=float(entropy),
+            detail=f"H={entropy:.4f} min={min_entropy:.3f}",
+        ))
+        if not entropy_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Spread
         spread = safe_float(row.get("spread"), None)
         min_spread_pct = max(0.0, min(1.0, to_float(cfg.get("min_spread_pct", 0.006), 0.006)))
         max_spread_pct = max(min_spread_pct, min(1.0, to_float(cfg.get("max_spread_pct", 0.065), 0.065)))
-        if spread is None or not (min_spread_pct <= spread <= max_spread_pct):
+        spread_ok = spread is not None and min_spread_pct <= spread <= max_spread_pct
+        gates.append(GateResult(
+            "spread_window", "Spread within window", spread_ok,
+            score=spread,
+            detail=f"spread={spread} range=[{min_spread_pct:.4f},{max_spread_pct:.4f}]",
+        ))
+        if not spread_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Cancel rate
         cancel_rate_30s = normalize_ratio(row.get("cancel_rate_30s") or row.get("maker_cancel_rate_30s"))
         max_cancel_rate_30s = max(0.0, min(1.0, to_float(cfg.get("max_cancel_rate_30s", 0.75), 0.75)))
-        if cancel_rate_30s is not None and cancel_rate_30s > max_cancel_rate_30s:
+        cancel_rate_ok = cancel_rate_30s is None or cancel_rate_30s <= max_cancel_rate_30s
+        gates.append(GateResult(
+            "cancel_rate", "Cancel rate <= max", cancel_rate_ok,
+            score=cancel_rate_30s,
+            detail=f"rate={cancel_rate_30s} max={max_cancel_rate_30s:.3f}",
+        ))
+        if not cancel_rate_ok:
+            _emit_reject(MURMUR)
             return None
 
         spread_widening_bps = safe_float(row.get("spread_widening_bps"), None)
         max_spread_widening_bps = max(0.0, to_float(cfg.get("max_spread_widening_bps", 22.0), 22.0))
-        if spread_widening_bps is not None and spread_widening_bps > max_spread_widening_bps:
+        spread_widening_ok = spread_widening_bps is None or spread_widening_bps <= max_spread_widening_bps
+        gates.append(GateResult(
+            "spread_widening", "Spread widening within cap", spread_widening_ok,
+            score=spread_widening_bps,
+            detail=f"widening_bps={spread_widening_bps} max={max_spread_widening_bps:.1f}",
+        ))
+        if not spread_widening_ok:
+            _emit_reject(MURMUR)
             return None
 
         prior_peak_cancel_rate = normalize_ratio(row.get("cancel_peak_2m"))
@@ -207,7 +280,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         # Liquidity
         liquidity = max(0.0, float(safe_float(row.get("liquidity"), 0.0) or 0.0))
         min_liquidity_usd = max(0.0, to_float(cfg.get("min_liquidity_usd", 1000.0), 1000.0))
-        if liquidity < min_liquidity_usd:
+        liquidity_ok = liquidity >= min_liquidity_usd
+        gates.append(GateResult(
+            "min_liquidity", "Min liquidity", liquidity_ok,
+            score=float(liquidity),
+            detail=f"liq=${liquidity:.0f} min=${min_liquidity_usd:.0f}",
+        ))
+        if not liquidity_ok:
+            _emit_reject(MURMUR)
             return None
 
         # ---- Oracle: prefer the freshest source (binance_direct sub-second
@@ -272,7 +352,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             entry_price = float(down_price)
 
         max_entry_price = clamp(to_float(cfg.get("max_entry_price", 0.92), 0.92), 0.05, 0.99)
-        if entry_price <= 0.0 or entry_price >= 1.0 or entry_price > max_entry_price:
+        entry_price_ok = 0.0 < entry_price < 1.0 and entry_price <= max_entry_price
+        gates.append(GateResult(
+            "entry_price", "Entry price within bounds", entry_price_ok,
+            score=float(entry_price),
+            detail=f"price={entry_price:.4f} max={max_entry_price:.4f} outcome={outcome}",
+        ))
+        if not entry_price_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Entropy-weighted edge
@@ -286,7 +373,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             edge += min(3.0, abs(recent_move_zscore)) * 0.4
 
         min_edge_percent = max(0.0, to_float(cfg.get("min_edge_percent", 1.0), 1.0))
-        if edge < min_edge_percent:
+        edge_ok = edge >= min_edge_percent
+        gates.append(GateResult(
+            "min_edge", "Min edge", edge_ok,
+            score=float(edge),
+            detail=f"edge={edge:.3f}% min={min_edge_percent:.3f}%",
+        ))
+        if not edge_ok:
+            _emit_reject(MURMUR)
             return None
 
         # ---- Fee-aware gate: maker rests pay zero, but if the maker order
@@ -294,7 +388,15 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         # spread on a follow-up), the realised cost is the taker curve. A
         # 1.5× clearance (vs spike's 2×) reflects the maker's discount.
         min_fee_clearance_x = max(1.0, to_float(cfg.get("min_fee_clearance_x", 1.5), 1.5))
-        if edge < fee_aware_min_edge_pct(entry_price, min_fee_clearance_x):
+        min_edge_required = fee_aware_min_edge_pct(entry_price, min_fee_clearance_x)
+        fee_clearance_ok = edge >= min_edge_required
+        gates.append(GateResult(
+            "fee_clearance", "Edge clears fee threshold", fee_clearance_ok,
+            score=float(edge),
+            detail=f"edge={edge:.3f}% min={min_edge_required:.3f}% (× {min_fee_clearance_x:.1f})",
+        ))
+        if not fee_clearance_ok:
+            _emit_reject(MURMUR)
             return None
         taker_fee_pct_value = polymarket_taker_fee_pct(entry_price) * 100.0
 
@@ -319,7 +421,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             )
 
         min_confidence = to_confidence(cfg.get("min_confidence", 0.40), 0.40)
-        if confidence < min_confidence:
+        confidence_ok = confidence >= min_confidence
+        gates.append(GateResult(
+            "min_confidence", "Min confidence", confidence_ok,
+            score=float(confidence),
+            detail=f"conf={confidence:.3f} min={min_confidence:.3f}",
+        ))
+        if not confidence_ok:
+            _emit_reject(MURMUR)
             return None
 
         # Score
@@ -330,7 +439,14 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             + (min(1.0, liquidity / 20_000.0) * 4.0)
         )
 
+        gates.append(GateResult(
+            "score_market_all", "All scoring gates passed", True,
+            score=float(edge),
+            detail=f"edge={edge:.3f}% conf={confidence:.3f} entropy={entropy:.3f}",
+        ))
+
         return {
+            "_firehose_gates": list(gates),
             "direction": direction,
             "outcome": outcome,
             "entry_price": entry_price,
@@ -570,10 +686,47 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
                 reason = self._rejection_reason(row, cfg)
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
+            firehose_gates = signal.get("_firehose_gates") or []
             opp = self._build_opportunity(row, signal)
             if opp is None:
                 rejection_counts["invalid_opportunity"] = rejection_counts.get("invalid_opportunity", 0) + 1
+                if firehose_gates:
+                    firehose_gates.append(GateResult(
+                        "build_opportunity", "Build opportunity", False,
+                        detail="_build_opportunity returned None",
+                    ))
+                    emit_evaluation_nowait(
+                        strategy_slug="crypto_entropy_maker",
+                        market=row,
+                        gates=firehose_gates,
+                        outcome="rejected",
+                        verbosity=MURMUR,
+                    )
                 continue
+            emit_emit_nowait(
+                strategy_slug="crypto_entropy_maker",
+                market=row,
+                detail=(
+                    f"{signal['outcome']} @ {signal['entry_price']:.4f} • "
+                    f"H={signal['entropy']:.3f} • edge={signal['edge']:.2f}% • "
+                    f"conf={signal['confidence']:.2f}"
+                ),
+                extra={
+                    "outcome": signal["outcome"],
+                    "entry_price": signal["entry_price"],
+                    "entropy": signal["entropy"],
+                    "edge": signal["edge"],
+                    "confidence": signal["confidence"],
+                },
+            )
+            if firehose_gates:
+                emit_evaluation_nowait(
+                    strategy_slug="crypto_entropy_maker",
+                    market=row,
+                    gates=firehose_gates,
+                    outcome="emitted",
+                    verbosity=WHISPER,
+                )
             candidates.append((float(signal["score"]), opp))
 
         top_rejections = sorted(rejection_counts.items(), key=lambda item: item[1], reverse=True)[:4]

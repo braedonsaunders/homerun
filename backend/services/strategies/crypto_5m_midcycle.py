@@ -35,6 +35,14 @@ from typing import Any, Optional
 
 from models import Market, Opportunity
 from services.data_events import DataEvent
+from services.strategies._firehose import (
+    GateResult,
+    MURMUR,
+    VOICE,
+    WHISPER,
+    emit_emit_nowait,
+    emit_evaluation_nowait,
+)
 from services.strategies.base import BaseStrategy
 from services.strategy_helpers.cycle_tracker import CycleTracker
 from services.strategy_helpers.crypto_strategy_utils import (
@@ -334,119 +342,193 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         *,
         now_ms: int,
     ) -> Optional[Opportunity]:
-        # Filter: 5-minute timeframe only.
-        if not _detect_5m(market):
+        # Collect every gate so we can emit one structured evaluation
+        # summary at the end (or on early reject).  Gates short-circuit
+        # — once one fails, later ones are recorded as ``passed=None``
+        # ("not evaluated").
+        gates: list[GateResult] = []
+        midcycle_s = float(self.config.get("midcycle_seconds", 150.0))
+        min_left_cfg = float(self.config.get("min_seconds_to_resolution", 90.0))
+        min_distance_bps = float(self.config.get("min_distance_bps", 5.0))
+        max_age_ms = float(self.config.get("max_oracle_age_ms", 5000))
+        max_entry = float(self.config.get("max_entry_price", 0.70))
+        min_entry = float(self.config.get("min_entry_price", 0.05))
+
+        def _emit_reject(verbosity: str = MURMUR) -> None:
+            emit_evaluation_nowait(
+                strategy_slug="crypto_5m_midcycle",
+                market=market,
+                gates=gates,
+                outcome="rejected",
+                verbosity=verbosity,
+            )
+
+        # Gate 1: 5-minute timeframe.  WHISPER tier — every non-5m
+        # market that walks past the door.
+        is_5m = _detect_5m(market)
+        gates.append(GateResult(
+            "timeframe", "5-minute timeframe", is_5m,
+            detail=f"timeframe={market.get('timeframe') or '?'} slug={market.get('slug') or '?'}",
+        ))
+        if not is_5m:
+            _emit_reject(WHISPER)
             return None
 
         market_id = str(market.get("condition_id") or market.get("id") or "")
+        gates.append(GateResult(
+            "market_id", "Market id present", bool(market_id),
+            detail="condition_id or id required",
+        ))
         if not market_id:
+            _emit_reject(WHISPER)
             return None
 
-        # Filter: per-asset enable list.
+        # Gate 2: per-asset enable list.
         asset = _normalize_asset(
             market.get("asset") or market.get("symbol") or market.get("coin")
         )
-        if not asset:
-            return None
-        if asset not in (self.config.get("assets") or []):
+        configured_assets = self.config.get("assets") or []
+        asset_passed = bool(asset) and asset in configured_assets
+        gates.append(GateResult(
+            "asset_enabled", "Asset in config list", asset_passed,
+            detail=f"asset={asset or '?'} configured={','.join(configured_assets) or 'none'}",
+        ))
+        if not asset_passed:
+            _emit_reject(WHISPER)
             return None
 
         end_ms_value = StrategySDK._coerce_end_ts_ms(market)
+        gates.append(GateResult(
+            "end_timestamp", "Cycle end timestamp parseable", end_ms_value is not None,
+            detail=f"end_ts_ms={end_ms_value}",
+        ))
         if end_ms_value is None:
+            _emit_reject(WHISPER)
             return None
 
-        # Trigger: did we just cross the midcycle milestone?
-        midcycle_s = float(self.config.get("midcycle_seconds", 150.0))
+        # Gate 3: midcycle milestone crossed.  This fires once per cycle
+        # — most ticks of crypto_update don't cross it, so most
+        # evaluations rest here.  WHISPER only.
         tracker = self._cycle_trackers.get(market_id)
         if tracker is None or tracker.cycle_seconds != 300.0:
             tracker = CycleTracker(cycle_seconds=300.0, milestones_s=(midcycle_s,))
             self._cycle_trackers[market_id] = tracker
         crossed = tracker.crossed(end_ms_value, now_ms=now_ms)
-        if midcycle_s not in crossed:
+        seconds_into_cycle = max(0.0, 300.0 - (end_ms_value - now_ms) / 1000.0)
+        milestone_passed = midcycle_s in crossed
+        gates.append(GateResult(
+            "midcycle_crossed", "Midcycle milestone crossed", milestone_passed,
+            score=seconds_into_cycle,
+            detail=f"milestone={midcycle_s:.0f}s elapsed={seconds_into_cycle:.1f}s",
+        ))
+        if not milestone_passed:
+            _emit_reject(WHISPER)
             return None
 
-        # Belt-and-suspenders: reject if cycle is too close to resolution.
+        # Past the milestone — every gate from here is MURMUR or higher
+        # because we have a real candidate.
         seconds_left = (end_ms_value - now_ms) / 1000.0
-        min_left = float(self.config.get("min_seconds_to_resolution", 90.0))
-        if seconds_left < min_left:
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — only %.1fs left (min=%.1f)",
-                market.get("slug") or market_id, seconds_left, min_left,
-            )
+        min_left_passed = seconds_left >= min_left_cfg
+        gates.append(GateResult(
+            "min_seconds_to_resolution", "Min seconds to resolution",
+            min_left_passed, score=seconds_left,
+            detail=f"left={seconds_left:.1f}s min={min_left_cfg:.1f}s",
+        ))
+        if not min_left_passed:
+            _emit_reject(MURMUR)
             return None
 
-        # Reference + current price — Chainlink only. Polymarket resolves
-        # against Chainlink, so any other source could pick the wrong side
-        # at the boundary.
         reference = to_float(market.get("price_to_beat"), None)
-        if reference is None or reference <= 0.0:
+        ref_passed = reference is not None and reference > 0.0
+        gates.append(GateResult(
+            "reference_price", "Reference price available", ref_passed,
+            score=reference,
+            detail=f"price_to_beat={reference}",
+        ))
+        if not ref_passed:
+            _emit_reject(MURMUR)
             return None
 
-        max_age_ms = float(self.config.get("max_oracle_age_ms", 5000))
         chainlink = pick_oracle_source(
             market, prefer="chainlink", max_age_ms=max_age_ms, now_ms=now_ms
         )
-        # ``pick_oracle_source`` falls back to the freshest non-preferred
-        # source when chainlink isn't available — but Polymarket resolves
-        # specifically on Chainlink, so we treat any non-chainlink pick
-        # as "no usable price." Better to skip than to pick the wrong
-        # side at the resolution boundary.
-        if chainlink is None or str(chainlink.get("source", "")).lower() != "chainlink":
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — no fresh Chainlink price (got %s)",
-                market.get("slug") or market_id,
-                chainlink.get("source") if chainlink else None,
-            )
+        oracle_source = str(chainlink.get("source", "")).lower() if chainlink else None
+        oracle_age = float(chainlink.get("age_ms", 0.0)) if chainlink else None
+        oracle_passed = chainlink is not None and oracle_source == "chainlink"
+        gates.append(GateResult(
+            "fresh_chainlink", "Fresh Chainlink oracle", oracle_passed,
+            score=oracle_age,
+            detail=f"source={oracle_source or 'none'} age_ms={oracle_age} max_age_ms={max_age_ms:.0f}",
+        ))
+        if not oracle_passed:
+            _emit_reject(MURMUR)
             return None
         spot = float(chainlink["price"])
-        if spot <= 0.0:
+        spot_passed = spot > 0.0
+        gates.append(GateResult(
+            "spot_price", "Spot price > 0", spot_passed, score=spot,
+            detail=f"spot={spot}",
+        ))
+        if not spot_passed:
+            _emit_reject(MURMUR)
             return None
 
-        # Distance gate. Use a small epsilon to admit values that hit the
-        # threshold exactly but fall a hair short due to float arithmetic
-        # (e.g. (100.05 - 100.0) / 100.0 * 10000 ≈ 4.99999... rather than 5.0).
+        # Distance gate.  Epsilon admits exact-threshold hits that come
+        # in a hair short due to float arithmetic.
         distance_bps = (spot - reference) / reference * 10_000.0
-        min_distance_bps = float(self.config.get("min_distance_bps", 5.0))
-        if abs(distance_bps) + 1e-9 < min_distance_bps:
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — distance %.2f bps < min %.2f",
-                market.get("slug") or market_id, distance_bps, min_distance_bps,
-            )
+        distance_passed = abs(distance_bps) + 1e-9 >= min_distance_bps
+        gates.append(GateResult(
+            "min_distance", "Min distance from reference", distance_passed,
+            score=distance_bps,
+            detail=f"distance={distance_bps:+.2f}bps min={min_distance_bps:.2f}bps",
+        ))
+        if not distance_passed:
+            _emit_reject(MURMUR)
             return None
 
-        # Pick winning side: spot > reference → UP wins → buy YES (UP token).
         side = "YES" if distance_bps > 0 else "NO"
 
-        # VWAP fill check against the live Polymarket book.
         typed_market = _build_market(market)
-        if not typed_market.clob_token_ids:
+        token_ids_present = bool(typed_market.clob_token_ids)
+        gates.append(GateResult(
+            "clob_tokens", "CLOB token ids present", token_ids_present,
+            detail=f"count={len(typed_market.clob_token_ids)}",
+        ))
+        if not token_ids_present:
+            _emit_reject(MURMUR)
             return None
 
         bet_size_usd = float(self.config.get("bet_size_usd", 15.0))
         depth = StrategySDK.get_order_book_depth(
             typed_market, side=side, size_usd=bet_size_usd
         )
-        if depth is None:
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — no book depth for %s",
-                market.get("slug") or market_id, side,
-            )
+        depth_present = depth is not None
+        gates.append(GateResult(
+            "book_depth", "Order book depth available", depth_present,
+            detail=f"side={side} size_usd={bet_size_usd:.2f}",
+        ))
+        if not depth_present:
+            _emit_reject(MURMUR)
             return None
-        if not depth.get("is_fresh", False):
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — stale book (age=%sms)",
-                market.get("slug") or market_id, depth.get("staleness_ms"),
-            )
+        is_fresh = bool(depth.get("is_fresh", False))
+        gates.append(GateResult(
+            "book_fresh", "Order book fresh", is_fresh,
+            score=float(depth.get("staleness_ms") or 0.0),
+            detail=f"staleness_ms={depth.get('staleness_ms')}",
+        ))
+        if not is_fresh:
+            _emit_reject(MURMUR)
             return None
 
         vwap_price = float(depth.get("vwap_price") or 0.0)
-        max_entry = float(self.config.get("max_entry_price", 0.70))
-        min_entry = float(self.config.get("min_entry_price", 0.05))
-        if vwap_price <= 0.0 or vwap_price > max_entry or vwap_price < min_entry:
-            logger.debug(
-                "crypto_5m_midcycle: %s skipped — VWAP %.4f outside [%.2f, %.2f]",
-                market.get("slug") or market_id, vwap_price, min_entry, max_entry,
-            )
+        vwap_passed = vwap_price > 0.0 and min_entry <= vwap_price <= max_entry
+        gates.append(GateResult(
+            "vwap_in_range", "VWAP within entry range", vwap_passed,
+            score=vwap_price,
+            detail=f"vwap={vwap_price:.4f} range=[{min_entry:.2f},{max_entry:.2f}]",
+        ))
+        if not vwap_passed:
+            _emit_reject(MURMUR)
             return None
 
         # All gates passed — build the Opportunity.
@@ -504,7 +586,39 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             confidence=win_prob_estimate,
         )
         if opp is None:
+            emit_evaluation_nowait(
+                strategy_slug="crypto_5m_midcycle",
+                market=market,
+                gates=gates,
+                outcome="rejected",
+                verbosity=MURMUR,
+                extra={"reason": "create_opportunity returned None"},
+            )
             return None
+
+        # All gates passed and Opportunity built — VOICE tier.
+        emit_emit_nowait(
+            strategy_slug="crypto_5m_midcycle",
+            market=market,
+            detail=(
+                f"{asset} {side} • dist={distance_bps:+.2f}bps • "
+                f"vwap={vwap_price:.4f} • oracle_age={chainlink.get('age_ms', 0):.0f}ms"
+            ),
+            extra={
+                "side": side,
+                "asset": asset,
+                "distance_bps": distance_bps,
+                "vwap_price": vwap_price,
+                "bet_size_usd": bet_size_usd,
+            },
+        )
+        emit_evaluation_nowait(
+            strategy_slug="crypto_5m_midcycle",
+            market=market,
+            gates=gates,
+            outcome="emitted",
+            verbosity=WHISPER,
+        )
 
         opp.risk_factors = [
             f"Crypto 5m midcycle continuation ({asset})",

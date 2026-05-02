@@ -134,6 +134,25 @@ type PositionDirectionFilter = 'all' | 'yes' | 'no'
 type PositionSortField = 'exposure' | 'updated' | 'edge' | 'confidence' | 'unrealized'
 type PositionSortDirection = 'asc' | 'desc'
 type TerminalDensity = 'compact' | 'expanded'
+// Firehose volume tier — orthogonal to severity.  See backend
+// ``services/strategies/_firehose.py`` for the producer side.
+type TerminalVerbosity = 'whisper' | 'murmur' | 'voice' | 'shout'
+// 'off' means firehose events (any verbosity) are hidden; only the
+// existing trader-orchestrator event stream renders.
+type TerminalVolume = 'off' | TerminalVerbosity
+const TERMINAL_VERBOSITY_RANK: Record<TerminalVerbosity, number> = {
+  whisper: 1,
+  murmur: 2,
+  voice: 3,
+  shout: 4,
+}
+const TERMINAL_VOLUME_OPTIONS: { value: TerminalVolume; label: string; hint: string }[] = [
+  { value: 'off',     label: 'Off',     hint: 'Firehose silenced — only the existing event stream' },
+  { value: 'whisper', label: 'Whisper', hint: 'Every gate evaluation, every market — full firehose' },
+  { value: 'murmur',  label: 'Murmur',  hint: 'Real candidates that died on a meaningful gate' },
+  { value: 'voice',   label: 'Voice',   hint: 'Opportunities emitted (passed every gate)' },
+  { value: 'shout',   label: 'Shout',   hint: 'Orders only — ignore upstream chatter' },
+]
 type TraderToggleAction = 'start' | 'stop' | 'activate' | 'deactivate'
 type ExecutionLatencyStageKey =
   | 'armed_to_ws_release_ms'
@@ -287,6 +306,12 @@ type ActivityRow = {
   detail: string
   action: TradeAction | null
   tone: 'neutral' | 'positive' | 'negative' | 'warning'
+  // Firehose-only metadata.  ``verbosity`` lets the volume dial filter
+  // events; ``sourceKey`` lets us route events with ``trader_id=null``
+  // (global crypto strategy emissions) to the correct trader's
+  // terminal.
+  verbosity?: TerminalVerbosity | null
+  sourceKey?: string | null
 }
 
 type OverviewTrendBucket = {
@@ -481,7 +506,9 @@ type TuneRevertSnapshot = {
 }
 
 const TERMINAL_ACTIVITY_MAX_ROWS = 320
-const TERMINAL_SELECTED_MAX_ROWS = 220
+// Default selected-trader cap.  The user can dial this up via the
+// terminal toolbar (``terminalMaxRows`` state); this is the seed.
+const TERMINAL_SELECTED_MAX_ROWS_DEFAULT = 220
 const TERMINAL_ALL_BOTS_MAX_ROWS = 120
 const TERMINAL_COMPACT_ROW_HEIGHT = 34
 const TERMINAL_COMPACT_OVERSCAN = 16
@@ -5289,6 +5316,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const [terminalDensity, setTerminalDensity] = useState<TerminalDensity>('compact')
   const [terminalScrollTop, setTerminalScrollTop] = useState(0)
   const [terminalViewportHeight, setTerminalViewportHeight] = useState(0)
+  // Firehose volume + viewing controls.  ``terminalVolume='off'`` is
+  // the default so existing behaviour is preserved until the user
+  // dials the volume up.  ``terminalPaused`` freezes the rendered
+  // list while events keep streaming behind it; ``terminalSlowMode``
+  // drips queued events at one per second so the firehose is
+  // human-readable.  ``terminalMaxRows`` is user-configurable so
+  // WHISPER mode (which fills the default 220-row window in seconds)
+  // can keep more history visible.
+  const [terminalVolume, setTerminalVolume] = useState<TerminalVolume>('off')
+  const [terminalPaused, setTerminalPaused] = useState(false)
+  const [terminalSlowMode, setTerminalSlowMode] = useState(false)
+  const [terminalMaxRows, setTerminalMaxRows] = useState(TERMINAL_SELECTED_MAX_ROWS_DEFAULT)
   const [tradeStatusFilter, setTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [tradeSearch, setTradeSearch] = useState('')
   const [decisionSearch, setDecisionSearch] = useState('')
@@ -8560,15 +8599,47 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         severity === 'error' || severity === 'failed' ? 'negative' :
         'neutral'
 
+      const rawVerbosity = String(event.verbosity || '').trim().toLowerCase()
+      const verbosity: TerminalVerbosity | null =
+        rawVerbosity === 'whisper' || rawVerbosity === 'murmur'
+        || rawVerbosity === 'voice' || rawVerbosity === 'shout'
+          ? rawVerbosity as TerminalVerbosity
+          : null
+      const sourceKey = String(event.source || '').trim().toLowerCase() || null
+
+      // Firehose events build a richer title (strategy + market) and
+      // pull their reason from the event message rather than the
+      // generic eventReasonDetail() path which assumes the standard
+      // payload shape.
+      let title: string
+      let detail: string
+      if (verbosity) {
+        const payloadStrategy = payload ? cleanText(payload.strategy_slug) : null
+        const payloadMarketSlug = payload && isRecord(payload.market)
+          ? cleanText((payload.market as Record<string, unknown>).slug)
+            || cleanText((payload.market as Record<string, unknown>).market_id)
+          : null
+        const tag = String(event.event_type || 'firehose').toUpperCase()
+        const labelStrategy = payloadStrategy || sourceKey || ''
+        title = `${tag} • ${verbosity.toUpperCase()}${labelStrategy ? ` • ${labelStrategy}` : ''}${payloadMarketSlug ? ` • ${payloadMarketSlug}` : ''}`
+        const message = cleanText(event.message)
+        detail = message || resolvedReason || ''
+      } else {
+        title = `${String(event.event_type || 'event').toUpperCase()} • ${String(event.severity || 'info').toUpperCase()} • ${marketLabel}`
+        detail = `Markets: ${renderMarketsDetail(linkedLegs, fallbackMarket)} :: Reason: ${resolvedReason}${latencyDetail ? ` :: Latency: ${latencyDetail}` : ''}`
+      }
+
       eventRows.push({
         kind: 'event',
         id: event.id,
         ts: event.created_at,
         traderId: event.trader_id,
-        title: `${String(event.event_type || 'event').toUpperCase()} • ${String(event.severity || 'info').toUpperCase()} • ${marketLabel}`,
-        detail: `Markets: ${renderMarketsDetail(linkedLegs, fallbackMarket)} :: Reason: ${resolvedReason}${latencyDetail ? ` :: Latency: ${latencyDetail}` : ''}`,
+        title,
+        detail,
         action,
         tone,
+        verbosity,
+        sourceKey,
       })
     }
 
@@ -8577,15 +8648,148 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       .slice(0, TERMINAL_ACTIVITY_MAX_ROWS)
   }, [allDecisions, allOrders, allEvents])
 
+  // Source keys the selected trader subscribes to.  Used to route
+  // global firehose events (``trader_id=null``, e.g. crypto strategy
+  // gate emissions) to this terminal — strategies emit once globally
+  // rather than fanning out N writes per tick across all traders.
+  const selectedTraderSourceKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const cfg of selectedTraderSourceConfigs) {
+      const key = String(cfg?.source_key || '').trim().toLowerCase()
+      if (key) set.add(key)
+    }
+    return set
+  }, [selectedTraderSourceConfigs])
+
   const selectedTraderActivityRows = useMemo(
-    () => activityRows.filter((row) => row.traderId === selectedTraderId).slice(0, TERMINAL_SELECTED_MAX_ROWS),
-    [activityRows, selectedTraderId]
+    () => activityRows
+      .filter((row) => {
+        if (row.traderId === selectedTraderId) return true
+        // Firehose-style global events have ``traderId=null`` and a
+        // ``sourceKey`` that identifies which strategy family they
+        // belong to.  Show them in the trader's terminal when the
+        // trader subscribes to that source.
+        if (row.traderId == null && row.sourceKey && selectedTraderSourceKeys.has(row.sourceKey)) {
+          return true
+        }
+        return false
+      })
+      .slice(0, terminalMaxRows),
+    [activityRows, selectedTraderId, selectedTraderSourceKeys, terminalMaxRows]
   )
 
   const filteredTraderActivityRows = useMemo(() => {
-    return selectedTraderActivityRows
-      .filter((row) => traderFeedFilter === 'all' || row.kind === traderFeedFilter)
-  }, [selectedTraderActivityRows, traderFeedFilter])
+    const minRank = terminalVolume === 'off' ? Infinity : TERMINAL_VERBOSITY_RANK[terminalVolume]
+    return selectedTraderActivityRows.filter((row) => {
+      if (traderFeedFilter !== 'all' && row.kind !== traderFeedFilter) return false
+      // Volume gate: rows without verbosity (existing event stream)
+      // and rows with severity != info (warnings/errors) always pass.
+      // Firehose ``info`` rows pass only if their tier is at-or-louder
+      // than the dial setting.
+      if (row.verbosity) {
+        if (row.tone === 'warning' || row.tone === 'negative') return true
+        return TERMINAL_VERBOSITY_RANK[row.verbosity] >= minRank
+      }
+      return true
+    })
+  }, [selectedTraderActivityRows, traderFeedFilter, terminalVolume])
+
+  // Pause + slow-mode behaviour.  ``displayedActivityRows`` is what
+  // actually renders.  When paused, it stops updating from upstream;
+  // when slow-mode is on, new rows trickle in at one per second so a
+  // human can read the firehose.
+  const [displayedActivityRows, setDisplayedActivityRows] = useState<ActivityRow[]>([])
+  const slowModeQueueRef = useRef<ActivityRow[]>([])
+  const slowModeTimerRef = useRef<number | null>(null)
+  const seenIdsRef = useRef<Set<string>>(new Set())
+
+  // Reset displayed rows + slow-mode queue when the user changes
+  // trader, filter, density, or volume — those are deliberate
+  // reconfigurations, not stream updates.
+  useEffect(() => {
+    setDisplayedActivityRows(filteredTraderActivityRows)
+    slowModeQueueRef.current = []
+    seenIdsRef.current = new Set(filteredTraderActivityRows.map((r) => `${r.kind}:${r.id}`))
+    if (slowModeTimerRef.current != null) {
+      window.clearInterval(slowModeTimerRef.current)
+      slowModeTimerRef.current = null
+    }
+    // Intentionally not depending on filteredTraderActivityRows itself
+    // so stream-driven re-renders flow into the next effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTraderId, traderFeedFilter, terminalDensity, terminalVolume, terminalMaxRows])
+
+  // Stream new rows into the displayed list (or queue them in
+  // slow-mode / drop them when paused).
+  useEffect(() => {
+    if (terminalPaused) return
+    const fresh: ActivityRow[] = []
+    const seen = seenIdsRef.current
+    for (const row of filteredTraderActivityRows) {
+      const key = `${row.kind}:${row.id}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        fresh.push(row)
+      }
+    }
+    if (fresh.length === 0) {
+      // Upstream rows might have been pruned (e.g. trader switch); if
+      // displayed length exceeds upstream, trim to match.
+      if (displayedActivityRows.length > filteredTraderActivityRows.length) {
+        setDisplayedActivityRows(filteredTraderActivityRows)
+      }
+      return
+    }
+    if (terminalSlowMode) {
+      // Push to queue; timer below drains one per second.
+      slowModeQueueRef.current.push(...fresh)
+      if (slowModeTimerRef.current == null) {
+        slowModeTimerRef.current = window.setInterval(() => {
+          const next = slowModeQueueRef.current.shift()
+          if (next == null) {
+            if (slowModeTimerRef.current != null) {
+              window.clearInterval(slowModeTimerRef.current)
+              slowModeTimerRef.current = null
+            }
+            return
+          }
+          setDisplayedActivityRows((prev) => [next, ...prev].slice(0, terminalMaxRows))
+        }, 1000)
+      }
+    } else {
+      setDisplayedActivityRows((prev) => {
+        // ``fresh`` is the set of rows missing from prev; merge and
+        // re-sort by ts so out-of-order arrivals (rare, but possible
+        // with WS + cache invalidation) settle correctly.
+        const merged = [...fresh, ...prev]
+        merged.sort((a, b) => toTs(b.ts) - toTs(a.ts))
+        return merged.slice(0, terminalMaxRows)
+      })
+    }
+  }, [filteredTraderActivityRows, terminalPaused, terminalSlowMode, terminalMaxRows, displayedActivityRows.length])
+
+  // When the user un-pauses, drop straight to the latest filtered
+  // snapshot.  This avoids replaying a giant backlog at once.
+  useEffect(() => {
+    if (!terminalPaused) {
+      setDisplayedActivityRows(filteredTraderActivityRows)
+      slowModeQueueRef.current = []
+      seenIdsRef.current = new Set(filteredTraderActivityRows.map((r) => `${r.kind}:${r.id}`))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalPaused])
+
+  // Cleanup the slow-mode timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (slowModeTimerRef.current != null) {
+        window.clearInterval(slowModeTimerRef.current)
+        slowModeTimerRef.current = null
+      }
+    }
+  }, [])
+
+  const slowModePending = slowModeQueueRef.current.length
 
   useEffect(() => {
     setTerminalScrollTop(0)
@@ -8605,10 +8809,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   }, [terminalDensity, workTab])
 
   const compactTerminalWindow = useMemo(() => {
-    const total = filteredTraderActivityRows.length
+    const total = displayedActivityRows.length
     if (terminalDensity !== 'compact') {
       return {
-        rows: filteredTraderActivityRows,
+        rows: displayedActivityRows,
         topPad: 0,
         bottomPad: 0,
         total,
@@ -8621,12 +8825,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     const start = Math.max(0, Math.floor(terminalScrollTop / TERMINAL_COMPACT_ROW_HEIGHT) - TERMINAL_COMPACT_OVERSCAN)
     const end = Math.min(total, start + visibleRows + TERMINAL_COMPACT_OVERSCAN * 2)
     return {
-      rows: filteredTraderActivityRows.slice(start, end),
+      rows: displayedActivityRows.slice(start, end),
       topPad: start * TERMINAL_COMPACT_ROW_HEIGHT,
       bottomPad: Math.max(0, (total - end) * TERMINAL_COMPACT_ROW_HEIGHT),
       total,
     }
-  }, [filteredTraderActivityRows, terminalDensity, terminalScrollTop, terminalViewportHeight])
+  }, [displayedActivityRows, terminalDensity, terminalScrollTop, terminalViewportHeight])
 
   const riskActivityRows = useMemo(
     () => activityRows.filter((row) => row.tone === 'negative' || row.tone === 'warning').slice(0, 240),
@@ -10934,7 +11138,59 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           expanded
                         </Button>
                       </div>
-                      <span className="text-[10px] text-muted-foreground ml-1">Auto-truncate: latest {TERMINAL_SELECTED_MAX_ROWS}</span>
+                      {/* Firehose volume + flow controls. */}
+                      <div className="ml-2 inline-flex items-center gap-1 border-l border-border/40 pl-2">
+                        <span className="text-[10px] uppercase text-muted-foreground tracking-wide">Volume</span>
+                        {TERMINAL_VOLUME_OPTIONS.map((opt) => (
+                          <Button
+                            key={opt.value}
+                            size="sm"
+                            variant={terminalVolume === opt.value ? 'default' : 'outline'}
+                            onClick={() => setTerminalVolume(opt.value)}
+                            title={opt.hint}
+                            className="h-5 px-2 text-[10px]"
+                          >
+                            {opt.label}
+                          </Button>
+                        ))}
+                      </div>
+                      <div className="ml-1 inline-flex items-center gap-1">
+                        <Button
+                          size="sm"
+                          variant={terminalPaused ? 'default' : 'outline'}
+                          onClick={() => setTerminalPaused((v) => !v)}
+                          title={terminalPaused ? 'Resume streaming' : 'Pause incoming events'}
+                          className="h-5 px-2 text-[10px]"
+                        >
+                          {terminalPaused ? '▶ Resume' : '⏸ Pause'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={terminalSlowMode ? 'default' : 'outline'}
+                          onClick={() => setTerminalSlowMode((v) => !v)}
+                          title="Drip new events at one per second so the firehose is readable"
+                          className="h-5 px-2 text-[10px]"
+                        >
+                          🐢 Slow{terminalSlowMode && slowModePending > 0 ? ` (${slowModePending})` : ''}
+                        </Button>
+                      </div>
+                      <div className="ml-1 inline-flex items-center gap-1">
+                        <span className="text-[10px] text-muted-foreground">Max</span>
+                        <select
+                          value={terminalMaxRows}
+                          onChange={(event) => setTerminalMaxRows(Number(event.target.value) || TERMINAL_SELECTED_MAX_ROWS_DEFAULT)}
+                          className="h-5 rounded border border-border/40 bg-background px-1 text-[10px]"
+                        >
+                          {[220, 500, 1000, 2000, 5000].map((n) => (
+                            <option key={n} value={n}>{n}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground ml-1">
+                        {terminalPaused
+                          ? 'PAUSED'
+                          : `Auto-truncate: latest ${terminalMaxRows}`}
+                      </span>
                       {terminalDensity === 'compact' && (
                         <span className="text-[10px] text-muted-foreground">Rendering {compactTerminalWindow.rows.length}/{compactTerminalWindow.total}</span>
                       )}
@@ -10952,8 +11208,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       }}
                       className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10 mx-1 overflow-auto"
                     >
-                      {filteredTraderActivityRows.length === 0 ? (
-                        <div className="py-8 text-center text-muted-foreground text-xs">No events matching filters.</div>
+                      {displayedActivityRows.length === 0 ? (
+                        <div className="py-8 text-center text-muted-foreground text-xs">
+                          {terminalPaused
+                            ? 'Paused — resume to see new events.'
+                            : terminalSlowMode && slowModePending > 0
+                              ? `Slow mode: ${slowModePending} event${slowModePending === 1 ? '' : 's'} queued (1/sec)…`
+                              : 'No events matching filters.'}
+                        </div>
                       ) : terminalDensity === 'compact' ? (
                         <div className="p-1.5 font-mono text-[11px]">
                           <div style={{ height: compactTerminalWindow.topPad }} />
@@ -10993,7 +11255,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </div>
                       ) : (
                         <div className="space-y-0.5 p-1.5 font-mono text-[11px] leading-relaxed">
-                          {filteredTraderActivityRows.map((row) => (
+                          {displayedActivityRows.map((row) => (
                             <div
                               key={`${row.kind}:${row.id}`}
                               className={cn(

@@ -1234,6 +1234,7 @@ async def buffer_trader_event(
     *,
     event_type: str,
     severity: str = "info",
+    verbosity: str | None = None,
     trader_id: str | None = None,
     source: str | None = None,
     operator: str | None = None,
@@ -1242,23 +1243,59 @@ async def buffer_trader_event(
     payload: dict[str, Any] | None = None,
 ) -> str:
     row_id = _new_id()
+    created_at = utcnow()
+    norm_verbosity = str(verbosity).lower() if verbosity else None
+    norm_severity = str(severity or "info")
+    payload_json = payload or {}
     entry = _AuditEntry(
         kind="trader_event",
         payload={
             "id": row_id,
             "trader_id": trader_id,
             "event_type": str(event_type or ""),
-            "severity": str(severity or "info"),
+            "severity": norm_severity,
+            "verbosity": norm_verbosity,
             "source": source,
             "operator": operator,
             "message": message,
             "trace_id": trace_id,
-            "payload_json": payload or {},
-            "created_at": utcnow(),
+            "payload_json": payload_json,
+            "created_at": created_at,
         },
     )
     async with _audit_lock:
         _audit_buffer_append(entry)
+
+    # Real-time fan-out: publish to Redis pub/sub the same way
+    # ``create_trader_event`` does, so the WebSocket bridge can deliver
+    # this event to UI clients in <5ms instead of waiting for the next
+    # audit flush (which can lag by 10+ seconds).  Soft fail on Redis
+    # outage — DB persistence still runs via the audit buffer.
+    try:
+        from services import redis_client  # local import to avoid cycles
+        import json as _json
+
+        client = redis_client.get_client_or_none()
+        if client is not None:
+            serialized = {
+                "id": row_id,
+                "trader_id": trader_id,
+                "event_type": str(event_type or ""),
+                "severity": norm_severity,
+                "verbosity": norm_verbosity,
+                "source": source,
+                "operator": operator,
+                "message": message,
+                "trace_id": trace_id,
+                "payload": payload_json,
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+            }
+            await client.publish(
+                redis_client.namespaced("trader_events"),
+                _json.dumps(serialized, default=str),
+            )
+    except Exception:
+        pass
     return row_id
 
 
@@ -1773,6 +1810,7 @@ def _flush_trader_event(session: AsyncSession, p: dict[str, Any]) -> None:
             trader_id=p.get("trader_id"),
             event_type=str(p.get("event_type") or ""),
             severity=str(p.get("severity") or "info"),
+            verbosity=p.get("verbosity"),
             source=p.get("source"),
             operator=p.get("operator"),
             message=p.get("message"),
@@ -1799,6 +1837,7 @@ async def _flush_trader_events_bulk(session: AsyncSession, payloads: list[dict[s
             "trader_id": p.get("trader_id"),
             "event_type": str(p.get("event_type") or ""),
             "severity": str(p.get("severity") or "info"),
+            "verbosity": p.get("verbosity"),
             "source": p.get("source"),
             "operator": p.get("operator"),
             "message": p.get("message"),
