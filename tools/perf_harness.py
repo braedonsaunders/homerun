@@ -167,6 +167,7 @@ class Aggregator:
         self.errors: Counter = Counter()
         self.error_samples: dict[str, str] = {}  # bucket → first-seen full line
         self.warnings_other: Counter = Counter()
+        self.warnings_other_samples: dict[str, str] = {}  # bucket → first-seen full line
         # Live tail
         self.recent: deque = deque(maxlen=200)
 
@@ -283,6 +284,13 @@ class Aggregator:
         # Fallback — bucket by first 100 chars of the body
         bucket = body[:100]
         self.warnings_other[bucket] += 1
+        # Keep the first FULL sample for each bucket so the report
+        # preserves dynamic context (task names, coro names, ids) that
+        # the 100-char bucket key truncates.  Cycle 3 lost the
+        # ``Connection held for 97.8s before return to pool
+        # (task=..., coro=...)`` task names this way.
+        if bucket not in self.warnings_other_samples:
+            self.warnings_other_samples[bucket] = raw[:600]
 
     def _bucket_error(self, plane: str, body: str, raw: str) -> None:
         bucket = body[:100]
@@ -306,6 +314,16 @@ class Aggregator:
 
         def topn(c: Counter, n: int = 25) -> list[dict[str, Any]]:
             return [{"key": k, "count": v} for k, v in c.most_common(n)]
+
+        def topn_with_samples(
+            c: Counter,
+            samples: dict[str, str],
+            n: int = 25,
+        ) -> list[dict[str, Any]]:
+            return [
+                {"key": k, "count": v, "sample": samples.get(k, "")}
+                for k, v in c.most_common(n)
+            ]
 
         # Per-trader slow cycle summary
         cycles_by_trader: dict[str, list[float]] = defaultdict(list)
@@ -401,7 +419,9 @@ class Aggregator:
                 {"key": k, "count": v, "sample": self.error_samples.get(k, "")[:300]}
                 for k, v in self.errors.most_common(20)
             ],
-            "top_other_warnings": topn(self.warnings_other, 25),
+            "top_other_warnings": topn_with_samples(
+                self.warnings_other, self.warnings_other_samples, 25
+            ),
         }
 
 
@@ -575,8 +595,19 @@ async def _spawn_plane(
 
 
 def _resolve_venv_python() -> Path:
-    """Locate the venv's python.  Falls back to whatever is on PATH."""
+    """Locate the homerun backend venv's python.
+
+    Homerun ships its venv at ``backend/venv/Scripts/python.exe`` (or
+    ``backend/venv/bin/python`` on POSIX) — that's the only env where
+    the workers' deps are installed.  Falls back to a few other
+    common venv layouts, then to the current interpreter as a last
+    resort.
+    """
     candidates = [
+        PROJECT_ROOT / "backend" / "venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / "backend" / "venv" / "bin" / "python",
+        PROJECT_ROOT / "backend" / ".venv" / "Scripts" / "python.exe",
+        PROJECT_ROOT / "backend" / ".venv" / "bin" / "python",
         PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
         PROJECT_ROOT / ".venv" / "bin" / "python",
         PROJECT_ROOT / "venv" / "Scripts" / "python.exe",
@@ -585,7 +616,6 @@ def _resolve_venv_python() -> Path:
     for c in candidates:
         if c.exists():
             return c
-    # No venv found — fall back to the current interpreter.
     return Path(sys.executable)
 
 
