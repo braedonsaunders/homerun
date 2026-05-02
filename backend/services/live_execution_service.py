@@ -2258,32 +2258,34 @@ class LiveExecutionService:
             async with AsyncSessionLocal() as session:
                 _persist_record("session_checkout", _stage_started)
                 try:
-                    # Resolve market_id from the opportunity_id → trade
-                    # _signals lookup ONCE per call (still need it
-                    # because ``order.market_id`` may be unset on
-                    # newly-placed orders).  Cheap PK SELECT.
-                    signal_ids = sorted(
-                        {
-                            str(order.opportunity_id or "").strip()
-                            for order in unique_orders.values()
-                            if str(order.opportunity_id or "").strip()
-                        }
-                    )
-                    market_ids_by_signal_id: dict[str, str] = {}
-                    if signal_ids:
-                        _stage_started = _time.monotonic()
-                        signal_result = await session.execute(
-                            select(TradeSignal.id, TradeSignal.market_id).where(TradeSignal.id.in_(signal_ids))
-                        )
-                        market_ids_by_signal_id = {
-                            str(signal_id): str(market_id)
-                            for signal_id, market_id in signal_result.all()
-                            if str(signal_id or "").strip() and str(market_id or "").strip()
-                        }
-                        _persist_record("select_signals", _stage_started)
+                    # Cycle 9 of the perf-harness loop showed ``select
+                    # _signals`` averaging 1.9s/call under DB pool
+                    # contention (30 slow events, 56s cumulative).
+                    # The SELECT was previously eager: every persist
+                    # call ran it whether or not the orders actually
+                    # needed market_id resolution.  In practice the
+                    # call site populates ``order.market_id`` BEFORE
+                    # persist (or the position cache fills it from
+                    # ``self._positions``), so the SELECT is a pure
+                    # defensive fallback for newly-placed orders that
+                    # haven't been linked to a position yet.
+                    #
+                    # Restructure to:
+                    #   1. First pass — check ``order.market_id`` and
+                    #      the position cache (no DB I/O).
+                    #   2. Collect ONLY the opportunity_ids that still
+                    #      lack a market_id.
+                    #   3. Run ``select_signals`` ONLY if step 2 left
+                    #      anything unresolved.
+                    #   4. Second pass — finalize using the resolved
+                    #      map and build the UPSERT values list.
+                    #
+                    # The 99% case has zero unresolved orders → the
+                    # SELECT is skipped entirely.
 
-                    # Build row-values list for the UPSERT.
-                    values_list: list[dict[str, Any]] = []
+                    # First pass: try in-memory resolution (no DB I/O).
+                    pending_resolution: list[tuple[Order, str, str | None, str | None]] = []
+                    needs_signal_lookup: set[str] = set()
                     for order in unique_orders.values():
                         token_key = str(order.token_id or "").strip()
                         authoritative_market_question = order.market_question
@@ -2299,6 +2301,37 @@ class LiveExecutionService:
                                 if position_market_question:
                                     authoritative_market_question = position_market_question
                                     order.market_question = position_market_question
+                        if authoritative_market_id is None:
+                            opportunity_key = str(order.opportunity_id or "").strip()
+                            if opportunity_key:
+                                needs_signal_lookup.add(opportunity_key)
+                        pending_resolution.append((
+                            order,
+                            token_key,
+                            authoritative_market_id,
+                            authoritative_market_question,
+                        ))
+
+                    # Step 3: only fetch signals that we couldn't resolve
+                    # locally.  Skipped entirely in the common case.
+                    market_ids_by_signal_id: dict[str, str] = {}
+                    if needs_signal_lookup:
+                        _stage_started = _time.monotonic()
+                        signal_result = await session.execute(
+                            select(TradeSignal.id, TradeSignal.market_id).where(
+                                TradeSignal.id.in_(sorted(needs_signal_lookup))
+                            )
+                        )
+                        market_ids_by_signal_id = {
+                            str(signal_id): str(market_id)
+                            for signal_id, market_id in signal_result.all()
+                            if str(signal_id or "").strip() and str(market_id or "").strip()
+                        }
+                        _persist_record("select_signals", _stage_started)
+
+                    # Second pass: finalize and build UPSERT values.
+                    values_list: list[dict[str, Any]] = []
+                    for order, token_key, authoritative_market_id, authoritative_market_question in pending_resolution:
                         if authoritative_market_id is None:
                             resolved_market_id = (
                                 market_ids_by_signal_id.get(str(order.opportunity_id or "").strip()) or None
