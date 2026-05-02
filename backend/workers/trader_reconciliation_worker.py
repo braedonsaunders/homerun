@@ -1662,6 +1662,35 @@ async def _run_reconciliation_cycle(
 async def run_worker_loop() -> None:
     logger.info("Starting trader reconciliation worker loop")
 
+    # Cycle 5 of the perf-harness loop hit a ``stale_heartbeat`` watchdog
+    # restart at +35s of new-worker runtime.  Root cause: the previous
+    # worker process left ``last_run_at`` in the ``worker_snapshots``
+    # row from N minutes ago.  The new worker spawned, the watchdog
+    # observed the old timestamp and killed the new process before it
+    # ever wrote its first heartbeat (the first write happens at line
+    # 1751 below, AFTER the startup reconciliation cycle which itself
+    # can take up to 180s).  Stamping ``last_run_at = now()`` here
+    # ensures the watchdog sees a fresh row within the first ~50ms of
+    # worker startup, eliminating the race entirely.  Activity string
+    # is intentionally generic — the cycle tail will overwrite it with
+    # the real "Reconciled X/Y traders ..." status.
+    try:
+        async with AsyncSessionLocal() as _bootstrap_session:
+            await write_worker_snapshot(
+                _bootstrap_session,
+                WORKER_NAME,
+                running=True,
+                enabled=True,
+                current_activity="Worker booting",
+                interval_seconds=DEFAULT_INTERVAL_SECONDS,
+                last_run_at=utcnow(),
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to write startup heartbeat snapshot; watchdog may misread the prior process's row",
+            exc_info=exc,
+        )
+
     # Wallet cache reseeder MUST start before any DB-dependent startup
     # work.  If we hang on ``ensure_all_strategies_seeded`` or any other
     # slow query at boot, traders block on ``no_rest_seed_yet`` because
