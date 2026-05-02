@@ -2590,12 +2590,17 @@ class LiveExecutionService:
         market_positions_json = {str(token_id): str(exposure) for token_id, exposure in self._market_positions.items()}
         pending_reconciliation_json = [dict(item) for item in self._pending_reconciliations]
 
-        # Per-stage breakdown for slow-log diagnosis.  Production saw
-        # this function take 3-9 s on every order despite being a
-        # single-row UPSERT — the cost was hidden between persist_lock
-        # acquire, AsyncSessionLocal checkout, the SELECT, the
-        # ``_derive_pnl_counters_from_orders`` aggregate query, and
-        # the COMMIT.
+        # Per-stage breakdown for slow-log diagnosis.  Cycle 3 of the
+        # perf-harness loop (post-_persist_orders UPSERT) showed
+        # ``select_state`` averaging 2.0-2.6s per slow event.  This
+        # is the same SELECT-then-UPDATE anti-pattern we just killed
+        # in ``_persist_orders``.  Apply the same fix:
+        #  - Drop the persist_lock acquire.  Concurrent calls
+        #    UPSERT the same id row → race-safe via ON CONFLICT.
+        #  - Replace SELECT-then-INSERT-or-UPDATE with single
+        #    ``INSERT ... ON CONFLICT DO UPDATE``.  Saves the PK
+        #    SELECT round-trip; PG does the existence check inline
+        #    against the PK index.
         _prs_started = _time.monotonic()
         _prs_breakdown: dict[str, float] = {}
 
@@ -2605,80 +2610,91 @@ class LiveExecutionService:
                 _prs_breakdown.get(stage, 0.0) + elapsed_ms, 1
             )
 
-        _stage_started = _time.monotonic()
-        persist_lock = self._get_persist_lock()
-        async with persist_lock:
-            _prs_record("persist_lock_wait", _stage_started)
-            for attempt in range(_DB_RETRY_ATTEMPTS):
-                _prs_breakdown["attempts"] = float(attempt + 1)
-                _stage_started = _time.monotonic()
-                async with AsyncSessionLocal() as session:
-                    _prs_record("session_checkout", _stage_started)
-                    try:
-                        _stage_started = _time.monotonic()
-                        result = await session.execute(
-                            select(LiveTradingRuntimeState).where(LiveTradingRuntimeState.id == runtime_id)
-                        )
-                        row = result.scalar_one_or_none()
-                        _prs_record("select_state", _stage_started)
-                        if row is None:
-                            row = LiveTradingRuntimeState(id=runtime_id, wallet_address=wallet)
-                            session.add(row)
+        for attempt in range(_DB_RETRY_ATTEMPTS):
+            _prs_breakdown["attempts"] = float(attempt + 1)
+            _stage_started = _time.monotonic()
+            async with AsyncSessionLocal() as session:
+                _prs_record("session_checkout", _stage_started)
+                try:
+                    # Derive realized P&L counters from the verified
+                    # ground truth (TraderOrder.actual_profit).  The legacy
+                    # in-memory accumulators on ``self._stats``/``self._total_pnl``
+                    # were never wired to the close-of-position path, which
+                    # left ``winning_trades`` / ``losing_trades`` /
+                    # ``total_pnl`` stuck at 0 across every wallet.  Sourcing
+                    # from TraderOrder also picks up the verifier's
+                    # corrections automatically.  Cached for 30s in
+                    # ``_derive_pnl_counters_from_orders`` so most calls
+                    # never round-trip to the DB.
+                    _stage_started = _time.monotonic()
+                    derived = await self._derive_pnl_counters_from_orders(
+                        session, wallet
+                    )
+                    _prs_record("derive_pnl", _stage_started)
 
-                        # Derive realized P&L counters from the verified
-                        # ground truth (TraderOrder.actual_profit).  The legacy
-                        # in-memory accumulators on ``self._stats``/``self._total_pnl``
-                        # were never wired to the close-of-position path, which
-                        # left ``winning_trades`` / ``losing_trades`` /
-                        # ``total_pnl`` stuck at 0 across every wallet.  Sourcing
-                        # from TraderOrder also picks up the verifier's
-                        # corrections automatically.
-                        _stage_started = _time.monotonic()
-                        derived = await self._derive_pnl_counters_from_orders(
-                            session, wallet
+                    values = {
+                        "id": runtime_id,
+                        "wallet_address": wallet,
+                        "total_trades": int(self._stats.total_trades),
+                        "winning_trades": int(derived["winning_trades"]),
+                        "losing_trades": int(derived["losing_trades"]),
+                        "total_volume": float(self._total_volume),
+                        "total_pnl": float(derived["total_pnl"]),
+                        "daily_volume": float(self._daily_volume),
+                        "daily_pnl": float(derived["daily_pnl"]),
+                        "open_positions": int(self._stats.open_positions),
+                        "last_trade_at": last_trade_at,
+                        "daily_volume_reset_at": daily_reset_at,
+                        "market_positions_json": market_positions_json,
+                        "pending_reconciliation_json": pending_reconciliation_json,
+                        "balance_signature_type": self._balance_signature_type,
+                        "updated_at": utcnow(),
+                    }
+
+                    _stage_started = _time.monotonic()
+                    stmt = pg_insert(LiveTradingRuntimeState).values(values)
+                    update_cols = {
+                        col: stmt.excluded[col]
+                        for col in (
+                            "wallet_address", "total_trades", "winning_trades",
+                            "losing_trades", "total_volume", "total_pnl",
+                            "daily_volume", "daily_pnl", "open_positions",
+                            "last_trade_at", "daily_volume_reset_at",
+                            "market_positions_json", "pending_reconciliation_json",
+                            "balance_signature_type", "updated_at",
                         )
-                        _prs_record("derive_pnl", _stage_started)
-                        row.wallet_address = wallet
-                        row.total_trades = int(self._stats.total_trades)
-                        row.winning_trades = int(derived["winning_trades"])
-                        row.losing_trades = int(derived["losing_trades"])
-                        row.total_volume = float(self._total_volume)
-                        row.total_pnl = float(derived["total_pnl"])
-                        row.daily_volume = float(self._daily_volume)
-                        row.daily_pnl = float(derived["daily_pnl"])
-                        row.open_positions = int(self._stats.open_positions)
-                        row.last_trade_at = last_trade_at
-                        row.daily_volume_reset_at = daily_reset_at
-                        row.market_positions_json = market_positions_json
-                        row.pending_reconciliation_json = pending_reconciliation_json
-                        row.balance_signature_type = self._balance_signature_type
-                        row.updated_at = utcnow()
-                        _stage_started = _time.monotonic()
-                        await session.commit()
-                        _prs_record("commit", _stage_started)
-                        _prs_breakdown["total_ms"] = round(
-                            (_time.monotonic() - _prs_started) * 1000.0, 1
-                        )
-                        if _prs_breakdown["total_ms"] >= 2000.0:
-                            try:
-                                logger.warning(
-                                    "_persist_runtime_state slow",
-                                    breakdown=_prs_breakdown,
-                                )
-                            except Exception:
-                                pass
-                        return
-                    except (OperationalError, InterfaceError) as exc:
-                        await session.rollback()
-                        is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
-                        if not _is_retryable_db_error(exc) or is_last:
-                            logger.error("Failed to persist live trading runtime state", exc_info=exc)
-                            return
-                        await asyncio.sleep(_db_retry_delay(attempt))
-                    except Exception as exc:
-                        await session.rollback()
+                    }
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["id"], set_=update_cols
+                    )
+                    await session.execute(stmt)
+                    _prs_record("upsert", _stage_started)
+                    _stage_started = _time.monotonic()
+                    await session.commit()
+                    _prs_record("commit", _stage_started)
+                    _prs_breakdown["total_ms"] = round(
+                        (_time.monotonic() - _prs_started) * 1000.0, 1
+                    )
+                    if _prs_breakdown["total_ms"] >= 2000.0:
+                        try:
+                            logger.warning(
+                                "_persist_runtime_state slow",
+                                breakdown=_prs_breakdown,
+                            )
+                        except Exception:
+                            pass
+                    return
+                except (OperationalError, InterfaceError) as exc:
+                    await session.rollback()
+                    is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
+                    if not _is_retryable_db_error(exc) or is_last:
                         logger.error("Failed to persist live trading runtime state", exc_info=exc)
                         return
+                except Exception as exc:
+                    await session.rollback()
+                    logger.error("Failed to persist live trading runtime state", exc_info=exc)
+                    return
+            await asyncio.sleep(_db_retry_delay(attempt))
 
     async def _restore_runtime_state(self) -> None:
         wallet = self._wallet_for_persistence()
