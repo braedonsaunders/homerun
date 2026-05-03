@@ -1,0 +1,12 @@
+# Keep the build context tiny — node_modules and dist get rebuilt
+# inside the image, and shipping them from the host both bloats the
+# context and risks pulling in OS-specific binaries (Windows-built
+# esbuild won't run in the Linux builder).
+
+node_modules/
+dist/
+.vite/
+*.log
+.env
+.env.*
+.DS_Store
