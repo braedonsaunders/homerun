@@ -59,11 +59,37 @@ class ProxyConfig:
 # In-memory cache of the last-loaded config so synchronous code
 # (e.g. patch_clob_client_proxy) doesn't need to await a DB read.
 _cached_config: ProxyConfig = ProxyConfig()
+_cached_config_loaded_at: float = 0.0
+# TTL on the cached config.  ``_load_config_from_db`` is called on
+# every order via ``_sync_trading_transport``; without a TTL each call
+# is a fresh AppSettings SELECT under DB pool pressure (1.3-1.7s
+# observed in soak as ``submit_sync_transport``).  Proxy settings
+# rarely change, and the settings-update API path explicitly calls
+# ``reload_proxy_settings()`` which forces a fresh load — so a 30s
+# TTL is safe.  Operator changes propagate immediately via the
+# explicit reload; the hot path serves from cache.
+_PROXY_CONFIG_TTL_SECONDS: float = 30.0
 
 
-async def _load_config_from_db() -> ProxyConfig:
-    """Load proxy settings from the AppSettings database table."""
-    global _cached_config
+async def _load_config_from_db(*, force: bool = False) -> ProxyConfig:
+    """Load proxy settings from the AppSettings database table.
+
+    With ``force=False`` (default), serves from the in-memory cache
+    when the cache is younger than ``_PROXY_CONFIG_TTL_SECONDS``.
+    Hot-path callers (``_sync_trading_transport`` per order) get the
+    cached value; first call after process start or cache expiry hits
+    the DB.
+
+    Pass ``force=True`` from the settings-update API path so an
+    operator's proxy-config change propagates to the hot path
+    immediately.  ``reload_proxy_settings()`` does this.
+    """
+    global _cached_config, _cached_config_loaded_at
+    if not force:
+        now = time.monotonic()
+        if now - _cached_config_loaded_at < _PROXY_CONFIG_TTL_SECONDS:
+            return _cached_config
+
     try:
         from sqlalchemy import select
         from models.database import AsyncSessionLocal, AppSettings
@@ -73,6 +99,7 @@ async def _load_config_from_db() -> ProxyConfig:
             row = result.scalar_one_or_none()
             if row is None:
                 _cached_config = ProxyConfig()
+                _cached_config_loaded_at = time.monotonic()
                 return _cached_config
 
             _cached_config = ProxyConfig(
@@ -82,10 +109,13 @@ async def _load_config_from_db() -> ProxyConfig:
                 timeout=row.trading_proxy_timeout or 30.0,
                 require_vpn=row.trading_proxy_require_vpn if row.trading_proxy_require_vpn is not None else True,
             )
+            _cached_config_loaded_at = time.monotonic()
             return _cached_config
     except Exception as e:
         logger.error(f"Failed to load proxy config from DB: {e}")
         _cached_config = ProxyConfig()
+        # Don't bump _cached_config_loaded_at on failure: we want the
+        # next call to retry the DB read, not serve a fallback for 30s.
         return _cached_config
 
 
@@ -351,7 +381,10 @@ async def reload_proxy_settings():
     _pre_trade_vpn_signature = None
     _pre_trade_vpn_cache_result = None
     _pre_trade_vpn_cache_until = 0.0
-    await _load_config_from_db()
+    # ``force=True`` bypasses the TTL cache so an operator's settings
+    # update propagates to the hot path (``_sync_trading_transport``)
+    # immediately on the next order submission.
+    await _load_config_from_db(force=True)
     cfg = _get_config()
     patched = patch_clob_client_proxy()
     if cfg.enabled and cfg.proxy_url:

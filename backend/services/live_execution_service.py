@@ -3689,9 +3689,18 @@ class LiveExecutionService:
         token_id: Optional[str],
         min_order_size_usd: Optional[float] = None,
     ) -> tuple[bool, str]:
-        # Force refresh from shared DB controls so pause-all propagates quickly
-        # across API and worker containers.
-        await global_pause_state.refresh_from_db(force=True)
+        # Refresh pause state from the shared-controls DB if our cached
+        # view is stale (default 2s TTL).  Previously this was
+        # ``force=True``, which bypassed the TTL and triggered EIGHT
+        # parallel ``AsyncSessionLocal`` checkouts (scanner / news /
+        # weather / discovery / orchestrator / crypto / tracked /
+        # events controls) on every order submission — surfacing as
+        # ``submit_validate_reserve=1906-3219ms`` in soak.  The 2s TTL
+        # plus the auto-refresh task on ``is_paused`` access keeps
+        # pause state ≤2s stale, which is fast enough for safety:
+        # pause-all from the operator UI propagates to live execution
+        # in ≤2s, well inside any human reaction time.
+        await global_pause_state.refresh_from_db()
 
         reserved = False
         stats_lock = self._get_stats_lock()
