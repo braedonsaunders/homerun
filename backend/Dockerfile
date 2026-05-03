@@ -38,7 +38,15 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 COPY requirements.txt requirements-trading.txt ./
+# Install CPU-only torch from PyTorch's wheel index BEFORE the main
+# requirements resolve.  ``sentence-transformers`` (in requirements.txt)
+# depends on torch transitively; without this pre-step pip resolves to
+# the default GPU build, which drags in ~4 GB of nvidia-*-cu12 wheels
+# that are pure dead weight in a CPU-only deploy.  Pre-installing the
+# CPU build satisfies the transitive requirement so the later resolve
+# is a no-op for torch.
 RUN pip install --upgrade pip wheel \
+    && pip install --index-url https://download.pytorch.org/whl/cpu torch \
     && pip install -r requirements.txt \
     && pip install -r requirements-trading.txt
 
@@ -66,8 +74,17 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app/backend
 COPY --chown=homerun:homerun . /app/backend
 
-# Bind-mount target for runtime state (FAISS indexes, ML weights, logs).
-RUN install -d -o homerun -g homerun /app/data
+# Make /app and /app/backend owned by homerun.  The ``WORKDIR`` directive
+# creates these as root-owned by default, and ``COPY --chown`` only
+# chowns the COPIED tree, not the parent directories.  Workers
+# (workers/host.py) create lock files under /app/backend/.runtime/locks
+# at startup; without this they hit PermissionError on the parent dir.
+#
+# Also bind-mount target for runtime state (FAISS indexes, ML weights,
+# logs).  ``.runtime/`` is gitignored so it doesn't ship in the image —
+# pre-create it here with the right ownership.
+RUN chown homerun:homerun /app /app/backend \
+    && install -d -o homerun -g homerun /app/data /app/backend/.runtime /app/backend/.runtime/locks
 
 USER homerun
 

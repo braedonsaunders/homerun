@@ -5171,12 +5171,29 @@ async def release_conn(session):
 def _run_alembic_upgrade(connection) -> None:
     from alembic import command
     from alembic.config import Config
+    from sqlalchemy import inspect as _sa_inspect
 
     backend_root = Path(__file__).resolve().parents[1]
     alembic_cfg = Config(str(backend_root / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(backend_root / "alembic"))
     alembic_cfg.set_main_option("sqlalchemy.url", str(connection.engine.url))
     alembic_cfg.attributes["connection"] = connection
+
+    # Fresh-DB bootstrap path.  The historical baseline migration uses
+    # ``Base.metadata.create_all`` — i.e. it dynamically reflects the
+    # CURRENT SQLAlchemy model, not the schema frozen at baseline-author
+    # time.  Sixty-plus post-baseline ``op.add_column`` migrations
+    # therefore collide on a from-empty replay because the columns they
+    # try to add already exist (create_all built them from the latest
+    # model).  The two-phase fix here: build the schema from the
+    # current model, then stamp head so the runner skips the broken
+    # add_column chain.  Existing DBs (with ``alembic_version``) take
+    # the normal upgrade branch — zero behavior change.
+    if not _sa_inspect(connection).has_table("alembic_version"):
+        Base.metadata.create_all(bind=connection)
+        command.stamp(alembic_cfg, "head")
+        return
+
     command.upgrade(alembic_cfg, "head")
 
 

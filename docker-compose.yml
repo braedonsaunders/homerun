@@ -150,7 +150,11 @@ services:
   migrate:
     <<: *backend-image
     container_name: homerun-migrate
-    command: ["alembic", "upgrade", "head"]
+    # Calls the same ``init_database()`` the FastAPI lifespan invokes —
+    # so docker and launcher share one battle-tested bootstrap path
+    # (handles fresh DBs via create_all+stamp, existing DBs via
+    # ``alembic upgrade head``).
+    command: ["python", "-c", "import asyncio; from models.database import init_database; asyncio.run(init_database())"]
     environment:
       <<: *backend-env
     depends_on:

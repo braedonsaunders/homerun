@@ -14,7 +14,10 @@ FROM node:${NODE_VERSION}-alpine AS builder
 
 WORKDIR /build
 
-COPY package.json package-lock.json ./
+# .npmrc carries legacy-peer-deps=true, needed because the @openuidev
+# packages and @assistant-ui packages disagree on zustand major version.
+# Without .npmrc, ``npm ci`` runs in strict mode and fails resolution.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 COPY . .
