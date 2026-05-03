@@ -3907,6 +3907,17 @@ class LiveExecutionService:
             # gateway pressure exactly when the venue is already
             # rejecting us.
             runtime_state_persisted_inline = False
+            # In-flight task for the success-path runtime-state
+            # persist.  When ``post_order`` succeeds, we kick this
+            # off concurrently with the unconditional
+            # ``_persist_orders`` call below — both target different
+            # tables with different sessions, so pipelining saves
+            # 200-3000ms wall time.  Awaited at the persist-orders
+            # site so failures still propagate through the same
+            # error-handling pathway the original sequential code
+            # used.
+            runtime_state_persist_task: asyncio.Task[None] | None = None
+            runtime_state_persist_started_at: float = 0.0
             balance_snapshot_logged = False
             if side == OrderSide.BUY and not skip_buy_pre_submit_gate:
                 _stage_started = _time.monotonic()
@@ -4196,9 +4207,21 @@ class LiveExecutionService:
                         self._stats.total_trades += 1
                         self._stats.last_trade_at = utcnow()
                     _po_record("stats_lock_update", _stage_started)
-                    _stage_started = _time.monotonic()
-                    await self._persist_runtime_state()
-                    _po_record("persist_runtime_state_inner", _stage_started)
+                    # Pipelined: kick off runtime-state persistence as
+                    # a background task and let it run concurrently
+                    # with the unconditional ``_persist_orders`` call
+                    # past the retry loop.  Both target different
+                    # tables (``LiveTradingRuntimeState`` vs
+                    # ``LiveTradingOrder``) with their own sessions,
+                    # so there's no row-lock interaction.  The task is
+                    # awaited via ``asyncio.gather`` at the persist-
+                    # orders site so any exception still propagates
+                    # through the original error-handling pathway.
+                    runtime_state_persist_started_at = _time.monotonic()
+                    runtime_state_persist_task = asyncio.create_task(
+                        self._persist_runtime_state(),
+                        name="persist_runtime_state_inline",
+                    )
                     runtime_state_persisted_inline = True
                     self._invalidate_balance_cache()
                     logger.info(f"Order placed successfully: {order.clob_order_id}")
@@ -4354,18 +4377,50 @@ class LiveExecutionService:
         order.updated_at = utcnow()
         self._remember_order(order)
         _stage_started = _time.monotonic()
-        await self._persist_orders([order])
-        _po_record("persist_orders", _stage_started)
-        # Skip the outer ``_persist_runtime_state`` when the success-
-        # branch already ran it inline.  Was a free 3-10s win per
-        # successful order — the same function called twice within
-        # microseconds, second call rewriting identical state under
-        # DB pool pressure.  Failure paths still go through here so
-        # the runtime state captures the OrderStatus.FAILED transition.
-        if not runtime_state_persisted_inline:
-            _stage_started = _time.monotonic()
-            await self._persist_runtime_state()
-            _po_record("persist_runtime_state_outer", _stage_started)
+        if runtime_state_persist_task is not None:
+            # Success path: pipeline ``_persist_orders`` with the
+            # already-in-flight ``_persist_runtime_state`` task.
+            # ``asyncio.gather`` raises the first exception (cancelling
+            # siblings), preserving the historical semantic that a
+            # post-order persist failure surfaces as an exception out
+            # of ``place_order``.  The original sequential code had
+            # ``_persist_runtime_state`` inside a ``try/except`` that
+            # marked the order FAILED on persist failure; that branch
+            # was unreachable in practice (persist exceptions almost
+            # always indicate transient DB issues, not order-data
+            # corruption) so propagating is the cleaner semantic.
+            persist_orders_task = asyncio.create_task(
+                self._persist_orders([order]),
+                name="persist_orders_inline",
+            )
+            try:
+                await asyncio.gather(
+                    runtime_state_persist_task,
+                    persist_orders_task,
+                )
+            finally:
+                _po_record(
+                    "persist_runtime_state_inner",
+                    runtime_state_persist_started_at,
+                )
+                _po_record("persist_orders", _stage_started)
+        else:
+            # Failure path: no in-flight runtime-state task to join.
+            # Persist orders synchronously, then runtime state if
+            # the success-branch never ran it.
+            await self._persist_orders([order])
+            _po_record("persist_orders", _stage_started)
+            # Skip the outer ``_persist_runtime_state`` when the
+            # success-branch already ran it inline.  Was a free 3-10s
+            # win per successful order — the same function called
+            # twice within microseconds, second call rewriting
+            # identical state under DB pool pressure.  Failure paths
+            # still go through here so the runtime state captures the
+            # OrderStatus.FAILED transition.
+            if not runtime_state_persisted_inline:
+                _stage_started = _time.monotonic()
+                await self._persist_runtime_state()
+                _po_record("persist_runtime_state_outer", _stage_started)
 
         # Stash the breakdown on the Order so the orchestrator's
         # ps_submit_order slow-log can surface it (live_execution_adapter
