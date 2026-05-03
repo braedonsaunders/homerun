@@ -1466,12 +1466,39 @@ async def upsert_trade_signal(
                 emission_reason = "suppressed:active_unchanged"
                 publish_signal_emission = False
                 if str(source or "").strip().lower() in _ACTIVE_REFRESH_SOURCES:
-                    row.expires_at = incoming_expires_naive
-                    row.payload_json = _safe_json(normalized_payload_json)
-                    row.strategy_context_json = _safe_json(strategy_context_json)
+                    # Cross-process row-lock contention guard: only assign
+                    # when the incoming value actually differs from the
+                    # existing one.  SQLAlchemy marks the row dirty on
+                    # EVERY attribute set, so re-assigning equal values
+                    # still emits an UPDATE — which competes for the row
+                    # lock with concurrent writers in other workers
+                    # (DISCOVERY/NEWS/WORKERS) doing the same active-
+                    # refresh.  Soak (post-runtime_sequence-gate) showed
+                    # this as ``LOCK CONTENTION ... UPDATE trade_signals
+                    # SET expires_at, payload_json, updated_at WHERE
+                    # trade_signals.id = $4`` — a 3-field UPDATE with no
+                    # ``runtime_sequence`` because that gate already
+                    # short-circuited the runtime_sequence-bearing path,
+                    # leaving these volatile-payload refreshes as the
+                    # last contention source.  Skipping equal-value
+                    # assignments removes the row from the dirty set
+                    # entirely; no UPDATE is emitted, no row lock taken.
+                    new_payload = _safe_json(normalized_payload_json)
+                    new_strategy_ctx = _safe_json(strategy_context_json)
+                    if existing_expires_naive != incoming_expires_naive:
+                        row.expires_at = incoming_expires_naive
+                    if row.payload_json != new_payload:
+                        row.payload_json = new_payload
+                    if row.strategy_context_json != new_strategy_ctx:
+                        row.strategy_context_json = new_strategy_ctx
                     if quality_passed is not None:
-                        row.quality_passed = quality_passed
-                        row.quality_rejection_reasons = quality_rejection_reasons if quality_rejection_reasons else None
+                        new_rejection_reasons = (
+                            quality_rejection_reasons if quality_rejection_reasons else None
+                        )
+                        if row.quality_passed != quality_passed:
+                            row.quality_passed = quality_passed
+                        if row.quality_rejection_reasons != new_rejection_reasons:
+                            row.quality_rejection_reasons = new_rejection_reasons
             elif incoming_already_expired and previous_status in SIGNAL_ACTIVE_STATUSES:
                 # Scanner sent a fresh emit with an already-past expires_at.
                 # Mark the existing row expired; do not reactivate or emit.
