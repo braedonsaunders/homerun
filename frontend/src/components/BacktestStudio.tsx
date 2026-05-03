@@ -785,6 +785,14 @@ export default function BacktestStudio({
   }
   const [iterRunning, setIterRunning] = useState(false)
   const [iterStarted, setIterStarted] = useState(false)
+  // Progressive-disclosure for the footer iterate config expander.
+  // Closed by default — clicking the footer "Iterate" button toggles
+  // it open to reveal target_score / max_iters / no-improve /
+  // mandate / auto-apply, and a "Start iteration" commit button.
+  // Auto-opens on first hover / first time a strategy with params is
+  // selected so the operator finds it; auto-closes when a run
+  // starts so the live status pill replaces it.
+  const [iterConfigOpen, setIterConfigOpen] = useState(false)
   const [iterError, setIterError] = useState<string | null>(null)
   const [iterBaselineScore, setIterBaselineScore] = useState<number | null>(null)
   const [iterBestScore, setIterBestScore] = useState<number | null>(null)
@@ -825,6 +833,10 @@ export default function BacktestStudio({
     setIterDoneSummary(null)
     setIterRunning(true)
     setIterStarted(true)
+    // Collapse the config expander so the live status row + log
+    // card become the focal point during the run.  The user can
+    // re-open it after Stop or completion to tweak + relaunch.
+    setIterConfigOpen(false)
 
     const body: StrategyParamsStartBody = {
       max_iterations: Math.max(1, Math.min(500, parseInt(String(iterMaxIterations), 10) || 50)),
@@ -1433,245 +1445,20 @@ export default function BacktestStudio({
                       </Button>
                     </div>
 
-                    {/* ───────── Iterate (LLM-driven param search) ─────────
-                        Streams iterations of the unified backtest with
-                        the LLM proposing overrides against the
-                        strategy's declared param_schema.  Same engine
-                        as a manual run + the same
-                        ``apply_platform_decision_gates`` pipeline; the
-                        loop just automates the propose-evaluate-decide
-                        cycle and surfaces a structured stop condition
-                        ("until best_score >= target_score").  Results
-                        persist on Strategy.config when ``auto_apply``
-                        is on; otherwise the run only mutates the
-                        in-memory paramOverrides state. */}
-                    {iterAvailable ? (
-                      <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="flex items-center gap-1.5 text-[10px] font-medium text-cyan-300">
-                            <Wand2 className="h-3 w-3" />
-                            Iterate params (LLM-driven)
-                          </span>
-                          {iterRunning ? (
-                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-cyan-300 border-cyan-400/40 animate-pulse">
-                              running · iter {iterIteration}/{iterMaxIterations}
-                            </Badge>
-                          ) : iterDoneSummary ? (
-                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-emerald-300 border-emerald-400/40">
-                              done · {iterDoneSummary.target_reached ? 'target' : 'completed'}
-                            </Badge>
-                          ) : null}
-                        </div>
-
-                        {/* Run config inputs.  These map 1:1 onto the
-                            structured stop conditions the autoresearch
-                            service consumes. */}
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <div>
-                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                              Target score
-                            </Label>
-                            <Input
-                              value={iterTargetScore}
-                              onChange={(e) => setIterTargetScore(e.target.value)}
-                              placeholder="e.g. 1.5"
-                              disabled={iterRunning}
-                              className="h-6 text-[11px] font-mono"
-                              title="Stop when best_score (Sharpe × DSR × WF − DD penalty) reaches this. Empty = no target, runs until max_iterations."
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                              Max iters
-                            </Label>
-                            <Input
-                              type="number"
-                              min={1}
-                              max={500}
-                              value={iterMaxIterations}
-                              onChange={(e) => setIterMaxIterations(parseInt(e.target.value, 10) || 50)}
-                              disabled={iterRunning}
-                              className="h-6 text-[11px] font-mono"
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                              Stop after N no-improve
-                            </Label>
-                            <Input
-                              value={iterMaxNoImprove}
-                              onChange={(e) => setIterMaxNoImprove(e.target.value)}
-                              placeholder="10"
-                              disabled={iterRunning}
-                              className="h-6 text-[11px] font-mono"
-                              title="Exit early after this many consecutive non-improving iterations"
-                            />
-                          </div>
-                          <div className="flex items-end pb-0.5">
-                            <label className="flex items-center gap-1.5 cursor-pointer text-[10px]">
-                              <input
-                                type="checkbox"
-                                checked={iterAutoApply}
-                                onChange={(e) => setIterAutoApply(e.target.checked)}
-                                disabled={iterRunning}
-                                className="h-3 w-3"
-                              />
-                              <span title="Persist kept overrides to Strategy.config so future runs use them by default">
-                                Auto-apply kept
-                              </span>
-                            </label>
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                            Mandate (optional)
-                          </Label>
-                          <Input
-                            value={iterMandate}
-                            onChange={(e) => setIterMandate(e.target.value)}
-                            placeholder="e.g. minimize drawdown without sacrificing Sharpe"
-                            disabled={iterRunning}
-                            className="h-6 text-[11px]"
-                          />
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          {iterRunning ? (
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={handleStopIteration}
-                              className="h-6 flex-1 gap-1 text-[10px]"
-                            >
-                              <Square className="h-3 w-3" />
-                              Stop iteration
-                            </Button>
-                          ) : (
-                            <Button
-                              size="sm"
-                              onClick={handleStartIteration}
-                              className="h-6 flex-1 gap-1 text-[10px] bg-cyan-600 hover:bg-cyan-700 text-white"
-                              disabled={!initialStrategyId}
-                            >
-                              <Wand2 className="h-3 w-3" />
-                              {iterDoneSummary ? 'Iterate again' : 'Start iteration'}
-                            </Button>
-                          )}
-                        </div>
-
-                        {iterError ? (
-                          <div className="flex items-start gap-1 text-[10px] text-red-300">
-                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-                            <span>{iterError}</span>
-                          </div>
-                        ) : null}
-
-                        {iterStarted ? (
-                          <div className="rounded-sm border border-border/40 bg-background/40 p-1.5 space-y-1">
-                            <div className="grid grid-cols-3 gap-1.5 text-[10px]">
-                              <div>
-                                <div className="text-muted-foreground">Baseline</div>
-                                <div className="font-mono">
-                                  {iterBaselineScore !== null ? iterBaselineScore.toFixed(4) : '—'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-muted-foreground">Best</div>
-                                <div className="font-mono text-emerald-400">
-                                  {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-muted-foreground flex items-center gap-1">
-                                  <Target className="h-2.5 w-2.5" />
-                                  Target
-                                </div>
-                                <div className="font-mono">
-                                  {iterTargetScore || '—'}
-                                </div>
-                              </div>
-                            </div>
-
-                            {iterLastProposal ? (
-                              <div className="text-[10px] border-t border-border/30 pt-1">
-                                <div className="text-muted-foreground">
-                                  Last proposal · iter {iterLastProposal.iteration} · conf {iterLastProposal.confidence.toFixed(2)}
-                                </div>
-                                <div className="text-foreground italic line-clamp-2">
-                                  {iterLastProposal.reasoning || '<no reasoning>'}
-                                </div>
-                              </div>
-                            ) : null}
-
-                            {/* Decision log — most recent first. */}
-                            {iterDecisions.length > 0 ? (
-                              <div className="max-h-40 overflow-y-auto border-t border-border/30 pt-1 space-y-0.5">
-                                {iterDecisions.map((d, idx) => (
-                                  <div
-                                    key={`${d.iteration}-${idx}`}
-                                    className={cn(
-                                      'flex items-start gap-1 text-[10px] font-mono px-1 py-0.5 rounded',
-                                      d.decision === 'kept'
-                                        ? 'bg-emerald-500/10 text-emerald-200'
-                                        : 'text-muted-foreground'
-                                    )}
-                                  >
-                                    <span className="w-8 shrink-0">#{d.iteration}</span>
-                                    <span className="w-12 shrink-0">{d.decision}</span>
-                                    <span className="w-14 shrink-0">
-                                      {typeof d.new_score === 'number' ? d.new_score.toFixed(4) : '—'}
-                                    </span>
-                                    <span className="w-14 shrink-0">
-                                      {typeof d.score_delta === 'number'
-                                        ? (d.score_delta > 0 ? '+' : '') + d.score_delta.toFixed(4)
-                                        : ''}
-                                    </span>
-                                    <span className="truncate">
-                                      {d.changed_params && Object.keys(d.changed_params).length > 0
-                                        ? Object.keys(d.changed_params).slice(0, 3).join(', ')
-                                        : (d.reasoning || '').slice(0, 60)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-
-                            {iterDoneSummary ? (
-                              <div className="border-t border-border/30 pt-1 text-[10px]">
-                                <div className="flex items-center gap-2">
-                                  <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                                  <span className="text-foreground">
-                                    {iterDoneSummary.total_iterations} iterations · improvement{' '}
-                                    <span className={iterDoneSummary.improvement > 0 ? 'text-emerald-400' : 'text-muted-foreground'}>
-                                      {iterDoneSummary.improvement >= 0 ? '+' : ''}
-                                      {iterDoneSummary.improvement.toFixed(4)}
-                                    </span>
-                                  </span>
-                                </div>
-                                {iterEarlyStopReason ? (
-                                  <div className="text-muted-foreground italic mt-0.5">
-                                    early stop: {iterEarlyStopReason}
-                                  </div>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {!initialStrategyId && paramFieldGroups.length > 0 ? (
-                      <div className="text-[10px] text-muted-foreground italic">
-                        Iteration unavailable — select a strategy from the dropdown
-                        (the panel needs the strategy's database UUID).
-                      </div>
-                    ) : null}
-
                     {/* Field-group tabs (Signal / Entry / Sizing /
                         Exit / Risk / Advanced).  Each tab content is
                         scrollable but the whole Parameters tab is
                         also wrapped in a parent ScrollArea, so even
-                        a 50-field strategy never overflows the rail. */}
+                        a 50-field strategy never overflows the rail.
+
+                        Iteration controls (Start/Stop, target_score,
+                        mandate, etc.) live in the footer beside the
+                        Run backtest button — no longer inside this
+                        tab.  The decision log + scoreboard + summary
+                        renders BELOW these field tabs (see
+                        "Iteration log" card further down) so the
+                        operator can review the optimizer's history
+                        without leaving Parameters. */}
                     <Tabs value={paramGroupTab} onValueChange={setParamGroupTab}
                       className="flex min-h-0 flex-col">
                       <div className="overflow-x-auto pb-1">
@@ -1704,6 +1491,123 @@ export default function BacktestStudio({
                         </TabsContent>
                       ))}
                     </Tabs>
+
+                    {/* ───────── Iteration log ─────────
+                        Renders only after the operator kicks off an
+                        iteration from the footer.  The CONTROLS
+                        (target_score, max_iters, mandate, auto-apply,
+                        Start/Stop) live in the footer alongside
+                        Run backtest — see the sticky footer below.
+                        This card is a read-only audit view: full
+                        scoreboard, last LLM proposal + reasoning,
+                        decision log (kept iterations highlighted),
+                        and the done summary with early-stop reason. */}
+                    {iterStarted ? (
+                      <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 p-2 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5 text-[10px] font-medium text-cyan-300">
+                            <Wand2 className="h-3 w-3" />
+                            Iteration log
+                          </span>
+                          {iterRunning ? (
+                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-cyan-300 border-cyan-400/40 animate-pulse">
+                              running · iter {iterIteration}/{iterMaxIterations}
+                            </Badge>
+                          ) : iterDoneSummary ? (
+                            <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-emerald-300 border-emerald-400/40">
+                              done · {iterDoneSummary.target_reached ? 'target' : 'completed'}
+                            </Badge>
+                          ) : null}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                          <div>
+                            <div className="text-muted-foreground">Baseline</div>
+                            <div className="font-mono">
+                              {iterBaselineScore !== null ? iterBaselineScore.toFixed(4) : '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Best</div>
+                            <div className="font-mono text-emerald-400">
+                              {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground flex items-center gap-1">
+                              <Target className="h-2.5 w-2.5" />
+                              Target
+                            </div>
+                            <div className="font-mono">
+                              {iterTargetScore || '—'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {iterLastProposal ? (
+                          <div className="text-[10px] border-t border-border/30 pt-1">
+                            <div className="text-muted-foreground">
+                              Last proposal · iter {iterLastProposal.iteration} · conf {iterLastProposal.confidence.toFixed(2)}
+                            </div>
+                            <div className="text-foreground italic line-clamp-2">
+                              {iterLastProposal.reasoning || '<no reasoning>'}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {iterDecisions.length > 0 ? (
+                          <div className="max-h-48 overflow-y-auto border-t border-border/30 pt-1 space-y-0.5">
+                            {iterDecisions.map((d, idx) => (
+                              <div
+                                key={`${d.iteration}-${idx}`}
+                                className={cn(
+                                  'flex items-start gap-1 text-[10px] font-mono px-1 py-0.5 rounded',
+                                  d.decision === 'kept'
+                                    ? 'bg-emerald-500/10 text-emerald-200'
+                                    : 'text-muted-foreground'
+                                )}
+                              >
+                                <span className="w-8 shrink-0">#{d.iteration}</span>
+                                <span className="w-12 shrink-0">{d.decision}</span>
+                                <span className="w-14 shrink-0">
+                                  {typeof d.new_score === 'number' ? d.new_score.toFixed(4) : '—'}
+                                </span>
+                                <span className="w-14 shrink-0">
+                                  {typeof d.score_delta === 'number'
+                                    ? (d.score_delta > 0 ? '+' : '') + d.score_delta.toFixed(4)
+                                    : ''}
+                                </span>
+                                <span className="truncate">
+                                  {d.changed_params && Object.keys(d.changed_params).length > 0
+                                    ? Object.keys(d.changed_params).slice(0, 3).join(', ')
+                                    : (d.reasoning || '').slice(0, 60)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {iterDoneSummary ? (
+                          <div className="border-t border-border/30 pt-1 text-[10px]">
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                              <span className="text-foreground">
+                                {iterDoneSummary.total_iterations} iterations · improvement{' '}
+                                <span className={iterDoneSummary.improvement > 0 ? 'text-emerald-400' : 'text-muted-foreground'}>
+                                  {iterDoneSummary.improvement >= 0 ? '+' : ''}
+                                  {iterDoneSummary.improvement.toFixed(4)}
+                                </span>
+                              </span>
+                            </div>
+                            {iterEarlyStopReason ? (
+                              <div className="text-muted-foreground italic mt-0.5">
+                                early stop: {iterEarlyStopReason}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </ScrollArea>
               ) : (
@@ -1733,27 +1637,207 @@ export default function BacktestStudio({
             </TabsContent>
           </Tabs>
 
-          {/* Sticky footer — Run backtest button.  Lives OUTSIDE the
+          {/* Sticky footer — primary actions.  Lives OUTSIDE the
               Tabs container so it stays visible regardless of which
-              tab is active.  Same handler the old layout used; the
-              error message floats just below it. */}
-          <div className="border-t border-border/50 px-3 py-2 space-y-1 bg-background/60">
-            <Button
-              onClick={handleRun}
-              disabled={runMutation.isPending || sourceCode.trim().length < 10}
-              className="w-full"
-            >
-              {runMutation.isPending ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              tab is active.  Two coequal entry points:
+
+                [▶ Run backtest]  [⚡ Iterate ▾]
+
+              The iterate config (target_score, max_iters,
+              max_no_improvement, mandate, auto_apply) is hidden
+              behind the chevron on the iterate button — clicking
+              the button (when not running) toggles the expander
+              open above the buttons, where the operator commits
+              the run via "Start iteration".
+
+              When iteration is running, the iterate button morphs
+              into a red [■ Stop] and a compact live status row
+              appears above showing best score / current iter /
+              target.  The full decision log lives in the
+              Parameters tab as a separate "Iteration log" card. */}
+          <div className="border-t border-border/50 px-3 py-2 space-y-1.5 bg-background/60">
+            {/* Live status row — only when iteration has been
+                kicked off.  Stays visible from any tab so the
+                operator can monitor progress without switching. */}
+            {iterStarted ? (
+              <div className="flex items-center justify-between gap-2 rounded-sm border border-cyan-500/30 bg-cyan-500/5 px-2 py-1 text-[10px]">
+                <span className="flex items-center gap-1.5">
+                  {iterRunning ? (
+                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  ) : iterDoneSummary?.target_reached ? (
+                    <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
+                  )}
+                  <span className="font-mono">
+                    best <span className="text-emerald-400">
+                      {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
+                    </span>
+                  </span>
+                </span>
+                <span className="font-mono text-muted-foreground">
+                  {iterRunning
+                    ? `iter ${iterIteration}/${iterMaxIterations}`
+                    : iterDoneSummary
+                      ? `${iterDoneSummary.total_iterations} iters · ${iterDoneSummary.improvement >= 0 ? '+' : ''}${iterDoneSummary.improvement.toFixed(4)}`
+                      : ''}
+                </span>
+                {iterTargetScore ? (
+                  <span className="flex items-center gap-1 text-muted-foreground">
+                    <Target className="h-2.5 w-2.5" />
+                    <span className="font-mono">{iterTargetScore}</span>
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/* Iterate config expander — progressive disclosure.
+                Closed by default; opens above the buttons when the
+                operator clicks the iterate button (and isn't
+                already running).  Inputs map 1:1 onto the
+                strategy_params autoresearch service's structured
+                stop conditions. */}
+            {iterAvailable && iterConfigOpen && !iterRunning ? (
+              <div className="rounded-sm border border-cyan-500/30 bg-cyan-500/5 p-2 space-y-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div>
+                    <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                      Target score
+                    </Label>
+                    <Input
+                      value={iterTargetScore}
+                      onChange={(e) => setIterTargetScore(e.target.value)}
+                      placeholder="e.g. 1.5"
+                      className="h-6 text-[11px] font-mono"
+                      title="Stop when best_score (Sharpe × DSR × WF − DD penalty) reaches this. Empty = no target, runs until max_iterations."
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                      Max iters
+                    </Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={iterMaxIterations}
+                      onChange={(e) => setIterMaxIterations(parseInt(e.target.value, 10) || 50)}
+                      className="h-6 text-[11px] font-mono"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                      Stop after N no-improve
+                    </Label>
+                    <Input
+                      value={iterMaxNoImprove}
+                      onChange={(e) => setIterMaxNoImprove(e.target.value)}
+                      placeholder="10"
+                      className="h-6 text-[11px] font-mono"
+                      title="Exit early after this many consecutive non-improving iterations"
+                    />
+                  </div>
+                  <div className="flex items-end pb-0.5">
+                    <label className="flex items-center gap-1.5 cursor-pointer text-[10px]">
+                      <input
+                        type="checkbox"
+                        checked={iterAutoApply}
+                        onChange={(e) => setIterAutoApply(e.target.checked)}
+                        className="h-3 w-3"
+                      />
+                      <span title="Persist kept overrides to Strategy.config so future runs use them by default">
+                        Auto-apply kept
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                    Mandate (optional)
+                  </Label>
+                  <Input
+                    value={iterMandate}
+                    onChange={(e) => setIterMandate(e.target.value)}
+                    placeholder="e.g. minimize drawdown without sacrificing Sharpe"
+                    className="h-6 text-[11px]"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleStartIteration}
+                  className="h-7 w-full gap-1 text-[11px] bg-cyan-600 hover:bg-cyan-700 text-white"
+                  disabled={!initialStrategyId}
+                >
+                  <Wand2 className="h-3 w-3" />
+                  {iterDoneSummary ? 'Iterate again' : 'Start iteration'}
+                </Button>
+              </div>
+            ) : null}
+
+            {/* Two-button row.  ``Run backtest`` is unchanged from the
+                old layout; ``Iterate`` is new and either opens the
+                config expander or stops the in-flight loop. */}
+            <div className="flex items-center gap-1.5">
+              <Button
+                onClick={handleRun}
+                disabled={runMutation.isPending || sourceCode.trim().length < 10}
+                className="flex-1"
+              >
+                {runMutation.isPending ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="mr-1 h-3.5 w-3.5" />
+                )}
+                Run backtest
+              </Button>
+              {iterRunning ? (
+                <Button
+                  variant="destructive"
+                  onClick={handleStopIteration}
+                  className="flex-1 gap-1"
+                  title="Stop the running iteration; the in-flight backtest still finishes."
+                >
+                  <Square className="h-3.5 w-3.5" />
+                  Stop
+                </Button>
               ) : (
-                <Play className="mr-1 h-3.5 w-3.5" />
+                <Button
+                  onClick={() => setIterConfigOpen((v) => !v)}
+                  disabled={!iterAvailable}
+                  className={cn(
+                    'flex-1 gap-1',
+                    iterConfigOpen
+                      ? 'bg-cyan-700 hover:bg-cyan-800 text-white'
+                      : 'bg-cyan-600 hover:bg-cyan-700 text-white',
+                  )}
+                  title={
+                    !iterAvailable
+                      ? (paramFieldGroups.length === 0
+                          ? "Strategy declares no params to iterate"
+                          : "Pick a strategy from the dropdown to enable iteration")
+                      : iterConfigOpen
+                        ? "Hide iterate config"
+                        : "Set target score + start an LLM-driven param search"
+                  }
+                >
+                  <Wand2 className="h-3.5 w-3.5" />
+                  Iterate
+                  {iterConfigOpen ? '▴' : '▾'}
+                </Button>
               )}
-              Run backtest
-            </Button>
+            </div>
+
+            {/* Errors from either action surface here. */}
             {errorMessage ? (
               <div className="flex items-start gap-1 text-[10px] text-red-300">
                 <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-                <span>{errorMessage}</span>
+                <span>run: {errorMessage}</span>
+              </div>
+            ) : null}
+            {iterError ? (
+              <div className="flex items-start gap-1 text-[10px] text-red-300">
+                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                <span>iter: {iterError}</span>
               </div>
             ) : null}
           </div>
