@@ -46,11 +46,10 @@ same snapshot.
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 

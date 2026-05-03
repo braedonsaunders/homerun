@@ -89,7 +89,6 @@ from services.trader_orchestrator_state import (
     create_trader_event as _create_trader_event,
     create_trader_order as _create_trader_order,
     get_gross_exposure as _db_get_gross_exposure,
-    get_pending_live_exit_summary_for_trader,
     list_unconsumed_trade_signals as _list_unconsumed_trade_signals_authoritative,
     list_traders,
     record_signal_consumption as _record_signal_consumption,
