@@ -2560,6 +2560,50 @@ class LiveExecutionService:
             if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
                 return cached_result
 
+        # Fix R: single-flight gate around the cache miss.  Without this,
+        # N concurrent ``_persist_runtime_state`` calls for the same
+        # wallet (e.g. several pipelined ``post_order`` successes within
+        # the cache TTL window, or concurrent traders sharing a wallet)
+        # all observe the cache miss simultaneously and each issue the
+        # double-aggregate query on their own ``session`` — wasted DB
+        # work that compounds the very pool pressure that made the
+        # query slow in the first place (5h soak 5/2026/05 cycle 12
+        # showed a single 3.2s ``derive_pnl`` event under cold cache;
+        # under sustained order flow this multiplies into the per-call
+        # baseline).
+        #
+        # Lazily create a per-instance lock dict keyed by ``wallet_key``
+        # so per-wallet caches lock independently.  Double-checked
+        # lock pattern: re-check the cache after acquiring so that
+        # the loser sees the winner's freshly populated entry and
+        # returns without running the query.
+        locks = getattr(self, "_pnl_counters_locks", None)
+        if locks is None:
+            locks = {}
+            self._pnl_counters_locks = locks
+        lock = locks.get(wallet_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[wallet_key] = lock
+        async with lock:
+            # Re-check cache under the lock — the writer that lost the
+            # race may have populated it while we were waiting.
+            cached = cache.get(wallet_key)
+            if cached is not None:
+                cached_at, cached_result = cached
+                if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
+                    return cached_result
+            return await self._compute_pnl_counters_from_orders(
+                session, wallet, wallet_key, cache
+            )
+
+    async def _compute_pnl_counters_from_orders(
+        self,
+        session: Any,
+        wallet: str,
+        wallet_key: str,
+        cache: dict[str, tuple[float, dict[str, Any]]],
+    ) -> dict[str, Any]:
         # ``TraderOrder.actual_profit`` is the verified-truth ledger maintained
         # by ``polymarket_trade_verifier``; aggregating it here keeps the
         # runtime-state row honest without inventing a parallel accumulator.
