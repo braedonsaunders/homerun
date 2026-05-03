@@ -247,6 +247,17 @@ class BinanceFeed:
         self._last_update_ms_by_asset[asset] = now_ms
         self._message_count_by_asset[asset] = self._message_count_by_asset.get(asset, 0) + 1
 
+        # Crypto latency harness: record wire arrival per asset for
+        # ``freshest_wire_ts_ms()`` lookups in ``place_order``.  Wrapped
+        # in try/except inside the recorder; this call is sub-microsecond
+        # and must never affect WS message handling.
+        try:
+            from services.crypto_latency_trace import record_wire_event
+
+            record_wire_event("binance", asset, now_ms)
+        except Exception:
+            pass
+
         if self._on_update:
             try:
                 self._on_update(asset, mid, bid, ask, now_ms)

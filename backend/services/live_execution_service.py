@@ -3904,6 +3904,22 @@ class LiveExecutionService:
             elapsed_ms = (_time.monotonic() - started_mono) * 1000.0
             _po_breakdown[stage] = round(_po_breakdown.get(stage, 0.0) + elapsed_ms, 1)
 
+        # Crypto latency harness: capture the freshest wire ts the system
+        # had access to at place_order entry.  This is the conservative
+        # ``t0_wire`` baseline — the actual decision may have been made
+        # against slightly older data, but no wire event the system saw
+        # AFTER this point could have driven this trade.  Used at
+        # function exit to compute ``wire_to_*_ms`` deltas in the
+        # ``crypto_latency_trace`` log line.  Recorder is non-raising;
+        # failure here returns None and the trace just omits the field.
+        _wire_ts_at_entry_ms: Optional[int] = None
+        try:
+            from services.crypto_latency_trace import freshest_wire_ts_ms
+
+            _wire_ts_at_entry_ms = freshest_wire_ts_ms()
+        except Exception:
+            _wire_ts_at_entry_ms = None
+
         _stage_started = _time.monotonic()
         # VPN pre-trade check (blocks if VPN required but unreachable)
         vpn_ok, vpn_reason = await pre_trade_vpn_check()
@@ -4490,6 +4506,38 @@ class LiveExecutionService:
                 )
             except Exception:
                 pass
+
+        # Crypto latency harness: emit a structured ``crypto_latency_trace``
+        # line on EVERY place_order (success OR failure), so the harness
+        # aggregator gets a per-trade sample feed instead of only the
+        # >=5s slow-events.  ``wire_to_ack_ms`` is computed against the
+        # snapshot taken at function entry; by the time we emit, the
+        # CLOB ack has already happened (it's the post_order stage,
+        # captured earlier in _po_breakdown).  Pure-additive — never
+        # raises into the order-return path.
+        try:
+            from services.crypto_latency_trace import emit_trace
+
+            now_ms = int(_time.time() * 1000)
+            trace_breakdown = dict(_po_breakdown)
+            wire_ts_for_trace: Optional[int] = _wire_ts_at_entry_ms
+            if wire_ts_for_trace is not None:
+                trace_breakdown["wire_to_place_order_end"] = max(
+                    0.0, float(now_ms - wire_ts_for_trace)
+                )
+            emit_trace(
+                signal_id=str(getattr(order, "opportunity_id", "") or "") or None,
+                token_id=str(token_key) if token_key else None,
+                status=str(getattr(order.status, "value", order.status) or ""),
+                wire_ts_ms=wire_ts_for_trace,
+                breakdown_ms=trace_breakdown,
+            )
+        except Exception:
+            # Never let an instrumentation bug change the order-return
+            # path.  The order is fully placed at this point — nothing
+            # the harness does should affect the caller.
+            pass
+
         return order
 
     async def place_order_with_chase(

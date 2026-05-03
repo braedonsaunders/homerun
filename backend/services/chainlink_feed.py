@@ -486,6 +486,22 @@ class ChainlinkFeed:
             if existing is None or is_chainlink or source == existing.source:
                 self._prices[asset] = oracle
 
+                # Crypto latency harness: record wire arrival per asset.
+                # Use local-receive time (not the oracle's source-claimed
+                # ``updated_at_ms``) so the metric is consistent with the
+                # Binance/Polymarket recorders — those also stamp
+                # local-receive.  This makes ``freshest_wire_ts_ms()``
+                # mean "the most recent message the local process saw",
+                # which is the comparison we need for end-to-end pipeline
+                # latency measurement.  Sub-microsecond cost; recorder is
+                # try/except-wrapped.
+                try:
+                    from services.crypto_latency_trace import record_wire_event
+
+                    record_wire_event("chainlink", asset, int(time.time() * 1000))
+                except Exception:
+                    pass
+
                 if self._on_update:
                     try:
                         self._on_update(oracle)

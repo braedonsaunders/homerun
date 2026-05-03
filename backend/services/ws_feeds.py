@@ -1048,6 +1048,22 @@ class PolymarketWSFeed:
         if bids or asks:
             self._cache.update(asset_id, bids, asks, exchange_ts=exchange_ts)
 
+        # Crypto latency harness: record book-update wire arrival per
+        # token.  Polymarket's CLOB book is one of the inputs the
+        # crypto strategies consume (entry-price VWAP); tracking it
+        # alongside the Binance/Chainlink feeds gives the harness a
+        # full picture of which input was freshest at decision time.
+        try:
+            from services.crypto_latency_trace import record_wire_event
+
+            record_wire_event(
+                "polymarket",
+                str(asset_id),
+                int(recv_time_epoch * 1000.0),
+            )
+        except Exception:
+            pass
+
         # Compute server-to-cache latency if a timestamp is present
         if exchange_ts is not None:
             try:
