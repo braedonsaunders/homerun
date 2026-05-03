@@ -38,8 +38,27 @@ _STATUS_PROJECTION_BATCH_MAX = 64
 _UPSERT_PROJECTION_BATCH_MAX = 8
 _STATUS_PROJECTION_CHUNK_SIZE = 16
 _STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 4
-_UPSERT_PROJECTION_CHUNK_SIZE = 10
-_UPSERT_PROJECTION_PRESSURE_CHUNK_SIZE = 5
+# Fix Q: chunk size 1 = one transaction per snapshot.  Previously a
+# chunk of 10 (or 5 under pressure) held N row locks on
+# ``trade_signals`` for the full chunk's UPDATE phase until commit —
+# typical ~1-3s under load.  That cascaded into ``LOCK CONTENTION
+# wait=Lock/transactionid query='UPDATE trade_signals SET
+# source_item_id=$1, signal_type=$2, ...'`` waits of 4-8s on
+# concurrent writers (orchestrator audit-buffer flush,
+# ``signal_bus.upsert_trade_signal`` from ``position_lifecycle`` reverse-
+# entry emission), and ate the 5s ``statement_timeout`` budget on
+# accumulated per-row lock waits — the recurring ``DBAPIError`` +
+# ``projection_queue_size=200+`` we saw 5/2026/05.
+#
+# Per-snapshot transactions release the row lock immediately at
+# commit, removing the multi-row hold window and bounding each
+# transaction's lock-wait cost to a single 1s ``lock_timeout``
+# budget instead of N×lock_timeout.  Throughput cost is the extra
+# session checkout + commit per snapshot (~5-10ms) which Postgres
+# handles trivially at this rate (projection feed is event-driven
+# from intent state changes, not a high-frequency loop).
+_UPSERT_PROJECTION_CHUNK_SIZE = 1
+_UPSERT_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 _PROJECTION_RETRY_MAX_ATTEMPTS = 3
 _PROJECTION_RETRY_BASE_DELAY_SECONDS = 0.25
 _PROJECTION_DB_PRESSURE_TTL_SECONDS = 15.0
