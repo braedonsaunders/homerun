@@ -1781,7 +1781,12 @@ export default function BacktestStudio({
               <Button
                 onClick={handleRun}
                 disabled={runMutation.isPending || sourceCode.trim().length < 10}
-                className="flex-1"
+                // Default ``bg-primary`` reads as near-white in dark
+                // mode and overwhelmed the rail; emerald-600 keeps
+                // the "primary action" weight (it's clearly louder
+                // than the cyan-600 Iterate sibling) while staying
+                // legible against the dark background.
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
               >
                 {runMutation.isPending ? (
                   <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
