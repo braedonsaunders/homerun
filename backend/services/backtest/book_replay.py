@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import bisect
 import logging
+import os as _os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable, Optional, Sequence
@@ -43,8 +44,6 @@ logger = logging.getLogger(__name__)
 # replay; under heavy DB load (live trading hammering the same
 # Postgres) a 7-day × 500-token chunk can legitimately take >30s. If
 # the env var is set, we use it; otherwise default to 5 min.
-import os as _os
-
 _BACKTEST_STATEMENT_TIMEOUT_MS = int(
     _os.getenv("HOMERUN_BACKTEST_STATEMENT_TIMEOUT_MS", "300000")
 )
