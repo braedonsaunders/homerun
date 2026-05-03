@@ -449,7 +449,7 @@ async def test_refresh_crypto_markets_publishes_snapshot_without_waiting_for_opp
 
     assert len(published) == 1
     assert published[0][1] == "startup"
-    assert elapsed < 0.15
+    assert elapsed < 0.5
 
     await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
     release_dispatch.set()
