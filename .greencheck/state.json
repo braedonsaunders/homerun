@@ -1,73 +1,112 @@
 {
-  "runId": 1777738214342,
-  "workflowRunId": 25255942118,
+  "runId": 1777794022972,
+  "workflowRunId": 25273163177,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25255942118",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25273163177",
   "branch": "main",
-  "headSha": "65130090e7643d8e9c0a888c93e92bb0e62d100d",
+  "headSha": "4493734ee91f8bb960d7c167a69f49c55d677a6b",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "test-failure",
+        "type": "lint",
         "files": [
-          "backend/tests/test_routes_trader_positions_cleanup.py"
+          "backend/workers/trader_orchestrator_worker.py"
         ],
         "failures": [
           {
-            "type": "test-failure",
-            "file": "backend/tests/test_routes_trader_positions_cleanup.py",
-            "line": null,
-            "column": null,
-            "message": "assert 0 == 1",
-            "rule": null,
-            "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
-            "confidence": 0.7
+            "type": "lint",
+            "file": "backend/workers/trader_orchestrator_worker.py",
+            "line": 110,
+            "column": 5,
+            "message": "[*] Redefinition of unused `get_pending_live_exit_summary_for_trader` from line 97",
+            "rule": "F811",
+            "rawLog": "F811 [*] Redefinition of unused `get_pending_live_exit_summary_for_trader` from line 97\n   --> workers/trader_orchestrator_worker.py:110:5",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/workers/trader_orchestrator_worker.py",
+            "line": 110,
+            "column": 5,
+            "message": "[*] `services.trader_orchestrator_state.get_pending_live_exit_summary_for_trader` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `services.trader_orchestrator_state.get_pending_live_exit_summary_for_trader` imported but unused\n   --> workers/trader_orchestrator_worker.py:110:5",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/workers/trader_orchestrator_worker.py",
+            "line": 114,
+            "column": 32,
+            "message": "[*] `services.signal_bus.set_trade_signal_status` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `services.signal_bus.set_trade_signal_status` imported but unused\n   --> workers/trader_orchestrator_worker.py:114:32",
+            "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "b46806a28c2c2248724d7f8012d1a3d93564dd29",
+      "commitSha": "def3d1985fee946c8c2c86d8ef66de36d10c77dd",
       "filesChanged": [
-        "backend/services/live_execution_service.py",
-        "backend/services/trader_orchestrator_state.py"
+        "backend/workers/trader_orchestrator_worker.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 459306
+      "durationMs": 50803
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-02T16:10:14.342Z",
+  "startedAt": "2026-05-03T07:40:22.972Z",
   "result": null,
   "commits": [
-    "b46806a28c2c2248724d7f8012d1a3d93564dd29"
+    "def3d1985fee946c8c2c86d8ef66de36d10c77dd"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_routes_trader_positions_cleanup.py",
+      "file": "backend/tests/test_wallet_ws_monitor.py",
       "line": null,
       "column": null,
-      "message": "assert 0 == 1",
+      "message": "AssertionError: assert ['https://pol...rpc.io/matic'] == ['https://pol...blicnode.com']",
       "rule": null,
-      "rawLog": "FAILED tests/test_routes_trader_positions_cleanup.py::test_open_position_count_aggregates_same_market_direction - assert 0 == 1",
+      "rawLog": "FAILED tests/test_wallet_ws_monitor.py::test_build_rpc_candidates_does_not_reintroduce_excluded_endpoints - AssertionError: assert ['https://pol...rpc.io/matic'] == ['https://pol...blicnode.com']",
       "confidence": 0.7
     },
     {
-      "type": "test-failure",
-      "file": "backend/tests/test_trading_service_balance.py",
-      "line": null,
-      "column": null,
-      "message": "UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trading_service_balance.py::test_place_sell_order_fails_before_submit_when_pre_submit_gate_fails - UnboundLocalError: cannot access local variable 'runtime_state_persisted_inline' where it is not associated with a value",
-      "confidence": 0.7
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 110,
+      "column": 5,
+      "message": "[*] Redefinition of unused `get_pending_live_exit_summary_for_trader` from line 97",
+      "rule": "F811",
+      "rawLog": "F811 [*] Redefinition of unused `get_pending_live_exit_summary_for_trader` from line 97\n   --> workers/trader_orchestrator_worker.py:110:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 110,
+      "column": 5,
+      "message": "[*] `services.trader_orchestrator_state.get_pending_live_exit_summary_for_trader` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `services.trader_orchestrator_state.get_pending_live_exit_summary_for_trader` imported but unused\n   --> workers/trader_orchestrator_worker.py:110:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 114,
+      "column": 32,
+      "message": "[*] `services.signal_bus.set_trade_signal_status` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `services.signal_bus.set_trade_signal_status` imported but unused\n   --> workers/trader_orchestrator_worker.py:114:32",
+      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-25255942118.log"
+  "latestParserUsed": "pytest, ruff",
+  "latestLogPath": ".greencheck/logs/workflow-run-25273163177.log"
 }

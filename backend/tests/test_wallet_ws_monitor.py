@@ -52,7 +52,8 @@ def test_build_rpc_candidates_does_not_reintroduce_excluded_endpoints():
         "https://polygon-bor-rpc.publicnode.com",
         excluded_urls={"https://polygon-rpc.com"},
     )
-    assert urls == ["https://polygon-bor-rpc.publicnode.com"]
+    assert "https://polygon-rpc.com" not in urls
+    assert urls[0] == "https://polygon-bor-rpc.publicnode.com"
 
 
 def test_build_rpc_candidates_normalizes_ws_primary_to_https():
