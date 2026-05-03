@@ -78,6 +78,19 @@ class TradersCopyTradeSignalService:
         self._replay_wakeup = asyncio.Event()
         self._processor_concurrency = 8
         self._overflow_direct_process_semaphore = asyncio.Semaphore(16)
+        # Outstanding overflow direct-process tasks. Tracked separately
+        # from ``_background_tasks`` so we can cap it without affecting
+        # other transient background work. The cap is 2× the semaphore
+        # permits — enough headroom for a transient burst, but small
+        # enough to refuse runaway accumulation. Above the cap, events
+        # are dropped from the in-memory fast path; ``_replay_loop``
+        # picks them up from ``WalletMonitorEvent`` (every wallet event
+        # is persisted before callbacks fire — see wallet_ws_monitor
+        # ``_persist_event``), so dropping is lossless, just delayed by
+        # at most ``_replay_interval_seconds``.
+        self._overflow_pending_cap = 32
+        self._overflow_pending_tasks: set[asyncio.Task] = set()
+        self._overflow_dropped_total = 0
         self._strategy_missing_warned = False
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -124,6 +137,9 @@ class TradersCopyTradeSignalService:
                 task.cancel()
         if self._replay_task and not self._replay_task.done():
             self._replay_task.cancel()
+        for task in list(self._overflow_pending_tasks):
+            if not task.done():
+                task.cancel()
         for task in list(self._background_tasks):
             if not task.done():
                 task.cancel()
@@ -259,14 +275,46 @@ class TradersCopyTradeSignalService:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
             self._queued_event_keys.discard(event_key)
+            # The event is already persisted to ``WalletMonitorEvent``
+            # before callbacks fire (see wallet_ws_monitor
+            # ``_persist_event``), so the replay loop will reach it
+            # within ``_replay_interval_seconds`` once we wake it.
+            # Wake it unconditionally; only spawn a direct-process
+            # task if the overflow backlog has headroom.
+            self._replay_wakeup.set()
+            pending = len(self._overflow_pending_tasks)
+            if pending >= self._overflow_pending_cap:
+                # Sustained saturation: parked overflow tasks were
+                # piling up at the semaphore and leaking memory +
+                # holding session/connection refs once they got a
+                # permit. Drop the in-memory fast path and let
+                # replay handle it from the DB.
+                self._overflow_dropped_total += 1
+                # Log every 100th drop to keep the line count
+                # manageable while still surfacing the condition.
+                if self._overflow_dropped_total % 100 == 1:
+                    logger.warning(
+                        "Copy-trade overflow saturated; deferring to replay",
+                        wallet=wallet,
+                        tx_hash=str(event.tx_hash or ""),
+                        log_index=int(event.log_index or 0),
+                        pending_overflow=pending,
+                        dropped_total=self._overflow_dropped_total,
+                    )
+                return
             logger.warning(
                 "Copy-trade signal queue full; replay fallback activated",
                 wallet=wallet,
                 tx_hash=str(event.tx_hash or ""),
                 log_index=int(event.log_index or 0),
+                pending_overflow=pending,
             )
-            self._replay_wakeup.set()
-            self._spawn_background_task(self._process_overflow_event_direct(event))
+            task = asyncio.create_task(
+                self._process_overflow_event_direct(event),
+                name="traders-copy-signal-overflow",
+            )
+            self._overflow_pending_tasks.add(task)
+            task.add_done_callback(self._overflow_pending_tasks.discard)
 
     async def _refresh_tracked_wallets(self) -> None:
         scopes: list[dict[str, Any]] = []

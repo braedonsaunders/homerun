@@ -85,6 +85,61 @@ async def test_queue_overflow_falls_back_to_direct_processing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_queue_overflow_drops_event_when_overflow_backlog_saturated(monkeypatch):
+    """When the queue is full *and* the overflow backlog is at its cap,
+    the new event must be dropped (not spawned as another parked task)
+    and ``_replay_wakeup`` must be set so the replay loop picks it up
+    from ``WalletMonitorEvent`` instead. This is the fix for the
+    unbounded ``_process_overflow_event_direct`` task accumulation
+    observed in soak (1593 -> 3515 in 28 minutes).
+    """
+    service = TradersCopyTradeSignalService()
+    service._running = True
+    service._tracked_wallets = {"0xabc"}
+    service._execution_wallet = ""
+    service._queue = asyncio.Queue(maxsize=1)
+    await service._queue.put(_event(tx_hash="0xprimed", log_index=1))
+
+    # Saturate the overflow backlog. We use a never-completing task so
+    # the cap check sees a full set without actually running the work.
+    pending_event = asyncio.Event()
+
+    async def _never_completes() -> None:
+        await pending_event.wait()
+
+    for _ in range(service._overflow_pending_cap):
+        task = asyncio.create_task(_never_completes())
+        service._overflow_pending_tasks.add(task)
+        task.add_done_callback(service._overflow_pending_tasks.discard)
+
+    process_calls: list[str] = []
+
+    async def fake_process(event: WalletTradeEvent) -> None:
+        process_calls.append(str(event.tx_hash))
+
+    monkeypatch.setattr(service, "_process_wallet_trade_event", fake_process)
+
+    assert not service._replay_wakeup.is_set()
+
+    overflow_event = _event(tx_hash="0xdropped", log_index=99)
+    await service._on_wallet_trade(overflow_event)
+
+    # Replay must be woken so the persisted DB row gets picked up.
+    assert service._replay_wakeup.is_set()
+    # Drop counter advanced.
+    assert service._overflow_dropped_total == 1
+    # No new overflow task was spawned (still exactly cap parked tasks).
+    assert len(service._overflow_pending_tasks) == service._overflow_pending_cap
+    # Give the loop a chance to run any spawned task — none should exist.
+    await asyncio.sleep(0)
+    assert process_calls == []
+
+    # Cleanup: release the parked tasks.
+    pending_event.set()
+    await asyncio.gather(*list(service._overflow_pending_tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_on_wallet_trade_ignores_execution_wallet():
     service = TradersCopyTradeSignalService()
     service._running = True
