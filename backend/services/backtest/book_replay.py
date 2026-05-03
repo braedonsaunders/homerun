@@ -28,13 +28,26 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import MarketMicrostructureSnapshot
 from utils.converters import safe_float
 
 logger = logging.getLogger(__name__)
+
+
+# Backtests are long-running batch work and shouldn't be killed by the
+# default API ``statement_timeout`` (typically 30s). The run-session
+# raises its own per-statement budget to 5 min before streaming the
+# replay; under heavy DB load (live trading hammering the same
+# Postgres) a 7-day × 500-token chunk can legitimately take >30s. If
+# the env var is set, we use it; otherwise default to 5 min.
+import os as _os
+
+_BACKTEST_STATEMENT_TIMEOUT_MS = int(
+    _os.getenv("HOMERUN_BACKTEST_STATEMENT_TIMEOUT_MS", "300000")
+)
 
 
 @dataclass(frozen=True)
@@ -214,13 +227,45 @@ class BookReplay:
         self._end = _to_utc(end)
         self._snapshot_type = snapshot_type
         self._chunk_size = max(100, int(chunk_size))
+        # Set when a chunk times out / errors and the replay is
+        # truncated.  Caller reads this after iter_snapshots() to
+        # surface a validation_warning.
+        self.truncated: bool = False
+        self.truncation_reason: Optional[str] = None
+        self.snapshots_yielded: int = 0
+
+    async def _raise_session_timeout(self) -> None:
+        """Bump ``statement_timeout`` on this session for replay queries.
+
+        Idempotent — runs once per BookReplay instance.  Backtests need
+        a longer per-statement budget than the API default because each
+        keyset-paginated chunk against ``market_microstructure_snapshots``
+        can legitimately take >30s when the IN-list spans hundreds of
+        tokens over a multi-day window AND the live system is loading
+        the same Postgres.
+        """
+        if getattr(self, "_timeout_raised", False):
+            return
+        try:
+            await self._session.execute(
+                text(f"SET statement_timeout = {int(_BACKTEST_STATEMENT_TIMEOUT_MS)}")
+            )
+            self._timeout_raised = True
+        except Exception as exc:
+            # Non-fatal — if SET fails we still try the queries; they
+            # just inherit whatever the connection-level default is.
+            logger.warning("Failed to raise statement_timeout for backtest replay: %s", exc)
+            self._timeout_raised = True  # don't retry every chunk
 
     async def iter_snapshots(self) -> AsyncIterator[BookSnapshot]:
         """Yield snapshots in (observed_at, sequence) order."""
         if not self._token_ids:
             return
+        await self._raise_session_timeout()
         last_observed = self._start
         last_id: Optional[str] = None
+        chunk_index = 0
+        total_yielded = 0
         while True:
             stmt = (
                 select(MarketMicrostructureSnapshot)
@@ -241,7 +286,30 @@ class BookReplay:
                 )
             if last_id is not None:
                 stmt = stmt.where(MarketMicrostructureSnapshot.id != last_id)
-            rows = (await self._session.execute(stmt)).scalars().all()
+            try:
+                rows = (await self._session.execute(stmt)).scalars().all()
+            except Exception as exc:
+                # If a chunk fails (statement_timeout under load,
+                # network blip, etc.) log and stop streaming rather
+                # than nuking the entire backtest.  The matching
+                # engine handles a truncated replay gracefully — open
+                # positions just don't see further book updates and
+                # the result records whatever fills already happened.
+                logger.warning(
+                    "BookReplay chunk %d failed after %d snapshots; truncating replay: %s",
+                    chunk_index, total_yielded, exc,
+                )
+                self.truncated = True
+                self.truncation_reason = str(exc)[:500]
+                # Roll back the failed transaction so the session can
+                # be returned cleanly when the caller's ``async with``
+                # exits.  Without this, asyncpg keeps the session in
+                # an aborted state.
+                try:
+                    await self._session.rollback()
+                except Exception:
+                    pass
+                break
             if not rows:
                 break
             for row in rows:
@@ -249,6 +317,9 @@ class BookReplay:
                 yield snap
                 last_observed = snap.observed_at
                 last_id = str(row.id)
+                total_yielded += 1
+            chunk_index += 1
+            self.snapshots_yielded = total_yielded
             if len(rows) < self._chunk_size:
                 break
 

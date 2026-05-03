@@ -2664,6 +2664,7 @@ async def run_execution_backtest(
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 
     run_start = time.monotonic()
+    replay_for_run: Optional[BookReplay] = None
     try:
         async with AsyncSessionLocal() as run_session:
             replay_for_run = BookReplay(
@@ -2682,6 +2683,21 @@ async def run_execution_backtest(
         return result
     finally:
         result.run_time_ms = (time.monotonic() - run_start) * 1000
+
+    # If the book replay had to truncate (e.g. a chunk hit
+    # statement_timeout under DB load), surface that loud-and-clear.
+    # The matching engine processed whatever snapshots arrived before
+    # the truncation, so the run may still be useful — but the
+    # operator needs to know the trade count is a lower bound.
+    if replay_for_run is not None and replay_for_run.truncated:
+        result.validation_warnings.append(
+            f"Book replay TRUNCATED after {replay_for_run.snapshots_yielded} "
+            f"snapshots — a chunk query failed: "
+            f"{replay_for_run.truncation_reason or 'unknown'}.  Trade count "
+            f"is a LOWER BOUND.  Likely cause: live DB load competing with "
+            f"the backtest run-session.  Retry when the live system is "
+            f"quieter, or shrink the time window / token universe."
+        )
 
     m = bt_result.metrics
     result.success = True
