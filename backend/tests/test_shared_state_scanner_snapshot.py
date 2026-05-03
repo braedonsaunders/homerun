@@ -163,10 +163,19 @@ async def test_write_scanner_snapshot_publishes_runtime_events_without_db_opport
 
 
 @pytest.mark.asyncio
-async def test_persist_incremental_state_updates_state_and_returns_runtime_events_without_db_event_rows():
+async def test_persist_incremental_state_emits_detected_event_via_batched_upsert():
+    """New opportunity → "detected" event + a batched pg_insert UPSERT.
+
+    The previous implementation called ``session.add(OpportunityState(...))``
+    per row, which generated one INSERT statement per row at flush.  The
+    new implementation issues a single ``INSERT ... ON CONFLICT DO UPDATE``
+    per chunk of 500 rows, so OpportunityState should NOT appear in
+    session.added — only ScannerRun does.
+    """
     opportunity = _build_opportunity(market_id="market-2")
     payload = [opportunity.model_dump(mode="json")]
     completed_at = utcnow().replace(tzinfo=None)
+    # Sequence: _load_existing_meta (empty) → active_ids (empty) → upsert execute.
     session = _FakeSession(execute_results=[{"scalars_list": []}, {"scalars_list": []}])
 
     event_messages = await shared_state._persist_incremental_state(
@@ -178,27 +187,41 @@ async def test_persist_incremental_state_updates_state_and_returns_runtime_event
 
     added_types = tuple(type(row) for row in session.added)
     assert ScannerRun in added_types
-    assert OpportunityState in added_types
+    # OpportunityState rows go through pg_insert, not session.add.
+    assert OpportunityState not in added_types
     assert len(event_messages) == 1
     assert event_messages[0]["event_type"] == "detected"
     assert event_messages[0]["stable_id"] == opportunity.stable_id
+    # An INSERT ... ON CONFLICT statement was executed for the row.
+    insert_statements = [
+        sql for sql, _ in session.statements if "INSERT INTO opportunity_state" in str(sql)
+    ]
+    assert insert_statements, "expected a batched pg_insert into opportunity_state"
 
 
 @pytest.mark.asyncio
-async def test_persist_incremental_state_fetches_missing_current_ids_without_loading_all_active_and_current_rows_together():
+async def test_persist_incremental_state_emits_reactivated_event_for_inactive_existing_row():
+    """Existing inactive opportunity reappearing → "reactivated" event + UPSERT."""
+    import json as _json
+
     opportunity = _build_opportunity(market_id="market-4")
     payload = [opportunity.model_dump(mode="json")]
     completed_at = utcnow().replace(tzinfo=None)
-    existing_row = OpportunityState(
-        stable_id=opportunity.stable_id,
-        opportunity_json=opportunity.model_dump(mode="json"),
-        first_seen_at=utcnow().replace(tzinfo=None),
-        last_seen_at=utcnow().replace(tzinfo=None),
-        last_updated_at=utcnow().replace(tzinfo=None),
-        is_active=False,
-        last_run_id=None,
+    # The new implementation reads (stable_id, is_active, first_seen_at,
+    # opportunity_json_text) tuples — opportunity_json is text-cast so
+    # the fake returns a JSON string, not a dict.
+    existing_meta_row = (
+        opportunity.stable_id,
+        False,  # is_active
+        utcnow().replace(tzinfo=None),
+        _json.dumps(opportunity.model_dump(mode="json")),
     )
-    session = _FakeSession(execute_results=[{"scalars_list": [existing_row]}, {"scalars_list": []}])
+    session = _FakeSession(
+        execute_results=[
+            {"scalars_list": [existing_meta_row]},  # _load_existing_meta
+            {"scalars_list": []},                    # active_ids select (no actives)
+        ]
+    )
 
     event_messages = await shared_state._persist_incremental_state(
         session,
@@ -207,26 +230,44 @@ async def test_persist_incremental_state_fetches_missing_current_ids_without_loa
         completed_at,
     )
 
-    assert existing_row.is_active is True
     assert len(event_messages) == 1
     assert event_messages[0]["event_type"] == "reactivated"
     assert event_messages[0]["stable_id"] == opportunity.stable_id
+    insert_statements = [
+        sql for sql, _ in session.statements if "INSERT INTO opportunity_state" in str(sql)
+    ]
+    assert insert_statements, "expected a batched pg_insert UPSERT for reactivation"
 
 
 @pytest.mark.asyncio
-async def test_persist_incremental_state_marks_missing_opportunities_expired_without_db_event_rows():
+async def test_persist_incremental_state_emits_expired_event_via_bulk_update():
+    """Active row missing from current scan → "expired" event + bulk UPDATE.
+
+    The previous implementation mutated the loaded ORM row's is_active
+    attribute, generating a per-row UPDATE at flush.  The new
+    implementation issues ``UPDATE ... WHERE stable_id IN (...)
+    AND is_active = TRUE`` once per chunk, so we no longer touch ORM
+    instances at all.
+    """
+    import json as _json
+
     opportunity = _build_opportunity(market_id="market-3")
-    existing_row = OpportunityState(
-        stable_id=opportunity.stable_id,
-        opportunity_json=opportunity.model_dump(mode="json"),
-        first_seen_at=utcnow().replace(tzinfo=None),
-        last_seen_at=utcnow().replace(tzinfo=None),
-        last_updated_at=utcnow().replace(tzinfo=None),
-        is_active=True,
-        last_run_id=None,
-    )
-    session = _FakeSession(execute_results=[{"scalars_list": [opportunity.stable_id]}, {"scalars_list": [existing_row]}])
     completed_at = utcnow().replace(tzinfo=None)
+    # Sequence (note: _load_existing_meta short-circuits on empty
+    # stable_ids and does NOT issue a SELECT, so its result is omitted):
+    #   1. active_ids select — returns the stable_id of the row to expire
+    #   2. expired-payload-text select — returns (stable_id, json_text) tuple
+    #   3. bulk UPDATE — execute call (no result needed)
+    session = _FakeSession(
+        execute_results=[
+            {"scalars_list": [opportunity.stable_id]},
+            {
+                "scalars_list": [
+                    (opportunity.stable_id, _json.dumps(opportunity.model_dump(mode="json"))),
+                ]
+            },
+        ]
+    )
 
     event_messages = await shared_state._persist_incremental_state(
         session,
@@ -235,10 +276,13 @@ async def test_persist_incremental_state_marks_missing_opportunities_expired_wit
         completed_at,
     )
 
-    assert existing_row.is_active is False
     assert len(event_messages) == 1
     assert event_messages[0]["event_type"] == "expired"
     assert event_messages[0]["stable_id"] == opportunity.stable_id
+    update_statements = [
+        sql for sql, _ in session.statements if "UPDATE opportunity_state" in str(sql)
+    ]
+    assert update_statements, "expected a bulk UPDATE setting is_active=false for expirations"
 
 
 @pytest.mark.asyncio

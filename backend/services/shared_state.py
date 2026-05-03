@@ -1032,8 +1032,23 @@ async def _persist_incremental_state(
     status: dict[str, Any],
     completed_at: datetime,
 ) -> list[dict[str, Any]]:
-    """Persist per-run + per-opportunity incremental state/event records."""
-    # Determine scan mode for observability.
+    """Persist per-run + per-opportunity incremental state/event records.
+
+    Single-statement batch UPSERT path.  The previous implementation
+    issued one UPDATE per changed row via SQLAlchemy ORM dirty-tracking
+    — under typical scan loads (1000+ opportunities) that translated to
+    1000+ individual UPDATE statements in a single transaction.  Each
+    statement was fast in isolation, but the transaction held row-locks
+    across the entire flush, blocking concurrent readers/writers and
+    producing the 181s zombie-backend incident that the SET LOCAL
+    statement_timeout cannot catch (statement_timeout is per-statement,
+    not per-transaction).  The replacement uses pg's
+    ``INSERT ... ON CONFLICT DO UPDATE`` for upserts and a single bulk
+    ``UPDATE ... WHERE stable_id IN (...)`` for expirations.  Net
+    effect: at most 3 SQL statements per scan cycle regardless of
+    opportunity count, and the ON CONFLICT DO UPDATE is a single
+    statement_timeout-bounded operation.
+    """
     scan_mode = "full"
     activity = (status.get("current_activity") or "").lower()
     if "fast scan" in activity:
@@ -1061,58 +1076,93 @@ async def _persist_incremental_state(
 
     current_ids = set(current_map.keys())
 
-    async def _load_rows_for_ids(stable_ids: set[str]) -> dict[str, OpportunityState]:
+    # Read existing-row metadata as text-cast JSON so asyncpg does not
+    # run ``json.loads`` on the event loop.  The actual decode happens
+    # in ``asyncio.to_thread``.  We only need the fields used for
+    # change detection and event emission — pulling the full ORM
+    # object was unnecessary and bloated the row buffer.
+    payload_text_col = cast(OpportunityState.opportunity_json, Text).label("opportunity_json_text")
+
+    async def _load_existing_meta(stable_ids: set[str]) -> dict[str, dict[str, Any]]:
         if not stable_ids:
             return {}
-        rows_by_id: dict[str, OpportunityState] = {}
-        for stable_id_chunk in _chunked_values(stable_ids):
-            existing_rows = (
-                (
-                    await session.execute(
-                        select(OpportunityState).where(OpportunityState.stable_id.in_(stable_id_chunk))
-                    )
-                )
-                .scalars()
-                .all()
+        rows_by_id: dict[str, dict[str, Any]] = {}
+        for chunk in _chunked_values(stable_ids):
+            result = await session.execute(
+                select(
+                    OpportunityState.stable_id,
+                    OpportunityState.is_active,
+                    OpportunityState.first_seen_at,
+                    payload_text_col,
+                ).where(OpportunityState.stable_id.in_(chunk))
             )
-            for row in existing_rows:
-                stable_id = str(row.stable_id or "").strip()
-                if stable_id:
-                    rows_by_id[stable_id] = row
+            for stable_id, is_active, first_seen_at, json_text in result.all():
+                key = str(stable_id or "").strip()
+                if not key:
+                    continue
+                rows_by_id[key] = {
+                    "is_active": bool(is_active),
+                    "first_seen_at": first_seen_at,
+                    "opportunity_json_text": json_text,
+                }
         return rows_by_id
 
-    existing_by_id = await _load_rows_for_ids(current_ids)
-    active_ids = {
-        str(stable_id or "").strip()
-        for stable_id in (
-            (
-                await session.execute(
-                    select(OpportunityState.stable_id).where(OpportunityState.is_active == True)  # noqa: E712
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if str(stable_id or "").strip()
+    existing_meta = await _load_existing_meta(current_ids)
+
+    # Active stable_ids (so we can detect rows missing from current = expired).
+    active_result = await session.execute(
+        select(OpportunityState.stable_id).where(OpportunityState.is_active == True)  # noqa: E712
+    )
+    active_ids: set[str] = {
+        key for key in (str(stable_id or "").strip() for stable_id in active_result.scalars().all()) if key
     }
 
-    # Upsert current opportunities and emit detected/updated/reactivated events.
+    # Decode existing-row JSON off the event loop.  A 1000-row scan
+    # parses ~10-20 MB of JSON; doing it inline blocks the loop for
+    # several seconds under DB pressure.
+    def _decode_existing() -> dict[str, dict[str, Any]]:
+        decoded: dict[str, dict[str, Any]] = {}
+        for stable_id, meta in existing_meta.items():
+            json_text = meta.get("opportunity_json_text")
+            previous_payload: dict[str, Any] = {}
+            if isinstance(json_text, str) and json_text:
+                try:
+                    parsed = json.loads(json_text)
+                    if isinstance(parsed, dict):
+                        previous_payload = parsed
+                except Exception:
+                    previous_payload = {}
+            decoded[stable_id] = {
+                "is_active": meta["is_active"],
+                "first_seen_at": meta["first_seen_at"],
+                "previous_payload": previous_payload,
+            }
+        return decoded
+
+    decoded_existing = await asyncio.to_thread(_decode_existing) if existing_meta else {}
+
+    # Classify and build the upsert row list.
+    upsert_rows: list[dict[str, Any]] = []
+
     for stable_id, item in current_map.items():
         incoming_item = item if isinstance(item, dict) else dict(item)
-        row = existing_by_id.get(stable_id)
-        if row is None:
+        prior = decoded_existing.get(stable_id)
+
+        if prior is None:
+            # New opportunity — emit detected event and queue an INSERT.
             incoming_item["revision"] = 1
             incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
-            row = OpportunityState(
-                stable_id=stable_id,
-                opportunity_json=incoming_item,
-                first_seen_at=completed_at,
-                last_seen_at=completed_at,
-                last_updated_at=completed_at,
-                is_active=True,
-                last_run_id=run.id,
+            upsert_rows.append(
+                {
+                    "stable_id": stable_id,
+                    "opportunity_json": incoming_item,
+                    "first_seen_at": completed_at,
+                    "last_seen_at": completed_at,
+                    "last_updated_at": completed_at,
+                    "is_active": True,
+                    "last_run_id": run.id,
+                }
             )
-            session.add(row)
             event_messages.append(
                 {
                     "id": uuid.uuid4().hex[:16],
@@ -1125,10 +1175,11 @@ async def _persist_incremental_state(
             )
             continue
 
-        was_active = bool(row.is_active)
-        previous_payload = row.opportunity_json if isinstance(row.opportunity_json, dict) else {}
+        was_active = prior["is_active"]
+        previous_payload = prior["previous_payload"]
         previous_revision = int(previous_payload.get("revision") or 0)
-        changed = row.opportunity_json != incoming_item
+        changed = previous_payload != incoming_item
+
         if changed:
             incoming_item["revision"] = max(1, previous_revision + 1)
         else:
@@ -1137,34 +1188,37 @@ async def _persist_incremental_state(
         previous_last_updated = previous_payload.get("last_updated_at")
         if changed or not was_active:
             incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
-            row.last_updated_at = completed_at
+            new_last_updated_at = completed_at
         elif previous_last_updated:
             incoming_item["last_updated_at"] = previous_last_updated
+            new_last_updated_at = None  # don't bump on unchanged-active
         else:
             incoming_item["last_updated_at"] = format_iso_utc_z(completed_at)
-            row.last_updated_at = completed_at
+            new_last_updated_at = completed_at
 
-        # Lock-contention fix: only mutate the ORM row when something
-        # genuinely changed.  The previous unconditional reassignments
-        # (``row.opportunity_json = ...; row.last_seen_at = ...; ...``)
-        # marked SQLAlchemy's instance as dirty for EVERY row in the
-        # current scan, even when ``changed=False``.  With 1000+
-        # opportunities per scan, the resulting commit emitted 1000+
-        # row UPDATEs in a single transaction, holding 1000+ row locks
-        # for the duration.  Concurrent transactions queued behind
-        # them, observed in production as repeated:
-        #    LOCK CONTENTION ... wait=Lock/transactionid query='UPDATE
-        #    opportunity_state SET opportunity_json=$1::JSON, ...'
-        # followed by ``Connection invalidated after 35.5s checked
-        # out`` and ``Scanner opportunity-state projection failed``.
-        # The expiration logic uses ``current_ids`` set membership,
-        # not ``last_seen_at`` freshness, so skipping the UPDATE on
-        # unchanged active rows is safe.
+        # Lock-contention fix: only emit a row write when something
+        # actually changed.  An unchanged + still-active opportunity
+        # generates no SQL at all -- this is the steady-state path
+        # for the majority of rows in any given scan.  The expiration
+        # logic uses ``current_ids`` set membership, not last_seen_at
+        # freshness, so skipping the UPSERT on unchanged active rows
+        # is safe.
         if changed or not was_active:
-            row.opportunity_json = incoming_item
-            row.last_seen_at = completed_at
-            row.last_run_id = run.id
-            row.is_active = True
+            upsert_rows.append(
+                {
+                    "stable_id": stable_id,
+                    "opportunity_json": incoming_item,
+                    # first_seen_at supplied for the (impossible-by-prior)
+                    # INSERT branch; ON CONFLICT DO UPDATE does NOT
+                    # touch first_seen_at, so existing values are
+                    # preserved on the actual UPDATE path.
+                    "first_seen_at": prior.get("first_seen_at") or completed_at,
+                    "last_seen_at": completed_at,
+                    "last_updated_at": new_last_updated_at if new_last_updated_at is not None else completed_at,
+                    "is_active": True,
+                    "last_run_id": run.id,
+                }
+            )
 
         if not was_active:
             event_type = "reactivated"
@@ -1185,28 +1239,92 @@ async def _persist_incremental_state(
                 }
             )
 
-    # Any previously active row missing from current payload is now expired.
+    # Single batched UPSERT for all new/changed/reactivated rows.
+    # Chunked at 500 to keep the parameter count well under PG's 65k
+    # limit (each row has 7 columns).  Using pg_insert(...).on_conflict
+    # is one statement per chunk — bounded by SET LOCAL statement_timeout.
+    if upsert_rows:
+        UPSERT_BATCH = 500
+        for start in range(0, len(upsert_rows), UPSERT_BATCH):
+            chunk = upsert_rows[start : start + UPSERT_BATCH]
+            stmt = pg_insert(OpportunityState).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[OpportunityState.stable_id],
+                set_={
+                    "opportunity_json": stmt.excluded.opportunity_json,
+                    "last_seen_at": stmt.excluded.last_seen_at,
+                    "last_updated_at": stmt.excluded.last_updated_at,
+                    "is_active": stmt.excluded.is_active,
+                    "last_run_id": stmt.excluded.last_run_id,
+                    # first_seen_at deliberately omitted: PG preserves
+                    # the existing value on UPDATE, which is the
+                    # documented lifecycle invariant.
+                },
+            )
+            await session.execute(stmt)
+
+    # Expirations: previously active rows that no longer appear in the
+    # current scan.  Read prior payloads (text-cast) for event-message
+    # emission, then bulk-flip is_active=False per chunk.
     expired_ids = active_ids - current_ids
     if expired_ids:
-        expired_rows_by_id = await _load_rows_for_ids(expired_ids)
+        expired_payload_texts: dict[str, str] = {}
+        for chunk in _chunked_values(expired_ids):
+            result = await session.execute(
+                select(OpportunityState.stable_id, payload_text_col).where(
+                    OpportunityState.stable_id.in_(chunk),
+                    OpportunityState.is_active == True,  # noqa: E712
+                )
+            )
+            for stable_id, json_text in result.all():
+                key = str(stable_id or "").strip()
+                if not key or not isinstance(json_text, str) or not json_text:
+                    continue
+                expired_payload_texts[key] = json_text
+
+        if expired_payload_texts:
+            def _decode_expired() -> dict[str, dict[str, Any]]:
+                decoded: dict[str, dict[str, Any]] = {}
+                for stable_id, json_text in expired_payload_texts.items():
+                    try:
+                        parsed = json.loads(json_text)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, dict):
+                        decoded[stable_id] = parsed
+                return decoded
+
+            decoded_expired = await asyncio.to_thread(_decode_expired)
+        else:
+            decoded_expired = {}
+
         for stable_id in expired_ids:
-            row = expired_rows_by_id.get(stable_id)
-            if row is None or not row.is_active:
-                continue
-            row.is_active = False
-            row.last_seen_at = completed_at
-            row.last_updated_at = completed_at
-            row.last_run_id = run.id
-            expired_payload = row.opportunity_json if isinstance(row.opportunity_json, dict) else {}
             event_messages.append(
                 {
                     "id": uuid.uuid4().hex[:16],
                     "stable_id": stable_id,
                     "run_id": run.id,
                     "event_type": "expired",
-                    "opportunity": expired_payload,
+                    "opportunity": decoded_expired.get(stable_id, {}),
                     "created_at": format_iso_utc_z(completed_at),
                 }
+            )
+
+        # Bulk UPDATE per chunk.  WHERE is_active=True keeps the
+        # statement idempotent under concurrent expiration races.
+        for chunk in _chunked_values(expired_ids):
+            await session.execute(
+                update(OpportunityState)
+                .where(
+                    OpportunityState.stable_id.in_(chunk),
+                    OpportunityState.is_active == True,  # noqa: E712
+                )
+                .values(
+                    is_active=False,
+                    last_seen_at=completed_at,
+                    last_updated_at=completed_at,
+                    last_run_id=run.id,
+                )
             )
 
     return event_messages

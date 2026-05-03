@@ -2783,10 +2783,13 @@ class PolymarketClient:
         """Fetch multiple pages of closed positions.
 
         60s TTL cache, single-flight.  ``data_positions`` has a 6 req/s
-        rate limit and the verifier paginates in 50-row pages with a
-        manual 0.35s inter-page sleep — caching the entire response
-        eliminates ~80% of the rate-limiter queue pressure in the
-        typical single-user install.
+        rate limit; the rate limiter's token bucket already paces page
+        requests, so a manual inter-page sleep was double-throttling
+        and pushed the verifier past its 12s HTTP budget on a 5-page
+        wallet (5 pages × 0.35s = 1.75s of pure idle latency on top
+        of the rate-limiter wait).  The single-flight cache collapses
+        concurrent same-wallet requests into one fetch chain, and the
+        token bucket bounds the cross-wallet aggregate rate.
         """
         normalized_address = str(address or "").strip().lower()
         capped_max_positions = max(1, int(max_positions or 200))
@@ -2808,10 +2811,6 @@ class PolymarketClient:
                 offset += len(page)
                 if len(page) < page_size:
                     break
-                # Stagger pagination to avoid saturating the
-                # data-positions rate bucket when multiple wallets are
-                # being analyzed concurrently.
-                await asyncio.sleep(0.35)
             return all_positions[:capped_max_positions]
 
         result = await self._closed_positions_cache.get_or_fetch(cache_key, _fetch)

@@ -56,8 +56,20 @@ DEFAULT_HTTP_RPC_URL = settings.POLYGON_RPC_URL
 DEFAULT_PUBLIC_HTTP_RPC_URL = "https://polygon-bor-rpc.publicnode.com"
 
 # Fallback RPC endpoints (tried in order after the configured primary).
+# Multiple no-auth public Polygon endpoints — eth_getLogs is supported on
+# all of them.  The 5/2026/05 10h soak showed the previous single-fallback
+# config produced 100 RPC failures (52 warnings + 48 ERROR-level "failed
+# across all endpoints") under transient publicnode.com ReadTimeouts.
+# A diverse pool eliminates the single-endpoint SPOF.  Order matters: the
+# loop in ``_rpc_request`` tries them in sequence until one succeeds, and
+# the first successful endpoint is promoted to ``_http_rpc_url`` for the
+# next call (see ``Wallet monitor RPC failover`` log message).
 FALLBACK_HTTP_RPC_URLS = (
-    DEFAULT_PUBLIC_HTTP_RPC_URL,
+    DEFAULT_PUBLIC_HTTP_RPC_URL,           # publicnode (current primary)
+    "https://polygon-rpc.com",              # Polygon Foundation official
+    "https://polygon.llamarpc.com",         # LlamaNodes
+    "https://polygon.drpc.org",             # dRPC (no-auth tier)
+    "https://1rpc.io/matic",                # 1RPC (no-auth tier)
 )
 
 DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=12.0, write=10.0, pool=8.0)

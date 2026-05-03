@@ -108,6 +108,7 @@ from services.signal_bus import (
     set_trade_signal_status as _persist_trade_signal_status,
 )
 import services.trader_hot_state as hot_state
+from services.trader_cycle_context import trader_cycle_context
 from services.ws_feeds import get_feed_manager
 from utils.utcnow import utcnow
 from utils.converters import coerce_bool as _coerce_bool, parse_iso_datetime, safe_float, safe_int, to_iso
@@ -4665,29 +4666,29 @@ async def _run_trader_once_inner(
             )
             return 0, 0, processed_signals
 
-        open_positions = await get_open_position_count_for_trader(
-            session,
-            trader_id,
-            mode=run_mode,
-            position_cap_scope=position_cap_scope,
-        )
-        open_order_count = await get_open_order_count_for_trader(
-            session,
-            trader_id,
-            mode=run_mode,
-        )
+        # ── Setup-stage state: pre-fetched via TraderCycleContext ──
+        #
+        # The previous implementation issued ~12 sequential DB queries
+        # against the shared session here (open_position_count,
+        # open_order_count, demoted_strategy_types, pending_live_exit,
+        # occupied_market_ids, reentry_cooldown, provider_failure,
+        # daily_realized/unrealized PnL, consecutive_loss_count,
+        # last_resolved_loss_at).  Each query was sub-100ms in
+        # isolation but the shared session forced strict serialization,
+        # and under DB pressure the cumulative pool wait blew the
+        # setup stage to p50≈5s / p99≈15s (10h soak 5/2026/05).  This
+        # was the dominant contributor to orchestrator backlog and the
+        # 15000-cap signal eviction in intent_runtime.
+        #
+        # Replaced with ``trader_cycle_context.acquire(...)`` which
+        # serves all per-trader hot reads from the lock-free hot_state
+        # projection, all cross-trader-shared values from a 1s-refreshed
+        # global snapshot, and the two remaining DB-bound projections
+        # (pending_live_exit, provider_failure) from event-driven
+        # caches with a 30s reconciler safety net.  Net DB cost on the
+        # hot path: zero.  See ``services/trader_cycle_context.py``.
         control_settings = dict(control.get("settings") or {})
         global_runtime_settings = dict(control_settings.get("global_runtime") or {})
-        # Fetch the demoted-strategy set once per cycle. Signals from a
-        # demoted strategy short-circuit at the first decision gate and
-        # never reach evaluate/order placement. The set comes from
-        # ``StrategyValidationProfile.status``, populated either by the
-        # auto-demotion guardrail or a manual operator override.
-        try:
-            from services.validation_service import validation_service as _validation_service
-            demoted_strategy_types = await _validation_service.get_demoted_strategy_types()
-        except Exception:
-            demoted_strategy_types = set()
         pending_live_exit_guard_settings = dict(global_runtime_settings.get("pending_live_exit_guard") or {})
         pending_live_exit_max_allowed = max(
             0,
@@ -4711,53 +4712,55 @@ async def _run_trader_once_inner(
         live_market_context_settings = dict(
             global_runtime_settings.get("live_market_context") or DEFAULT_LIVE_MARKET_CONTEXT
         )
+        # provider_health_window_seconds is also re-clamped further
+        # below for the live-mode block-decision path; we compute it
+        # here so the cycle context's provider-failure projection is
+        # keyed off the same window the operator configured.
+        _ctx_provider_window_seconds = int(
+            max(
+                30,
+                min(
+                    900,
+                    safe_int(
+                        live_provider_health_settings.get("window_seconds"),
+                        int(DEFAULT_LIVE_PROVIDER_HEALTH["window_seconds"]),
+                    ),
+                ),
+            )
+        )
+        trader_ctx = await trader_cycle_context.acquire(
+            trader_id=trader_id,
+            mode=run_mode,
+            terminal_statuses=pending_live_exit_terminal_statuses,
+            provider_window_seconds=_ctx_provider_window_seconds,
+        )
+        open_positions = trader_ctx.open_position_count
+        open_order_count = trader_ctx.open_order_count
+        demoted_strategy_types = set(trader_ctx.global_snapshot.demoted_strategy_types)
+        # Materialise the pending-live-exit summary as a mutable dict
+        # with mutable nested collections.  The cycle context returns
+        # immutable mappings/tuples for safety; downstream code in this
+        # module appends/mutates without copy, so we restore the
+        # legacy mutable shape here.
         pending_live_exit_summary = {
-            "count": 0,
-            "order_ids": [],
-            "market_ids": [],
-            "signal_ids": [],
-            "statuses": {},
-            "identities": [],
-            "identity_keys": [],
+            "count": int(trader_ctx.pending_live_exit_summary.get("count", 0) or 0),
+            "order_ids": list(trader_ctx.pending_live_exit_summary.get("order_ids") or ()),
+            "market_ids": list(trader_ctx.pending_live_exit_summary.get("market_ids") or ()),
+            "signal_ids": list(trader_ctx.pending_live_exit_summary.get("signal_ids") or ()),
+            "statuses": dict(trader_ctx.pending_live_exit_summary.get("statuses") or {}),
+            "terminal_statuses": list(
+                trader_ctx.pending_live_exit_summary.get("terminal_statuses")
+                or pending_live_exit_terminal_statuses
+            ),
+            "identities": [
+                dict(item) for item in (trader_ctx.pending_live_exit_summary.get("identities") or ())
+            ],
+            "identity_keys": list(trader_ctx.pending_live_exit_summary.get("identity_keys") or ()),
         }
-        if run_mode == "live":
-            if open_order_count > 0:
-                try:
-                    pending_live_exit_summary = await asyncio.wait_for(
-                        get_pending_live_exit_summary_for_trader(
-                            session,
-                            trader_id,
-                            mode=run_mode,
-                            terminal_statuses=pending_live_exit_terminal_statuses,
-                        ),
-                        timeout=_TRADER_PENDING_EXIT_SUMMARY_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    if session.in_transaction():
-                        await session.rollback()
-                    pending_live_exit_summary = {
-                        "count": open_order_count,
-                        "order_ids": [],
-                        "market_ids": [],
-                        "signal_ids": [],
-                        "statuses": {},
-                        "identities": [],
-                        "identity_keys": [],
-                        "timed_out": True,
-                    }
-                    logger.warning(
-                        "Pending live-exit summary timed out for trader=%s timeout=%.1fs",
-                        trader_id,
-                        _TRADER_PENDING_EXIT_SUMMARY_TIMEOUT_SECONDS,
-                    )
         pending_live_exit_count = int(pending_live_exit_summary.get("count", 0) or 0)
         effective_open_positions = max(open_positions, open_order_count)
-        occupied_market_ids = await get_occupied_market_ids_for_trader(session, trader_id, mode=run_mode)
-        reentry_cooldown_market_ids = await get_reentry_cooldown_market_ids_for_trader(
-            session,
-            trader_id,
-            mode=run_mode,
-        )
+        occupied_market_ids = set(trader_ctx.occupied_market_ids)
+        reentry_cooldown_market_ids = set(trader_ctx.reentry_cooldown_market_ids)
 
         block_entries_reason = None
         block_entries_payload: dict[str, Any] = {
@@ -4831,11 +4834,25 @@ async def _run_trader_once_inner(
             provider_health_snapshot: dict[str, Any]
             new_provider_block = False
             if blocked_until is None:
-                provider_health_snapshot = await _live_provider_failure_snapshot(
-                    session,
-                    trader_id=trader_id,
-                    window_seconds=provider_health_window_seconds,
-                )
+                # Pre-fetched via ``trader_cycle_context``: 30 s
+                # event-driven cache, 30 s reconciler safety net,
+                # zero DB cost on the hot path.  When the runtime
+                # config window differs from the cycle-context
+                # window, we materialise a mutable dict so downstream
+                # code can extend it without aliasing the projection.
+                provider_health_snapshot = {
+                    "count": int(trader_ctx.live_provider_failure_snapshot.get("count", 0) or 0),
+                    "window_seconds": int(
+                        trader_ctx.live_provider_failure_snapshot.get(
+                            "window_seconds", provider_health_window_seconds
+                        )
+                        or provider_health_window_seconds
+                    ),
+                    "errors": [
+                        dict(err)
+                        for err in (trader_ctx.live_provider_failure_snapshot.get("errors") or ())
+                    ],
+                }
                 if int(provider_health_snapshot.get("count", 0) or 0) >= provider_health_min_errors:
                     blocked_until = provider_health_now + timedelta(seconds=provider_health_block_seconds)
                     _live_provider_entry_blocked_until[trader_id] = blocked_until
@@ -5011,31 +5028,27 @@ async def _run_trader_once_inner(
                     payload={"changes": live_risk_clamp_changes},
                 )
         allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
-        # Realized PnL: instant hot-state lookups.
-        global_daily_pnl = await get_daily_realized_pnl(session, trader_id=None, mode=run_mode)
-        trader_daily_pnl = await get_daily_realized_pnl(session, trader_id=trader_id, mode=run_mode)
-        # Unrealized PnL: may read WS price cache — run both in parallel.
-        try:
-            global_unrealized_pnl, trader_unrealized_pnl = await asyncio.gather(
-                get_unrealized_pnl(session, trader_id=None, mode=run_mode),
-                get_unrealized_pnl(session, trader_id=trader_id, mode=run_mode),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to load unrealized PnL for trader cycle; using zero fallback",
-                trader_id=trader_id,
-                mode=run_mode,
-                exc_info=exc,
-            )
-            global_unrealized_pnl = 0.0
-            trader_unrealized_pnl = 0.0
+        # PnL + loss-streak come from the pre-fetched cycle context.
+        # Global values resolve via ``trader_ctx.global_snapshot`` which
+        # is refreshed once per second by a long-lived background task —
+        # not duplicated per trader.  Per-trader values come from the
+        # lock-free hot_state reads materialised when the context was
+        # acquired.  Net cost: zero DB reads, zero pool checkouts.
+        global_daily_pnl = float(
+            trader_ctx.global_snapshot.global_daily_realized_pnl_by_mode.get(run_mode, 0.0)
+        )
+        trader_daily_pnl = float(trader_ctx.trader_daily_realized_pnl)
+        global_unrealized_pnl = float(
+            trader_ctx.global_snapshot.global_unrealized_pnl_by_mode.get(run_mode, 0.0)
+        )
+        trader_unrealized_pnl = float(trader_ctx.trader_unrealized_pnl)
         # Track cumulative notional committed within this cycle so that
         # subsequent risk checks account for intra-cycle exposure even
         # before PnL is realized in the database.
         intra_cycle_committed_usd: float = 0.0
         intra_cycle_seen_market_ids: set[str] = set()
-        trader_loss_streak = await get_consecutive_loss_count(session, trader_id=trader_id, mode=run_mode)
-        last_loss_at = await get_last_resolved_loss_at(session, trader_id=trader_id, mode=run_mode)
+        trader_loss_streak = int(trader_ctx.consecutive_loss_count)
+        last_loss_at = trader_ctx.last_resolved_loss_at
         cooldown_seconds = max(0, safe_int(effective_risk_limits.get("cooldown_seconds"), 0))
         cooldown_active = False
         cooldown_remaining_seconds = 0
@@ -9078,6 +9091,17 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
         except Exception as exc:
             logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
 
+    # Start the cycle-context manager BEFORE the worker loop so the
+    # global snapshot has time to warm up (~1 s) before the first
+    # trader cycle reads from it.  Failure here is not fatal — the
+    # context falls back to lock-free hot_state reads + empty global
+    # snapshot, which is still a strict superset of correctness.
+    try:
+        await trader_cycle_context.start()
+        await trader_cycle_context.wait_warm(timeout=2.0)
+    except Exception as exc:
+        logger.warning("Trader cycle context start failed (non-fatal): %s", exc)
+
     try:
         try:
             if str(lane or _LANE_GENERAL).strip().lower() == _LANE_GENERAL:
@@ -9098,6 +9122,10 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
     except asyncio.CancelledError:
         logger.info("Trader orchestrator worker shutting down")
     finally:
+        try:
+            await trader_cycle_context.stop()
+        except Exception as exc:
+            logger.debug("Trader cycle context stop skipped: %s", exc)
         if runtime_trigger_task is not None and not runtime_trigger_task.done():
             runtime_trigger_task.cancel()
             try:
