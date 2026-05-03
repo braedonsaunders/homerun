@@ -1351,12 +1351,17 @@ function Cleanup-StartedPostgres {
     }
 
     if ($script:postgresStartMode -eq "docker-compose") {
-        $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "postgres") -EnvironmentOverrides @{
+        # ``-t 30``: give Postgres a full 30 seconds to flush WAL on
+        # SIGTERM before Docker escalates to SIGKILL. The default 10s
+        # is usually enough but can fall short under load — and an
+        # unclean exit forces WAL crash recovery on the next boot,
+        # which the readiness check then has to wait through.
+        $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "-t", "30", "postgres") -EnvironmentOverrides @{
             "POSTGRES_CONTAINER_NAME" = $postgresContainerName
         }
         if ($composeStop.ExitCode -ne 0) {
             if (Ensure-DockerCommand) {
-                try { docker stop $postgresContainerName *> $null } catch {}
+                try { docker stop -t 30 $postgresContainerName *> $null } catch {}
             }
         }
         return
@@ -1364,7 +1369,7 @@ function Cleanup-StartedPostgres {
 
     if ($script:postgresStartMode -eq "docker") {
         if (Ensure-DockerCommand) {
-            try { docker stop $postgresContainerName *> $null } catch {}
+            try { docker stop -t 30 $postgresContainerName *> $null } catch {}
             if ($script:postgresDockerCreatedByScript) {
                 try { docker rm $postgresContainerName *> $null } catch {}
             }
@@ -1407,7 +1412,7 @@ function Cleanup-AdoptedDockerPostgres {
         return
     }
 
-    $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "postgres") -EnvironmentOverrides @{
+    $composeStop = Invoke-DockerComposeCommand -Arguments @("stop", "-t", "30", "postgres") -EnvironmentOverrides @{
         "POSTGRES_CONTAINER_NAME" = $postgresContainerName
     }
     if ($composeStop.ExitCode -eq 0) {
@@ -1415,7 +1420,7 @@ function Cleanup-AdoptedDockerPostgres {
     }
 
     if (Ensure-DockerCommand) {
-        try { docker stop $postgresContainerName *> $null } catch {}
+        try { docker stop -t 30 $postgresContainerName *> $null } catch {}
     }
 }
 
@@ -1760,7 +1765,12 @@ try {
         $env:DATABASE_URL = "postgresql+asyncpg://${postgresUser}:${postgresPassword}@${postgresHost}:${script:postgresPort}/${postgresDb}"
     }
 
-    & backend\venv\Scripts\python.exe .\scripts\infra\ensure_postgres_ready.py --database-url $env:DATABASE_URL --retries 240 --retry-delay-seconds 0.5
+    # 1200×0.5s = 10 min ceiling. The script exits as soon as Postgres
+    # accepts a connection, so the ceiling only matters during WAL crash
+    # recovery after an unclean shutdown — and the script prints progress
+    # in that case so the console doesn't look hung. The previous 120s
+    # budget could exhaust mid-recovery on a large WAL.
+    & backend\venv\Scripts\python.exe .\scripts\infra\ensure_postgres_ready.py --database-url $env:DATABASE_URL --retries 1200 --retry-delay-seconds 0.5
     if ($LASTEXITCODE -ne 0) {
         throw "Postgres readiness validation failed"
     }

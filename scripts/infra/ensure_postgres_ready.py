@@ -43,6 +43,8 @@ async def _database_exists(conn: asyncpg.Connection, database_name: str) -> bool
 async def _ensure_database(database_url: str, retries: int, retry_delay_seconds: float) -> None:
     normalized_database_url = _normalize_asyncpg_url(database_url)
     admin_url, target_db = _admin_database_url(normalized_database_url)
+    last_progress_attempt = 0
+    recovery_warned = False
     for attempt in range(1, retries + 1):
         try:
             conn = await asyncpg.connect(admin_url, timeout=5)
@@ -59,7 +61,45 @@ async def _ensure_database(database_url: str, retries: int, retry_delay_seconds:
                     raise RuntimeError("Postgres probe query returned unexpected result")
             finally:
                 await probe.close()
+            if recovery_warned:
+                # Acknowledge to the user that the wait paid off, so the
+                # progress messages don't end without resolution.
+                print(
+                    f"Postgres recovery completed after {attempt} attempts "
+                    f"({attempt * retry_delay_seconds:.1f}s); database is ready.",
+                    flush=True,
+                )
             return
+        except asyncpg.exceptions.CannotConnectNowError as exc:
+            # Postgres is up but still in WAL crash recovery
+            # ("Consistent recovery state has not been yet reached").
+            # This is a "be patient" signal, not a real failure — recovery
+            # on a busy DB can take several minutes after an unclean
+            # shutdown (SIGKILL, host sleep, Docker Desktop quit). Print
+            # progress so the launcher console doesn't appear hung, and
+            # let the retry loop continue.
+            if not recovery_warned:
+                print(
+                    "Postgres is recovering after a prior unclean shutdown; "
+                    "waiting for consistent recovery state...",
+                    flush=True,
+                )
+                print(f"  detail: {exc}", flush=True)
+                recovery_warned = True
+                last_progress_attempt = attempt
+            elif attempt - last_progress_attempt >= 20:
+                # Heartbeat every ~10s (20 × 0.5s) so the user can see the
+                # wait is making progress, not stalled.
+                elapsed = attempt * retry_delay_seconds
+                print(
+                    f"  still recovering... attempt {attempt}/{retries} "
+                    f"(~{elapsed:.0f}s elapsed)",
+                    flush=True,
+                )
+                last_progress_attempt = attempt
+            if attempt >= retries:
+                raise
+            await asyncio.sleep(retry_delay_seconds)
         except Exception:
             if attempt >= retries:
                 raise
