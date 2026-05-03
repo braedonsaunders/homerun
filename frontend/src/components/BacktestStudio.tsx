@@ -20,8 +20,6 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   Clock,
   Flame,
   Layers3,
@@ -694,7 +692,12 @@ export default function BacktestStudio({
   // Whether the dynamic-params panel is expanded.  Defaults to
   // collapsed so the rail stays compact for operators who just
   // want to run the strategy with declared defaults.
-  const [paramsPanelOpen, setParamsPanelOpen] = useState<boolean>(false)
+  // Left-rail subtab.  Three tabs split the rail by the kind of
+  // decision the operator is making: configure the run (Setup), tune
+  // the strategy (Parameters), pick a prior result (Runs).  Replaces
+  // the old single-column scroll where opening the params panel
+  // would push the Run button below the fold.
+  const [leftTab, setLeftTab] = useState<'setup' | 'parameters' | 'runs'>('setup')
   // Track which group (Signal / Entry / Sizing / Exit / Risk /
   // Advanced / etc.) is active in the inner tabs.  Reset when
   // the strategy changes.
@@ -1212,9 +1215,18 @@ export default function BacktestStudio({
 
       {/* MAIN — 3-pane workbench */}
       <div className="flex flex-1 min-h-0">
-        {/* LEFT RAIL — controls + history */}
-        <div className="flex w-[320px] shrink-0 flex-col border-r border-border/50 bg-background/40">
-          <div className="border-b border-border/50 px-3 py-3 space-y-2">
+        {/* LEFT RAIL — controls + history.  Vertical layout:
+              [strategy source pill]      ← always visible (identity)
+              [subtab bar]                ← Setup | Parameters | Runs
+              [active subtab content]     ← scrolls independently
+              [Run backtest button]       ← always visible (action)
+            Each subtab's body is its own ScrollArea so a tall
+            Parameters panel doesn't push the Run button off-screen
+            (the bug that triggered this refactor — the rail used to
+            be one flat scroll and the params + iterate UI got cut). */}
+        <div className="flex w-[340px] shrink-0 flex-col border-r border-border/50 bg-background/40">
+          {/* Strategy identity — small persistent header. */}
+          <div className="border-b border-border/50 px-3 py-2">
             <div
               className={cn(
                 'flex items-center justify-between gap-2 rounded-sm border px-2 py-1.5 transition-colors duration-700',
@@ -1245,129 +1257,163 @@ export default function BacktestStudio({
                 ) : null}
               </div>
             </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Capital
-                </Label>
-                <Input
-                  value={initialCapital}
-                  onChange={(e) => setInitialCapital(e.target.value)}
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Seed
-                </Label>
-                <Input
-                  value={seed}
-                  onChange={(e) => setSeed(e.target.value)}
-                  placeholder="auto"
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Latency p50 (ms)
-                </Label>
-                <Input
-                  value={submitP50}
-                  onChange={(e) => setSubmitP50(e.target.value)}
-                  placeholder="measured"
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Latency p95 (ms)
-                </Label>
-                <Input
-                  value={submitP95}
-                  onChange={(e) => setSubmitP95(e.target.value)}
-                  placeholder="measured"
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="How many days of history to backtest against.  7 days is the default; extend for thicker samples, shorten for fast iteration.">
-                  Window (days)
-                </Label>
-                <Input
-                  value={windowDays}
-                  onChange={(e) => setWindowDays(e.target.value)}
-                  placeholder="7"
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
-                  Impact (bps)
-                </Label>
-                <Input
-                  value={impactBps}
-                  onChange={(e) => setImpactBps(e.target.value)}
-                  placeholder="0 (off)"
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Polymarket maker LP-rewards approximation. ~1-3 bps realistic on top crypto markets; >5 bps optimistic. Only paid on inside-band fills.">
-                  Maker rebate (bps)
-                </Label>
-                <Input
-                  value={makerRebateBps}
-                  onChange={(e) => setMakerRebateBps(e.target.value)}
-                  placeholder="0 (off)"
-                  className="h-7 text-xs"
-                />
-              </div>
-            </div>
-
-            {/* ───────── Strategy parameters (dynamic) ─────────
-                Renders the SAME field schema the bot orchestrator's
-                tune subtab does — every dynamic knob the strategy
-                declared in its ``param_fields`` schema is editable
-                here for THIS backtest run.  Overrides feed into
-                ``run_execution_backtest(config=...)`` and the
-                StrategyLoader merges them on top of the strategy's
-                ``default_config`` before instantiation, so every
-                gate + evaluate() + should_exit() reads them via
-                ``strategy.config`` exactly as live does after a
-                tune-save.  Hidden when the strategy declares no
-                fields (legacy strategies without param_schema_json). */}
-            {paramFieldGroups.length > 0 ? (
-              <div className="rounded-md border border-border/50 bg-background/60">
-                <button
-                  type="button"
-                  onClick={() => setParamsPanelOpen((v) => !v)}
-                  className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-muted/30 transition-colors rounded-t-md"
-                  title="Override the strategy's declared parameters for this run.  Same fields the bot's tune subtab edits."
-                >
-                  <span className="flex items-center gap-1.5 font-medium text-foreground">
-                    {paramsPanelOpen ? (
-                      <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                    )}
-                    <Sliders className="h-3 w-3 text-cyan-400" />
-                    Strategy parameters
+          {/* Subtab bar.  Three tabs split the rail by the kind of
+              decision the operator is making: configure the run
+              (Setup), tune the strategy (Parameters), pick a prior
+              result to view (Runs).  Counts hint at how much content
+              is in each — Parameters shows the dynamic field count
+              + a 'modified' badge when overrides differ from
+              defaults; Runs shows the cached run count. */}
+          <Tabs
+            value={leftTab}
+            onValueChange={(v) => setLeftTab(v as 'setup' | 'parameters' | 'runs')}
+            className="flex flex-1 min-h-0 flex-col"
+          >
+            <TabsList className="h-8 w-full justify-start gap-0 rounded-none border-b border-border/50 bg-transparent p-0">
+              <TabsTrigger
+                value="setup"
+                className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px]"
+              >
+                Setup
+              </TabsTrigger>
+              <TabsTrigger
+                value="parameters"
+                className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px] gap-1"
+              >
+                <span>Parameters</span>
+                {paramFieldGroups.length > 0 ? (
+                  <span className="text-[9px] text-muted-foreground">
+                    {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)}
                   </span>
-                  <span className="flex items-center gap-1.5">
-                    {paramsDirty ? (
-                      <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-amber-300 border-amber-400/40">
-                        modified
-                      </Badge>
-                    ) : null}
-                    <span className="text-[9px] text-muted-foreground">
-                      {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)} fields
-                    </span>
-                  </span>
-                </button>
+                ) : null}
+                {paramsDirty ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Overrides modified" />
+                ) : null}
+                {iterRunning ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title="Iteration running" />
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger
+                value="runs"
+                className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px] gap-1"
+              >
+                <span>Runs</span>
+                {runsQuery.data && runsQuery.data.length > 0 ? (
+                  <span className="text-[9px] text-muted-foreground">{runsQuery.data.length}</span>
+                ) : null}
+              </TabsTrigger>
+            </TabsList>
 
-                {paramsPanelOpen ? (
-                  <div className="border-t border-border/40 p-2 space-y-2">
+            {/* ─────── Setup tab ─────── */}
+            <TabsContent value="setup" className="flex-1 min-h-0 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="px-3 py-3 space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Capital
+                      </Label>
+                      <Input
+                        value={initialCapital}
+                        onChange={(e) => setInitialCapital(e.target.value)}
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Seed
+                      </Label>
+                      <Input
+                        value={seed}
+                        onChange={(e) => setSeed(e.target.value)}
+                        placeholder="auto"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Latency p50 (ms)
+                      </Label>
+                      <Input
+                        value={submitP50}
+                        onChange={(e) => setSubmitP50(e.target.value)}
+                        placeholder="measured"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Latency p95 (ms)
+                      </Label>
+                      <Input
+                        value={submitP95}
+                        onChange={(e) => setSubmitP95(e.target.value)}
+                        placeholder="measured"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="How many days of history to backtest against.  7 days is the default; extend for thicker samples, shorten for fast iteration.">
+                        Window (days)
+                      </Label>
+                      <Input
+                        value={windowDays}
+                        onChange={(e) => setWindowDays(e.target.value)}
+                        placeholder="7"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
+                        Impact (bps)
+                      </Label>
+                      <Input
+                        value={impactBps}
+                        onChange={(e) => setImpactBps(e.target.value)}
+                        placeholder="0 (off)"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Polymarket maker LP-rewards approximation. ~1-3 bps realistic on top crypto markets; >5 bps optimistic. Only paid on inside-band fills.">
+                        Maker rebate (bps)
+                      </Label>
+                      <Input
+                        value={makerRebateBps}
+                        onChange={(e) => setMakerRebateBps(e.target.value)}
+                        placeholder="0 (off)"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Hint when the strategy carries dynamic
+                      params — point operators at the Parameters tab
+                      so they don't miss it. */}
+                  {paramFieldGroups.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setLeftTab('parameters')}
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] rounded-md border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/10 transition-colors text-cyan-200"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Sliders className="h-3 w-3" />
+                        {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)} strategy params available
+                      </span>
+                      <span className="text-cyan-300">→ Parameters</span>
+                    </button>
+                  ) : null}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* ─────── Parameters tab ─────── */}
+            <TabsContent value="parameters" className="flex-1 min-h-0 mt-0 overflow-hidden">
+              {paramFieldGroups.length > 0 ? (
+                <ScrollArea className="h-full">
+                  <div className="px-3 py-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] text-muted-foreground">
                         Edits apply to this run only · backend merges over the
@@ -1620,6 +1666,12 @@ export default function BacktestStudio({
                         (the panel needs the strategy's database UUID).
                       </div>
                     ) : null}
+
+                    {/* Field-group tabs (Signal / Entry / Sizing /
+                        Exit / Risk / Advanced).  Each tab content is
+                        scrollable but the whole Parameters tab is
+                        also wrapped in a parent ScrollArea, so even
+                        a 50-field strategy never overflows the rail. */}
                     <Tabs value={paramGroupTab} onValueChange={setParamGroupTab}
                       className="flex min-h-0 flex-col">
                       <div className="overflow-x-auto pb-1">
@@ -1642,7 +1694,7 @@ export default function BacktestStudio({
                         <TabsContent
                           key={`panel:${group.key}`}
                           value={group.key}
-                          className="mt-0 max-h-[420px] overflow-auto rounded-md border border-border/50 bg-background/65 p-2"
+                          className="mt-0 rounded-md border border-border/50 bg-background/65 p-2"
                         >
                           <StrategyConfigForm
                             schema={{ param_fields: group.fields as any[] }}
@@ -1653,14 +1705,43 @@ export default function BacktestStudio({
                       ))}
                     </Tabs>
                   </div>
-                ) : null}
-              </div>
-            ) : null}
+                </ScrollArea>
+              ) : (
+                <div className="flex h-full items-center justify-center px-3 text-center">
+                  <div className="space-y-1.5">
+                    <Sliders className="h-5 w-5 mx-auto text-muted-foreground/50" />
+                    <div className="text-[11px] text-muted-foreground">
+                      Strategy declares no dynamic params
+                    </div>
+                    <div className="text-[10px] text-muted-foreground/70">
+                      Add fields to the strategy's <code className="font-mono">config_schema.param_fields</code> to enable iteration.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </TabsContent>
 
+            {/* ─────── Runs tab ─────── */}
+            <TabsContent value="runs" className="flex-1 min-h-0 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <RunHistory
+                  runs={runsQuery.data ?? []}
+                  activeId={activeRun?.run_id ?? null}
+                  onSelect={(run) => loadRunMutation.mutate(run.run_id)}
+                />
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+
+          {/* Sticky footer — Run backtest button.  Lives OUTSIDE the
+              Tabs container so it stays visible regardless of which
+              tab is active.  Same handler the old layout used; the
+              error message floats just below it. */}
+          <div className="border-t border-border/50 px-3 py-2 space-y-1 bg-background/60">
             <Button
               onClick={handleRun}
               disabled={runMutation.isPending || sourceCode.trim().length < 10}
-              className="mt-1 w-full"
+              className="w-full"
             >
               {runMutation.isPending ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1670,23 +1751,12 @@ export default function BacktestStudio({
               Run backtest
             </Button>
             {errorMessage ? (
-              <div className="mt-1 flex items-start gap-1 text-[10px] text-red-300">
+              <div className="flex items-start gap-1 text-[10px] text-red-300">
                 <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
                 <span>{errorMessage}</span>
               </div>
             ) : null}
           </div>
-
-          <div className="px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-            Recent runs
-          </div>
-          <ScrollArea className="flex-1 min-h-0">
-            <RunHistory
-              runs={runsQuery.data ?? []}
-              activeId={activeRun?.run_id ?? null}
-              onSelect={(run) => loadRunMutation.mutate(run.run_id)}
-            />
-          </ScrollArea>
         </div>
 
         {/* CENTER — results */}
