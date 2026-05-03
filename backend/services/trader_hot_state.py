@@ -26,6 +26,7 @@ from models.database import (
     AuditAsyncSessionLocal,
     LiveTradingPosition,
     TradeSignal,
+    TradeSignalEmission,
     TraderDecision,
     TraderDecisionCheck,
     TraderEvent,
@@ -1221,10 +1222,33 @@ async def buffer_signal_cursor(
         _audit_buffer_append(entry)
 
 
-async def buffer_signal_status(*, signal_id: str, status: str, effective_price: float | None = None) -> None:
+async def buffer_signal_status(
+    *,
+    signal_id: str,
+    status: str,
+    effective_price: float | None = None,
+    emission_event_type: str | None = None,
+    emission_reason: str | None = None,
+) -> None:
+    """Buffer a deferred ``trade_signals`` status mutation.
+
+    When ``emission_event_type`` is supplied the audit flush also
+    writes a ``TradeSignalEmission`` row capturing the post-update
+    signal state — this preserves the audit trail produced by the
+    legacy synchronous ``signal_bus.set_trade_signal_status`` path.
+    The emission INSERT lands in the same flush transaction as the
+    status UPDATE, so it inherits the audit-tier statement timeout
+    and short-tx envelope (no separate row-lock window).
+    """
     entry = _AuditEntry(
         kind="signal_status",
-        payload={"signal_id": signal_id, "status": status, "effective_price": effective_price},
+        payload={
+            "signal_id": signal_id,
+            "status": status,
+            "effective_price": effective_price,
+            "emission_event_type": emission_event_type,
+            "emission_reason": emission_reason,
+        },
     )
     async with _audit_lock:
         _audit_buffer_append(entry)
@@ -1796,11 +1820,60 @@ async def _flush_cursors_bulk(
 
 async def _flush_signal_status(session: AsyncSession, p: dict[str, Any]) -> None:
     signal = await session.get(TradeSignal, p["signal_id"])
-    if signal is not None:
-        signal.status = p["status"]
-        if p.get("effective_price") is not None:
-            signal.effective_price = p["effective_price"]
-        signal.updated_at = utcnow()
+    if signal is None:
+        return
+    new_status = str(p.get("status") or "").strip().lower()
+    incoming_effective_price = p.get("effective_price")
+    previous_status = str(signal.status or "").strip().lower()
+    # No-op when the buffered mutation does not actually change the
+    # row.  Mirrors the early-return in the legacy synchronous
+    # ``signal_bus.set_trade_signal_status`` so duplicate audit
+    # entries (which the orchestrator can produce when a signal is
+    # re-evaluated within the same TTL) don't generate redundant
+    # UPDATEs that compete with the projection writer.
+    if previous_status == new_status and (
+        incoming_effective_price is None
+        or float(signal.effective_price or 0.0) == float(incoming_effective_price)
+    ):
+        return
+    signal.status = new_status
+    if incoming_effective_price is not None:
+        signal.effective_price = incoming_effective_price
+    signal.updated_at = utcnow()
+
+    # When the buffered call captured an emission event_type, write
+    # the matching ``TradeSignalEmission`` row in the same flush
+    # transaction.  The legacy synchronous path
+    # (``signal_bus._record_signal_emission``) wrote this inline
+    # before commit; routing it through the audit flush keeps the
+    # audit trail intact while removing the per-row lock window
+    # from the orchestrator's hot path.
+    emission_event_type = p.get("emission_event_type")
+    if emission_event_type:
+        session.add(
+            TradeSignalEmission(
+                id=_new_id(),
+                signal_id=signal.id,
+                source=str(signal.source or ""),
+                source_item_id=signal.source_item_id,
+                signal_type=str(signal.signal_type or ""),
+                strategy_type=signal.strategy_type,
+                market_id=str(signal.market_id or ""),
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                effective_price=signal.effective_price,
+                edge_percent=signal.edge_percent,
+                confidence=signal.confidence,
+                liquidity=signal.liquidity,
+                status=str(signal.status or ""),
+                dedupe_key=str(signal.dedupe_key or ""),
+                event_type=str(emission_event_type),
+                reason=p.get("emission_reason"),
+                payload_json=None,
+                snapshot_json=None,
+                created_at=utcnow(),
+            )
+        )
 
 
 def _flush_trader_event(session: AsyncSession, p: dict[str, Any]) -> None:

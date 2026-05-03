@@ -89,6 +89,12 @@ from services.trader_orchestrator_state import (
     create_trader_event as _create_trader_event,
     create_trader_order as _create_trader_order,
     get_gross_exposure as _db_get_gross_exposure,
+    # Re-exported into this module's namespace so
+    # ``services.trader_cycle_context`` (and the orchestrator's test
+    # fixtures) can monkeypatch it via the worker module path.  The
+    # cycle context's projection refresh delegates to this name —
+    # see ``trader_cycle_context._query_pending_live_exit``.
+    get_pending_live_exit_summary_for_trader,  # noqa: F401
     list_unconsumed_trade_signals as _list_unconsumed_trade_signals_authoritative,
     list_traders,
     record_signal_consumption as _record_signal_consumption,
@@ -559,13 +565,40 @@ async def update_trader_decision(
 
 
 async def set_trade_signal_status(session, *, signal_id, status, commit=True):
-    await _persist_trade_signal_status(
-        session,
-        str(signal_id or ""),
-        str(status or ""),
-        commit=commit,
+    """Buffered ``trade_signals`` status writer for the orchestrator
+    hot path.
+
+    Routes the DB UPDATE + ``TradeSignalEmission`` audit-row INSERT
+    through ``hot_state.buffer_signal_status`` (audit-flush task,
+    short transaction) instead of executing them inline on the
+    orchestrator's session.  This eliminates the per-row lock
+    contention against ``intent_runtime._project_upsert_batch``
+    that the 5/2026/05 10h soak surfaced as the dominant bottleneck
+    after the opportunity_state batched-UPSERT fix landed (commit
+    e6c78e9): 6+ ``UPDATE trade_signals SET ...`` lock-contention
+    incidents per soak hour, with intent_runtime projection_queue
+    backing up to 782 entries.
+
+    The in-memory ``intent_runtime`` status is updated synchronously
+    so any read-after-write within the same trader cycle observes
+    the new value.  The ``session`` and ``commit`` parameters are
+    accepted for backward-compatibility with the call-site signature
+    but are deliberately ignored — the audit-flush task owns its own
+    transaction lifecycle and the orchestrator session must not
+    block waiting for that commit.
+    """
+    sid = str(signal_id or "").strip()
+    st = str(status or "").strip()
+    if not sid:
+        return
+    normalized_status = st.lower()
+    await hot_state.buffer_signal_status(
+        signal_id=sid,
+        status=st,
+        emission_event_type="status_update",
+        emission_reason=f"status:{normalized_status}",
     )
-    await get_intent_runtime().update_signal_status(signal_id=str(signal_id or ""), status=str(status or ""))
+    await get_intent_runtime().update_signal_status(signal_id=sid, status=st)
 
 
 async def create_trader_event(
