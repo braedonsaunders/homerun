@@ -216,6 +216,11 @@ class _AuditEntry:
     kind: str  # "decision" | "decision_checks" | "consumption" | "cursor" | "signal_status" | "trader_event" | "experiment_assignment"
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.monotonic)
+    # Number of failed flush attempts.  Incremented when an entry's group
+    # commit fails and the entry is re-queued.  After ``_AUDIT_MAX_RETRIES``
+    # the entry is dropped permanently (logged at ERROR) rather than
+    # cycling forever and growing the buffer toward the cap.
+    retry_count: int = 0
 
 
 _audit_buffer: list[_AuditEntry] = []
@@ -232,6 +237,15 @@ _AUDIT_FLUSH_INTERVAL = 0.5
 # interval still drains 500/sec of audit throughput.
 _AUDIT_FLUSH_BATCH_SIZE = 250
 _AUDIT_BUFFER_MAX_SIZE = 50_000
+# Maximum number of retry attempts per entry before we give up and drop
+# it permanently.  Without this, persistent group failures (e.g. a
+# trader_id row owned by orchestrator under a hot lock) would re-queue
+# the same entries every 500ms forever, growing the buffer until the
+# cap drops oldest-first — silently corrupting audit ordering.  Five
+# retries × 0.5s flush interval ≈ a 2.5s retry window per entry, which
+# is long enough to ride out a transient lock conflict but short enough
+# that a hung writer doesn't pollute the buffer.
+_AUDIT_MAX_RETRIES = 5
 # Hard timeouts the audit transaction sets on its own connection. The
 # pool default is 30s statement_timeout / 60s idle_in_transaction; that
 # is too generous for the audit path, which should fail-fast and re-queue
@@ -1562,41 +1576,80 @@ async def flush_audit_buffer() -> int:
 
     # Re-queue only the failed entries; the rest persisted successfully.
     if failed_entries:
+        # Increment per-entry retry counter and partition into "retry"
+        # vs "exhausted-retry" buckets.  Without this, a persistently
+        # failing entry (e.g. a signal_status update against a row
+        # whose lock is permanently owned by another writer) would
+        # cycle through the buffer forever, growing it toward the cap
+        # and silently dropping fresher entries via the FIFO eviction.
+        retry_entries: list[_AuditEntry] = []
+        exhausted_entries: list[_AuditEntry] = []
+        for entry in failed_entries:
+            entry.retry_count += 1
+            if entry.retry_count > _AUDIT_MAX_RETRIES:
+                exhausted_entries.append(entry)
+            else:
+                retry_entries.append(entry)
+
         async with _audit_lock:
             headroom = _AUDIT_BUFFER_MAX_SIZE - len(_audit_buffer)
             if headroom > 0:
-                preserved = failed_entries[:headroom]
+                preserved = retry_entries[:headroom]
                 _audit_buffer[:0] = preserved
-                dropped = len(failed_entries) - len(preserved)
+                dropped_for_cap = len(retry_entries) - len(preserved)
             else:
-                dropped = len(failed_entries)
+                dropped_for_cap = len(retry_entries)
         kind_counts: dict[str, int] = {}
         for entry in failed_entries:
             kind_counts[entry.kind] = kind_counts.get(entry.kind, 0) + 1
-        # Surface which group(s) failed so we can target the contention
-        # source on the next failure (e.g. consumption persistently
-        # failing => orchestrator owns trader_signal_consumption locks
-        # and audit needs a different write strategy).
+        # Surface per-group exception type/message so the operator can
+        # tell at a glance whether failures are LockTimeout, OperationalError,
+        # CancelledError, or something else — without grepping stderr to
+        # correlate exc_info dumps.  Truncate the message to 160 chars
+        # to keep the log line one-screen-readable.
         failure_groups = [name for name, _ in group_failures]
+        exception_summary = {
+            name: f"{type(exc).__name__}: {str(exc)[:160] if exc is not None else 'unknown'}"
+            for name, exc in group_failures
+        }
         first_exc = group_failures[0][1] if group_failures else None
-        if dropped > 0:
+        if exhausted_entries:
+            exhausted_kind_counts: dict[str, int] = {}
+            for entry in exhausted_entries:
+                exhausted_kind_counts[entry.kind] = (
+                    exhausted_kind_counts.get(entry.kind, 0) + 1
+                )
+            # ERROR (not WARNING) because these audit rows are now
+            # permanently lost — operator needs to know.  Dropping
+                # is preferable to unbounded retry, but the operator
+                # should see the cumulative pattern.
+            logger.error(
+                "Audit entries exhausted retry budget; dropping permanently",
+                exhausted_count=len(exhausted_entries),
+                kind_counts=exhausted_kind_counts,
+                max_retries=_AUDIT_MAX_RETRIES,
+                exceptions=exception_summary,
+            )
+        if dropped_for_cap > 0:
             logger.warning(
                 "Audit groups failed; buffer at cap, dropped entries",
                 failed_count=len(failed_entries),
                 succeeded_count=len(succeeded_entries),
-                dropped=dropped,
+                dropped_for_cap=dropped_for_cap,
                 buffer_size=len(_audit_buffer),
                 kind_counts=kind_counts,
                 failed_groups=failure_groups,
+                exceptions=exception_summary,
                 exc_info=first_exc,
             )
-        else:
+        elif retry_entries:
             logger.warning(
                 "Audit groups failed, re-queuing",
                 failed_count=len(failed_entries),
                 succeeded_count=len(succeeded_entries),
                 kind_counts=kind_counts,
                 failed_groups=failure_groups,
+                exceptions=exception_summary,
                 exc_info=first_exc,
             )
     return len(succeeded_entries)

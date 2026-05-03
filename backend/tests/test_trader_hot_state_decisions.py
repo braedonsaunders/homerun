@@ -115,6 +115,78 @@ async def test_flush_audit_buffer_requeues_failed_batch_at_front(monkeypatch):
             "second",
             "third",
         ]
+        # Each re-queue increments the entry's retry_count so the
+        # exhaustion path can drop entries after _AUDIT_MAX_RETRIES
+        # cycles instead of looping forever.  Only the first two were
+        # in this flush's batch (batch_size=2); "third" was untouched
+        # and stays at retry_count=0.
+        buffer_by_id = {e.payload["id"]: e for e in trader_hot_state._audit_buffer}
+        assert buffer_by_id["first"].retry_count == 1
+        assert buffer_by_id["second"].retry_count == 1
+        assert buffer_by_id["third"].retry_count == 0
     finally:
         monkeypatch.setattr(trader_hot_state, "_AUDIT_FLUSH_BATCH_SIZE", original_batch_size)
+        _reset_hot_state()
+
+
+@pytest.mark.asyncio
+async def test_flush_audit_buffer_drops_entries_that_exhaust_retry_budget(monkeypatch, caplog):
+    """Entries that fail to flush ``_AUDIT_MAX_RETRIES + 1`` times must
+    be dropped permanently rather than cycling forever.  Without this
+    cap, a persistently-failing audit kind (e.g. a row whose lock is
+    permanently held by another writer) would re-queue every 500ms,
+    growing the buffer toward its 50K cap and silently dropping fresher
+    entries via FIFO eviction — corrupting audit ordering invisibly.
+    """
+    _reset_hot_state()
+
+    class _NoAutoflush:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _Session:
+        def __init__(self):
+            self.no_autoflush = _NoAutoflush()
+
+        async def execute(self, *args, **kwargs):
+            return None
+
+        async def commit(self):
+            raise TimeoutError("simulated lock timeout")
+
+        async def rollback(self):
+            return None
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(trader_hot_state, "_AUDIT_FLUSH_BATCH_SIZE", 5)
+    monkeypatch.setattr(trader_hot_state, "AuditAsyncSessionLocal", lambda: _SessionContext())
+
+    try:
+        # Seed an entry already at one-below the cap.  After one more
+        # failed flush it should be dropped permanently rather than
+        # re-queued.
+        primed_entry = trader_hot_state._AuditEntry(
+            kind="consumption",
+            payload={"id": "primed"},
+            created_at=1.0,
+        )
+        primed_entry.retry_count = trader_hot_state._AUDIT_MAX_RETRIES
+        trader_hot_state._audit_buffer.append(primed_entry)
+
+        flushed = await trader_hot_state.flush_audit_buffer()
+        assert flushed == 0
+
+        # Buffer must be empty: the entry exhausted its retry budget on
+        # this flush and was dropped, NOT re-queued.
+        assert trader_hot_state._audit_buffer == []
+    finally:
         _reset_hot_state()
