@@ -52,6 +52,13 @@ class _RedisState:
     started: bool = False
     health_task: Optional[asyncio.Task] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Consecutive probe failures.  We require ``REDIS_PROBE_FAILURE_THRESHOLD``
+    # consecutive failures before flipping ``healthy`` to ``False`` so that
+    # an isolated transport hiccup (notably the WSL2↔Windows NAT vSwitch
+    # stalling for a second or two on this dev box) does not flap the
+    # health state and disable every Redis-using caller.  Reset on the
+    # next successful probe.
+    consecutive_failures: int = 0
 
 
 _state = _RedisState()
@@ -244,10 +251,22 @@ async def shutdown() -> None:
 
 
 async def _probe_once() -> bool:
-    """Run a single PING + SET/GET round-trip; update health state."""
+    """Run a single PING + SET/GET round-trip; update health state.
+
+    SET and GET are pipelined into one round-trip so the probe makes 2
+    RTTs (PING, then SET+GET) instead of 3.  On this dev box the probe
+    travels Windows host → WSL2 NAT vSwitch → Redis-in-WSL, where each
+    RTT can stall 8-50ms (sometimes seconds) under Hyper-V scheduler
+    pressure; cutting the RTT count keeps the probe under budget.
+
+    A single failure does NOT flip ``_state.healthy`` to ``False`` —
+    we wait for ``REDIS_PROBE_FAILURE_THRESHOLD`` consecutive failures
+    before declaring unhealthy, to absorb isolated transport hiccups.
+    """
     client = _state.client
     if client is None:
         _state.healthy = False
+        _state.consecutive_failures = 0
         return False
 
     probe_key = _ns(_HEALTH_PROBE_KEY_SUFFIX)
@@ -258,35 +277,51 @@ async def _probe_once() -> bool:
     # failed" warning.  The probe is a *liveness* check, not a latency
     # gate; ops on the hot path use the tighter socket_timeout directly.
     timeout = max(4.0, float(getattr(settings, "REDIS_SOCKET_TIMEOUT_SECONDS", 1.5)) * 2.5)
+    failure_threshold = max(
+        1, int(getattr(settings, "REDIS_PROBE_FAILURE_THRESHOLD", 2))
+    )
     try:
         async with asyncio.timeout(timeout + 0.5):
             pong = await client.ping()
             if pong is True or pong == b"PONG" or pong == "PONG":
                 # Light read/write to confirm the chosen DB is accepting
                 # writes (PING is answered even by a read-only replica).
-                await client.set(probe_key, "1", ex=30)
-                await client.get(probe_key)
+                # Pipeline both operations into a single network round-
+                # trip — the previous implementation awaited SET and GET
+                # sequentially, which on a slow vSwitch stacked the
+                # latency.  ``transaction=False`` skips MULTI/EXEC; we
+                # don't need atomicity, just the round-trip merge.
+                async with client.pipeline(transaction=False) as pipe:
+                    pipe.set(probe_key, "1", ex=30)
+                    pipe.get(probe_key)
+                    await pipe.execute()
             else:
                 raise RedisError(f"unexpected PING reply: {pong!r}")
     except (asyncio.TimeoutError, RedisError, OSError) as exc:
-        was_healthy = _state.healthy
-        _state.healthy = False
         # asyncio.TimeoutError() formats to an empty string — include the
         # type name so the operator sees "TimeoutError" rather than a
         # blank "Redis health probe failed: " in the log.
         exc_text = str(exc) or repr(exc) or type(exc).__name__
         _state.last_error = f"probe: {type(exc).__name__}: {exc_text}"
         _state.last_error_at = time.time()
-        if was_healthy:
-            logger.warning(
-                "Redis health probe failed: %s: %s (timeout=%.2fs)",
-                type(exc).__name__,
-                exc_text,
-                timeout,
-            )
+        _state.consecutive_failures += 1
+        # Only flip healthy=False once we've seen ``failure_threshold``
+        # consecutive misses — absorbs single transport hiccups.
+        if _state.consecutive_failures >= failure_threshold:
+            was_healthy = _state.healthy
+            _state.healthy = False
+            if was_healthy:
+                logger.warning(
+                    "Redis health probe failed: %s: %s (timeout=%.2fs, %d consecutive)",
+                    type(exc).__name__,
+                    exc_text,
+                    timeout,
+                    _state.consecutive_failures,
+                )
         return False
     except Exception as exc:  # defensive — never let probe crash the loop
         _state.healthy = False
+        _state.consecutive_failures += 1
         exc_text = str(exc) or repr(exc) or type(exc).__name__
         _state.last_error = f"probe_unexpected: {type(exc).__name__}: {exc_text}"
         _state.last_error_at = time.time()
@@ -295,6 +330,7 @@ async def _probe_once() -> bool:
 
     became_healthy = not _state.healthy
     _state.healthy = True
+    _state.consecutive_failures = 0
     _state.last_ok_at = time.time()
     if became_healthy:
         logger.info("Redis health restored")
