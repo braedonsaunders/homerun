@@ -19,7 +19,7 @@ from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from config import settings
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -1538,32 +1538,133 @@ async def upsert_trade_signal(
                     emission_reason = "reactivation_suppressed:skipped_unchanged"
                     publish_signal_emission = False
                 else:
-                    row.source_item_id = source_item_id
-                    row.signal_type = signal_type
-                    row.strategy_type = strategy_type
-                    row.market_id = market_id
-                    row.market_question = market_question
-                    row.direction = direction
-                    row.entry_price = entry_price
-                    row.edge_percent = edge_percent
-                    row.confidence = confidence
-                    row.liquidity = liquidity
-                    row.expires_at = _to_utc_naive(expires_at)
-                    row.payload_json = _safe_json(normalized_payload_json)
-                    row.strategy_context_json = _safe_json(strategy_context_json)
-                    if quality_passed is not None:
-                        row.quality_passed = quality_passed
-                        row.quality_rejection_reasons = quality_rejection_reasons if quality_rejection_reasons else None
                     emission_event_type = "upsert_update"
                     emission_reason = None
                     if should_reactivate:
-                        row.status = "pending"
-                        row.effective_price = None
                         emission_event_type = "upsert_reactivated"
                         emission_reason = f"reactivated_from:{previous_status}"
-                    if runtime_sequence is not _RUNTIME_SEQUENCE_UNSET:
-                        row.runtime_sequence = int(runtime_sequence) if runtime_sequence is not None else None
-                    row.updated_at = _utc_now()
+
+                    # Compute the values dict once so both code paths
+                    # (SQL-level conditional UPDATE for the cross-process
+                    # race, ORM mutate for callers without a sequence)
+                    # write the same shape.
+                    now_utc = _utc_now()
+                    new_values: dict[str, Any] = {
+                        "source_item_id": source_item_id,
+                        "signal_type": signal_type,
+                        "strategy_type": strategy_type,
+                        "market_id": market_id,
+                        "market_question": market_question,
+                        "direction": direction,
+                        "entry_price": entry_price,
+                        "edge_percent": edge_percent,
+                        "confidence": confidence,
+                        "liquidity": liquidity,
+                        "expires_at": _to_utc_naive(expires_at),
+                        "payload_json": _safe_json(normalized_payload_json),
+                        "strategy_context_json": _safe_json(strategy_context_json),
+                        "updated_at": now_utc,
+                    }
+                    if quality_passed is not None:
+                        new_values["quality_passed"] = quality_passed
+                        new_values["quality_rejection_reasons"] = (
+                            quality_rejection_reasons if quality_rejection_reasons else None
+                        )
+                    if should_reactivate:
+                        new_values["status"] = "pending"
+                        new_values["effective_price"] = None
+
+                    incoming_seq_int_for_update: int | None = None
+                    if (
+                        runtime_sequence is not _RUNTIME_SEQUENCE_UNSET
+                        and runtime_sequence is not None
+                    ):
+                        try:
+                            incoming_seq_int_for_update = int(runtime_sequence)
+                        except (TypeError, ValueError):
+                            incoming_seq_int_for_update = None
+
+                    if incoming_seq_int_for_update is not None:
+                        # SQL-level optimistic concurrency.  The Python
+                        # gate above already short-circuited the cases
+                        # where ``incoming <= existing`` at SELECT time,
+                        # but two writers from different worker processes
+                        # can both have ``incoming > existing`` when they
+                        # SELECTed the same snapshot — both then proceed
+                        # to UPDATE and serialize on the row lock for
+                        # multi-second waits, growing the projection
+                        # queue.  This conditional UPDATE makes Postgres
+                        # the arbiter: only one writer's row passes the
+                        # ``runtime_sequence < incoming`` predicate, the
+                        # loser's UPDATE returns 0 rows and we bail
+                        # without emitting an audit row or holding the
+                        # lock for the SET clause.
+                        #
+                        # ``runtime_sequence IS NULL`` covers legacy
+                        # rows that pre-date sequence tracking — they
+                        # accept any incoming write.
+                        new_values["runtime_sequence"] = incoming_seq_int_for_update
+                        with session.no_autoflush:
+                            update_result = await session.execute(
+                                sa_update(TradeSignal)
+                                .where(TradeSignal.id == row.id)
+                                .where(
+                                    or_(
+                                        TradeSignal.runtime_sequence < incoming_seq_int_for_update,
+                                        TradeSignal.runtime_sequence.is_(None),
+                                    )
+                                )
+                                .values(**new_values)
+                            )
+                        if update_result.rowcount == 0:
+                            # Lost the race.  Another writer committed a
+                            # >= sequence between our SELECT and our
+                            # UPDATE.  No audit emission; no further
+                            # mutation.  The Python ``row`` object still
+                            # holds SELECT-time attribute values, but
+                            # the caller's contract is that the row
+                            # exists in DB at >= our sequence — the
+                            # winning writer's data is now authoritative.
+                            return row
+                        # Won.  Refresh the in-memory row so callers
+                        # that inspect attributes after this function
+                        # see the values we just wrote.
+                        await session.refresh(row)
+                    else:
+                        # Caller did not supply a runtime_sequence (or
+                        # supplied None to clear it).  Fall back to the
+                        # original ORM mutate-and-commit pattern; no
+                        # SQL-level race gate applies here.  This path
+                        # is a small minority of upsert calls — the
+                        # contention sources (intent_runtime projection)
+                        # always pass an integer sequence.
+                        row.source_item_id = source_item_id
+                        row.signal_type = signal_type
+                        row.strategy_type = strategy_type
+                        row.market_id = market_id
+                        row.market_question = market_question
+                        row.direction = direction
+                        row.entry_price = entry_price
+                        row.edge_percent = edge_percent
+                        row.confidence = confidence
+                        row.liquidity = liquidity
+                        row.expires_at = _to_utc_naive(expires_at)
+                        row.payload_json = _safe_json(normalized_payload_json)
+                        row.strategy_context_json = _safe_json(strategy_context_json)
+                        if quality_passed is not None:
+                            row.quality_passed = quality_passed
+                            row.quality_rejection_reasons = (
+                                quality_rejection_reasons if quality_rejection_reasons else None
+                            )
+                        if should_reactivate:
+                            row.status = "pending"
+                            row.effective_price = None
+                        if runtime_sequence is not _RUNTIME_SEQUENCE_UNSET:
+                            row.runtime_sequence = (
+                                int(runtime_sequence) if runtime_sequence is not None else None
+                            )
+                        row.updated_at = now_utc
+
                     await _record_signal_emission(
                         session,
                         row,
