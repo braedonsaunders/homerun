@@ -27,7 +27,22 @@ from utils.utcnow import utcnow
 
 logger = get_logger(__name__)
 
-_WS_REACTIVE_DEBOUNCE_SECONDS = max(0.01, float(getattr(settings, "CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS", 0.05) or 0.05))
+# Crypto-latency harness sub-second target: this debounce is a pure
+# floor on the WS-tick → strategy-dispatch path.  Default was 0.05s
+# (50ms artificial wait per dispatch), which was originally added to
+# coalesce burst ticks into one strategy evaluation per token.  In
+# practice the ``_pending_tokens`` set already coalesces ticks that
+# arrive in the same event-loop iteration without any sleep — the
+# drain task acquires the lock, snapshot+clears the set in one
+# critical section, so any tick that arrives between drain-task
+# creation and lock acquisition gets coalesced for free.  The sleep
+# was therefore pure overhead in steady-state single-tick flow.
+#
+# Default is now 0.0 — the configurable env var
+# (``CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS``) remains an escape hatch
+# if a future load profile shows the natural coalescing isn't
+# enough.  ``max(0.0, ...)`` clamps negatives but allows true-zero.
+_WS_REACTIVE_DEBOUNCE_SECONDS = max(0.0, float(getattr(settings, "CRYPTO_WS_REACTIVE_DEBOUNCE_SECONDS", 0.0) or 0.0))
 _CATALOG_REFRESH_SECONDS = 300.0
 _CATALOG_MISS_REFRESH_SECONDS = 15.0
 _CRYPTO_SNAPSHOT_PERSIST_INTERVAL_SECONDS = 5.0
@@ -1579,7 +1594,15 @@ class MarketRuntime:
             )
 
     async def _drain_reactive_updates(self) -> None:
-        await asyncio.sleep(_WS_REACTIVE_DEBOUNCE_SECONDS)
+        # Skip the explicit sleep when the debounce is zero — even a
+        # ``await asyncio.sleep(0)`` round-trip through the event loop
+        # is non-zero cost and unnecessary when the operator has
+        # disabled coalescing.  The ``_pending_tokens`` set still
+        # coalesces ticks that arrive between this task's scheduling
+        # and the lock acquisition below, which is the only coalescing
+        # the sub-second path actually needs.
+        if _WS_REACTIVE_DEBOUNCE_SECONDS > 0.0:
+            await asyncio.sleep(_WS_REACTIVE_DEBOUNCE_SECONDS)
         async with self._pending_reactive_lock:
             tokens = set(self._pending_tokens)
             self._pending_tokens.clear()
