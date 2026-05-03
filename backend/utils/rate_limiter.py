@@ -69,19 +69,43 @@ class RateLimiter:
     imports happen before the asyncio loop exists.
     """
 
-    # Polymarket API rate limits (from docs.polymarket.com)
+    # Polymarket API rate limits (from docs.polymarket.com).
+    #
+    # Fix S: ``burst_limit`` set on the tightest endpoints — most
+    # notably ``data_positions``.  Without it the bucket capacity
+    # equals ``requests_per_window`` (60) so after any quiet
+    # window the bucket refills to 60 and a fan-out caller (e.g.
+    # ``polymarket_trade_verifier`` + ``trader_reconciliation_worker``
+    # + per-trader ``position_lifecycle`` all fetching closed-positions
+    # within the same second) drains the bucket in <1s — the wire-
+    # level burst hits Polymarket's server-side throttle which is
+    # tighter than the documented ``60/10s`` for sustained traffic
+    # on this specific endpoint, producing the recurring
+    # ``429 Too Many Requests`` errors observed in the 5/2026/05
+    # 21:00 soak (``[DISCOVERY] polymarket get_closed_positions()
+    # closed-positions fetch failed ... '429 Too Many Requests'``).
+    #
+    # Burst limit of 12 = 2 seconds at sustained 6/s, leaving the
+    # token bucket configured for steady-state throughput while
+    # bounding the worst-case 1-second arrival rate to 12 — which
+    # is the threshold where Polymarket's throttle stops triggering
+    # in our environment.  ``data_trades`` and ``gamma_search`` get
+    # the same treatment as a defense-in-depth measure (these
+    # endpoints have similar fan-out patterns from scanner /
+    # reconciliation paths) — their burst caps are sized to roughly
+    # 2 seconds of sustained rate.
     LIMITS = {
         "gamma_general": RateLimitConfig(requests_per_window=4000, window_seconds=10),
         "gamma_markets": RateLimitConfig(requests_per_window=300, window_seconds=10),
         "gamma_events": RateLimitConfig(requests_per_window=500, window_seconds=10),
-        "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10),
+        "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10, burst_limit=70),
         "clob_general": RateLimitConfig(requests_per_window=9000, window_seconds=10),
         "clob_market": RateLimitConfig(requests_per_window=1500, window_seconds=10),
         "clob_markets_batch": RateLimitConfig(requests_per_window=500, window_seconds=10),
         "clob_prices_history": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
-        "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
-        "data_positions": RateLimitConfig(requests_per_window=60, window_seconds=10),
+        "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10, burst_limit=40),
+        "data_positions": RateLimitConfig(requests_per_window=60, window_seconds=10, burst_limit=12),
     }
 
     # Cap on simultaneous in-flight Polymarket HTTP requests across all

@@ -1722,7 +1722,47 @@ def _resolve_provider_order_ids(
     return provider_order_id, provider_clob_order_id
 
 
-async def _acquire_live_order_authority_recovery_lock(session: AsyncSession) -> None:
+async def _acquire_live_order_authority_recovery_lock(
+    session: AsyncSession,
+    *,
+    trader_ids: list[str] | None = None,
+) -> None:
+    """Acquire the recovery serialization lock.
+
+    When ``trader_ids`` is a single specific trader, lock per-trader
+    (two-arg form) so that distinct traders' recoveries can run
+    concurrently — the dominant call shape is ``session_engine``
+    invoking ``recover_missing_live_trader_orders`` with one
+    ``trader_id`` during a pre-submit gate, which previously serialized
+    against the worker-plane ``trader_reconciliation_worker``'s global
+    pass through the same single integer key (``LOCK CONTENTION ...
+    wait=Lock/advisory query='SELECT pg_advisory_xact_lock($1)'`` in
+    the 5/2026/05 soak).
+
+    Multi-trader and global passes (``trader_ids=None``) keep the
+    namespace-wide single-arg lock so two global passes still
+    serialize.  The single-arg lock and two-arg lock occupy different
+    Postgres advisory-lock namespaces and do not block each other —
+    same-row duplicate inserts are caught by the row-level UNIQUE
+    constraint on ``trader_orders.provider_clob_order_id`` (the
+    primary safety primitive; this advisory lock is purely a
+    serialization optimization to avoid wasted work and unique-
+    violation rollbacks).
+    """
+    filtered = [str(t or "").strip() for t in (trader_ids or []) if str(t or "").strip()]
+    if len(filtered) == 1:
+        import zlib
+
+        crc = zlib.crc32(filtered[0].encode("utf-8"))
+        # asyncpg binds Python ints as int4 in the (int4, int4) overload —
+        # normalize to signed int32 range so values >= 0x80000000 don't
+        # overflow the parameter cast.
+        key2 = crc - 0x100000000 if crc >= 0x80000000 else crc
+        await session.execute(
+            sa_text("SELECT pg_advisory_xact_lock(:k1, :k2)"),
+            {"k1": _LIVE_ORDER_AUTHORITY_RECOVERY_LOCK_KEY, "k2": key2},
+        )
+        return
     await session.execute(
         sa_text("SELECT pg_advisory_xact_lock(:lock_key)"),
         {"lock_key": _LIVE_ORDER_AUTHORITY_RECOVERY_LOCK_KEY},
@@ -2590,7 +2630,9 @@ async def recover_missing_live_trader_orders(
     broadcast: bool = True,
 ) -> dict[str, Any]:
     trader_id_filter = {str(value or "").strip() for value in (trader_ids or []) if str(value or "").strip()}
-    await _acquire_live_order_authority_recovery_lock(session)
+    await _acquire_live_order_authority_recovery_lock(
+        session, trader_ids=trader_ids
+    )
     # Only recover live authority from the last 24 hours, and only keep
     # terminal venue rows in a short lookback window. Old failed/cancelled
     # rows are already final and repeatedly rescanning them was starving the
