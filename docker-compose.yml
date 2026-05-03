@@ -1,0 +1,249 @@
+# Headless / server deployment for Homerun.
+#
+# This is a parallel deployment path to the desktop launchers
+# (scripts/launchers/Homerun.bat / .command / .desktop) — those still
+# work and stay the recommended path for running on the same machine
+# you sit at.  Use this compose stack when you want Homerun running
+# on a server, NAS, VPS, or any host you don't keep a tkinter window
+# open on.
+#
+# Usage
+#   cp .env.example .env       # then edit secrets
+#   docker compose up -d
+#
+# Defaults pull pre-built images from GHCR.  To build locally:
+#   docker compose build
+#   docker compose up -d
+#
+# Worker plane split is load-bearing — don't collapse the three worker
+# services into one.  See gui.py:233 and backend/workers/host.py for
+# why running the trading plane twice would double-connect the
+# Polymarket WS user channel and get both sessions dropped.
+
+x-backend-image: &backend-image
+  image: ghcr.io/braedonsaunders/homerun-backend:${HOMERUN_IMAGE_TAG:-latest}
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-homerun}:${POSTGRES_PASSWORD:-homerun}@postgres:5432/${POSTGRES_DB:-homerun}
+  REDIS_URL: redis://redis:6379/0
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  HF_TOKEN: ${HF_TOKEN:-}
+  APP_SECRETS_KEY: ${APP_SECRETS_KEY:-}
+  POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY:-}
+  POLYMARKET_API_KEY: ${POLYMARKET_API_KEY:-}
+  POLYMARKET_API_SECRET: ${POLYMARKET_API_SECRET:-}
+  POLYMARKET_API_PASSPHRASE: ${POLYMARKET_API_PASSPHRASE:-}
+  POLYMARKET_FUNDER: ${POLYMARKET_FUNDER:-}
+  POLYMARKET_BUILDER_CODE: ${POLYMARKET_BUILDER_CODE:-}
+  POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://rpc-mainnet.matic.quiknode.pro}
+  POLYGON_WS_URL: ${POLYGON_WS_URL:-wss://polygon-bor-rpc.publicnode.com}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+
+x-backend-volumes: &backend-volumes
+  - ./data/cache:/app/data/cache
+  - ./data/runtime:/app/data/runtime
+  - ./data/machine_learning:/app/data/machine_learning
+
+services:
+  # ---------------------------------------------------------------------
+  # Infrastructure — Postgres + Redis.
+  # Configs mirror scripts/infra/docker-compose.infra.yml; that file is
+  # still the source of truth for the launcher's Postgres-via-Docker
+  # path and is shared with this stack.
+  # ---------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: homerun-postgres
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=10GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - synchronous_commit=off
+      - -c
+      - wal_compression=on
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - autovacuum_max_workers=5
+      - -c
+      - autovacuum_naptime=15s
+      - -c
+      - autovacuum_vacuum_cost_limit=2000
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - statement_timeout=60000
+      - -c
+      - lock_timeout=5000
+      - -c
+      - idle_in_transaction_session_timeout=120000
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_activity_query_size=2048
+    shm_size: '5g'
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-homerun}
+      POSTGRES_USER: ${POSTGRES_USER:-homerun}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-homerun}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-homerun} -d ${POSTGRES_DB:-homerun}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: homerun-redis
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - "1gb"
+      - --maxmemory-policy
+      - "volatile-lru"
+      - --slowlog-log-slower-than
+      - "100"
+      - --slowlog-max-len
+      - "256"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # Migrations — one-shot.  Workers and the API both depend on this
+  # completing successfully, which closes the alembic-pain-point the
+  # issue author hit (#302).
+  # ---------------------------------------------------------------------
+  migrate:
+    <<: *backend-image
+    container_name: homerun-migrate
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------
+  # API — FastAPI / uvicorn, port 8000.
+  # ---------------------------------------------------------------------
+  backend:
+    <<: *backend-image
+    container_name: homerun-backend
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *backend-env
+    volumes: *backend-volumes
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # Worker planes — three separate services on purpose.  See gui.py:233.
+  # Each plane runs ``python -m workers.host <plane>``.
+  # ---------------------------------------------------------------------
+  worker-trading:
+    <<: *backend-image
+    container_name: homerun-worker-trading
+    command: ["python", "-m", "workers.host", "trading"]
+    environment:
+      <<: *backend-env
+      HOMERUN_PROCESS_ROLE: worker
+      HOMERUN_WORKER_PLANE: trading
+    volumes: *backend-volumes
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-news:
+    <<: *backend-image
+    container_name: homerun-worker-news
+    command: ["python", "-m", "workers.host", "news"]
+    environment:
+      <<: *backend-env
+      HOMERUN_PROCESS_ROLE: worker
+      HOMERUN_WORKER_PLANE: news
+    volumes: *backend-volumes
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-discovery:
+    <<: *backend-image
+    container_name: homerun-worker-discovery
+    command: ["python", "-m", "workers.host", "discovery"]
+    environment:
+      <<: *backend-env
+      HOMERUN_PROCESS_ROLE: worker
+      HOMERUN_WORKER_PLANE: discovery
+    volumes: *backend-volumes
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # Frontend — nginx serving the built Vite bundle, proxying /api and
+  # /ws to the backend.
+  # ---------------------------------------------------------------------
+  frontend:
+    image: ghcr.io/braedonsaunders/homerun-frontend:${HOMERUN_IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: homerun-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

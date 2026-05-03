@@ -174,6 +174,19 @@ Swagger docs:  http://localhost:8000/docs
 WebSocket:     ws://localhost:8000/ws
 ```
 
+### Headless / server deployment (Docker)
+
+For running Homerun on a server, NAS, or VPS where the desktop launcher's tkinter window isn't useful. The one-click launchers above are still the recommended path for desktop use.
+
+```bash
+git clone <your-repo-url>
+cd homerun
+cp .env.example .env       # edit APP_SECRETS_KEY at minimum
+docker compose up -d
+```
+
+Pulls pre-built images from GHCR (`ghcr.io/braedonsaunders/homerun-backend` and `-frontend`). Add `--build` to build locally instead. The stack runs Postgres, Redis, the API, three worker planes, and the frontend behind nginx — Alembic migrations are applied automatically on first start. See [docker-compose.yml](./docker-compose.yml) and [.env.example](./.env.example) for details.
+
 ### Prerequisites
 
 - Python 3.10+ (auto-installed if missing)

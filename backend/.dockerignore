@@ -1,0 +1,34 @@
+# Anything not needed at runtime — keeps the build context tiny and
+# avoids accidentally baking dev artifacts (venv, caches, logs) into
+# the image.
+
+venv/
+.venv/
+.venv-ci/
+.venv-ci*/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime state — provided by the bind mount in compose, not the image.
+.runtime/
+
+# Tests don't ship in the image.
+tests/
+
+# Local dev / IDE noise.
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp files.
+*.log
+*.tmp
+
+# Lockfile is not consumed by pip; requirements.txt is the source of truth.
+uv.lock
