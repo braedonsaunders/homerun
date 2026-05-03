@@ -101,6 +101,7 @@ from services.trader_orchestrator_state import (
     update_orchestrator_control,
     update_trader_decision as _persist_trader_decision_update,
     write_orchestrator_snapshot,
+    get_pending_live_exit_summary_for_trader,
 )
 from services.signal_bus import (
     expire_stale_signals,
