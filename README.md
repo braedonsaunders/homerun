@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/React-19.2.4-61DAFB?logo=react&logoColor=black" alt="React" />
   <img src="https://img.shields.io/badge/TypeScript-5.3.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/PostgreSQL-Async-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="License" />
+  <img src="https://img.shields.io/badge/License-AGPL_v3-blue" alt="License" />
 </p>
 
 <p align="center">
@@ -281,4 +281,8 @@ Read [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md) &nbsp;&bull;&nbsp; Securit
 
 ## License
 
-MIT. See [`LICENSE`](./LICENSE).
+Copyright (C) 2025-2026 Braedon Saunders.
+
+Homerun is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [`LICENSE`](./LICENSE) for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
