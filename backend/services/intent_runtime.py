@@ -38,26 +38,33 @@ _STATUS_PROJECTION_BATCH_MAX = 64
 _UPSERT_PROJECTION_BATCH_MAX = 8
 _STATUS_PROJECTION_CHUNK_SIZE = 16
 _STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 4
-# Fix Q: chunk size 1 = one transaction per snapshot.  Previously a
-# chunk of 10 (or 5 under pressure) held N row locks on
-# ``trade_signals`` for the full chunk's UPDATE phase until commit —
-# typical ~1-3s under load.  That cascaded into ``LOCK CONTENTION
-# wait=Lock/transactionid query='UPDATE trade_signals SET
-# source_item_id=$1, signal_type=$2, ...'`` waits of 4-8s on
-# concurrent writers (orchestrator audit-buffer flush,
-# ``signal_bus.upsert_trade_signal`` from ``position_lifecycle`` reverse-
-# entry emission), and ate the 5s ``statement_timeout`` budget on
-# accumulated per-row lock waits — the recurring ``DBAPIError`` +
-# ``projection_queue_size=200+`` we saw 5/2026/05.
+# Fix Q (chunk_size 10→1) eliminated the multi-row lock-hold pattern
+# that produced ``LOCK CONTENTION wait=Lock/transactionid
+# query='UPDATE trade_signals SET source_item_id=$1, signal_type=$2,
+# ...'`` waits of 4-8s — verified across cycles 12-14: lock_contentions
+# went 6+/17min → 0 sustained.
 #
-# Per-snapshot transactions release the row lock immediately at
-# commit, removing the multi-row hold window and bounding each
-# transaction's lock-wait cost to a single 1s ``lock_timeout``
-# budget instead of N×lock_timeout.  Throughput cost is the extra
-# session checkout + commit per snapshot (~5-10ms) which Postgres
-# handles trivially at this rate (projection feed is event-driven
-# from intent state changes, not a high-frequency loop).
-_UPSERT_PROJECTION_CHUNK_SIZE = 1
+# Fix V: re-tune the trade-off.  The 5/2026/05 22:42-22:49 live
+# capture (post-Fix-Q + post-S/T/U) showed the projection queue
+# backing up to ``projection_queue_size=684`` under sustained burst
+# load.  Cause: chunk_size=1 means every snapshot pays the full
+# per-transaction overhead — session checkout + 2× SET LOCAL + 1
+# dedupe-key SELECT + 1 upsert + 1 commit ≈ 5 round trips per row.
+# When the burst arrival rate exceeds the consumer's per-row cost
+# under shared-pool contention with concurrent trader cycles, the
+# queue grows monotonically until the next quiet window.
+#
+# Compromise: chunk_size=3 in the steady-state path.  Three row
+# locks held briefly (single-digit ms each commit) is far below
+# the contention regime that motivated Fix Q (cycle 11 / pre-Fix-Q
+# saw 10-row chunks holding locks 1-3s under the same load).
+# Three-row chunks amortize the per-transaction overhead 3× while
+# keeping lock-hold time bounded to a small multiple of the
+# fastest commit time.  Pressure-mode chunk_size stays at 1 — when
+# ``is_db_pressure_active()`` is True (recent DBAPIError or
+# pool-watchdog flag) we prioritize lock-hold-time minimization
+# over throughput.
+_UPSERT_PROJECTION_CHUNK_SIZE = 3
 _UPSERT_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 _PROJECTION_RETRY_MAX_ATTEMPTS = 3
 _PROJECTION_RETRY_BASE_DELAY_SECONDS = 0.25
