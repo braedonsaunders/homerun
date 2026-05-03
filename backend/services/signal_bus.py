@@ -1361,6 +1361,44 @@ async def upsert_trade_signal(
             event_type="upsert_insert",
         )
     else:
+        # Cross-process row-lock contention guard.  When the caller
+        # supplies a ``runtime_sequence`` AND the existing row already
+        # has an equal-or-greater sequence, this incoming write is
+        # stale relative to a write another worker has already committed.
+        # Skip the entire UPDATE path so we don't compete for the row
+        # lock — the work is duplicate and the lock wait stretches the
+        # holder's transaction, cascading into ``LOCK CONTENTION ...
+        # UPDATE trade_signals SET edge_percent, expires_at,
+        # payload_json, strategy_context_json, runtime_sequence,
+        # updated_at`` events and growing the projection_queue.
+        #
+        # The intent_runtime projection loop already does an in-memory
+        # sequence gate at projection-pop time
+        # (``intent_runtime.py:2662``), but that snapshot was captured
+        # before this transaction started; by the time we get here
+        # another process may have committed a fresher state.  This
+        # DB-level gate catches the cross-process race the in-memory
+        # gate cannot see.
+        #
+        # ``runtime_sequence`` callers that don't pass a sequence (the
+        # ``_RUNTIME_SEQUENCE_UNSET`` sentinel) are unaffected — they
+        # fall through to the existing logic.  Legacy rows with a NULL
+        # sequence also fall through, since we have no basis for
+        # comparison.
+        incoming_seq: int | None = None
+        if runtime_sequence is not _RUNTIME_SEQUENCE_UNSET and runtime_sequence is not None:
+            try:
+                incoming_seq = int(runtime_sequence)
+            except (TypeError, ValueError):
+                incoming_seq = None
+        existing_seq = getattr(row, "runtime_sequence", None)
+        if (
+            incoming_seq is not None
+            and existing_seq is not None
+            and incoming_seq <= existing_seq
+        ):
+            return row
+
         previous_status = str(row.status or "").strip().lower()
         can_update_row = previous_status in SIGNAL_ACTIVE_STATUSES or previous_status in SIGNAL_REACTIVATABLE_STATUSES
         if can_update_row:

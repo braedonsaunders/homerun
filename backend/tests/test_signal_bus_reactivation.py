@@ -633,6 +633,165 @@ async def test_upsert_pending_signal_unchanged_suppresses_update_emission(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_upsert_skips_when_incoming_runtime_sequence_is_stale(tmp_path):
+    """Cross-process row-lock contention guard: when the existing row's
+    ``runtime_sequence`` is already >= the incoming sequence, the upsert
+    must short-circuit without modifying the row, taking row locks, or
+    emitting an audit event.
+
+    The intent_runtime projection loop runs in every worker process and
+    does an in-memory sequence gate at projection-pop time, but that
+    snapshot was captured before the transaction started.  By the time
+    we reach the DB, another worker may have already committed a fresher
+    state.  This test pins the DB-level fallback gate so stale upserts
+    don't compete for the row lock — that contention was the dominant
+    bottleneck after the orchestrator audit-buffer fixes (e6c78e9 /
+    4493734) shifted the lock pattern from orchestrator status writes
+    onto the projection upsert path.
+    """
+    engine, session_factory = await _build_session_factory(tmp_path)
+    signal_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            now = utcnow().replace(microsecond=0)
+            existing = TradeSignal(
+                id=signal_id,
+                source="custom_source",
+                source_item_id="seq_existing",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_seq_1",
+                market_question="Sequence-gated signal",
+                direction="buy_yes",
+                entry_price=0.55,
+                edge_percent=8.0,
+                confidence=0.80,
+                liquidity=500.0,
+                expires_at=now + timedelta(hours=1),
+                status="pending",
+                dedupe_key="dedupe_seq_gate",
+                payload_json={"id": "fresh", "version": 5},
+                strategy_context_json={"version": 5},
+                quality_passed=True,
+                runtime_sequence=110,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(existing)
+            await session.commit()
+
+            # Stale upsert: incoming sequence (100) < existing (110).
+            # Should be a no-op — return the existing row, no UPDATE
+            # emitted, no audit event written.
+            returned = await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="seq_stale",  # different — must NOT be applied
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_seq_1",
+                market_question="Stale rewrite (should not stick)",
+                direction="buy_no",  # inverted — must NOT be applied
+                entry_price=0.99,  # garbage — must NOT be applied
+                edge_percent=99.0,
+                confidence=0.10,
+                liquidity=1.0,
+                expires_at=now + timedelta(hours=99),
+                payload_json={"id": "STALE", "version": 1},
+                strategy_context_json={"version": 1},
+                quality_passed=False,
+                quality_rejection_reasons=["stale_sequence"],
+                dedupe_key="dedupe_seq_gate",
+                runtime_sequence=100,
+                commit=True,
+            )
+
+            # Returned row must be the existing one, with all original
+            # values intact.
+            assert returned is not None
+            assert returned.id == signal_id
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed is not None
+            assert refreshed.source_item_id == "seq_existing"
+            assert refreshed.direction == "buy_yes"
+            assert refreshed.entry_price == pytest.approx(0.55)
+            assert refreshed.edge_percent == pytest.approx(8.0)
+            assert refreshed.runtime_sequence == 110
+            assert refreshed.payload_json == {"id": "fresh", "version": 5}
+            assert refreshed.updated_at == now
+
+            # No audit row should have been written for the stale call.
+            emissions = (
+                (
+                    await session.execute(
+                        select(TradeSignalEmission)
+                        .where(TradeSignalEmission.signal_id == signal_id)
+                        .order_by(TradeSignalEmission.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert not emissions
+
+            # Equal sequence is also stale — same short-circuit.
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="seq_stale_equal",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_seq_1",
+                market_question="Equal-sequence rewrite",
+                direction="buy_no",
+                entry_price=0.99,
+                edge_percent=99.0,
+                confidence=0.10,
+                liquidity=1.0,
+                expires_at=now + timedelta(hours=99),
+                payload_json={"id": "STALE_EQUAL"},
+                strategy_context_json={},
+                dedupe_key="dedupe_seq_gate",
+                runtime_sequence=110,  # equal to existing
+                commit=True,
+            )
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed.source_item_id == "seq_existing"
+            assert refreshed.runtime_sequence == 110
+
+            # Fresh upsert (sequence > existing) must go through and
+            # apply the new field values.
+            await upsert_trade_signal(
+                session,
+                source="custom_source",
+                source_item_id="seq_fresh",
+                signal_type="custom_opportunity",
+                strategy_type="custom_strategy",
+                market_id="market_seq_1",
+                market_question="Fresh signal",
+                direction="buy_yes",
+                entry_price=0.60,
+                edge_percent=9.5,
+                confidence=0.85,
+                liquidity=600.0,
+                expires_at=now + timedelta(hours=2),
+                payload_json={"id": "fresher", "version": 6},
+                strategy_context_json={"version": 6},
+                quality_passed=True,
+                dedupe_key="dedupe_seq_gate",
+                runtime_sequence=120,
+                commit=True,
+            )
+            refreshed = await session.get(TradeSignal, signal_id)
+            assert refreshed.source_item_id == "seq_fresh"
+            assert refreshed.entry_price == pytest.approx(0.60)
+            assert refreshed.edge_percent == pytest.approx(9.5)
+            assert refreshed.runtime_sequence == 120
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_upsert_pending_scanner_signal_refreshes_volatile_payload_without_emission(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     signal_id = uuid.uuid4().hex
