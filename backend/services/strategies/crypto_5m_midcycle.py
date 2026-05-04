@@ -89,15 +89,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_oracle_age_ms": 5000,
     # Master switch (also exposed at the row level via Strategy.enabled).
     "enabled": True,
-    # Latency-harness test mode.  When > 0:
-    #   * the once-per-cycle midcycle milestone is replaced by a
-    #     simple per-market cooldown of ``test_mode_fire_every_seconds``
-    #   * ``min_distance_bps`` is forced to 0 (no direction filter)
-    #   * ``min_entry_price`` / ``max_entry_price`` widen to (0.01, 0.99)
-    #   * Chainlink-only gate is dropped — any fresh oracle qualifies
-    # Leave at 0.0 in production.  Set to (e.g.) 30 to fire every
-    # 30 s per market for end-to-end latency measurement.
-    "test_mode_fire_every_seconds": 0.0,
 }
 
 
@@ -186,15 +177,6 @@ def crypto_5m_midcycle_config_schema() -> dict[str, Any]:
                 "min": 0,
                 "max": 60_000,
                 "default": 5_000,
-                "phase": "signal",
-            },
-            {
-                "key": "test_mode_fire_every_seconds",
-                "label": "Test mode: fire every N seconds (0=off)",
-                "type": "number",
-                "min": 0.0,
-                "max": 600.0,
-                "default": 0.0,
                 "phase": "signal",
             },
         ]
@@ -302,10 +284,6 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         # Per-market CycleTracker — fires the midcycle milestone exactly
         # once per cycle and self-resets on cycle rollover.
         self._cycle_trackers: dict[str, CycleTracker] = {}
-        # Per-market last-fire timestamp used by ``test_mode_fire_every
-        # _seconds`` so the strategy can be coaxed into a steady fire
-        # cadence for end-to-end latency measurement.
-        self._test_mode_last_fire_ms: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -374,18 +352,6 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         max_age_ms = float(self.config.get("max_oracle_age_ms", 5000))
         max_entry = float(self.config.get("max_entry_price", 0.70))
         min_entry = float(self.config.get("min_entry_price", 0.05))
-        test_mode_fire_every_s = float(
-            self.config.get("test_mode_fire_every_seconds", 0.0) or 0.0
-        )
-        # Test mode short-circuits the production gates that suppress
-        # firing.  We still require fresh oracle + book + valid token
-        # ids — those are correctness guards, not selectivity gates.
-        test_mode_active = test_mode_fire_every_s > 0.0
-        if test_mode_active:
-            min_distance_bps = 0.0
-            min_entry = 0.01
-            max_entry = 0.99
-            min_left_cfg = min(min_left_cfg, 30.0)
 
         def _emit_reject(verbosity: str = MURMUR) -> None:
             emit_evaluation_nowait(
@@ -439,42 +405,24 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             _emit_reject(WHISPER)
             return None
 
-        # Gate 3: fire-cadence gate.  Production path uses the
-        # midcycle CycleTracker (fires exactly once per 5m cycle).
-        # Test mode replaces it with a per-market cooldown so we can
-        # measure end-to-end latency at a tunable cadence.
-        if test_mode_active:
-            cooldown_ms = int(test_mode_fire_every_s * 1000.0)
-            last_fire_ms = self._test_mode_last_fire_ms.get(market_id, 0)
-            cooldown_passed = (now_ms - last_fire_ms) >= cooldown_ms
-            seconds_into_cycle = max(0.0, 300.0 - (end_ms_value - now_ms) / 1000.0)
-            gates.append(GateResult(
-                "test_mode_cooldown", "Test-mode cooldown elapsed", cooldown_passed,
-                score=float(now_ms - last_fire_ms) / 1000.0,
-                detail=(
-                    f"since_last_fire_s={(now_ms - last_fire_ms) / 1000.0:.1f} "
-                    f"cooldown_s={test_mode_fire_every_s:.1f}"
-                ),
-            ))
-            if not cooldown_passed:
-                _emit_reject(WHISPER)
-                return None
-        else:
-            tracker = self._cycle_trackers.get(market_id)
-            if tracker is None or tracker.cycle_seconds != 300.0:
-                tracker = CycleTracker(cycle_seconds=300.0, milestones_s=(midcycle_s,))
-                self._cycle_trackers[market_id] = tracker
-            crossed = tracker.crossed(end_ms_value, now_ms=now_ms)
-            seconds_into_cycle = max(0.0, 300.0 - (end_ms_value - now_ms) / 1000.0)
-            milestone_passed = midcycle_s in crossed
-            gates.append(GateResult(
-                "midcycle_crossed", "Midcycle milestone crossed", milestone_passed,
-                score=seconds_into_cycle,
-                detail=f"milestone={midcycle_s:.0f}s elapsed={seconds_into_cycle:.1f}s",
-            ))
-            if not milestone_passed:
-                _emit_reject(WHISPER)
-                return None
+        # Gate 3: midcycle milestone crossed.  This fires once per cycle
+        # — most ticks of crypto_update don't cross it, so most
+        # evaluations rest here.  WHISPER only.
+        tracker = self._cycle_trackers.get(market_id)
+        if tracker is None or tracker.cycle_seconds != 300.0:
+            tracker = CycleTracker(cycle_seconds=300.0, milestones_s=(midcycle_s,))
+            self._cycle_trackers[market_id] = tracker
+        crossed = tracker.crossed(end_ms_value, now_ms=now_ms)
+        seconds_into_cycle = max(0.0, 300.0 - (end_ms_value - now_ms) / 1000.0)
+        milestone_passed = midcycle_s in crossed
+        gates.append(GateResult(
+            "midcycle_crossed", "Midcycle milestone crossed", milestone_passed,
+            score=seconds_into_cycle,
+            detail=f"milestone={midcycle_s:.0f}s elapsed={seconds_into_cycle:.1f}s",
+        ))
+        if not milestone_passed:
+            _emit_reject(WHISPER)
+            return None
 
         # Past the milestone — every gate from here is MURMUR or higher
         # because we have a real candidate.
@@ -500,25 +448,14 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             _emit_reject(MURMUR)
             return None
 
-        # Test mode accepts any fresh oracle (Chainlink or Binance);
-        # production keeps the Chainlink-only requirement so the
-        # decision price matches what Polymarket settles against.
-        oracle_prefer = "chainlink"
         chainlink = pick_oracle_source(
-            market, prefer=oracle_prefer, max_age_ms=max_age_ms, now_ms=now_ms
+            market, prefer="chainlink", max_age_ms=max_age_ms, now_ms=now_ms
         )
         oracle_source = str(chainlink.get("source", "")).lower() if chainlink else None
         oracle_age = float(chainlink.get("age_ms", 0.0)) if chainlink else None
-        if test_mode_active:
-            oracle_passed = chainlink is not None
-            gate_label = "Fresh oracle (test mode)"
-            gate_key = "fresh_oracle"
-        else:
-            oracle_passed = chainlink is not None and oracle_source == "chainlink"
-            gate_label = "Fresh Chainlink oracle"
-            gate_key = "fresh_chainlink"
+        oracle_passed = chainlink is not None and oracle_source == "chainlink"
         gates.append(GateResult(
-            gate_key, gate_label, oracle_passed,
+            "fresh_chainlink", "Fresh Chainlink oracle", oracle_passed,
             score=oracle_age,
             detail=f"source={oracle_source or 'none'} age_ms={oracle_age} max_age_ms={max_age_ms:.0f}",
         ))
@@ -688,8 +625,6 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             f"VWAP entry: {vwap_price:.4f} (max allowed: {max_entry:.2f})",
             f"Chainlink age: {chainlink.get('age_ms', 0):.0f}ms",
         ]
-        if test_mode_active:
-            self._test_mode_last_fire_ms[market_id] = now_ms
         opp.strategy_context = {
             "source_key": "crypto",
             "strategy": "crypto_5m_midcycle",
