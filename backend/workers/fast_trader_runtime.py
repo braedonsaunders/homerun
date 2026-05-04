@@ -422,6 +422,15 @@ class _FastTraderTask:
             checks_payload=checks_payload,
         )
 
+    def _accumulate_stage_ms(self, stage: str, started_mono: float) -> None:
+        # Per-cycle timing accumulator.  ``_process_one`` may run more
+        # than once per cycle when several markets fire at the same
+        # instant — summing into one bucket keeps the budget-exceeded
+        # log readable while still surfacing where the wall-clock went.
+        elapsed_ms = (time.monotonic() - started_mono) * 1000.0
+        existing = float(self._last_stage_timings_ms.get(stage) or 0.0)
+        self._last_stage_timings_ms[stage] = round(existing + elapsed_ms, 1)
+
     async def _touch_trader_run(self, session, *, force: bool = False) -> bool:
         now_mono = time.monotonic()
         if not force and now_mono - self._last_trader_touch_at < _TRADER_LAST_RUN_TOUCH_SECONDS:
@@ -1065,10 +1074,12 @@ class _FastTraderTask:
         }
 
         try:
+            _evaluate_started = time.monotonic()
             decision = await asyncio.wait_for(
                 asyncio.to_thread(strategy.evaluate, signal, context),
                 timeout=_EVALUATE_BUDGET_SECONDS,
             )
+            self._accumulate_stage_ms("evaluate", _evaluate_started)
         except asyncio.TimeoutError:
             reason = f"Fast evaluate exceeded budget ({_EVALUATE_BUDGET_SECONDS}s)."
             decision_id = await self._buffer_decision(
@@ -1223,6 +1234,7 @@ class _FastTraderTask:
                     reason=reason or None,
                 )
                 submit_duration_seconds = time.monotonic() - submit_started_at
+                self._accumulate_stage_ms("submit", submit_started_at)
                 if submit_duration_seconds > _SUBMIT_BUDGET_SECONDS:
                     logger.warning(
                         "Fast trader submit exceeded budget",
@@ -1334,7 +1346,9 @@ class _FastTraderTask:
                 try:
                     await _submit_and_persist(active_session)
                     if active_session.in_transaction():
+                        _persist_started = time.monotonic()
                         await asyncio.shield(active_session.commit())
+                        self._accumulate_stage_ms("persist", _persist_started)
                 except Exception:
                     try:
                         await active_session.rollback()

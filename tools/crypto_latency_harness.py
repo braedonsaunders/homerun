@@ -119,6 +119,22 @@ SLA_BREACH_RE = re.compile(
 CRYPTO_TRACE_RE = re.compile(
     r"crypto_latency_trace\s+(?P<kv>.+)$"
 )
+# Fast-tier (workers/fast_trader_runtime.py) emits these whenever a
+# fast-trader cycle or submit blows its budget.  Both carry
+# ``stage_timings_ms`` so they're aggregator-friendly.  These are the
+# actual measurements for the path the crypto traders run on (they
+# have ``latency_class='fast'``); the original ``Trader cycle slow``
+# regex captures the SLOW orchestrator only.
+FAST_TRADER_CYCLE_BUDGET_RE = re.compile(
+    r"Fast trader cycle exceeded hard budget\s+trader_id=(?P<tid>\w+)\s+"
+    r"duration_s=(?P<dur>[\d.]+)\s+budget_s=(?P<budget>[\d.]+)\s+"
+    r"stage_timings_ms=(?P<stages>\{.+\})\s*$"
+)
+FAST_TRADER_SUBMIT_BUDGET_RE = re.compile(
+    r"Fast trader submit exceeded budget\s+trader_id=(?P<tid>\w+)\s+"
+    r"signal_id=(?P<sid>\w+)\s+duration_s=(?P<dur>[\d.]+)\s+"
+    r"budget_s=(?P<budget>[\d.]+)"
+)
 
 
 def _safe_eval_dict(text: str) -> dict[str, Any]:
@@ -266,6 +282,8 @@ class CryptoLatencyAggregator:
         self.matched_place_order_slow = 0
         self.matched_sla_breach = 0
         self.matched_crypto_trace = 0
+        self.matched_fast_cycle_budget = 0
+        self.matched_fast_submit_budget = 0
 
         self.stages: dict[str, StageSamples] = defaultdict(
             lambda: StageSamples(name="<unset>")
@@ -364,6 +382,39 @@ class CryptoLatencyAggregator:
                 self.recent_lines.append({"kind": "crypto_trace", "trace": kv})
             return
 
+        # 5. Fast-tier (workers/fast_trader_runtime.py) cycle budget
+        # exceeded — carries the canonical fast-cycle stage_timings_ms.
+        # The crypto traders run on this path (latency_class='fast'),
+        # so this is where their actual cycle latency surfaces.
+        m = FAST_TRADER_CYCLE_BUDGET_RE.search(body)
+        if m:
+            self.matched_fast_cycle_budget += 1
+            stages = _safe_eval_dict(m.group("stages"))
+            if stages:
+                self.worst_traces.append(
+                    {
+                        "kind": "fast_cycle",
+                        "trader": m.group("tid"),
+                        "duration_s": float(m.group("dur")),
+                        "budget_s": float(m.group("budget")),
+                        "stages": stages,
+                    }
+                )
+                for stage_name, ms in stages.items():
+                    self._stage(f"fast_cycle.{stage_name}").add(ms)
+            return
+
+        # 6. Fast-tier submit budget exceeded — bare duration_s, no
+        # stage_timings_ms (the per-trade detail comes from the
+        # crypto_latency_trace line that fires inside place_order).
+        m = FAST_TRADER_SUBMIT_BUDGET_RE.search(body)
+        if m:
+            self.matched_fast_submit_budget += 1
+            self._stage("fast_submit.duration_ms").add(
+                float(m.group("dur")) * 1000.0
+            )
+            return
+
     def report(self) -> dict[str, Any]:
         elapsed_s = round(time.monotonic() - self.start_mono, 1)
         stage_summary = {
@@ -380,6 +431,8 @@ class CryptoLatencyAggregator:
                     "place_order_slow": self.matched_place_order_slow,
                     "sla_breach_crypto": self.matched_sla_breach,
                     "crypto_latency_trace": self.matched_crypto_trace,
+                    "fast_cycle_budget": self.matched_fast_cycle_budget,
+                    "fast_submit_budget": self.matched_fast_submit_budget,
                 },
             },
             "stages": stage_summary,
@@ -571,7 +624,9 @@ def _print_summary(agg: CryptoLatencyAggregator) -> None:
         f"matches: trader_cycle_slow_live={h['matched']['trader_cycle_slow_live']} "
         f"place_order_slow={h['matched']['place_order_slow']} "
         f"sla_breach_crypto={h['matched']['sla_breach_crypto']} "
-        f"crypto_latency_trace={h['matched']['crypto_latency_trace']}"
+        f"crypto_latency_trace={h['matched']['crypto_latency_trace']} "
+        f"fast_cycle_budget={h['matched'].get('fast_cycle_budget', 0)} "
+        f"fast_submit_budget={h['matched'].get('fast_submit_budget', 0)}"
     )
     print(
         f"headline: end_to_end p90={head['end_to_end_p90_ms']}ms "

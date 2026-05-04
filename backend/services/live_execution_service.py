@@ -562,6 +562,15 @@ class LiveExecutionService:
         # order submission pipeline (signature refresh + buy gate both call get_balance).
         self._balance_cache: Optional[dict] = None
         self._balance_cache_at: float = 0.0
+        # HTTP/2 keepalive task — pings /ok every few seconds so the
+        # shared httpx.Client (and the underlying TLS+H2 stream) stays
+        # warm.  httpx default ``keepalive_expiry=5.0s`` means a cold-
+        # start submit pays a full TLS handshake (≈150-300 ms over the
+        # VPN) any time trading idles past 5 s.  A cheap unauth GET
+        # below the expiry window avoids that on every order placement.
+        self._clob_keepalive_task: Optional[asyncio.Task] = None
+        self._clob_keepalive_last_ok_at: float = 0.0
+        self._clob_keepalive_last_fail_at: float = 0.0
 
     def _get_stats_lock(self) -> asyncio.Lock:
         if self._stats_lock is None:
@@ -2113,6 +2122,10 @@ class LiveExecutionService:
                 logger.info("Trading service initialized successfully", credential_source=credential_source)
                 self._last_init_error = None
                 self._init_retry_not_before = None
+                # Keep the CLOB HTTP/2 connection warm so order submits
+                # don't pay a TLS handshake when the trader has been
+                # idle past httpx's 5 s keepalive_expiry.
+                self._start_clob_keepalive_loop()
                 return True
 
             except ImportError:
@@ -2148,6 +2161,63 @@ class LiveExecutionService:
 
     def get_last_init_error(self) -> Optional[str]:
         return str(self._last_init_error or "").strip() or None
+
+    def _start_clob_keepalive_loop(self) -> None:
+        # Trading-plane only.  The API process never submits orders, so
+        # paying for a periodic CLOB GET there is pure waste — and would
+        # double the /ok request rate on no benefit.
+        if os.environ.get("HOMERUN_WORKER_PLANE", "") != "trading":
+            return
+        existing = self._clob_keepalive_task
+        if existing is not None and not existing.done():
+            return
+        self._start_background_task(
+            self._run_clob_keepalive_loop(),
+            name="clob_keepalive_loop",
+        )
+
+    async def _run_clob_keepalive_loop(self) -> None:
+        # Cadence < httpx default ``keepalive_expiry`` (5 s).  3 s gives
+        # a 2 s safety margin against jitter and lets one stretched-out
+        # tick still land before the connection is reaped.
+        TICK_SECONDS = 3.0
+        # Stagger the first tick so the very first order after init
+        # also benefits from a primed connection — without blocking
+        # initialize() on the round-trip.
+        await asyncio.sleep(0.0)
+        while True:
+            try:
+                client = self._client
+                if client is None or not self._initialized:
+                    await asyncio.sleep(TICK_SECONDS)
+                    continue
+                t0 = _time.monotonic()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(client.get_ok),
+                        timeout=2.0,
+                    )
+                    self._clob_keepalive_last_ok_at = _time.monotonic()
+                except asyncio.TimeoutError:
+                    self._clob_keepalive_last_fail_at = _time.monotonic()
+                    logger.debug(
+                        "CLOB keepalive ping timed out",
+                        elapsed_ms=round((_time.monotonic() - t0) * 1000.0, 1),
+                    )
+                except Exception as exc:
+                    self._clob_keepalive_last_fail_at = _time.monotonic()
+                    logger.debug(
+                        "CLOB keepalive ping failed",
+                        elapsed_ms=round((_time.monotonic() - t0) * 1000.0, 1),
+                        exc=str(exc),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as outer_exc:
+                logger.warning(
+                    "CLOB keepalive loop iteration raised", exc_info=outer_exc
+                )
+            await asyncio.sleep(TICK_SECONDS)
 
     def _sync_stats_from_decimals(self) -> None:
         self._stats.total_volume = float(self._total_volume)
