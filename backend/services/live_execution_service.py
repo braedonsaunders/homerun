@@ -5385,6 +5385,107 @@ class LiveExecutionService:
         except Exception as e:
             return {"error": str(e)}
 
+    async def prewarm_clob_market_info_cache(
+        self,
+        condition_ids: list[str],
+        *,
+        max_concurrent: int = 4,
+    ) -> dict[str, Any]:
+        """Pre-populate the SDK's per-token caches so ``create_order`` is HTTP-free.
+
+        Crypto-latency Fix Y: ``py_clob_client_v2.create_order`` makes up to
+        three SYNCHRONOUS HTTP round-trips on the order-creation path
+        (``__resolve_tick_size``, ``get_neg_risk``, ``__resolve_fee_rate_bps``)
+        for any token whose metadata isn't yet in the SDK's per-instance
+        dicts.  ``get_clob_market_info(condition_id)`` is ONE HTTP call
+        that populates ``__tick_sizes``, ``__neg_risk``, AND
+        ``__fee_infos`` for both YES + NO tokens of the market in one
+        shot.
+
+        Wired in from ``market_runtime._refresh_crypto_markets`` so each
+        time the runtime discovers / re-fetches the crypto market list,
+        a background task warms the SDK cache.  ``create_order`` then
+        hits cache (sub-microsecond) on the hot path.
+
+        Returns a small status dict so the caller can log/aggregate.
+        Never raises — failures degrade silently and the next order
+        falls back to the SDK's lazy-fetch path.
+        """
+        if not self.is_ready() or self._client is None:
+            return {"prewarmed": 0, "skipped": "not_ready"}
+        unique_ids = sorted({cid for cid in (condition_ids or []) if cid})
+        if not unique_ids:
+            return {"prewarmed": 0, "skipped": "no_condition_ids"}
+
+        # Probe what's already cached so we don't re-issue HTTP calls
+        # for markets the SDK has already seen.  ``__token_condition_map``
+        # is populated by ``get_clob_market_info`` and indirectly by
+        # ``get_tick_size`` etc., so its presence is the cheapest way
+        # to know the row is warm.
+        try:
+            already_cached = set(getattr(self._client, "_BaseClobClientV2__token_condition_map", {}).values())
+        except Exception:
+            already_cached = set()
+        # Some Python implementations expose name-mangled attrs without
+        # the class prefix or via a different path; fall back gracefully
+        # if the introspection didn't pick anything up.
+        if not already_cached:
+            for attr in (
+                "__token_condition_map",
+                "_token_condition_map",
+                "_BaseClobClient__token_condition_map",
+            ):
+                try:
+                    already_cached = set(getattr(self._client, attr, {}).values())
+                    if already_cached:
+                        break
+                except Exception:
+                    pass
+
+        targets = [cid for cid in unique_ids if cid not in already_cached]
+        if not targets:
+            return {"prewarmed": 0, "skipped": "all_cached", "total": len(unique_ids)}
+
+        sem = asyncio.Semaphore(max(1, int(max_concurrent)))
+        succeeded = 0
+        failed = 0
+
+        async def _warm_one(cid: str) -> None:
+            nonlocal succeeded, failed
+            async with sem:
+                try:
+                    await asyncio.to_thread(self._client.get_clob_market_info, cid)
+                    succeeded += 1
+                except Exception:
+                    failed += 1
+
+        try:
+            await asyncio.gather(*[_warm_one(cid) for cid in targets], return_exceptions=True)
+        except Exception:
+            return {
+                "prewarmed": succeeded,
+                "failed": failed,
+                "total": len(unique_ids),
+                "targets": len(targets),
+            }
+        if succeeded > 0:
+            try:
+                logger.info(
+                    "Prewarmed CLOB market info cache",
+                    targets=len(targets),
+                    succeeded=succeeded,
+                    failed=failed,
+                    total=len(unique_ids),
+                )
+            except Exception:
+                pass
+        return {
+            "prewarmed": succeeded,
+            "failed": failed,
+            "total": len(unique_ids),
+            "targets": len(targets),
+        }
+
 
 # Singleton instance
 live_execution_service = LiveExecutionService()

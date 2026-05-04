@@ -1338,6 +1338,41 @@ class MarketRuntime:
             self._index_crypto_market_row(row)
         self._last_crypto_refresh_at = utcnow().isoformat().replace("+00:00", "Z")
         self._last_crypto_trigger = str(trigger)
+
+        # Crypto-latency Fix Y: fire-and-forget prewarm of the trading
+        # SDK's per-token metadata cache (tick_size / neg_risk /
+        # fee_rate_bps) for every crypto market we just discovered.
+        # ``py_clob_client_v2.create_order`` otherwise issues up to
+        # THREE synchronous HTTP round-trips on the order-creation
+        # path for any token whose metadata isn't in the SDK's
+        # per-instance dicts — directly observed at 1,000 ms in the
+        # 5/2026/05 latency harness ``place_order`` breakdown.  These
+        # are static market properties so an aggressive prewarm here,
+        # refreshed on every market-runtime crypto refresh (every
+        # ~3 min), keeps the cache hot indefinitely.  Background task
+        # so it never blocks the dispatch loop; failures inside the
+        # prewarm method are non-raising and degrade gracefully back
+        # to the SDK's lazy-fetch path.
+        try:
+            condition_ids = [
+                str(row.get("condition_id") or row.get("conditionId") or "").strip()
+                for row in payload
+                if (row.get("condition_id") or row.get("conditionId"))
+            ]
+            condition_ids = [cid for cid in condition_ids if cid]
+            if condition_ids:
+                from services.live_execution_service import live_execution_service
+
+                asyncio.create_task(
+                    live_execution_service.prewarm_clob_market_info_cache(
+                        condition_ids
+                    ),
+                    name="market-runtime-clob-cache-prewarm",
+                )
+        except Exception as exc:
+            # Never let a prewarm scheduling error trip the runtime
+            # refresh.  The SDK lazy-fetch path is the fallback.
+            logger.debug("CLOB cache prewarm scheduling failed: %s", exc)
         try:
             await self._await_with_cancel_grace(
                 self._sync_crypto_subscriptions(),
