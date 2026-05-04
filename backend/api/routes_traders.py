@@ -2080,7 +2080,9 @@ async def manual_buy(
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
 
-    mode = str(trader.mode or "shadow").strip().lower()
+    # ``get_trader`` returns a dict; previous ``.mode`` access was a bug
+    # that 500'd every manual-buy invocation.
+    mode = str((trader.get("mode") if isinstance(trader, dict) else getattr(trader, "mode", None)) or "shadow").strip().lower()
     now = utcnow()
     created_orders = []
 

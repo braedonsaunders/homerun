@@ -3733,18 +3733,27 @@ class LiveExecutionService:
         token_id: Optional[str],
         min_order_size_usd: Optional[float] = None,
     ) -> tuple[bool, str]:
-        # Refresh pause state from the shared-controls DB if our cached
-        # view is stale (default 2s TTL).  Previously this was
-        # ``force=True``, which bypassed the TTL and triggered EIGHT
-        # parallel ``AsyncSessionLocal`` checkouts (scanner / news /
-        # weather / discovery / orchestrator / crypto / tracked /
-        # events controls) on every order submission — surfacing as
-        # ``submit_validate_reserve=1906-3219ms`` in soak.  The 2s TTL
-        # plus the auto-refresh task on ``is_paused`` access keeps
-        # pause state ≤2s stale, which is fast enough for safety:
-        # pause-all from the operator UI propagates to live execution
-        # in ≤2s, well inside any human reaction time.
-        await global_pause_state.refresh_from_db()
+        # Crypto-latency Fix W: removed the ``await refresh_from_db()``
+        # call that previously sat at the head of this function.  On a
+        # cache miss it issued 8 parallel ``AsyncSessionLocal`` checkouts
+        # against the shared-controls table (scanner / news / weather /
+        # discovery / orchestrator / crypto / tracked / events) and
+        # took 1.9-3.2 s wall time on the synchronous order submission
+        # path — directly observed at 2,187 ms in the 5/2026/05 latency
+        # harness ``place_order`` breakdown.  The earlier 2 s TTL fix
+        # capped the worst case but every cold-cache moment still paid
+        # the full multi-second cost.
+        #
+        # The actual ``global_pause_state.is_paused`` check already
+        # happens 3 lines below inside ``_validate_order`` (live_execution
+        # _service.py:3681).  That property accessor is non-blocking
+        # (sub-microsecond) and *also* schedules a background
+        # ``refresh_from_db()`` if the cache is stale — same correctness,
+        # zero blocking on the order's serial path.  Pause-all from the
+        # operator UI now propagates to live execution within one
+        # background-refresh tick (≤2 s + DB query time) instead of
+        # being held up for an explicit pre-flight refresh.
+        pass
 
         reserved = False
         stats_lock = self._get_stats_lock()
@@ -4438,32 +4447,53 @@ class LiveExecutionService:
         self._remember_order(order)
         _stage_started = _time.monotonic()
         if runtime_state_persist_task is not None:
-            # Success path: pipeline ``_persist_orders`` with the
-            # already-in-flight ``_persist_runtime_state`` task.
-            # ``asyncio.gather`` raises the first exception (cancelling
-            # siblings), preserving the historical semantic that a
-            # post-order persist failure surfaces as an exception out
-            # of ``place_order``.  The original sequential code had
-            # ``_persist_runtime_state`` inside a ``try/except`` that
-            # marked the order FAILED on persist failure; that branch
-            # was unreachable in practice (persist exceptions almost
-            # always indicate transient DB issues, not order-data
-            # corruption) so propagating is the cleaner semantic.
+            # Crypto-latency Fix X: success path is now FIRE-AND-FORGET
+            # for both persist tasks.  The CLOB has already ack'd the
+            # order at this point (post_order returned an order_id) so
+            # the order is at the venue regardless of the local DB
+            # write.  Previously this gather() blocked place_order for
+            # 3.6 s wall time waiting for ``_persist_runtime_state`` +
+            # ``_persist_orders`` to commit — directly observed at
+            # 3,656 ms each in the 5/2026/05 latency harness, dominating
+            # 49 % of the 7.5 s place_order wall time.
+            #
+            # The orchestrator's caller does not need the local DB row
+            # to exist before returning — it has the in-memory ``order``
+            # object with the venue order_id and uses that for
+            # downstream decisions.  The reconciliation worker
+            # (``trader_reconciliation_worker``) syncs venue → local
+            # DB on every cycle, so any persist failure here is caught
+            # and corrected within one reconciliation pass without
+            # blocking trade flow.  Failure semantic in the persist
+            # task is logged inside ``_persist_orders`` /
+            # ``_persist_runtime_state`` themselves; we explicitly
+            # attach a done-callback so an exception doesn't get
+            # silently swallowed by the asyncio task GC.
             persist_orders_task = asyncio.create_task(
                 self._persist_orders([order]),
                 name="persist_orders_inline",
             )
-            try:
-                await asyncio.gather(
-                    runtime_state_persist_task,
-                    persist_orders_task,
-                )
-            finally:
-                _po_record(
-                    "persist_runtime_state_inner",
-                    runtime_state_persist_started_at,
-                )
-                _po_record("persist_orders", _stage_started)
+
+            def _log_persist_failure(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "Background persist task failed (order is at venue, "
+                        "reconciler will sync)",
+                        task_name=task.get_name(),
+                        exc_info=exc,
+                    )
+
+            runtime_state_persist_task.add_done_callback(_log_persist_failure)
+            persist_orders_task.add_done_callback(_log_persist_failure)
+            # Record zero ms on the synchronous side — both persists
+            # complete asynchronously on a background task; their wall
+            # time no longer blocks the order-return path.
+            _po_record("persist_runtime_state_inner", _time.monotonic())
+            _po_record("persist_orders", _time.monotonic())
         else:
             # Failure path: no in-flight runtime-state task to join.
             # Persist orders synchronously, then runtime state if
