@@ -508,7 +508,20 @@ class LiveExecutionService:
         self._market_positions: OrderedDict[str, Decimal] = OrderedDict()  # token_id -> USD exposure
         self._stats_lock: Optional[asyncio.Lock] = None
         self._init_lock: Optional[asyncio.Lock] = None
-        self._client_io_lock: Optional[asyncio.Lock] = None
+        # ``_client_io_lock`` was historically a Lock — single-flight for
+        # every CLOB SDK call.  In practice the SDK's create/post path is
+        # thread-safe (signer is stateless eth_account, ``_http_client``
+        # is a shared httpx.Client which httpx documents as concurrency-
+        # safe), so the single-flight serialization was paying p90 ~1.2 s
+        # of ``io_lock_wait`` for no correctness benefit when several
+        # crypto signals arrived within the same tick.  A bounded
+        # semaphore caps inflight CLOB calls so we don't pile a runaway
+        # 30-call burst onto the venue, while letting the typical 2-4
+        # parallel orders proceed concurrently.
+        self._client_io_lock: Optional[asyncio.Semaphore] = None
+        self._client_io_lock_concurrency = max(
+            1, int(getattr(settings, "POLYMARKET_CLIENT_IO_CONCURRENCY", 8))
+        )
         # Split off balance / read-only SDK calls to a separate lock so
         # they don't queue behind in-flight order submissions.  Pre-split
         # production saw ``_client_io_lock`` serialize ALL SDK calls — a
@@ -582,9 +595,14 @@ class LiveExecutionService:
             self._init_lock = asyncio.Lock()
         return self._init_lock
 
-    def _get_client_io_lock(self) -> asyncio.Lock:
+    def _get_client_io_lock(self) -> asyncio.Semaphore:
+        # Returns a bounded semaphore (NOT an asyncio.Lock) so multiple
+        # CLOB SDK calls can be in flight concurrently up to the
+        # configured cap.  Callers use ``async with self._get_client_io
+        # _lock():`` exactly as before — Semaphore implements the same
+        # async-context interface so existing call sites Just Work.
         if self._client_io_lock is None:
-            self._client_io_lock = asyncio.Lock()
+            self._client_io_lock = asyncio.Semaphore(self._client_io_lock_concurrency)
         return self._client_io_lock
 
     def _get_client_balance_io_lock(self) -> asyncio.Lock:
