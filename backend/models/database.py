@@ -4569,8 +4569,8 @@ AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, exp
 # corrupts the asyncpg protocol state and produces the recurring
 # "cannot switch to state X; another operation (Y) is in progress" warnings.
 
-_FAST_POOL_SIZE = 4
-_FAST_MAX_OVERFLOW = 0
+_FAST_POOL_SIZE = 12
+_FAST_MAX_OVERFLOW = 6
 _FAST_STATEMENT_TIMEOUT_MS = 2500
 _FAST_LOCK_TIMEOUT_MS = 500
 _FAST_IDLE_IN_TRANSACTION_TIMEOUT_MS = 3000

@@ -1062,12 +1062,28 @@ class _FastTraderTask:
 
         strategy_params = self._strategy_params_for_source(source_key)
 
+        # Layer the strategy's loaded DB config UNDER the per-trader
+        # params so evaluate() sees the same gate values as on_event().
+        # Historically ``context["params"]`` was just the trader's
+        # ``source_config.strategy_params`` — meaning a strategy gate
+        # tuned via the strategy-manager UI applied to opportunity
+        # generation but the trader silently re-imposed default
+        # thresholds at decision time, requiring users to set the same
+        # gate in two places.  Trader params still win (they're the
+        # last layer) so any per-trader override behaves as before.
+        merged_params: dict[str, Any] = {}
+        strategy_db_config = getattr(strategy, "config", None)
+        if isinstance(strategy_db_config, dict):
+            merged_params.update(strategy_db_config)
+        if isinstance(strategy_params, dict):
+            merged_params.update(strategy_params)
+
         # Build a minimal evaluation context.  The fast path intentionally
         # skips live_market_context enrichment and heavy risk snapshots —
         # the strategy's own evaluate() is the gate, nothing else.
         context: dict[str, Any] = {
             "trader": self._trader,
-            "params": strategy_params,
+            "params": merged_params,
             "mode": mode,
             "source_config": {"source_key": source_key, "strategy_key": strategy_key},
             "fast_tier": True,

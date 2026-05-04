@@ -438,7 +438,30 @@ async def execute_fast_signal(
     # ``release_conn`` resets the session, which detaches the pre-submit
     # ``order`` ORM object. Re-attach by fetching it back so subsequent
     # attribute mutations propagate to an UPDATE on flush.
-    refetched = await session.get(TraderOrder, pre_submit_order_id)
+    #
+    # The refetch can race with pool saturation under burst load (the
+    # CLOB call held no DB connection but other consumers may have
+    # filled the fast pool while we were on the wire).  If the get
+    # raises a pool / asyncpg-state error the session is unusable for
+    # the rest of this function, so we rollback and fall back to
+    # building a transient row that mirrors the pre-submit state — the
+    # CLOB-side trade is durable already (covered by the pre-submit
+    # row's idempotency lock); this just keeps the post-submit update
+    # path running rather than crashing the trader.
+    try:
+        refetched = await session.get(TraderOrder, pre_submit_order_id)
+    except Exception as _refetch_exc:
+        logger.warning(
+            "Fast-tier post-submit refetch failed; will skip ORM update",
+            trader_id=trader_id,
+            pre_submit_order_id=pre_submit_order_id,
+            exc_info=_refetch_exc,
+        )
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        refetched = None
     if refetched is not None:
         order = refetched
 

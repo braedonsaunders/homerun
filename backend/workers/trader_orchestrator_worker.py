@@ -6515,12 +6515,24 @@ async def _run_trader_once_inner(
                             )
                         _enter_stage("strategy_evaluate")
                         _evaluate_started = time.monotonic()
+                        # Layer the strategy's loaded DB config UNDER the per-
+                        # trader params so evaluate() sees the same gate values
+                        # as on_event().  Trader params win (last layer) — any
+                        # per-trader override behaves as before, but a gate
+                        # tuned via the strategy-manager UI now applies at
+                        # decision time too.
+                        _merged_eval_params: dict[str, Any] = {}
+                        _strategy_db_config = getattr(strategy, "config", None)
+                        if isinstance(_strategy_db_config, dict):
+                            _merged_eval_params.update(_strategy_db_config)
+                        if isinstance(strategy_params, dict):
+                            _merged_eval_params.update(strategy_params)
                         decision_future = loop.run_in_executor(
                             _STRATEGY_EVAL_POOL,
                             strategy.evaluate,
                             runtime_signal,
                             {
-                                "params": strategy_params,
+                                "params": _merged_eval_params,
                                 "trader": trader,
                                 "mode": control.get("mode", "shadow"),
                                 "live_market": live_context,
