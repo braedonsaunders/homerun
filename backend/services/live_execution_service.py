@@ -4236,40 +4236,88 @@ class LiveExecutionService:
                     immediate_snapshot = self._parse_provider_order_snapshot(response)
                     if immediate_snapshot is not None:
                         self._apply_snapshot_to_order(order, immediate_snapshot)
-                    # IOC/FAK orders fill immediately but the placement response
-                    # often lacks both size_matched AND average_fill_price.
-                    # Always fetch the full order from the venue for these order
-                    # types so fill data is captured before the order disappears
-                    # from the active-orders list.
-                    if (
+                    # Crypto-latency Fix Z: post-placement fill fetch is now
+                    # FIRE-AND-FORGET for IOC/FAK/FOK orders.  The order is
+                    # already at the venue (post_order returned an order_id);
+                    # this HTTP GET to ``client.get_order`` fetches the fill
+                    # snapshot so the local Order has ``size_matched`` and
+                    # ``average_fill_price`` populated.  Synchronous it cost
+                    # 531-3937 ms in the 5/2026/05 latency harness — directly
+                    # on the order-return path.  Background-task it costs zero
+                    # wall time on the caller; the snapshot is applied
+                    # ASYNCHRONOUSLY when the fetch completes.
+                    #
+                    # Trade-off: in the brief window between place_order
+                    # return and the background fetch completing, the
+                    # in-memory Order object reads as ``OPEN`` even though
+                    # the venue already filled it.  Callers that need
+                    # synchronous fill data should call ``get_order``
+                    # directly post-placement.  The reconciliation worker
+                    # syncs venue → local state on every cycle, so even if
+                    # the background fetch fails we converge within one
+                    # reconciliation pass.
+                    #
+                    # Optimization: skip the fetch entirely when the
+                    # immediate response already carried fill data
+                    # (``size_matched > 0``).  Polymarket's place_order
+                    # response sometimes embeds the fill snapshot —
+                    # checking saves the HTTP round-trip.
+                    needs_fill_fetch = (
                         order.clob_order_id
                         and normalized_order_type in {OrderType.IOC, OrderType.FAK, OrderType.FOK}
                         and hasattr(self._client, "get_order")
-                    ):
+                        and float(getattr(order, "filled_size", 0.0) or 0.0) <= 0.0
+                    )
+                    if needs_fill_fetch:
                         _stage_started = _time.monotonic()
-                        try:
-                            detail = await self._run_client_io(
-                                self._client.get_order,
-                                order.clob_order_id,
-                                timeout=_CLOB_READ_TIMEOUT_SECONDS,
-                            )
-                            for srv in self._extract_server_orders(
-                                detail if isinstance(detail, (list, dict)) else {}
-                            ):
-                                snap = self._parse_provider_order_snapshot(srv)
-                                if (
-                                    snap is not None
-                                    and str(snap.get("clob_order_id")) == order.clob_order_id
+                        clob_id_for_fetch = order.clob_order_id
+
+                        async def _bg_fill_fetch() -> None:
+                            try:
+                                detail = await self._run_client_io(
+                                    self._client.get_order,
+                                    clob_id_for_fetch,
+                                    timeout=_CLOB_READ_TIMEOUT_SECONDS,
+                                )
+                                for srv in self._extract_server_orders(
+                                    detail if isinstance(detail, (list, dict)) else {}
                                 ):
-                                    self._apply_snapshot_to_order(order, snap)
-                                    break
-                        except Exception as exc:
-                            logger.debug(
-                                "Post-placement fill-price fetch failed for %s: %s",
-                                order.clob_order_id,
-                                exc,
-                            )
-                        _po_record("post_placement_fill_fetch", _stage_started)
+                                    snap = self._parse_provider_order_snapshot(srv)
+                                    if (
+                                        snap is not None
+                                        and str(snap.get("clob_order_id")) == clob_id_for_fetch
+                                    ):
+                                        self._apply_snapshot_to_order(order, snap)
+                                        break
+                            except Exception as exc:
+                                logger.debug(
+                                    "Post-placement fill-price fetch (bg) failed for %s: %s",
+                                    clob_id_for_fetch,
+                                    exc,
+                                )
+
+                        bg_task = asyncio.create_task(
+                            _bg_fill_fetch(),
+                            name=f"post-fill-fetch-{clob_id_for_fetch[:16]}",
+                        )
+
+                        def _log_bg_fill_fetch_failure(task: asyncio.Task) -> None:
+                            try:
+                                task.result()
+                            except asyncio.CancelledError:
+                                return
+                            except Exception as exc:
+                                logger.debug(
+                                    "Post-placement fill-fetch background task error",
+                                    exc_info=exc,
+                                )
+
+                        bg_task.add_done_callback(_log_bg_fill_fetch_failure)
+                        # Record near-zero on the synchronous breakdown — the
+                        # actual HTTP cost moves to a background task that
+                        # the harness will see as a separate ``post_fill_fetch_bg``
+                        # log line if it becomes a problem.
+                        _po_record("post_placement_fill_fetch", _time.monotonic())
                     _stage_started = _time.monotonic()
                     stats_lock = self._get_stats_lock()
                     async with stats_lock:
@@ -5385,7 +5433,34 @@ class LiveExecutionService:
         except Exception as e:
             return {"error": str(e)}
 
+    _prewarm_in_progress: bool = False
+
     async def prewarm_clob_market_info_cache(
+        self,
+        condition_ids: list[str],
+        *,
+        max_concurrent: int = 4,
+    ) -> dict[str, Any]:
+        # Fix Y addendum: dedup overlapping prewarm calls.  market_runtime
+        # fires one prewarm task per crypto refresh (~3 min); under
+        # network jitter the prior call may not have finished before the
+        # next refresh kicks off, stacking concurrent _warm_one tasks
+        # in the asyncio task tree (observed at 11 in flight in stall
+        # dumps despite a per-call Semaphore(4)).  Class-level boolean
+        # gate ensures only one prewarm sweep is alive at a time;
+        # subsequent overlap calls return immediately with the
+        # ``in_progress`` sentinel.
+        if self.__class__._prewarm_in_progress:
+            return {"prewarmed": 0, "skipped": "in_progress"}
+        self.__class__._prewarm_in_progress = True
+        try:
+            return await self._prewarm_clob_market_info_cache_inner(
+                condition_ids, max_concurrent=max_concurrent
+            )
+        finally:
+            self.__class__._prewarm_in_progress = False
+
+    async def _prewarm_clob_market_info_cache_inner(
         self,
         condition_ids: list[str],
         *,
