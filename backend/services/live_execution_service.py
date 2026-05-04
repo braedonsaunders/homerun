@@ -2171,10 +2171,14 @@ class LiveExecutionService:
         existing = self._clob_keepalive_task
         if existing is not None and not existing.done():
             return
-        self._start_background_task(
+        task = self._start_background_task(
             self._run_clob_keepalive_loop(),
             name="clob_keepalive_loop",
         )
+        # Store the handle so a second ``initialize()`` (e.g. credential
+        # refresh path) doesn't spawn a duplicate keepalive loop —
+        # without this assignment the guard above always falls through.
+        self._clob_keepalive_task = task
 
     async def _run_clob_keepalive_loop(self) -> None:
         # Cadence < httpx default ``keepalive_expiry`` (5 s).  3 s gives
