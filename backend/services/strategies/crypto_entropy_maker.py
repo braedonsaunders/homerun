@@ -386,7 +386,10 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         # ages out and fills as taker (or the price moves and we cross the
         # spread on a follow-up), the realised cost is the taker curve. A
         # 1.5× clearance (vs spike's 2×) reflects the maker's discount.
-        min_fee_clearance_x = max(1.0, to_float(cfg.get("min_fee_clearance_x", 1.5), 1.5))
+        # Floor was previously 1.0 to prevent users from negating the fee
+        # gate; relaxed to 0.0 so a config of 0 truly disables it.  The
+        # gate still runs — it just becomes ``edge >= 0`` when disabled.
+        min_fee_clearance_x = max(0.0, to_float(cfg.get("min_fee_clearance_x", 1.5), 1.5))
         min_edge_required = fee_aware_min_edge_pct(entry_price, min_fee_clearance_x)
         fee_clearance_ok = edge >= min_edge_required
         gates.append(GateResult(

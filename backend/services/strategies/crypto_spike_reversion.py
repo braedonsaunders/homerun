@@ -143,7 +143,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             _emit_reject(WHISPER)
             return None
 
-        min_abs_move_5m = max(0.2, to_float(cfg.get("min_abs_move_5m", 1.8), 1.8))
+        min_abs_move_5m = max(0.0, to_float(cfg.get("min_abs_move_5m", 1.8), 1.8))
         max_abs_move_2h = max(min_abs_move_5m, to_float(cfg.get("max_abs_move_2h", 14.0), 14.0))
         require_reversion_shape = bool(cfg.get("require_reversion_shape", True))
 
@@ -347,8 +347,9 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         net_edge_percent = max(0.0, edge - taker_fee_pct_value)
 
         # Hard fee-clearance gate: refuse trades whose raw edge can't clear
-        # the taker fee by ``min_fee_clearance_x``×.
-        min_fee_clearance_x = max(1.0, to_float(cfg.get("min_fee_clearance_x", 2.0), 2.0))
+        # the taker fee by ``min_fee_clearance_x``×.  Floor relaxed to 0.0
+        # so a config of 0 truly disables this gate.
+        min_fee_clearance_x = max(0.0, to_float(cfg.get("min_fee_clearance_x", 2.0), 2.0))
         min_edge_required = fee_aware_min_edge_pct(selected_price, min_fee_clearance_x)
         fee_clearance_ok = edge >= min_edge_required
         gates.append(GateResult(
@@ -502,7 +503,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         if move_5m is None:
             return "missing_move_5m"
 
-        min_abs_move_5m = max(0.2, to_float(cfg.get("min_abs_move_5m", 1.8), 1.8))
+        min_abs_move_5m = max(0.0, to_float(cfg.get("min_abs_move_5m", 1.8), 1.8))
         if abs(move_5m) < min_abs_move_5m:
             return "move_below_threshold"
 
