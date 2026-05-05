@@ -69,6 +69,21 @@ _SUBMISSION_STATE_COMPLETED = "completed"
 _SUBMISSION_STATE_CLOB_RAISED = "clob_exception"
 _SUBMISSION_STATE_POST_UPDATE_FAILED = "post_update_failed"
 
+# Hard ceiling on the CLOB submit roundtrip from the fast tier.  Fix NN:
+# the underlying ``py_clob_client_v2`` retries internally on ``Server
+# disconnected`` errors, which under degraded CLOB health pushed the
+# direct ``submit_execution_leg`` call to 30-47s — well past the fast
+# trader's 3s hard cycle budget AND the 30s stale-task watchdog.  The
+# multi-leg ``submit_execution_wave`` already wraps the call in
+# ``asyncio.wait_for(..., 35s)``; the fast (single-leg) path was
+# unbounded.  5s is conservative: typical successful submits land in
+# 300-700ms; a 5s budget catches degraded paths fast enough that the
+# cycle fits inside its budget and the cap unwinds promptly.  On
+# timeout we fall through the same ``clob_exception`` path as a raised
+# exception, so the orphan reconcile (running every 60s) checks the
+# venue and reconciles or marks-failed as appropriate.
+_FAST_LEG_SUBMIT_TIMEOUT_SECONDS = 5.0
+
 
 # Per-trader async lock for the cap-check + pre-submit-row-insert
 # critical section.  Without this, several concurrent ``execute_fast_
@@ -542,20 +557,35 @@ async def execute_fast_signal(
     # row picks up real fill data.
     try:
         async with release_conn(session):
-            leg_result = await submit_execution_leg(
-                mode=mode_key,
-                signal=signal,
-                leg=leg,
-                notional_usd=notional,
-                strategy_params=strategy_params,
+            leg_result = await _asyncio.wait_for(
+                submit_execution_leg(
+                    mode=mode_key,
+                    signal=signal,
+                    leg=leg,
+                    notional_usd=notional,
+                    strategy_params=strategy_params,
+                ),
+                timeout=_FAST_LEG_SUBMIT_TIMEOUT_SECONDS,
             )
     except (Exception, _asyncio.CancelledError) as exc:
         is_cancelled = isinstance(exc, _asyncio.CancelledError)
+        is_timeout = isinstance(exc, _asyncio.TimeoutError)
         if is_cancelled:
             logger.warning(
                 "Fast-tier leg submit cancelled mid-flight",
                 trader_id=trader_id,
                 pre_submit_order_id=pre_submit_order_id,
+            )
+        elif is_timeout:
+            # Surface as warning (not error) — under degraded CLOB
+            # health this is the expected failure mode and operators
+            # should see it, but it's not unexpected enough to log a
+            # full traceback every time.
+            logger.warning(
+                "Fast-tier leg submit exceeded CLOB timeout",
+                trader_id=trader_id,
+                pre_submit_order_id=pre_submit_order_id,
+                timeout_seconds=_FAST_LEG_SUBMIT_TIMEOUT_SECONDS,
             )
         else:
             logger.warning(
@@ -564,30 +594,40 @@ async def execute_fast_signal(
                 pre_submit_order_id=pre_submit_order_id,
                 exc_info=exc,
             )
-        # CLOB call raised / was cancelled — we don't know if the venue
-        # accepted the order. Mark the skeleton row as failed-with-
-        # clob-exception so (a) the cap unwinds immediately ("failed"
-        # is not in active_statuses), (b) the orphan reconcile sweep
-        # can match it against any orders the venue actually has, and
-        # (c) the duplicate-check guard still blocks re-submission of
-        # the same signal.
+        # CLOB call raised / cancelled / timed out — we don't know if
+        # the venue accepted the order.  Mark the skeleton row as
+        # failed-with-clob-exception so (a) the cap unwinds immediately
+        # ("failed" is not in active_statuses), (b) the orphan
+        # reconcile sweep can match it against any orders the venue
+        # actually has, and (c) the duplicate-check guard still blocks
+        # re-submission of the same signal.
         try:
             # ``release_conn`` detached the pre-submit ``order`` ORM object;
             # re-attach it before mutating so the UPDATE actually flushes.
             refetched_after_raise = await session.get(TraderOrder, pre_submit_order_id)
             target = refetched_after_raise if refetched_after_raise is not None else order
             target.status = "failed"
-            target.error_message = (
-                "submit_execution_leg cancelled (cycle teardown)"
-                if is_cancelled
-                else f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
-            )
+            if is_cancelled:
+                target.error_message = "submit_execution_leg cancelled (cycle teardown)"
+            elif is_timeout:
+                target.error_message = (
+                    f"submit_execution_leg timed out after "
+                    f"{_FAST_LEG_SUBMIT_TIMEOUT_SECONDS}s (CLOB degraded)"
+                )
+            else:
+                target.error_message = f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
             target.payload_json = {
                 **(target.payload_json or {}),
                 _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_CLOB_RAISED,
                 "exception_type": type(exc).__name__,
-                "exception_message": "cancelled" if is_cancelled else str(exc),
+                "exception_message": (
+                    "cancelled"
+                    if is_cancelled
+                    else (f"timeout_{_FAST_LEG_SUBMIT_TIMEOUT_SECONDS}s" if is_timeout else str(exc))
+                ),
                 "cancelled_mid_flight": is_cancelled,
+                "timed_out": is_timeout,
+                "timeout_seconds": _FAST_LEG_SUBMIT_TIMEOUT_SECONDS if is_timeout else None,
             }
             await session.flush()
         except (Exception, _asyncio.CancelledError) as flush_exc:
