@@ -639,6 +639,17 @@ async def execute_fast_signal(
                 trader_id=trader_id,
                 exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
             )
+            # Fix PP — clear PendingRollback state from the failed flush.
+            # The pre-submit row is already durably committed (line 505);
+            # this rollback only undoes the in-flight UPDATE attempt, so
+            # the session is usable by the runtime caller afterwards
+            # (otherwise the next session.execute() raises
+            # PendingRollbackError and we get the cluster of errors seen
+            # in the post-Fix-NN soak).
+            try:
+                await session.rollback()
+            except Exception:
+                pass
         if is_cancelled:
             # Re-raise so the runtime's cycle teardown completes
             # (otherwise the task wouldn't be detected as cancelled).
@@ -712,6 +723,12 @@ async def execute_fast_signal(
                 trader_id=trader_id,
                 exc_info=flush_exc,
             )
+            # Fix PP — drop PendingRollback before returning so the
+            # runtime's downstream session.execute() calls don't trip.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
         return FastSubmitResult(
             session_id="",
             status="skipped",
@@ -900,6 +917,15 @@ async def execute_fast_signal(
                 trader_id=trader_id,
                 exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
             )
+            # Fix PP — clear PendingRollback so the runtime caller can
+            # still use this session (record_signal_event, cursor
+            # advance) after this function returns.  Pre-submit row is
+            # durably committed; this only drops in-memory mutation
+            # attempts that already failed.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
         if is_cancelled:
             raise
         return FastSubmitResult(

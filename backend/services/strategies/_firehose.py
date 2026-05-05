@@ -70,10 +70,38 @@ logger = get_logger(__name__)
 # up to firehose within a single refresh.
 
 _BINDING_TTL_SECONDS = 3.0
+# Hard ceiling on the cache age before we *must* block to refresh.
+# Between TTL_SECONDS and STALE_HARD_SECONDS we serve the stale value
+# and kick off a background refresh — that prevents a thundering herd
+# of evaluation tasks from queueing behind one DB roundtrip when the
+# DB momentarily slows down.  Above the hard ceiling we resume blocking
+# behaviour so we never return a wildly outdated binding map.
+_BINDING_STALE_HARD_SECONDS = 30.0
 _orchestrator_enabled: bool = False
 _strategy_to_trader_ids: dict[str, list[str]] = {}
 _binding_cache_at: float = 0.0
 _binding_refresh_lock: asyncio.Lock | None = None
+_binding_refresh_inflight: bool = False
+
+# ---------------------------------------------------------------------------
+# Fix OO — Firehose emission backpressure.
+#
+# Pre-fix observation: stall dumps showed 1000+ tasks parked at
+# ``_firehose.py:emit_evaluation:327`` and ``emit_emit:391``.  Every
+# crypto_update tick, six strategies each emit several gate/eval/emit
+# events per market they consider — easily 300-600 fire-and-forget
+# tasks per second.  When the binding cache refresh blocked on a slow
+# DB query (or audit-write Redis publish hiccupped), tasks accumulated
+# faster than they drained, saturating the event loop and pushing
+# orchestrator cycles to 30-90 s.
+#
+# Firehose events are observability, not load-bearing.  Drop them
+# under pressure rather than letting them gum up the event loop.  The
+# budget below is generous enough to never bite during normal
+# operation but hard-caps the leak surface area.
+_INFLIGHT_TASK_BUDGET = 256
+_inflight_emission_tasks: int = 0
+_dropped_emission_tasks: int = 0
 
 
 async def _refresh_binding_cache() -> None:
@@ -134,12 +162,45 @@ def _binding_cache_fresh() -> bool:
     return (_time.monotonic() - _binding_cache_at) < _BINDING_TTL_SECONDS
 
 
+def _binding_cache_hard_stale() -> bool:
+    return (_time.monotonic() - _binding_cache_at) >= _BINDING_STALE_HARD_SECONDS
+
+
+async def _refresh_binding_cache_guarded() -> None:
+    """Refresh the cache but never let two coroutines hit the DB at once.
+
+    On contention this returns immediately — the in-flight refresh
+    will update the shared globals when it completes.
+    """
+    global _binding_refresh_inflight
+    if _binding_refresh_inflight:
+        return
+    _binding_refresh_inflight = True
+    try:
+        await _refresh_binding_cache()
+    finally:
+        _binding_refresh_inflight = False
+
+
 async def _ensure_binding_cache() -> None:
     global _binding_refresh_lock
     if _binding_cache_fresh():
         return
     if _binding_refresh_lock is None:
         _binding_refresh_lock = asyncio.Lock()
+    # Soft-stale: serve the cached value, schedule a background refresh
+    # if one isn't already running.  This breaks the thundering-herd
+    # behaviour where every concurrent evaluation task queues behind
+    # one DB roundtrip on cache expiry.
+    if not _binding_cache_hard_stale():
+        if not _binding_refresh_inflight:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_refresh_binding_cache_guarded())
+            except RuntimeError:
+                pass
+        return
+    # Hard-stale: cache is too old to trust, block on the refresh.
     async with _binding_refresh_lock:
         if _binding_cache_fresh():
             return
@@ -231,7 +292,30 @@ def _fire_and_forget(coro) -> None:
     Strategies run inside the market_runtime dispatch loop; we don't
     want gate emissions to add latency to the hot path.  If no event
     loop is available (sync test path), drop the event silently.
+
+    Fix OO — drop emissions when the in-flight budget is saturated.
+    Firehose events are debug observability and must never queue
+    enough tasks to saturate the event loop or stall the orchestrator.
     """
+    global _inflight_emission_tasks, _dropped_emission_tasks
+    if _inflight_emission_tasks >= _INFLIGHT_TASK_BUDGET:
+        try:
+            coro.close()
+        except Exception:
+            pass
+        _dropped_emission_tasks += 1
+        # Log every 1000th drop so the situation is visible without
+        # spamming the log itself when the firehose is over-budget.
+        if _dropped_emission_tasks % 1000 == 1:
+            logger.warning(
+                "firehose dropping emissions (in-flight budget exhausted)",
+                extra={
+                    "inflight": _inflight_emission_tasks,
+                    "budget": _INFLIGHT_TASK_BUDGET,
+                    "total_dropped": _dropped_emission_tasks,
+                },
+            )
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -240,7 +324,28 @@ def _fire_and_forget(coro) -> None:
         except Exception:
             pass
         return
-    loop.create_task(coro)
+    _inflight_emission_tasks += 1
+    task = loop.create_task(_tracked_emission(coro))
+    # Avoid 'Task was destroyed but it is pending' warnings if the
+    # loop tears down before the task runs.
+    task.add_done_callback(lambda _t: None)
+
+
+async def _tracked_emission(coro) -> None:
+    global _inflight_emission_tasks
+    try:
+        await coro
+    finally:
+        _inflight_emission_tasks -= 1
+
+
+def get_firehose_stats() -> dict[str, int]:
+    """Expose in-flight / dropped counters for observability."""
+    return {
+        "inflight_emission_tasks": _inflight_emission_tasks,
+        "dropped_emission_tasks_total": _dropped_emission_tasks,
+        "inflight_budget": _INFLIGHT_TASK_BUDGET,
+    }
 
 
 async def emit_gate(

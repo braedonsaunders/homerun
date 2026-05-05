@@ -9880,10 +9880,56 @@ async def reconcile_live_positions(
             for row in touched_rows:
                 if inspect(row).session is session.sync_session:
                     session.sync_session.expunge(row)
-            with session.no_autoflush:
-                await session.execute(stmt, params)
-            _lc_t3b = _time.monotonic()
-            await session.commit()
+            # Fix QQ — explicit handler for the lock_timeout=2s the
+            # statement above arms.  asyncpg raises ``LockNotAvailableError``
+            # (wrapped by SQLAlchemy as DBAPIError) when another writer
+            # holds the row lock past 2 s; without this catch, the
+            # exception propagates as a full ERROR-level traceback every
+            # cycle under contention and fills the logs with noise.  The
+            # contract here is "next reconcile cycle retries", and that
+            # contract is what this except block enforces.  Note: we still
+            # need ``rollback()`` so the aborted transaction state from
+            # the failed UPDATE doesn't poison the session for the rest
+            # of the calling code.
+            try:
+                with session.no_autoflush:
+                    await session.execute(stmt, params)
+                _lc_t3b = _time.monotonic()
+                await session.commit()
+            except Exception as _bulk_exc:
+                _is_lock_timeout = (
+                    "lockNotAvailable" in type(_bulk_exc).__name__
+                    or "lock_timeout" in str(_bulk_exc).lower()
+                    or "55P03" in str(getattr(_bulk_exc, "orig", "") or "")
+                )
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+                if _is_lock_timeout:
+                    logger.warning(
+                        "reconcile_live_positions bulk UPDATE hit lock_timeout; "
+                        "next reconcile cycle will retry",
+                        extra={"trader_id": trader_id, "rows": len(touched_rows)},
+                    )
+                    return {
+                        "trader_id": trader_id,
+                        "mode": "live",
+                        "dry_run": bool(dry_run),
+                        "matched": len(candidates),
+                        "would_close": would_close,
+                        "closed": 0,
+                        "held": held,
+                        "skipped": skipped + closed,
+                        "state_updates": 0,
+                        "total_realized_pnl": 0.0,
+                        "by_status": by_status,
+                        "skipped_reasons": {**skipped_reasons, "lock_timeout": closed + state_updates},
+                        "reverse_signals_emitted": 0,
+                        "details": details,
+                        "deferred_due_to_lock_timeout": True,
+                    }
+                raise
             _lc_t3c = _time.monotonic()
             _total_elapsed = _lc_t3c - _lc_t0
             # Top-3 slowest candidates (by elapsed wall time inside the
