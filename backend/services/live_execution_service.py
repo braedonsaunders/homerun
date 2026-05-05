@@ -4230,12 +4230,50 @@ class LiveExecutionService:
                             if normalized_metadata is not None:
                                 market_order_kwargs["metadata"] = normalized_metadata
                             order_args = MarketOrderArgs(**market_order_kwargs)
+                            # ITER-4 (Fix EE): Combine create + post into ONE
+                            # ``asyncio.to_thread`` dispatch.  Pre-fix code paid
+                            # two executor hops (~30-50 ms each) plus an event-
+                            # loop turn between them; the SDK's create + post
+                            # have a strict data dependency (post takes the
+                            # signed order) so there's nothing to gain from
+                            # interleaving on the asyncio side, but every
+                            # millisecond of dispatch is hot-path time we don't
+                            # want.  Inner stage timings (create + post) are
+                            # captured by ``_po_breakdown_ref`` so the harness
+                            # still sees them split out.
                             _stage_started = _time.monotonic()
-                            signed_order = await asyncio.wait_for(
-                                asyncio.to_thread(self._client.create_market_order, order_args),
+                            client_ref = self._client
+                            _po_breakdown_ref = _po_breakdown
+
+                            def _create_and_post_market() -> dict:
+                                t_create = _time.monotonic()
+                                signed = client_ref.create_market_order(order_args)
+                                _po_breakdown_ref["create_market_order"] = round(
+                                    _po_breakdown_ref.get("create_market_order", 0.0)
+                                    + (_time.monotonic() - t_create) * 1000.0,
+                                    1,
+                                )
+                                t_post = _time.monotonic()
+                                resp = client_ref.post_order(
+                                    signed, provider_order_type, post_only=post_only
+                                )
+                                _po_breakdown_ref["post_order"] = round(
+                                    _po_breakdown_ref.get("post_order", 0.0)
+                                    + (_time.monotonic() - t_post) * 1000.0,
+                                    1,
+                                )
+                                return resp
+
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(_create_and_post_market),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
-                            _po_record("create_market_order", _stage_started)
+                            # ``signed_order`` left undefined on this branch —
+                            # only the limit-order branch references it later
+                            # for retry-on-version-mismatch.  Set to None to
+                            # surface any accidental cross-branch usage.
+                            signed_order = None
+                            _po_record("clob_create_post_combined", _stage_started)
                         else:
                             limit_order_kwargs = dict(
                                 price=submit_price,
@@ -4246,23 +4284,40 @@ class LiveExecutionService:
                             if normalized_metadata is not None:
                                 limit_order_kwargs["metadata"] = normalized_metadata
                             order_args = OrderArgs(**limit_order_kwargs)
+                            # Same combined create + post for the limit-order
+                            # path.  The SDK's ``post_order`` for a GTC limit
+                            # is the same call shape as for FAK/FOK (just a
+                            # different ``order_type``).
                             _stage_started = _time.monotonic()
-                            signed_order = await asyncio.wait_for(
-                                asyncio.to_thread(self._client.create_order, order_args),
+                            client_ref = self._client
+                            _po_breakdown_ref = _po_breakdown
+                            _post_only_ref = post_only
+                            _provider_order_type_ref = provider_order_type
+
+                            def _create_and_post_limit() -> tuple:
+                                t_create = _time.monotonic()
+                                signed = client_ref.create_order(order_args)
+                                _po_breakdown_ref["create_order"] = round(
+                                    _po_breakdown_ref.get("create_order", 0.0)
+                                    + (_time.monotonic() - t_create) * 1000.0,
+                                    1,
+                                )
+                                t_post = _time.monotonic()
+                                resp = client_ref.post_order(
+                                    signed, _provider_order_type_ref, post_only=_post_only_ref
+                                )
+                                _po_breakdown_ref["post_order"] = round(
+                                    _po_breakdown_ref.get("post_order", 0.0)
+                                    + (_time.monotonic() - t_post) * 1000.0,
+                                    1,
+                                )
+                                return signed, resp
+
+                            signed_order, response = await asyncio.wait_for(
+                                asyncio.to_thread(_create_and_post_limit),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
-                            _po_record("create_order", _stage_started)
-                        _stage_started = _time.monotonic()
-                        response = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                self._client.post_order,
-                                signed_order,
-                                provider_order_type,
-                                post_only=post_only,
-                            ),
-                            timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
-                        )
-                        _po_record("post_order", _stage_started)
+                            _po_record("clob_create_post_combined", _stage_started)
                     if not isinstance(response, dict):
                         raise RuntimeError("Trading provider returned malformed order response")
                 except Exception as exc:
