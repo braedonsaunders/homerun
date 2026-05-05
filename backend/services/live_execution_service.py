@@ -2231,6 +2231,20 @@ class LiveExecutionService:
                     )
                 except Exception:
                     pass
+                # ITER-5 (Fix GG): pre-spin the dedicated CLOB executor
+                # pool so the FIRST order doesn't pay thread-creation
+                # cost (≈ 5-10 ms per worker on Windows).  Submit one
+                # noop per configured worker to ensure they're all
+                # alive and ready to take work.  The executor returns
+                # an immediately-resolved future on noop, so this is
+                # essentially free aside from the spawn.
+                try:
+                    executor = self._get_clob_executor()
+                    pool_size = self._client_io_lock_concurrency + 4
+                    for _ in range(pool_size):
+                        executor.submit(lambda: None)
+                except Exception:
+                    pass
                 return True
 
             except ImportError:
