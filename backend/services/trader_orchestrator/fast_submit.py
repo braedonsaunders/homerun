@@ -313,6 +313,14 @@ async def execute_fast_signal(
         "pre_submit_at_iso": now_iso,
         "fast_idempotency_key": idempotency_key,
     }
+    # Persist the runtime strategy_params so the UI's per-bot performance
+    # view can attribute historical orders to the exact configuration that
+    # produced them (rather than falling back to the trader's *current*
+    # config, which would drift after every retune).  The session_engine
+    # path persists this under ``payload["strategy_params"]``; mirror that
+    # here so fast-tier orders show up the same way.
+    if strategy_params:
+        pre_submit_payload["strategy_params"] = dict(strategy_params)
     try:
         if decision_audit is not None and decision_id:
             await create_trader_decision(
@@ -514,6 +522,11 @@ async def execute_fast_signal(
     order_payload[_SUBMISSION_STATE_KEY] = _SUBMISSION_STATE_COMPLETED
     order_payload["fast_tier"] = True
     order_payload["fast_idempotency_key"] = idempotency_key
+    # Carry the runtime strategy_params forward into the post-submit row.
+    # The post-submit update overwrites payload_json wholesale, so without
+    # this the params we stamped onto the pre-submit row would be lost.
+    if strategy_params:
+        order_payload["strategy_params"] = dict(strategy_params)
     submit_completed_iso = submit_completed_at.isoformat()
     order_payload.setdefault("submit_started_at_iso", submit_started_at.isoformat())
     order_payload.setdefault("submit_completed_at_iso", submit_completed_iso)

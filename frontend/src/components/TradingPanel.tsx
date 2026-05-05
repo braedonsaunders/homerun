@@ -104,6 +104,19 @@ import { Switch } from './ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { FlashNumber } from './AnimatedNumber'
 import { toTimeValueSeries } from '../lib/priceHistory'
 import AutoresearchView from './AutoresearchView'
@@ -411,7 +424,7 @@ type PerformanceBucketRow = {
   fullLosses: number
 }
 
-type PerformanceSubview = 'latency' | 'configuration'
+type PerformanceSubview = 'performance' | 'latency' | 'configuration'
 
 type PerformanceSection = {
   sectionKey: string
@@ -5352,7 +5365,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   // to Strategies → Research, but the live-tune UI is a per-bot operation
   // and belongs here.
   const [workTab, setWorkTab] = useState<'trades' | 'terminal' | 'tune' | 'risk' | 'decisions' | 'performance'>('trades')
-  const [performanceSubview, setPerformanceSubview] = useState<PerformanceSubview>('latency')
+  const [performanceSubview, setPerformanceSubview] = useState<PerformanceSubview>('performance')
   const [performanceSectionKey, setPerformanceSectionKey] = useState('')
   const [performanceParamKey, setPerformanceParamKey] = useState('')
   const [allBotsTab, setAllBotsTab] = useState<AllBotsTab>('overview')
@@ -7804,6 +7817,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     let resolved = 0
     let wins = 0
     let losses = 0
+    let breakeven = 0
+    let pendingPnl = 0
     let failed = 0
     let open = 0
     let allowanceErrorCount = 0
@@ -7811,14 +7826,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
     for (const order of selectedOrders) {
       const status = normalizeStatus(order.status)
-      const pnl = toNumber(order.actual_profit)
+      const rawPnl = (order as { actual_profit?: unknown }).actual_profit
+      const pnlVerified = rawPnl !== null && rawPnl !== undefined && Number.isFinite(Number(rawPnl))
+      const pnl = toNumber(rawPnl)
       const notional = Math.abs(toNumber(order.notional_usd))
       if (RESOLVED_ORDER_STATUSES.has(status)) {
         resolved += 1
         resolvedPnl += pnl
         resolvedNotional += notional
-        if (pnl > 0) wins += 1
-        if (pnl < 0) losses += 1
+        if (!pnlVerified) {
+          pendingPnl += 1
+        } else if (pnl > 0) {
+          wins += 1
+        } else if (pnl < 0) {
+          losses += 1
+        } else {
+          breakeven += 1
+        }
       }
       if (FAILED_ORDER_STATUSES.has(status)) failed += 1
       if (OPEN_ORDER_STATUSES.has(status)) open += 1
@@ -7852,6 +7876,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       resolved,
       wins,
       losses,
+      breakeven,
+      pendingPnl,
       failed,
       open,
       resolvedPnl,
@@ -8158,6 +8184,68 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     () => buildLatencyGroupRows(executionLatency, 'by_strategy', 'ws_release_to_submit_start_ms', sourceCards).slice(0, 10),
     [executionLatency, sourceCards]
   )
+
+  const performancePnlSeries = useMemo(() => {
+    type Point = {
+      ts: number
+      cumulativePnl: number
+      pnl: number
+      orderIndex: number
+      notional: number
+      drawdown: number
+    }
+    const resolved: Array<{ ts: number; pnl: number; notional: number }> = []
+    for (const order of selectedOrders) {
+      const status = normalizeStatus(order.status)
+      if (!RESOLVED_ORDER_STATUSES.has(status)) continue
+      const tsRaw = latestTimestampValue(order.executed_at, order.updated_at, order.created_at)
+      const ts = toTs(tsRaw)
+      if (ts <= 0) continue
+      const pnl = toNumber(order.actual_profit)
+      const notional = Math.abs(toNumber(order.notional_usd))
+      resolved.push({ ts, pnl, notional })
+    }
+    resolved.sort((left, right) => left.ts - right.ts)
+    let running = 0
+    let peak = 0
+    let trough = 0
+    let maxDrawdown = 0
+    let largestWin = 0
+    let largestLoss = 0
+    const points: Point[] = resolved.map((entry, index) => {
+      running += entry.pnl
+      if (running > peak) peak = running
+      if (running < trough) trough = running
+      const drawdown = running - peak
+      if (-drawdown > maxDrawdown) maxDrawdown = -drawdown
+      if (entry.pnl > largestWin) largestWin = entry.pnl
+      if (entry.pnl < largestLoss) largestLoss = entry.pnl
+      return {
+        ts: entry.ts,
+        cumulativePnl: running,
+        pnl: entry.pnl,
+        orderIndex: index + 1,
+        notional: entry.notional,
+        drawdown,
+      }
+    })
+    const positivePnl = resolved.reduce((acc, entry) => acc + (entry.pnl > 0 ? entry.pnl : 0), 0)
+    const negativePnl = resolved.reduce((acc, entry) => acc + (entry.pnl < 0 ? entry.pnl : 0), 0)
+    const finalPnl = points.length > 0 ? points[points.length - 1].cumulativePnl : 0
+    return {
+      points,
+      peak,
+      trough,
+      maxDrawdown,
+      positivePnl,
+      negativePnl,
+      finalPnl,
+      avgPnl: resolved.length > 0 ? finalPnl / resolved.length : 0,
+      profitFactor: negativePnl < 0 ? positivePnl / Math.abs(negativePnl) : null,
+      largestWin,
+      largestLoss,
+    }
+  }, [selectedOrders])
 
   const activePerformanceSection = useMemo(
     () => selectedPerformanceConfig.sections.find((section) => section.sectionKey === performanceSectionKey) || selectedPerformanceConfig.sections[0] || null,
@@ -11645,6 +11733,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     >
                       <div className="shrink-0 flex items-center justify-between gap-2 overflow-x-auto pb-1">
                         <TabsList className="h-auto justify-start gap-1 rounded-lg border border-border/60 bg-card/70 p-1">
+                          <TabsTrigger value="performance" className="h-7 px-2.5 text-[11px]">Performance</TabsTrigger>
                           <TabsTrigger value="latency" className="h-7 px-2.5 text-[11px]">Latency</TabsTrigger>
                           <TabsTrigger value="configuration" className="h-7 px-2.5 text-[11px]">Configuration</TabsTrigger>
                         </TabsList>
@@ -11658,7 +11747,251 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </div>
                       </div>
 
-                      {performanceSubview === 'latency' ? (
+                      {performanceSubview === 'performance' ? (
+                        <TabsContent value="performance" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                          <div className="shrink-0 grid gap-1 sm:grid-cols-3 xl:grid-cols-6">
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Cumulative P&amp;L</p>
+                              <p className={cn('text-xs font-mono', performancePnlSeries.finalPnl > 0 ? 'text-emerald-500' : performancePnlSeries.finalPnl < 0 ? 'text-red-500' : '')}>
+                                {formatSignedCurrency(performancePnlSeries.finalPnl)}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">ROI</p>
+                              <p className={cn('text-xs font-mono', selectedPerformance.roiPercent > 0 ? 'text-emerald-500' : selectedPerformance.roiPercent < 0 ? 'text-red-500' : '')}>
+                                {selectedPerformance.roiPercent > 0 ? '+' : ''}{formatPercent(selectedPerformance.roiPercent, 2)}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Win Rate</p>
+                              <p className="text-xs font-mono">
+                                {(() => {
+                                  const decided = selectedPerformance.wins + selectedPerformance.losses
+                                  const breakdownExtras: string[] = []
+                                  if (selectedPerformance.breakeven > 0) breakdownExtras.push(`${selectedPerformance.breakeven}BE`)
+                                  if (selectedPerformance.pendingPnl > 0) breakdownExtras.push(`${selectedPerformance.pendingPnl} pending`)
+                                  const extras = breakdownExtras.length > 0 ? ` · ${breakdownExtras.join(' / ')}` : ''
+                                  if (decided === 0) return selectedPerformance.resolved > 0 ? `— (${selectedPerformance.wins}W / ${selectedPerformance.losses}L${extras})` : '—'
+                                  return `${formatPercent((selectedPerformance.wins / decided) * 100, 1)} (${selectedPerformance.wins}W / ${selectedPerformance.losses}L${extras})`
+                                })()}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Profit Factor</p>
+                              <p className="text-xs font-mono">
+                                {performancePnlSeries.profitFactor !== null ? performancePnlSeries.profitFactor.toFixed(2) : '—'}
+                              </p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Best Streak (Peak)</p>
+                              <p className="text-xs font-mono text-emerald-500">{formatSignedCurrency(performancePnlSeries.peak)}</p>
+                            </div>
+                            <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
+                              <p className="text-[9px] uppercase text-muted-foreground">Max Drawdown</p>
+                              <p className="text-xs font-mono text-red-500">
+                                {performancePnlSeries.maxDrawdown > 0 ? `-${formatCurrency(performancePnlSeries.maxDrawdown)}` : '—'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex-[2] min-h-[260px] rounded-md border border-border/60 bg-card/60 flex flex-col">
+                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                              <span>Cumulative P&amp;L Over Time</span>
+                              <span className="text-muted-foreground/70 normal-case tracking-normal">
+                                {performancePnlSeries.points.length} resolved · avg {selectedPerformance.resolved > 0 ? formatSignedCurrency(performancePnlSeries.avgPnl) : '—'} · best {formatSignedCurrency(performancePnlSeries.largestWin)} · worst {formatSignedCurrency(performancePnlSeries.largestLoss)}
+                              </span>
+                            </div>
+                            <div className="flex-1 min-h-0 p-1">
+                              {performancePnlSeries.points.length === 0 ? (
+                                <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">
+                                  No resolved orders yet — chart will appear once trades close.
+                                </div>
+                              ) : (
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <AreaChart data={performancePnlSeries.points} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                                    <defs>
+                                      <linearGradient id="botPnlPositive" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.32} />
+                                        <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.04} />
+                                      </linearGradient>
+                                      <linearGradient id="botPnlNegative" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.32} />
+                                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0.04} />
+                                      </linearGradient>
+                                    </defs>
+                                    <CartesianGrid stroke="hsl(var(--border) / 0.45)" strokeDasharray="3 3" />
+                                    <XAxis
+                                      dataKey="ts"
+                                      type="number"
+                                      domain={['dataMin', 'dataMax']}
+                                      scale="time"
+                                      tickFormatter={(value) => {
+                                        const d = new Date(Number(value))
+                                        return Number.isFinite(d.getTime())
+                                          ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                          : ''
+                                      }}
+                                      tick={{ fontSize: 10 }}
+                                      stroke="hsl(var(--muted-foreground))"
+                                      minTickGap={48}
+                                      interval="preserveStartEnd"
+                                    />
+                                    <YAxis
+                                      tick={{ fontSize: 10 }}
+                                      stroke="hsl(var(--muted-foreground))"
+                                      tickFormatter={(value) => formatCurrency(Number(value), true)}
+                                    />
+                                    <RechartsTooltip
+                                      contentStyle={{
+                                        borderRadius: 8,
+                                        borderColor: 'hsl(var(--border))',
+                                        backgroundColor: 'hsl(var(--background) / 0.95)',
+                                        fontSize: 11,
+                                      }}
+                                      labelFormatter={(value) => {
+                                        const d = new Date(Number(value))
+                                        return Number.isFinite(d.getTime()) ? d.toLocaleString() : ''
+                                      }}
+                                      formatter={(value: unknown, name: unknown) => {
+                                        const num = Number(value)
+                                        const label = name === 'cumulativePnl' ? 'Cumulative' : name === 'pnl' ? 'Trade P&L' : String(name)
+                                        return [Number.isFinite(num) ? formatSignedCurrency(num) : String(value), label] as [string, string]
+                                      }}
+                                    />
+                                    <ReferenceLine y={0} stroke="hsl(var(--border))" strokeDasharray="2 2" />
+                                    <Area
+                                      type="monotone"
+                                      dataKey="cumulativePnl"
+                                      stroke={performancePnlSeries.finalPnl >= 0 ? '#22d3ee' : '#ef4444'}
+                                      fill={performancePnlSeries.finalPnl >= 0 ? 'url(#botPnlPositive)' : 'url(#botPnlNegative)'}
+                                      strokeWidth={2}
+                                      dot={false}
+                                      isAnimationActive={false}
+                                    />
+                                  </AreaChart>
+                                </ResponsiveContainer>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex-1 min-h-[180px] grid gap-2 xl:grid-cols-2">
+                            <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">
+                                Per-Trade P&amp;L
+                              </div>
+                              <div className="flex-1 min-h-0 p-1">
+                                {performancePnlSeries.points.length === 0 ? (
+                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">No trades yet.</div>
+                                ) : (
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={performancePnlSeries.points} margin={{ top: 6, right: 8, left: 4, bottom: 6 }}>
+                                      <CartesianGrid stroke="hsl(var(--border) / 0.35)" strokeDasharray="3 3" />
+                                      <XAxis
+                                        dataKey="orderIndex"
+                                        tick={{ fontSize: 9 }}
+                                        stroke="hsl(var(--muted-foreground))"
+                                      />
+                                      <YAxis
+                                        tick={{ fontSize: 9 }}
+                                        stroke="hsl(var(--muted-foreground))"
+                                        tickFormatter={(value) => formatCurrency(Number(value), true)}
+                                      />
+                                      <RechartsTooltip
+                                        contentStyle={{
+                                          borderRadius: 8,
+                                          borderColor: 'hsl(var(--border))',
+                                          backgroundColor: 'hsl(var(--background) / 0.95)',
+                                          fontSize: 11,
+                                        }}
+                                        labelFormatter={(value) => `Trade #${value}`}
+                                        formatter={(value: unknown) => {
+                                          const num = Number(value)
+                                          return [Number.isFinite(num) ? formatSignedCurrency(num) : String(value), 'P&L'] as [string, string]
+                                        }}
+                                      />
+                                      <ReferenceLine y={0} stroke="hsl(var(--border))" />
+                                      <Bar dataKey="pnl" isAnimationActive={false}>
+                                        {performancePnlSeries.points.map((point, index) => (
+                                          <Cell key={`bar-${index}`} fill={point.pnl >= 0 ? '#22d3ee' : '#ef4444'} fillOpacity={0.85} />
+                                        ))}
+                                      </Bar>
+                                    </BarChart>
+                                  </ResponsiveContainer>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">
+                                Drawdown (Underwater)
+                              </div>
+                              <div className="flex-1 min-h-0 p-1">
+                                {performancePnlSeries.points.length === 0 ? (
+                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">No trades yet.</div>
+                                ) : (
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={performancePnlSeries.points} margin={{ top: 6, right: 8, left: 4, bottom: 6 }}>
+                                      <defs>
+                                        <linearGradient id="botDrawdownGradient" x1="0" y1="0" x2="0" y2="1">
+                                          <stop offset="5%" stopColor="#ef4444" stopOpacity={0.04} />
+                                          <stop offset="95%" stopColor="#ef4444" stopOpacity={0.32} />
+                                        </linearGradient>
+                                      </defs>
+                                      <CartesianGrid stroke="hsl(var(--border) / 0.35)" strokeDasharray="3 3" />
+                                      <XAxis
+                                        dataKey="ts"
+                                        type="number"
+                                        domain={['dataMin', 'dataMax']}
+                                        scale="time"
+                                        tickFormatter={(value) => {
+                                          const d = new Date(Number(value))
+                                          return Number.isFinite(d.getTime())
+                                            ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                            : ''
+                                        }}
+                                        tick={{ fontSize: 9 }}
+                                        stroke="hsl(var(--muted-foreground))"
+                                        minTickGap={48}
+                                        interval="preserveStartEnd"
+                                      />
+                                      <YAxis
+                                        tick={{ fontSize: 9 }}
+                                        stroke="hsl(var(--muted-foreground))"
+                                        tickFormatter={(value) => formatCurrency(Number(value), true)}
+                                      />
+                                      <RechartsTooltip
+                                        contentStyle={{
+                                          borderRadius: 8,
+                                          borderColor: 'hsl(var(--border))',
+                                          backgroundColor: 'hsl(var(--background) / 0.95)',
+                                          fontSize: 11,
+                                        }}
+                                        labelFormatter={(value) => {
+                                          const d = new Date(Number(value))
+                                          return Number.isFinite(d.getTime()) ? d.toLocaleString() : ''
+                                        }}
+                                        formatter={(value: unknown) => {
+                                          const num = Number(value)
+                                          return [Number.isFinite(num) ? formatSignedCurrency(num) : String(value), 'Drawdown'] as [string, string]
+                                        }}
+                                      />
+                                      <Area
+                                        type="monotone"
+                                        dataKey="drawdown"
+                                        stroke="#ef4444"
+                                        fill="url(#botDrawdownGradient)"
+                                        strokeWidth={1.5}
+                                        dot={false}
+                                        isAnimationActive={false}
+                                      />
+                                    </AreaChart>
+                                  </ResponsiveContainer>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </TabsContent>
+                      ) : performanceSubview === 'latency' ? (
                         <TabsContent value="latency" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
                         {executionLatency ? (
                           <div className="shrink-0 grid gap-1 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
