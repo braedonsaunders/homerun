@@ -2210,41 +2210,71 @@ class LiveExecutionService:
                         process_role=os.environ.get("HOMERUN_PROCESS_ROLE", ""),
                         plane=worker_plane,
                     )
-                logger.info("Trading service initialized successfully", credential_source=credential_source)
-                self._last_init_error = None
-                self._init_retry_not_before = None
-                # Keep the CLOB HTTP/2 connection warm so order submits
-                # don't pay a TLS handshake when the trader has been
-                # idle past httpx's 5 s keepalive_expiry.
-                self._start_clob_keepalive_loop()
-                # Prime ``__cached_version`` so the FIRST create_market_
-                # order doesn't pay a synchronous /version HTTP roundtrip
-                # inside the io_lock.  ``get_version`` populates the
-                # cache; subsequent calls hit the cached value.
-                # Fire-and-forget — failure leaves the SDK to lazy-fetch
-                # on the first order placement, which is the pre-fix
-                # behaviour, so this prewarm is a pure win.
-                try:
-                    asyncio.create_task(
-                        asyncio.to_thread(self._client.get_version),
-                        name="clob_prewarm_version",
-                    )
-                except Exception:
-                    pass
-                # ITER-5 (Fix GG): pre-spin the dedicated CLOB executor
-                # pool so the FIRST order doesn't pay thread-creation
-                # cost (≈ 5-10 ms per worker on Windows).  Submit one
-                # noop per configured worker to ensure they're all
-                # alive and ready to take work.  The executor returns
-                # an immediately-resolved future on noop, so this is
-                # essentially free aside from the spawn.
+                # ITER-? (Fix HH): SYNCHRONOUS prewarm.  Fire-and-forget
+                # prewarm let the FIRST order race ahead of the cache
+                # population — measured cold-start ``create_order`` of
+                # 968 ms and ``post_order`` of 1625 ms, vs the warm-path
+                # 78 ms / 610 ms baseline.  Block ``initialize`` until
+                # every lazy SDK path is warm so no order can be cold.
+                #
+                # Order matters: spin the executor BEFORE we submit
+                # tasks to it, run ``get_version`` on the same executor
+                # so we exercise the to_thread dispatch path the hot-
+                # path will use, and finally fire one ``get_ok`` round-
+                # trip through the proxy so the SOCKS5+TLS+H2 connection
+                # is fully established (the 1050 ms cold-vs-148 ms warm
+                # gap we measured against the proxy directly).
                 try:
                     executor = self._get_clob_executor()
                     pool_size = self._client_io_lock_concurrency + 4
-                    for _ in range(pool_size):
-                        executor.submit(lambda: None)
-                except Exception:
-                    pass
+                    spinup_futures = [executor.submit(lambda: None) for _ in range(pool_size)]
+                    # Wait for every worker thread to actually exist
+                    # (Python lazy-spawns on submit; futures.result()
+                    # returns once the thread has picked up the noop).
+                    for fut in spinup_futures:
+                        try:
+                            fut.result(timeout=1.0)
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    logger.debug("CLOB executor prewarm failed (non-fatal)", exc_info=exc)
+
+                # Prime ``__cached_version`` and the SOCKS5+TLS+H2
+                # connection in ONE call: ``get_ok`` is unauthenticated
+                # so it's the cheapest endpoint that establishes the
+                # full network path; ``get_version`` populates the
+                # SDK's lazy version cache.  Both run on the dedicated
+                # executor so the pool's threads are also exercised.
+                # ``await asyncio.wait_for`` blocks until done — that's
+                # the whole point.  Failures here just log; the SDK
+                # falls back to lazy init at first order, which is the
+                # pre-Fix-HH behaviour and acceptable.
+                loop = asyncio.get_running_loop()
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(self._get_clob_executor(), self._client.get_ok),
+                        timeout=5.0,
+                    )
+                except Exception as exc:
+                    logger.debug("CLOB connection warmup failed (non-fatal)", exc_info=exc)
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(self._get_clob_executor(), self._client.get_version),
+                        timeout=5.0,
+                    )
+                except Exception as exc:
+                    logger.debug("CLOB version prewarm failed (non-fatal)", exc_info=exc)
+
+                logger.info(
+                    "Trading service initialized successfully (prewarm complete)",
+                    credential_source=credential_source,
+                )
+                self._last_init_error = None
+                self._init_retry_not_before = None
+                # Now the connection is warm we can start the keepalive
+                # loop — the loop's first ping will renew the warm
+                # connection, not establish a cold one.
+                self._start_clob_keepalive_loop()
                 return True
 
             except ImportError:

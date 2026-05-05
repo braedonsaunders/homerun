@@ -1363,12 +1363,29 @@ class MarketRuntime:
             if condition_ids:
                 from services.live_execution_service import live_execution_service
 
-                asyncio.create_task(
-                    live_execution_service.prewarm_clob_market_info_cache(
-                        condition_ids
-                    ),
-                    name="market-runtime-clob-cache-prewarm",
-                )
+                # ITER-? (Fix HH): AWAIT the prewarm with a bounded
+                # timeout so the FIRST order on a newly-discovered
+                # market doesn't pay the SDK's lazy ``get_clob_market_
+                # info`` HTTP roundtrip (≈ 500-1000 ms over the trading
+                # VPN per token).  Pre-fix this was fire-and-forget,
+                # racing the strategy dispatch — a tick that fired
+                # before the prewarm finished cold-started the cache.
+                # Cap at 2 s so a stuck CLOB endpoint never blocks
+                # market dispatch indefinitely; on timeout we fall
+                # through to the SDK's lazy-fetch path which is the
+                # pre-fix behaviour.
+                try:
+                    await asyncio.wait_for(
+                        live_execution_service.prewarm_clob_market_info_cache(
+                            condition_ids
+                        ),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "CLOB cache prewarm exceeded 2s — proceeding with lazy-fetch fallback",
+                        token_count=len(condition_ids),
+                    )
         except Exception as exc:
             # Never let a prewarm scheduling error trip the runtime
             # refresh.  The SDK lazy-fetch path is the fallback.
