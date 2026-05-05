@@ -37,10 +37,130 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+import time as _time
+
 from services.trader_hot_state import buffer_trader_event
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Strategy-emit eligibility cache
+# ---------------------------------------------------------------------------
+#
+# Pre-fix, every strategy that ran on_event for a tick fired firehose
+# evaluation events to the trader-events stream.  That meant:
+#   * Strategies loaded but bound to no active trader (e.g. spike_
+#     reversion when no trader has it in source_configs) still spammed
+#     the Live Pulse feed with rejections.
+#   * Events fired even when the orchestrator was disabled.
+#   * Per-bot terminals leaked events from strategies the bot doesn't
+#     run (because the events carried no trader_id).
+#
+# This cache resolves all three:
+#   * ``_orchestrator_enabled`` → if False, suppress emit entirely.
+#   * ``_strategy_to_trader_ids`` → the set of LIVE-mode trader_ids
+#     that have ``strategy_slug`` in their ``source_configs``.  If
+#     empty, suppress emit (no one consumes this strategy's signals).
+#     Otherwise, tag the event payload with the list so per-bot
+#     terminals can filter by ``trader_id IN bound_trader_ids``.
+#
+# TTL is short (3 s) — orchestrator enable / trader-config edits show
+# up to firehose within a single refresh.
+
+_BINDING_TTL_SECONDS = 3.0
+_orchestrator_enabled: bool = False
+_strategy_to_trader_ids: dict[str, list[str]] = {}
+_binding_cache_at: float = 0.0
+_binding_refresh_lock: asyncio.Lock | None = None
+
+
+async def _refresh_binding_cache() -> None:
+    """Pull orchestrator state + strategy→trader binding map from DB."""
+    global _orchestrator_enabled, _strategy_to_trader_ids, _binding_cache_at
+    try:
+        from sqlalchemy import select
+        from models.database import (
+            AsyncSessionLocal,
+            Trader,
+            TraderOrchestratorControl,
+        )
+
+        async with AsyncSessionLocal() as session:
+            control = await session.get(TraderOrchestratorControl, "default")
+            orchestrator_enabled = bool(
+                control and control.is_enabled and not control.is_paused and not control.kill_switch
+            )
+            traders = (
+                (
+                    await session.execute(
+                        select(Trader).where(Trader.is_enabled.is_(True))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        new_map: dict[str, list[str]] = {}
+        for trader in traders:
+            mode_lower = str(getattr(trader, "mode", "") or "").strip().lower()
+            if mode_lower != "live":
+                continue
+            cfgs = getattr(trader, "source_configs_json", None) or []
+            if isinstance(cfgs, str):
+                try:
+                    import json as _json
+                    cfgs = _json.loads(cfgs)
+                except Exception:
+                    cfgs = []
+            if not isinstance(cfgs, list):
+                continue
+            for cfg in cfgs:
+                if not isinstance(cfg, dict):
+                    continue
+                if not cfg.get("enabled", True):
+                    continue
+                slug = str(cfg.get("strategy_key") or "").strip().lower()
+                if slug:
+                    new_map.setdefault(slug, []).append(str(trader.id))
+        _orchestrator_enabled = orchestrator_enabled
+        _strategy_to_trader_ids = new_map
+        _binding_cache_at = _time.monotonic()
+    except Exception as exc:
+        logger.debug("firehose binding cache refresh failed", exc_info=exc)
+
+
+def _binding_cache_fresh() -> bool:
+    return (_time.monotonic() - _binding_cache_at) < _BINDING_TTL_SECONDS
+
+
+async def _ensure_binding_cache() -> None:
+    global _binding_refresh_lock
+    if _binding_cache_fresh():
+        return
+    if _binding_refresh_lock is None:
+        _binding_refresh_lock = asyncio.Lock()
+    async with _binding_refresh_lock:
+        if _binding_cache_fresh():
+            return
+        await _refresh_binding_cache()
+
+
+async def _emit_should_fire(strategy_slug: str) -> tuple[bool, list[str]]:
+    """Return (should_emit, bound_trader_ids).
+
+    ``False, []`` means: drop the event entirely — either the
+    orchestrator is off or the strategy has no live consumer.
+    ``True, [trader_ids…]`` means: emit and tag the payload so per-
+    bot terminals can filter.
+    """
+    await _ensure_binding_cache()
+    if not _orchestrator_enabled:
+        return False, []
+    bound = _strategy_to_trader_ids.get(str(strategy_slug or "").strip().lower(), [])
+    if not bound:
+        return False, []
+    return True, list(bound)
 
 
 # Verbosity tiers — frontend's volume dial selects a minimum tier and
@@ -132,6 +252,9 @@ async def emit_gate(
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Emit a single-gate decision (typically a rejection)."""
+    should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
+    if not should_emit:
+        return
     market_info = _market_summary(market)
     pass_word = "passed" if gate.passed else ("skipped" if gate.passed is None else "rejected")
     msg = (
@@ -145,6 +268,7 @@ async def emit_gate(
         "source_key": "crypto",
         "market": market_info,
         "gate": gate.to_payload(),
+        "bound_trader_ids": bound_trader_ids,
     }
     if extra:
         payload.update(extra)
@@ -200,6 +324,9 @@ async def emit_evaluation(
     decision tree, including gates that didn't run because an
     earlier one short-circuited.
     """
+    should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
+    if not should_emit:
+        return
     market_info = _market_summary(market)
     gate_list = [g.to_payload() for g in gates]
     failed = [g for g in gate_list if g.get("passed") is False]
@@ -215,6 +342,7 @@ async def emit_evaluation(
         "market": market_info,
         "outcome": outcome,
         "gates": gate_list,
+        "bound_trader_ids": bound_trader_ids,
     }
     if extra:
         payload.update(extra)
@@ -260,6 +388,9 @@ async def emit_emit(
     extra: dict[str, Any] | None = None,
 ) -> None:
     """An Opportunity was produced (passed every gate).  VOICE tier."""
+    should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
+    if not should_emit:
+        return
     market_info = _market_summary(market)
     msg = (
         f"{strategy_slug} • {market_info.get('slug') or market_info.get('market_id') or '?'} • "
@@ -272,6 +403,7 @@ async def emit_emit(
         "source_key": "crypto",
         "market": market_info,
         "detail": detail,
+        "bound_trader_ids": bound_trader_ids,
     }
     if extra:
         payload.update(extra)
