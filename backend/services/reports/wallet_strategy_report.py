@@ -28,7 +28,7 @@ import logging
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from utils.utcnow import utcnow
 
@@ -98,8 +98,7 @@ def render_wallet_strategy_report(
         # Defer the heavy import until first use — keeps API cold-start
         # cheap and avoids a hard dependency for installs that never
         # generate a report.
-        from jinja2 import Environment, FileSystemLoader, select_autoescape
-        from weasyprint import CSS, HTML  # type: ignore[import-not-found]
+        from weasyprint import HTML  # type: ignore[import-not-found]
     except (ImportError, OSError) as exc:
         raise ReportRenderError(
             f"PDF rendering unavailable: {exc}.\n\n"

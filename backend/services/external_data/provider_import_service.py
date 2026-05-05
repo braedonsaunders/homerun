@@ -24,7 +24,6 @@ wiring it into ``_DISPATCH``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import time
@@ -43,7 +42,6 @@ from models.database import (
 )
 from services.external_data.polybacktest_client import (
     PolybacktestAuthError,
-    PolybacktestClient,
     PolybacktestError,
     PolybacktestNotConfiguredError,
     PolybacktestSnapshot,

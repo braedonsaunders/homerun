@@ -42,8 +42,6 @@ from typing import Any, Optional
 
 from services.ai.llm_provider import LLMMessage
 from services.strategy_reverse_engineer.wallet_analytics import (
-    DominanceRow,
-    FilterRow,
     WalletAnalytics,
 )
 
@@ -477,7 +475,6 @@ def _stub_pseudocode(facts: dict[str, Any]) -> str:
     LLMs tend to invent imports that don't exist, so we keep the
     pseudocode block hand-written.
     """
-    h = facts.get("headline", {})
     median_size = facts.get("trade_size", {}).get("median_usdc") or 20.0
     return f"""\
 # Per-market loop. One running instance per active 5-min market.

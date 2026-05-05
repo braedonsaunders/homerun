@@ -203,7 +203,6 @@ async def get_pdf_report(job_id: str) -> Response:
 async def _render_analytical(row: Any, render_fn) -> bytes:
     """Reconstruct the WalletAnalytics + sections payload from the job row."""
     import json
-    from types import SimpleNamespace
 
     profile = row.wallet_profile_json or {}
     raw_payload: dict[str, Any] = {}

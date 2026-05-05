@@ -28,7 +28,6 @@ from models.database import (
     StrategyReverseEngineerIteration,
     StrategyReverseEngineerJob,
 )
-from services.ai import get_llm_manager
 from services.ai.agent import Agent, AgentEventType
 from services.strategy_reverse_engineer.scoring import (
     ScoreBreakdown,
@@ -420,7 +419,7 @@ async def _bootstrap(job_id: str) -> tuple[StrategyReverseEngineerJob, list[dict
 
     await _update_job(job_id, status="profiling", activity="Fetching wallet trades")
 
-    profile = await fetch_and_profile_wallet(
+    await fetch_and_profile_wallet(
         job.wallet_address,
         max_trades=int(job.max_wallet_trades or 50_000),
     )

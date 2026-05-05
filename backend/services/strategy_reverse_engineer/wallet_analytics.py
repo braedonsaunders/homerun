@@ -1108,7 +1108,7 @@ def _top_row(agg: _MarketAggregate, pl: Optional[float] = None) -> TopMarketRow:
 def _identify_archetypes(out: WalletAnalytics) -> list[StrategyArchetypeMatch]:
     matches: list[StrategyArchetypeMatch] = []
 
-    h, t, c = out.headline, out.two_leg, out.cadence
+    h, t = out.headline, out.two_leg
 
     # A. Both-sides spread capture / market-making
     bs_rate = t.both_sides_participation_rate or 0.0
