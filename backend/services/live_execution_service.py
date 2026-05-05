@@ -592,6 +592,21 @@ class LiveExecutionService:
         # latency win comes from network/TLS or from the venue.
         self._clob_keepalive_recent_ms: collections.deque = collections.deque(maxlen=20)
         self._clob_keepalive_log_every = 10  # log a stats summary every N pings
+        # TTL cache for ``prepare_sell_balance_allowance``.  Each call
+        # makes 2-4 HTTP roundtrips (signature_type select + conditional
+        # balance refresh + collateral balance refresh).  ITER-2 traces
+        # showed it costing 4-5 seconds on the sell hot path.  Sell-
+        # frequent strategies (e.g. exit cascades after a fill) re-
+        # refresh those values within seconds of each other for no
+        # information gain — the venue's cache hasn't moved that fast.
+        # A short TTL skips the refresh on consecutive sells while
+        # still catching genuine drift after idle gaps.  ``last_at`` is
+        # per-token so a sell on token A doesn't satisfy a sell on
+        # token B (different conditional balance lookups).
+        self._sell_allowance_last_at: dict[str, float] = {}
+        self._sell_allowance_ttl_seconds = float(
+            getattr(settings, "POLYMARKET_SELL_ALLOWANCE_TTL_SECONDS", 5.0)
+        )
 
     def _get_stats_lock(self) -> asyncio.Lock:
         if self._stats_lock is None:
@@ -1578,7 +1593,12 @@ class LiveExecutionService:
             )
             return False
 
-    async def prepare_sell_balance_allowance(self, token_id: str) -> bool:
+    async def prepare_sell_balance_allowance(
+        self,
+        token_id: str,
+        *,
+        force_refresh: bool = False,
+    ) -> bool:
         """Pre-flight refresh for a SELL submission.
 
         Refreshes BOTH the conditional balance/allowance (the venue
@@ -1600,8 +1620,23 @@ class LiveExecutionService:
         Returns True if EITHER refresh succeeded — failure to refresh
         is non-fatal, the SDK has its own on-the-fly approval
         fall-through.
+
+        TTL cache: if a successful refresh ran in the last
+        ``_sell_allowance_ttl_seconds`` (default 5 s) for this token,
+        skip the 4-5 s of HTTP roundtrips and trust the cached venue-
+        side view.  ITER-2 traces showed sells inheriting up to 8 s
+        of pre-submit overhead from this function's serial refreshes;
+        for sell-frequent strategies (exit cascades right after a
+        fill) the second-and-later sells gain nothing from re-asking
+        the venue what its balance view is — the venue has not had
+        time to forget.  Pass ``force_refresh=True`` to bypass.
         """
         token_key = str(token_id or "").strip()
+        if not force_refresh and token_key:
+            last_at = self._sell_allowance_last_at.get(token_key, 0.0)
+            if last_at > 0.0 and (_time.monotonic() - last_at) < self._sell_allowance_ttl_seconds:
+                # Cache hit — recent refresh is still good enough.
+                return True
         if token_key:
             try:
                 await self._select_signature_type_for_conditional_token(token_key)
@@ -1637,6 +1672,11 @@ class LiveExecutionService:
                 token_id=token_key,
                 exc_info=exc,
             )
+        # Stamp the TTL gate only when the work that hit the wire
+        # actually succeeded — a failed refresh shouldn't suppress the
+        # next attempt.
+        if (conditional_refreshed or collateral_refreshed) and token_key:
+            self._sell_allowance_last_at[token_key] = _time.monotonic()
         return conditional_refreshed or collateral_refreshed
 
     async def _enforce_buy_pre_submit_gate(
