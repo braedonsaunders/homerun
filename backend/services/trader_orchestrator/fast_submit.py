@@ -26,6 +26,7 @@ A fast trader *must* be single-leg single-market.  If the signal has no
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,7 +81,6 @@ _SUBMISSION_STATE_POST_UPDATE_FAILED = "post_update_failed"
 # commit of the pre-submit row — released BEFORE the CLOB call so
 # the cap-bound serialisation doesn't extend over the network
 # round-trip.
-import asyncio as _asyncio
 _per_trader_submit_locks: dict[str, _asyncio.Lock] = {}
 
 
