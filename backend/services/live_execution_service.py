@@ -4191,7 +4191,6 @@ class LiveExecutionService:
             # error-handling pathway the original sequential code
             # used.
             runtime_state_persist_task: asyncio.Task[None] | None = None
-            runtime_state_persist_started_at: float = 0.0
             balance_snapshot_logged = False
             if side == OrderSide.BUY and not skip_buy_pre_submit_gate:
                 _stage_started = _time.monotonic()
@@ -4604,7 +4603,6 @@ class LiveExecutionService:
                     # awaited via ``asyncio.gather`` at the persist-
                     # orders site so any exception still propagates
                     # through the original error-handling pathway.
-                    runtime_state_persist_started_at = _time.monotonic()
                     runtime_state_persist_task = asyncio.create_task(
                         self._persist_runtime_state(),
                         name="persist_runtime_state_inline",
