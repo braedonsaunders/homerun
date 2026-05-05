@@ -1701,42 +1701,42 @@ function resolveVenueStatusPresentation(order: TraderOrder, providerSnapshotStat
     return {
       label: 'Disputed',
       detail: verificationReason || 'Venue history is inconsistent and this row is excluded from normal trading truth.',
-      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/60 dark:bg-red-500/25 dark:text-red-200',
     }
   }
   if (verificationStatus === 'summary_only') {
     return {
       label: 'Summary',
       detail: verificationReason || 'Recovered only from closed-position summary data, not direct order/trade lineage.',
-      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/60 dark:bg-amber-500/25 dark:text-amber-200',
     }
   }
   if (verificationStatus === 'wallet_activity') {
     return {
       label: 'Wallet',
       detail: verificationReason || verificationSource || 'Verified from wallet trade/activity authority.',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/60 dark:bg-emerald-500/25 dark:text-emerald-200',
     }
   }
   if (verificationStatus === 'wallet_position') {
     return {
       label: 'Wallet',
       detail: verificationReason || verificationSource || 'Verified from current execution wallet holdings.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/60 dark:bg-sky-500/25 dark:text-sky-200',
     }
   }
   if (verificationStatus === 'venue_order' && !key) {
     return {
       label: 'Acked',
       detail: verificationReason || verificationSource || 'Venue order acknowledgement exists, but no current fill snapshot was preserved.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/60 dark:bg-sky-500/25 dark:text-sky-200',
     }
   }
   if (verificationStatus === 'venue_fill' && !key) {
     return {
       label: 'Verified',
       detail: verificationReason || verificationSource || 'Venue fill authority exists without a current snapshot status.',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/60 dark:bg-emerald-500/25 dark:text-emerald-200',
     }
   }
   if (verificationStatus === 'local' && !key) {
@@ -1750,28 +1750,28 @@ function resolveVenueStatusPresentation(order: TraderOrder, providerSnapshotStat
     return {
       label: 'Filled',
       detail: 'Venue reports the order as filled.',
-      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/45 dark:bg-emerald-500/12 dark:text-emerald-200',
+      className: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-400/60 dark:bg-emerald-500/25 dark:text-emerald-200',
     }
   }
   if (key === 'partially_filled') {
     return {
       label: 'Partial',
       detail: 'Venue reports a partial fill.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/60 dark:bg-sky-500/25 dark:text-sky-200',
     }
   }
   if (key === 'open') {
     return {
       label: 'Working',
       detail: 'Venue order remains working on book.',
-      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/45 dark:bg-sky-500/12 dark:text-sky-200',
+      className: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/60 dark:bg-sky-500/25 dark:text-sky-200',
     }
   }
   if (key === 'pending') {
     return {
       label: 'Pending',
       detail: 'Venue has accepted but not yet worked the order.',
-      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/45 dark:bg-amber-500/12 dark:text-amber-200',
+      className: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/60 dark:bg-amber-500/25 dark:text-amber-200',
     }
   }
   if (key === 'cancelled' || key === 'expired') {
@@ -1785,7 +1785,7 @@ function resolveVenueStatusPresentation(order: TraderOrder, providerSnapshotStat
     return {
       label: 'Rejected',
       detail: 'Venue reports failed/rejected execution.',
-      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200',
+      className: 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/60 dark:bg-red-500/25 dark:text-red-200',
     }
   }
   return {
@@ -2542,30 +2542,30 @@ function tradeLifecycleStageClassName(stage: TradeLifecycleStage, pulseCurrentSt
   if (stage.state === 'current') {
     const pulseClass = pulseCurrentStage ? ' animate-pulse' : ''
     if (stage.tone === 'success') {
-      return `${base} border-emerald-300 bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/60${pulseClass} dark:border-emerald-400/45 dark:bg-emerald-500/15 dark:text-emerald-200`
+      return `${base} border-emerald-300 bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/60${pulseClass} dark:border-emerald-400/60 dark:bg-emerald-500/30 dark:text-emerald-200`
     }
     if (stage.tone === 'warning') {
-      return `${base} border-amber-300 bg-amber-100 text-amber-900 ring-1 ring-amber-300/60${pulseClass} dark:border-amber-400/45 dark:bg-amber-500/15 dark:text-amber-200`
+      return `${base} border-amber-300 bg-amber-100 text-amber-900 ring-1 ring-amber-300/60${pulseClass} dark:border-amber-400/60 dark:bg-amber-500/30 dark:text-amber-200`
     }
     if (stage.tone === 'danger') {
-      return `${base} border-red-300 bg-red-100 text-red-900 ring-1 ring-red-300/60${pulseClass} dark:border-red-400/45 dark:bg-red-500/15 dark:text-red-200`
+      return `${base} border-red-300 bg-red-100 text-red-900 ring-1 ring-red-300/60${pulseClass} dark:border-red-400/60 dark:bg-red-500/30 dark:text-red-200`
     }
     if (stage.tone === 'info') {
-      return `${base} border-sky-300 bg-sky-100 text-sky-900 ring-1 ring-sky-300/60${pulseClass} dark:border-sky-400/45 dark:bg-sky-500/15 dark:text-sky-200`
+      return `${base} border-sky-300 bg-sky-100 text-sky-900 ring-1 ring-sky-300/60${pulseClass} dark:border-sky-400/60 dark:bg-sky-500/30 dark:text-sky-200`
     }
     return `${base} border-border bg-muted/70 text-foreground ring-1 ring-border/70${pulseClass}`
   }
   if (stage.tone === 'success') {
-    return `${base} border-emerald-300/80 bg-emerald-100/70 text-emerald-900 dark:border-emerald-400/40 dark:bg-emerald-500/12 dark:text-emerald-200`
+    return `${base} border-emerald-300/80 bg-emerald-100/70 text-emerald-900 dark:border-emerald-400/55 dark:bg-emerald-500/25 dark:text-emerald-200`
   }
   if (stage.tone === 'warning') {
-    return `${base} border-amber-300/80 bg-amber-100/70 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/12 dark:text-amber-200`
+    return `${base} border-amber-300/80 bg-amber-100/70 text-amber-900 dark:border-amber-400/55 dark:bg-amber-500/25 dark:text-amber-200`
   }
   if (stage.tone === 'danger') {
-    return `${base} border-red-300/80 bg-red-100/70 text-red-900 dark:border-red-400/40 dark:bg-red-500/12 dark:text-red-200`
+    return `${base} border-red-300/80 bg-red-100/70 text-red-900 dark:border-red-400/55 dark:bg-red-500/25 dark:text-red-200`
   }
   if (stage.tone === 'info') {
-    return `${base} border-sky-300/80 bg-sky-100/70 text-sky-900 dark:border-sky-400/40 dark:bg-sky-500/12 dark:text-sky-200`
+    return `${base} border-sky-300/80 bg-sky-100/70 text-sky-900 dark:border-sky-400/55 dark:bg-sky-500/25 dark:text-sky-200`
   }
   return `${base} border-border/70 bg-muted/60 text-foreground/80`
 }
@@ -4681,7 +4681,7 @@ function BotTradePositionModal({
                   className={cn(
                     'h-5 px-1.5 text-[10px]',
                     bundleDisplayRow.guaranteedAnomaly
-                      ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
+                      ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/60 dark:bg-red-500/25 dark:text-red-200'
                       : 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-400/45 dark:bg-cyan-500/12 dark:text-cyan-200'
                   )}
                 >
@@ -9950,7 +9950,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               className={cn(
                 'h-4 max-w-[120px] truncate px-1 text-[9px] font-semibold',
                 guaranteedAnomaly
-                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-200'
+                  ? 'border-red-300 bg-red-100 text-red-900 dark:border-red-400/60 dark:bg-red-500/25 dark:text-red-200'
                   : 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-400/45 dark:bg-cyan-500/12 dark:text-cyan-200'
               )}
               title={bundleLabel}

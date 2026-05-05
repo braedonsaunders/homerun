@@ -6,6 +6,10 @@ report.json
 report.json.tmp
 live.log
 cycle*.json
+*.out
+*.pdf
+*.bat
+crypto_latency_report.json
 
 # Keep .gitkeep + this .gitignore so the directory ships with the repo
 # (otherwise the launcher's mkdir-on-spawn race could fight git on
