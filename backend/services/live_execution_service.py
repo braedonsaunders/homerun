@@ -2888,6 +2888,7 @@ class LiveExecutionService:
                 if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
                     return
             try:
+                from models.database import AsyncSessionLocal
                 async with AsyncSessionLocal() as bg_session:
                     await self._compute_pnl_counters_from_orders(
                         bg_session, wallet, wallet_key, cache
