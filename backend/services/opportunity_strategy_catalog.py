@@ -910,7 +910,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "type": "number",
                     "min": 0.0,
                     "max": 1000.0,
-                    "default": 5.0,
+                    "default": 15.0,
                     "phase": "signal",
                 },
                 {
@@ -1111,6 +1111,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "take_profit_pct", "label": "Take Profit (%)", "type": "number", "min": 0},
                 {"key": "stop_loss_pct", "label": "Stop Loss (%)", "type": "number", "min": 0},
                 {"key": "max_hold_minutes", "label": "Max Hold (min)", "type": "number", "min": 0},
+                {"key": "min_entry_price", "label": "Min Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "max_markets_per_event", "label": "Max Markets per Event", "type": "integer", "min": 1},
             ]

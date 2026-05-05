@@ -1501,14 +1501,24 @@ class _FastRuntime:
                     # state stays quiet.  ``matched`` / ``marked_orphan``
                     # are the headline counts; ``venue_unreachable``
                     # flags partial passes (kept untouched + retried
-                    # next sweep).
+                    # next sweep). ``matched_via_wallet_position`` and
+                    # ``marked_orphan_with_wallet_evidence`` surface
+                    # the 2026-05-05 fallback that links orphans to
+                    # wallet positions when the venue's open-orders
+                    # list missed the fill.
                     logger.info(
                         "Fast-tier orphan reconcile",
                         label=label,
                         trader_id=trader_id_for_reconcile,
                         eligible=result.get("eligible"),
                         matched=result.get("matched"),
+                        matched_via_wallet_position=result.get(
+                            "matched_via_wallet_position"
+                        ),
                         marked_orphan=result.get("marked_orphan"),
+                        marked_orphan_with_wallet_evidence=result.get(
+                            "marked_orphan_with_wallet_evidence"
+                        ),
                         venue_unreachable=result.get("venue_unreachable"),
                     )
             except asyncio.CancelledError:

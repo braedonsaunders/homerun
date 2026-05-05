@@ -69,7 +69,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Minimum |distance from reference| in bps required to fire.
     # Below this the direction is too uncertain and entries sit in the
     # "70-80¢ trap" where wins are too small to cover the -$15 losses.
-    "min_distance_bps": 5.0,
+    #
+    # 2026-05-05 live data: 5-bps threshold produced 5 trades, 3 of which
+    # resolved against (-$17.28) vs 2 wins (+$3.74) — net -$13.53. 5 bps
+    # at typical asset prices is too small to be a directional signal:
+    #   BTC @ $80k → 5 bps = $40 (noise)
+    #   ETH @ $3k  → 5 bps = $1.50 (well within tick noise)
+    # Raised to 15 bps so the strategy fires only on more decisive
+    # mid-cycle moves: BTC $120, ETH $4.50, SOL $0.30. Tunable via UI.
+    "min_distance_bps": 15.0,
     # VWAP entry-price ceiling. The report's data is unambiguous: 60-70¢
     # entries are +$35.87 (8 trades), 70-80¢ are -$45.24 (23 trades).
     "max_entry_price": 0.70,
@@ -122,7 +130,7 @@ def crypto_5m_midcycle_config_schema() -> dict[str, Any]:
                 "type": "number",
                 "min": 0.0,
                 "max": 1000.0,
-                "default": 5.0,
+                "default": 15.0,
                 "phase": "signal",
             },
             {
@@ -348,7 +356,7 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         gates: list[GateResult] = []
         midcycle_s = float(self.config.get("midcycle_seconds", 150.0))
         min_left_cfg = float(self.config.get("min_seconds_to_resolution", 90.0))
-        min_distance_bps = float(self.config.get("min_distance_bps", 5.0))
+        min_distance_bps = float(self.config.get("min_distance_bps", 15.0))
         max_age_ms = float(self.config.get("max_oracle_age_ms", 5000))
         max_entry = float(self.config.get("max_entry_price", 0.70))
         min_entry = float(self.config.get("min_entry_price", 0.05))

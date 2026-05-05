@@ -69,7 +69,10 @@ def _build_market_dict(
     timeframe: str = "5min",
     end_ms: int = END_MS,
     reference: float = 100.0,
-    spot: float = 100.06,
+    # Default 20 bps so happy-path tests clear the 2026-05-05-bumped
+    # ``min_distance_bps`` floor of 15 bps. Tests that target the
+    # distance gate itself override this explicitly.
+    spot: float = 100.20,
     oracle_age_ms: float = 200.0,
     oracle_source: str = "chainlink",
     yes_token: str = YES_TOKEN,
@@ -224,26 +227,36 @@ def test_fires_again_on_next_cycle(strategy, fresh_cache):
 
 def test_skipped_when_distance_below_threshold(strategy, fresh_cache):
     _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
-    # spot 100.04 vs ref 100.0 = 4 bps; default threshold is 5 bps.
-    market = _build_market_dict(reference=100.0, spot=100.04)
+    # spot 100.10 vs ref 100.0 = 10 bps; default threshold is 15 bps.
+    market = _build_market_dict(reference=100.0, spot=100.10)
     assert strategy._evaluate_market(market, now_ms=MIDCYCLE_MS) is None
 
 
 def test_fires_when_distance_at_threshold(strategy, fresh_cache):
     _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
-    # spot 100.05 vs ref 100.0 = 5 bps exactly.
-    market = _build_market_dict(reference=100.0, spot=100.05)
+    # spot 100.15 vs ref 100.0 = 15 bps exactly.
+    market = _build_market_dict(reference=100.0, spot=100.15)
     opp = strategy._evaluate_market(market, now_ms=MIDCYCLE_MS)
     assert opp is not None
 
 
 def test_user_can_tighten_distance_threshold(fresh_cache):
     s = Crypto5mMidcycleStrategy()
-    s.configure({"min_distance_bps": 20.0})
+    s.configure({"min_distance_bps": 30.0})
     _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
-    # 5 bps move — below the user's tightened 20-bp threshold
-    market = _build_market_dict(reference=100.0, spot=100.05)
+    # 15 bps move — below the user's tightened 30-bp threshold
+    market = _build_market_dict(reference=100.0, spot=100.15)
     assert s._evaluate_market(market, now_ms=MIDCYCLE_MS) is None
+
+
+def test_user_can_loosen_distance_threshold(fresh_cache):
+    """User can revert to the pre-2026-05-05 5-bp threshold via UI."""
+    s = Crypto5mMidcycleStrategy()
+    s.configure({"min_distance_bps": 5.0})
+    _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
+    market = _build_market_dict(reference=100.0, spot=100.06)  # 6 bps
+    opp = s._evaluate_market(market, now_ms=MIDCYCLE_MS)
+    assert opp is not None
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +266,8 @@ def test_user_can_tighten_distance_threshold(fresh_cache):
 
 def test_picks_yes_when_spot_above_reference(strategy, fresh_cache):
     _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
-    market = _build_market_dict(reference=100.0, spot=100.10)
+    # 20 bps above (clears 15-bp default threshold).
+    market = _build_market_dict(reference=100.0, spot=100.20)
     opp = strategy._evaluate_market(market, now_ms=MIDCYCLE_MS)
     assert opp is not None
     assert opp.strategy_context["side"] == "YES"
@@ -261,7 +275,8 @@ def test_picks_yes_when_spot_above_reference(strategy, fresh_cache):
 
 def test_picks_no_when_spot_below_reference(strategy, fresh_cache):
     _seed_book(fresh_cache, NO_TOKEN, ask_price=0.55)
-    market = _build_market_dict(reference=100.0, spot=99.90)
+    # 20 bps below (clears 15-bp default threshold).
+    market = _build_market_dict(reference=100.0, spot=99.80)
     opp = strategy._evaluate_market(market, now_ms=MIDCYCLE_MS)
     assert opp is not None
     assert opp.strategy_context["side"] == "NO"
@@ -365,7 +380,8 @@ def test_disabled_strategy_emits_nothing(fresh_cache):
 
 def test_happy_path_opportunity_carries_full_context(strategy, fresh_cache):
     _seed_book(fresh_cache, YES_TOKEN, ask_price=0.55)
-    market = _build_market_dict(reference=100.0, spot=100.10, oracle_age_ms=250.0)
+    # 20 bps above ref — passes the 2026-05-05-bumped 15-bp threshold.
+    market = _build_market_dict(reference=100.0, spot=100.20, oracle_age_ms=250.0)
 
     opp = strategy._evaluate_market(market, now_ms=MIDCYCLE_MS)
     assert opp is not None
@@ -376,7 +392,7 @@ def test_happy_path_opportunity_carries_full_context(strategy, fresh_cache):
     assert ctx["timeframe"] == "5min"
     assert ctx["side"] == "YES"
     assert ctx["reference_price"] == pytest.approx(100.0)
-    assert ctx["spot_price"] == pytest.approx(100.10)
-    assert ctx["distance_bps"] == pytest.approx(10.0, rel=1e-3)
+    assert ctx["spot_price"] == pytest.approx(100.20)
+    assert ctx["distance_bps"] == pytest.approx(20.0, rel=1e-3)
     assert ctx["oracle_source"] == "chainlink"
     assert ctx["bet_size_usd"] == pytest.approx(15.0)

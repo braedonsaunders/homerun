@@ -129,9 +129,24 @@ def entropy_strategy() -> CryptoEntropyMakerStrategy:
     return CryptoEntropyMakerStrategy()
 
 
+def _entropy_cfg(strategy: CryptoEntropyMakerStrategy) -> dict:
+    """Strategy default config with the min-entry-price floor disabled.
+
+    The strategy intentionally picks the cheap side of the book (entry < 0.5)
+    so the production min_entry_price floor (currently 0.80, raised from
+    0.50 after the 2026-05-05 live data showed only the 0.80+ bucket was
+    profitable) would block these test scenarios. Tests that target other
+    gates (freshness, fee clearance, resolution boundary) drop the floor
+    here so the gate under test is the one that fires.
+    """
+    cfg = dict(strategy.default_config)
+    cfg["min_entry_price"] = 0.0
+    return cfg
+
+
 def test_entropy_happy_path_uses_binance_direct(entropy_strategy):
     row = _fresh_btc_row(up_price=0.49, down_price=0.51)
-    signal = entropy_strategy._score_market(row, dict(entropy_strategy.default_config))
+    signal = entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy))
     assert signal is not None
     assert signal["oracle_source_used"] == "binance_direct"
     assert signal["taker_fee_pct"] > 0.5
@@ -140,12 +155,12 @@ def test_entropy_happy_path_uses_binance_direct(entropy_strategy):
 
 def test_entropy_rejects_too_close_to_resolution(entropy_strategy):
     row = _fresh_btc_row(up_price=0.49, down_price=0.51, seconds_left=10.0)
-    assert entropy_strategy._score_market(row, dict(entropy_strategy.default_config)) is None
+    assert entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy)) is None
 
 
 def test_entropy_rejects_stale_market_data(entropy_strategy):
     row = _fresh_btc_row(up_price=0.49, down_price=0.51, market_data_age_ms=10_000.0)
-    assert entropy_strategy._score_market(row, dict(entropy_strategy.default_config)) is None
+    assert entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy)) is None
 
 
 def test_entropy_rejects_stale_oracle(entropy_strategy):
@@ -159,7 +174,7 @@ def test_entropy_rejects_stale_oracle(entropy_strategy):
     # Falls through to price-skew direction since oracle is unavailable, but
     # timeframe + min-seconds-left still pass — verify the OracleSource
     # missing path still works (returns a signal with oracle_source_used=None).
-    signal = entropy_strategy._score_market(row, dict(entropy_strategy.default_config))
+    signal = entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy))
     if signal is not None:
         assert signal.get("oracle_source_used") is None
         assert signal.get("oracle_price") is None
@@ -171,10 +186,10 @@ def test_entropy_maker_rest_inflates_min_seconds_left_for_entry(entropy_strategy
     # rejected — a maker order placed there could rest into the resolution
     # boundary if it doesn't fill.
     row = _fresh_btc_row(up_price=0.49, down_price=0.51, seconds_left=50.0)
-    assert entropy_strategy._score_market(row, dict(entropy_strategy.default_config)) is None
+    assert entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy)) is None
     # Same row with maker-rest accounting disabled should pass the seconds
     # gate (it'll still need to clear other filters but not fail on time).
-    cfg = dict(entropy_strategy.default_config)
+    cfg = _entropy_cfg(entropy_strategy)
     cfg["maker_rest_includes_timeout"] = False
     signal = entropy_strategy._score_market(row, cfg)
     # Either the signal passes or it's rejected for a non-time reason —
@@ -200,4 +215,20 @@ def test_entropy_rejects_when_edge_cant_clear_15x_fee(entropy_strategy):
     row["oracle_prices_by_source"] = {
         "binance_direct": {"source": "binance_direct", "price": 78002.0, "updated_at_ms": now_ms - 200},
     }
+    assert entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy)) is None
+
+
+def test_entropy_rejects_below_min_entry_price(entropy_strategy):
+    # 2026-05-05 live data showed entries below 0.50 lost 4 wins / 19 losses
+    # for -$58. The default min_entry_price=0.50 floor must reject those.
+    row = _fresh_btc_row(up_price=0.42, down_price=0.58)
+    # Default config (with floor=0.50) — buy_yes at 0.42 is below the floor.
     assert entropy_strategy._score_market(row, dict(entropy_strategy.default_config)) is None
+    # Lower the floor and the same row should clear the entry-price gate
+    # (it may still be rejected by other gates, but not for this reason).
+    cfg = dict(entropy_strategy.default_config)
+    cfg["min_entry_price"] = 0.0
+    signal = entropy_strategy._score_market(row, cfg)
+    # Not asserting truthy — other gates may still reject. The asymmetric
+    # check above is what locks in the floor's behavior.
+    assert signal is None or signal["entry_price"] >= 0.0

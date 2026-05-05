@@ -80,6 +80,19 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         "min_recent_move_zscore": 1.25,
         "min_liquidity_usd": 1000.0,
         "max_entry_price": 0.92,
+        # Minimum entry price floor. 2026-05-05 live data showed bucket-by-
+        # bucket P&L (entry_price → wins/losses → $):
+        #   0.00–0.20: 0/1   → -$1.70
+        #   0.20–0.35: 0/2   → -$6.44
+        #   0.35–0.50: 4/19  → -$52.38
+        #   0.50–0.65: 20/15 → -$30.12   (50% win-rate but losers wipe to 0)
+        #   0.65–0.80: 11/8  → -$26.31
+        #   0.80+    : 5/0   → +$4.74    ← only profitable bucket
+        # The asymmetric payoff (lose 100% when wrong, capture only the
+        # spread on wins) needs a high prior probability of being right —
+        # only entries at 0.80+ deliver that. Anything below is a losing
+        # contrarian bet against market consensus.
+        "min_entry_price": 0.80,
         "max_markets_per_event": 24,
         "min_order_size_usd": 2.0,
         "sizing_policy": "adaptive",
@@ -351,11 +364,16 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             entry_price = float(down_price)
 
         max_entry_price = clamp(to_float(cfg.get("max_entry_price", 0.92), 0.92), 0.05, 0.99)
-        entry_price_ok = 0.0 < entry_price < 1.0 and entry_price <= max_entry_price
+        min_entry_price = clamp(to_float(cfg.get("min_entry_price", 0.80), 0.80), 0.0, max_entry_price)
+        entry_price_ok = (
+            0.0 < entry_price < 1.0
+            and entry_price >= min_entry_price
+            and entry_price <= max_entry_price
+        )
         gates.append(GateResult(
             "entry_price", "Entry price within bounds", entry_price_ok,
             score=float(entry_price),
-            detail=f"price={entry_price:.4f} max={max_entry_price:.4f} outcome={outcome}",
+            detail=f"price={entry_price:.4f} min={min_entry_price:.4f} max={max_entry_price:.4f} outcome={outcome}",
         ))
         if not entry_price_ok:
             _emit_reject(MURMUR)
@@ -614,8 +632,11 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
 
         entry_price = float(up_price if direction == "buy_yes" else down_price)
         max_entry_price = clamp(to_float(cfg.get("max_entry_price", 0.92), 0.92), 0.05, 0.99)
+        min_entry_price = clamp(to_float(cfg.get("min_entry_price", 0.80), 0.80), 0.0, max_entry_price)
         if entry_price <= 0.0 or entry_price >= 1.0:
             return "invalid_entry_price"
+        if entry_price < min_entry_price:
+            return "entry_price_too_low"
         if entry_price > max_entry_price:
             return "entry_price_too_high"
 

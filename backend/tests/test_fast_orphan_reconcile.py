@@ -25,6 +25,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from models.database import (  # noqa: E402
     Base,
+    LiveTradingPosition,
     Trader,
     TraderOrder,
 )
@@ -64,6 +65,9 @@ def _seed_skeleton(
     signal_id: str,
     submission_state: str,
     age_seconds: float = 60.0,
+    market_id: str = "market-orphan",
+    direction: str | None = None,
+    execution_wallet_address: str | None = None,
 ) -> tuple[str, str]:
     from datetime import timedelta
 
@@ -77,10 +81,12 @@ def _seed_skeleton(
             trader_id="orphan-trader",
             signal_id=signal_id,
             source="generic-source",
-            market_id="market-orphan",
+            market_id=market_id,
             mode="live",
             status="submitted",
             notional_usd=3.0,
+            direction=direction,
+            execution_wallet_address=execution_wallet_address,
             payload_json={
                 "fast_tier": True,
                 "fast_submission_state": submission_state,
@@ -91,6 +97,37 @@ def _seed_skeleton(
         )
     )
     return order_id, key
+
+
+def _seed_live_position(
+    session,
+    *,
+    wallet_address: str,
+    token_id: str,
+    market_id: str,
+    outcome: str,
+    size: float,
+    average_cost: float,
+    current_price: float = 0.0,
+) -> None:
+    now = utcnow().replace(tzinfo=None)
+    session.add(
+        LiveTradingPosition(
+            id=f"pos-{wallet_address}-{token_id}",
+            wallet_address=wallet_address,
+            token_id=token_id,
+            market_id=market_id,
+            outcome=outcome,
+            size=size,
+            average_cost=average_cost,
+            current_price=current_price,
+            unrealized_pnl=size * (current_price - average_cost),
+            counts_as_open=True,
+            redeemable=False,
+            created_at=now,
+            updated_at=now,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -297,5 +334,188 @@ async def test_orphan_reconcile_does_not_mark_when_venue_unreachable(monkeypatch
         assert row.status == "submitted"
         assert row.payload_json["fast_submission_state"] == "post_update_failed"
         assert row.provider_clob_order_id is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_orphan_with_wallet_position_is_reconciled_as_executed(monkeypatch):
+    """When the venue has no OPEN order matching the orphan's metadata
+    BUT the wallet holds a position on the same market+outcome that
+    isn't already tracked by another live local order, the sweep
+    should treat the orphan as a confirmed fill (not silently lose it).
+
+    Pre-2026-05-05 behavior: marked orphan, $139 of fills lost
+    silently across 25 markets in one day.
+    """
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "fast_orphan_wallet_position"
+    )
+
+    async def fake_metadata_map():
+        return {}  # Venue's open-orders list does not include the filled order
+
+    from services import live_execution_service as les_module
+
+    monkeypatch.setattr(
+        les_module.live_execution_service,
+        "get_open_order_snapshots_by_metadata",
+        fake_metadata_map,
+    )
+
+    wallet = "0xabcdef0000000000000000000000000000000001"
+
+    try:
+        async with session_factory() as session:
+            _seed_trader(session)
+            order_id, _ = _seed_skeleton(
+                session,
+                signal_id="sig-wallet-fill",
+                submission_state="post_update_failed",
+                market_id="market-with-wallet-pos",
+                direction="buy_yes",
+                execution_wallet_address=wallet,
+            )
+            _seed_live_position(
+                session,
+                wallet_address=wallet,
+                token_id="token-yes",
+                market_id="market-with-wallet-pos",
+                outcome="Yes",
+                size=12.5,
+                average_cost=0.42,
+                current_price=0.40,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            result = await reconcile_orphaned_fast_submissions(
+                session,
+                trader_id="orphan-trader",
+            )
+
+        assert result["eligible"] == 1
+        assert result["matched"] == 0
+        assert result["matched_via_wallet_position"] == 1
+        assert result["marked_orphan"] == 0
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(TraderOrder).where(TraderOrder.id == order_id)
+                )
+            ).scalar_one()
+
+        assert row.status == "executed"
+        assert row.executed_at is not None
+        assert row.payload_json["fast_submission_state"] == "reconciled_via_wallet_position"
+        assert row.payload_json["reconciled_via"] == "orphan_wallet_position_match"
+        recon = row.payload_json["provider_reconciliation"]
+        assert recon["filled_size"] == pytest.approx(12.5)
+        assert recon["average_fill_price"] == pytest.approx(0.42)
+        assert recon["filled_notional_usd"] == pytest.approx(12.5 * 0.42)
+        evidence = row.payload_json["wallet_position_evidence"]
+        assert evidence["market_id"] == "market-with-wallet-pos"
+        assert evidence["outcome"] == "Yes"
+        assert evidence["size"] == pytest.approx(12.5)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_orphan_with_wallet_position_but_sibling_owns_market_marks_orphan(monkeypatch):
+    """If a sibling local order with a provider_clob_order_id already
+    tracks a position on the same market+direction, we don't double-credit
+    the orphan to the same wallet position. The orphan is still marked
+    failed, but we stamp the wallet evidence onto the payload for audit.
+    """
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "fast_orphan_sibling_owns"
+    )
+
+    async def fake_metadata_map():
+        return {}
+
+    from services import live_execution_service as les_module
+
+    monkeypatch.setattr(
+        les_module.live_execution_service,
+        "get_open_order_snapshots_by_metadata",
+        fake_metadata_map,
+    )
+
+    wallet = "0xabcdef0000000000000000000000000000000002"
+
+    try:
+        async with session_factory() as session:
+            _seed_trader(session)
+            # Sibling order: not orphaned, has a provider_clob_order_id
+            # and is in an active status. It "owns" the wallet position.
+            from datetime import timedelta
+
+            now = utcnow().replace(tzinfo=None)
+            session.add(
+                TraderOrder(
+                    id="order-sibling-active",
+                    trader_id="orphan-trader",
+                    signal_id="sig-sibling",
+                    source="generic-source",
+                    market_id="market-sibling-shared",
+                    mode="live",
+                    status="executed",
+                    notional_usd=3.0,
+                    direction="buy_yes",
+                    execution_wallet_address=wallet,
+                    provider_clob_order_id="venue-clob-sibling",
+                    payload_json={"fast_tier": True},
+                    created_at=now - timedelta(seconds=120),
+                    updated_at=now - timedelta(seconds=60),
+                )
+            )
+            # Orphan on the same market+direction.
+            order_id, _ = _seed_skeleton(
+                session,
+                signal_id="sig-orphan-with-sibling",
+                submission_state="clob_exception",
+                market_id="market-sibling-shared",
+                direction="buy_yes",
+                execution_wallet_address=wallet,
+            )
+            _seed_live_position(
+                session,
+                wallet_address=wallet,
+                token_id="token-shared-yes",
+                market_id="market-sibling-shared",
+                outcome="Yes",
+                size=10.0,
+                average_cost=0.51,
+                current_price=0.55,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            result = await reconcile_orphaned_fast_submissions(
+                session,
+                trader_id="orphan-trader",
+            )
+
+        assert result["eligible"] == 1
+        assert result["matched"] == 0
+        assert result["matched_via_wallet_position"] == 0
+        assert result["marked_orphan"] == 1
+        assert result["marked_orphan_with_wallet_evidence"] == 1
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(TraderOrder).where(TraderOrder.id == order_id)
+                )
+            ).scalar_one()
+
+        assert row.status == "failed"
+        assert row.payload_json["fast_submission_state"] == "orphan_no_venue_match"
+        evidence = row.payload_json["wallet_position_evidence"]
+        assert evidence["sibling_already_tracks_market"] is True
+        assert evidence["market_id"] == "market-sibling-shared"
     finally:
         await engine.dispose()

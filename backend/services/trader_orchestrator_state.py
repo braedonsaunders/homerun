@@ -7015,8 +7015,24 @@ async def reconcile_orphaned_fast_submissions(
     onto the local row, allowing the existing
     ``reconcile_live_provider_orders`` to take over status syncing on
     the next cycle. Rows older than ``min_age_seconds`` whose key is
-    not present at the venue are marked ``failed`` with reason
-    ``orphan_no_venue_match`` — the venue never received the order.
+    not present at the venue are normally marked ``failed`` with
+    reason ``orphan_no_venue_match`` — the venue never received (or
+    matched) the order.
+
+    **Filled-order fallback (added 2026-05-05).** ``get_open_orders``
+    only returns orders that are currently resting on the book. If a
+    fast-tier submission landed at the venue and *filled* (or was
+    cancelled) before this sweep ran, the venue won't return it as
+    open and the previous code marked it orphan, silently losing the
+    resulting position from local accounting. Before falling through
+    to the orphan branch, we now consult ``live_trading_positions``
+    for the same wallet+market: if a position exists that isn't
+    already covered by another live local order, we treat the orphan
+    as a confirmed fill, populate ``provider_reconciliation`` /
+    ``filled_size`` from the wallet snapshot, and flip the row to
+    ``executed`` so the lifecycle picks it up. If a sibling order
+    already accounts for the position, we still mark orphan but stamp
+    the wallet evidence onto the payload for audit.
 
     Returns a structured result for telemetry / log consumption.
     """
@@ -7062,7 +7078,9 @@ async def reconcile_orphaned_fast_submissions(
         "candidates_seen": len(candidate_rows),
         "eligible": len(eligible),
         "matched": 0,
+        "matched_via_wallet_position": 0,
         "marked_orphan": 0,
+        "marked_orphan_with_wallet_evidence": 0,
         "venue_unreachable": False,
         "errors": [],
     }
@@ -7095,6 +7113,113 @@ async def reconcile_orphaned_fast_submissions(
             await _commit_with_retry(session)
         return result
 
+    # Build a wallet-position lookup keyed by (wallet, market_id) so we
+    # can detect orphans whose submissions actually filled at the venue
+    # before falling off the open-orders list. We use the local
+    # ``live_trading_positions`` ledger rather than a fresh data-API call:
+    # the wallet sync worker already keeps that table fresh and pulling
+    # from the DB avoids the ~20 req/s data-API limit during sweeps.
+    orphan_market_ids: set[str] = set()
+    orphan_wallets: set[str] = set()
+    for row, _ in eligible:
+        market_id = str(getattr(row, "market_id", None) or "").strip()
+        if market_id:
+            orphan_market_ids.add(market_id)
+        wallet = str(getattr(row, "execution_wallet_address", None) or "").strip().lower()
+        if wallet:
+            orphan_wallets.add(wallet)
+
+    # Cover the case where the fast-path didn't stamp a wallet on the
+    # orphan row (which is exactly the failure mode that produces orphans).
+    # Fall back to the trader's resolved execution wallet so we still
+    # get to consult positions for unattributed orphans.
+    if not orphan_wallets:
+        try:
+            fallback_wallet = str(await _resolve_execution_wallet_address() or "").strip().lower()
+        except Exception:
+            fallback_wallet = ""
+        if fallback_wallet:
+            orphan_wallets.add(fallback_wallet)
+
+    wallet_positions_by_market: dict[tuple[str, str], list[LiveTradingPosition]] = {}
+    if orphan_market_ids and orphan_wallets:
+        try:
+            position_query = (
+                select(LiveTradingPosition)
+                .where(LiveTradingPosition.market_id.in_(orphan_market_ids))
+                .where(
+                    func.lower(func.coalesce(LiveTradingPosition.wallet_address, "")).in_(orphan_wallets)
+                )
+            )
+            position_rows = list((await session.execute(position_query)).scalars().all())
+            for pos_row in position_rows:
+                wallet_key = str(pos_row.wallet_address or "").strip().lower()
+                market_key = str(pos_row.market_id or "").strip()
+                if not wallet_key or not market_key:
+                    continue
+                wallet_positions_by_market.setdefault((wallet_key, market_key), []).append(pos_row)
+        except Exception as exc:
+            logger.warning(
+                "Orphan reconcile: wallet-position lookup failed",
+                trader_id=trader_id,
+                exc_info=exc,
+            )
+            result["errors"].append(f"wallet_position_lookup_failed: {type(exc).__name__}")
+
+    # Build a lookup of OTHER active local orders that already account
+    # for a position on the same market+direction. We avoid auto-linking
+    # an orphan to a wallet position that another live local row is
+    # already tracking — that would double-count fills.
+    other_active_keys: set[tuple[str, str]] = set()
+    if wallet_positions_by_market:
+        eligible_ids = {str(row.id) for row, _ in eligible}
+        try:
+            sibling_rows = list(
+                (
+                    await session.execute(
+                        select(TraderOrder.market_id, TraderOrder.direction, TraderOrder.id).where(
+                            TraderOrder.trader_id == trader_id,
+                            TraderOrder.mode == "live",
+                            TraderOrder.market_id.in_(orphan_market_ids),
+                            TraderOrder.status.in_(
+                                ("submitted", "executed", "completed", "open", "pending", "placing", "queued")
+                            ),
+                            TraderOrder.provider_clob_order_id.is_not(None),
+                        )
+                    )
+                ).all()
+            )
+            for sibling_market_id, sibling_direction, sibling_id in sibling_rows:
+                if str(sibling_id) in eligible_ids:
+                    continue
+                key = (str(sibling_market_id or "").strip(), str(sibling_direction or "").strip().lower())
+                if key[0] and key[1]:
+                    other_active_keys.add(key)
+        except Exception as exc:
+            logger.warning(
+                "Orphan reconcile: sibling-order lookup failed",
+                trader_id=trader_id,
+                exc_info=exc,
+            )
+            result["errors"].append(f"sibling_lookup_failed: {type(exc).__name__}")
+
+    def _outcome_matches_direction(outcome: Optional[str], direction: Optional[str]) -> bool:
+        """Return True when ``outcome`` (e.g. Yes/No/Up/Down) is the side a
+        ``buy_yes`` / ``buy_no`` direction would have purchased.
+        """
+        if not outcome or not direction:
+            return False
+        outcome_norm = str(outcome).strip().lower()
+        direction_norm = str(direction).strip().lower()
+        yes_side = {"yes", "up", "y", "true", "1"}
+        no_side = {"no", "down", "n", "false", "0"}
+        if direction_norm == "buy_yes":
+            return outcome_norm in yes_side
+        if direction_norm == "buy_no":
+            return outcome_norm in no_side
+        # Unknown direction — be conservative, only match exact label
+        return outcome_norm == direction_norm
+
     now_ts = _now()
     for row, idempotency_key in eligible:
         normalized = normalize_metadata_for_match(idempotency_key)
@@ -7118,18 +7243,120 @@ async def reconcile_orphaned_fast_submissions(
             row.payload_json = updated_payload
             row.updated_at = now_ts
             result["matched"] += 1
-        else:
-            # Venue has no order with this metadata. The submission never
-            # reached the venue (or was cancelled before our sweep ran).
-            # Either way, the local row should not stay live.
-            row.status = "failed"
-            row.error_message = (row.error_message or "orphan: no venue match for fast_idempotency_key")
+            continue
+
+        # Venue has no OPEN order for this metadata. Before declaring
+        # the submission lost, check whether a wallet position exists
+        # that the orphan plausibly opened (fast-tier maker/taker fill
+        # that completed before this sweep ran).
+        row_market_id = str(getattr(row, "market_id", None) or "").strip()
+        row_direction = str(getattr(row, "direction", None) or "").strip().lower()
+        row_wallet = str(getattr(row, "execution_wallet_address", None) or "").strip().lower()
+        position_candidates: list[LiveTradingPosition] = []
+        if row_market_id and wallet_positions_by_market:
+            wallet_keys = (
+                [row_wallet] if row_wallet else list(orphan_wallets)
+            )
+            for wallet_key in wallet_keys:
+                position_candidates.extend(
+                    wallet_positions_by_market.get((wallet_key, row_market_id), [])
+                )
+
+        matching_positions = [
+            pos
+            for pos in position_candidates
+            if _outcome_matches_direction(pos.outcome, row_direction)
+            and float(pos.size or 0.0) > 0.0
+        ]
+
+        sibling_already_owns = (row_market_id, row_direction) in other_active_keys
+
+        if matching_positions and not sibling_already_owns:
+            # Pick the most-recent matching position (defensive — the
+            # same wallet+token id is unique, but a market may carry two
+            # outcomes and we already filtered to the correct side).
+            matched_position = max(
+                matching_positions,
+                key=lambda p: (p.updated_at or p.created_at or now_ts),
+            )
+            position_size = float(matched_position.size or 0.0)
+            position_avg_cost = float(matched_position.average_cost or 0.0)
+            position_token_id = str(matched_position.token_id or "").strip()
+
             updated_payload = dict(row.payload_json or {})
-            updated_payload["fast_submission_state"] = "orphan_no_venue_match"
-            updated_payload["resolved_at_iso"] = now_ts.isoformat()
-            row.payload_json = updated_payload
+            updated_payload["fast_submission_state"] = "reconciled_via_wallet_position"
+            updated_payload["reconciled_at_iso"] = now_ts.isoformat()
+            updated_payload["reconciled_via"] = "orphan_wallet_position_match"
+            existing_recon = (
+                updated_payload.get("provider_reconciliation")
+                if isinstance(updated_payload.get("provider_reconciliation"), dict)
+                else {}
+            )
+            existing_recon = dict(existing_recon)
+            existing_recon.setdefault("source", "orphan_wallet_position_match")
+            existing_recon["filled_size"] = position_size
+            if position_avg_cost > 0:
+                existing_recon["average_fill_price"] = position_avg_cost
+                existing_recon["filled_notional_usd"] = position_size * position_avg_cost
+            existing_recon["matched_at_iso"] = now_ts.isoformat()
+            existing_recon["matched_position_token_id"] = position_token_id
+            existing_recon["matched_position_outcome"] = str(matched_position.outcome or "")
+            existing_recon["matched_position_redeemable"] = bool(matched_position.redeemable)
+            existing_recon["matched_position_counts_as_open"] = bool(matched_position.counts_as_open)
+            updated_payload["provider_reconciliation"] = existing_recon
+            updated_payload["wallet_position_evidence"] = {
+                "wallet_address": str(matched_position.wallet_address or ""),
+                "market_id": row_market_id,
+                "outcome": str(matched_position.outcome or ""),
+                "size": position_size,
+                "average_cost": position_avg_cost,
+                "current_price": float(matched_position.current_price or 0.0),
+                "token_id": position_token_id,
+                "matched_at_iso": now_ts.isoformat(),
+            }
+
+            # Use the average fill price from the wallet rather than the
+            # local row's pre-fill ``entry_price``, which the fast path
+            # may have stamped from a stale snapshot.
+            if position_avg_cost > 0:
+                row.effective_price = position_avg_cost
+            row.status = "executed"
+            row.executed_at = row.executed_at or now_ts
             row.updated_at = now_ts
-            result["marked_orphan"] += 1
+            row.payload_json = updated_payload
+            # Don't clear ``error_message`` — it stays empty for executed
+            # rows, but if a prior cycle stamped one, leave it for audit.
+            result["matched_via_wallet_position"] += 1
+            continue
+
+        # Either no wallet evidence, or another live local order is
+        # already tracking the position. Mark orphan as before, but
+        # stamp any wallet evidence we DID see for audit visibility.
+        row.status = "failed"
+        row.error_message = (row.error_message or "orphan: no venue match for fast_idempotency_key")
+        updated_payload = dict(row.payload_json or {})
+        updated_payload["fast_submission_state"] = "orphan_no_venue_match"
+        updated_payload["resolved_at_iso"] = now_ts.isoformat()
+        if matching_positions:
+            # Sibling owns the position. Record what we saw so operators
+            # have a paper trail if reconciliation needs auditing.
+            audit_position = max(
+                matching_positions,
+                key=lambda p: (p.updated_at or p.created_at or now_ts),
+            )
+            updated_payload["wallet_position_evidence"] = {
+                "wallet_address": str(audit_position.wallet_address or ""),
+                "market_id": row_market_id,
+                "outcome": str(audit_position.outcome or ""),
+                "size": float(audit_position.size or 0.0),
+                "average_cost": float(audit_position.average_cost or 0.0),
+                "sibling_already_tracks_market": True,
+                "matched_at_iso": now_ts.isoformat(),
+            }
+            result["marked_orphan_with_wallet_evidence"] += 1
+        row.payload_json = updated_payload
+        row.updated_at = now_ts
+        result["marked_orphan"] += 1
 
     if commit:
         await _commit_with_retry(session)
