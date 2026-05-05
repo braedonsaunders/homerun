@@ -522,7 +522,6 @@ const TERMINAL_ACTIVITY_MAX_ROWS = 320
 // Default selected-trader cap.  The user can dial this up via the
 // terminal toolbar (``terminalMaxRows`` state); this is the seed.
 const TERMINAL_SELECTED_MAX_ROWS_DEFAULT = 220
-const TERMINAL_ALL_BOTS_MAX_ROWS = 120
 const TERMINAL_COMPACT_ROW_HEIGHT = 34
 const TERMINAL_COMPACT_OVERSCAN = 16
 const ORDERS_PAGE_SIZE = 200
@@ -8750,19 +8749,27 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   }, [selectedTraderSourceConfigs])
 
   const selectedTraderActivityRows = useMemo(
-    () => activityRows
-      .filter((row) => {
-        if (row.traderId === selectedTraderId) return true
-        // Firehose-style global events have ``traderId=null`` and a
-        // ``sourceKey`` that identifies which strategy family they
-        // belong to.  Show them in the trader's terminal when the
-        // trader subscribes to that source.
-        if (row.traderId == null && row.sourceKey && selectedTraderSourceKeys.has(row.sourceKey)) {
-          return true
-        }
-        return false
-      })
-      .slice(0, terminalMaxRows),
+    () => {
+      // All-bots view: no trader selected — surface every row so the
+      // combined terminal mirrors the per-trader pipeline (filters,
+      // pause, slow-mode, volume) instead of a hardcoded snapshot.
+      if (selectedTraderId == null) {
+        return activityRows.slice(0, terminalMaxRows)
+      }
+      return activityRows
+        .filter((row) => {
+          if (row.traderId === selectedTraderId) return true
+          // Firehose-style global events have ``traderId=null`` and a
+          // ``sourceKey`` that identifies which strategy family they
+          // belong to.  Show them in the trader's terminal when the
+          // trader subscribes to that source.
+          if (row.traderId == null && row.sourceKey && selectedTraderSourceKeys.has(row.sourceKey)) {
+            return true
+          }
+          return false
+        })
+        .slice(0, terminalMaxRows)
+    },
     [activityRows, selectedTraderId, selectedTraderSourceKeys, terminalMaxRows]
   )
 
@@ -8933,11 +8940,6 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
   const selectedDecisionCountAllBots = useMemo(
     () => allDecisions.filter((decision) => String(decision.decision).toLowerCase() === 'selected').length,
     [allDecisions]
-  )
-
-  const allBotsActivityRows = useMemo(
-    () => activityRows.slice(0, TERMINAL_ALL_BOTS_MAX_ROWS),
-    [activityRows]
   )
 
   const traderPerformanceById = useMemo(
@@ -10436,20 +10438,118 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </div>
                         </div>
 
-                        <div className="min-h-0 flex-1 xl:min-h-0 xl:col-start-1 xl:row-start-2 rounded-md border border-border/60 bg-card/80 overflow-hidden">
-                          <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
+                        <div className="min-h-0 flex-1 xl:min-h-0 xl:col-start-1 xl:row-start-2 rounded-md border border-border/60 bg-card/80 overflow-hidden flex flex-col">
+                          <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2 shrink-0">
                             <div className="flex items-center gap-1.5">
                               <Clock3 className="w-3.5 h-3.5 text-cyan-500" />
                               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Live Pulse Feed</span>
                             </div>
-                            <span className="text-[10px] font-mono text-muted-foreground">{allBotsActivityRows.length} events</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              {terminalPaused ? 'PAUSED · ' : ''}{displayedActivityRows.length} events
+                            </span>
                           </div>
-                          <ScrollArea className="h-[260px] xl:h-full">
-                            <div className="space-y-1.5 p-2 text-[11px]">
-                              {allBotsActivityRows.length === 0 ? (
-                                <p className="py-10 text-center text-muted-foreground text-xs">No activity captured yet.</p>
+                          {/* Same control surface as the per-trader Terminal tab.
+                              State is shared so a setting set in one view persists
+                              into the other.  Single-row layout — Volume collapses
+                              to a dropdown so nothing overflows. */}
+                          <div className="shrink-0 flex flex-nowrap items-center gap-1 px-2 py-1.5 border-b border-border/40 overflow-hidden">
+                            {(['all', 'decision', 'order', 'event'] as FeedFilter[]).map((kind) => (
+                              <Button key={kind} size="sm" variant={traderFeedFilter === kind ? 'default' : 'outline'} onClick={() => setTraderFeedFilter(kind)} className="h-5 px-1.5 text-[10px] shrink-0">
+                                {kind}
+                              </Button>
+                            ))}
+                            <div className="inline-flex items-center gap-0.5 ml-1 shrink-0">
+                              <Button size="sm" variant={terminalDensity === 'compact' ? 'default' : 'outline'} onClick={() => setTerminalDensity('compact')} title="Compact rows" className="h-5 px-1.5 text-[10px]">
+                                ▤
+                              </Button>
+                              <Button size="sm" variant={terminalDensity === 'expanded' ? 'default' : 'outline'} onClick={() => setTerminalDensity('expanded')} title="Expanded rows" className="h-5 px-1.5 text-[10px]">
+                                ☰
+                              </Button>
+                            </div>
+                            <select
+                              value={terminalVolume}
+                              onChange={(event) => setTerminalVolume(event.target.value as TerminalVolume)}
+                              title={TERMINAL_VOLUME_OPTIONS.find((o) => o.value === terminalVolume)?.hint || 'Firehose volume'}
+                              className="h-5 rounded border border-border/40 bg-background px-1 text-[10px] ml-1 shrink-0"
+                            >
+                              {TERMINAL_VOLUME_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>vol: {opt.label.toLowerCase()}</option>
+                              ))}
+                            </select>
+                            <Button
+                              size="sm"
+                              variant={terminalPaused ? 'default' : 'outline'}
+                              onClick={() => setTerminalPaused((v) => !v)}
+                              title={terminalPaused ? 'Resume streaming' : 'Pause incoming events'}
+                              className="h-5 px-1.5 text-[10px] ml-1 shrink-0"
+                            >
+                              {terminalPaused ? '▶' : '⏸'}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={terminalSlowMode ? 'default' : 'outline'}
+                              onClick={() => setTerminalSlowMode((v) => !v)}
+                              title="Drip new events at one per second so the firehose is readable"
+                              className="h-5 px-1.5 text-[10px] shrink-0"
+                            >
+                              🐢{terminalSlowMode && slowModePending > 0 ? ` ${slowModePending}` : ''}
+                            </Button>
+                            <select
+                              value={terminalMaxRows}
+                              onChange={(event) => setTerminalMaxRows(Number(event.target.value) || TERMINAL_SELECTED_MAX_ROWS_DEFAULT)}
+                              title="Max rows kept in view"
+                              className="h-5 rounded border border-border/40 bg-background px-1 text-[10px] ml-1 shrink-0"
+                            >
+                              {[220, 500, 1000, 2000, 5000].map((n) => (
+                                <option key={n} value={n}>max {n}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <ScrollArea className="h-[260px] xl:h-full xl:flex-1 xl:min-h-0">
+                            <div className={cn('p-2', terminalDensity === 'compact' ? 'space-y-0.5 font-mono text-[11px]' : 'space-y-1.5 text-[11px]')}>
+                              {displayedActivityRows.length === 0 ? (
+                                <p className="py-10 text-center text-muted-foreground text-xs">
+                                  {terminalPaused
+                                    ? 'Paused — resume to see new events.'
+                                    : terminalSlowMode && slowModePending > 0
+                                      ? `Slow mode: ${slowModePending} event${slowModePending === 1 ? '' : 's'} queued (1/sec)…`
+                                      : 'No activity captured yet.'}
+                                </p>
+                              ) : terminalDensity === 'compact' ? (
+                                displayedActivityRows.map((row) => (
+                                  <div
+                                    key={`${row.kind}:${row.id}`}
+                                    className={cn(
+                                      'rounded border px-2 py-1 flex items-center gap-1.5 whitespace-nowrap',
+                                      row.tone === 'positive' && 'border-emerald-500/25 text-emerald-700 dark:text-emerald-100',
+                                      row.tone === 'negative' && 'border-red-500/30 text-red-700 dark:text-red-100',
+                                      row.tone === 'warning' && 'border-amber-500/30 text-amber-700 dark:text-amber-100',
+                                      row.tone === 'neutral' && row.action === 'BUY' && 'border-emerald-500/25 bg-emerald-500/5 text-emerald-700 dark:text-emerald-100',
+                                      row.tone === 'neutral' && row.action === 'SELL' && 'border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-100',
+                                      row.tone === 'neutral' && !row.action && 'border-border/50 text-foreground'
+                                    )}
+                                  >
+                                    <span className="text-muted-foreground shrink-0">[{formatTimestamp(row.ts)}]</span>
+                                    <span className="uppercase text-[10px] shrink-0">{row.kind}</span>
+                                    {row.action && (
+                                      <span
+                                        className={cn(
+                                          'uppercase text-[10px] font-semibold shrink-0',
+                                          row.action === 'BUY' ? 'text-emerald-500' : 'text-red-500'
+                                        )}
+                                      >
+                                        {row.action}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] text-muted-foreground shrink-0">
+                                      {traderNameById[String(row.traderId || '')] || shortId(row.traderId || '')}
+                                    </span>
+                                    <span className="font-medium truncate">{row.title}</span>
+                                    <span className="text-muted-foreground truncate">{row.detail}</span>
+                                  </div>
+                                ))
                               ) : (
-                                allBotsActivityRows.slice(0, 40).map((row) => (
+                                displayedActivityRows.map((row) => (
                                   <div
                                     key={`${row.kind}:${row.id}`}
                                     className={cn(
