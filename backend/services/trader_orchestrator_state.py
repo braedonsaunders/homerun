@@ -4282,6 +4282,7 @@ def _serialize_order(
     signal: TradeSignal | None = None,
     cached_market: CachedMarket | None = None,
     sibling_rows: list[TraderOrder] | None = None,
+    live_prices_by_token: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     payload = dict(row.payload_json or {})
     provider_reconciliation = payload.get("provider_reconciliation")
@@ -4305,7 +4306,23 @@ def _serialize_order(
     price_anchor = average_fill_price
     if price_anchor is None or price_anchor <= 0:
         price_anchor = safe_float(row.effective_price) or safe_float(row.entry_price)
-    current_price = safe_float(position_state.get("last_mark_price"))
+    # Option-3 read-side P&L: prefer the WS-cache live mid price over
+    # the slow-orchestrator-stamped ``position_state.last_mark_price``.
+    # The WS cache reflects sub-second venue activity; ``position_
+    # state`` is updated only by the position monitor loop which the
+    # fast tier doesn't run (and which polls at multi-second cadence
+    # even for slow-tier).  When the WS cache is fresh we surface
+    # that as the authoritative mark; when stale, we fall through
+    # the existing chain.
+    current_price: float | None = None
+    if live_prices_by_token:
+        token_id = _extract_order_token_id(row)
+        if token_id:
+            ws_price = live_prices_by_token.get(token_id)
+            if ws_price is not None and ws_price > 0.0:
+                current_price = float(ws_price)
+    if current_price is None or current_price <= 0:
+        current_price = safe_float(position_state.get("last_mark_price"))
     if current_price is None or current_price <= 0:
         current_price = safe_float(
             payload.get("market_price")
@@ -4426,6 +4443,8 @@ def _serialize_order(
     mark_updated_at = str(position_state.get("last_marked_at") or provider_reconciliation.get("reconciled_at") or "")
 
     unrealized_pnl = None
+    unrealized_pnl_pct: float | None = None
+    edge_delta_pct: float | None = None
     if (
         status_key in {"submitted", "open", "executed"}
         and current_price is not None
@@ -4433,6 +4452,16 @@ def _serialize_order(
         and quantity > 0
     ):
         unrealized_pnl = (quantity * current_price) - filled_notional_display
+        # Match the existing PositionMarkState formula so the REST and
+        # WS push values agree.  ``unrealized_pnl_pct`` is mark-vs-fill
+        # in price-percent terms; ``edge_delta_pct`` is how that P&L
+        # compares against the strategy-claimed edge at signal time.
+        if price_anchor is not None and price_anchor > 0:
+            unrealized_pnl_pct = (
+                (float(current_price) - float(price_anchor)) / float(price_anchor) * 100.0
+            )
+            edge_at_signal = safe_float(row.edge_percent, 0.0) or 0.0
+            edge_delta_pct = unrealized_pnl_pct - float(edge_at_signal)
 
     signal_payload = signal.payload_json if signal is not None and isinstance(signal.payload_json, dict) else {}
     direction_side, direction_label, yes_label, no_label = _resolve_direction_presentation(
@@ -4575,6 +4604,8 @@ def _serialize_order(
         "mark_source": str(position_state.get("last_mark_source") or ""),
         "mark_updated_at": mark_updated_at,
         "unrealized_pnl": float(unrealized_pnl) if unrealized_pnl is not None else None,
+        "unrealized_pnl_pct": float(unrealized_pnl_pct) if unrealized_pnl_pct is not None else None,
+        "edge_delta_pct": float(edge_delta_pct) if edge_delta_pct is not None else None,
         "edge_percent": row.edge_percent,
         "confidence": row.confidence,
         # Returns row.actual_profit directly. The DB-layer guard in
@@ -10503,6 +10534,32 @@ async def list_serialized_trader_orders(
             if key:
                 cached_markets_by_condition_id[key] = cached_market
 
+    # Option-3 read-side U-P&L: bulk-fetch live mid prices for every
+    # order's token from the WS feed cache (which is already
+    # subscribed for the markets the trader cares about).  ``ws_only=
+    # True`` makes this non-blocking — no HTTP fallback in the API
+    # request path.  When the WS cache has a fresh mid, we surface it
+    # to ``_serialize_order`` as the authoritative current_price; if
+    # not, the existing position_state.last_mark_price fallback
+    # remains.  Zero persistence; zero hot-path cost; pure render-
+    # time math.  Far cheaper than the polling-loop alternative.
+    live_prices_by_token: dict[str, float] = {}
+    try:
+        from services.live_price_snapshot import get_live_mid_prices
+        order_token_ids: list[str] = []
+        seen_tokens: set[str] = set()
+        for row in rows:
+            token_id = _extract_order_token_id(row)
+            if token_id and token_id not in seen_tokens:
+                seen_tokens.add(token_id)
+                order_token_ids.append(token_id)
+        if order_token_ids:
+            live_prices_by_token = await get_live_mid_prices(
+                order_token_ids, ws_only=True
+            ) or {}
+    except Exception:
+        live_prices_by_token = {}
+
     serialized_rows: list[dict[str, Any]] = []
     for row, condition_id in zip(rows, condition_ids_for_rows):
         serialized_rows.append(
@@ -10511,6 +10568,7 @@ async def list_serialized_trader_orders(
                 signals_by_id.get(str(row.signal_id or "")),
                 cached_markets_by_condition_id.get(condition_id),
                 sibling_rows_by_signal_id.get(str(row.signal_id or "").strip()),
+                live_prices_by_token=live_prices_by_token,
             )
         )
     return serialized_rows
