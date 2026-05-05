@@ -1736,6 +1736,25 @@ class IntentRuntime:
             from sqlalchemy import text as _sa_text
 
             await session.execute(_sa_text("SET LOCAL statement_timeout = '300000'"))
+            # ITER-? (Fix II): also probe ``trader_signal_cursor`` for
+            # the highest consumed-runtime-sequence so the rebuilt
+            # ``_next_runtime_sequence`` never lands below a trader's
+            # cursor (which IS persisted across restarts).  Used inside
+            # the lock below alongside the per-row hydrated sequences.
+            cursor_max_seq = 0
+            try:
+                cursor_max_row = (
+                    await session.execute(
+                        _sa_text("SELECT COALESCE(MAX(last_runtime_sequence), 0) AS max_seq FROM trader_signal_cursor")
+                    )
+                ).first()
+                cursor_max_seq = int(cursor_max_row.max_seq) if cursor_max_row else 0
+            except Exception as _seq_seed_exc:
+                logger.debug(
+                    "Cursor-based runtime_sequence seed query failed (non-fatal); "
+                    "falling back to trade_signals scan",
+                    exc_info=_seq_seed_exc,
+                )
             raw_rows = (
                 (
                     await session.execute(
@@ -1908,6 +1927,25 @@ class IntentRuntime:
                         required_token_ids=snapshot["required_token_ids"],
                         reason=defer_reason,
                     )
+            # ITER-? (Fix II): after hydrating from trade_signals,
+            # ensure ``_next_runtime_sequence`` is also above every
+            # trader's consumed cursor.  The trade_signals hydration
+            # only sees rows kept after the 24h prune cutoff — older
+            # signals' sequences are gone, but the cursors that
+            # consumed them are persisted.  Without this max(), new
+            # signals get sequences BELOW the cursor and the trader
+            # silently treats them as already-consumed, manifesting
+            # as "strategies fire but trader sees nothing" after every
+            # restart.  Found in ITER-4 production debugging.
+            if cursor_max_seq > 0:
+                self._next_runtime_sequence = max(
+                    self._next_runtime_sequence, cursor_max_seq + 1
+                )
+                logger.info(
+                    "intent_runtime sequence floor raised from cursor max",
+                    cursor_max=cursor_max_seq,
+                    next_runtime_sequence=self._next_runtime_sequence,
+                )
         if bootstrap_snapshots:
             await self._attach_live_market_contexts(bootstrap_snapshots)
             await self._defer_scanner_snapshots_without_strict_live_market(
