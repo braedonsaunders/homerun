@@ -2786,46 +2786,70 @@ class LiveExecutionService:
                 if needs_retry:
                     await asyncio.sleep(_db_retry_delay(attempt))
 
+    _PNL_COUNTERS_PLACEHOLDER: dict[str, Any] = {
+        "total_pnl": 0.0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "daily_pnl": 0.0,
+    }
+
     async def _derive_pnl_counters_from_orders(
         self, session: Any, wallet: str
     ) -> dict[str, Any]:
-        # 30s TTL cache.  This function runs inside EVERY
-        # ``_persist_runtime_state`` call (which fires after every
-        # successful order), and the underlying double-aggregate
-        # query (sum/count per profit-sign + daily window) cost
-        # ~1.4s avg under DB pressure in production (5h soak,
-        # 5/2026/05).  PnL counters are only used for the
-        # runtime_state snapshot row — they don't gate any
-        # decision logic, so 30s staleness is safe and saves the
-        # double-aggregate scan on every persist.
+        # 300s TTL cache (see ``_PNL_COUNTERS_TTL_SECONDS``).  This used to
+        # run the double-aggregate query inline on the caller's
+        # ``session`` whenever the cache missed — under DB pool pressure
+        # the 1ms query stretched to 2-3s of *event-loop blocking*
+        # because the persist's session was waiting for a connection.
+        # The 12-hour soak on 2026-05-05 showed ``derive_pnl=2578ms``
+        # repeating ~every 5 min as the dominant single contributor to
+        # event-loop stalls.
+        #
+        # Fix RR: never block the persist hot path on this.  PnL
+        # counters are informational telemetry written to the
+        # runtime_state snapshot row — no decision logic depends on
+        # them.  The pattern below:
+        #   * Cache fresh → return cached (unchanged)
+        #   * Cache stale → return stale immediately, kick off a
+        #     background refresh on a fresh session
+        #   * Cache cold (process startup) → return zeros, kick off a
+        #     background populate
+        # The background compute uses its own DB session via
+        # ``AsyncSessionLocal`` so it doesn't compete with the caller's
+        # session pool slot, and the existing single-flight lock
+        # prevents duplicate refreshes when several wallets pipe
+        # through the same TTL boundary.
         cache = getattr(self, "_pnl_counters_cache", None)
         if cache is None:
             cache = {}
             self._pnl_counters_cache = cache
         wallet_key = (wallet or "").lower()
         cached = cache.get(wallet_key)
+        now_mono = _time.monotonic()
         if cached is not None:
             cached_at, cached_result = cached
-            if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
+            if (now_mono - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
                 return cached_result
+            # Stale — return immediately, kick off background refresh.
+            self._schedule_pnl_counters_refresh(wallet, wallet_key, cache)
+            return cached_result
+        # Cold cache (first call for this wallet since process start).
+        # Schedule a background populate and return placeholder zeros.
+        self._schedule_pnl_counters_refresh(wallet, wallet_key, cache)
+        return self._PNL_COUNTERS_PLACEHOLDER
 
-        # Fix R: single-flight gate around the cache miss.  Without this,
-        # N concurrent ``_persist_runtime_state`` calls for the same
-        # wallet (e.g. several pipelined ``post_order`` successes within
-        # the cache TTL window, or concurrent traders sharing a wallet)
-        # all observe the cache miss simultaneously and each issue the
-        # double-aggregate query on their own ``session`` — wasted DB
-        # work that compounds the very pool pressure that made the
-        # query slow in the first place (5h soak 5/2026/05 cycle 12
-        # showed a single 3.2s ``derive_pnl`` event under cold cache;
-        # under sustained order flow this multiplies into the per-call
-        # baseline).
-        #
-        # Lazily create a per-instance lock dict keyed by ``wallet_key``
-        # so per-wallet caches lock independently.  Double-checked
-        # lock pattern: re-check the cache after acquiring so that
-        # the loser sees the winner's freshly populated entry and
-        # returns without running the query.
+    def _schedule_pnl_counters_refresh(
+        self,
+        wallet: str,
+        wallet_key: str,
+        cache: dict[str, tuple[float, dict[str, Any]]],
+    ) -> None:
+        """Fire a background compute of PnL counters on a fresh session.
+
+        Single-flight via the existing per-wallet lock dict.  The lock
+        guards both the compute and the cache write, so concurrent
+        callers see exactly one DB query per TTL window per wallet.
+        """
         locks = getattr(self, "_pnl_counters_locks", None)
         if locks is None:
             locks = {}
@@ -2834,17 +2858,48 @@ class LiveExecutionService:
         if lock is None:
             lock = asyncio.Lock()
             locks[wallet_key] = lock
+        # If a refresh is already in flight for this wallet, the lock
+        # is held — don't queue another.  The acquire/release pattern
+        # below handles that with ``locked()`` so we don't spawn a
+        # background task that just blocks on the lock.
+        if lock.locked():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self._refresh_pnl_counters_background(wallet, wallet_key, cache, lock)
+        )
+
+    async def _refresh_pnl_counters_background(
+        self,
+        wallet: str,
+        wallet_key: str,
+        cache: dict[str, tuple[float, dict[str, Any]]],
+        lock: asyncio.Lock,
+    ) -> None:
         async with lock:
-            # Re-check cache under the lock — the writer that lost the
-            # race may have populated it while we were waiting.
+            # Re-check freshness inside the lock — another waiter
+            # may have refreshed the cache while we were queued.
             cached = cache.get(wallet_key)
             if cached is not None:
-                cached_at, cached_result = cached
+                cached_at, _ = cached
                 if (_time.monotonic() - cached_at) < _PNL_COUNTERS_TTL_SECONDS:
-                    return cached_result
-            return await self._compute_pnl_counters_from_orders(
-                session, wallet, wallet_key, cache
-            )
+                    return
+            try:
+                async with AsyncSessionLocal() as bg_session:
+                    await self._compute_pnl_counters_from_orders(
+                        bg_session, wallet, wallet_key, cache
+                    )
+            except Exception as exc:
+                # Best-effort telemetry — don't surface as an error.
+                # The cache simply stays stale until the next call.
+                logger.debug(
+                    "PnL counters background refresh failed",
+                    wallet=wallet_key[:12],
+                    exc_info=exc,
+                )
 
     async def _compute_pnl_counters_from_orders(
         self,
