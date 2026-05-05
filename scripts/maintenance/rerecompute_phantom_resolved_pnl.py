@@ -128,12 +128,26 @@ async def _main(trader_id: str, dry_run: bool) -> int:
             continue
         polymarket_entry = by_asset.get(token_id)
         if polymarket_entry is None:
-            # Wallet has no record → losing redeemed-to-zero token.
-            cur_price = 0.0
+            # Token isn't in the wallet's positions / closed-positions
+            # API.  The data-api endpoints have an effective backlog
+            # window — older resolved positions age out — so absence
+            # is NOT evidence of a loss.  Skip; we cannot prove or
+            # disprove the recorded status.  (A future iteration can
+            # use the Subgraph or direct CTF queries to verify older
+            # resolutions; for now, conservative skip.)
+            continue
+        cur_price = float(polymarket_entry.get("curPrice") or 0.0)
+        # Decide the truth from the on-chain settlement price:
+        #   cur_price >= 0.999 → definitively won, position pays $1
+        #   cur_price <= 0.001 → definitively lost, position pays $0
+        # Anything in between is an unsettled / partially-settled
+        # state we shouldn't overwrite.
+        if cur_price >= 0.999:
+            actually_won = True
+        elif cur_price <= 0.001:
+            actually_won = False
         else:
-            cur_price = float(polymarket_entry.get("curPrice") or 0.0)
-        # Decide the truth: cur_price near 1.0 means the position won.
-        actually_won = cur_price >= 0.999
+            continue  # Indeterminate — don't touch.
         was_recorded_won = str(row.status) == "resolved_win"
         if actually_won == was_recorded_won:
             continue  # Already correct.
