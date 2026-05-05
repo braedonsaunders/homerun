@@ -3966,11 +3966,25 @@ class TraderOrderVerification(Base):
     )
 
 
-# NOTE: the old _enforce_pnl_verification_guard_v2 listener that NULL'd
-# unverified actual_profit on this side table was removed in Fix KK —
-# see the comment block above ``TraderOrder.actual_profit`` for the
-# full rationale.  ``actual_profit`` is now mirrored verbatim from
-# ``trader_orders`` (computed baseline + verifier override).
+# The guard on trader_order_verification is intentionally scoped to this
+# side table only (not trader_orders).  trader_orders.actual_profit may
+# carry a lifecycle-computed baseline at any status; this table is the
+# authoritative verified-P&L view and must only expose a non-null
+# actual_profit when the value has been confirmed on-chain.
+_VERIFIED_PNL_STATUSES = {"wallet_activity", "manual_writeoff"}
+
+
+def _enforce_pnl_verification_guard_v2(mapper, connection, target):  # noqa: ANN001
+    """Coerce actual_profit to None unless verification_status is verified."""
+    status = str(getattr(target, "verification_status", "") or "").strip().lower()
+    if status in _VERIFIED_PNL_STATUSES:
+        return
+    if getattr(target, "actual_profit", None) is not None:
+        target.actual_profit = None
+
+
+_sa_event.listen(TraderOrderVerification, "before_insert", _enforce_pnl_verification_guard_v2)
+_sa_event.listen(TraderOrderVerification, "before_update", _enforce_pnl_verification_guard_v2)
 
 
 # ── Dual-write mirror: TraderOrder → TraderOrderVerification ─────────
@@ -4012,14 +4026,20 @@ def _mirror_trader_order_to_verification(mapper, connection, target):  # noqa: A
     order_id = getattr(target, "id", None)
     if not order_id:
         return
+    _vstatus = (getattr(target, "verification_status", None) or "local")
+    _actual_profit = (
+        getattr(target, "actual_profit", None)
+        if _vstatus in _VERIFIED_PNL_STATUSES
+        else None
+    )
     payload = {
         "trader_order_id": str(order_id),
-        "verification_status": getattr(target, "verification_status", None) or "local",
+        "verification_status": _vstatus,
         "verification_source": getattr(target, "verification_source", None),
         "verification_reason": getattr(target, "verification_reason", None),
         "verification_tx_hash": getattr(target, "verification_tx_hash", None),
         "verified_at": getattr(target, "verified_at", None),
-        "actual_profit": getattr(target, "actual_profit", None),
+        "actual_profit": _actual_profit,
         "execution_wallet_address": getattr(target, "execution_wallet_address", None),
         "updated_at": _utcnow(),
     }
