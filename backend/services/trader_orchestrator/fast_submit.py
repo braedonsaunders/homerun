@@ -69,6 +69,29 @@ _SUBMISSION_STATE_CLOB_RAISED = "clob_exception"
 _SUBMISSION_STATE_POST_UPDATE_FAILED = "post_update_failed"
 
 
+# Per-trader async lock for the cap-check + pre-submit-row-insert
+# critical section.  Without this, several concurrent ``execute_fast_
+# signal`` calls for the same trader can race: each reads the open-
+# order COUNT(*) before any of them has committed its pre-submit
+# row, so they all observe ``count == cap-1`` and all proceed to
+# insert.  Result: ``cap+N`` open orders for a 2-cap trader (user-
+# observed: 5 open vs 2 cap).  Lock is per-trader so unrelated
+# traders don't serialise.  Held only across the cap check + DB
+# commit of the pre-submit row — released BEFORE the CLOB call so
+# the cap-bound serialisation doesn't extend over the network
+# round-trip.
+import asyncio as _asyncio
+_per_trader_submit_locks: dict[str, _asyncio.Lock] = {}
+
+
+def _get_per_trader_submit_lock(trader_id: str) -> _asyncio.Lock:
+    lock = _per_trader_submit_locks.get(trader_id)
+    if lock is None:
+        lock = _asyncio.Lock()
+        _per_trader_submit_locks[trader_id] = lock
+    return lock
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -240,12 +263,20 @@ async def execute_fast_signal(
     # ----- Fast-tier risk cap ------------------------------------------------
     # Fix JJ: the fast tier was bypassing the risk_manager entirely, so a
     # configured ``max_open_orders`` cap (visible in the trader-config
-    # UI) had ZERO effect on this code path.  Production observed 8
-    # open orders against a 2-order cap.  Apply a single-row count
-    # check here using the trader's persisted risk_limits.  The query
-    # is bounded to active statuses and indexed on ``trader_id``, so
-    # it adds a few ms — far cheaper than a runaway-order-fan.  Skip
-    # the check entirely if no limit is configured.
+    # UI) had ZERO effect on this code path.  Apply a single-row count
+    # check here using the trader's persisted risk_limits.
+    #
+    # Fix JJ.2: serialise the cap-check + pre-submit-INSERT under a
+    # per-trader async lock.  Pre-fix, several concurrent
+    # ``execute_fast_signal`` calls for the same trader could each
+    # observe ``COUNT(*) < cap`` BEFORE any of them committed its
+    # pre-submit row, so all of them passed the gate and all of them
+    # inserted — user-observed 5 open orders against a 2-cap.  The
+    # lock is HELD only across the cap check + the pre-submit
+    # commit; it's RELEASED before the CLOB network call so we don't
+    # serialise the venue roundtrip across the trader's open-order
+    # window.  Idempotency, the cap check, and the pre-submit row
+    # write all happen inside the lock together.
     if isinstance(strategy_params, dict):
         # ``strategy_params`` is the per-source config passed in by the
         # fast trader runtime; it carries whatever risk overrides the
@@ -275,36 +306,50 @@ async def execute_fast_signal(
         risk_open_cap_int = int(risk_open_cap) if risk_open_cap is not None else None
     except Exception:
         risk_open_cap_int = None
-    if risk_open_cap_int is not None and risk_open_cap_int > 0:
-        from sqlalchemy import func as _sa_func
-        active_statuses = ("submitted", "open", "partial", "pending", "working")
-        open_count = (
-            await session.execute(
-                select(_sa_func.count(TraderOrder.id))
-                .where(TraderOrder.trader_id == trader_id)
-                .where(TraderOrder.status.in_(active_statuses))
-            )
-        ).scalar_one() or 0
-        if open_count >= risk_open_cap_int:
-            logger.info(
-                "Fast-tier blocking submission: trader at max_open_orders cap",
-                trader_id=trader_id,
-                open_count=open_count,
-                max_open_orders=risk_open_cap_int,
-            )
-            return FastSubmitResult(
-                session_id="",
-                status="skipped",
-                effective_price=None,
-                error_message=f"max_open_orders cap reached ({open_count}/{risk_open_cap_int})",
-                orders_written=0,
-                payload={
-                    "fast_tier": True,
-                    "reason": "max_open_orders_cap",
-                    "open_count": open_count,
-                    "cap": risk_open_cap_int,
-                },
-            )
+
+    # Acquire the per-trader serialisation lock.  Released after
+    # the pre-submit row commit (see below) — NOT held across the
+    # CLOB call.
+    _submit_lock = _get_per_trader_submit_lock(trader_id)
+    await _submit_lock.acquire()
+    _lock_released = False
+    try:
+        if risk_open_cap_int is not None and risk_open_cap_int > 0:
+            from sqlalchemy import func as _sa_func
+            active_statuses = ("submitted", "open", "partial", "pending", "working")
+            open_count = (
+                await session.execute(
+                    select(_sa_func.count(TraderOrder.id))
+                    .where(TraderOrder.trader_id == trader_id)
+                    .where(TraderOrder.status.in_(active_statuses))
+                )
+            ).scalar_one() or 0
+            if open_count >= risk_open_cap_int:
+                logger.info(
+                    "Fast-tier blocking submission: trader at max_open_orders cap",
+                    trader_id=trader_id,
+                    open_count=open_count,
+                    max_open_orders=risk_open_cap_int,
+                )
+                _submit_lock.release()
+                _lock_released = True
+                return FastSubmitResult(
+                    session_id="",
+                    status="skipped",
+                    effective_price=None,
+                    error_message=f"max_open_orders cap reached ({open_count}/{risk_open_cap_int})",
+                    orders_written=0,
+                    payload={
+                        "fast_tier": True,
+                        "reason": "max_open_orders_cap",
+                        "open_count": open_count,
+                        "cap": risk_open_cap_int,
+                    },
+                )
+    except BaseException:
+        if not _lock_released:
+            _submit_lock.release()
+        raise
 
     signal_id = str(getattr(signal, "id", "") or "").strip()
     if signal_id:
@@ -323,6 +368,9 @@ async def execute_fast_signal(
                 signal_id=signal_id,
                 existing_order_id=str(existing_id),
             )
+            if not _lock_released:
+                _submit_lock.release()
+                _lock_released = True
             return FastSubmitResult(
                 session_id="",
                 status="skipped",
@@ -338,6 +386,9 @@ async def execute_fast_signal(
 
     position, parse_error = _extract_single_position(signal)
     if parse_error is not None or position is None:
+        if not _lock_released:
+            _submit_lock.release()
+            _lock_released = True
         return FastSubmitResult(
             session_id="",
             status="failed",
@@ -436,6 +487,12 @@ async def execute_fast_signal(
         except Exception as rollback_exc:
             logger.debug("Fast-tier pre-submit rollback failed", trader_id=trader_id, exc_info=rollback_exc)
         logger.error("Fast-tier pre-submit row write failed", trader_id=trader_id, exc_info=exc)
+        # Release the per-trader cap-check lock (Fix JJ.2) so other
+        # signals for this trader aren't blocked behind a failed
+        # pre-submit row write.
+        if not _lock_released:
+            _submit_lock.release()
+            _lock_released = True
         return FastSubmitResult(
             session_id="",
             status="failed",
@@ -445,6 +502,13 @@ async def execute_fast_signal(
             payload={"fast_tier": True, "reason": "pre_submit_persist_failed"},
         )
     pre_submit_order_id = str(order.id)
+    # Pre-submit row is durably committed; the next concurrent
+    # cap-check for this trader will see it in the COUNT(*).  Drop
+    # the per-trader lock so the CLOB network call doesn't extend
+    # the trader's serialisation window across the wire roundtrip.
+    if not _lock_released:
+        _submit_lock.release()
+        _lock_released = True
 
     # ----- CLOB submission ----------------------------------------------------
     # Release the DB connection (if the session has one checked out)
