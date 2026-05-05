@@ -526,6 +526,20 @@ async def execute_fast_signal(
     # progress`` pattern).  ``release_conn`` is a no-op when the
     # session is still lazy.
     submit_started_at = utcnow()
+    # Handle Exception AND CancelledError around the CLOB submit.
+    # Pre-fix MM the bare ``except Exception`` left CancelledError to
+    # propagate with the pre-submit row stuck at status='submitted',
+    # ``fast_submission_state='in_flight'`` — that row counted toward
+    # ``max_open_orders`` indefinitely and silently broke the cap on
+    # the next signal.  Now: for either failure mode we re-attach the
+    # ORM row, mark it status='failed' with ``clob_exception`` so the
+    # cap unwinds, do a best-effort flush, then re-raise the
+    # CancelledError when applicable so the runtime's cycle teardown
+    # still observes the cancellation.  The orphan reconcile (which
+    # now runs periodically — see fast_trader_runtime) consults the
+    # venue afterward to determine whether the order actually went
+    # through; if so, ``provider_clob_order_id`` is patched and the
+    # row picks up real fill data.
     try:
         async with release_conn(session):
             leg_result = await submit_execution_leg(
@@ -535,37 +549,60 @@ async def execute_fast_signal(
                 notional_usd=notional,
                 strategy_params=strategy_params,
             )
-    except Exception as exc:
-        logger.warning(
-            "Fast-tier leg submit raised",
-            trader_id=trader_id,
-            pre_submit_order_id=pre_submit_order_id,
-            exc_info=exc,
-        )
-        # CLOB call raised — we don't know if the venue accepted the order.
-        # Mark the skeleton row as failed-with-clob-exception so the reconcile
-        # sweep can match it against any orders the venue actually has, and
-        # so the duplicate-check guard still blocks re-submission.
+    except (Exception, _asyncio.CancelledError) as exc:
+        is_cancelled = isinstance(exc, _asyncio.CancelledError)
+        if is_cancelled:
+            logger.warning(
+                "Fast-tier leg submit cancelled mid-flight",
+                trader_id=trader_id,
+                pre_submit_order_id=pre_submit_order_id,
+            )
+        else:
+            logger.warning(
+                "Fast-tier leg submit raised",
+                trader_id=trader_id,
+                pre_submit_order_id=pre_submit_order_id,
+                exc_info=exc,
+            )
+        # CLOB call raised / was cancelled — we don't know if the venue
+        # accepted the order. Mark the skeleton row as failed-with-
+        # clob-exception so (a) the cap unwinds immediately ("failed"
+        # is not in active_statuses), (b) the orphan reconcile sweep
+        # can match it against any orders the venue actually has, and
+        # (c) the duplicate-check guard still blocks re-submission of
+        # the same signal.
         try:
             # ``release_conn`` detached the pre-submit ``order`` ORM object;
             # re-attach it before mutating so the UPDATE actually flushes.
             refetched_after_raise = await session.get(TraderOrder, pre_submit_order_id)
             target = refetched_after_raise if refetched_after_raise is not None else order
             target.status = "failed"
-            target.error_message = f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
+            target.error_message = (
+                f"submit_execution_leg cancelled (cycle teardown)"
+                if is_cancelled
+                else f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
+            )
             target.payload_json = {
                 **(target.payload_json or {}),
                 _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_CLOB_RAISED,
                 "exception_type": type(exc).__name__,
-                "exception_message": str(exc),
+                "exception_message": "cancelled" if is_cancelled else str(exc),
+                "cancelled_mid_flight": is_cancelled,
             }
             await session.flush()
-        except Exception as flush_exc:
+        except (Exception, _asyncio.CancelledError) as flush_exc:
+            # Best-effort: even if the flush fails, we've at least
+            # attempted to clear the cap.  The startup orphan reconcile
+            # is the durable backstop.
             logger.debug(
                 "Fast-tier flush of clob-exception marker failed",
                 trader_id=trader_id,
-                exc_info=flush_exc,
+                exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
             )
+        if is_cancelled:
+            # Re-raise so the runtime's cycle teardown completes
+            # (otherwise the task wouldn't be detected as cancelled).
+            raise
         return FastSubmitResult(
             session_id="",
             status="failed",
@@ -776,30 +813,56 @@ async def execute_fast_signal(
                         order_id=pre_submit_order_id,
                         exc_info=_pms_exc,
                     )
-    except Exception as exc:
+    except (Exception, _asyncio.CancelledError) as exc:
+        is_cancelled = isinstance(exc, _asyncio.CancelledError)
         # CLOB has already executed — DO NOT rollback. Mark the row so the
         # reconcile sweep knows post-update is incomplete and can repair
-        # the missing fields against the venue snapshot.
-        logger.error(
-            "Fast-tier trader_order post-submit update failed",
-            trader_id=trader_id,
-            pre_submit_order_id=pre_submit_order_id,
-            exc_info=exc,
-        )
+        # the missing fields against the venue snapshot.  CancelledError is
+        # caught alongside Exception (Fix MM): a stale-cycle teardown
+        # mid-update used to leak the row at status='submitted' /
+        # ``in_flight``, occupying the cap permanently.  We mark
+        # status='failed' (the leg already executed at the venue, so the
+        # cap should NOT continue to hold open) and stamp
+        # ``post_update_failed`` so the orphan reconcile patches in the
+        # missing ``provider_clob_order_id`` from the venue snapshot.
+        # CancelledError is re-raised so the runtime's cycle teardown
+        # observes the cancellation.
+        if is_cancelled:
+            logger.warning(
+                "Fast-tier trader_order post-submit update cancelled mid-flight",
+                trader_id=trader_id,
+                pre_submit_order_id=pre_submit_order_id,
+            )
+        else:
+            logger.error(
+                "Fast-tier trader_order post-submit update failed",
+                trader_id=trader_id,
+                pre_submit_order_id=pre_submit_order_id,
+                exc_info=exc,
+            )
         try:
+            order.status = "failed"
+            order.error_message = (
+                "post_update cancelled (cycle teardown)"
+                if is_cancelled
+                else f"fast order post-update raised: {type(exc).__name__}: {exc}"
+            )
             order.payload_json = {
                 **(order.payload_json or {}),
                 _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_POST_UPDATE_FAILED,
                 "post_update_error_type": type(exc).__name__,
-                "post_update_error_message": str(exc),
+                "post_update_error_message": "cancelled" if is_cancelled else str(exc),
+                "cancelled_mid_update": is_cancelled,
             }
             await session.flush()
-        except Exception as flush_exc:
+        except (Exception, _asyncio.CancelledError) as flush_exc:
             logger.debug(
                 "Fast-tier flush of post-update marker failed",
                 trader_id=trader_id,
-                exc_info=flush_exc,
+                exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
             )
+        if is_cancelled:
+            raise
         return FastSubmitResult(
             session_id="",
             status="failed",

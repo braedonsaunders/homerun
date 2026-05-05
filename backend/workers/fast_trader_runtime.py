@@ -79,6 +79,16 @@ _POLL_FALLBACK_SECONDS = 0.25
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
 _TRADER_REFRESH_INTERVAL_SECONDS = 15.0
 _FAST_TASK_STALE_SECONDS = 30.0
+# Periodic orphan-reconcile sweep cadence.  The startup sweep runs once
+# right after bootstrap; this re-runs it on a fixed cadence so any
+# in_flight / clob_exception / post_update_failed rows produced by a
+# cycle teardown (CancelledError, process kill, network blip) get
+# resolved within minutes instead of waiting for the next worker
+# restart.  60s strikes a balance: well below the operator-visible
+# threshold for "the cap is stuck at N/N" and well above the venue's
+# per-call rate limits (one wallet-snapshot fetch per fast trader per
+# 60s is trivial).
+_ORPHAN_RECONCILE_INTERVAL_SECONDS = 60.0
 _MAX_SIGNALS_PER_CYCLE = 4
 _TRADER_LAST_RUN_TOUCH_SECONDS = 30.0
 _IDLE_EVENT_INTERVAL_SECONDS = 300.0
@@ -1450,6 +1460,69 @@ class _FastRuntime:
         except Exception as exc:
             logger.debug("Fast runtime heartbeat failed", exc_info=exc)
 
+    async def _run_orphan_reconcile_sweep(self, *, label: str) -> None:
+        """Run ``reconcile_orphaned_fast_submissions`` for every fast trader.
+
+        Invoked at supervisor startup and periodically thereafter (see
+        ``_ORPHAN_RECONCILE_INTERVAL_SECONDS``).  Each per-trader call
+        opens its own short-lived session so a stuck trader can't
+        starve the rest.  All exceptions are caught and logged — this
+        sweep is best-effort cleanup, never load-bearing on the live
+        trading path.
+        """
+        if self._stopping:
+            return
+        try:
+            async with AsyncSessionLocal() as session:
+                fast_trader_rows = list(await list_fast_traders(session))
+        except Exception as exc:
+            logger.warning(
+                "Fast-tier orphan reconcile bootstrap failed",
+                label=label,
+                exc_info=exc,
+            )
+            return
+        for trader_row in fast_trader_rows:
+            if self._stopping:
+                return
+            trader_id_for_reconcile = str(trader_row.get("id") or "").strip()
+            if not trader_id_for_reconcile:
+                continue
+            try:
+                async with AsyncSessionLocal() as session:
+                    result = await reconcile_orphaned_fast_submissions(
+                        session,
+                        trader_id=trader_id_for_reconcile,
+                        commit=True,
+                    )
+                if result.get("eligible"):
+                    # Operator-visible signal: emitted only when the
+                    # sweep actually had work, so a healthy steady
+                    # state stays quiet.  ``matched`` / ``marked_orphan``
+                    # are the headline counts; ``venue_unreachable``
+                    # flags partial passes (kept untouched + retried
+                    # next sweep).
+                    logger.info(
+                        "Fast-tier orphan reconcile",
+                        label=label,
+                        trader_id=trader_id_for_reconcile,
+                        eligible=result.get("eligible"),
+                        matched=result.get("matched"),
+                        marked_orphan=result.get("marked_orphan"),
+                        venue_unreachable=result.get("venue_unreachable"),
+                    )
+            except asyncio.CancelledError:
+                # Supervisor is shutting down — propagate so the outer
+                # loop can finalize cleanup.
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Fast-tier orphan reconcile failed",
+                    label=label,
+                    trader_id=trader_id_for_reconcile,
+                    exc_info=exc,
+                )
+
     async def _stop_task(self, trader_id: str, runner: _FastTraderTask | None, task: asyncio.Task | None) -> None:
         if runner is not None:
             runner.stop()
@@ -1541,43 +1614,15 @@ class _FastRuntime:
             await hot_state.seed()
         except Exception as exc:
             logger.warning("Fast-tier runtime hot-state seed failed", exc_info=exc)
-        # One-shot orphan-reconcile sweep at startup. Catches any
-        # ``in_flight`` / ``clob_exception`` / ``post_update_failed``
-        # skeleton rows from a prior crash and matches them against the
-        # venue by their deterministic fast_idempotency_key. The
-        # subsequent periodic reconcile in the orchestrator picks up
-        # ongoing orphans on its own cadence.
-        try:
-            async with AsyncSessionLocal() as session:
-                fast_trader_rows = list(await list_fast_traders(session))
-            for trader_row in fast_trader_rows:
-                trader_id_for_reconcile = str(trader_row.get("id") or "").strip()
-                if not trader_id_for_reconcile:
-                    continue
-                try:
-                    async with AsyncSessionLocal() as session:
-                        result = await reconcile_orphaned_fast_submissions(
-                            session,
-                            trader_id=trader_id_for_reconcile,
-                            commit=True,
-                        )
-                    if result.get("eligible"):
-                        logger.info(
-                            "Fast-tier startup orphan reconcile",
-                            trader_id=trader_id_for_reconcile,
-                            eligible=result.get("eligible"),
-                            matched=result.get("matched"),
-                            marked_orphan=result.get("marked_orphan"),
-                            venue_unreachable=result.get("venue_unreachable"),
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "Fast-tier startup orphan reconcile failed",
-                        trader_id=trader_id_for_reconcile,
-                        exc_info=exc,
-                    )
-        except Exception as exc:
-            logger.warning("Fast-tier startup orphan reconcile bootstrap failed", exc_info=exc)
+        # Startup orphan-reconcile sweep.  Catches any ``in_flight`` /
+        # ``clob_exception`` / ``post_update_failed`` skeleton rows from
+        # a prior crash and matches them against the venue by their
+        # deterministic fast_idempotency_key.  The same sweep runs
+        # periodically (see ``_ORPHAN_RECONCILE_INTERVAL_SECONDS`` and
+        # the call inside the supervisor loop) so orphans produced
+        # mid-session — by a CancelledError teardown or network blip —
+        # get cleared without waiting for a worker restart.
+        await self._run_orphan_reconcile_sweep(label="startup")
         # Install ourselves as the active runtime BEFORE subscribing so the
         # dispatcher has a target to forward to.  The dedup in EventBus.subscribe
         # plus the module-level _dispatch_wake indirection guarantees the
@@ -1591,6 +1636,7 @@ class _FastRuntime:
         try:
             await self._refresh_roster()
             await self._emit_heartbeat()
+            last_orphan_sweep_mono = time.monotonic()
             while not self._stopping:
                 try:
                     await asyncio.sleep(_TRADER_REFRESH_INTERVAL_SECONDS)
@@ -1601,6 +1647,25 @@ class _FastRuntime:
                 except Exception as exc:
                     logger.warning("Fast-tier runtime roster refresh failed", exc_info=exc)
                 await self._emit_heartbeat()
+                # Periodic orphan reconcile.  Runs in the supervisor
+                # thread (not on a separate task) so it serializes
+                # against roster refresh — both touch the fast-trader
+                # roster, and serialising them is cheaper than holding
+                # an extra lock.  The sweep is short (one venue HTTP
+                # call + per-trader DB pass) and tolerates supervisor
+                # cancellation cleanly.
+                now_mono = time.monotonic()
+                if (now_mono - last_orphan_sweep_mono) >= _ORPHAN_RECONCILE_INTERVAL_SECONDS:
+                    last_orphan_sweep_mono = now_mono
+                    try:
+                        await self._run_orphan_reconcile_sweep(label="periodic")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as exc:
+                        logger.warning(
+                            "Fast-tier periodic orphan reconcile sweep failed",
+                            exc_info=exc,
+                        )
         finally:
             self._stopping = True
             for trader_id, runner in list(self._task_objs.items()):
