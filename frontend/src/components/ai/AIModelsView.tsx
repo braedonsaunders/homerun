@@ -38,6 +38,12 @@ const PURPOSES: PurposeConfig[] = [
   { key: 'market_analysis', label: 'Market Analysis', description: 'Used for general market analysis' },
   { key: 'agent_execution', label: 'Agent Execution', description: 'Used when running AI agents' },
   { key: 'strategy_intelligence', label: 'Strategy Intelligence', description: 'Used for custom strategy LLM calls' },
+  {
+    key: 'strategy_reverse_engineer',
+    label: 'Strategy Reverse-Engineer',
+    description:
+      'Used by the wallet strategy reverse-engineer agent (Strategies → Research → Reverse Engineer)',
+  },
 ]
 
 function ModelCombobox({
@@ -270,7 +276,7 @@ export default function AIModelsView() {
                 {Object.entries(modelAssignments).map(([key, model]) => {
                   const purpose = PURPOSES.find(p => p.key === key)
                   return (
-                    <Badge key={key} variant="outline" className="text-[10px] bg-violet-500/10 text-violet-300 border-violet-500/20">
+                    <Badge key={key} variant="outline" className="text-[10px] bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20">
                       {purpose?.label ?? key}: {model}
                     </Badge>
                   )

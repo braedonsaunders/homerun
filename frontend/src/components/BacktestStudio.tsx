@@ -76,6 +76,10 @@ import {
   getLatencyDistribution,
   getTriangulation,
 } from '../services/apiFillModel'
+import {
+  listProviderDatasets,
+  type ProviderDataset,
+} from '../services/apiProviders'
 
 interface BacktestStudioProps {
   initialSourceCode?: string
@@ -946,6 +950,13 @@ export default function BacktestStudio({
   // Date range — defaulted blank so the backend's 7d window applies.
   // Operator can extend (e.g. "30" for 30 days, "0" for "now").
   const [windowDays, setWindowDays] = useState<string>('7')
+
+  // Imported provider dataset(s) the operator picked from Data Lab →
+  // Providers.  When non-empty the backend resolves these into the
+  // (token_ids, start, end) scope for the run; window/days/start/end
+  // controls above are ignored.  Mutually exclusive with session_id
+  // (recording session wins on the backend if both are present).
+  const [providerDatasetIds, setProviderDatasetIds] = useState<string[]>([])
   // Center-pane subtab.  Three coherent groupings + a small status
   // ribbon-equivalent so the workbench doesn't scroll-and-pray.
   const [centerTab, setCenterTab] = useState<'performance' | 'fill_quality' | 'robustness' | 'portfolio'>('performance')
@@ -1114,6 +1125,9 @@ export default function BacktestStudio({
       initial_capital_usd: parseFloat(initialCapital) || 1000,
       start: startIso,
       end: endIso,
+      // Provider datasets win over the (start, end) controls — the
+      // backend resolves them into the union of (token_ids, window).
+      provider_dataset_ids: providerDatasetIds.length > 0 ? providerDatasetIds : undefined,
       submit_p50_ms: submitP50 ? parseFloat(submitP50) : undefined,
       submit_p95_ms: submitP95 ? parseFloat(submitP95) : undefined,
       seed: seed ? parseInt(seed, 10) : undefined,
@@ -1322,6 +1336,15 @@ export default function BacktestStudio({
             <TabsContent value="setup" className="flex-1 min-h-0 mt-0 overflow-hidden">
               <ScrollArea className="h-full">
                 <div className="px-3 py-3 space-y-2">
+                  {/* Provider dataset picker — when set, the run uses
+                      the selected datasets' (token_ids, window) instead
+                      of the Window field below.  Imports happen in
+                      Data Lab → Providers (polybacktest etc.). */}
+                  <ProviderDatasetSelector
+                    selected={providerDatasetIds}
+                    onChange={setProviderDatasetIds}
+                  />
+
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -1972,7 +1995,7 @@ export default function BacktestStudio({
                 {activeRun?.outcome_netting ? (
                   <div className="mt-2 rounded-md border border-border/50 bg-card/40 p-3">
                     <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                      <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+                      <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                       Outcome-token netting + capital lockup
                       <span className="ml-auto text-[10px] text-muted-foreground">
                         multi-outcome aware
@@ -2316,7 +2339,7 @@ export default function BacktestStudio({
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                    <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+                    <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                     Ensemble fill probability (p10 / p50 / p90)
                     <span className="ml-auto text-[10px] text-muted-foreground">
                       {activeRun.ensemble_band.length} sample fills
@@ -2507,7 +2530,7 @@ export default function BacktestStudio({
               {centerTab === 'robustness' && (
               <div className="rounded-md border border-border/50 bg-card/40 p-3">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
-                  <Activity className="h-3.5 w-3.5 text-violet-300" />
+                  <Activity className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                   Walk-forward analysis
                   <div className="ml-auto flex items-center gap-1.5">
                     <select
@@ -3105,7 +3128,7 @@ export default function BacktestStudio({
               {decomp ? (
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
-                    <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+                    <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                     Trade vs cancel ({decomp.window_hours}h)
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
@@ -3160,6 +3183,108 @@ export default function BacktestStudio({
           </ScrollArea>
         </div>
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * Compact picker for imported provider datasets.
+ *
+ * Pulls the catalog from /api/providers/datasets, lets the operator
+ * multi-select.  When at least one dataset is selected the run uses
+ * the union of those datasets' (token_ids, window) instead of the
+ * standard Window field — backend resolves on the server side via
+ * the `provider_dataset_ids` request field.
+ */
+function ProviderDatasetSelector({
+  selected,
+  onChange,
+}: {
+  selected: string[]
+  onChange: (ids: string[]) => void
+}) {
+  const datasetsQuery = useQuery({
+    queryKey: ['providers', 'datasets', 'backtest-picker'],
+    queryFn: () => listProviderDatasets({ limit: 200 }),
+    staleTime: 60_000,
+  })
+  const datasets: ProviderDataset[] = datasetsQuery.data ?? []
+  const [open, setOpen] = useState(false)
+
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const summary = useMemo(() => {
+    if (selected.length === 0) return 'None — using Window below'
+    if (selected.length === 1) {
+      const d = datasets.find((x) => x.id === selected[0])
+      return d ? (d.title || d.external_slug || d.external_id) : `${selected.length} dataset`
+    }
+    return `${selected.length} datasets selected`
+  }, [selected, datasets])
+
+  return (
+    <div className="rounded-md border border-violet-500/20 bg-violet-500/5 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          Provider dataset
+        </Label>
+        {selected.length > 0 ? (
+          <button
+            type="button"
+            className="text-[10px] text-muted-foreground hover:text-foreground"
+            onClick={() => onChange([])}
+          >
+            clear
+          </button>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        className="mt-1 flex w-full items-center justify-between rounded-sm border border-border/40 bg-background/40 px-2 py-1 text-[11px] hover:bg-background/60"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="truncate">{summary}</span>
+        <span className="text-muted-foreground">{open ? '▴' : '▾'}</span>
+      </button>
+      {open ? (
+        <div className="mt-1 max-h-44 overflow-auto rounded-sm border border-border/30 bg-background/40 p-1">
+          {datasetsQuery.isLoading ? (
+            <div className="px-2 py-1 text-[10px] text-muted-foreground">Loading…</div>
+          ) : datasets.length === 0 ? (
+            <div className="px-2 py-1 text-[10px] text-muted-foreground">
+              No imported datasets — go to Data Lab → Providers to add some.
+            </div>
+          ) : (
+            datasets.map((d) => {
+              const checked = selectedSet.has(d.id)
+              return (
+                <label
+                  key={d.id}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-1 hover:bg-card/40"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = new Set(selectedSet)
+                      if (e.target.checked) next.add(d.id)
+                      else next.delete(d.id)
+                      onChange(Array.from(next))
+                    }}
+                    className="h-3 w-3 accent-violet-500"
+                  />
+                  <span className="flex-1 truncate text-[10.5px]">
+                    {d.title || d.external_slug || d.external_id}
+                  </span>
+                  <span className="ml-1 text-[9px] text-muted-foreground">
+                    {(d.coin || '?').toUpperCase()} · {d.snapshot_count.toLocaleString()}
+                  </span>
+                </label>
+              )
+            })
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }

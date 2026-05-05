@@ -48,6 +48,7 @@ import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
+import DataLabProviders from './DataLabProviders'
 import {
   type BackfillResult,
   type BackfillScope,
@@ -175,7 +176,7 @@ function DatasetPicker({
             className={cn(
               'group flex items-center gap-2 rounded-md border px-2.5 py-1 text-[11px] transition-colors',
               isActive
-                ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                 : 'border-border/40 bg-card/40 text-muted-foreground hover:border-border/70 hover:text-foreground',
             )}
             title={d.description}
@@ -233,7 +234,7 @@ function FilterBar({
                 className={cn(
                   'rounded-sm border px-2 py-0.5 text-[10px] transition-colors',
                   isActive
-                    ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                    ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                     : 'border-border/40 bg-background/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
                 )}
               >
@@ -320,7 +321,7 @@ function EnumFilter({
       {selected.map((s) => (
         <span
           key={s}
-          className="flex items-center gap-1 rounded-sm bg-violet-500/15 px-1 py-0 text-[10px] text-violet-200"
+          className="flex items-center gap-1 rounded-sm bg-violet-500/15 px-1 py-0 text-[10px] text-violet-700 dark:text-violet-200"
         >
           {s}
           <button
@@ -590,7 +591,7 @@ function StorageOverviewSection() {
     <div className="rounded-md border border-border/40 bg-card/30">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
-          <HardDrive className="h-3.5 w-3.5 text-violet-300" />
+          <HardDrive className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
           <span className="text-xs font-semibold">Storage overview</span>
           <span className="text-[10px] text-muted-foreground">all datasets, on-disk</span>
         </div>
@@ -685,7 +686,7 @@ function MicrostructureRecorderSection() {
     <div className="rounded-md border border-border/40 bg-card/30">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+          <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
           <span className="text-xs font-semibold">Microstructure recorder</span>
           <span className="text-[10px] text-muted-foreground">
             prediction markets (Polymarket / Kalshi) · L2 book + trade prints
@@ -812,7 +813,7 @@ function ProactiveCoverageSection() {
     <div className="rounded-md border border-border/40 bg-card/30">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+          <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
           <span className="text-xs font-semibold">Proactive coverage</span>
           <span className="text-[10px] text-muted-foreground">
             keeps the WS feed subscribed to liquid catalog markets so backtests have data
@@ -907,7 +908,7 @@ function ProactiveCoverageSection() {
             <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
               dropped over-cap: {(s?.last_run_dropped_over_cap ?? 0).toLocaleString()}
             </span>
-            <span className="rounded-sm bg-violet-500/15 px-2 py-0.5 font-mono text-violet-200">
+            <span className="rounded-sm bg-violet-500/15 px-2 py-0.5 font-mono text-violet-700 dark:text-violet-200">
               target: {target.toLocaleString()}
             </span>
             <span className="rounded-sm bg-emerald-500/15 px-2 py-0.5 font-mono text-emerald-200">
@@ -1054,7 +1055,7 @@ function BackfillFlyout({ open, onClose }: { open: boolean; onClose: () => void 
       >
         <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
           <div className="flex items-center gap-2">
-            <Download className="h-4 w-4 text-violet-300 rotate-180" />
+            <Download className="h-4 w-4 text-violet-700 dark:text-violet-300 rotate-180" />
             <div>
               <div className="text-sm font-semibold leading-tight">REST backfill</div>
               <div className="text-[10px] text-muted-foreground leading-tight">
@@ -1096,7 +1097,7 @@ function BackfillFlyout({ open, onClose }: { open: boolean; onClose: () => void 
                       className={cn(
                         'rounded-sm border px-2 py-1.5 text-left transition-colors',
                         active
-                          ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                          ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                           : 'border-border/40 text-muted-foreground hover:text-foreground',
                       )}
                     >
@@ -1332,7 +1333,7 @@ function BackfillSection() {
       <div className="rounded-md border border-border/40 bg-card/30">
         <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
           <div className="flex items-center gap-2">
-            <Download className="h-3.5 w-3.5 rotate-180 text-violet-300" />
+            <Download className="h-3.5 w-3.5 rotate-180 text-violet-700 dark:text-violet-300" />
             <span className="text-xs font-semibold">REST backfill</span>
             <span className="text-[10px] text-muted-foreground">
               fill historical gaps via Polymarket /prices-history
@@ -1420,7 +1421,7 @@ function CryptoOhlcRecorderSection() {
     <div className="rounded-md border border-border/40 bg-card/30">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Clock className="h-3.5 w-3.5 text-violet-300" />
+          <Clock className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
           <span className="text-xs font-semibold">Crypto OHLC recorder</span>
           <span className="text-[10px] text-muted-foreground">
             crypto bars (BTC / ETH / SOL / ...) at fixed timeframes — feeds the crypto ML adapters
@@ -1722,7 +1723,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
       >
         <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
           <div className="flex items-center gap-2">
-            <PlayCircle className="h-4 w-4 text-violet-300" />
+            <PlayCircle className="h-4 w-4 text-violet-700 dark:text-violet-300" />
             <div>
               <div className="text-sm font-semibold leading-tight">New recording session</div>
               <div className="text-[10px] text-muted-foreground leading-tight">
@@ -1782,7 +1783,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                         className={cn(
                           'rounded-sm border px-2 py-1.5 text-left transition-colors',
                           active
-                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                             : 'border-border/40 bg-background/40 text-muted-foreground hover:text-foreground',
                         )}
                       >
@@ -1829,7 +1830,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                         className={cn(
                           'rounded-sm border px-2.5 py-1 text-[11px] transition-colors',
                           active
-                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                            ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                             : 'border-border/40 text-muted-foreground hover:text-foreground',
                         )}
                       >
@@ -2006,7 +2007,7 @@ function SessionRow({ s }: { s: RecordingSession }) {
       <td className="px-2 py-1.5 text-[10px]">
         <div className="flex flex-wrap gap-0.5">
           {s.capture_types.map((c) => (
-            <span key={c} className="rounded-sm bg-violet-500/10 px-1 py-0 text-[9px] text-violet-200">
+            <span key={c} className="rounded-sm bg-violet-500/10 px-1 py-0 text-[9px] text-violet-700 dark:text-violet-200">
               {c}
             </span>
           ))}
@@ -2081,7 +2082,7 @@ function OnDemandSessionsSection() {
       <div className="rounded-md border border-border/40 bg-card/30">
         <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
           <div className="flex items-center gap-2">
-            <PlayCircle className="h-3.5 w-3.5 text-violet-300" />
+            <PlayCircle className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
             <span className="text-xs font-semibold">On-demand sessions</span>
             <span className="text-[10px] text-muted-foreground">
               targeted captures · backtester-consumable
@@ -2157,7 +2158,7 @@ function RecordView() {
 }
 
 
-type DataLabMode = 'browse' | 'record'
+type DataLabMode = 'browse' | 'record' | 'providers'
 
 export default function DataLab() {
   const queryClient = useQueryClient()
@@ -2301,7 +2302,9 @@ export default function DataLab() {
             {mode === 'browse'
               ? (activeSpec?.description
                 ?? 'Browse data the orchestrator + scanner have already captured. Filter, preview, export, or hand it to the agent.')
-              : 'Manage the background recorder, view storage usage, and (soon) run on-demand capture sessions for targeted markets / windows.'}
+              : mode === 'record'
+              ? 'Manage the background recorder, view storage usage, and (soon) run on-demand capture sessions for targeted markets / windows.'
+              : 'Pull historical market data on demand from third-party providers (polybacktest etc.) into your Data Lab.'}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -2312,7 +2315,7 @@ export default function DataLab() {
               className={cn(
                 'flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors',
                 mode === 'browse'
-                  ? 'bg-violet-500/15 text-violet-200'
+                  ? 'bg-violet-500/15 text-violet-700 dark:text-violet-200'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
@@ -2324,12 +2327,24 @@ export default function DataLab() {
               className={cn(
                 'flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors',
                 mode === 'record'
-                  ? 'bg-violet-500/15 text-violet-200'
+                  ? 'bg-violet-500/15 text-violet-700 dark:text-violet-200'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
               <PlayCircle className="h-3 w-3" />
               Record
+            </button>
+            <button
+              onClick={() => setMode('providers')}
+              className={cn(
+                'flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors',
+                mode === 'providers'
+                  ? 'bg-violet-500/15 text-violet-700 dark:text-violet-200'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Download className="h-3 w-3" />
+              Providers
             </button>
           </div>
           <Button
@@ -2349,6 +2364,13 @@ export default function DataLab() {
       {mode === 'record' ? (
         <ScrollArea className="flex-1 min-h-0">
           <RecordView />
+        </ScrollArea>
+      ) : null}
+
+      {/* PROVIDERS MODE — external data import (polybacktest etc.) */}
+      {mode === 'providers' ? (
+        <ScrollArea className="flex-1 min-h-0">
+          <DataLabProviders />
         </ScrollArea>
       ) : null}
 
@@ -2479,7 +2501,7 @@ export default function DataLab() {
                       <span
                         className={cn(
                           'inline-flex items-center gap-1',
-                          isSorted && 'text-violet-300',
+                          isSorted && 'text-violet-700 dark:text-violet-300',
                         )}
                       >
                         {c.label}

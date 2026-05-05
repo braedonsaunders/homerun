@@ -150,7 +150,7 @@ const SPARKLINE_TEXT_CLASSES = [
   'text-red-400/80',
   'text-sky-400/80',
   'text-amber-300/90',
-  'text-violet-300/90',
+  'text-violet-700 dark:text-violet-300/90',
   'text-teal-300/90',
   'text-orange-300/90',
   'text-pink-300/90',
@@ -868,7 +868,7 @@ function FindingCard({
               <button
                 type="button"
                 onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
+                className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
                 title="Expand this card"
               >
                 <Maximize2 className="w-2.5 h-2.5" />
@@ -878,7 +878,7 @@ function FindingCard({
               <button
                 type="button"
                 onClick={() => onCloseModal?.()}
-                className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
+                className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
                 title="Return to grid"
               >
                 <Minimize2 className="w-2.5 h-2.5" />

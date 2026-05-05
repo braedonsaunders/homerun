@@ -33,6 +33,8 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
         market_tools,
         news_tools,
         portfolio_tools,
+        provider_tools,
+        reverse_engineer_tools,
         strategy_tools,
         system_tools,
         trading_tools,
@@ -57,6 +59,15 @@ def _build_all_tools() -> dict[str, "AgentTool"]:
         # recent opportunities, and run_id-keyed backtest cache lookups —
         # the surface the MCP server bridge surfaces to external agents.
         iteration_tools,
+        # External provider import (polybacktest etc.) — lets the agent
+        # browse markets and kick off historical-data imports the same
+        # way the human operator does in Data Lab → Providers.
+        provider_tools,
+        # Strategy reverse-engineering — outer orchestration layer that
+        # spawns long-running agent jobs.  See
+        # services/strategy_reverse_engineer/tools.py for the inner
+        # tool registry the spawned agent itself uses.
+        reverse_engineer_tools,
     ]
 
     tool_map: dict[str, "AgentTool"] = {}

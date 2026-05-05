@@ -14,6 +14,7 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   TrendingDown,
   TrendingUp,
   User,
@@ -1104,6 +1105,38 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               <Badge variant="outline" className={risk.badgeClass}>
                 Risk: {risk.label}
               </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto h-7 gap-1.5 border-violet-500/40 text-violet-700 dark:text-violet-200 hover:bg-violet-500/10 text-[11px]"
+                onClick={() => {
+                  // Hand the wallet over to Strategy Research → Reverse
+                  // Engineer.  Stored in sessionStorage so the receiving
+                  // page can pre-fill the form without us coupling to
+                  // App.tsx routing internals.
+                  try {
+                    sessionStorage.setItem('homerun:reverse-engineer:wallet', activeWallet)
+                  } catch {
+                    /* ignore */
+                  }
+                  // Best-effort programmatic navigation: dispatch a
+                  // CustomEvent that App.tsx listens for, then surface
+                  // a manual click target as a fallback.
+                  try {
+                    window.dispatchEvent(
+                      new CustomEvent('homerun:navigate', {
+                        detail: { tab: 'strategies', subtab: 'research', researchInner: 'reverse' },
+                      }),
+                    )
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                title="Open Strategy Research → Reverse Engineer with this wallet pre-loaded"
+              >
+                <Sparkles className="h-3 w-3" />
+                Reverse-engineer strategy
+              </Button>
             </div>
           )}
 

@@ -282,6 +282,12 @@ export interface RunBacktestRequest {
   token_ids?: string[]
   start?: string
   end?: string
+  /** Recording session ID — overrides token_ids/start/end if set. */
+  session_id?: string | null
+  /** Imported provider dataset IDs — resolves to union of token_ids and
+   *  [min start, max end].  Mutually exclusive with session_id; session
+   *  wins when both are present. */
+  provider_dataset_ids?: string[] | null
   initial_capital_usd?: number
   submit_p50_ms?: number
   submit_p95_ms?: number

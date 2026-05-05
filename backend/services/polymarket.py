@@ -2230,24 +2230,54 @@ class PolymarketClient:
         )
 
     async def get_wallet_trades_paginated(self, address: str, *, max_trades: int = 1000, page_size: int = 500) -> list[dict]:
+        """Pull a wallet's trade history page-by-page from Polymarket.
+
+        Polymarket's ``/trades`` endpoint exposes only offset-based
+        pagination and silently caps offsets at ~3500 (returns 400
+        Bad Request beyond that).  There is no documented timestamp
+        cursor.  We honor that ceiling: on a 400 we stop paging and
+        return what we have, so the caller never sees a crash for
+        a wallet with > 4000 trades — they just get the most recent
+        ~3500.  The cap is logged at INFO so operators know we
+        truncated.
+        """
         # 60s TTL cache, single-flight.  Single-user install + 5-minute
         # verifier cycle = sub-second cache hit on every cycle except
         # the first.  The cache key includes max_trades because callers
-        # ask for different sizes (verifier=10000, lifecycle=300).
+        # ask for different sizes — most are tiny (verifier=10000,
+        # lifecycle=300) but the strategy reverse-engineer agent pulls
+        # the wallet's full history (capped at 250k as a safety net,
+        # though Polymarket's offset ceiling will usually clip first).
         normalized_address = str(address or "").strip().lower()
         capped_page_size = max(1, min(int(page_size or 500), 500))
-        capped_max_trades = max(1, min(int(max_trades or 1000), 10_000))
+        capped_max_trades = max(1, min(int(max_trades or 1000), 250_000))
         if not normalized_address:
             return []
         cache_key = (normalized_address, capped_max_trades, capped_page_size)
 
         async def _fetch() -> list[dict]:
+            import httpx as _httpx
+
             all_trades: list[dict] = []
             offset = 0
+            hit_upstream_cap = False
             while len(all_trades) < capped_max_trades:
-                page = await self.get_wallet_trades(
-                    normalized_address, limit=capped_page_size, offset=offset
-                )
+                try:
+                    page = await self.get_wallet_trades(
+                        normalized_address, limit=capped_page_size, offset=offset
+                    )
+                except _httpx.HTTPStatusError as exc:
+                    # Polymarket returns 400 once offset exceeds ~3500.
+                    # Treat as end-of-data, not as a crash.
+                    if exc.response is not None and exc.response.status_code == 400:
+                        hit_upstream_cap = True
+                        _logger.info(
+                            "polymarket /trades hit upstream offset cap at offset=%d for wallet %s — "
+                            "returning %d trades captured so far",
+                            offset, normalized_address, len(all_trades),
+                        )
+                        break
+                    raise
                 if not page:
                     break
                 all_trades.extend(page)
@@ -2255,6 +2285,12 @@ class PolymarketClient:
                     break
                 offset += capped_page_size
                 await asyncio.sleep(0.05)
+            if hit_upstream_cap and len(all_trades) < capped_max_trades:
+                _logger.info(
+                    "polymarket /trades returned %d trades for wallet %s "
+                    "(requested %d; truncated by upstream offset cap)",
+                    len(all_trades), normalized_address, capped_max_trades,
+                )
             return all_trades[:capped_max_trades]
 
         result = await self._wallet_trades_cache.get_or_fetch(cache_key, _fetch)

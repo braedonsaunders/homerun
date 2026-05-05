@@ -2154,7 +2154,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                           className={cn(
                             'w-full h-8 rounded-md border px-2 text-xs text-left transition-colors',
                             hideIsolated
-                              ? 'border-violet-500/60 bg-violet-500/14 text-violet-200'
+                              ? 'border-violet-500/60 bg-violet-500/14 text-violet-700 dark:text-violet-200'
                               : 'border-border bg-background/70 text-muted-foreground',
                           )}
                         >

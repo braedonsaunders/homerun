@@ -51,6 +51,15 @@ faiss-cpu>=1.7.0
 # no GPU.  Pinned >=0.27 for the ``baseline_survival_at_times`` API.
 lifelines>=0.27.0
 
+# Report generation — strategy reverse-engineer executive PDFs and any
+# future HTML→PDF deliverables.  WeasyPrint depends on native
+# Pango/Cairo libs; the platform-specific install steps are baked into
+# the Dockerfile + scripts/launchers/install-deps.* and
+# services/reports/wallet_strategy_report.py prints actionable hints
+# when the import fails.
+weasyprint>=60.0
+jinja2>=3.1.0
+
 # GUI uses tkinter (ships with Python, no pip install needed)
 pytest-asyncio>=0.23.0,<1.0
 pytest-timeout>=2.3.0,<3.0

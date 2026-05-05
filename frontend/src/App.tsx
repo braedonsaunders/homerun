@@ -750,6 +750,30 @@ function App() {
     return () => window.removeEventListener('navigate-strategies-subtab', handler as EventListener)
   }, [])
 
+  // Generic homerun:navigate handler — used by deep-links from
+  // WalletAnalysisPanel ("Reverse-engineer strategy") and any future
+  // cross-tab handoff.  Detail shape: { tab, subtab?, researchInner? }.
+  // Subtab/researchInner are stashed in sessionStorage so the
+  // destination component can pick them up on mount.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as
+        | { tab?: string; subtab?: string; researchInner?: string }
+        | undefined
+      if (!detail) return
+      if (detail.tab) setActiveTab(detail.tab as Tab)
+      try {
+        if (detail.researchInner) {
+          sessionStorage.setItem('homerun:research:inner', detail.researchInner)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    window.addEventListener('homerun:navigate', handler as EventListener)
+    return () => window.removeEventListener('homerun:navigate', handler as EventListener)
+  }, [])
+
   // When switching to AI tab, dispatch resize so chart ResizeObservers recalculate
   useEffect(() => {
     if (activeTab === 'ai') {

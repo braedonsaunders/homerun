@@ -210,6 +210,42 @@ ensure_postgres_runtime() {
     return 1
 }
 
+# ── WeasyPrint native deps (Pango/Cairo/GdkPixbuf) ──────────────────
+# WeasyPrint powers the executive PDF report endpoint
+# (services/reports/wallet_strategy_report.py).  Without these libs the
+# report endpoint returns 503 with an install hint, but the rest of the
+# API runs fine — we therefore best-effort install and don't fail setup
+# if the package manager isn't available.
+ensure_weasyprint_native_deps() {
+    if command -v brew >/dev/null 2>&1; then
+        for pkg in pango cairo gdk-pixbuf libffi; do
+            brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg" >/dev/null 2>&1 || true
+        done
+        return 0
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        run_with_optional_sudo apt-get update >/dev/null 2>&1 || true
+        run_with_optional_sudo apt-get install -y \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
+            libfreetype6 libgdk-pixbuf-2.0-0 libffi-dev \
+            fonts-dejavu-core >/dev/null 2>&1 || true
+        return 0
+    fi
+    if command -v dnf >/dev/null 2>&1; then
+        run_with_optional_sudo dnf install -y \
+            pango cairo gdk-pixbuf2 libffi dejavu-sans-fonts >/dev/null 2>&1 || true
+        return 0
+    fi
+    if command -v pacman >/dev/null 2>&1; then
+        run_with_optional_sudo pacman -Sy --noconfirm \
+            pango cairo gdk-pixbuf2 libffi ttf-dejavu >/dev/null 2>&1 || true
+        return 0
+    fi
+    # No supported package manager — print a hint, keep going.
+    echo "  (skipping WeasyPrint native deps install — no supported package manager found.)"
+    return 0
+}
+
 # ── PostgresOnly Mode ────────────────────────────────────────────────
 
 if [ "$POSTGRES_ONLY" -eq 1 ]; then
@@ -290,6 +326,16 @@ if ! python -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 an
 fi
 
 show_step_ok "venv ready"
+
+# ── Step 4a: WeasyPrint native libs (best-effort, no failure) ───────
+# Pango / Cairo / GdkPixbuf are required at runtime by WeasyPrint
+# (services/reports/wallet_strategy_report.py).  The PDF report
+# endpoint is the only consumer; if these libs are missing the rest
+# of the API still runs and the endpoint returns a 503 with an
+# install hint.  Best-effort install here so the typical "git clone
+# && setup.sh" path produces a working report endpoint out of the
+# box on Mac (brew) and Linux (apt/dnf/pacman).
+ensure_weasyprint_native_deps
 
 # ── Step 4: Python dependencies ──────────────────────────────────────
 

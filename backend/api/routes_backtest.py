@@ -62,6 +62,12 @@ class UnifiedBacktestRequest(BaseModel):
     # session's target tokens × time window — overrides token_ids /
     # start / end if provided here OR in the request.
     session_id: str | None = None
+    # Imported provider datasets (polybacktest, etc.).  Resolves to the
+    # union of token_ids and the [min(start), max(end)] window across
+    # the selected datasets.  Mutually exclusive with session_id; when
+    # both are present, session_id wins (recording sessions are the
+    # higher-fidelity local capture).
+    provider_dataset_ids: list[str] | None = None
     initial_capital_usd: float = Field(default=1000.0, gt=0.0)
     submit_p50_ms: float | None = Field(default=None, ge=0.0)
     submit_p95_ms: float | None = Field(default=None, ge=0.0)
@@ -95,6 +101,7 @@ async def run_backtest(req: UnifiedBacktestRequest):
     start = req.start
     end = req.end
     session_meta: dict[str, Any] | None = None
+    provider_dataset_meta: dict[str, Any] | None = None
     if req.session_id:
         from services.recording_session_service import session_backtest_scope
 
@@ -108,6 +115,26 @@ async def run_backtest(req: UnifiedBacktestRequest):
         start = scope["start"]
         end = scope["end"]
         session_meta = {"session_id": scope["session_id"], "session_name": scope["session_name"]}
+    elif req.provider_dataset_ids:
+        from services.external_data.provider_import_service import resolve_dataset_scope
+
+        scope = await resolve_dataset_scope(list(req.provider_dataset_ids))
+        if scope is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "None of the requested provider_dataset_ids resolved to "
+                    "an imported dataset. Import them via Data Lab → Providers first."
+                ),
+            )
+        token_ids = scope["token_ids"]
+        start = scope["start"]
+        end = scope["end"]
+        provider_dataset_meta = {
+            "dataset_ids": scope["dataset_ids"],
+            "labels": scope["labels"],
+            "token_ids": scope["token_ids"],
+        }
 
     try:
         result = await run_unified_backtest(
@@ -133,8 +160,11 @@ async def run_backtest(req: UnifiedBacktestRequest):
         logger.exception("Unified backtest failed")
         raise HTTPException(status_code=500, detail=f"backtest failed: {exc}") from exc
 
-    if session_meta is not None and isinstance(result, dict):
-        result["recording_session"] = session_meta
+    if isinstance(result, dict):
+        if session_meta is not None:
+            result["recording_session"] = session_meta
+        if provider_dataset_meta is not None:
+            result["provider_datasets"] = provider_dataset_meta
     return _sanitize_floats(result)
 
 

@@ -549,6 +549,44 @@ Show-StepOK "venv ready"
 
 Pop-Location
 
+# ── Step 4a: WeasyPrint native libs (Windows: GTK runtime) ───────────
+# WeasyPrint powers the executive PDF report endpoint
+# (services/reports/wallet_strategy_report.py).  On Windows it depends
+# on the GTK 3 runtime (Pango / Cairo / GdkPixbuf).  We try winget /
+# choco / msys2 in that order; any failure is logged and we keep going.
+# The PDF endpoint returns a 503 with an actionable install hint when
+# WeasyPrint can't initialize, so the rest of the API runs regardless.
+Show-Step "Installing WeasyPrint native libs (GTK runtime)"
+$weasyOk = $false
+try {
+    $gtkProbe = (& gtk-update-icon-cache --version 2>$null)
+    if ($LASTEXITCODE -eq 0) { $weasyOk = $true }
+} catch {}
+if (-not $weasyOk) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        # Tobias Schönberg's GTK+ for Windows Runtime Environment is the
+        # canonical Windows distribution of the GTK 3 runtime that ships
+        # the libgobject/libpango/libcairo DLLs WeasyPrint depends on.
+        # See https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer
+        try {
+            winget install --silent --accept-source-agreements --accept-package-agreements `
+                --id tschoonj.GTKForWindows 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $weasyOk = $true }
+        } catch {}
+    }
+}
+if (-not $weasyOk -and (Get-Command choco -ErrorAction SilentlyContinue)) {
+    try {
+        choco install -y --no-progress gtk-runtime 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $weasyOk = $true }
+    } catch {}
+}
+if ($weasyOk) {
+    Show-StepOK "GTK runtime detected"
+} else {
+    Show-StepOK "(GTK runtime not auto-installed - PDF report endpoint will surface install hint)"
+}
+
 # ── Step 4: Python dependencies ──────────────────────────────────────
 
 Show-Step "Installing Python dependencies"

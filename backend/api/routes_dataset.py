@@ -41,6 +41,7 @@ from models.database import (
     BookDeltaEvent,
     MarketMicrostructureSnapshot,
     OpportunityHistory,
+    ProviderDataset,
     TraderOrder,
 )
 
@@ -231,6 +232,45 @@ _DATASETS: dict[str, DatasetSpec] = {
             FilterSpec("market_id", "market_id", "Market ID", "eq"),
             FilterSpec("start", "created_at", "From", "time_range_start"),
             FilterSpec("end", "created_at", "To", "time_range_end"),
+        ),
+    ),
+    "provider_dataset": DatasetSpec(
+        name="provider_dataset",
+        label="Imported provider datasets",
+        description=(
+            "Catalog of historical datasets imported on demand from "
+            "external vendors (polybacktest, etc.).  Snapshot rows live "
+            "in microstructure_snapshot keyed by provider; this index "
+            "powers the Backtest Studio dataset picker."
+        ),
+        model=ProviderDataset,
+        default_sort="updated_at",
+        default_sort_dir="desc",
+        columns=(
+            ColumnSpec("id", "ID", "string"),
+            ColumnSpec("provider", "Provider", "string"),
+            ColumnSpec("coin", "Coin", "string"),
+            ColumnSpec("external_id", "External ID", "string"),
+            ColumnSpec("external_slug", "Slug", "string", default_visible=False),
+            ColumnSpec("title", "Title", "string"),
+            ColumnSpec("asset_class", "Asset class", "string"),
+            ColumnSpec("token_ids_json", "Token IDs", "json", sortable=False, default_visible=False),
+            ColumnSpec("start_ts", "Window start", "datetime"),
+            ColumnSpec("end_ts", "Window end", "datetime"),
+            ColumnSpec("snapshot_count", "Snapshots", "int"),
+            ColumnSpec("trade_count", "Trades", "int"),
+            ColumnSpec("last_imported_at", "Last imported", "datetime"),
+            ColumnSpec("last_import_job_id", "Last job", "string", default_visible=False),
+            ColumnSpec("payload_json", "Payload", "json", sortable=False, default_visible=False),
+            ColumnSpec("created_at", "Created", "datetime", default_visible=False),
+            ColumnSpec("updated_at", "Updated", "datetime", default_visible=False),
+        ),
+        filters=(
+            FilterSpec("provider", "provider", "Provider", "eq"),
+            FilterSpec("coin", "coin", "Coin", "eq"),
+            FilterSpec("title_contains", "title", "Title contains", "contains"),
+            FilterSpec("start", "updated_at", "Updated from", "time_range_start"),
+            FilterSpec("end", "updated_at", "Updated to", "time_range_end"),
         ),
     ),
     "backtest_run": DatasetSpec(
@@ -428,6 +468,7 @@ async def query_dataset(
     market_id: str | None = None,
     title_contains: str | None = None,
     provider: str | None = None,
+    coin: str | None = None,
     start: str | None = None,
     end: str | None = None,
 ) -> dict[str, Any]:
@@ -463,6 +504,7 @@ async def query_dataset(
         "market_id": market_id,
         "title_contains": title_contains,
         "provider": provider,
+        "coin": coin,
         "start": start,
         "end": end,
     }
@@ -521,6 +563,7 @@ async def export_dataset_csv(
     market_id: str | None = None,
     title_contains: str | None = None,
     provider: str | None = None,
+    coin: str | None = None,
     start: str | None = None,
     end: str | None = None,
 ):
@@ -549,6 +592,7 @@ async def export_dataset_csv(
         "market_id": market_id,
         "title_contains": title_contains,
         "provider": provider,
+        "coin": coin,
         "start": start,
         "end": end,
     }

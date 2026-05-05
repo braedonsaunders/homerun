@@ -308,7 +308,7 @@ function AdaptersTab() {
               className={cn(
                 'rounded-md border px-3 py-1.5 text-xs transition-colors',
                 trainingSourceSessionId === ''
-                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                   : 'border-border/40 text-muted-foreground hover:text-foreground',
               )}
             >
@@ -325,7 +325,7 @@ function AdaptersTab() {
               className={cn(
                 'rounded-md border px-3 py-1.5 text-xs transition-colors',
                 trainingSourceSessionId !== ''
-                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-200'
+                  ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
                   : 'border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-50',
               )}
             >
@@ -385,7 +385,7 @@ function AdaptersTab() {
                       </span>
                     </div>
                   </div>
-                  <div className="mt-1 text-[10px] text-violet-200/70">
+                  <div className="mt-1 text-[10px] text-violet-700 dark:text-violet-200/70">
                     Training will use only rows captured during this session.  The session id is
                     preserved on the resulting adapter for attribution.
                   </div>
@@ -657,7 +657,7 @@ export default function MLModelsPanel() {
             <p className="text-sm font-semibold leading-tight">Machine Learning</p>
             <p className="text-[10px] text-muted-foreground leading-tight">
               {headerNote}
-              <span className="ml-1 inline-flex items-center gap-0.5 text-violet-300/80">
+              <span className="ml-1 inline-flex items-center gap-0.5 text-violet-700 dark:text-violet-300/80">
                 <Database className="h-2.5 w-2.5" />
                 Training data: <span className="font-medium">Research → Data Lab</span>
                 {' '}(microstructure_snapshot, book_delta_event, trader_order)

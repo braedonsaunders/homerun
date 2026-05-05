@@ -525,7 +525,7 @@ export default function FillModelPanel() {
 
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-              <Layers3 className="h-3.5 w-3.5 text-violet-300" />
+              <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
               Trade vs cancel decomposition (24h)
             </div>
             {decomp ? (
@@ -659,7 +659,7 @@ export default function FillModelPanel() {
         {/* ML CAPABILITY REGISTRY — strategies that own ML tasks */}
         <div className="rounded-md border border-border/50 bg-card/40 p-3">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-            <Boxes className="h-3.5 w-3.5 text-violet-300" />
+            <Boxes className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
             ML capabilities registered
             <span className="ml-auto text-[10px] text-muted-foreground">
               {capabilitiesQuery.data?.length ?? 0} task{(capabilitiesQuery.data?.length ?? 0) === 1 ? '' : 's'}
@@ -674,7 +674,7 @@ export default function FillModelPanel() {
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-xs">{cap.task_key}</span>
                   {cap.owner_strategy_slug ? (
-                    <Badge className="bg-violet-500/10 text-violet-300 text-[9px]">
+                    <Badge className="bg-violet-500/10 text-violet-700 dark:text-violet-300 text-[9px]">
                       strategy: {cap.owner_strategy_slug}
                     </Badge>
                   ) : (

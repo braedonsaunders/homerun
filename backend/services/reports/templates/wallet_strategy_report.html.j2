@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reverse-Engineered Strategy Report — {{ job.wallet_address }}</title>
+  <style>
+    @page {
+      size: Letter;
+      margin: 1in 0.85in;
+      @top-right {
+        content: "Homerun · Strategy Reverse-Engineer Report";
+        font-size: 9pt;
+        color: #6b7280;
+      }
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-size: 9pt;
+        color: #6b7280;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+                   Arial, sans-serif;
+      color: #111827;
+      font-size: 10.5pt;
+      line-height: 1.5;
+    }
+    h1 { font-size: 22pt; margin: 0 0 4pt; color: #111827; }
+    h2 { font-size: 14pt; margin: 18pt 0 8pt; color: #1f2937;
+         border-bottom: 1px solid #e5e7eb; padding-bottom: 4pt; }
+    h3 { font-size: 12pt; margin: 14pt 0 6pt; color: #374151; }
+    .subtitle { color: #6b7280; font-size: 11pt; }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6pt 24pt;
+      margin: 12pt 0 8pt;
+    }
+    .meta-grid div { font-size: 9.5pt; }
+    .meta-grid .label { color: #6b7280; }
+    .meta-grid .value { font-weight: 600; color: #111827; }
+    .score-card {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 14pt 18pt;
+      margin: 12pt 0;
+    }
+    .score-card .headline {
+      font-size: 24pt;
+      font-weight: 700;
+      color: #111827;
+    }
+    .score-card .headline .label {
+      font-size: 10pt;
+      font-weight: 400;
+      color: #6b7280;
+      margin-left: 8pt;
+    }
+    .score-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8pt;
+      margin-top: 10pt;
+    }
+    .score-bar .item { text-align: center; padding: 4pt 0; }
+    .score-bar .item .v { font-weight: 600; font-size: 12pt; color: #111827; }
+    .score-bar .item .l { font-size: 8.5pt; color: #6b7280; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8pt 0;
+      font-size: 9.5pt;
+    }
+    th, td {
+      border: 1px solid #e5e7eb;
+      padding: 4pt 6pt;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f3f4f6; font-weight: 600; color: #1f2937; }
+    pre {
+      background: #1f2937;
+      color: #f3f4f6;
+      padding: 10pt 12pt;
+      border-radius: 4px;
+      font-size: 8.5pt;
+      line-height: 1.45;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    code { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: 8.5pt; }
+    .pill {
+      display: inline-block;
+      padding: 1pt 6pt;
+      border-radius: 9pt;
+      font-size: 8.5pt;
+      font-weight: 600;
+    }
+    .pill-completed { background: #dcfce7; color: #166534; }
+    .pill-failed    { background: #fee2e2; color: #991b1b; }
+    .pill-running   { background: #dbeafe; color: #1e40af; }
+    .pill-cancelled { background: #f3f4f6; color: #4b5563; }
+    .small { font-size: 8.5pt; color: #6b7280; }
+    .mono { font-family: "SF Mono", Consolas, monospace; }
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Reverse-Engineered Strategy</h1>
+    <div class="subtitle">
+      Wallet
+      <span class="mono">{{ job.wallet_address }}</span>
+      · {{ job.label }}
+    </div>
+  </header>
+
+  <section class="meta-grid">
+    <div><span class="label">Job ID:</span> <span class="value mono">{{ job.id }}</span></div>
+    <div><span class="label">Status:</span>
+      <span class="pill pill-{{ job.status }}">{{ job.status }}</span>
+    </div>
+    <div><span class="label">Iterations:</span>
+      <span class="value">{{ job.current_iteration }} / {{ job.max_iterations }}</span>
+    </div>
+    <div><span class="label">Model:</span>
+      <span class="value mono">{{ job.llm_model or "(default)" }}</span>
+    </div>
+    <div><span class="label">Wallet trades analyzed:</span>
+      <span class="value">{{ job.wallet_trade_count }}</span>
+    </div>
+    <div><span class="label">Trade window:</span>
+      <span class="value">{{ job.wallet_window_start | humanize_dt }} → {{ job.wallet_window_end | humanize_dt }}</span>
+    </div>
+    <div><span class="label">Started:</span>
+      <span class="value">{{ job.started_at | humanize_dt }}</span>
+    </div>
+    <div><span class="label">Finished:</span>
+      <span class="value">{{ job.finished_at | humanize_dt }}</span>
+    </div>
+    <div><span class="label">LLM cost:</span>
+      <span class="value">{{ job.total_cost_usd | money }}</span>
+    </div>
+    <div><span class="label">Tokens (in/out):</span>
+      <span class="value">{{ job.total_input_tokens }} / {{ job.total_output_tokens }}</span>
+    </div>
+  </section>
+
+  {% set best = iterations | selectattr('id', 'equalto', job.best_iteration_id if job.best_iteration_id else '') | list | first %}
+
+  <section class="score-card">
+    <div class="headline">
+      {{ job.best_score | pct }}<span class="label">composite score (best of {{ iterations | length }} iterations)</span>
+    </div>
+    {% if best and best.score_breakdown %}
+      <div class="score-bar">
+        <div class="item">
+          <div class="v">{{ best.score_breakdown.trade_overlap_pct | pct }}</div>
+          <div class="l">trade overlap</div>
+        </div>
+        <div class="item">
+          <div class="v">{{ best.score_breakdown.side_agreement_pct | pct }}</div>
+          <div class="l">side agreement</div>
+        </div>
+        <div class="item">
+          <div class="v">{{ "%.3f"|format(best.score_breakdown.pnl_correlation or 0) }}</div>
+          <div class="l">PnL correlation</div>
+        </div>
+        <div class="item">
+          <div class="v">{{ best.score_breakdown.frequency_match | pct }}</div>
+          <div class="l">frequency match</div>
+        </div>
+      </div>
+    {% endif %}
+  </section>
+
+  {# Trader profile #}
+  <h2>Wallet profile</h2>
+  {% set summary = job.wallet_profile.summary if job.wallet_profile else None %}
+  {% if summary %}
+  <table>
+    <tr>
+      <th>Total trades</th><td>{{ summary.trade_count or 0 }}</td>
+      <th>Unique markets</th><td>{{ summary.unique_markets or 0 }}</td>
+    </tr>
+    <tr>
+      <th>Revisited markets</th><td>{{ summary.revisited_markets or 0 }}</td>
+      <th>Avg notional / trade</th>
+      <td>{{ (summary.notional or {}).get('mean') | money }}</td>
+    </tr>
+    <tr>
+      <th>Avg time between trades</th>
+      <td>
+        {% set its = (summary.inter_trade_seconds or {}).get('median') %}
+        {% if its is not none %}{{ "%.0f"|format(its) }} s{% else %}—{% endif %}
+      </td>
+      <th>P95 notional</th>
+      <td>{{ (summary.notional or {}).get('p95') | money }}</td>
+    </tr>
+  </table>
+
+  {% if summary.side_distribution %}
+  <h3>Side distribution</h3>
+  <table>
+    <tr><th>Side</th><th>Count</th></tr>
+    {% for side, count in summary.side_distribution.items() %}
+      <tr><td>{{ side }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if job.wallet_profile.markets %}
+  <h3>Top markets</h3>
+  <table>
+    <tr><th>Market</th><th>Trade count</th><th>Total notional</th></tr>
+    {% for m in job.wallet_profile.markets[:10] %}
+      <tr>
+        <td>{{ m.title or m.market_id }}</td>
+        <td>{{ m.trade_count }}</td>
+        <td>{{ m.total_notional_usd | money }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% endif %}
+
+  {# Best strategy #}
+  {% if job.best_strategy_code %}
+  <div class="page-break"></div>
+  <h2>Inferred strategy</h2>
+  <p>
+    Class: <code>{{ job.best_strategy_class }}</code>
+    {% if job.best_backtest_run_id %}
+      · Best backtest run:
+      <code>{{ job.best_backtest_run_id }}</code>
+    {% endif %}
+  </p>
+  <pre><code>{{ job.best_strategy_code }}</code></pre>
+  {% endif %}
+
+  {# Iteration history #}
+  <div class="page-break"></div>
+  <h2>Iteration history</h2>
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Status</th>
+      <th>Score</th>
+      <th>Class</th>
+      <th>Notes</th>
+      <th>Divergence</th>
+      <th>Duration</th>
+    </tr>
+    {% for it in iterations %}
+      <tr>
+        <td>{{ it.iteration }}</td>
+        <td><span class="pill pill-{{ it.status }}">{{ it.status }}</span></td>
+        <td>{{ it.score | pct if it.score is not none else "—" }}</td>
+        <td class="mono small">{{ it.strategy_class or "—" }}</td>
+        <td class="small">{{ it.notes or "" }}</td>
+        <td class="small mono">{{ it.divergence_summary or "" }}</td>
+        <td class="small">{{ "%.1fs"|format((it.duration_ms or 0) / 1000) }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Reproduction details</h2>
+  <table>
+    <tr>
+      <th>Data source kind</th><td>{{ job.data_source_kind }}</td>
+    </tr>
+    {% if job.provider_dataset_ids %}
+    <tr>
+      <th>Provider dataset IDs</th>
+      <td>
+        {% for id in job.provider_dataset_ids %}
+          <div class="mono small">{{ id }}</div>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endif %}
+    {% if job.recording_session_ids %}
+    <tr>
+      <th>Recording session IDs</th>
+      <td>
+        {% for id in job.recording_session_ids %}
+          <div class="mono small">{{ id }}</div>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endif %}
+    {% if job.promoted_strategy_id %}
+    <tr>
+      <th>Promoted strategy ID</th>
+      <td class="mono">{{ job.promoted_strategy_id }}</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  <p class="small" style="margin-top: 24pt; color: #9ca3af;">
+    Generated {{ generated_at | humanize_dt }} · Homerun ·
+    Reverse-engineered strategies are deliberately disabled by default; review
+    the source above and the per-iteration score breakdown before enabling
+    live trading.
+  </p>
+
+</body>
+</html>

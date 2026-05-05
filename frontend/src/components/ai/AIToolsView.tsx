@@ -137,7 +137,7 @@ export default function AIToolsView() {
           <Button
             size="sm"
             onClick={handleCreate}
-            className="h-7 gap-1.5 text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 hover:bg-violet-500/30"
+            className="h-7 gap-1.5 text-xs bg-violet-500/20 text-violet-700 dark:text-violet-300 border border-violet-500/30 hover:bg-violet-500/30"
           >
             <Plus className="w-3 h-3" />
             Create

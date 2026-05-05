@@ -207,6 +207,14 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "worker_modules": (
             "workers.discovery_worker",
             "workers.tracked_traders_worker",
+            # Drains the ProviderImportJob queue (polybacktest etc.).
+            # Pure REST I/O fan-out — same shape as the other discovery
+            # workers; share the plane to keep the trading event loop
+            # clean.  Also runs the strategy reverse-engineer queue
+            # since both are bounded long-running operator-initiated
+            # jobs that benefit from the same plane.
+            "workers.provider_import_worker",
+            "workers.strategy_reverse_engineer_worker",
         ),
         "runtime_names": (),
         # Load the ``traders`` strategy bucket so
@@ -254,6 +262,8 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.fast_trader_runtime",
             "workers.redeemer_worker",
             "workers.fill_simulator_refresh_worker",
+            "workers.provider_import_worker",
+            "workers.strategy_reverse_engineer_worker",
         ),
         "runtime_names": (
             "trader_orchestrator",

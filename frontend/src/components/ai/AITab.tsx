@@ -39,7 +39,7 @@ export default function AITab() {
           <TabsList className="bg-transparent gap-1">
             <TabsTrigger value="chat" className="data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">Chat</TabsTrigger>
             <TabsTrigger value="agents" className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">Agents</TabsTrigger>
-            <TabsTrigger value="tools" className="data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-300">Tools</TabsTrigger>
+            <TabsTrigger value="tools" className="data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-700 dark:text-violet-300">Tools</TabsTrigger>
             <TabsTrigger value="providers" className="data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-300">Providers</TabsTrigger>
             <TabsTrigger value="models" className="data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300">Models</TabsTrigger>
             <TabsTrigger value="activity" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300">Activity</TabsTrigger>

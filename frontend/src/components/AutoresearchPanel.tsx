@@ -49,6 +49,7 @@ import {
 
 import BacktestStudio from './BacktestStudio'
 import DataLab from './DataLab'
+import StrategyReverseEngineer from './StrategyReverseEngineer'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
@@ -56,7 +57,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { cn } from '../lib/utils'
 
 
-type InnerTab = 'code' | 'studio' | 'data'
+type InnerTab = 'code' | 'studio' | 'data' | 'reverse'
 
 
 export default function AutoresearchPanel() {
@@ -74,7 +75,27 @@ export default function AutoresearchPanel() {
   )
 
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
-  const [innerTab, setInnerTab] = useState<InnerTab>('studio')
+  const [innerTab, setInnerTab] = useState<InnerTab>(() => {
+    // Honor a deep-link hand-off (e.g. WalletAnalysisPanel →
+    // "Reverse-engineer strategy" stashes 'reverse' in sessionStorage).
+    try {
+      const requested = sessionStorage.getItem('homerun:research:inner')
+      if (requested) {
+        sessionStorage.removeItem('homerun:research:inner')
+        if (
+          requested === 'code'
+          || requested === 'studio'
+          || requested === 'data'
+          || requested === 'reverse'
+        ) {
+          return requested
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'studio'
+  })
 
   // Resolve strategy: deep-link signal → first item in catalog.
   useEffect(() => {
@@ -176,6 +197,19 @@ export default function AutoresearchPanel() {
           >
             <Database className="w-3 h-3" /> Data Lab
           </button>
+          <button
+            type="button"
+            onClick={() => setInnerTab('reverse')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
+              innerTab === 'reverse'
+                ? 'border-cyan-500 text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+            title="Reverse-engineer a wallet's trading strategy via the LLM agent loop"
+          >
+            <Sparkles className="w-3 h-3" /> Reverse Engineer
+          </button>
         </div>
       </div>
 
@@ -196,6 +230,18 @@ export default function AutoresearchPanel() {
           )
         ) : innerTab === 'data' ? (
           <DataLab />
+        ) : innerTab === 'reverse' ? (
+          <StrategyReverseEngineer
+            initialWalletAddress={(() => {
+              try {
+                const w = sessionStorage.getItem('homerun:reverse-engineer:wallet')
+                if (w) sessionStorage.removeItem('homerun:reverse-engineer:wallet')
+                return w
+              } catch {
+                return null
+              }
+            })()}
+          />
         ) : selectedStrategy ? (
           <BacktestStudio
             initialSourceCode={(selectedStrategy as any).source_code || ''}

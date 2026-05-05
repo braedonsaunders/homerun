@@ -38,6 +38,11 @@ import {
   type DatabaseFlushTarget,
 } from '../services/apiTraders'
 import {
+  getProviderSettings,
+  updateProviderSettings,
+  type ProviderSettings,
+} from '../services/apiProviders'
+import {
   getSettings,
   updateSettings,
   testTelegramConnection,
@@ -58,6 +63,7 @@ type SettingsSection =
   | 'vpn'
   | 'network'
   | 'discovery'
+  | 'providers'
   | 'maintenance'
   | 'transfer'
 
@@ -279,6 +285,63 @@ export default function SettingsPanel({
 
   const [networkForm, setNetworkForm] = useState({
     allow_network_access: false,
+  })
+
+  // Data Providers — separate from /api/settings (uses /api/providers/settings).
+  const providerSettingsQuery = useQuery({
+    queryKey: ['providers', 'settings'],
+    queryFn: getProviderSettings,
+    staleTime: 60_000,
+  })
+  const [providerForm, setProviderForm] = useState({
+    polybacktest_api_key: '',
+    polybacktest_base_url: '',
+    reverse_engineer_max_iterations: '',
+    reverse_engineer_target_score: '',
+    reverse_engineer_max_cost_usd: '',
+    reverse_engineer_max_wallet_trades: '',
+  })
+  const [showProviderKey, setShowProviderKey] = useState(false)
+  useEffect(() => {
+    const s: ProviderSettings | undefined = providerSettingsQuery.data
+    if (!s) return
+    setProviderForm({
+      polybacktest_api_key: s.polybacktest_api_key_set ? '********' : '',
+      polybacktest_base_url: s.polybacktest_base_url ?? '',
+      reverse_engineer_max_iterations: s.reverse_engineer_max_iterations?.toString() ?? '',
+      reverse_engineer_target_score: s.reverse_engineer_target_score?.toString() ?? '',
+      reverse_engineer_max_cost_usd: s.reverse_engineer_max_cost_usd?.toString() ?? '',
+      reverse_engineer_max_wallet_trades: s.reverse_engineer_max_wallet_trades?.toString() ?? '',
+    })
+  }, [providerSettingsQuery.data])
+  const saveProviderSettingsMutation = useMutation({
+    mutationFn: () =>
+      updateProviderSettings({
+        polybacktest_api_key:
+          providerForm.polybacktest_api_key === '********'
+            ? null
+            : providerForm.polybacktest_api_key,
+        polybacktest_base_url: providerForm.polybacktest_base_url,
+        reverse_engineer_max_iterations: providerForm.reverse_engineer_max_iterations
+          ? parseInt(providerForm.reverse_engineer_max_iterations, 10)
+          : null,
+        reverse_engineer_target_score: providerForm.reverse_engineer_target_score
+          ? parseFloat(providerForm.reverse_engineer_target_score)
+          : null,
+        reverse_engineer_max_cost_usd: providerForm.reverse_engineer_max_cost_usd
+          ? parseFloat(providerForm.reverse_engineer_max_cost_usd)
+          : null,
+        reverse_engineer_max_wallet_trades: providerForm.reverse_engineer_max_wallet_trades
+          ? parseInt(providerForm.reverse_engineer_max_wallet_trades, 10)
+          : null,
+      }),
+    onSuccess: () => {
+      setSaveMessage({ type: 'success', text: 'Provider settings saved' })
+      providerSettingsQuery.refetch()
+    },
+    onError: (err: Error) => {
+      setSaveMessage({ type: 'error', text: err.message || 'Save failed' })
+    },
   })
 
   const [searchForm, setSearchForm] = useState({
@@ -781,6 +844,11 @@ export default function SettingsPanel({
         return vpnForm.enabled ? 'Active' : 'Disabled'
       case 'network':
         return networkForm.allow_network_access ? 'LAN Enabled' : 'Localhost Only'
+      case 'providers': {
+        const s = providerSettingsQuery.data
+        if (!s) return '—'
+        return s.polybacktest_api_key_set ? 'Polybacktest configured' : 'Polybacktest not configured'
+      }
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
       case 'transfer':
@@ -809,6 +877,10 @@ export default function SettingsPanel({
         return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
       case 'network':
         return networkForm.allow_network_access ? 'text-sky-400 bg-sky-500/10' : 'text-muted-foreground bg-muted'
+      case 'providers':
+        return providerSettingsQuery.data?.polybacktest_api_key_set
+          ? 'text-violet-400 bg-violet-500/10'
+          : 'text-muted-foreground bg-muted'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
       case 'transfer':
@@ -826,6 +898,7 @@ export default function SettingsPanel({
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'network', icon: Wifi, label: 'Network Access', description: 'Allow LAN devices to reach the dashboard' },
     { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
+    { id: 'providers', icon: Database, label: 'Data Providers', description: 'Polybacktest API key and reverse-engineer defaults' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
     { id: 'transfer', icon: Upload, label: 'Import / Export', description: 'Migrate trading configuration bundle' },
   ]
@@ -1837,6 +1910,131 @@ export default function SettingsPanel({
                   )}
 
                   {/* Maintenance Settings */}
+                  {section.id === 'providers' && (
+                    <div className="space-y-4">
+                      <Card className="bg-muted">
+                        <CardContent className="p-3 space-y-3">
+                          <div>
+                            <p className="font-medium text-sm">Polybacktest</p>
+                            <p className="text-xs text-muted-foreground">
+                              Sub-second Polymarket Up/Down book history + Binance reference prices.
+                              Buy a Pro tier at <a href="https://polybacktest.com/dashboard" target="_blank" rel="noreferrer" className="underline">polybacktest.com</a>.
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">API key</Label>
+                            <div className="flex items-center gap-1">
+                              <Input
+                                type={showProviderKey ? 'text' : 'password'}
+                                value={providerForm.polybacktest_api_key}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, polybacktest_api_key: e.target.value }))}
+                                placeholder={
+                                  providerSettingsQuery.data?.polybacktest_api_key_set
+                                    ? '(set — leave to keep)'
+                                    : 'Paste API key'
+                                }
+                                className="h-9 font-mono text-xs"
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-9 w-9 p-0"
+                                onClick={() => setShowProviderKey((v) => !v)}
+                                title={showProviderKey ? 'Hide' : 'Show'}
+                              >
+                                {showProviderKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                              Empty value clears the key. Mask is shown when a key is stored — leave it untouched to keep.
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Base URL (optional)</Label>
+                            <Input
+                              value={providerForm.polybacktest_base_url}
+                              onChange={(e) => setProviderForm((p) => ({ ...p, polybacktest_base_url: e.target.value }))}
+                              placeholder="https://api.polybacktest.com"
+                              className="h-9 font-mono text-xs"
+                            />
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="bg-muted">
+                        <CardContent className="p-3 space-y-3">
+                          <div>
+                            <p className="font-medium text-sm">Reverse-engineer defaults</p>
+                            <p className="text-xs text-muted-foreground">
+                              Operator-tunable defaults for new strategy reverse-engineer jobs.
+                              Empty fields fall back to the AI default model + service guards (no hidden defaults in code).
+                            </p>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">
+                            Default LLM model is set in <strong>AI → Models</strong> (under
+                            "Strategy Reverse-Engineer" — same place every other per-purpose model lives).
+                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                              <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Max iterations</Label>
+                              <Input
+                                value={providerForm.reverse_engineer_max_iterations}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, reverse_engineer_max_iterations: e.target.value }))}
+                                placeholder="10"
+                                className="h-9 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Target score (0-1)</Label>
+                              <Input
+                                value={providerForm.reverse_engineer_target_score}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, reverse_engineer_target_score: e.target.value }))}
+                                placeholder="0.7"
+                                className="h-9 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Max cost (USD)</Label>
+                              <Input
+                                value={providerForm.reverse_engineer_max_cost_usd}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, reverse_engineer_max_cost_usd: e.target.value }))}
+                                placeholder="(no cap)"
+                                className="h-9 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                              <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Max wallet trades pulled</Label>
+                              <Input
+                                value={providerForm.reverse_engineer_max_wallet_trades}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, reverse_engineer_max_wallet_trades: e.target.value }))}
+                                placeholder="50000"
+                                className="h-9 text-xs"
+                              />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => saveProviderSettingsMutation.mutate()}
+                          disabled={saveProviderSettingsMutation.isPending}
+                          className="gap-1.5"
+                        >
+                          {saveProviderSettingsMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Save className="h-3.5 w-3.5" />
+                          )}
+                          Save provider settings
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {section.id === 'maintenance' && (
                     <div className="space-y-4">
                       <div className="space-y-3">

@@ -1275,6 +1275,23 @@ class AppSettings(Base):
     llm_model_assignments = Column(JSON, nullable=True)  # Per-purpose model overrides
     llm_enabled_features = Column(JSON, nullable=True)  # Per-feature LLM enable/disable
 
+    # External market data providers (Data Lab on-demand import).  All
+    # nullable; the UI surfaces these in Settings → Data Sources →
+    # Providers.  No defaults baked in code so the operator's choice in
+    # the UI is the single source of truth.
+    polybacktest_api_key = Column(String, nullable=True)
+    polybacktest_base_url = Column(String, nullable=True)
+
+    # Strategy reverse-engineer agent — UI-tunable defaults.  Null
+    # values fall back to service-level constants.  The default *model*
+    # for this purpose lives in ``llm_model_assignments['strategy_reverse_engineer']``
+    # — same JSON column the AI tab → Models view manages for every other
+    # per-purpose LLM override (chat, news_analysis, etc.).
+    reverse_engineer_max_iterations = Column(Integer, nullable=True)
+    reverse_engineer_target_score = Column(Float, nullable=True)
+    reverse_engineer_max_cost_usd = Column(Float, nullable=True)
+    reverse_engineer_max_wallet_trades = Column(Integer, nullable=True)
+
     # Notification Settings
     telegram_bot_token = Column(String, nullable=True)
     telegram_chat_id = Column(String, nullable=True)
@@ -3361,6 +3378,240 @@ class RecordingSession(Base):
     config_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+# ==================== EXTERNAL DATA PROVIDER CATALOG ====================
+
+
+class ProviderDataset(Base):
+    """Catalog entry for a dataset imported from an external data provider.
+
+    A "provider" is any third-party data vendor we pull historical market
+    data from on demand — currently ``polybacktest`` (Polymarket Up/Down
+    book history + Binance reference prices) but the table is shaped to
+    accept additional providers (Kaiko, Tardis, Crypto Compare, etc.)
+    without schema changes.
+
+    The actual snapshot rows continue to live in
+    ``MarketMicrostructureSnapshot`` with ``provider`` set to the
+    provider key — this table is the human-friendly catalog index that
+    powers Data Lab's "Imported datasets" view and the Backtest Studio
+    dataset picker.
+
+    Synthetic ``token_id`` shape for non-Polymarket providers:
+        ``{provider}:{coin}:{market_id}:{outcome}``
+    e.g. ``polybacktest:btc:up-down-2026-05-04T15-00:up``.
+
+    Unique on ``(provider, external_id)`` so re-importing the same
+    provider+market produces an upsert, not a duplicate.
+    """
+
+    __tablename__ = "provider_datasets"
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False, index=True)  # 'polybacktest' etc
+    coin = Column(String, nullable=True, index=True)  # 'btc' | 'eth' | 'sol' | None for non-crypto
+    external_id = Column(String, nullable=False)  # provider's market id / slug
+    external_slug = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    asset_class = Column(String, nullable=False, default="prediction")  # prediction | spot | futures
+    # Synthetic token_ids written to MarketMicrostructureSnapshot for this dataset.
+    token_ids_json = Column(JSON, nullable=False, default=list)
+    start_ts = Column(DateTime, nullable=True, index=True)
+    end_ts = Column(DateTime, nullable=True, index=True)
+    snapshot_count = Column(Integer, nullable=False, default=0)
+    trade_count = Column(Integer, nullable=False, default=0)
+    last_imported_at = Column(DateTime, nullable=True)
+    last_import_job_id = Column(String, nullable=True)
+    payload_json = Column(JSON, default=dict)  # cached provider market metadata
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "external_id", name="uq_provider_dataset_provider_extid"),
+        Index("idx_provider_dataset_provider_coin", "provider", "coin"),
+        Index("idx_provider_dataset_updated", "updated_at"),
+    )
+
+
+class ProviderImportJob(Base):
+    """Async job: pull a window of data from an external provider.
+
+    Mirrors the ``ValidationJob`` shape (status / progress / payload /
+    result / error) so the existing job-tracking UI patterns transfer
+    cleanly.  Worked off by ``workers/provider_import_worker.py`` on
+    the discovery plane.
+
+    payload_json shape (polybacktest):
+        {
+            "provider": "polybacktest",
+            "coin": "btc",
+            "market_ids": ["..."],
+            "start_ms": 1714780800000,
+            "end_ms":   1714867200000,
+            "include_trades": true
+        }
+    """
+
+    __tablename__ = "provider_import_jobs"
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="queued", index=True)
+    # queued | running | completed | failed | cancelled
+    progress = Column(Float, nullable=False, default=0.0)  # 0.0 — 1.0
+    message = Column(String, nullable=True)
+    payload_json = Column(JSON, nullable=False, default=dict)
+    result_json = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    snapshots_fetched = Column(Integer, nullable=False, default=0)
+    snapshots_inserted = Column(Integer, nullable=False, default=0)
+    trades_fetched = Column(Integer, nullable=False, default=0)
+    api_calls = Column(Integer, nullable=False, default=0)
+    bytes_downloaded = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_provider_import_status", "status"),
+        Index("idx_provider_import_created", "created_at"),
+    )
+
+
+# ==================== STRATEGY REVERSE ENGINEER ====================
+
+
+class StrategyReverseEngineerJob(Base):
+    """Long-running job: reverse-engineer a wallet's trading strategy.
+
+    Owned by the Strategy / Research domain (the deliverable is a
+    strategy, not a wallet profile).  An LLM agent loop ingests the
+    wallet's full trade history, picks an appropriate dataset (live
+    recordings, recording sessions, polybacktest imports, etc.),
+    iteratively writes Python source conforming to ``BaseStrategy``,
+    backtests each candidate, scores it against the wallet's actual
+    fills, and refines until ``target_score`` or ``max_iterations``.
+
+    All per-iteration audit lives in ``StrategyReverseEngineerIteration``;
+    this row only carries the headline status + best result.
+    """
+
+    __tablename__ = "strategy_reverse_engineer_jobs"
+
+    id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    label = Column(String, nullable=True)  # human-friendly name for the run
+
+    # report_mode chooses what the agent produces:
+    #   'report'        — deterministic analytical report (the polyresearchrobotics-shape
+    #                     deliverable: tables + LLM section narratives + PDF)
+    #   'strategy_seed' — LLM agent loop that synthesizes a candidate
+    #                     ``BaseStrategy`` Python class via iterative backtest scoring
+    # Default is 'report' since that's the higher-value deliverable for
+    # most operators; the strategy-seed mode is the legacy / advanced path.
+    report_mode = Column(String, nullable=False, default="report")
+
+    # Dataset scope chosen by the user (Data Lab integration).
+    # One of: 'auto' | 'recording_session' | 'provider_dataset' | 'live'
+    data_source_kind = Column(String, nullable=False, default="auto")
+    # When data_source_kind != 'auto', the concrete IDs:
+    recording_session_ids_json = Column(JSON, nullable=True)
+    provider_dataset_ids_json = Column(JSON, nullable=True)
+
+    # Configuration knobs (UI-tunable, no defaults hidden in code).
+    llm_model = Column(String, nullable=True)  # null → use ai_default_model
+    max_iterations = Column(Integer, nullable=False, default=10)
+    target_score = Column(Float, nullable=False, default=0.7)
+    max_cost_usd = Column(Float, nullable=True)  # null → no per-job ceiling
+    max_wallet_trades = Column(Integer, nullable=False, default=2000)
+
+    # Status: queued | profiling | importing_data | running | completed | failed | cancelled
+    status = Column(String, nullable=False, default="queued", index=True)
+    progress = Column(Float, nullable=False, default=0.0)
+    current_iteration = Column(Integer, nullable=False, default=0)
+    activity = Column(String, nullable=True)  # human-readable current step
+    error = Column(Text, nullable=True)
+
+    # Wallet profile (computed in step 1) — surfaced to UI without a re-fetch.
+    wallet_profile_json = Column(JSON, nullable=True)
+    wallet_trade_count = Column(Integer, nullable=False, default=0)
+    wallet_window_start = Column(DateTime, nullable=True)
+    wallet_window_end = Column(DateTime, nullable=True)
+
+    # Best result (refreshed every iteration that improves the score).
+    best_iteration_id = Column(String, nullable=True)
+    best_score = Column(Float, nullable=True)
+    best_strategy_code = Column(Text, nullable=True)
+    best_strategy_class = Column(String, nullable=True)
+    best_backtest_run_id = Column(String, nullable=True)
+
+    # Cost / observability.
+    total_input_tokens = Column(Integer, nullable=False, default=0)
+    total_output_tokens = Column(Integer, nullable=False, default=0)
+    total_cost_usd = Column(Float, nullable=False, default=0.0)
+
+    promoted_strategy_id = Column(String, nullable=True)  # set when user clicks "Promote"
+
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_re_jobs_wallet", "wallet_address"),
+        Index("idx_re_jobs_status", "status"),
+        Index("idx_re_jobs_created", "created_at"),
+    )
+
+
+class StrategyReverseEngineerIteration(Base):
+    """One iteration of a reverse-engineer agent loop.
+
+    Captures the candidate strategy code, backtest run linkage,
+    scoring breakdown, the LLM's critique of the previous attempt,
+    and per-iteration cost.  Every iteration is preserved (not just
+    the best) so the user can replay the agent's reasoning end-to-end
+    in the UI and the PDF report.
+    """
+
+    __tablename__ = "strategy_reverse_engineer_iterations"
+
+    id = Column(String, primary_key=True)
+    job_id = Column(
+        String,
+        ForeignKey("strategy_reverse_engineer_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    iteration = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="running")
+    # running | completed | failed
+
+    strategy_code = Column(Text, nullable=True)
+    strategy_class = Column(String, nullable=True)
+    backtest_run_id = Column(String, nullable=True)
+
+    score = Column(Float, nullable=True)
+    score_breakdown_json = Column(JSON, nullable=True)
+    # {trade_overlap_pct, pnl_correlation, entry_timing_mae_seconds,
+    #  win_rate_actual, win_rate_backtest, ...}
+    divergence_summary = Column(Text, nullable=True)
+    llm_critique = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Float, nullable=False, default=0.0)
+    duration_ms = Column(Float, nullable=False, default=0.0)
+
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_re_iter_job_iter", "job_id", "iteration"),
+        UniqueConstraint("job_id", "iteration", name="uq_re_iter_job_iter"),
+    )
 
 
 # ==================== WORKER RUNTIME STATE ====================

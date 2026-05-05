@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ analytics.address }} — Wallet Strategy Analysis</title>
+  <style>
+    @page {
+      size: Letter;
+      margin: 0.85in 0.75in 0.85in 0.75in;
+      @top-left {
+        content: "Homerun · Wallet Strategy Analysis";
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+      @top-right {
+        content: "{{ analytics.address[:6] }}…{{ analytics.address[-4:] }}";
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+      @bottom-right {
+        content: counter(page) " of " counter(pages);
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+    }
+
+    body {
+      font-family: "Iowan Old Style", "Palatino", Georgia, serif;
+      color: #111827;
+      font-size: 10pt;
+      line-height: 1.5;
+    }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    .mono { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: 8.5pt; }
+
+    /* ── Hero ─────────────────────────────────────────── */
+    .hero { padding-bottom: 14pt; border-bottom: 2px solid #111827; }
+    .hero .label { font-family: -apple-system, sans-serif;
+                   font-size: 9pt; letter-spacing: 0.18em;
+                   text-transform: uppercase; color: #6b7280; }
+    .hero h1 { font-size: 26pt; line-height: 1.15; margin: 6pt 0 2pt;
+               font-weight: 700; }
+    .hero .punchline { font-size: 14pt; line-height: 1.45; color: #1f2937;
+                       font-style: italic; margin-top: 4pt; }
+    .hero .meta { margin-top: 8pt; font-size: 9pt; color: #6b7280;
+                  font-family: -apple-system, sans-serif; }
+    .hero .meta .pill { display: inline-block; padding: 1pt 6pt;
+                        background: #f3f4f6; border-radius: 9pt;
+                        margin-right: 6pt; }
+
+    /* ── At-a-glance metric grid ──────────────────────── */
+    .at-a-glance { margin-top: 14pt; }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6pt;
+      margin: 8pt 0;
+    }
+    .metric {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8pt 10pt;
+    }
+    .metric .l {
+      font-family: -apple-system, sans-serif;
+      font-size: 8pt;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #6b7280;
+    }
+    .metric .v { font-size: 16pt; font-weight: 700; line-height: 1.2;
+                 margin-top: 2pt; }
+    .metric .v.pos { color: #047857; }
+    .metric .v.neg { color: #b91c1c; }
+    .metric .sub { font-size: 9pt; color: #6b7280; margin-top: 1pt; }
+
+    /* ── Section headers ──────────────────────────────── */
+    h2 { font-family: -apple-system, sans-serif;
+         font-size: 9pt; letter-spacing: 0.18em;
+         text-transform: uppercase; color: #6b7280;
+         margin-top: 24pt; margin-bottom: 0pt; font-weight: 600; }
+    h2 .num { color: #9ca3af; margin-right: 8pt; }
+    h2 .title { color: #111827; }
+    h3 { font-family: -apple-system, sans-serif;
+         font-size: 12pt; margin: 14pt 0 6pt; font-weight: 600;
+         color: #1f2937; }
+
+    /* ── Body text ────────────────────────────────────── */
+    p { margin: 6pt 0; }
+    blockquote {
+      border-left: 3px solid #e5e7eb;
+      padding: 4pt 12pt; margin: 8pt 0;
+      color: #4b5563; font-style: italic;
+    }
+
+    /* ── Tables ───────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8pt 0;
+      font-size: 9pt;
+    }
+    th, td {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 4pt 6pt;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      font-family: -apple-system, sans-serif;
+      font-size: 8pt;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #6b7280;
+      border-bottom: 2px solid #111827;
+    }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.pos { color: #047857; font-weight: 600; }
+    td.neg { color: #b91c1c; font-weight: 600; }
+    tr.highlight { background: #fef3c7; }
+
+    /* ── Code blocks ──────────────────────────────────── */
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12pt 14pt;
+      border-radius: 4px;
+      font-size: 8.5pt;
+      line-height: 1.45;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    /* ── Bullets ──────────────────────────────────────── */
+    ul.callouts { padding-left: 18pt; margin: 6pt 0; }
+    ul.callouts li { margin-bottom: 4pt; }
+
+    .small { font-size: 8.5pt; color: #6b7280; }
+    .page-break { page-break-before: always; }
+
+    /* Visual chart — pure CSS bars */
+    .barchart { margin: 10pt 0; }
+    .bar-row { display: grid; grid-template-columns: 80pt 1fr 60pt;
+               gap: 6pt; align-items: center; padding: 2pt 0; }
+    .bar-row .label { font-size: 9pt; color: #4b5563; }
+    .bar-row .bar { background: #f3f4f6; height: 14pt;
+                    border-radius: 2px; position: relative;
+                    overflow: hidden; }
+    .bar-row .bar > .fill {
+      position: absolute; top: 0; bottom: 0; left: 0;
+      background: #2563eb;
+    }
+    .bar-row .bar.pos > .fill { background: #047857; }
+    .bar-row .bar.neg > .fill { background: #dc2626; }
+    .bar-row .v { font-size: 9pt; text-align: right;
+                  font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+
+  {# ── HERO ─────────────────────────────────────────── #}
+  <div class="hero">
+    <div class="label">Wallet Strategy Analysis · {{ generated_at | humanize_dt }}</div>
+    <h1>{{ analytics.address[:6] }}…{{ analytics.address[-4:] }}</h1>
+    {% if sections.headline_oneliner %}
+      <div class="punchline">{{ sections.headline_oneliner }}</div>
+    {% endif %}
+    <div class="meta">
+      <span class="pill">{{ analytics.headline.total_trades | int_thousands }} trades</span>
+      <span class="pill">{{ analytics.headline.markets_touched }} markets</span>
+      <span class="pill">{{ analytics.headline.active_days }} active days</span>
+      <span class="pill">{{ analytics.headline.total_usdc_deployed | money_compact }} deployed</span>
+      {% if analytics.headline.realized_pl_usdc is not none %}
+        <span class="pill">{{ analytics.headline.realized_pl_usdc | money_signed }} P/L</span>
+      {% endif %}
+      {% if analytics.headline.roi_on_deployed is not none %}
+        <span class="pill">{{ analytics.headline.roi_on_deployed | pct_signed(3) }} ROI</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── 001 ANALYSIS ─────────────────────────────────── #}
+  <h2><span class="num">001</span><span class="title">Analysis</span></h2>
+  {% if sections.at_a_glance %}
+    <p>{{ sections.at_a_glance }}</p>
+  {% endif %}
+
+  <div class="metric-grid">
+    <div class="metric">
+      <div class="l">Total trades</div>
+      <div class="v">{{ analytics.headline.total_trades | int_thousands }}</div>
+      <div class="sub">{{ analytics.headline.buy_trades | int_thousands }} BUY · {{ analytics.headline.sell_trades }} SELL</div>
+    </div>
+    <div class="metric">
+      <div class="l">Realized P/L</div>
+      <div class="v {{ 'pos' if (analytics.headline.realized_pl_usdc or 0) >= 0 else 'neg' }}">
+        {{ analytics.headline.realized_pl_usdc | money_signed }}
+      </div>
+      <div class="sub">{{ analytics.headline.resolved_trade_count | int_thousands }} resolved</div>
+    </div>
+    <div class="metric">
+      <div class="l">ROI on deployed</div>
+      <div class="v {{ 'pos' if (analytics.headline.roi_on_deployed or 0) >= 0 else 'neg' }}">
+        {{ analytics.headline.roi_on_deployed | pct_signed(3) }}
+      </div>
+      <div class="sub">on {{ analytics.headline.total_usdc_deployed | money_compact }} deployed</div>
+    </div>
+    <div class="metric">
+      <div class="l">Win rate</div>
+      <div class="v">{{ analytics.headline.win_rate | pct(2) }}</div>
+      <div class="sub">of resolved trades</div>
+    </div>
+    <div class="metric">
+      <div class="l">Markets touched</div>
+      <div class="v">{{ analytics.headline.markets_touched }}</div>
+      <div class="sub">{{ analytics.headline.avg_fills_per_market | round(1) }} fills/market</div>
+    </div>
+    <div class="metric">
+      <div class="l">Active / calendar days</div>
+      <div class="v">{{ analytics.headline.active_days }} / {{ analytics.headline.calendar_days }}</div>
+      <div class="sub">{{ analytics.headline.avg_trades_per_active_day | round(0) | int }} trades/day</div>
+    </div>
+    <div class="metric">
+      <div class="l">Median clip size</div>
+      <div class="v">${{ analytics.trade_size.median_usdc | round(2) }}</div>
+      <div class="sub">max ${{ analytics.trade_size.max_usdc | round(2) }}</div>
+    </div>
+    <div class="metric">
+      <div class="l">Median inter-fill gap</div>
+      <div class="v">{{ analytics.cadence.median_seconds | round(1) }}s</div>
+      <div class="sub">{{ (analytics.cadence.pct_under_10s or 0) | pct(0) }} under 10s</div>
+    </div>
+  </div>
+
+  {% if sections.analysis_narrative %}
+    {% for para in sections.analysis_narrative.split('\n\n') if para.strip() %}
+      <p>{{ para | safe }}</p>
+    {% endfor %}
+  {% endif %}
+
+  {% if sections.what_to_copy %}
+    <h3>What you can copy</h3>
+    <ul class="callouts">
+      {% for b in sections.what_to_copy %}<li>{{ b }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+  {% if sections.what_not_to_copy %}
+    <h3>What you probably can't copy</h3>
+    <ul class="callouts">
+      {% for b in sections.what_not_to_copy %}<li>{{ b }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+
+  {# ── 002 P/L FIGURE — daily cumulative ───────────── #}
+  <h2><span class="num">002</span><span class="title">Daily P/L Trajectory</span></h2>
+  {% set cum_max = (analytics.daily_rows | map(attribute='cum_pl_usdc') | reject('none') | map('abs') | list) %}
+  {% set cum_max_val = cum_max | max if cum_max else 1 %}
+  <div class="barchart">
+    {% for d in analytics.daily_rows %}
+      {% if d.cum_pl_usdc is not none %}
+        {% set width_pct = ((d.cum_pl_usdc | abs) / cum_max_val * 100) %}
+        <div class="bar-row">
+          <span class="label mono">{{ d.date }}</span>
+          <span class="bar {{ 'pos' if d.cum_pl_usdc >= 0 else 'neg' }}">
+            <span class="fill" style="width: {{ width_pct | round(1) }}%;"></span>
+          </span>
+          <span class="v {{ 'pos' if d.cum_pl_usdc >= 0 else 'neg' }}">
+            {{ d.cum_pl_usdc | money_signed }}
+          </span>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  {# ── 003 REVERSE-ENGINEERING (two-leg + dominance) ─ #}
+  <div class="page-break"></div>
+  <h2><span class="num">003</span><span class="title">Reverse-Engineering</span></h2>
+
+  <h3>Two-leg P/L decomposition</h3>
+  {% if sections.two_leg_explainer %}
+    <p>{{ sections.two_leg_explainer }}</p>
+  {% endif %}
+  <table>
+    <tr>
+      <th>Component</th>
+      <th class="num">Value</th>
+    </tr>
+    <tr>
+      <td>Spread leg P/L (paired_shares × (1 − paired_cost))</td>
+      <td class="num {{ 'pos' if analytics.two_leg.spread_leg_pl_usdc >= 0 else 'neg' }}">
+        {{ analytics.two_leg.spread_leg_pl_usdc | money_signed }}
+      </td>
+    </tr>
+    <tr>
+      <td>Directional leg P/L (excess shares × outcome)</td>
+      <td class="num {{ 'pos' if analytics.two_leg.directional_leg_pl_usdc >= 0 else 'neg' }}">
+        {{ analytics.two_leg.directional_leg_pl_usdc | money_signed }}
+      </td>
+    </tr>
+    <tr>
+      <td>One-sided market P/L</td>
+      <td class="num">{{ analytics.two_leg.one_sided_market_pl_usdc | money_signed }}</td>
+    </tr>
+    <tr class="highlight">
+      <td><strong>Total realized P/L</strong></td>
+      <td class="num">
+        <strong>{{ analytics.two_leg.realized_pl_usdc | money_signed }}</strong>
+      </td>
+    </tr>
+    <tr>
+      <td>Paired shares total</td>
+      <td class="num mono">{{ analytics.two_leg.paired_shares | int_thousands }}</td>
+    </tr>
+    <tr>
+      <td>Median paired cost / share</td>
+      <td class="num mono">${{ analytics.two_leg.median_paired_cost | round(4) }}</td>
+    </tr>
+    <tr>
+      <td>Hedge tax (USDC on losing-side hedges in dom-won markets)</td>
+      <td class="num mono">{{ analytics.two_leg.hedge_tax_usdc | money_compact }}</td>
+    </tr>
+    <tr>
+      <td>Both-sides participation rate</td>
+      <td class="num">
+        {{ analytics.two_leg.both_sides_participation_rate | pct(1) }}
+        ({{ analytics.two_leg.both_sides_market_count }}/{{ analytics.two_leg.both_sides_market_count + analytics.two_leg.one_sided_market_count }})
+      </td>
+    </tr>
+  </table>
+
+  <h3>Dominance vs. resolution</h3>
+  {% if sections.dominance_explainer %}
+    <p>{{ sections.dominance_explainer }}</p>
+  {% endif %}
+  <table>
+    <tr>
+      <th>Skew bucket</th>
+      <th class="num">Markets</th>
+      <th class="num">Dom-side wins</th>
+      <th class="num">Win rate</th>
+      <th class="num">Avg paired cost</th>
+      <th class="num">Total P/L</th>
+      <th class="num">Avg P/L / market</th>
+    </tr>
+    {% for d in analytics.dominance_buckets %}
+      <tr {% if d.dom_side_win_rate is not none and d.dom_side_win_rate >= 0.95 %}class="highlight"{% endif %}>
+        <td><strong>{{ d.band_label }}</strong></td>
+        <td class="num">{{ d.markets }}</td>
+        <td class="num">{{ d.dom_side_wins }}</td>
+        <td class="num"><strong>{{ d.dom_side_win_rate | pct(1) }}</strong></td>
+        <td class="num">${{ d.avg_paired_cost | round(4) if d.avg_paired_cost is not none else '—' }}</td>
+        <td class="num {{ 'pos' if (d.total_pl_usdc or 0) >= 0 else 'neg' }}">
+          {{ d.total_pl_usdc | money_signed }}
+        </td>
+        <td class="num">{{ d.avg_pl_per_market | money_signed }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  {# ── 004 QUANTITATIVE ───────────────────────────── #}
+  <div class="page-break"></div>
+  <h2><span class="num">004</span><span class="title">Quantitative breakdown</span></h2>
+
+  <h3>Strategy archetype matches</h3>
+  <table>
+    <tr><th>Archetype</th><th>Match</th><th>Evidence</th></tr>
+    {% for ar in analytics.archetypes %}
+      <tr>
+        <td>{{ ar.archetype }}</td>
+        <td><strong>{{ ar.match_strength }}</strong></td>
+        <td class="small">{{ ar.evidence }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h3>Trade-size distribution</h3>
+  <table>
+    <tr><th>Stat</th><th class="num">Value</th></tr>
+    <tr><td>Min</td><td class="num">${{ analytics.trade_size.min_usdc | round(2) }}</td></tr>
+    <tr><td>Median</td><td class="num">${{ analytics.trade_size.median_usdc | round(2) }}</td></tr>
+    <tr><td>Mean</td><td class="num">${{ analytics.trade_size.mean_usdc | round(2) }}</td></tr>
+    <tr><td>P90</td><td class="num">${{ analytics.trade_size.p90_usdc | round(2) }}</td></tr>
+    <tr><td>P95</td><td class="num">${{ analytics.trade_size.p95_usdc | round(2) }}</td></tr>
+    <tr><td>P99</td><td class="num">${{ analytics.trade_size.p99_usdc | round(2) }}</td></tr>
+    <tr><td>Max</td><td class="num">${{ analytics.trade_size.max_usdc | round(2) }}</td></tr>
+    <tr><td>Top 5% share of capital</td><td class="num">{{ analytics.trade_size.top5pct_share_of_capital | pct(1) }}</td></tr>
+    <tr><td>Top 1% share of capital</td><td class="num">{{ analytics.trade_size.top1pct_share_of_capital | pct(1) }}</td></tr>
+  </table>
+
+  <h3>Entry-price 10-bucket histogram</h3>
+  <table>
+    <tr>
+      <th>Band</th><th class="num">Trades</th><th class="num">Win rate</th>
+      <th class="num">USDC</th><th class="num">P/L</th><th class="num">ROI</th>
+    </tr>
+    {% for b in analytics.price_buckets if b.trades > 0 %}
+      <tr>
+        <td>{{ b.band_label }}</td>
+        <td class="num">{{ b.trades | int_thousands }}</td>
+        <td class="num">{{ b.win_rate | pct(1) }}</td>
+        <td class="num">{{ b.usdc_deployed | money_compact }}</td>
+        <td class="num {{ 'pos' if (b.pl_usdc or 0) >= 0 else 'neg' }}">{{ b.pl_usdc | money_signed }}</td>
+        <td class="num"><strong>{{ b.roi | pct_signed(2) }}</strong></td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h3>Paired-cost bands</h3>
+  <table>
+    <tr>
+      <th>Band</th><th class="num">Trades</th><th class="num">Win rate</th>
+      <th class="num">USDC</th><th class="num">P/L</th><th class="num">ROI</th>
+    </tr>
+    {% for b in analytics.paired_cost_bands if b.trades > 0 %}
+      <tr>
+        <td>{{ b.band_label }}</td>
+        <td class="num">{{ b.trades | int_thousands }}</td>
+        <td class="num">{{ b.win_rate | pct(1) }}</td>
+        <td class="num">{{ b.usdc_deployed | money_compact }}</td>
+        <td class="num {{ 'pos' if (b.pl_usdc or 0) >= 0 else 'neg' }}">{{ b.pl_usdc | money_signed }}</td>
+        <td class="num"><strong>{{ b.roi | pct_signed(2) }}</strong></td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  {% if analytics.within_window_timing %}
+    <h3>Entry timing within window</h3>
+    <table>
+      <tr>
+        <th>Seconds remaining</th><th class="num">Trades</th>
+        <th class="num">USDC</th><th class="num">Win rate</th><th class="num">ROI</th>
+      </tr>
+      {% for w in analytics.within_window_timing if w.trades > 0 %}
+        <tr {% if w.roi is not none and analytics.headline.roi_on_deployed is not none and w.roi > analytics.headline.roi_on_deployed * 1.5 %}class="highlight"{% endif %}>
+          <td>{{ w.bucket_label }}</td>
+          <td class="num">{{ w.trades | int_thousands }}</td>
+          <td class="num">{{ w.usdc_deployed | money_compact }}</td>
+          <td class="num">{{ w.win_rate | pct(1) }}</td>
+          <td class="num">{{ w.roi | pct_signed(2) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  <h3>Hour-of-day (UTC)</h3>
+  <table>
+    <tr><th>Hour</th><th class="num">Trades</th><th class="num">Win rate</th><th class="num">P/L</th></tr>
+    {% for h in analytics.hourly_rows if h.trades > 0 %}
+      <tr>
+        <td class="mono">{{ '%02d'|format(h.hour_utc) }}:00</td>
+        <td class="num">{{ h.trades | int_thousands }}</td>
+        <td class="num">{{ h.win_rate | pct(1) }}</td>
+        <td class="num {{ 'pos' if (h.pl_usdc or 0) >= 0 else 'neg' }}">{{ h.pl_usdc | money_signed }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h3>Day of week</h3>
+  <table>
+    <tr><th>Day</th><th class="num">Trades</th><th class="num">P/L</th></tr>
+    {% for d in analytics.dow_rows if d.trades > 0 %}
+      <tr>
+        <td>{{ d.label }}</td>
+        <td class="num">{{ d.trades | int_thousands }}</td>
+        <td class="num {{ 'pos' if (d.pl_usdc or 0) >= 0 else 'neg' }}">{{ d.pl_usdc | money_signed }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  {% if analytics.rolling_7d or analytics.rolling_15d %}
+    <h3>Rolling-window stability</h3>
+    <table>
+      <tr><th>Window</th><th class="num">Total</th><th class="num">Positive</th><th class="num">Min P/L</th><th class="num">Max P/L</th></tr>
+      {% if analytics.rolling_7d %}
+        <tr>
+          <td>7-day</td>
+          <td class="num">{{ analytics.rolling_7d.windows_total }}</td>
+          <td class="num">{{ analytics.rolling_7d.windows_positive }}</td>
+          <td class="num">{{ analytics.rolling_7d.min_pl_usdc | money_signed }}</td>
+          <td class="num">{{ analytics.rolling_7d.max_pl_usdc | money_signed }}</td>
+        </tr>
+      {% endif %}
+      {% if analytics.rolling_15d %}
+        <tr>
+          <td>15-day</td>
+          <td class="num">{{ analytics.rolling_15d.windows_total }}</td>
+          <td class="num">{{ analytics.rolling_15d.windows_positive }}</td>
+          <td class="num">{{ analytics.rolling_15d.min_pl_usdc | money_signed }}</td>
+          <td class="num">{{ analytics.rolling_15d.max_pl_usdc | money_signed }}</td>
+        </tr>
+      {% endif %}
+    </table>
+  {% endif %}
+
+  {# ── 005 SPOTLIGHT MARKET ───────────────────────── #}
+  {% if spotlight %}
+    <div class="page-break"></div>
+    <h2><span class="num">005</span><span class="title">Spotlight market — trade by trade</span></h2>
+    <p>
+      <strong>{{ spotlight.market_title }}</strong>
+      {% if spotlight.event_slug %}<span class="mono small"> · {{ spotlight.event_slug }}</span>{% endif %}
+      {% if spotlight.winner %} · winner <strong>{{ spotlight.winner }}</strong>{% endif %}
+    </p>
+    <p>
+      {{ spotlight.fill_count }} fills.
+      Final position: <strong>{{ spotlight.yes_shares | round(0) | int }} UP / {{ spotlight.no_shares | round(0) | int }} DOWN</strong>
+      {% if spotlight.dominance_ratio %}
+        ({{ spotlight.dominance_ratio | round(1) }}× dominance toward
+        {{ 'UP' if spotlight.yes_shares >= spotlight.no_shares else 'DOWN' }}).
+      {% endif %}
+      Net P/L: <strong>{{ spotlight.final_pl_usdc | money_signed }}</strong>.
+    </p>
+    <table>
+      <tr>
+        <th>Time (UTC)</th><th class="num">Sec to close</th><th>Side</th>
+        <th class="num">Price</th><th class="num">Shares</th>
+        <th class="num">USDC</th><th class="num">Fill P/L</th><th class="num">Running P/L</th>
+      </tr>
+      {% for r in spotlight.rows %}
+        <tr>
+          <td class="mono small">{{ r.timestamp[11:19] }}</td>
+          <td class="num">{{ r.sec_to_close if r.sec_to_close is not none else '—' }}</td>
+          <td>{{ r.side_label }}</td>
+          <td class="num">${{ r.price | round(4) }}</td>
+          <td class="num">{{ r.shares | round(0) | int }}</td>
+          <td class="num">${{ r.usdc | round(2) }}</td>
+          <td class="num {{ 'pos' if r.fill_pl >= 0 else 'neg' }}">{{ r.fill_pl | money_signed }}</td>
+          <td class="num {{ 'pos' if r.running_pl >= 0 else 'neg' }}">{{ r.running_pl | money_signed }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {# ── 006 FILTER LEDGER ───────────────────────────── #}
+  <div class="page-break"></div>
+  <h2><span class="num">006</span><span class="title">Filter strategy</span></h2>
+  {% if sections.filter_recommendation %}
+    <p>{{ sections.filter_recommendation }}</p>
+  {% endif %}
+  <table>
+    <tr>
+      <th>Filter</th><th class="num">Trades</th><th class="num">USDC</th>
+      <th class="num">P/L</th><th class="num">Win %</th>
+      <th class="num">ROI</th><th class="num">Lift</th>
+    </tr>
+    {% for f in analytics.filter_ledger %}
+      <tr {% if f.roi_lift_vs_baseline is not none and f.roi_lift_vs_baseline > 0.05 %}class="highlight"{% endif %}>
+        <td><strong>{{ f.name }}</strong><br><span class="small">{{ f.description }}</span></td>
+        <td class="num">{{ f.trades | int_thousands }}</td>
+        <td class="num">{{ f.usdc_deployed | money_compact }}</td>
+        <td class="num {{ 'pos' if (f.pl_usdc or 0) >= 0 else 'neg' }}">{{ f.pl_usdc | money_signed }}</td>
+        <td class="num">{{ f.win_rate | pct(1) }}</td>
+        <td class="num"><strong>{{ f.roi | pct_signed(2) }}</strong></td>
+        <td class="num">{{ f.roi_lift_vs_baseline | pp_signed(2) }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  {# ── 007 REPLICATION PLAYBOOK ──────────────────── #}
+  <div class="page-break"></div>
+  <h2><span class="num">007</span><span class="title">Replication playbook</span></h2>
+  {% if sections.playbook_brief %}
+    <p>{{ sections.playbook_brief }}</p>
+  {% endif %}
+
+  <h3>Pseudocode</h3>
+  <pre><code>{{ sections.pseudocode }}</code></pre>
+
+  <h3>Bankroll math</h3>
+  {% if sections.bankroll_paragraph %}
+    <p>{{ sections.bankroll_paragraph }}</p>
+  {% endif %}
+
+  <h3>Top markets by volume</h3>
+  <table>
+    <tr><th>#</th><th>Market</th><th class="num">Trades</th><th class="num">USDC</th><th class="num">P/L</th></tr>
+    {% for m in analytics.top_by_volume %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ m.market_label }}</td>
+        <td class="num">{{ m.trades }}</td>
+        <td class="num">{{ m.usdc_deployed | money_compact }}</td>
+        <td class="num {{ 'pos' if (m.pl_usdc or 0) >= 0 else 'neg' }}">{{ m.pl_usdc | money_signed }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  {# ── footer ──────────────────────────────────────── #}
+  <p class="small" style="margin-top: 24pt; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 8pt;">
+    Generated {{ generated_at | humanize_dt }} by Homerun ·
+    All quantitative figures derived from the wallet's on-chain Polymarket trade history;
+    LLM-generated narrative is grounded in those values verbatim.
+    {% if analytics.headline.unresolved_trade_count %}
+      Unresolved trades: {{ analytics.headline.unresolved_trade_count | int_thousands }}
+      ({{ (analytics.headline.unresolved_trade_count / analytics.headline.total_trades * 100) | round(1) }}%).
+    {% endif %}
+  </p>
+</body>
+</html>

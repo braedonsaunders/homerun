@@ -53,6 +53,8 @@ from api.routes_simulation import simulation_router
 from api.routes_anomaly import anomaly_router
 from api.routes_backtest import router as backtest_router
 from api.routes_dataset import router as dataset_router
+from api.routes_providers import router as providers_router
+from api.routes_strategy_reverse_engineer import router as strategy_re_router
 from api.routes_fill_model import router as fill_model_router
 from api.routes_orchestrator_live import router as orchestrator_live_router
 from api.routes_maintenance import router as maintenance_router
@@ -1059,6 +1061,8 @@ app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulatio
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(backtest_router, prefix="/api", tags=["Backtest"])
 app.include_router(dataset_router, prefix="/api", tags=["Dataset"])
+app.include_router(providers_router, prefix="/api", tags=["Providers"])
+app.include_router(strategy_re_router, prefix="/api", tags=["Strategy Reverse-Engineer"])
 app.include_router(fill_model_router, prefix="/api", tags=["Fill Model"])
 app.include_router(orchestrator_live_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])

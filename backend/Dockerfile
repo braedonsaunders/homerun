@@ -59,11 +59,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOMERUN_PROCESS_ROLE=server
 
 # libgomp1 is required by faiss-cpu, xgboost and lightgbm at runtime.
+# WeasyPrint (services/reports) needs Pango / Cairo / GdkPixbuf at
+# runtime; without these the executive PDF report endpoint returns
+# 503 with an install hint, but otherwise the rest of the API runs.
 # curl is included so healthchecks can hit /health without an extra image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         curl \
         tini \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libharfbuzz0b \
+        libfreetype6 \
+        libffi8 \
+        libgdk-pixbuf-2.0-0 \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 1000 homerun \
