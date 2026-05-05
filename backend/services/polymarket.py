@@ -21,6 +21,17 @@ _logger = get_logger("polymarket")
 _MAX_RETRIES = 4
 _BASE_DELAY = 1.0
 _MAX_DELAY = 30.0
+
+# 2026-05-05: per-endpoint cooldown applied AFTER the inner retries
+# exhausted. The retry loop already handles transient 429s with
+# exponential backoff; this is the safety net for sustained throttling
+# where multiple consecutive callers each burn _MAX_RETRIES attempts
+# against the same already-throttled endpoint. Once cooldown is set,
+# subsequent same-endpoint calls short-circuit until expiry. Cooldown
+# escalates per consecutive trip to MAX so a heavily-throttled endpoint
+# doesn't get hit again every 30s.
+_DATA_API_ENDPOINT_COOLDOWN_BASE_SECONDS = 30.0
+_DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS = 300.0
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
@@ -154,6 +165,22 @@ class PolymarketClient:
         self._closed_positions_warning_cooldown_until: float = 0.0
         self._network_error_last_log_at: float = 0.0
         self._network_error_log_interval_seconds: float = 10.0
+        # 2026-05-05: per-endpoint hard cooldowns triggered by sustained
+        # 429s (the rate-limiter retries exhausted). When the data-api
+        # rejects us with 429 after every retry, hammering it again on
+        # the next caller's request just deepens the throttle. Stamp a
+        # cooldown deadline that ``_rate_limited_get`` honors by short-
+        # circuiting the call. Per-endpoint (``data_positions`` etc.) so
+        # a 429 on one endpoint doesn't pause unrelated traffic.
+        # ``data_positions`` (closed-positions) was the observed offender
+        # — fan-out copy-trade signal processor across many wallets
+        # produced bursts that exceeded the documented 6 req/s and
+        # cascaded into multi-minute throttling. The fan-out stops
+        # immediately when the cooldown is set; the in-process
+        # _closed_positions_cache (60s TTL) absorbs cache misses during
+        # the cooldown.
+        self._endpoint_cooldown_until: dict[str, float] = {}
+        self._endpoint_cooldown_attempts: dict[str, int] = {}
 
         # Single-flight TTL caches for the data-API endpoints that the
         # rate limiter throttles hardest (data_trades=20 req/s,
@@ -276,6 +303,31 @@ class PolymarketClient:
         endpoint = endpoint_for_url(url)
         last_response: Optional[httpx.Response] = None
 
+        # 2026-05-05: short-circuit when the endpoint is in 429 cooldown.
+        # Returns a synthetic 429 response so callers' status-code
+        # branching ("if response.status_code == 429" etc.) keeps
+        # working. We avoid the network entirely during cooldown so
+        # heavy fan-out callers can't deepen the throttle.
+        cooldown_remaining = self._endpoint_cooldown_remaining(endpoint)
+        if cooldown_remaining > 0:
+            now = time.monotonic()
+            # Suppressed-rate logging (every 30s per endpoint) so we don't
+            # flood the operator console while cooled down.
+            log_key = f"_endpoint_cooldown_log_{endpoint}"
+            last_log_at = getattr(self, log_key, 0.0)
+            if (now - last_log_at) >= 30.0:
+                setattr(self, log_key, now)
+                _logger.info(
+                    "Polymarket data-api endpoint in 429 cooldown; short-circuiting request",
+                    endpoint=endpoint,
+                    cooldown_remaining_seconds=round(cooldown_remaining, 1),
+                )
+            return httpx.Response(
+                429,
+                headers={"Retry-After": str(int(cooldown_remaining) + 1)},
+                request=httpx.Request("GET", url),
+            )
+
         for attempt in range(_MAX_RETRIES):
             await rate_limiter.acquire(endpoint)
 
@@ -357,12 +409,99 @@ class PolymarketClient:
                     continue
                 # Final attempt exhausted — return the response as-is so
                 # callers that check status_code still work correctly.
+                # 2026-05-05: also stamp an endpoint-level cooldown so
+                # the next same-endpoint request short-circuits instead
+                # of repeating the full retry storm. This is the
+                # mitigation for the cascade where multiple wallets'
+                # ``get_closed_positions`` calls each burned 4 retries
+                # against an already-throttled endpoint.
+                if response.status_code == 429:
+                    self._stamp_endpoint_cooldown(endpoint, response=response)
                 return response
 
+            # 2026-05-05: clear the escalation counter on success — next
+            # 429 should restart from the base cooldown, not the escalated
+            # window from a long-past throttle event.
+            self._clear_endpoint_cooldown(endpoint)
             return response
 
         # Should not be reached, but just in case
         return last_response  # type: ignore[return-value]
+
+    def _endpoint_cooldown_remaining(self, endpoint: str) -> float:
+        """Return seconds remaining on the endpoint's 429 cooldown, or 0
+        if no cooldown is active (or it just expired).
+
+        Lazily expires entries: an expired endpoint clears its own state
+        on next read so the next 429 starts fresh.
+        """
+        if not endpoint:
+            return 0.0
+        deadline = self._endpoint_cooldown_until.get(endpoint)
+        if deadline is None:
+            return 0.0
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            self._endpoint_cooldown_until.pop(endpoint, None)
+            return 0.0
+        return remaining
+
+    def _stamp_endpoint_cooldown(
+        self,
+        endpoint: str,
+        *,
+        response: Optional[httpx.Response] = None,
+    ) -> float:
+        """Mark ``endpoint`` cooled-down after sustained 429s. Returns
+        the cooldown duration applied (for logging).
+
+        Honors a ``Retry-After`` header on the response as a floor of
+        the cooldown window. Escalates exponentially per consecutive
+        trip up to ``_DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS`` so a
+        provider in deep throttle isn't pinged again every 30s.
+        """
+        if not endpoint:
+            return 0.0
+        attempts = self._endpoint_cooldown_attempts.get(endpoint, 0) + 1
+        self._endpoint_cooldown_attempts[endpoint] = attempts
+        backoff = min(
+            _DATA_API_ENDPOINT_COOLDOWN_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+            _DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS,
+        )
+        if response is not None:
+            try:
+                retry_after_header = response.headers.get("Retry-After")
+                if retry_after_header:
+                    try:
+                        retry_after_seconds = float(retry_after_header)
+                        backoff = max(backoff, retry_after_seconds)
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
+        backoff = min(backoff, _DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS)
+        self._endpoint_cooldown_until[endpoint] = time.monotonic() + backoff
+        _logger.warning(
+            "Polymarket data-api 429 — applying endpoint cooldown",
+            endpoint=endpoint,
+            cooldown_seconds=round(backoff, 1),
+            consecutive_trips=attempts,
+        )
+        return backoff
+
+    def _clear_endpoint_cooldown(self, endpoint: str) -> None:
+        """Reset the cooldown deadline AND escalation counter on success.
+
+        Called after any non-429 successful request through ``endpoint``
+        so the next 429 starts from the base window. Without this, an
+        endpoint that recovers and is later re-throttled would jump
+        straight to a multi-minute cooldown.
+        """
+        if not endpoint:
+            return
+        self._endpoint_cooldown_until.pop(endpoint, None)
+        self._endpoint_cooldown_attempts.pop(endpoint, None)
 
     @staticmethod
     def _is_retryable_closed_client_error(exc: Exception) -> bool:

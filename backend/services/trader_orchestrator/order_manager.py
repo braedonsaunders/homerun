@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from services.live_execution_adapter import execute_live_order
 from services.polymarket import polymarket_client
@@ -712,6 +715,75 @@ async def submit_execution_leg(
                 },
                 shares=shares,
                 notional_usd=notional,
+            )
+
+    # 2026-05-05: defense-in-depth pre-submit safety floor.
+    #
+    # Strategies are loaded from ``Strategy.source_code`` in the database
+    # (see services.strategy_loader). A fix made in the .py file under
+    # services/strategies/ does NOT propagate to the running process
+    # unless the corresponding row is re-seeded. The catalog explicitly
+    # preserves user edits across reseeds. So a strategy-level safety
+    # gate (e.g. min_entry_price floor on contrarian maker bets) can
+    # be silently absent from the live system.
+    #
+    # The check below runs at the submit boundary on EVERY live order,
+    # regardless of which path constructed it. Per-strategy floors live
+    # in services.execution_safety.py and can only be changed by
+    # deploying new code — operators cannot loosen them via the UI.
+    # Violations are reported as a SKIPPED result with reason
+    # ``execution_safety_floor`` so the cap accounting is unaffected
+    # and the operator console clearly shows the rejection cause.
+    if mode_key == "live" and order_side == "BUY":
+        from services.execution_safety import (
+            assert_buy_entry_price_within_safety_bounds,
+        )
+
+        safety_strategy_slug = str(
+            payload.get("strategy_key")
+            or getattr(signal, "strategy_key", "")
+            or ""
+        ).strip().lower() or None
+        _stage_started = time.monotonic()
+        safety_assessment = assert_buy_entry_price_within_safety_bounds(
+            strategy_slug=safety_strategy_slug,
+            entry_price=price,
+        )
+        _leg_record("orchestrator_safety_floor", _stage_started)
+        if not safety_assessment.passed:
+            logger.warning(
+                "Pre-submit safety floor refused order: %s",
+                safety_assessment.message,
+                extra={
+                    "strategy_slug": safety_strategy_slug,
+                    "entry_price": price,
+                    "floor": safety_assessment.floor,
+                    "ceiling": safety_assessment.ceiling,
+                    "reason": safety_assessment.reason,
+                    "leg_id": leg_id,
+                },
+            )
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="skipped",
+                effective_price=price,
+                error_message=safety_assessment.message,
+                payload={
+                    "mode": mode_key,
+                    "submission": "skipped",
+                    "reason": "execution_safety_floor",
+                    "safety_reason": safety_assessment.reason,
+                    "strategy_slug": safety_strategy_slug,
+                    "entry_price": price,
+                    "safety_floor": safety_assessment.floor,
+                    "safety_ceiling": safety_assessment.ceiling,
+                    "token_id": token_id,
+                    "leg": dict(leg),
+                    "shares": shares,
+                    "requested_notional_usd": notional,
+                },
+                shares=shares,
+                notional_usd=effective_notional,
             )
 
     skip_buy_pre_submit_gate = False

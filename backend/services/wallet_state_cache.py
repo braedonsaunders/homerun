@@ -297,25 +297,48 @@ class WalletStateCache:
     # -------------------- Configuration --------------------
 
     def configure_wallet(self, wallet_address: Optional[str]) -> None:
-        """Pin the wallet this cache tracks.  Called once at startup."""
+        """Pin the wallet this cache tracks.  Called once at startup.
+
+        2026-05-05 hardening: refuse silent rebinds to a different wallet.
+        On a single-wallet install (the only configuration we currently
+        support) the cache is bound to either the proxy funder or the EOA.
+        Live execution service has been observed to call this twice within
+        seconds with different addresses when ``initialize()`` re-runs and
+        ``_proxy_funder_address`` transiently flips between funder and
+        ``None`` (e.g. signature-type probe race) — each rebind dropped the
+        whole cache (positions / orders / fills / dedup set), forcing a
+        full WS reseed and producing a freshness-stale window during which
+        the orchestrator refused to trade.
+
+        New behavior: keep the FIRST wallet seen and ignore subsequent
+        attempts to bind to a different one. Operators can still force a
+        rebind by calling :meth:`reset` first — which is the only path that
+        clears the wallet pin AND the cached state in lockstep, with
+        explicit intent. The previous behavior of "clear everything if the
+        bind address looked different" is dangerous because the second
+        bind is almost always a transient init-time fallback, not a real
+        wallet swap. To detect a genuine wallet change (e.g. operator
+        rotated keys), the orchestrator should be restarted, which calls
+        ``reset_wallet_state_cache()`` and then re-binds cleanly.
+        """
         with self._lock:
             normalized = str(wallet_address or "").strip().lower() or None
             if self._wallet_address is None:
                 self._wallet_address = normalized
                 return
             if normalized and normalized != self._wallet_address:
+                # 2026-05-05: REFUSE the rebind. Log loudly so operators
+                # can investigate why two wallets are racing for the cache,
+                # but DO NOT clear the state — that destroys the freshness
+                # signal the orchestrator depends on to trade.
                 logger.warning(
-                    "WalletStateCache rebound to a different wallet; clearing state",
-                    old=self._wallet_address,
-                    new=normalized,
+                    "WalletStateCache rebind refused (already pinned); "
+                    "ignoring new wallet to preserve cache state. "
+                    "Restart the worker to switch wallets cleanly.",
+                    pinned=self._wallet_address,
+                    refused=normalized,
                 )
-                self._positions.clear()
-                self._condition_to_token_ids.clear()
-                self._orders.clear()
-                self._recent_fills.clear()
-                self._applied_trade_ids.clear()
-                self._applied_trade_id_set.clear()
-                self._wallet_address = normalized
+                return
 
     # -------------------- WS push side --------------------
 

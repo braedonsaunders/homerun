@@ -75,6 +75,15 @@ FALLBACK_HTTP_RPC_URLS = (
 DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=12.0, write=10.0, pool=8.0)
 RPC_ATTEMPTS_PER_ENDPOINT = 2
 
+# 2026-05-05: per-endpoint 429 cooldowns. Quiknode and other free-tier
+# providers rate-limit to ~25 req/s; bursts return 429 and the endpoint
+# stays brittle for the rest of the rate-limit window. Cooldown an
+# endpoint after the FIRST 429 so the round-robin skips it instead of
+# hammering, and back off exponentially per consecutive 429.
+_RPC_ENDPOINT_COOLDOWN_BASE_SECONDS = 30.0  # First 429 → 30s skip
+_RPC_ENDPOINT_COOLDOWN_MAX_SECONDS = 600.0  # Cap at 10 minutes
+_RPC_429_RETRY_AFTER_FALLBACK_SECONDS = 60.0  # If Retry-After header missing
+
 
 # ==================== DATA MODEL ====================
 
@@ -440,6 +449,19 @@ class WalletWebSocketMonitor:
         # failure modes without us having to enumerate status codes.
         self._rpc_endpoint_consecutive_failures: dict[str, int] = {}
         self._rpc_endpoint_evict_threshold: int = 5
+        # 2026-05-05: 429-aware temporary cooldowns. Quiknode's free tier
+        # rate-limits to ~25 req/s and returns 429 when burst-loaded. The
+        # generic eviction counter fires after _rpc_endpoint_evict_threshold
+        # 429s, but each cycle in between still hammers the endpoint and
+        # adds to event-loop stalls. ``_rpc_endpoint_cooldown_until[ep]``
+        # holds a wall-clock monotonic deadline before which the endpoint
+        # is skipped from the round-robin. After cooldown expiry the
+        # endpoint is tried again — if it 429s once more we extend the
+        # cooldown exponentially up to ``_RPC_ENDPOINT_COOLDOWN_MAX_SECONDS``.
+        # This is per-endpoint so a healthy fallback URL still serves the
+        # request while the throttled one rests.
+        self._rpc_endpoint_cooldown_until: dict[str, float] = {}
+        self._rpc_endpoint_cooldown_attempts: dict[str, int] = {}
         self._rpc_client: Optional[httpx.AsyncClient] = None
         self._rpc_client_lock = asyncio.Lock()
         self._stats = {
@@ -499,6 +521,81 @@ class WalletWebSocketMonitor:
             self._evict_rpc_endpoint(normalized)
             return True
         return False
+
+    def _rpc_endpoint_in_cooldown(self, endpoint: str, *, now_mono: Optional[float] = None) -> bool:
+        """Return True iff ``endpoint`` is currently rate-limited and
+        should be skipped on this request.
+
+        Cooldowns are stored as monotonic-clock deadlines. We expire
+        entries lazily — once the deadline passes, the endpoint is tried
+        again (and re-cooled if it 429s again). Per-endpoint state means
+        a healthy fallback can serve the request while a throttled one
+        rests, instead of all endpoints sharing one global backoff.
+        """
+        normalized = _normalize_rpc_http_url(endpoint)
+        if not normalized:
+            return False
+        deadline = self._rpc_endpoint_cooldown_until.get(normalized)
+        if deadline is None:
+            return False
+        current = now_mono if now_mono is not None else time.monotonic()
+        if current >= deadline:
+            # Cooldown expired — clear and let the endpoint retry.
+            self._rpc_endpoint_cooldown_until.pop(normalized, None)
+            return False
+        return True
+
+    def _cool_down_rpc_endpoint(
+        self,
+        endpoint: str,
+        *,
+        retry_after_seconds: Optional[float] = None,
+    ) -> float:
+        """Mark ``endpoint`` rate-limited; skip it from the round-robin
+        until the cooldown expires.
+
+        Args:
+            endpoint: The RPC URL that returned 429.
+            retry_after_seconds: When the provider returns a Retry-After
+                header (in seconds), honor it as the floor of the cooldown
+                window. If unset, fall back to exponential backoff over
+                the per-endpoint attempt counter.
+
+        Returns the cooldown duration applied (for logging).
+        """
+        normalized = _normalize_rpc_http_url(endpoint)
+        if not normalized:
+            return 0.0
+        attempts = self._rpc_endpoint_cooldown_attempts.get(normalized, 0) + 1
+        self._rpc_endpoint_cooldown_attempts[normalized] = attempts
+        # Exponential backoff: 30s, 60s, 120s, ... capped at MAX. First
+        # 429 → 30s; sustained throttling → up to 10 min before each retry.
+        backoff = min(
+            _RPC_ENDPOINT_COOLDOWN_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+            _RPC_ENDPOINT_COOLDOWN_MAX_SECONDS,
+        )
+        if retry_after_seconds is not None and retry_after_seconds > 0:
+            # Honor server-suggested retry interval as a floor — we may
+            # extend further via exponential backoff, but never retry
+            # sooner than the provider asked us to.
+            backoff = max(backoff, float(retry_after_seconds))
+        backoff = min(backoff, _RPC_ENDPOINT_COOLDOWN_MAX_SECONDS)
+        self._rpc_endpoint_cooldown_until[normalized] = time.monotonic() + backoff
+        return backoff
+
+    def _clear_rpc_endpoint_cooldown(self, endpoint: str) -> None:
+        """Clear the 429 cooldown for an endpoint after a successful request.
+
+        Resets the attempt counter so the next 429 starts from the base
+        backoff again. Without this, an endpoint that recovers and then
+        gets throttled again much later would jump straight to a multi-
+        minute cooldown.
+        """
+        normalized = _normalize_rpc_http_url(endpoint)
+        if not normalized:
+            return
+        self._rpc_endpoint_cooldown_until.pop(normalized, None)
+        self._rpc_endpoint_cooldown_attempts.pop(normalized, None)
 
     # ==================== WALLET MANAGEMENT ====================
 
@@ -1037,6 +1134,11 @@ class WalletWebSocketMonitor:
             return None
 
         for endpoint in self._rpc_urls:
+            # 2026-05-05: skip endpoints currently in 429 cooldown so we
+            # don't burn a request attempt against a known-throttled
+            # provider. Healthy fallbacks still serve the request below.
+            if self._rpc_endpoint_in_cooldown(endpoint):
+                continue
             endpoint_error: Optional[Exception] = None
             for endpoint_attempt in range(RPC_ATTEMPTS_PER_ENDPOINT):
                 try:
@@ -1115,6 +1217,11 @@ class WalletWebSocketMonitor:
                     self._rpc_failure_streak = 0
                     self._rpc_backoff_until = 0.0
                     self._note_rpc_endpoint_success(endpoint)
+                    # 2026-05-05: clear the 429 cooldown attempt counter
+                    # on success so the next throttling event starts from
+                    # the base backoff rather than the previous escalated
+                    # window.
+                    self._clear_rpc_endpoint_cooldown(endpoint)
                     return result
                 except Exception as e:
                     endpoint_error = e
@@ -1124,6 +1231,47 @@ class WalletWebSocketMonitor:
                     _status = getattr(getattr(e, "response", None), "status_code", None)
                     if _status in (401, 403):
                         self._evict_rpc_endpoint(endpoint)
+                        break
+                    # 2026-05-05: 429 = rate-limited. Honor Retry-After if
+                    # present, fall back to exponential cooldown. Mark the
+                    # endpoint cooled-down so the round-robin skips it on
+                    # subsequent calls until the window expires.
+                    if _status == 429:
+                        retry_after_seconds: Optional[float] = None
+                        try:
+                            response_obj = getattr(e, "response", None)
+                            if response_obj is not None:
+                                retry_after_header = response_obj.headers.get("Retry-After")
+                                if retry_after_header:
+                                    try:
+                                        retry_after_seconds = float(retry_after_header)
+                                    except (TypeError, ValueError):
+                                        retry_after_seconds = (
+                                            _RPC_429_RETRY_AFTER_FALLBACK_SECONDS
+                                        )
+                        except Exception:
+                            retry_after_seconds = None
+                        cooldown_seconds = self._cool_down_rpc_endpoint(
+                            endpoint,
+                            retry_after_seconds=retry_after_seconds,
+                        )
+                        # Suppressed-rate logging — same throttle as the
+                        # generic endpoint-failure log so we don't drown
+                        # the operator console during sustained throttling.
+                        now_log = time.monotonic()
+                        if (
+                            now_log - self._rpc_last_endpoint_failure_log_at
+                        ) >= self._rpc_endpoint_failure_log_interval_seconds:
+                            self._rpc_last_endpoint_failure_log_at = now_log
+                            logger.warning(
+                                "Wallet monitor RPC 429 — cooling down endpoint",
+                                method=method,
+                                endpoint=endpoint,
+                                cooldown_seconds=round(cooldown_seconds, 1),
+                                retry_after_seconds=retry_after_seconds,
+                            )
+                        # Don't burn the second attempt against a 429'd
+                        # endpoint — move on to the next URL immediately.
                         break
                     if endpoint_attempt < RPC_ATTEMPTS_PER_ENDPOINT - 1:
                         await asyncio.sleep(0.2 * (endpoint_attempt + 1))

@@ -341,6 +341,69 @@ class TestSubscriptionHelpers:
         assert set(cids) == {"0xc1", "0xc2"}
 
 
+class TestConfigureWalletPin:
+    """The cache MUST pin its wallet on first bind and refuse silent rebinds.
+
+    Production observed (2026-05-05) `live_execution_service.initialize()`
+    calling configure_wallet twice in seconds with different addresses
+    (proxy funder vs EOA) when sig-type probe race left ``_proxy_funder_address``
+    transiently None. Each rebind dropped positions/orders/fills/dedup —
+    the freshness gate then refused to trade until the next REST reseed.
+    """
+
+    def test_first_bind_pins_wallet(self):
+        reset_wallet_state_cache()
+        c = WalletStateCache()
+        c.configure_wallet("0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae")
+        assert c.wallet_address() == "0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae"
+
+    def test_rebind_to_different_wallet_is_refused(self):
+        reset_wallet_state_cache()
+        c = WalletStateCache()
+        # First bind: proxy funder
+        c.configure_wallet("0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae")
+        # Seed some state we DO NOT want cleared by a rogue rebind.
+        c.seed_from_rest(
+            wallet_address="0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae",
+            positions=[
+                {"asset": "tA", "conditionId": "0xc1", "outcomeIndex": 0, "size": "10", "avgPrice": "0.5"},
+            ],
+            closed_positions=[],
+        )
+        assert c.wallet_address() == "0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae"
+        assert "tA" in c.positions_by_token()
+
+        # Second bind with a different wallet (the EOA on a sig-type
+        # probe race). MUST be refused — keeps original pin AND state.
+        c.configure_wallet("0x6195365e778876ad10d1550af066f76b2a6d7993")
+        assert c.wallet_address() == "0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae"
+        # State preserved across the refused rebind.
+        assert "tA" in c.positions_by_token()
+
+    def test_rebind_to_same_wallet_is_noop(self):
+        reset_wallet_state_cache()
+        c = WalletStateCache()
+        c.configure_wallet("0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae")
+        # Re-binding to the same wallet is allowed (idempotent) — useful
+        # when the live execution service re-runs and the resolved wallet
+        # is unchanged.
+        c.configure_wallet("0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae")
+        c.configure_wallet("0X1BA7FDB0B103D7B805F7C0C097C32ED5A8AC0BAE")  # case-insensitive
+        # configure_wallet normalizes to lowercase before comparing.
+        assert c.wallet_address() == "0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae"
+
+    def test_explicit_reset_then_rebind_works(self):
+        """Operator-initiated wallet swap: full reset is required."""
+        reset_wallet_state_cache()
+        c = WalletStateCache()
+        c.configure_wallet("0x1ba7fdb0b103d7b805f7c0c097c32ed5a8ac0bae")
+        # After explicit reset, a new bind is allowed.
+        reset_wallet_state_cache()
+        c2 = WalletStateCache()
+        c2.configure_wallet("0x6195365e778876ad10d1550af066f76b2a6d7993")
+        assert c2.wallet_address() == "0x6195365e778876ad10d1550af066f76b2a6d7993"
+
+
 class TestLegacyDictShape:
     def test_to_legacy_dict_has_all_keys(self, cache):
         cache.apply_trade(_trade_event(trade_id="t1", side="BUY", price="0.40", size="100"))

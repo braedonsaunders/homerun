@@ -258,6 +258,199 @@ async def test_wallet_monitor_invalid_block_range_is_treated_as_transient(monkey
     assert monitor._rpc_failure_streak == 0
 
 
+# ---------------------------------------------------------------------------
+# 2026-05-05: per-endpoint 429 cooldown
+# ---------------------------------------------------------------------------
+
+
+def test_rpc_endpoint_in_cooldown_returns_false_when_no_cooldown_set():
+    monitor = WalletWebSocketMonitor()
+    assert monitor._rpc_endpoint_in_cooldown("https://polygon-rpc.com") is False
+
+
+def test_cool_down_rpc_endpoint_marks_endpoint_skipped():
+    monitor = WalletWebSocketMonitor()
+    cooldown = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    assert cooldown >= 30.0  # First 429 → at least the base 30s window
+    assert monitor._rpc_endpoint_in_cooldown("https://polygon-rpc.com") is True
+
+
+def test_cool_down_rpc_endpoint_backs_off_exponentially():
+    monitor = WalletWebSocketMonitor()
+    first = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    second = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    third = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    # Each consecutive 429 doubles the cooldown (30 → 60 → 120 → ...).
+    assert second > first
+    assert third > second
+
+
+def test_cool_down_rpc_endpoint_honors_retry_after_header():
+    monitor = WalletWebSocketMonitor()
+    # First 429 base would be 30s; provider asks 90s → honor 90s.
+    cooldown = monitor._cool_down_rpc_endpoint(
+        "https://polygon-rpc.com",
+        retry_after_seconds=90.0,
+    )
+    assert cooldown >= 90.0
+
+
+def test_cool_down_rpc_endpoint_caps_at_max():
+    monitor = WalletWebSocketMonitor()
+    # 11 consecutive cooldowns ⇒ 30 * 2^10 = 30720s, must clamp.
+    for _ in range(11):
+        cooldown = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    # Final cooldown must respect the 600s ceiling.
+    assert cooldown <= 600.0
+
+
+def test_clear_rpc_endpoint_cooldown_resets_attempts_and_window():
+    monitor = WalletWebSocketMonitor()
+    monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    monitor._clear_rpc_endpoint_cooldown("https://polygon-rpc.com")
+    assert monitor._rpc_endpoint_in_cooldown("https://polygon-rpc.com") is False
+    # The next 429 should restart from the base window, not from where we
+    # left off.
+    next_cooldown = monitor._cool_down_rpc_endpoint("https://polygon-rpc.com")
+    assert next_cooldown >= 30.0
+    assert next_cooldown < 90.0  # Not 4x escalated; back to fresh
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_skips_endpoints_in_cooldown(monkeypatch):
+    """If endpoint A is in cooldown, _rpc_request must skip it and use B."""
+    monitor = WalletWebSocketMonitor()
+    monitor._http_rpc_url = "https://a.example"
+    monitor._rpc_urls = ["https://a.example", "https://b.example"]
+    monitor._cool_down_rpc_endpoint("https://a.example")
+
+    posted_to: list[str] = []
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+
+    class _FakeClient:
+        async def post(self, endpoint, json):
+            posted_to.append(endpoint)
+            return _FakeResponse()
+
+    async def _get_rpc_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(monitor, "_get_rpc_client", _get_rpc_client)
+
+    result = await monitor._rpc_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+        method="eth_blockNumber",
+    )
+
+    assert result == {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+    # Only the non-cooldowned endpoint received traffic.
+    assert posted_to == ["https://b.example"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_clears_cooldown_attempts_on_success(monkeypatch):
+    """A successful request through a previously-throttled endpoint must
+    reset the attempt counter so the next 429 starts from the base window."""
+    monitor = WalletWebSocketMonitor()
+    monitor._http_rpc_url = "https://a.example"
+    monitor._rpc_urls = ["https://a.example"]
+    # Pretend we've already cooled this endpoint down twice.
+    monitor._rpc_endpoint_cooldown_attempts["https://a.example"] = 2
+    # ...but the cooldown window has expired so the request goes through.
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+
+    class _FakeClient:
+        async def post(self, endpoint, json):
+            return _FakeResponse()
+
+    async def _get_rpc_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(monitor, "_get_rpc_client", _get_rpc_client)
+
+    await monitor._rpc_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+        method="eth_blockNumber",
+    )
+
+    assert monitor._rpc_endpoint_cooldown_attempts.get("https://a.example") in (None, 0)
+
+
+@pytest.mark.asyncio
+async def test_rpc_request_429_response_cools_endpoint(monkeypatch):
+    """A 429 from one endpoint cools it down, falls through to the next."""
+    import httpx
+
+    monitor = WalletWebSocketMonitor()
+    monitor._http_rpc_url = "https://a.example"
+    monitor._rpc_urls = ["https://a.example", "https://b.example"]
+
+    class _FakeResponse:
+        def __init__(self, *, status: int):
+            self.status_code = status
+            self.headers = {"Retry-After": "45"} if status == 429 else {}
+
+        def raise_for_status(self):
+            if self.status_code == 429:
+                raise httpx.HTTPStatusError(
+                    "429",
+                    request=httpx.Request("POST", "https://a.example"),
+                    response=httpx.Response(429, headers={"Retry-After": "45"}),
+                )
+
+        def json(self):
+            return {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+
+    posted_to: list[str] = []
+
+    class _FakeClient:
+        async def post(self, endpoint, json):
+            posted_to.append(endpoint)
+            if endpoint == "https://a.example":
+                # Construct a real httpx.Response with the 429 headers so
+                # the wrapper's headers.get("Retry-After") path works.
+                response = httpx.Response(
+                    429,
+                    headers={"Retry-After": "45"},
+                    request=httpx.Request("POST", endpoint),
+                )
+                raise httpx.HTTPStatusError(
+                    "429 Too Many Requests",
+                    request=response.request,
+                    response=response,
+                )
+            return _FakeResponse(status=200)
+
+    async def _get_rpc_client():
+        return _FakeClient()
+
+    monkeypatch.setattr(monitor, "_get_rpc_client", _get_rpc_client)
+
+    result = await monitor._rpc_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+        method="eth_blockNumber",
+    )
+
+    assert result == {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+    # Confirm we tried A (got 429), then fell through to B.
+    assert posted_to == ["https://a.example", "https://b.example"]
+    # A is now in cooldown — Retry-After 45s honored as the floor.
+    assert monitor._rpc_endpoint_in_cooldown("https://a.example") is True
+
+
 @pytest.mark.asyncio
 async def test_kalshi_ws_feed_start_skips_when_credentials_missing(monkeypatch):
     feed = KalshiWSFeed(cache=PriceCache())

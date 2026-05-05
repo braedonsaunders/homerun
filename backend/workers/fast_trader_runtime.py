@@ -1371,10 +1371,50 @@ class _FastTraderTask:
             async with FastAsyncSessionLocal() as active_session:
                 try:
                     await _submit_and_persist(active_session)
-                    if active_session.in_transaction():
+                    # 2026-05-05 hardening: explicit pending-rollback guard.
+                    # Production observed cycles where ``_submit_and_persist``
+                    # returned without raising but the session was left in
+                    # SQLAlchemy's ``pending-rollback`` state by an inner
+                    # flush whose own rollback failed silently. Calling
+                    # ``commit()`` directly on that session raises
+                    # PendingRollbackError, the outer rollback fails for
+                    # the same reason, and the cycle's signal counts as
+                    # "Fast trader signal processing failed" with a stack
+                    # that obscures the original CLOB-side cause. Always
+                    # rollback first if the session shows pending state,
+                    # then only commit if there's still pending work to
+                    # commit — this never destroys durably-flushed pre-
+                    # submit rows (those committed in fast_submit.py:505
+                    # before the network call) and prevents the cascade.
+                    rolled_back_pending = False
+                    try:
+                        if _session_has_pending_rollback(active_session):
+                            await active_session.rollback()
+                            rolled_back_pending = True
+                    except Exception as guard_exc:
+                        logger.debug(
+                            "Fast trader pre-commit pending-rollback guard failed",
+                            trader_id=trader_id,
+                            exc_info=guard_exc,
+                        )
+                    if not rolled_back_pending and active_session.in_transaction():
                         _persist_started = time.monotonic()
-                        await asyncio.shield(active_session.commit())
-                        self._accumulate_stage_ms("persist", _persist_started)
+                        try:
+                            await asyncio.shield(active_session.commit())
+                            self._accumulate_stage_ms("persist", _persist_started)
+                        except Exception as commit_exc:
+                            # Last-resort: if commit raised PendingRollback
+                            # (race window where ``in_transaction`` reported
+                            # True but a parallel inner-task drain marked
+                            # the session dirty between the check and the
+                            # commit), absorb the error after rolling back
+                            # so the worker keeps processing the next
+                            # signal cleanly.
+                            try:
+                                await active_session.rollback()
+                            except Exception:
+                                pass
+                            raise commit_exc
                 except Exception:
                     try:
                         await active_session.rollback()
@@ -1383,6 +1423,29 @@ class _FastTraderTask:
                     raise
         else:
             await _submit_and_persist(session)
+
+
+def _session_has_pending_rollback(session) -> bool:
+    """Return True if SQLAlchemy considers the session to be in a state
+    where the next operation will raise ``PendingRollbackError``.
+
+    The relevant signal lives on the underlying ``SessionTransaction``
+    (``_rollback_exception``); when it's set, every subsequent execute /
+    commit / flush short-circuits with the cached error until rollback
+    runs. We probe defensively because the attribute is private — fall
+    back to False on any failure so we never block a healthy commit.
+    """
+    try:
+        sync_session = getattr(session, "sync_session", None)
+        if sync_session is None:
+            return False
+        transaction = getattr(sync_session, "_transaction", None)
+        if transaction is None:
+            return False
+        rb_exc = getattr(transaction, "_rollback_exception", None)
+        return rb_exc is not None
+    except Exception:
+        return False
 
 
 # Module-level reference to the currently-active _FastRuntime instance.

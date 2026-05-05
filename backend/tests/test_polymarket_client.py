@@ -548,3 +548,147 @@ def test_is_market_tradable_false_for_dispute_status():
         )
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-05: per-endpoint 429 cooldown (sustained-throttle safety net)
+# ---------------------------------------------------------------------------
+
+
+class _Fake429Client:
+    """Returns a 429 response; aread() yields an empty body."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def get(self, _url, **_kwargs):
+        self.calls += 1
+        return _Fake429Response(retry_after_seconds=None)
+
+
+class _Fake429Response:
+    def __init__(self, *, retry_after_seconds):
+        self.status_code = 429
+        self.headers = (
+            {"Retry-After": str(int(retry_after_seconds))}
+            if retry_after_seconds is not None
+            else {}
+        )
+
+    def raise_for_status(self):
+        # The wrapper checks status_code directly for 429; raise_for_status
+        # is only consulted on transport-level errors that escape into
+        # the except branch — so we no-op here.
+        return None
+
+    async def aread(self):
+        return b""
+
+
+def test_endpoint_cooldown_remaining_returns_zero_when_no_cooldown_set():
+    client = PolymarketClient()
+    assert client._endpoint_cooldown_remaining("data_positions") == 0.0
+
+
+def test_stamp_endpoint_cooldown_marks_endpoint_cooled():
+    client = PolymarketClient()
+    cooldown = client._stamp_endpoint_cooldown("data_positions")
+    assert cooldown >= 30.0
+    assert client._endpoint_cooldown_remaining("data_positions") > 0.0
+
+
+def test_stamp_endpoint_cooldown_backs_off_exponentially():
+    client = PolymarketClient()
+    first = client._stamp_endpoint_cooldown("data_positions")
+    second = client._stamp_endpoint_cooldown("data_positions")
+    third = client._stamp_endpoint_cooldown("data_positions")
+    assert second > first
+    assert third > second
+
+
+def test_stamp_endpoint_cooldown_honors_retry_after_floor():
+    client = PolymarketClient()
+    response = httpx.Response(429, headers={"Retry-After": "120"})
+    cooldown = client._stamp_endpoint_cooldown("data_positions", response=response)
+    assert cooldown >= 120.0
+
+
+def test_stamp_endpoint_cooldown_caps_at_max():
+    client = PolymarketClient()
+    # Sufficient consecutive trips to blow past the cap.
+    for _ in range(20):
+        cooldown = client._stamp_endpoint_cooldown("data_positions")
+    assert cooldown <= 300.0
+
+
+def test_clear_endpoint_cooldown_resets_attempts_and_window():
+    client = PolymarketClient()
+    client._stamp_endpoint_cooldown("data_positions")
+    client._stamp_endpoint_cooldown("data_positions")
+    client._clear_endpoint_cooldown("data_positions")
+    assert client._endpoint_cooldown_remaining("data_positions") == 0.0
+    # Next 429 starts from the base window again.
+    next_cooldown = client._stamp_endpoint_cooldown("data_positions")
+    assert next_cooldown >= 30.0
+    assert next_cooldown < 90.0
+
+
+def test_rate_limited_get_short_circuits_when_endpoint_cooled(monkeypatch):
+    """Cooldown set → next request returns synthetic 429 without network IO."""
+
+    client = PolymarketClient()
+    # Skip the rate-limiter and clock for determinism.
+    async def _fake_acquire(_endpoint):
+        return None
+
+    monkeypatch.setattr("services.polymarket.rate_limiter.acquire", _fake_acquire)
+
+    # Stamp a cooldown on the same endpoint key the wrapper derives.
+    from services.polymarket import endpoint_for_url
+
+    endpoint_key = endpoint_for_url("https://data-api.polymarket.com/closed-positions")
+    client._stamp_endpoint_cooldown(endpoint_key)
+
+    fake_client = _FakeStreamingClient(failures_before_success=0)
+    response = asyncio.run(
+        client._rate_limited_get(
+            "https://data-api.polymarket.com/closed-positions?user=0xabc",
+            client=fake_client,
+        )
+    )
+
+    # Request short-circuited → no calls were made through the HTTP client.
+    assert fake_client.calls == 0
+    assert response.status_code == 429
+
+
+def test_rate_limited_get_stamps_cooldown_when_429_retries_exhausted(monkeypatch):
+    """After all retries return 429, the wrapper stamps a cooldown so the
+    next caller's request short-circuits instead of repeating the storm."""
+
+    client = PolymarketClient()
+
+    async def _fake_acquire(_endpoint):
+        return None
+
+    async def _fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("services.polymarket.rate_limiter.acquire", _fake_acquire)
+    monkeypatch.setattr("services.polymarket.asyncio.sleep", _fake_sleep)
+
+    fake_client = _Fake429Client()
+    response = asyncio.run(
+        client._rate_limited_get(
+            "https://data-api.polymarket.com/closed-positions?user=0xabc",
+            client=fake_client,
+        )
+    )
+
+    # All retries returned 429 — the final response is still surfaced…
+    assert response.status_code == 429
+    # …and the endpoint is cooled-down for the next caller.
+    from services.polymarket import endpoint_for_url
+
+    endpoint_key = endpoint_for_url("https://data-api.polymarket.com/closed-positions")
+    assert client._endpoint_cooldown_remaining(endpoint_key) > 0.0
