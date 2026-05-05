@@ -237,6 +237,75 @@ async def execute_fast_signal(
     # gap requires a deterministic provider client_order_id derived from
     # the signal so a restart can reconcile against the provider; tracked
     # as a follow-up — see ``docs/fast-lane-idempotency.md``.
+    # ----- Fast-tier risk cap ------------------------------------------------
+    # Fix JJ: the fast tier was bypassing the risk_manager entirely, so a
+    # configured ``max_open_orders`` cap (visible in the trader-config
+    # UI) had ZERO effect on this code path.  Production observed 8
+    # open orders against a 2-order cap.  Apply a single-row count
+    # check here using the trader's persisted risk_limits.  The query
+    # is bounded to active statuses and indexed on ``trader_id``, so
+    # it adds a few ms — far cheaper than a runaway-order-fan.  Skip
+    # the check entirely if no limit is configured.
+    if isinstance(strategy_params, dict):
+        # ``strategy_params`` is the per-source config passed in by the
+        # fast trader runtime; it carries whatever risk overrides the
+        # operator put on the source-config row.  Fall through to the
+        # trader-wide risk_limits otherwise.
+        risk_open_cap = strategy_params.get("max_open_orders")
+    else:
+        risk_open_cap = None
+    if risk_open_cap is None:
+        # Pull from the trader's risk_limits_json, lazy-fetched once
+        # per call — small cost on the few-ms scale.
+        try:
+            from models.database import Trader
+            trader_row = await session.get(Trader, trader_id)
+            if trader_row is not None:
+                trader_risk = getattr(trader_row, "risk_limits_json", None) or {}
+                if isinstance(trader_risk, str):
+                    import json as _json
+                    try:
+                        trader_risk = _json.loads(trader_risk)
+                    except Exception:
+                        trader_risk = {}
+                risk_open_cap = trader_risk.get("max_open_orders") if isinstance(trader_risk, dict) else None
+        except Exception:
+            risk_open_cap = None
+    try:
+        risk_open_cap_int = int(risk_open_cap) if risk_open_cap is not None else None
+    except Exception:
+        risk_open_cap_int = None
+    if risk_open_cap_int is not None and risk_open_cap_int > 0:
+        from sqlalchemy import func as _sa_func
+        active_statuses = ("submitted", "open", "partial", "pending", "working")
+        open_count = (
+            await session.execute(
+                select(_sa_func.count(TraderOrder.id))
+                .where(TraderOrder.trader_id == trader_id)
+                .where(TraderOrder.status.in_(active_statuses))
+            )
+        ).scalar_one() or 0
+        if open_count >= risk_open_cap_int:
+            logger.info(
+                "Fast-tier blocking submission: trader at max_open_orders cap",
+                trader_id=trader_id,
+                open_count=open_count,
+                max_open_orders=risk_open_cap_int,
+            )
+            return FastSubmitResult(
+                session_id="",
+                status="skipped",
+                effective_price=None,
+                error_message=f"max_open_orders cap reached ({open_count}/{risk_open_cap_int})",
+                orders_written=0,
+                payload={
+                    "fast_tier": True,
+                    "reason": "max_open_orders_cap",
+                    "open_count": open_count,
+                    "cap": risk_open_cap_int,
+                },
+            )
+
     signal_id = str(getattr(signal, "id", "") or "").strip()
     if signal_id:
         existing_id = (
