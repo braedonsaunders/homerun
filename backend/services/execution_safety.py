@@ -2,49 +2,64 @@
 
 Background
 ----------
-Strategies on this platform are loaded by ``exec``-ing
-``Strategy.source_code`` from the database (see
-:mod:`services.strategy_loader`).  That means a fix made in the .py
-file under ``services/strategies/`` does NOT propagate to the running
-process unless the corresponding ``Strategy.source_code`` row is
-re-seeded — and the catalog explicitly does NOT overwrite existing
-rows on startup (``ensure_system_opportunity_strategies_seeded``
-preserves user edits).
+Strategies on this platform are DB-backed and user-managed: their
+source code lives in ``Strategy.source_code``, their gate config
+lives in ``Strategy.config``. Operators add, edit, fork, and remove
+strategies through the UI; the platform itself MUST NOT assume any
+specific strategy slug exists.
 
-The 2026-05-05 review uncovered a category of strategy-level safety
-guards (e.g. ``min_entry_price`` floors on contrarian maker bets)
-where the .py-level fix was real but invisible to the live system
-because the DB-stored source_code lacked the gate.  Operators could
-also disable the gate inadvertently from the UI.
+That makes any guard whose only home is the strategy's own
+``_score_market`` gate fragile: a fix to the .py file under
+``services/strategies/`` doesn't propagate to the running system
+because the catalog explicitly preserves user edits across reseeds,
+and a UI edit can disable a gate the operator considered protective.
 
-This module enforces those floors at the **submit boundary** —
-inside :func:`services.trader_orchestrator.order_manager.submit_execution_leg`,
-right before the CLOB call — using a hard table that can only be
-changed by deploying new code.  Strategies cannot loosen these floors
-via config.  The result is defense-in-depth: even if a stale
-strategy_versions row, a misconfigured UI override, or a bug in the
-strategy's own gate logic lets a low-quality order through, this
-layer rejects it before the venue ever sees the request.
+This module enforces operator-installed safety floors at the
+**submit boundary** (inside
+:func:`services.trader_orchestrator.order_manager.submit_execution_leg`,
+right before the CLOB call). Strategies cannot loosen these floors
+via UI config or strategy source-code edits — only an explicit call
+to :func:`register_strategy_entry_price_floor` at startup or runtime
+installs one.
 
 Design
 ------
-* Per-strategy entry-price floors and ceilings, keyed by strategy
-  slug, with a default of "no floor" so unknown strategies are
-  unaffected.
-* Returns a structured :class:`SafetyAssessment` so the caller can
-  log the decision, propagate it as an order ``error_message``, and
-  surface it as a ``buy_pre_submit_gate``-style skip without disturbing
-  cap accounting.
-* No exceptions are raised; ``passed=False`` is the rejection signal.
+* Per-strategy entry-price floors and ceilings, registered by slug.
+* Empty by default — the platform makes NO assumptions about which
+  strategies exist or what their floors should be. Operators install
+  floors as part of their deployment policy (loader script, admin
+  endpoint, settings migration, etc.).
+* :class:`SafetyAssessment` carries the structured result (no
+  exceptions raised) so callers log the decision, propagate it as an
+  order ``error_message``, and surface it as a SKIPPED order without
+  disturbing cap accounting.
 
-Adding a new floor
-------------------
-Edit ``_STRATEGY_ENTRY_PRICE_FLOORS`` (or the ceiling map) below,
-include a comment with the empirical justification + date, and add a
-test in ``tests/test_execution_safety.py``.  Code review should
-verify the floor matches the strategy's documented profitability
-window.  Floors should be conservative — they're the line below
-which the platform refuses to trade, regardless of operator config.
+API
+---
+* :func:`register_strategy_entry_price_floor` — install or update a
+  floor for a strategy slug.
+* :func:`register_strategy_entry_price_ceiling` — install or update a
+  ceiling for a strategy slug.
+* :func:`unregister_strategy_entry_price_floor` /
+  :func:`unregister_strategy_entry_price_ceiling` — remove operator-
+  installed bounds.
+* :func:`assert_buy_entry_price_within_safety_bounds` — the canonical
+  pre-submit check.
+* :func:`get_strategy_entry_price_floor` /
+  :func:`get_strategy_entry_price_ceiling` — read-only accessors for
+  UI surfacing and diagnostics.
+* :func:`clear_all_strategy_entry_price_bounds` — testing-only helper
+  to reset the registry between cases.
+
+Concurrency
+-----------
+The registry is mutated only at install / update time, which is
+expected to be infrequent (startup, admin actions). Reads on the hot
+path are dict lookups against the live mapping — Python dict reads
+are atomic enough for our use here, and the cost of a stale read on
+a register/unregister race is one stale safety decision (which is
+the same outcome as making the change one cycle later). No lock is
+held across the hot-path check.
 """
 
 from __future__ import annotations
@@ -54,31 +69,14 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Hard floors / ceilings (defense-in-depth tables)
+# Operator-installed floor / ceiling registries.
+#
+# Both are EMPTY by default. The platform makes no assumption that any
+# particular strategy slug exists. Operators install bounds via the
+# ``register_*`` functions below as part of their deployment policy.
 # ---------------------------------------------------------------------------
 
-# Per-strategy minimum BUY entry price. The strategy will be REFUSED
-# at the submit boundary if a buy order targets this strategy with an
-# entry price strictly below the listed value. Default behavior for
-# strategies not listed here: no floor enforced.
-#
-# Each entry MUST cite the empirical justification + date. These are
-# safety floors, not optimization targets — pick the value below which
-# the strategy is structurally unprofitable, not the optimum.
-_STRATEGY_ENTRY_PRICE_FLOORS: dict[str, float] = {
-    # 2026-05-05 live data: bucket-by-bucket P&L for a single trading day
-    # showed only the 0.80+ entry-price bucket was profitable
-    # (5/0 wins, +$4.74). Below 0.50: 4/19 wins, -$58. Below 0.20: 0/3
-    # wins, -$8. Asymmetric payoff (lose 100% on adverse resolution,
-    # capture only the spread on wins) makes contrarian cheap-side
-    # entries structurally a losing bet against market consensus.
-    "crypto_entropy_maker": 0.80,
-}
-
-# Per-strategy maximum BUY entry price. Currently empty — left here
-# as the symmetric extension point. Settlement-risk-driven ceilings
-# (e.g. "never buy at >= 0.99 because Polymarket's redemption window
-# can land you holding losing tokens") would live here.
+_STRATEGY_ENTRY_PRICE_FLOORS: dict[str, float] = {}
 _STRATEGY_ENTRY_PRICE_CEILINGS: dict[str, float] = {}
 
 
@@ -111,12 +109,95 @@ class SafetyAssessment:
     observed: Optional[float] = None
 
 
+def _normalize_slug(strategy_slug: Optional[str]) -> str:
+    return (strategy_slug or "").strip().lower()
+
+
+def register_strategy_entry_price_floor(
+    strategy_slug: str,
+    floor: float,
+) -> None:
+    """Install or update the BUY entry-price floor for a strategy slug.
+
+    Args:
+        strategy_slug: The strategy slug, case-insensitive. Empty / None
+            slugs are silently ignored (no floor installed).
+        floor: Minimum acceptable BUY entry price. Polymarket scale
+            (0..1). Must be a finite number; non-finite values are
+            silently ignored.
+
+    Calling with the same slug overwrites the previous floor.
+    """
+    slug_norm = _normalize_slug(strategy_slug)
+    if not slug_norm:
+        return
+    try:
+        floor_value = float(floor)
+    except (TypeError, ValueError):
+        return
+    if floor_value != floor_value or floor_value in (float("inf"), float("-inf")):
+        # NaN / inf — refuse to install.
+        return
+    _STRATEGY_ENTRY_PRICE_FLOORS[slug_norm] = floor_value
+
+
+def register_strategy_entry_price_ceiling(
+    strategy_slug: str,
+    ceiling: float,
+) -> None:
+    """Install or update the BUY entry-price ceiling for a strategy slug.
+
+    Same semantics as :func:`register_strategy_entry_price_floor` but
+    for the upper bound. Useful for settlement-risk-driven ceilings
+    (e.g. "never buy at >= 0.99").
+    """
+    slug_norm = _normalize_slug(strategy_slug)
+    if not slug_norm:
+        return
+    try:
+        ceiling_value = float(ceiling)
+    except (TypeError, ValueError):
+        return
+    if ceiling_value != ceiling_value or ceiling_value in (float("inf"), float("-inf")):
+        return
+    _STRATEGY_ENTRY_PRICE_CEILINGS[slug_norm] = ceiling_value
+
+
+def unregister_strategy_entry_price_floor(strategy_slug: str) -> None:
+    """Remove the operator-installed floor for a strategy slug.
+
+    No-op if the slug isn't registered.
+    """
+    _STRATEGY_ENTRY_PRICE_FLOORS.pop(_normalize_slug(strategy_slug), None)
+
+
+def unregister_strategy_entry_price_ceiling(strategy_slug: str) -> None:
+    """Remove the operator-installed ceiling for a strategy slug.
+
+    No-op if the slug isn't registered.
+    """
+    _STRATEGY_ENTRY_PRICE_CEILINGS.pop(_normalize_slug(strategy_slug), None)
+
+
+def clear_all_strategy_entry_price_bounds() -> None:
+    """Wipe the floor + ceiling registries.
+
+    Intended for tests and explicit deployment-time resets. Production
+    code should prefer :func:`unregister_strategy_entry_price_floor` /
+    :func:`unregister_strategy_entry_price_ceiling` so unrelated bounds
+    aren't accidentally cleared.
+    """
+    _STRATEGY_ENTRY_PRICE_FLOORS.clear()
+    _STRATEGY_ENTRY_PRICE_CEILINGS.clear()
+
+
 def assert_buy_entry_price_within_safety_bounds(
     *,
     strategy_slug: Optional[str],
     entry_price: Optional[float],
 ) -> SafetyAssessment:
-    """Verify a BUY order's entry price clears the per-strategy hard floor.
+    """Verify a BUY order's entry price clears the operator-installed
+    per-strategy hard floor and ceiling.
 
     This is the canonical pre-submit safety check for entry-price
     bounds. It runs from
@@ -125,9 +206,11 @@ def assert_buy_entry_price_within_safety_bounds(
     constructed the order.
 
     Args:
-        strategy_slug: Lower-cased strategy identifier. Unknown / empty
-            slugs are treated as "no floor enforced" so the safety
-            layer never blocks unrelated strategies.
+        strategy_slug: Strategy identifier (case-insensitive). Empty /
+            ``None`` slugs are treated as "no floor enforced" so the
+            safety layer never blocks orders whose strategy attribution
+            is missing — that's an upstream telemetry issue, not a
+            safety violation.
         entry_price: The order's effective entry price (Polymarket
             scale: 0..1). ``None`` is treated as missing — the safety
             layer doesn't fabricate a violation when upstream code
@@ -140,11 +223,10 @@ def assert_buy_entry_price_within_safety_bounds(
     Notes:
         * No exception is raised. Callers MUST inspect ``passed``.
         * The function is pure / synchronous / O(1).
-        * Strategies CAN'T loosen the floor via UI config — these are
-          hardcoded so they survive UI edits AND stale strategy_versions
-          rows in the DB.
+        * If no floor or ceiling is registered for the slug, the check
+          passes — the registry is empty by default.
     """
-    slug_norm = (strategy_slug or "").strip().lower()
+    slug_norm = _normalize_slug(strategy_slug)
     if not slug_norm:
         return SafetyAssessment(
             passed=True,
@@ -152,10 +234,6 @@ def assert_buy_entry_price_within_safety_bounds(
             message="No strategy slug supplied; safety floor not applicable.",
         )
 
-    # ``None`` entry_price → upstream gate didn't populate the field.
-    # Don't fabricate a violation; let the existing buy-gate / token-id
-    # validation handle it. The safety layer is for orders the system
-    # *thinks* are well-formed but which violate a hard policy floor.
     if entry_price is None:
         return SafetyAssessment(
             passed=True,
@@ -215,20 +293,16 @@ def assert_buy_entry_price_within_safety_bounds(
 
 
 def get_strategy_entry_price_floor(strategy_slug: Optional[str]) -> Optional[float]:
-    """Read-only accessor for the configured floor (or None).
-
-    Useful for UI surfacing ("This strategy has a hard floor at X")
-    and for tests that pin the table contents.
-    """
-    slug_norm = (strategy_slug or "").strip().lower()
+    """Read-only accessor for the registered floor (or None)."""
+    slug_norm = _normalize_slug(strategy_slug)
     if not slug_norm:
         return None
     return _STRATEGY_ENTRY_PRICE_FLOORS.get(slug_norm)
 
 
 def get_strategy_entry_price_ceiling(strategy_slug: Optional[str]) -> Optional[float]:
-    """Read-only accessor for the configured ceiling (or None)."""
-    slug_norm = (strategy_slug or "").strip().lower()
+    """Read-only accessor for the registered ceiling (or None)."""
+    slug_norm = _normalize_slug(strategy_slug)
     if not slug_norm:
         return None
     return _STRATEGY_ENTRY_PRICE_CEILINGS.get(slug_norm)
