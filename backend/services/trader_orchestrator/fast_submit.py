@@ -646,6 +646,67 @@ async def execute_fast_signal(
                 filled_shares=safe_float(leg_result.shares, 0.0) or 0.0,
                 payload=order_payload,
             )
+            # Wire the fresh order into PositionMarkState so the WS
+            # ``position_marks_update`` push channel updates U-P&L on
+            # the very next price tick (≤ 100 ms typically) instead
+            # of waiting for the trader_reconciliation_worker to
+            # register it on its 30 s cycle.  The slow orchestrator's
+            # position-monitor loop normally does this; the fast tier
+            # had to wait, leaving fresh fast-tier fills with $0
+            # marks in the UI for up to half a minute.  Live mode
+            # only — shadow trades have no real position to track.
+            if mode_key == "live" and order_status == "executed":
+                try:
+                    fill_token_id = str(leg.get("token_id") or "").strip()
+                    fill_price = (
+                        safe_float(leg_result.effective_price, None)
+                        or safe_float(order.entry_price, None)
+                    )
+                    fill_notional = safe_float(leg_result.notional_usd, notional) or 0.0
+                    if fill_token_id and fill_price and fill_price > 0 and fill_notional > 0:
+                        from services.position_mark_state import get_position_mark_state
+                        from services.ws_feeds import get_feed_manager
+
+                        pms = get_position_mark_state()
+                        pms.register_position(
+                            order_id=pre_submit_order_id,
+                            market_id=str(order.market_id or ""),
+                            token_id=fill_token_id,
+                            direction=str(order.direction or "yes").strip().lower(),
+                            entry_price=float(fill_price),
+                            notional=float(fill_notional),
+                            edge_percent=safe_float(order.edge_percent, 0.0) or 0.0,
+                        )
+                        # Subscribe the WS feed for this token if it
+                        # isn't already subscribed — without this the
+                        # PriceCache.on_update callbacks that drive
+                        # ``pms.on_price_update`` never fire for the
+                        # new token, so U-P&L stays at the initial
+                        # entry-price-equals-mark (0 P&L) state.
+                        try:
+                            feed_manager = get_feed_manager()
+                            if getattr(feed_manager, "_started", False):
+                                # Fire-and-forget — subscribe is fast
+                                # but we don't want to block the
+                                # post-submit hot path on any WS
+                                # network jitter.
+                                import asyncio as _asyncio
+                                _asyncio.create_task(
+                                    feed_manager.polymarket_feed.subscribe([fill_token_id]),
+                                    name=f"fast-submit-ws-subscribe-{fill_token_id[:12]}",
+                                )
+                        except Exception as _sub_exc:
+                            logger.debug(
+                                "Fast-tier WS subscribe after fill failed (non-fatal)",
+                                token_id=fill_token_id,
+                                exc_info=_sub_exc,
+                            )
+                except Exception as _pms_exc:
+                    logger.debug(
+                        "Fast-tier PositionMarkState registration failed (non-fatal)",
+                        order_id=pre_submit_order_id,
+                        exc_info=_pms_exc,
+                    )
     except Exception as exc:
         # CLOB has already executed — DO NOT rollback. Mark the row so the
         # reconcile sweep knows post-update is incomplete and can repair
