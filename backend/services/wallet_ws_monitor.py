@@ -427,6 +427,19 @@ class WalletWebSocketMonitor:
         self._rpc_endpoint_failure_log_interval_seconds: float = 10.0
         self._rpc_last_total_failure_log_at: float = 0.0
         self._rpc_total_failure_log_interval_seconds: float = 30.0
+        # Fix SS — per-endpoint consecutive-failure counter.  401/403 already
+        # evict immediately (auth required), and the existing
+        # ``_rpc_error_requires_auth`` / ``unsupported_logs_query`` heuristics
+        # cover known RPC-level signals.  But a provider returning persistent
+        # 400 Bad Request (observed: drpc.org no-auth tier across the
+        # 12h soak — every wallet_ws_monitor cycle for hours) burns two
+        # request attempts per cycle without ever evicting, since 400 isn't
+        # in the auth set and the JSON-RPC ``result.error`` path doesn't
+        # see the 400 (it's a transport-level status code on the response).
+        # A consecutive-failure counter handles all unknown-but-persistent
+        # failure modes without us having to enumerate status codes.
+        self._rpc_endpoint_consecutive_failures: dict[str, int] = {}
+        self._rpc_endpoint_evict_threshold: int = 5
         self._rpc_client: Optional[httpx.AsyncClient] = None
         self._rpc_client_lock = asyncio.Lock()
         self._stats = {
@@ -456,8 +469,36 @@ class WalletWebSocketMonitor:
             return
         self._evicted_rpc_urls.add(normalized)
         self._rpc_urls = [url for url in self._rpc_urls if url != normalized]
+        self._rpc_endpoint_consecutive_failures.pop(normalized, None)
         if self._http_rpc_url == normalized:
             self._http_rpc_url = self._rpc_urls[0] if self._rpc_urls else ""
+
+    def _note_rpc_endpoint_success(self, endpoint: str) -> None:
+        normalized = _normalize_rpc_http_url(endpoint)
+        if normalized:
+            self._rpc_endpoint_consecutive_failures.pop(normalized, None)
+
+    def _note_rpc_endpoint_failure(self, endpoint: str) -> bool:
+        """Increment the consecutive-failure counter.
+
+        Returns True when the threshold has been reached and the endpoint
+        was evicted; False otherwise.
+        """
+        normalized = _normalize_rpc_http_url(endpoint)
+        if not normalized:
+            return False
+        count = self._rpc_endpoint_consecutive_failures.get(normalized, 0) + 1
+        self._rpc_endpoint_consecutive_failures[normalized] = count
+        if count >= self._rpc_endpoint_evict_threshold:
+            logger.warning(
+                "Wallet monitor evicting RPC endpoint after consecutive failures",
+                endpoint=normalized,
+                consecutive_failures=count,
+                threshold=self._rpc_endpoint_evict_threshold,
+            )
+            self._evict_rpc_endpoint(normalized)
+            return True
+        return False
 
     # ==================== WALLET MANAGEMENT ====================
 
@@ -1073,6 +1114,7 @@ class WalletWebSocketMonitor:
 
                     self._rpc_failure_streak = 0
                     self._rpc_backoff_until = 0.0
+                    self._note_rpc_endpoint_success(endpoint)
                     return result
                 except Exception as e:
                     endpoint_error = e
@@ -1107,6 +1149,12 @@ class WalletWebSocketMonitor:
                         )
                     break
             if endpoint_error is not None:
+                # Fix SS — bump per-endpoint consecutive-failure counter
+                # so a provider that consistently fails (e.g. drpc.org's
+                # no-auth tier returning 400 Bad Request) gets evicted
+                # after ``_rpc_endpoint_evict_threshold`` cycles instead
+                # of burning two attempts per request indefinitely.
+                self._note_rpc_endpoint_failure(endpoint)
                 last_error = endpoint_error
 
         if last_error is not None:

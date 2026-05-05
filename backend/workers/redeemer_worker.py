@@ -32,12 +32,17 @@ _MAX_CONSECUTIVE_DB_FAILURES = 3
 # update, but a transient RPC failure shouldn't lock us out forever —
 # 15 minutes is a balance between "loud failure" and "self-heal".
 _BOOT_INVARIANT_RETRY_SECONDS = 900.0
-# Dry-run scans (the default scheduled cycle) only do view calls and finish
-# in seconds, but a real-mode run has to walk every resolved condition with
-# multiple chain RPCs (payoutDenominator + per-token balance + redeem) and
-# can comfortably exceed 90s on slower providers.  Give real cycles a much
-# wider budget; dry-runs still complete inside their normal envelope.
-_REDEEM_CYCLE_TIMEOUT_SECONDS = 90.0
+# Both dry-run and real cycles walk every resolved condition with the
+# same set of view calls (payoutDenominator + collateral inference +
+# payoutNumerators + balanceOf for each token).  The real-run additionally
+# submits redeem txs.  The 12h soak on 2026-05-05 showed the dry-run
+# hitting the 90s wall every cycle on a wallet with ~hundreds of
+# resolved positions accumulated over time, putting the worker
+# permanently in timeout-loop and never completing a scan.  Give the
+# dry-run the same 240s envelope as the real cycle — there's no
+# correctness penalty (it's read-only) and it lets the scan actually
+# finish on slower providers.  Fix TT.
+_REDEEM_CYCLE_TIMEOUT_SECONDS = 240.0
 _REDEEM_REAL_CYCLE_TIMEOUT_SECONDS = 240.0
 
 

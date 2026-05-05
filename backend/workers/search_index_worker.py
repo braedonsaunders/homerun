@@ -53,6 +53,21 @@ _HEARTBEAT_INTERVAL_SECONDS = 5.0
 # tick and other workers checkout connections instead of starving
 # behind an 11-collector burst.
 _INTER_COLLECTOR_YIELD_SECONDS = 0.1
+# Fix UU — chunked reindex.  The 12h soak on 2026-05-05 showed a single
+# reindex pass running 79s and the heartbeat upsert hitting
+# QueryCanceledError (statement_timeout) on the worker_snapshot row,
+# which then flagged DB pressure and cascaded into scanner / trader
+# reconciliation deferring.  The contributors are cumulative: 11
+# collectors back-to-back, each touching its own large source table,
+# adds up under any concurrent DB load.  Cap each cycle to a small
+# chunk and persist a cursor so the next cycle resumes — total
+# freshness latency rises proportionally (~120s × ceil(11/CHUNK)
+# instead of 120s) but the per-cycle DB footprint stays bounded.
+_REINDEX_COLLECTORS_PER_CYCLE = 4
+# Soft per-cycle wall-clock budget — even within one chunk, if we're
+# already this far into the cycle, defer the rest.  Picked below the
+# expected statement_timeout so we don't paint ourselves into a corner.
+_REINDEX_CYCLE_SOFT_BUDGET_SECONDS = 30.0
 
 
 async def _run_loop() -> None:
@@ -105,6 +120,7 @@ async def _run_loop() -> None:
                             "total_deleted": int(state.get("total_deleted", 0) or 0),
                             "total_indexed": int(state.get("total_indexed", 0) or 0),
                             "last_duration_ms": float(state.get("last_duration_ms", 0.0) or 0.0),
+                            "collector_cursor": int(state.get("collector_cursor", 0) or 0),
                         },
                     )
             except Exception as exc:
@@ -157,9 +173,20 @@ async def _run_loop() -> None:
 
             total_upserted = 0
             total_deleted = 0
-            n_types = max(1, len(COLLECTORS))
+            collector_list = list(COLLECTORS)
+            n_types = max(1, len(collector_list))
+            # Fix UU — resume from where the prior cycle left off.  The
+            # cursor is process-local, so a worker restart restarts at
+            # collector 0; that's intentional, since we want a freshly-
+            # started worker to publish a current snapshot of the most
+            # important collectors first.
+            cursor = int(state.get("collector_cursor", 0) or 0) % n_types
+            chunk_started_mono = utcnow()
             try:
-                for idx, entity_type in enumerate(COLLECTORS, start=1):
+                processed_this_cycle = 0
+                for chunk_offset in range(min(_REINDEX_COLLECTORS_PER_CYCLE, n_types)):
+                    idx = (cursor + chunk_offset) % n_types
+                    entity_type = collector_list[idx]
                     # In-loop backpressure check.  If a separate worker
                     # has flagged DB pressure (worker_snapshot writes
                     # cancelled, persist_orders thrashing, etc.)
@@ -173,16 +200,29 @@ async def _run_loop() -> None:
                     if is_db_pressure_active():
                         state["activity"] = (
                             f"Search reindex paused under DB pressure "
-                            f"({idx-1}/{n_types} collectors processed)"
+                            f"(cursor={idx}/{n_types}, processed_this_cycle={processed_this_cycle})"
                         )
                         logger.warning(
                             "Search reindex deferring remaining collectors under DB pressure",
-                            processed=idx - 1,
+                            cursor=idx,
                             total=n_types,
+                            processed_this_cycle=processed_this_cycle,
                         )
                         break
-                    state["activity"] = f"Reindexing {entity_type}..."
-                    state["progress"] = idx / n_types
+                    # Soft wall-clock budget — bail out of this cycle's
+                    # chunk if we've already used most of our envelope.
+                    elapsed_s = (utcnow() - chunk_started_mono).total_seconds()
+                    if elapsed_s >= _REINDEX_CYCLE_SOFT_BUDGET_SECONDS:
+                        logger.warning(
+                            "Search reindex deferring remaining chunk under soft budget",
+                            cursor=idx,
+                            total=n_types,
+                            elapsed_seconds=round(elapsed_s, 1),
+                            budget_seconds=_REINDEX_CYCLE_SOFT_BUDGET_SECONDS,
+                        )
+                        break
+                    state["activity"] = f"Reindexing {entity_type} (cursor={idx}/{n_types})..."
+                    state["progress"] = (idx + 1) / n_types
                     try:
                         async with AsyncSessionLocal() as session:
                             result = await reindex_one(session, entity_type)
@@ -203,11 +243,17 @@ async def _run_loop() -> None:
                             entity_type,
                             exc,
                         )
+                    processed_this_cycle += 1
                     # Yield to the event loop and release the DB pool
                     # slot before grabbing the next collector's session.
                     # Without this, an 11-collector reindex hogs the
                     # pool back-to-back.
                     await asyncio.sleep(_INTER_COLLECTOR_YIELD_SECONDS)
+                # Advance the cursor for next cycle.  ``processed_this_cycle``
+                # may be smaller than the chunk if we bailed under DB
+                # pressure / soft budget — in that case the next cycle
+                # picks up exactly where we left off.
+                state["collector_cursor"] = (cursor + processed_this_cycle) % n_types
 
                 state["total_upserted"] = total_upserted
                 state["total_deleted"] = total_deleted
