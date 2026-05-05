@@ -7,8 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from services.live_execution_adapter import execute_live_order
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
@@ -26,6 +24,8 @@ from services.fill_simulator import (
 from services.fill_simulator.cox_inference import _cache as _cox_cache  # for lookup hint
 from services.strategy_sdk import StrategySDK
 from utils.converters import safe_float
+
+logger = logging.getLogger(__name__)
 
 
 _MIN_EXECUTION_PRICE = 0.001
