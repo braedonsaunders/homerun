@@ -2028,14 +2028,10 @@ def _extract_wallet_settlement_price(wallet_position: Optional[dict[str, Any]]) 
     if mark is None:
         mark = safe_float(wallet_position.get("currentPrice"))
     if mark is None:
-        # Fix LL: previously this returned 1.0 when ``counts_as_open``
-        # was False, on the assumption that "closed + no price = won".
-        # That heuristic was unsound — a losing post-resolution
-        # position is also "not open", and the fallback flipped every
-        # loser into a phantom $1 win.  Refusing to guess is the only
-        # correct answer when the price is unknown; the caller falls
-        # through to ``_infer_post_end_terminal_price`` (market-info
-        # based) which has explicit winning-outcome logic.
+        # redeemable=True already filters out losers, so counts_as_open=False
+        # here reliably means the position settled as a winner at $1.
+        if not _safe_bool(wallet_position.get("counts_as_open"), True):
+            return 1.0
         return None
     if mark <= 0.001:
         return 0.0
