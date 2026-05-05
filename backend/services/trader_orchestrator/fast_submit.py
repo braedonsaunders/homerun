@@ -578,7 +578,7 @@ async def execute_fast_signal(
             target = refetched_after_raise if refetched_after_raise is not None else order
             target.status = "failed"
             target.error_message = (
-                f"submit_execution_leg cancelled (cycle teardown)"
+                "submit_execution_leg cancelled (cycle teardown)"
                 if is_cancelled
                 else f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
             )
@@ -796,7 +796,6 @@ async def execute_fast_signal(
                                 # but we don't want to block the
                                 # post-submit hot path on any WS
                                 # network jitter.
-                                import asyncio as _asyncio
                                 _asyncio.create_task(
                                     feed_manager.polymarket_feed.subscribe([fill_token_id]),
                                     name=f"fast-submit-ws-subscribe-{fill_token_id[:12]}",
