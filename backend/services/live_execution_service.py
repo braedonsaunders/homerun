@@ -19,6 +19,7 @@ import asyncio
 import os
 import re
 import time as _time
+import collections
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
@@ -584,6 +585,13 @@ class LiveExecutionService:
         self._clob_keepalive_task: Optional[asyncio.Task] = None
         self._clob_keepalive_last_ok_at: float = 0.0
         self._clob_keepalive_last_fail_at: float = 0.0
+        # Rolling window of recent keepalive RTTs (ms).  This is the
+        # warm-connection baseline against which place_order's
+        # ``post_order`` stage is decomposed: post_order minus this RTT
+        # ≈ venue-side processing time, which tells us whether the next
+        # latency win comes from network/TLS or from the venue.
+        self._clob_keepalive_recent_ms: collections.deque = collections.deque(maxlen=20)
+        self._clob_keepalive_log_every = 10  # log a stats summary every N pings
 
     def _get_stats_lock(self) -> asyncio.Lock:
         if self._stats_lock is None:
@@ -2144,6 +2152,20 @@ class LiveExecutionService:
                 # don't pay a TLS handshake when the trader has been
                 # idle past httpx's 5 s keepalive_expiry.
                 self._start_clob_keepalive_loop()
+                # Prime ``__cached_version`` so the FIRST create_market_
+                # order doesn't pay a synchronous /version HTTP roundtrip
+                # inside the io_lock.  ``get_version`` populates the
+                # cache; subsequent calls hit the cached value.
+                # Fire-and-forget — failure leaves the SDK to lazy-fetch
+                # on the first order placement, which is the pre-fix
+                # behaviour, so this prewarm is a pure win.
+                try:
+                    asyncio.create_task(
+                        asyncio.to_thread(self._client.get_version),
+                        name="clob_prewarm_version",
+                    )
+                except Exception:
+                    pass
                 return True
 
             except ImportError:
@@ -2207,6 +2229,7 @@ class LiveExecutionService:
         # also benefits from a primed connection — without blocking
         # initialize() on the round-trip.
         await asyncio.sleep(0.0)
+        ping_counter = 0
         while True:
             try:
                 client = self._client
@@ -2219,7 +2242,32 @@ class LiveExecutionService:
                         asyncio.to_thread(client.get_ok),
                         timeout=2.0,
                     )
+                    elapsed_ms = (_time.monotonic() - t0) * 1000.0
                     self._clob_keepalive_last_ok_at = _time.monotonic()
+                    self._clob_keepalive_recent_ms.append(elapsed_ms)
+                    ping_counter += 1
+                    # Periodic summary so the operator (and the
+                    # crypto_latency_harness) can see the warm-
+                    # connection baseline that ``post_order`` is being
+                    # measured against.  Logged at INFO so the harness
+                    # can pick it up alongside ``crypto_latency_trace``.
+                    if (
+                        ping_counter % self._clob_keepalive_log_every == 0
+                        and self._clob_keepalive_recent_ms
+                    ):
+                        samples = sorted(self._clob_keepalive_recent_ms)
+                        n = len(samples)
+                        p50 = samples[n // 2]
+                        p90 = samples[min(n - 1, max(0, int(round(0.9 * (n - 1)))))]
+                        logger.info(
+                            "clob_keepalive_rtt",
+                            samples=n,
+                            min_ms=round(samples[0], 1),
+                            p50_ms=round(p50, 1),
+                            p90_ms=round(p90, 1),
+                            max_ms=round(samples[-1], 1),
+                            last_ms=round(elapsed_ms, 1),
+                        )
                 except asyncio.TimeoutError:
                     self._clob_keepalive_last_fail_at = _time.monotonic()
                     logger.debug(
