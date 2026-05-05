@@ -218,9 +218,16 @@ def _live_trading_position_to_wallet_position(row: LiveTradingPosition) -> Optio
         if average_cost is not None and average_cost > 0.0
         else None
     )
+    # Fix LL: ``current_price`` of 0.0 is a VALID post-resolution
+    # settlement value (the losing side of a binary market), not a
+    # missing-data sentinel.  Nullifying it here masked losers from
+    # the downstream settlement-price extraction, which then fell
+    # into a fallback heuristic that treated "no price" as "won at
+    # $1" — flipping every loser into a phantom win.  Preserve 0.0
+    # explicitly; only treat strictly-negative values as missing.
     current_value = (
         float(size * current_price)
-        if current_price is not None and current_price > 0.0
+        if current_price is not None and current_price >= 0.0
         else None
     )
     outcome_text = str(row.outcome or "").strip()
@@ -248,12 +255,12 @@ def _live_trading_position_to_wallet_position(row: LiveTradingPosition) -> Optio
         "average_price": float(average_cost) if average_cost is not None and average_cost > 0.0 else None,
         "avgCost": float(average_cost) if average_cost is not None and average_cost > 0.0 else None,
         "average_cost": float(average_cost) if average_cost is not None and average_cost > 0.0 else None,
-        "currentPrice": float(current_price) if current_price is not None and current_price > 0.0 else None,
-        "current_price": float(current_price) if current_price is not None and current_price > 0.0 else None,
-        "curPrice": float(current_price) if current_price is not None and current_price > 0.0 else None,
-        "cur_price": float(current_price) if current_price is not None and current_price > 0.0 else None,
-        "markPrice": float(current_price) if current_price is not None and current_price > 0.0 else None,
-        "mark_price": float(current_price) if current_price is not None and current_price > 0.0 else None,
+        "currentPrice": float(current_price) if current_price is not None and current_price >= 0.0 else None,
+        "current_price": float(current_price) if current_price is not None and current_price >= 0.0 else None,
+        "curPrice": float(current_price) if current_price is not None and current_price >= 0.0 else None,
+        "cur_price": float(current_price) if current_price is not None and current_price >= 0.0 else None,
+        "markPrice": float(current_price) if current_price is not None and current_price >= 0.0 else None,
+        "mark_price": float(current_price) if current_price is not None and current_price >= 0.0 else None,
         "initialValue": initial_value,
         "currentValue": current_value,
         "unrealizedPnl": safe_float(row.unrealized_pnl, None),
@@ -2021,8 +2028,14 @@ def _extract_wallet_settlement_price(wallet_position: Optional[dict[str, Any]]) 
     if mark is None:
         mark = safe_float(wallet_position.get("currentPrice"))
     if mark is None:
-        if not _safe_bool(wallet_position.get("counts_as_open"), True):
-            return 1.0
+        # Fix LL: previously this returned 1.0 when ``counts_as_open``
+        # was False, on the assumption that "closed + no price = won".
+        # That heuristic was unsound — a losing post-resolution
+        # position is also "not open", and the fallback flipped every
+        # loser into a phantom $1 win.  Refusing to guess is the only
+        # correct answer when the price is unknown; the caller falls
+        # through to ``_infer_post_end_terminal_price`` (market-info
+        # based) which has explicit winning-outcome logic.
         return None
     if mark <= 0.001:
         return 0.0
