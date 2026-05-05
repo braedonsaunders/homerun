@@ -64,13 +64,13 @@ _STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 4
 # ``is_db_pressure_active()`` is True (recent DBAPIError or
 # pool-watchdog flag) we prioritize lock-hold-time minimization
 # over throughput.
-_UPSERT_PROJECTION_CHUNK_SIZE = 3
+_UPSERT_PROJECTION_CHUNK_SIZE = 1  # ITER-?: 3->1 isolates per-row lock failures so one contended dedupe_key can't poison a 3-row batch
 _UPSERT_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 _PROJECTION_RETRY_MAX_ATTEMPTS = 3
 _PROJECTION_RETRY_BASE_DELAY_SECONDS = 0.25
 _PROJECTION_DB_PRESSURE_TTL_SECONDS = 15.0
 _PROJECTION_STATEMENT_TIMEOUT_MS = 5000
-_PROJECTION_LOCK_TIMEOUT_MS = 1000
+_PROJECTION_LOCK_TIMEOUT_MS = 3000  # ITER-?: 1000->3000ms gives more headroom for transient row-lock contention before the projection batch aborts and the signal ages out
 _RUNTIME_LANE_BY_SOURCE = {"crypto": "crypto"}
 _PREWARM_SOURCES = {"scanner"}
 _PREWARM_WAIT_TIMEOUT_SECONDS = 0.5
