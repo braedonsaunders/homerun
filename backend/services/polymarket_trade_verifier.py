@@ -110,7 +110,18 @@ def _reconcile_status_with_pnl(row: TraderOrder, verified_pnl: float) -> None:
 # pagination consumes the entire budget and the verifier holds its
 # session checked out for ~30s while doing zero DB work — leaving the
 # pool starved for live-path traffic.
-_HTTP_FETCH_TIMEOUT_SECONDS = 12.0
+#
+# Bumped from 12s to 25s in Fix KK: the prior budget was failing under
+# normal Polymarket latency (worker logs showed
+# ``closed_positions fetch exceeded 12s HTTP budget; skipping cycle``
+# repeatedly), so resolved positions never got their on-chain
+# verification and the lifecycle baseline was the only available
+# value.  25s leaves headroom inside the session's 30s statement
+# timeout while letting the typical 8-15s pagination complete.  The
+# Phase 2 release_conn pattern means we're not holding a DB
+# connection during the HTTP wait, so the longer budget does not
+# starve the live-path pool.
+_HTTP_FETCH_TIMEOUT_SECONDS = 25.0
 
 
 def _direction_to_outcome_index(direction: str | None) -> int | None:

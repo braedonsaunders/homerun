@@ -4,11 +4,10 @@ Institutional-grade pattern: when the bot's exit submission has been
 permanently blocked (e.g. ``pending_live_exit.status =
 'blocked_persistent_timeout'`` because the CLOB no longer accepts
 orders for the underlying market), we DO NOT auto-write a synthetic
-loss.  That would violate the DB-layer P&L guard
-(``_enforce_pnl_verification_guard``) which requires
-``verification_status='wallet_activity'`` for ``actual_profit`` to
-persist — the guard exists precisely so phantom P&L cannot be created
-by inference paths.
+loss.  Synthetic-loss writes belong on the operator-attested
+manual-writeoff path (which captures an immutable audit event), not
+on a passive monitor — auto-write would erode the audit trail that
+makes ledger-grade P&L defensible.
 
 Instead, this module does what a bank's exception queue does:
 

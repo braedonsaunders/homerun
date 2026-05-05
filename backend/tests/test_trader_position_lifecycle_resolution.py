@@ -928,11 +928,11 @@ async def test_reconcile_live_positions_does_not_reopen_verified_wallet_activity
             )
             order = await session.get(TraderOrder, "order-1")
             assert order is not None
-            # The DB-layer guard in models.database._enforce_pnl_verification_guard
-            # null-coerces actual_profit unless verification_status is the
-            # exact "wallet_activity" sentinel.  This test simulates a row
-            # that polymarket_trade_verifier already matched to an on-chain
-            # SELL trade, so we must set those columns alongside the value.
+            # Simulates a row that polymarket_trade_verifier already
+            # matched to an on-chain SELL trade — actual_profit + the
+            # full verification fields are written together so the
+            # downstream reconcile path treats the close as already
+            # verified rather than re-computing a baseline value.
             order.actual_profit = -0.5
             order.verification_status = "wallet_activity"
             order.verification_source = "polymarket_wallet_trades"

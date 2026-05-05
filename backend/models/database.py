@@ -3853,63 +3853,51 @@ class TraderOrder(Base):
     )
 
 
-# ── Single-source-of-truth enforcement for realized P&L ───────────
+# ── Realized P&L: computed-baseline-with-verifier-override ────────
 #
-# Database-layer guard: reject any write of actual_profit unless the
-# row's verification_status is "wallet_activity" — meaning the row
-# was matched to an actual on-chain trade record (by transactionHash
-# from polymarket.get_wallet_trades) by polymarket_trade_verifier,
-# which is the SOLE authoritative writer of realized P&L.
+# ``actual_profit`` carries the BEST AVAILABLE realized P&L estimate
+# at any moment.  It is populated by two layers:
 #
-# We deliberately do NOT trust "venue_fill" here even though it
-# *sounds* like a real fill. Lifecycle code historically set
-# verification_status=venue_fill for THREE different paths via
-# trader_order_verification.derive_trader_order_verification:
+#   1. The lifecycle / reconcile path computes ``actual_profit`` from
+#      the bot's recorded fill (size, price) and the close event
+#      (close_price for resolutions, sell-fill price for early exits).
+#      This is the BASELINE — the UI sees real numbers immediately
+#      after the close event lands, instead of $0.
 #
-#   1. provider_exit_fill   — could be a real CLOB fill OR could be
-#                              inferred from a snapshot status check
-#   2. resolved_settlement  — INFERRED from market resolution metadata
-#                              (Athletics/Rangers case showed this can
-#                              get the winning-outcome mapping wrong
-#                              and produce a phantom +$49 win when we
-#                              actually lost $9)
-#   3. wallet_redeemable_mark — INFERRED from wallet's redeemable
-#                                balance, not a real fill record
+#   2. ``polymarket_trade_verifier`` runs periodically and OVERWRITES
+#      ``actual_profit`` with on-chain truth (matched against
+#      transactionHash from polymarket.get_wallet_trades, or against
+#      the deterministic resolution payout).  When the verifier
+#      writes, it also bumps ``verification_status`` to
+#      ``wallet_activity`` so the UI can flag the row as verified.
 #
-# Only wallet_activity guarantees the value came from an on-chain
-# trade record we matched and computed PnL from real fill prices.
-# polymarket_trade_verifier writes wallet_activity atomically with
-# actual_profit, so its writes pass. Every other code path's writes
-# get silently coerced to None — deferring the value to the next
-# verifier sweep against Polymarket truth.
+# The previous architecture (silent-NULL guard, removed in Fix KK)
+# rejected layer 1 writes entirely — only the verifier could write
+# ``actual_profit``.  This was meant to make phantom-PnL impossible,
+# but in practice it produced a far worse failure mode: when the
+# verifier's HTTP fetch timed out (12s budget on closed_positions),
+# resolved positions sat at ``actual_profit = NULL`` for hours, and
+# the UI rendered "$0 R-P&L" — operators reasonably interpreted this
+# as a 100% loss when the position had actually won.  Cure was worse
+# than the disease.
 #
-# This makes phantom-PnL writes IMPOSSIBLE at the database layer,
-# regardless of how many lifecycle paths get added in the future.
-# It is the only architecture that gives the financial accuracy
-# guarantee the user requires (UI numbers must equal Polymarket).
-
-# wallet_activity is the only VERIFIED status that the system itself
-# can produce (verifier matches a real on-chain trade record).
-# manual_writeoff is operator-asserted: it can only be written via the
-# manual-writeoff API path (which requires an explicit reason + creates
-# an immutable TraderOrderVerificationEvent).  Both are acceptable
-# carriers of non-NULL actual_profit; everything else still gets the
-# value coerced to None.  See services/operator_writeoff.py for the
-# operator-side helper that enforces the audit trail.
-_VERIFIED_PNL_STATUSES = frozenset({"wallet_activity", "manual_writeoff"})
-
-
-def _enforce_pnl_verification_guard(mapper, connection, target):  # noqa: ANN001
-    """Coerce actual_profit to None unless verification_status is verified."""
-    status = str(getattr(target, "verification_status", "") or "").strip().lower()
-    if status in _VERIFIED_PNL_STATUSES:
-        return
-    if getattr(target, "actual_profit", None) is not None:
-        target.actual_profit = None
-
-
-_sa_event.listen(TraderOrder, "before_insert", _enforce_pnl_verification_guard)
-_sa_event.listen(TraderOrder, "before_update", _enforce_pnl_verification_guard)
+# Trade-off accepted: a buggy lifecycle computation could write a
+# wrong baseline (the Athletics/Rangers case from the old guard's
+# motivation: phantom +$49 when actual was -$9).  Mitigations:
+#   * ``verification_status`` distinguishes baseline vs verified, so
+#     dashboards can flag unverified rows.
+#   * The verifier's overwrite is the durable correctness anchor —
+#     even if a lifecycle write is wrong, the next verifier sweep
+#     replaces it with on-chain truth.
+#   * Lifecycle paths use the bot's own recorded fill data, not
+#     wallet aggregates, so the conflation problem that produced the
+#     old phantom case is structurally ruled out at the source.
+#
+# Operators relying on ``SUM(actual_profit)`` for ledger-grade P&L
+# should join through ``trader_order_verification`` and filter to
+# ``verification_status IN ('wallet_activity', 'manual_writeoff')``
+# for verified-only aggregates.  The default (all rows) is the live
+# operational P&L view.
 
 
 # ── trader_order_verification: writer-isolation table ────────────────
@@ -3947,9 +3935,10 @@ class TraderOrderVerification(Base):
     columns.  Moving verification fields to their own row makes the
     two writers never share a lock target.
 
-    The DB-layer guard (_enforce_pnl_verification_guard above) is
-    re-implemented for this table — actual_profit can only be
-    non-NULL when verification_status == "wallet_activity".
+    The DB-layer guards that used to NULL out unverified actual_profit
+    were removed in Fix KK (see the comment block above the table) —
+    this table now mirrors trader_orders.actual_profit verbatim, with
+    verification_status carrying the "is this a verified value?" flag.
     """
 
     __tablename__ = "trader_order_verification"
@@ -3977,18 +3966,11 @@ class TraderOrderVerification(Base):
     )
 
 
-def _enforce_pnl_verification_guard_v2(mapper, connection, target):  # noqa: ANN001
-    """Same invariant as _enforce_pnl_verification_guard, applied to
-    the trader_order_verification side table."""
-    status = str(getattr(target, "verification_status", "") or "").strip().lower()
-    if status in _VERIFIED_PNL_STATUSES:
-        return
-    if getattr(target, "actual_profit", None) is not None:
-        target.actual_profit = None
-
-
-_sa_event.listen(TraderOrderVerification, "before_insert", _enforce_pnl_verification_guard_v2)
-_sa_event.listen(TraderOrderVerification, "before_update", _enforce_pnl_verification_guard_v2)
+# NOTE: the old _enforce_pnl_verification_guard_v2 listener that NULL'd
+# unverified actual_profit on this side table was removed in Fix KK —
+# see the comment block above ``TraderOrder.actual_profit`` for the
+# full rationale.  ``actual_profit`` is now mirrored verbatim from
+# ``trader_orders`` (computed baseline + verifier override).
 
 
 # ── Dual-write mirror: TraderOrder → TraderOrderVerification ─────────

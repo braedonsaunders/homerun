@@ -307,16 +307,20 @@ async def test_manual_writeoff_rejects_nan_pnl(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_db_guard_still_nulls_actual_profit_for_random_writes(tmp_path):
-    """The DB-layer guard (``_enforce_pnl_verification_guard``) must
-    still null actual_profit if someone tries to write it with a status
-    OUTSIDE the new {wallet_activity, manual_writeoff} whitelist.
+async def test_unverified_actual_profit_persists_as_baseline(tmp_path):
+    """Fix KK: lifecycle-computed ``actual_profit`` must persist alongside
+    an unverified ``verification_status`` (e.g. ``venue_fill``).
 
-    This locks in the safety-net property: even if a code path bypasses
-    the operator helper, the guard is a backstop.
+    Previously a DB-layer guard silently NULL'd the value unless
+    ``verification_status`` was on the verifier whitelist.  That guard
+    was removed because, when the verifier failed to complete, the UI
+    showed $0 P&L for resolved-but-not-yet-verified positions and
+    operators reasonably interpreted that as a 100% loss.  See the
+    comment block above ``TraderOrder.actual_profit`` in
+    ``models/database.py`` for the full architectural rationale.
     """
     engine, session_factory = await build_postgres_session_factory(
-        Base, "manual_writeoff_db_guard_backstop"
+        Base, "manual_writeoff_unverified_baseline_persists"
     )
     try:
         async with session_factory() as session:
@@ -325,18 +329,21 @@ async def test_db_guard_still_nulls_actual_profit_for_random_writes(tmp_path):
         async with session_factory() as session:
             row = await session.get(TraderOrder, "order-guard")
             assert row is not None
-            # Try to write a synthetic loss WITHOUT going through the
-            # operator helper — set status to anything but the
-            # whitelisted values.
+            # Simulate a lifecycle resolution write: actual_profit is
+            # computed from the bot's recorded fill + close price, with
+            # verification_status carrying the "not yet verified by the
+            # on-chain trade matcher" flag.  Both must persist so the
+            # UI can render real numbers immediately.
             row.actual_profit = -123.45
-            row.verification_status = "venue_fill"  # NOT whitelisted
+            row.verification_status = "venue_fill"
             await session.commit()
 
             persisted = await session.get(TraderOrder, "order-guard")
-            assert persisted.actual_profit is None, (
-                "DB guard must coerce actual_profit to None when "
-                "verification_status is not in the whitelist"
+            assert persisted.actual_profit == pytest.approx(-123.45), (
+                "Lifecycle-computed actual_profit must persist as the "
+                "baseline value before the verifier overwrites it."
             )
+            assert persisted.verification_status == "venue_fill"
     finally:
         await engine.dispose()
 

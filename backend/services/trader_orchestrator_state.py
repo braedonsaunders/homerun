@@ -4608,11 +4608,15 @@ def _serialize_order(
         "edge_delta_pct": float(edge_delta_pct) if edge_delta_pct is not None else None,
         "edge_percent": row.edge_percent,
         "confidence": row.confidence,
-        # Returns row.actual_profit directly. The DB-layer guard in
-        # models/database.py (_enforce_pnl_verification_guard) coerces
-        # this column to NULL on insert/update unless verification_status
-        # is "wallet_activity" — so anything that surfaces here is
-        # already truth-matched against an on-chain Polymarket trade.
+        # Returns row.actual_profit directly.  Carries either the
+        # lifecycle-computed baseline (immediately after a close event)
+        # or the verifier-overwritten on-chain truth (after the next
+        # polymarket_trade_verifier sweep matches the row to a real
+        # trade record).  ``verification_status`` distinguishes the
+        # two: ``wallet_activity`` / ``manual_writeoff`` are verified;
+        # everything else is the lifecycle baseline.  See the comment
+        # block above ``TraderOrder.actual_profit`` in
+        # ``models/database.py`` for the architectural rationale.
         "actual_profit": row.actual_profit,
         "reason": row.reason,
         "close_trigger": close_trigger or None,
