@@ -20,6 +20,7 @@ import os
 import re
 import time as _time
 import collections
+import concurrent.futures
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
@@ -592,6 +593,15 @@ class LiveExecutionService:
         # latency win comes from network/TLS or from the venue.
         self._clob_keepalive_recent_ms: collections.deque = collections.deque(maxlen=20)
         self._clob_keepalive_log_every = 10  # log a stats summary every N pings
+        # Dedicated thread pool for SDK calls on the CLOB hot path.
+        # Default ``asyncio.to_thread`` uses the shared default executor
+        # which is contended by everything else in the process (DB
+        # adapter setup, pickle round-trips, file I/O on logs etc.) —
+        # a transient burst on the default pool blocks order submission
+        # for tens of ms.  A dedicated pool sized to match the order-
+        # submission semaphore guarantees we never queue behind an
+        # unrelated thread task.  Lazy-created on first hot-path call.
+        self._clob_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # TTL cache for ``prepare_sell_balance_allowance``.  Each call
         # makes 2-4 HTTP roundtrips (signature_type select + conditional
         # balance refresh + collateral balance refresh).  ITER-2 traces
@@ -617,6 +627,21 @@ class LiveExecutionService:
         if self._init_lock is None:
             self._init_lock = asyncio.Lock()
         return self._init_lock
+
+    def _get_clob_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Dedicated thread pool for CLOB SDK calls.
+
+        Sized to ``_client_io_lock_concurrency + 4`` so the order-
+        submission semaphore can saturate the pool without blocking,
+        with a small buffer for the keepalive ping and prewarm calls.
+        Threads are tagged so stack dumps make their purpose obvious.
+        """
+        if self._clob_executor is None or self._clob_executor._shutdown:  # type: ignore[attr-defined]
+            self._clob_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(4, self._client_io_lock_concurrency + 4),
+                thread_name_prefix="clob-sdk",
+            )
+        return self._clob_executor
 
     def _get_client_io_lock(self) -> asyncio.Semaphore:
         # Returns a bounded semaphore (NOT an asyncio.Lock) so multiple
@@ -4264,8 +4289,14 @@ class LiveExecutionService:
                                 )
                                 return resp
 
+                            # ITER-5 (Fix FF): dispatch to dedicated CLOB
+                            # executor instead of the default thread pool so
+                            # this hot-path call never queues behind unrelated
+                            # blocking work elsewhere in the process.
                             response = await asyncio.wait_for(
-                                asyncio.to_thread(_create_and_post_market),
+                                asyncio.get_running_loop().run_in_executor(
+                                    self._get_clob_executor(), _create_and_post_market
+                                ),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
                             # ``signed_order`` left undefined on this branch —
@@ -4313,8 +4344,12 @@ class LiveExecutionService:
                                 )
                                 return signed, resp
 
+                            # ITER-5 (Fix FF): dedicated CLOB executor on
+                            # the limit-order path too.
                             signed_order, response = await asyncio.wait_for(
-                                asyncio.to_thread(_create_and_post_limit),
+                                asyncio.get_running_loop().run_in_executor(
+                                    self._get_clob_executor(), _create_and_post_limit
+                                ),
                                 timeout=_ORDER_SUBMIT_TIMEOUT_SECONDS,
                             )
                             _po_record("clob_create_post_combined", _stage_started)
