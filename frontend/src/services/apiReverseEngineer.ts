@@ -186,6 +186,15 @@ export async function cancelReverseEngineerJob(
   return data
 }
 
+export async function deleteReverseEngineerJob(
+  jobId: string,
+): Promise<{ deleted: boolean; id: string }> {
+  const { data } = await api.delete(
+    `/strategy-reverse-engineer/jobs/${encodeURIComponent(jobId)}`,
+  )
+  return data
+}
+
 export async function listReverseEngineerIterations(
   jobId: string,
 ): Promise<ReverseEngineerIteration[]> {

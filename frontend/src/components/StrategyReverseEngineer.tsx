@@ -31,6 +31,7 @@ import {
   Plus,
   Rocket,
   StopCircle,
+  Trash2,
   Wallet,
   X,
 } from 'lucide-react'
@@ -44,6 +45,7 @@ import { ScrollArea } from './ui/scroll-area'
 import { cn } from '../lib/utils'
 import {
   cancelReverseEngineerJob,
+  deleteReverseEngineerJob,
   createReverseEngineerJob,
   getReverseEngineerJob,
   listReverseEngineerIterations,
@@ -287,7 +289,13 @@ function CreateJobView({
 }) {
   const [walletAddress, setWalletAddress] = useState<string>(initialWalletAddress ?? '')
   const [label, setLabel] = useState<string>('')
-  const [reportMode, setReportMode] = useState<'report' | 'strategy_seed'>('report')
+  // Default to the iterative agent ("Deep reverse-engineer") — that's
+  // the actual reverse-engineering process, not the 10-second
+  // analytical-report deterministic path.  Operators consistently
+  // click into the dialog expecting the iterative depth and were
+  // surprised to get a 10s "100% complete" report; making the deep
+  // mode the default closes that mismatch.
+  const [reportMode, setReportMode] = useState<'report' | 'strategy_seed'>('strategy_seed')
   const [dataSourceKind, setDataSourceKind] = useState<
     'auto' | 'recording_session' | 'provider_dataset'
   >('auto')
@@ -408,14 +416,18 @@ function CreateJobView({
             {(
               [
                 {
-                  key: 'report',
-                  label: 'Analytical report',
-                  hint: 'Multi-section PDF with two-leg P/L decomposition, dominance buckets, filter ledger, replication playbook (~1 LLM call per section)',
+                  key: 'strategy_seed',
+                  label: 'Deep reverse-engineer',
+                  hint: 'Iterative LLM agent: hypothesizes → writes a BaseStrategy class → backtests → critiques → refines until target_score or max_iterations.  This is the actual reverse-engineering process.',
+                  eta: '5–30 min · $0.10–$2.00',
+                  recommended: true,
                 },
                 {
-                  key: 'strategy_seed',
-                  label: 'Strategy seed',
-                  hint: 'LLM agent loop that writes a BaseStrategy Python class and iteratively backtests it (advanced)',
+                  key: 'report',
+                  label: 'Quick analytical report',
+                  hint: 'Deterministic stat tables (two-leg P/L decomposition, dominance buckets, filter ledger) + one LLM call per section.  Useful for a fast PDF brief; NOT a backtest of any strategy.',
+                  eta: '5–15 sec · $0.01–$0.05',
+                  recommended: false,
                 },
               ] as const
             ).map((opt) => (
@@ -430,8 +442,16 @@ function CreateJobView({
                     : 'border-border/40 hover:bg-card/40',
                 )}
               >
-                <div className="font-semibold">{opt.label}</div>
-                <div className="text-[9.5px] text-muted-foreground leading-tight">{opt.hint}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold">{opt.label}</span>
+                  {opt.recommended ? (
+                    <span className="rounded-sm bg-emerald-500/15 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                      recommended
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-0.5 text-[9.5px] text-muted-foreground leading-tight">{opt.hint}</div>
+                <div className="mt-1 font-mono text-[9px] text-muted-foreground/80">{opt.eta}</div>
               </button>
             ))}
           </div>
@@ -670,6 +690,20 @@ function JobDetailView({ jobId }: { jobId: string }) {
       queryClient.invalidateQueries({ queryKey: ['reverse-engineer'] })
     },
   })
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteReverseEngineerJob(jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reverse-engineer'] })
+    },
+  })
+
+  const handleDelete = () => {
+    const yes = window.confirm(
+      `Delete reverse-engineer job ${jobId}?  This wipes the job and all its iteration rows.  This cannot be undone.`,
+    )
+    if (!yes) return
+    deleteMutation.mutate()
+  }
 
   const job = jobQuery.data ?? null
   const iterations: ReverseEngineerIteration[] = iterationsQuery.data ?? []
@@ -744,6 +778,19 @@ function JobDetailView({ jobId }: { jobId: string }) {
                 <PromoteButton jobId={job.id} suggestedSlug={(job.best_strategy_class || '').toLowerCase()} />
               </>
             ) : null}
+            {/* Delete — allowed in any status.  Confirms first, then
+                wipes job + iteration rows.  Useful when a run got
+                stuck or the operator wants the queue clean. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 text-[11px] border-rose-500/30 text-rose-700 dark:text-rose-300 hover:bg-rose-500/10"
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+              title="Delete this run and all its iterations"
+            >
+              <Trash2 className="h-3 w-3" /> Delete
+            </Button>
           </div>
         </div>
 

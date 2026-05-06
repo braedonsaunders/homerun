@@ -126,6 +126,25 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
     return {"cancelled": True, "id": job_id}
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_job(job_id: str) -> dict[str, Any]:
+    """Hard-delete a reverse-engineer job + its iteration rows.
+
+    Allowed regardless of status — operators need a clean wipe path
+    for stuck jobs.  If the job is still running, also cancel it
+    first so the worker stops chewing on it before we drop the row.
+    """
+    # Best-effort cancel first; ignored on terminal-state jobs.
+    try:
+        await re_service.cancel_job(job_id)
+    except Exception:
+        pass
+    deleted = await re_service.delete_job(job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return {"deleted": True, "id": job_id}
+
+
 @router.get("/jobs/{job_id}/iterations")
 async def list_iterations(job_id: str) -> dict[str, Any]:
     row = await re_service.get_job(job_id)

@@ -246,6 +246,35 @@ async def cancel_job(job_id: str) -> bool:
         return True
 
 
+async def delete_job(job_id: str) -> bool:
+    """Delete a reverse-engineer job + all its iteration rows.
+
+    Allowed in any status — operator can wipe a stuck/half-broken job
+    cleanly without leaving dependent iteration rows orphaned.  Returns
+    False when the job_id doesn't exist (404 surface).
+    """
+    from sqlalchemy import delete as sa_delete
+    from models.database import StrategyReverseEngineerIteration
+
+    async with AsyncSessionLocal() as session:
+        # Iterations first to satisfy any FK ordering — though the
+        # schema doesn't enforce a hard FK, deleting children first
+        # is the institutional safe-default.
+        await session.execute(
+            sa_delete(StrategyReverseEngineerIteration).where(
+                StrategyReverseEngineerIteration.job_id == job_id
+            )
+        )
+        result = await session.execute(
+            sa_delete(StrategyReverseEngineerJob).where(
+                StrategyReverseEngineerJob.id == job_id
+            )
+        )
+        deleted = (result.rowcount or 0) > 0
+        await session.commit()
+        return deleted
+
+
 # ---------------------------------------------------------------------------
 # Read
 # ---------------------------------------------------------------------------
