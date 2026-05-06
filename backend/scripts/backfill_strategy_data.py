@@ -133,26 +133,40 @@ async def backfill_crypto_polybacktest(
         for coin in coins:
             t0 = time.monotonic()
             try:
-                # Discover market IDs that overlap our window.  Pull
-                # the most recent N (most-liquid first by polybacktest's
-                # default sort).  Their resolved markets in-window plus
-                # any in-flight ones on the boundary will be captured.
-                markets, total = await client.list_markets(
-                    coin=coin,
-                    limit=market_limit_per_coin,
-                    offset=0,
-                )
+                # Discover markets that overlap our window.  Polybacktest
+                # caps ``limit`` at 100 per page, so we paginate until
+                # we have ``market_limit_per_coin`` total OR exhaust
+                # the catalog (offset >= total).  Default sort is most-
+                # recent first, which matches our "want fresh markets"
+                # backfill goal.
+                _PAGE = 100
+                all_markets: list = []
+                total = 0
+                offset = 0
+                while len(all_markets) < market_limit_per_coin:
+                    page_limit = min(_PAGE, market_limit_per_coin - len(all_markets))
+                    page, total = await client.list_markets(
+                        coin=coin,
+                        limit=page_limit,
+                        offset=offset,
+                    )
+                    if not page:
+                        break
+                    all_markets.extend(page)
+                    offset += len(page)
+                    if offset >= total:
+                        break
                 # Filter to markets whose [start_time, end_time] overlap
                 # our window -- no point importing a market that doesn't
                 # have any snapshots in our range.
                 in_window: list[str] = []
-                for m in markets:
+                for m in all_markets:
                     m_start_ms = int(m.start_time.timestamp() * 1000) if m.start_time else 0
                     m_end_ms = int(m.end_time.timestamp() * 1000) if m.end_time else end_ms
                     # overlap: m_start <= end AND m_end >= start
                     if m_start_ms <= end_ms and m_end_ms >= start_ms:
                         in_window.append(m.market_id)
-                print(f"  {coin}: discovered {len(markets)}/{total} markets, "
+                print(f"  {coin}: discovered {len(all_markets)}/{total} markets, "
                       f"{len(in_window)} overlap window")
                 if not in_window:
                     out["per_coin"][coin] = {
