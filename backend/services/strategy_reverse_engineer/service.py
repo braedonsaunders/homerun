@@ -187,14 +187,30 @@ async def claim_next_queued_job() -> Optional[StrategyReverseEngineerJob]:
 async def run_job(job_id: str) -> dict[str, Any]:
     """Execute the job's runner end-to-end.
 
-    Routes by ``report_mode``:
-      * 'report'        → analytical report runner (deterministic
-        analytics + section-by-section LLM narrative)
-      * 'strategy_seed' → LLM agent loop that synthesizes BaseStrategy
-        Python and iteratively backtests it
+    Architecture: the PDF report AND the Python strategy class are
+    both OUTPUTS of the same deep iterative process — not alternate
+    pipelines.  A faithful PDF requires the same wallet understanding
+    the Python class needs.  When the operator picks 'strategy_seed'
+    (the default), the iterative agent runs end-to-end and BOTH
+    outputs are rendered from its accumulated state:
+
+      * Python class       — produced during iteration; available on
+                             ``best_strategy_code`` and on each
+                             iteration row.
+      * PDF report         — rendered on demand by GET /report.pdf
+                             from the iteration history + wallet
+                             profile.  No separate "report-only" pass
+                             needed; the iteration history IS the
+                             evidence trail the PDF showcases.
+
+    The legacy ``report_mode='report'`` path is preserved for back-
+    compat with already-queued jobs and for operators who explicitly
+    want the fast deterministic + LLM-narrative path.  The UI no
+    longer offers it as a default and labels it "Quick analytical
+    report" with explicit ETA / cost.
     """
     job = await get_job(job_id)
-    mode = (getattr(job, "report_mode", None) or "report") if job else "report"
+    mode = (getattr(job, "report_mode", None) or "strategy_seed") if job else "strategy_seed"
 
     if mode == "report":
         from services.strategy_reverse_engineer.analytical_report_runner import (

@@ -289,12 +289,11 @@ function CreateJobView({
 }) {
   const [walletAddress, setWalletAddress] = useState<string>(initialWalletAddress ?? '')
   const [label, setLabel] = useState<string>('')
-  // Default to the iterative agent ("Deep reverse-engineer") — that's
-  // the actual reverse-engineering process, not the 10-second
-  // analytical-report deterministic path.  Operators consistently
-  // click into the dialog expecting the iterative depth and were
-  // surprised to get a 10s "100% complete" report; making the deep
-  // mode the default closes that mismatch.
+  // Default to the iterative agent.  The PDF report AND the Python
+  // strategy class are BOTH outputs of this same deep iterative
+  // process — they're not alternate pipelines.  ``report`` mode is
+  // a legacy quick deterministic path kept only as an explicit
+  // "fast preview" escape hatch.
   const [reportMode, setReportMode] = useState<'report' | 'strategy_seed'>('strategy_seed')
   const [dataSourceKind, setDataSourceKind] = useState<
     'auto' | 'recording_session' | 'provider_dataset'
@@ -401,15 +400,21 @@ function CreateJobView({
           </div>
         </div>
 
-        {/* ── Mode picker — what kind of deliverable to produce ── */}
+        {/* ── Pipeline picker ──
+              The default deep-iterative agent produces BOTH the PDF
+              report AND the Python strategy class as outputs of the
+              same underlying process — operators don't pick output
+              type, they pick depth.  The legacy quick-analytical
+              path is preserved as a fast preview escape hatch.
+        */}
         <div className="rounded-md border border-border/40 bg-card/40 p-3 space-y-2">
           <div>
             <div className="text-xs font-semibold flex items-center gap-1.5">
               <FileDown className="h-3.5 w-3.5 text-violet-400" />
-              Deliverable
+              Pipeline
             </div>
             <p className="text-[10.5px] text-muted-foreground">
-              Pick what the job produces.
+              The deep iterative agent produces BOTH the PDF report and the Python strategy class as outputs.  PDF + code share the same underlying wallet understanding — they're rendered from the iteration history when the agent converges.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-1">
@@ -418,14 +423,14 @@ function CreateJobView({
                 {
                   key: 'strategy_seed',
                   label: 'Deep reverse-engineer',
-                  hint: 'Iterative LLM agent: hypothesizes → writes a BaseStrategy class → backtests → critiques → refines until target_score or max_iterations.  This is the actual reverse-engineering process.',
+                  hint: 'Iterative LLM agent — hypothesizes → writes BaseStrategy Python → backtests → critiques → refines until target_score or max_iterations.  Outputs: PDF report (from iteration history) + Python strategy class (promotable to live).',
                   eta: '5–30 min · $0.10–$2.00',
                   recommended: true,
                 },
                 {
                   key: 'report',
-                  label: 'Quick analytical report',
-                  hint: 'Deterministic stat tables (two-leg P/L decomposition, dominance buckets, filter ledger) + one LLM call per section.  Useful for a fast PDF brief; NOT a backtest of any strategy.',
+                  label: 'Quick analytical preview',
+                  hint: 'Skip the iteration loop — deterministic stat tables (two-leg P/L decomp, dominance buckets, filter ledger) + one LLM call per section.  PDF only, no Python class, no backtest.  Use when you want a fast brief, not the actual reverse-engineering.',
                   eta: '5–15 sec · $0.01–$0.05',
                   recommended: false,
                 },
