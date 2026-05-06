@@ -22,6 +22,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Award,
   Brain,
+  Code,
+  Copy,
   Database,
   FileDown,
   Layers,
@@ -801,30 +803,343 @@ function JobDetailView({ jobId }: { jobId: string }) {
         {/* Selected iteration detail */}
         {selectedIteration ? <IterationDetail iteration={selectedIteration} /> : null}
 
-        {/* Best strategy code */}
+        {/* Run metadata */}
+        <RunMetadata job={job} />
+
+        {/* Best strategy / analytical report */}
         {job.best_strategy_code ? (
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
-            <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
-              <Award className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
-              Best strategy
-              {job.best_strategy_class ? (
-                <code className="rounded bg-card/40 px-1 py-0.5 font-mono text-[10px]">
-                  {job.best_strategy_class}
-                </code>
-              ) : null}
-              {job.promoted_strategy_id ? (
-                <Badge variant="outline" className="ml-auto border-emerald-500/40 text-emerald-700 dark:text-emerald-300 text-[9px]">
-                  Promoted: {job.promoted_strategy_id}
-                </Badge>
-              ) : null}
-            </div>
-            <pre className="max-h-96 overflow-auto rounded-sm bg-zinc-950 p-3 font-mono text-[10.5px] leading-relaxed text-zinc-200">
-              {job.best_strategy_code}
-            </pre>
-          </div>
+          job.best_strategy_class === 'AnalyticalReport' ? (
+            <AnalyticalReportView job={job} />
+          ) : (
+            <StrategySeedView job={job} />
+          )
         ) : null}
       </div>
     </ScrollArea>
+  )
+}
+
+
+// ─── Run metadata ──────────────────────────────────────────────────
+
+
+function fmtDate(s: string | null): string {
+  if (!s) return '—'
+  try {
+    return new Date(s).toLocaleString()
+  } catch {
+    return s
+  }
+}
+
+function fmtDuration(start: string | null, end: string | null): string {
+  if (!start || !end) return '—'
+  try {
+    const ms = new Date(end).getTime() - new Date(start).getTime()
+    if (!isFinite(ms) || ms < 0) return '—'
+    const sec = Math.round(ms / 1000)
+    if (sec < 60) return `${sec}s`
+    const min = Math.floor(sec / 60)
+    const remSec = sec % 60
+    if (min < 60) return `${min}m ${remSec}s`
+    const hr = Math.floor(min / 60)
+    const remMin = min % 60
+    return `${hr}h ${remMin}m`
+  } catch {
+    return '—'
+  }
+}
+
+function RunMetadata({ job }: { job: ReverseEngineerJob }) {
+  const totalTokens = (job.total_input_tokens || 0) + (job.total_output_tokens || 0)
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 p-3">
+      <div className="mb-2 text-xs font-semibold">Run metadata</div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] md:grid-cols-3">
+        <MetaRow label="Mode" value={job.report_mode} mono />
+        <MetaRow label="Model" value={job.llm_model || '—'} mono />
+        <MetaRow label="Best class" value={job.best_strategy_class || '—'} mono />
+        <MetaRow label="Cost" value={`$${(job.total_cost_usd || 0).toFixed(4)}`} />
+        <MetaRow label="Tokens" value={totalTokens.toLocaleString()} />
+        <MetaRow
+          label="In/Out tokens"
+          value={`${(job.total_input_tokens || 0).toLocaleString()} / ${(job.total_output_tokens || 0).toLocaleString()}`}
+        />
+        <MetaRow label="Iterations" value={`${job.current_iteration} / ${job.max_iterations}`} />
+        <MetaRow label="Target score" value={`${(job.target_score * 100).toFixed(0)}%`} />
+        <MetaRow
+          label="Best score"
+          value={job.best_score != null ? `${(job.best_score * 100).toFixed(1)}%` : '—'}
+        />
+        <MetaRow label="Created" value={fmtDate(job.created_at)} />
+        <MetaRow label="Started" value={fmtDate(job.started_at)} />
+        <MetaRow label="Finished" value={fmtDate(job.finished_at)} />
+        <MetaRow
+          label="Duration"
+          value={fmtDuration(job.started_at, job.finished_at)}
+        />
+        <MetaRow
+          label="Wallet trades"
+          value={(job.wallet_trade_count || 0).toLocaleString()}
+        />
+        <MetaRow
+          label="Trade window"
+          value={
+            job.wallet_window_start && job.wallet_window_end
+              ? `${fmtDate(job.wallet_window_start)} → ${fmtDate(job.wallet_window_end)}`
+              : '—'
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
+function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex justify-between gap-2 truncate">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={cn('truncate text-right', mono && 'font-mono text-[10.5px]')}>{value}</span>
+    </div>
+  )
+}
+
+
+// ─── Analytical report renderer ────────────────────────────────────
+
+
+interface ReportSections {
+  headline_oneliner?: string
+  at_a_glance?: string
+  analysis_narrative?: string
+  two_leg_explainer?: string
+  dominance_explainer?: string
+  filter_recommendation?: string
+  playbook_brief?: string
+  what_to_copy?: string[]
+  what_not_to_copy?: string[]
+  pseudocode?: string
+  bankroll_paragraph?: string
+}
+
+interface AnalyticalPayload {
+  mode?: string
+  sections?: ReportSections
+  spotlight?: Record<string, unknown> | null
+}
+
+function downloadFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function AnalyticalReportView({ job }: { job: ReverseEngineerJob }) {
+  const payload = useMemo<AnalyticalPayload | null>(() => {
+    if (!job.best_strategy_code) return null
+    try {
+      return JSON.parse(job.best_strategy_code) as AnalyticalPayload
+    } catch {
+      return null
+    }
+  }, [job.best_strategy_code])
+
+  if (!payload) {
+    return (
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-[11px] text-amber-700 dark:text-amber-300">
+        Failed to parse analytical report payload — try the PDF download instead.
+      </div>
+    )
+  }
+
+  const s = payload.sections || {}
+  const pseudocode = s.pseudocode || ''
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
+          <Award className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+          Analytical report
+          {job.promoted_strategy_id ? (
+            <Badge
+              variant="outline"
+              className="ml-auto border-emerald-500/40 text-emerald-700 dark:text-emerald-300 text-[9px]"
+            >
+              Promoted: {job.promoted_strategy_id}
+            </Badge>
+          ) : null}
+        </div>
+
+        {s.headline_oneliner ? (
+          <div className="mb-3 rounded-sm border border-emerald-500/20 bg-card/40 p-2.5 text-[12.5px] italic leading-snug">
+            “{s.headline_oneliner}”
+          </div>
+        ) : null}
+
+        <ReportSection title="At a glance" body={s.at_a_glance} />
+        <ReportSection title="Analysis" body={s.analysis_narrative} />
+        <ReportSection title="Two-leg decomposition" body={s.two_leg_explainer} />
+        <ReportSection title="Dominance buckets" body={s.dominance_explainer} />
+        <ReportSection title="Filter recommendation" body={s.filter_recommendation} />
+        <ReportSection title="Playbook brief" body={s.playbook_brief} />
+        <ReportSection title="Bankroll" body={s.bankroll_paragraph} />
+
+        <BulletSection
+          title="What to copy"
+          items={s.what_to_copy}
+          tone="positive"
+        />
+        <BulletSection
+          title="What not to copy"
+          items={s.what_not_to_copy}
+          tone="negative"
+        />
+      </div>
+
+      {pseudocode ? (
+        <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-3">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
+            <Code className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
+            Pseudocode
+            <div className="ml-auto flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 gap-1 text-[10px]"
+                onClick={() => navigator.clipboard?.writeText(pseudocode)}
+              >
+                <Copy className="h-3 w-3" /> Copy
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 gap-1 text-[10px]"
+                onClick={() =>
+                  downloadFile(
+                    `reverse_engineer_${job.id}_pseudocode.py`,
+                    pseudocode,
+                    'text/x-python',
+                  )
+                }
+              >
+                <FileDown className="h-3 w-3" /> .py
+              </Button>
+            </div>
+          </div>
+          <pre className="max-h-96 overflow-auto rounded-sm bg-zinc-950 p-3 font-mono text-[10.5px] leading-relaxed text-zinc-200">
+            {pseudocode}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ReportSection({ title, body }: { title: string; body?: string }) {
+  if (!body) return null
+  return (
+    <div className="mb-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </div>
+      <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-foreground/90">
+        {body}
+      </div>
+    </div>
+  )
+}
+
+function BulletSection({
+  title,
+  items,
+  tone,
+}: {
+  title: string
+  items?: string[]
+  tone: 'positive' | 'negative'
+}) {
+  if (!items || items.length === 0) return null
+  const dotClass =
+    tone === 'positive'
+      ? 'bg-emerald-500/70'
+      : 'bg-rose-500/70'
+  return (
+    <div className="mb-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </div>
+      <ul className="space-y-1">
+        {items.map((item, i) => (
+          <li key={i} className="flex gap-2 text-[11.5px] leading-relaxed text-foreground/90">
+            <span className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', dotClass)} />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+
+// ─── Strategy-seed (Python) view ───────────────────────────────────
+
+
+function StrategySeedView({ job }: { job: ReverseEngineerJob }) {
+  const code = job.best_strategy_code || ''
+  return (
+    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold">
+        <Award className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+        Best strategy
+        {job.best_strategy_class ? (
+          <code className="rounded bg-card/40 px-1 py-0.5 font-mono text-[10px]">
+            {job.best_strategy_class}
+          </code>
+        ) : null}
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 text-[10px]"
+            onClick={() => navigator.clipboard?.writeText(code)}
+          >
+            <Copy className="h-3 w-3" /> Copy
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 text-[10px]"
+            onClick={() =>
+              downloadFile(
+                `reverse_engineer_${job.id}_${(job.best_strategy_class || 'strategy').toLowerCase()}.py`,
+                code,
+                'text/x-python',
+              )
+            }
+          >
+            <FileDown className="h-3 w-3" /> .py
+          </Button>
+          {job.promoted_strategy_id ? (
+            <Badge
+              variant="outline"
+              className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300 text-[9px]"
+            >
+              Promoted: {job.promoted_strategy_id}
+            </Badge>
+          ) : null}
+        </div>
+      </div>
+      <pre className="max-h-96 overflow-auto rounded-sm bg-zinc-950 p-3 font-mono text-[10.5px] leading-relaxed text-zinc-200">
+        {code}
+      </pre>
+    </div>
   )
 }
 
