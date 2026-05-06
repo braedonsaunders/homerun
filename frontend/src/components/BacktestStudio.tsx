@@ -490,6 +490,79 @@ function HazardBar({ label, hr }: { label: string; hr: number }) {
  * pure-snapshots path is neutral.  Both light + dark colorways
  * preserve AA contrast.
  */
+/**
+ * Skeleton shown in the center pane while a backtest is running.
+ *
+ * Replaces the previous-run's KPIs / charts / tables with shimmer
+ * placeholders so the operator never sees stale data alongside an
+ * in-flight mutation.  Mirrors the layout of the real Performance
+ * tab (4 KPI tiles + a wide chart-equivalent block + a metrics
+ * grid) so the visual transition is smooth — when the real result
+ * arrives, the layout doesn't jump.
+ *
+ * The pulse animation is deliberately slow (1.6s) and the contrast
+ * is subtle.  Don't make it loud — backtests can take 30s-2min and
+ * a hyperactive shimmer becomes irritating.
+ */
+function RunningBacktestSkeleton({
+  variant,
+  caption,
+}: {
+  variant: 'running' | 'loading'
+  caption: string
+}) {
+  return (
+    <div className="space-y-3">
+      <div
+        className={cn(
+          'flex items-center gap-2 rounded-md border px-3 py-2 text-[11px]',
+          variant === 'running'
+            ? 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+            : 'border-border/40 bg-card/40 text-muted-foreground',
+        )}
+      >
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+        <span>{caption}</span>
+      </div>
+
+      {/* Mirror the 4-tile KPI grid */}
+      <div className="grid grid-cols-4 gap-2">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="rounded-md border border-border/40 bg-card/40 px-3 py-2.5"
+          >
+            <div className="h-2 w-12 rounded bg-muted/60 animate-pulse" />
+            <div className="mt-2 h-6 w-20 rounded bg-muted/80 animate-pulse" style={{ animationDuration: '1.6s' }} />
+            <div className="mt-1.5 h-2 w-16 rounded bg-muted/40 animate-pulse" />
+          </div>
+        ))}
+      </div>
+
+      {/* Mirror the secondary-metrics two-column block */}
+      <div className="grid grid-cols-2 gap-2">
+        {[0, 1].map((col) => (
+          <div key={col} className="rounded-md border border-border/50 bg-card/40 p-3">
+            <div className="mb-2 h-3 w-32 rounded bg-muted/60 animate-pulse" />
+            {[0, 1, 2, 3, 4].map((row) => (
+              <div key={row} className="flex items-center justify-between py-1">
+                <div className="h-2.5 w-20 rounded bg-muted/50 animate-pulse" />
+                <div className="h-2.5 w-16 rounded bg-muted/70 animate-pulse" />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      {/* Mirror the equity-curve / chart block */}
+      <div className="rounded-md border border-border/40 bg-card/40 p-3">
+        <div className="mb-2 h-3 w-24 rounded bg-muted/60 animate-pulse" />
+        <div className="h-32 rounded bg-muted/30 animate-pulse" style={{ animationDuration: '2.0s' }} />
+      </div>
+    </div>
+  )
+}
+
 function ReplaySourcePill({ source }: { source?: string }) {
   if (!source) return null
   const isDelta = source.startsWith('deltas')
@@ -2251,9 +2324,29 @@ export default function BacktestStudio({
               })}
             </div>
 
+            {/* In-flight skeleton.  Takes precedence over both the
+                empty-state and the activeRun render so the operator
+                never sees stale KPIs / charts overlaid with a tiny
+                "Backtest running" pill — the whole pane swaps to a
+                shimmer that mirrors the real layout. */}
+            {(runMutation.isPending || loadRunMutation.isPending) && centerTab !== 'portfolio' ? (
+              <RunningBacktestSkeleton
+                variant={runMutation.isPending ? 'running' : 'loading'}
+                caption={
+                  runMutation.isPending
+                    ? 'Running backtest — this can take 30s-2min depending on window/tokens. Safe to switch tabs; results will appear here when complete.'
+                    : 'Loading run data…'
+                }
+              />
+            ) : null}
+
             {/* Empty-state placeholder for run-required tabs when no
-                run is loaded. */}
-            {!activeRun && centerTab !== 'portfolio' ? (
+                run is loaded.  Only shown when nothing else is in
+                flight — otherwise the skeleton above wins. */}
+            {!activeRun &&
+            !runMutation.isPending &&
+            !loadRunMutation.isPending &&
+            centerTab !== 'portfolio' ? (
               <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
                 <Flame className="h-7 w-7 text-amber-300/50" />
                 <div className="text-sm font-medium">
@@ -2498,7 +2591,7 @@ export default function BacktestStudio({
               </>
             ) : null}
 
-            {activeRun ? (
+            {activeRun && !runMutation.isPending && !loadRunMutation.isPending ? (
               <>
               {/* HEADLINE KPIS + SECONDARY METRICS — Performance tab. */}
               {centerTab === 'performance' && (
