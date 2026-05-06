@@ -2661,8 +2661,14 @@ async def run_execution_backtest(
                     )
                 except Exception as exc:
                     logger.warning("Historical discovery replay failed: %s", exc)
+                    result.validation_warnings.append(
+                        f"Discovery replay FAILED: {type(exc).__name__}: {str(exc)[:200]}"
+                    )
                     replay_opps = []
 
+                # Always surface what the discovery path did so we can
+                # tell "code ran but found 0" vs "code never ran" from
+                # the result alone.
                 if replay_opps:
                     discovery_mode = (
                         "hybrid" if opps else "historical_synthesis"
@@ -2689,6 +2695,18 @@ async def run_execution_backtest(
                         f"Discovery replay: {len(new_opps)} synthetic opps added "
                         f"(live_opps={len(opps) - len(new_opps)}, replay={len(replay_opps)}, "
                         f"deduped={len(replay_opps) - len(new_opps)})"
+                    )
+                else:
+                    # Code ran but produced 0 opps.  Tell the operator
+                    # WHY — most likely: strategy doesn't override
+                    # detect_async, or the catalog didn't yield any
+                    # markets with reconstructable prices in window,
+                    # or every detect_async call timed out.
+                    result.validation_warnings.append(
+                        "Discovery replay produced 0 synthetic opps "
+                        "(strategy may not override detect_async, or no "
+                        "catalog markets had reconstructable prices in "
+                        "window).  Falling back to live opp_history only."
                     )
             # Surface the discovery mode on the result so the UI can
             # show "this run used historical discovery" / "live opps
