@@ -378,14 +378,23 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
                 "total_available": total_avail,
             }
 
-            # Catalog upsert.
+            # Catalog upsert.  Prefer real Polymarket clob_token_ids so
+            # the dataset metadata matches what _insert_snapshots
+            # actually wrote.  See _insert_snapshots for the full
+            # rationale.
+            real_up = getattr(market, "clob_token_up", None)
+            real_down = getattr(market, "clob_token_down", None)
+            if real_up and real_down:
+                catalog_token_ids = [str(real_up), str(real_down)]
+            else:
+                catalog_token_ids = _token_ids_for_market(coin, market_id)
             await _upsert_provider_dataset(
                 provider=PROVIDER_POLYBACKTEST,
                 coin=coin,
                 external_id=market_id,
                 external_slug=market.slug,
                 title=market.title,
-                token_ids=_token_ids_for_market(coin, market_id),
+                token_ids=catalog_token_ids,
                 start_ts=_ms_to_utc(start_ms),
                 end_ts=_ms_to_utc(end_ms),
                 snapshot_count=per_market_inserted,
@@ -495,9 +504,25 @@ async def _insert_snapshots(
     if not snapshots:
         return 0
 
+    # Prefer the REAL Polymarket clob_token_ids exposed by polybacktest's
+    # market metadata over the synthetic ``polybacktest:btc:X:up`` slugs.
+    # Polybacktest captures Polymarket markets — the snapshots ARE
+    # Polymarket book state.  Storing them under synthetic IDs meant
+    # crypto strategies (which query mms by their real opportunity-
+    # history clob_token_ids) silently saw zero polybacktest coverage.
+    # We fall back to the synthetic ID only when polybacktest didn't
+    # populate clob_token_{up,down} (rare; would imply broken metadata).
+    real_up = getattr(market, "clob_token_up", None)
+    real_down = getattr(market, "clob_token_down", None)
+
     rows: list[dict[str, Any]] = []
     for snap in snapshots:
-        token_id = _token_id_for_side(snap.coin, snap.market_id, snap.side)
+        if snap.side == "up" and real_up:
+            token_id = str(real_up)
+        elif snap.side == "down" and real_down:
+            token_id = str(real_down)
+        else:
+            token_id = _token_id_for_side(snap.coin, snap.market_id, snap.side)
         observed_at = _ms_to_utc(snap.observed_at_ms)
         # Snapshot ID uses the polybacktest snapshot_id when present
         # (it's already globally unique per side+time).  Falls back to
