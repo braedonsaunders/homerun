@@ -346,8 +346,70 @@ export interface RunBacktestRequest {
   latency_correlation_window_ms?: number
 }
 
+/**
+ * Legacy synchronous run.  Returns the full result blob; blocks the
+ * API process for the entire engine wall time.  Kept for back-compat;
+ * the BacktestStudio now uses ``enqueueBacktest`` + polling.
+ */
 export async function runUnifiedBacktest(req: RunBacktestRequest): Promise<UnifiedBacktestResult> {
   const { data } = await api.post<UnifiedBacktestResult>('/backtest/run', req)
+  return data
+}
+
+/**
+ * Async-by-default backtest enqueue.  Returns immediately with the
+ * allocated ``run_id``; the engine runs in the dedicated worker
+ * process (services/backtest/job_runner.py).  Operator polls
+ * ``getBacktestRunStatus(runId)`` for progress.
+ */
+export interface EnqueueBacktestResponse {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'ok'
+  message: string | null
+  created_at: string | null
+}
+
+export async function enqueueBacktest(req: RunBacktestRequest): Promise<EnqueueBacktestResponse> {
+  const { data } = await api.post<EnqueueBacktestResponse>('/backtest/runs/enqueue', req)
+  return data
+}
+
+/**
+ * Lightweight poll-friendly status.  Distinct from ``getBacktestRun``
+ * which returns the heavy result blob (only meaningful once the run
+ * is complete).
+ *
+ * ``progress`` is 0.0-1.0 when ``snapshots_total_estimate`` is set;
+ * otherwise stays at 0 and the operator reads ``snapshots_processed``
+ * + ``message`` for an indeterminate-style indicator.
+ */
+export interface BacktestRunStatus {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'ok'
+  progress: number
+  message: string | null
+  snapshots_processed: number
+  snapshots_total_estimate: number | null
+  trade_count: number
+  total_return_pct: number
+  error: string | null
+  claimed_at: string | null
+  completed_at: string | null
+  worker_id: string | null
+  cancel_requested: boolean
+}
+
+export async function getBacktestRunStatus(runId: string): Promise<BacktestRunStatus> {
+  const { data } = await api.get<BacktestRunStatus>(
+    `/backtest/runs/${encodeURIComponent(runId)}/status`,
+  )
+  return data
+}
+
+export async function cancelBacktestRun(runId: string): Promise<{ run_id: string; cancel_requested: boolean }> {
+  const { data } = await api.post<{ run_id: string; cancel_requested: boolean }>(
+    `/backtest/runs/${encodeURIComponent(runId)}/cancel`,
+  )
   return data
 }
 

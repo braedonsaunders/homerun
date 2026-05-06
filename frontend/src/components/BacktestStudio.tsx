@@ -60,13 +60,16 @@ import {
   type PortfolioCorrelationResult,
   type UnifiedBacktestResult,
   type WalkForwardResult,
+  type BacktestRunStatus,
+  cancelBacktestRun,
+  enqueueBacktest,
   getBacktestRun,
+  getBacktestRunStatus,
   getDriftMonitor,
   getPortfolioCorrelation,
   listBacktestRuns,
   runCPCV,
   runMonteCarloLatency,
-  runUnifiedBacktest,
   runWalkForward,
 } from '../services/apiBacktest'
 import {
@@ -507,22 +510,76 @@ function HazardBar({ label, hr }: { label: string; hr: number }) {
 function RunningBacktestSkeleton({
   variant,
   caption,
+  status,
+  onCancel,
 }: {
   variant: 'running' | 'loading'
   caption: string
+  /** Live status from the worker poll, when available.  When set, the
+   *  banner renders a real progress bar + activity message. */
+  status?: BacktestRunStatus | null
+  /** Operator cancel handler.  Renders a stop button when set. */
+  onCancel?: () => void
 }) {
+  // Real progress comes from the worker's debounced writes to the
+  // BacktestRun row.  ``progress`` is 0-1 when an estimate is set;
+  // otherwise we fall back to an indeterminate-style snapshots-
+  // processed counter from ``message``.
+  const pct = status ? Math.round(Math.min(100, Math.max(0, status.progress * 100))) : null
+  const determinate = pct !== null && status && (status.snapshots_total_estimate ?? 0) > 0
   return (
     <div className="space-y-3">
       <div
         className={cn(
-          'flex items-center gap-2 rounded-md border px-3 py-2 text-[11px]',
+          'rounded-md border px-3 py-2.5 text-[11px]',
           variant === 'running'
-            ? 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+            ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/5 dark:text-amber-200'
             : 'border-border/40 bg-card/40 text-muted-foreground',
         )}
       >
-        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-        <span>{caption}</span>
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+          <span className="flex-1">{status?.message || caption}</span>
+          {status && pct !== null ? (
+            <span className="font-mono tabular-nums text-[10px] opacity-80">
+              {determinate ? `${pct}%` : `${(status.snapshots_processed || 0).toLocaleString()} snaps`}
+            </span>
+          ) : null}
+          {onCancel && status && ['queued', 'running'].includes(status.status) && !status.cancel_requested ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-sm border border-amber-400 bg-white/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 hover:bg-white/80 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/20"
+            >
+              Cancel
+            </button>
+          ) : null}
+          {status?.cancel_requested ? (
+            <span className="rounded-sm bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-900 dark:text-amber-200">
+              Cancelling…
+            </span>
+          ) : null}
+        </div>
+        {/* Progress bar — only renders when we have a determinate
+            progress estimate.  Indeterminate mode just shows the
+            snapshot counter above. */}
+        {determinate ? (
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-amber-200/50 dark:bg-amber-900/40">
+            <div
+              className="h-full rounded-full bg-amber-500 transition-all dark:bg-amber-400"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        ) : status && variant === 'running' ? (
+          // Indeterminate mode — animated bar that pulses without
+          // implying a percentage we don't have.
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-amber-200/50 dark:bg-amber-900/40">
+            <div
+              className="h-full w-1/3 rounded-full bg-amber-500 animate-pulse dark:bg-amber-400"
+              style={{ animationDuration: '1.2s' }}
+            />
+          </div>
+        ) : null}
       </div>
 
       {/* Mirror the 4-tile KPI grid */}
@@ -1163,9 +1220,12 @@ export default function BacktestStudio({
   const [seed, setSeed] = useState<string>('')
   const [impactBps, setImpactBps] = useState<string>('')
   const [makerRebateBps, setMakerRebateBps] = useState<string>('')
-  // Date range — defaulted blank so the backend's 7d window applies.
-  // Operator can extend (e.g. "30" for 30 days, "0" for "now").
-  const [windowDays, setWindowDays] = useState<string>('7')
+  // Default window: 1 day for fast iteration.  Earlier default of 7d
+  // routinely produced 1.5M-snapshot replays that took 30s+ wall-clock
+  // on the API thread (now mitigated by the worker process, but still
+  // a slow first-run experience).  Operators tune up to 7/30 via
+  // preset chips.
+  const [windowDays, setWindowDays] = useState<string>('1')
 
   // Imported provider dataset(s) the operator picked from Data Lab →
   // Providers.  When non-empty the backend resolves these into the
@@ -1376,32 +1436,106 @@ export default function BacktestStudio({
     },
   })
 
+  // ── Async-by-default run flow ─────────────────────────────────────
+  //
+  // The new pipeline:
+  //
+  //   click Run → POST /backtest/runs/enqueue → returns run_id with
+  //   status='queued'.  The backtest worker process picks it up off
+  //   the discovery plane and chews on it; the API process is never
+  //   blocked.
+  //
+  //   pendingRunId tracks the in-flight run.  A useQuery polls
+  //   /backtest/runs/{id}/status every 1.5s while the run is alive,
+  //   feeding the progress bar.
+  //
+  //   When status flips to 'completed', we fetch the full result
+  //   blob via getBacktestRun and promote it to activeRun.  On
+  //   'failed' / 'cancelled', surface the error.
+
+  const PENDING_RUN_ID_KEY = 'hr_backtest_pending_run_id'
+  const readPendingRunId = (): string | null => {
+    try {
+      return localStorage.getItem(PENDING_RUN_ID_KEY)
+    } catch {
+      return null
+    }
+  }
+  const writePendingRunId = (id: string | null) => {
+    try {
+      if (id) localStorage.setItem(PENDING_RUN_ID_KEY, id)
+      else localStorage.removeItem(PENDING_RUN_ID_KEY)
+    } catch {
+      /* silent */
+    }
+  }
+  const [pendingRunId, setPendingRunIdState] = useState<string | null>(
+    () => readPendingRunId(),
+  )
+  const setPendingRunId = (id: string | null) => {
+    writePendingRunId(id)
+    setPendingRunIdState(id)
+  }
+
   const runMutation = useMutation({
-    mutationFn: runUnifiedBacktest,
-    // Drop a "pending run" marker BEFORE the request resolves.  If
-    // the user navigates away mid-flight, this is what lets the
-    // studio find the run when they come back.  We don't yet have a
-    // run_id (the backend allocates one when the run completes), so
-    // we record (startedAt, strategySlug) and reconcile against the
-    // runs list on remount.
+    mutationFn: enqueueBacktest,
     onMutate: (vars) => {
+      // Legacy marker for slow-restoration paths (kept for back-compat
+      // with any tab that might land on a pre-pendingRunId build).
       persistPendingRun({
         startedAt: Date.now(),
         strategySlug: vars.slug || initialSlug || '_backtest_unified',
       })
     },
     onSuccess: (data) => {
-      setActiveRun(data)
-      persistActiveRunId(data.run_id)
+      setPendingRunId(data.run_id)
       persistPendingRun(null)
       queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
     },
     onError: () => {
-      // Clear the pending marker on error too — otherwise it would
-      // sit in storage and make the next mount poll for a run that
-      // never completed.
       persistPendingRun(null)
     },
+  })
+
+  // Poll the status of the in-flight run.  Stops polling automatically
+  // when the run reaches a terminal state.
+  const runStatusQuery = useQuery<BacktestRunStatus>({
+    queryKey: ['backtest', 'run-status', pendingRunId],
+    queryFn: () => getBacktestRunStatus(pendingRunId!),
+    enabled: !!pendingRunId,
+    // 1.5s while running; the engine writes progress at ~1s cadence
+    // so this keeps the UI fresh without slamming the DB.
+    refetchInterval: (q) => {
+      const data = q.state.data as BacktestRunStatus | undefined
+      if (!data) return 1500
+      if (['queued', 'running'].includes(data.status)) return 1500
+      // Terminal state — stop polling.
+      return false
+    },
+  })
+
+  // When the polled status flips to a terminal state, promote / clear.
+  useEffect(() => {
+    const data = runStatusQuery.data
+    if (!data || !pendingRunId) return
+    if (data.status === 'completed' || data.status === 'ok') {
+      // Fetch the full result blob and promote.
+      loadRunMutation.mutate(pendingRunId)
+      setPendingRunId(null)
+      queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
+    } else if (data.status === 'failed' || data.status === 'cancelled') {
+      // Surface the error / cancel state by promoting the row's
+      // result_json (which carries the traceback for failures); the
+      // UI's error banner in the header will render it.
+      loadRunMutation.mutate(pendingRunId)
+      setPendingRunId(null)
+      queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runStatusQuery.data?.status])
+
+  const cancelMutation = useMutation({
+    mutationFn: cancelBacktestRun,
   })
 
   // ── Restore on mount ────────────────────────────────────────────────
@@ -1761,15 +1895,46 @@ export default function BacktestStudio({
                       />
                     </div>
                     <div>
-                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="How many days of history to backtest against.  7 days is the default; extend for thicker samples, shorten for fast iteration.">
+                      <Label
+                        className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                        title="How many days of history to backtest against. Quick = fast iteration (~10-30s); Standard = thicker samples for confidence (~1-2min); Thorough = max statistical power (3-5min)."
+                      >
                         Window (days)
                       </Label>
                       <Input
                         value={windowDays}
                         onChange={(e) => setWindowDays(e.target.value)}
-                        placeholder="7"
+                        placeholder="1"
                         className="h-7 text-xs"
                       />
+                      {/* Preset chips — illuminated defaults that
+                          map to wall-clock expectations.  Quick is
+                          the recommended first run; Standard for
+                          deciding whether to deploy; Thorough for
+                          a final pre-production sanity check. */}
+                      <div className="mt-1 flex items-center gap-1">
+                        {([
+                          ['1', 'Quick', '10-30s'],
+                          ['7', 'Standard', '1-2m'],
+                          ['30', 'Thorough', '3-5m'],
+                        ] as const).map(([val, label, eta]) => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setWindowDays(val)}
+                            title={`${label} — ${val}-day window, expect ~${eta} wall-clock at typical scale`}
+                            className={cn(
+                              'rounded-sm border px-1.5 py-0.5 text-[9px] font-medium transition-colors',
+                              windowDays === val
+                                ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                                : 'border-border/40 bg-card/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
+                            )}
+                          >
+                            {label}
+                            <span className="ml-1 opacity-60">{eta}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
@@ -2329,13 +2494,24 @@ export default function BacktestStudio({
                 never sees stale KPIs / charts overlaid with a tiny
                 "Backtest running" pill — the whole pane swaps to a
                 shimmer that mirrors the real layout. */}
-            {(runMutation.isPending || loadRunMutation.isPending) && centerTab !== 'portfolio' ? (
+            {(runMutation.isPending || loadRunMutation.isPending || pendingRunId) && centerTab !== 'portfolio' ? (
               <RunningBacktestSkeleton
-                variant={runMutation.isPending ? 'running' : 'loading'}
+                variant={pendingRunId ? 'running' : (runMutation.isPending ? 'running' : 'loading')}
                 caption={
-                  runMutation.isPending
-                    ? 'Running backtest — this can take 30s-2min depending on window/tokens. Safe to switch tabs; results will appear here when complete.'
-                    : 'Loading run data…'
+                  pendingRunId
+                    ? 'Backtest running on the dedicated worker process. Backend stays responsive; safe to switch tabs.'
+                    : runMutation.isPending
+                      ? 'Enqueueing backtest…'
+                      : 'Loading run data…'
+                }
+                status={runStatusQuery.data ?? null}
+                onCancel={
+                  pendingRunId
+                    ? () => {
+                        if (!pendingRunId) return
+                        cancelMutation.mutate(pendingRunId)
+                      }
+                    : undefined
                 }
               />
             ) : null}
@@ -2346,6 +2522,7 @@ export default function BacktestStudio({
             {!activeRun &&
             !runMutation.isPending &&
             !loadRunMutation.isPending &&
+            !pendingRunId &&
             centerTab !== 'portfolio' ? (
               <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
                 <Flame className="h-7 w-7 text-amber-300/50" />
@@ -2591,7 +2768,7 @@ export default function BacktestStudio({
               </>
             ) : null}
 
-            {activeRun && !runMutation.isPending && !loadRunMutation.isPending ? (
+            {activeRun && !runMutation.isPending && !loadRunMutation.isPending && !pendingRunId ? (
               <>
               {/* HEADLINE KPIS + SECONDARY METRICS — Performance tab. */}
               {centerTab === 'performance' && (
