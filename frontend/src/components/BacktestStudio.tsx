@@ -620,6 +620,51 @@ function RunningBacktestSkeleton({
   )
 }
 
+/**
+ * Discovery-mode pill.  Shows which path the strategy's opportunities
+ * came from on this run:
+ *   - hybrid                — live cache + replay-discovery merged
+ *   - historical_synthesis  — pure replay-discovery (no live opps)
+ *   - live_opps             — pure cache (legacy path; usually means
+ *                             ``discover_from_history`` was disabled)
+ *
+ * "Hybrid" and "historical_synthesis" are emerald — they mean the
+ * strategy actually ran discovery against historical data.  Pure
+ * "live_opps" is amber to signal "this is fill-counterfactual mode,
+ * not full backtest".
+ */
+function DiscoveryModePill({ mode }: { mode?: string }) {
+  if (!mode) return null
+  const label =
+    mode === 'historical_synthesis'
+      ? 'replay+detect'
+      : mode === 'hybrid'
+      ? 'live+replay'
+      : mode === 'live_opps'
+      ? 'live cache only'
+      : mode
+  const live_only = mode === 'live_opps'
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+        live_only
+          ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-300 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-500/30'
+          : 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/30',
+      )}
+      title={
+        mode === 'hybrid'
+          ? 'Discovery: strategy.detect ran against historical market state at sampled time intervals AND we cached opportunities the live system already saw.  This is the default backtest mode.'
+          : mode === 'historical_synthesis'
+          ? 'Discovery: strategy.detect ran against historical market state.  No live opportunity history existed for this strategy in the window — the backtest is entirely replay-driven.'
+          : 'Discovery: ONLY OpportunityHistory rows the live system already produced.  This is fill-counterfactual mode (testing fill-model / risk gates), not full backtest.  Set discover_from_history=True to run discovery against recorded data.'
+      }
+    >
+      discovery: {label}
+    </span>
+  )
+}
+
 function ReplaySourcePill({ source }: { source?: string }) {
   if (!source) return null
   const isDelta = source.startsWith('deltas')
@@ -661,9 +706,11 @@ function ReplaySourcePill({ source }: { source?: string }) {
 function DataCoverageBanner({
   coverage,
   replaySource,
+  discoveryMode,
 }: {
   coverage?: UnifiedBacktestResult['data_coverage']
   replaySource?: string
+  discoveryMode?: string
 }) {
   if (!coverage || !coverage.fidelity_rating) return null
   const rating = coverage.fidelity_rating
@@ -687,7 +734,10 @@ function DataCoverageBanner({
             ({tokensWithDeltas}/{oppTokens} tokens · median {deltasMedian.toFixed(1)} deltas/hr)
           </span>
         </div>
-        <ReplaySourcePill source={replaySource} />
+        <div className="flex items-center gap-1.5">
+          <DiscoveryModePill mode={discoveryMode} />
+          <ReplaySourcePill source={replaySource} />
+        </div>
       </div>
     )
   }
@@ -701,7 +751,10 @@ function DataCoverageBanner({
             median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens covered
           </span>
         </div>
-        <ReplaySourcePill source={replaySource} />
+        <div className="flex items-center gap-1.5">
+          <DiscoveryModePill mode={discoveryMode} />
+          <ReplaySourcePill source={replaySource} />
+        </div>
       </div>
     )
   }
@@ -711,7 +764,10 @@ function DataCoverageBanner({
       <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
         <div className="flex items-center justify-between">
           <span className="font-semibold">⚠ DATA FIDELITY: medium</span>
+          <div className="flex items-center gap-1.5">
+          <DiscoveryModePill mode={discoveryMode} />
           <ReplaySourcePill source={replaySource} />
+        </div>
         </div>
         <div className="mt-1 text-amber-900/90 dark:text-amber-300/90">
           median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens.
@@ -730,7 +786,10 @@ function DataCoverageBanner({
         <span className="font-semibold text-red-900 dark:text-red-200">
           ⚠ DATA FIDELITY: {rating.toUpperCase()} — backtest fills NOT representative of live
         </span>
-        <ReplaySourcePill source={replaySource} />
+        <div className="flex items-center gap-1.5">
+          <DiscoveryModePill mode={discoveryMode} />
+          <ReplaySourcePill source={replaySource} />
+        </div>
       </div>
       <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-red-900/90 dark:text-red-100/90">
         <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
@@ -2782,6 +2841,7 @@ export default function BacktestStudio({
               <DataCoverageBanner
                 coverage={activeRun.data_coverage}
                 replaySource={activeRun.execution?.replay_source}
+                discoveryMode={activeRun.execution?.discovery_mode}
               />
               <div className="grid grid-cols-4 gap-2">
                 <StatTile

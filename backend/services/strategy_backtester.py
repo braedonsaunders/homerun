@@ -1637,6 +1637,14 @@ class ExecutionBacktestResult:
     # are preferred when their coverage is materially richer than
     # snapshots for the run's window.
     replay_source: str = ""
+    # How the strategy discovered the opportunities driving this run.
+    # One of:
+    #   - "live_opps"            — only OpportunityHistory rows (legacy fast path)
+    #   - "historical_synthesis" — only replay-discovery (zero live opps in window)
+    #   - "hybrid"               — both live + replay-discovered, deduped
+    # The default is hybrid: the strategy's discovery pipeline runs
+    # against recorded data AND we cache off live opps when present.
+    discovery_mode: str = "live_opps"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1860,6 +1868,330 @@ def _exec_ci_to_dict(metric: Any) -> dict[str, Any]:
             else None
         ),
     }
+
+
+# ── Historical discovery replay ──────────────────────────────────────────
+#
+# Runs strategy.detect_async against historical market state at sampled
+# time intervals across the window, returning synthetic
+# OpportunityHistory-shaped rows for the existing evaluate / gate /
+# matcher pipeline.  This is what "backtest" actually means — re-run
+# the strategy's discovery pipeline against recorded data, not just
+# replay fill simulation against opps live happened to surface.
+
+
+class _SyntheticOpp:
+    """OpportunityHistory-quack object built from strategy.detect output.
+
+    The existing evaluate path inspects: ``strategy_type``,
+    ``detected_at``, ``positions_data`` (with ``positions_to_take``).
+    We populate exactly those, plus a ``_synthetic`` marker so
+    downstream code can downweight if needed.
+    """
+
+    __slots__ = ("strategy_type", "detected_at", "positions_data",
+                 "title", "event_id", "_synthetic")
+
+    def __init__(
+        self,
+        *,
+        strategy_type: str,
+        detected_at: datetime,
+        positions_data: dict[str, Any],
+        title: str = "",
+        event_id: str | None = None,
+    ) -> None:
+        self.strategy_type = strategy_type
+        self.detected_at = detected_at
+        self.positions_data = positions_data
+        self.title = title
+        self.event_id = event_id
+        self._synthetic = True
+
+
+async def _replay_discover_opportunities(
+    *,
+    strategy: Any,
+    slug: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    sample_interval_seconds: int,
+    max_ticks: int,
+    candidate_token_ids: list[str] | None = None,
+) -> list[_SyntheticOpp]:
+    """Replay-discovery: walk historical market state at sampled time
+    ticks across [start_dt, end_dt] and call strategy.detect_async at
+    each tick, accumulating returned opportunities.
+
+    The (events, markets, prices) tuple at each tick is reconstructed
+    from:
+      * markets — current Polymarket market catalog filtered to
+        active-during-window markets, optionally narrowed to
+        ``candidate_token_ids`` when caller provides a scope.  We use
+        the CURRENT catalog (not historical) for the metadata since
+        Polymarket markets are short-lived and metadata rarely
+        changes during a market's life — only the prices do.
+      * prices — best_bid / best_ask / mid reconstructed per token
+        from the most-recent ``MarketMicrostructureSnapshot`` at-or-
+        before the tick.  This is what we backfilled from polybacktest
+        and the live ingestor.
+      * events — empty for now.  Few strategies use the events list;
+        crypto / news strategies that do will surface that as a
+        validation warning rather than fail.
+
+    Returns a list of ``_SyntheticOpp`` instances that quack like
+    ``OpportunityHistory`` rows — the existing evaluate /
+    orchestrator-gate / matcher pipeline consumes them unchanged.
+    """
+    import json as _json
+    from sqlalchemy import select as _select, text as _text
+    from models.database import (
+        AsyncSessionLocal as _Sess,
+        MarketMicrostructureSnapshot as _MMS,
+    )
+
+    if not _has_custom_detect_async(strategy) and not _has_custom_detect_sync(strategy):
+        # Strategy uses the default ``detect()`` which is usually a
+        # no-op — historical replay can't do anything for it.
+        return []
+
+    # Step 1: build the time grid.  Cap at ``max_ticks`` total samples
+    # so a 30-day window doesn't blow up into 1500 detect() calls.
+    total_seconds = max(60.0, (end_dt - start_dt).total_seconds())
+    n_ticks = min(max_ticks, max(1, int(total_seconds / max(60, sample_interval_seconds))))
+    actual_interval = total_seconds / n_ticks
+
+    # Step 2: load the current market catalog from the live scanner
+    # (in-memory cache, no API call).  Filter to markets with at least
+    # one mms book row in the window — anything else can't be price-
+    # reconstructed and would just produce stale prices in detect.
+    try:
+        from services.shared_state import _read_market_catalog_file
+        catalog = _read_market_catalog_file()
+    except Exception:
+        catalog = None
+
+    candidate_set: set[str] | None = (
+        set(candidate_token_ids) if candidate_token_ids else None
+    )
+
+    catalog_markets: list[Any] = []
+    if catalog is not None:
+        _events_in_catalog, _markets_in_catalog, _meta = catalog
+        for m in _markets_in_catalog or []:
+            if not isinstance(m, dict):
+                continue
+            if m.get("closed") or m.get("archived") or m.get("resolved"):
+                continue
+            if m.get("active") is False:
+                continue
+            tok_ids = m.get("clob_token_ids") or []
+            if isinstance(tok_ids, str):
+                try:
+                    tok_ids = _json.loads(tok_ids)
+                except (_json.JSONDecodeError, TypeError):
+                    tok_ids = []
+            tok_ids = [str(t).strip() for t in (tok_ids or []) if t]
+            if not tok_ids:
+                continue
+            if candidate_set is not None and not any(t in candidate_set for t in tok_ids):
+                continue
+            catalog_markets.append(m)
+
+    if not catalog_markets:
+        return []
+
+    # Step 3: pre-fetch every mms snapshot we'll need across all
+    # candidate tokens in one chunked query.  Index by token; within
+    # each token, sort by observed_at for fast bisect lookup.
+    all_token_ids: list[str] = []
+    seen_t: set[str] = set()
+    for m in catalog_markets:
+        for t in m.get("clob_token_ids") or []:
+            ts = str(t).strip()
+            if ts and ts not in seen_t:
+                seen_t.add(ts)
+                all_token_ids.append(ts)
+
+    snaps_by_token: dict[str, list[Any]] = {}
+    CHUNK = 100
+    async with _Sess() as session:
+        await session.execute(_text("SET statement_timeout = 60000"))
+        for i in range(0, len(all_token_ids), CHUNK):
+            chunk = all_token_ids[i : i + CHUNK]
+            try:
+                rows = (await session.execute(
+                    _select(
+                        _MMS.token_id,
+                        _MMS.observed_at,
+                        _MMS.best_bid,
+                        _MMS.best_ask,
+                        _MMS.spread_bps,
+                    )
+                    .where(
+                        _MMS.token_id.in_(chunk),
+                        _MMS.observed_at >= start_dt,
+                        _MMS.observed_at <= end_dt,
+                        _MMS.snapshot_type == "book",
+                    )
+                    .order_by(_MMS.token_id, _MMS.observed_at)
+                )).all()
+            except Exception:
+                rows = []
+            for r in rows:
+                snaps_by_token.setdefault(str(r[0]), []).append(
+                    {"observed_at": r[1], "best_bid": r[2], "best_ask": r[3], "spread_bps": r[4]}
+                )
+
+    # Step 4: walk the time grid + run detect at each tick.
+    detected_total: list[_SyntheticOpp] = []
+    detect_failures = 0
+
+    from datetime import timedelta as _td_replay
+    for tick_i in range(n_ticks):
+        tick_t = start_dt + _td_replay(seconds=actual_interval * tick_i)
+
+        # Build prices dict at this tick.  Strategies expect a dict
+        # keyed by token_id with at least best_bid/best_ask/mid.  We
+        # also include observed_at and spread_bps which some
+        # strategies inspect.
+        prices_at_tick: dict[str, dict[str, Any]] = {}
+        for token_id in all_token_ids:
+            snaps = snaps_by_token.get(token_id) or []
+            if not snaps:
+                continue
+            # Find the most recent snap at-or-before tick_t.
+            target_ts = tick_t
+            # Linear scan from end is fine — snaps sorted ASC, most
+            # ticks land late in the list.  For very large per-token
+            # lists we could bisect, but the typical density caps
+            # this naturally.
+            chosen = None
+            for snap in reversed(snaps):
+                if snap["observed_at"] <= target_ts:
+                    chosen = snap
+                    break
+            if chosen is None:
+                continue
+            bb = float(chosen["best_bid"]) if chosen["best_bid"] is not None else 0.0
+            ba = float(chosen["best_ask"]) if chosen["best_ask"] is not None else 0.0
+            if bb <= 0 and ba <= 0:
+                continue
+            mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
+            prices_at_tick[token_id] = {
+                "best_bid": bb,
+                "best_ask": ba,
+                "mid": mid,
+                "price": mid,
+                "spread_bps": (
+                    float(chosen["spread_bps"]) if chosen["spread_bps"] is not None else None
+                ),
+                "observed_at": chosen["observed_at"],
+            }
+
+        if not prices_at_tick:
+            continue
+
+        # Filter markets to those whose tokens have prices at this tick.
+        markets_at_tick: list[dict] = []
+        for m in catalog_markets:
+            tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+            if any(t in prices_at_tick for t in tok_ids):
+                markets_at_tick.append(m)
+        if not markets_at_tick:
+            continue
+
+        # Call strategy.detect_async with the reconstructed inputs.
+        # Wrap dict-shaped catalog markets into Market pydantic models
+        # because that's what strategies expect (verified — every
+        # detect_async signature in the repo annotates ``markets:
+        # list[Market]``).
+        try:
+            from models.market import Market as _Market
+            market_models: list[Any] = []
+            for m in markets_at_tick:
+                try:
+                    market_models.append(_Market.from_gamma_response(m))
+                except Exception:
+                    continue
+        except Exception:
+            market_models = markets_at_tick
+
+        try:
+            opps_at_tick = await _run_detect_once(
+                strategy,
+                events=[],
+                markets=market_models,
+                prices=prices_at_tick,
+                timeout_seconds=8.0,
+            )
+        except Exception:
+            detect_failures += 1
+            continue
+
+        for opp in opps_at_tick or []:
+            # ``opp`` is whatever the strategy's detect returns — usually
+            # an Opportunity-like object with ``positions_to_take`` /
+            # ``total_cost`` / ``expected_roi`` etc.  Wrap in a synthetic
+            # OpportunityHistory-shaped record.
+            pdata = _opp_to_positions_data(opp)
+            if not pdata.get("positions_to_take"):
+                continue
+            detected_total.append(
+                _SyntheticOpp(
+                    strategy_type=slug,
+                    detected_at=tick_t,
+                    positions_data=pdata,
+                    title=str(getattr(opp, "title", "") or ""),
+                    event_id=str(getattr(opp, "event_id", "") or "") or None,
+                )
+            )
+
+    if detect_failures > 0:
+        logger.info(
+            "replay_discover: %d detect() failures across %d ticks",
+            detect_failures, n_ticks,
+        )
+
+    return detected_total
+
+
+def _opp_to_positions_data(opp: Any) -> dict[str, Any]:
+    """Convert a strategy.detect() return value into the OpportunityHistory
+    ``positions_data`` shape: ``{"positions_to_take": [{...}, ...]}``.
+
+    Tolerates several common return shapes:
+      * Pydantic Opportunity with ``positions_to_take`` field
+      * Dict with ``positions_to_take`` key
+      * Bare list of position dicts
+      * Single position dict
+    """
+    if isinstance(opp, dict):
+        pdata = dict(opp)
+        if "positions_to_take" not in pdata:
+            # Treat the dict itself as a single position.
+            if any(k in pdata for k in ("token_id", "side", "action")):
+                return {"positions_to_take": [pdata]}
+            return {}
+        return pdata
+    pos_list = getattr(opp, "positions_to_take", None)
+    if isinstance(pos_list, list):
+        # Coerce each entry to a dict.
+        out: list[dict[str, Any]] = []
+        for p in pos_list:
+            if isinstance(p, dict):
+                out.append(p)
+            elif hasattr(p, "model_dump"):
+                out.append(p.model_dump())
+            elif hasattr(p, "__dict__"):
+                out.append({k: v for k, v in p.__dict__.items() if not k.startswith("_")})
+        return {
+            "positions_to_take": out,
+            "total_cost": float(getattr(opp, "total_cost", 0.0) or 0.0),
+            "expected_roi": float(getattr(opp, "expected_roi", 0.0) or 0.0),
+            "risk_score": float(getattr(opp, "risk_score", 0.0) or 0.0),
+        }
+    return {}
 
 
 # ── Pre-flight data-coverage measurement ─────────────────────────────────
@@ -2091,13 +2423,42 @@ async def run_execution_backtest(
     # can render a live progress bar.  Sync callers leave it at None
     # and the engine treats that as "no callback".
     progress_callback: Any = None,
+    # ── Historical discovery replay ─────────────────────────────────
+    # When True (default), the backtest runs strategy.detect_async
+    # against historical market state at sampled time intervals
+    # across the window — independent of whether the live system
+    # ever surfaced opportunities.  This is what "backtest" actually
+    # means: re-run the WHOLE strategy pipeline on recorded data,
+    # including discovery.
+    #
+    # When False, the legacy path runs (read OpportunityHistory rows
+    # for slug-in-window only).  Useful as a fast cache when you
+    # want to test fill-model / risk-gate changes against the same
+    # opps live saw.
+    #
+    # Both paths produce the same OpportunityHistory-shaped objects
+    # the existing evaluate / orchestrator / matcher pipeline
+    # consumes — so all advanced features (Cox PH, ensemble bands,
+    # CPCV, drift, regime decomp, latency MC, walk-forward) sit
+    # downstream of fills and continue working unchanged.
+    discover_from_history: bool = True,
+    # Time grid resolution for historical discovery.  The default
+    # 30-min cadence is a good balance: tighter than 30 min gives
+    # diminishing returns (most strategies' discovery filters change
+    # state on similar time scales), wider misses fast-moving
+    # opportunities.  Capped at 96 ticks per window to bound runtime
+    # (each tick = one strategy.detect_async call).
+    discovery_sample_interval_seconds: int = 1800,
+    discovery_max_ticks: int = 96,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
     Loads the strategy, fetches book snapshots from
-    ``MarketMicrostructureSnapshot``, generates trade intents from
-    historical opportunities, runs the production matching engine, and
-    reports headline + risk-adjusted metrics with bootstrap CIs.
+    ``MarketMicrostructureSnapshot``, runs strategy.detect_async at
+    sampled time intervals across the window (so discovery itself is
+    backtested, not just fill simulation), generates trade intents,
+    runs the production matching engine, and reports headline + risk-
+    adjusted metrics with bootstrap CIs.
     """
     from datetime import timedelta as _td
     from services.backtest import (
@@ -2271,6 +2632,73 @@ async def run_execution_backtest(
                     opps = (await session.execute(opp_stmt_loose)).scalars().all()
             except Exception:
                 opps = []
+
+            # ── Historical discovery replay ──────────────────────────
+            # When enabled (default), run strategy.detect_async against
+            # historical market state at sampled time intervals.  This
+            # is what "backtest" actually means — the strategy's
+            # discovery pipeline runs against recorded data, NOT just
+            # against opps live happened to surface.
+            #
+            # The live ``opps`` set above stays — it's a fast cache of
+            # already-discovered opportunities for the strategy.  We
+            # APPEND replay-discovered opps to it.  Dedup by (token_id,
+            # detected_at-bucket) so we don't double-count when the
+            # live system saw the same opp the synthesis would have
+            # picked up.
+            replay_opps: list = []
+            discovery_mode = "live_opps"
+            if discover_from_history:
+                try:
+                    replay_opps = await _replay_discover_opportunities(
+                        strategy=strategy,
+                        slug=slug,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        sample_interval_seconds=int(discovery_sample_interval_seconds),
+                        max_ticks=int(discovery_max_ticks),
+                        candidate_token_ids=token_ids,
+                    )
+                except Exception as exc:
+                    logger.warning("Historical discovery replay failed: %s", exc)
+                    replay_opps = []
+
+                if replay_opps:
+                    discovery_mode = (
+                        "hybrid" if opps else "historical_synthesis"
+                    )
+                    # Dedup by (first-token, 30-min bucket) so
+                    # synthesis-time-ticks don't pile on top of live
+                    # opps for the same token+moment.
+                    def _dedup_key(o: Any) -> tuple[str, int]:
+                        pdata = getattr(o, "positions_data", None) or {}
+                        if isinstance(pdata, dict):
+                            ptt = pdata.get("positions_to_take") or []
+                            first = ptt[0] if ptt and isinstance(ptt[0], dict) else {}
+                            tok = str(first.get("token_id") or "")
+                        else:
+                            tok = ""
+                        det = getattr(o, "detected_at", None)
+                        bucket = int(det.timestamp() // 1800) if det else 0
+                        return (tok, bucket)
+
+                    seen = {_dedup_key(o) for o in opps}
+                    new_opps = [o for o in replay_opps if _dedup_key(o) not in seen]
+                    opps = list(opps) + new_opps
+                    result.validation_warnings.append(
+                        f"Discovery replay: {len(new_opps)} synthetic opps added "
+                        f"(live_opps={len(opps) - len(new_opps)}, replay={len(replay_opps)}, "
+                        f"deduped={len(replay_opps) - len(new_opps)})"
+                    )
+            # Surface the discovery mode on the result so the UI can
+            # show "this run used historical discovery" / "live opps
+            # only" / "hybrid".
+            if not hasattr(result, "discovery_mode"):
+                pass  # field declared on the dataclass below
+            try:
+                result.discovery_mode = discovery_mode
+            except Exception:
+                pass
 
             tokens = list(token_ids or [])
             if not tokens:

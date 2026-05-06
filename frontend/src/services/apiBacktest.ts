@@ -58,6 +58,13 @@ export interface ExecutionResult {
   runtime_traceback: string | null
   /** Which replay source the engine ran against (live-parity if "deltas*"). */
   replay_source?: ReplaySource
+  /**
+   * How the strategy discovered the opportunities driving this run:
+   *   - live_opps             — only OpportunityHistory rows (legacy fast path)
+   *   - historical_synthesis  — only replay-discovery (zero live opps in window)
+   *   - hybrid                — both live + replay-discovered, deduped
+   */
+  discovery_mode?: 'live_opps' | 'historical_synthesis' | 'hybrid' | ''
   /** Pre-flight data coverage stats — same struct as the top-level field. */
   data_coverage?: DataCoverageStats
 }
