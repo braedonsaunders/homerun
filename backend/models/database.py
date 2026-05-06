@@ -3296,13 +3296,36 @@ class FillProbabilityModel(Base):
 
 
 class BacktestRun(Base):
-    """Persisted Backtest Studio run.
+    """Persisted Backtest Studio run + job-queue row.
 
-    Replaces the prior process-local LRU so runs survive worker
-    restarts.  Summary columns are denormalized for the run-history
-    list query (sort by started_at, render the row sparkline + return
-    %) while the full augmented result lives in ``result_json`` for
-    the per-run detail view.
+    Holds the full run lifecycle: from initial enqueue (operator clicks
+    Run) through worker claim, in-flight progress, and final result.
+    The split from "run" to "run + job" is deliberate — having a single
+    canonical row eliminates the need for a separate jobs table and a
+    join to read run state.
+
+    Lifecycle (``status`` column):
+
+      queued    → enqueued, waiting for a worker to claim it
+      running   → claimed by a worker; ``progress`` 0.0→1.0,
+                  ``message`` carries human-readable activity
+      completed → engine finished; ``result_json`` populated
+      failed    → crashed; ``error`` populated
+      cancelled → operator clicked stop; worker bails on next yield
+
+    The dedicated backtest worker process (workers/backtest_worker.py)
+    polls this table for ``status='queued'`` rows and runs them off
+    the API event loop entirely — guarantees the orchestrator and
+    other workers cannot be impacted by a long-running backtest.
+
+    ``payload_json`` carries the full run request shape:
+        { source_code, slug, config, token_ids, start, end,
+          initial_capital_usd, ... } so the worker can reconstruct
+        the run without reading other tables.
+
+    Legacy in-process runs (POST /backtest/run sync path) write rows
+    with ``status='ok'`` directly, skipping the queue lifecycle.  The
+    UI tolerates both code paths.
     """
 
     __tablename__ = "backtest_runs"
@@ -3313,19 +3336,46 @@ class BacktestRun(Base):
     started_at = Column(DateTime, nullable=False, index=True)
     completed_at = Column(DateTime, nullable=True)
     total_time_ms = Column(Float, nullable=False, default=0.0)
-    status = Column(String, nullable=False, default="ok", index=True)  # "ok" | "failed"
+    # Status values: queued | running | completed | failed | cancelled |
+    # ok (legacy sync path).  ``ok`` is treated as ``completed`` by
+    # readers; we keep both so old rows still work.
+    status = Column(String, nullable=False, default="ok", index=True)
     trade_count = Column(Integer, nullable=False, default=0)
     total_return_pct = Column(Float, nullable=False, default=0.0)
     sparkline_pct_json = Column(JSON, nullable=True)  # list[float]
     result_json = Column(JSON, nullable=False, default=dict)
-    # Optional FK to a strategy row.  We don't enforce a hard FK so
-    # runs survive the strategy being deleted/renamed; the slug is
-    # the durable identifier.
+
+    # ── Job-queue lifecycle fields ─────────────────────────────────
+    # ``payload_json`` is set at enqueue time so the worker can rebuild
+    # the run config without dependencies on the API process state.
+    payload_json = Column(JSON, nullable=True)
+    # 0.0 → 1.0; the engine's progress_callback writes here every
+    # ~1k snapshots so the UI can render a live progress bar.
+    progress = Column(Float, nullable=False, default=0.0)
+    # Human-readable activity string ("Running engine: 47% · 8 fills").
+    message = Column(String, nullable=True)
+    # Worker process that claimed this row.  Diagnostic only.
+    worker_id = Column(String, nullable=True)
+    # When the worker picked it up.  Null for queued / legacy rows.
+    claimed_at = Column(DateTime, nullable=True)
+    # Stop signal: operator → backend writes True; worker checks on
+    # every progress yield and bails out cleanly.
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    # Failure surface.
+    error = Column(Text, nullable=True)
+    # Snapshot tracking from the engine.  Useful for ETA estimation.
+    snapshots_processed = Column(Integer, nullable=False, default=0)
+    snapshots_total_estimate = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=_utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_btr_strategy_started", "strategy_slug", "started_at"),
         Index("idx_btr_started", "started_at"),
+        # Job-queue claim path: workers SELECT WHERE status='queued'
+        # ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED.  This
+        # composite index keeps that hot.
+        Index("idx_btr_status_created", "status", "created_at"),
     )
 
 

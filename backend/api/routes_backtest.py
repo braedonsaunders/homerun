@@ -182,6 +182,119 @@ async def get_run(run_id: str):
     return _sanitize_floats(run)
 
 
+# ── Async-job-queue endpoints ───────────────────────────────────────────
+#
+# The default UX flow goes through these now:
+#
+#   POST /backtest/runs/enqueue        → 202 Accepted with run_id
+#   GET  /backtest/runs/{run_id}/status → poll for progress (1s cadence)
+#   POST /backtest/runs/{run_id}/cancel → operator stop
+#
+# Engine work runs in the dedicated backtest worker process (discovery
+# plane, see workers/backtest_worker.py).  Full GIL + crash isolation
+# from the API + orchestrator.
+#
+# The legacy ``POST /backtest/run`` (sync) path stays for backwards
+# compatibility but should be considered deprecated — running a 1M+
+# snapshot replay on the API process makes the entire backend
+# unresponsive for the run's duration.
+
+
+@router.post("/runs/enqueue", status_code=202)
+async def enqueue_run_route(req: UnifiedBacktestRequest) -> dict[str, Any]:
+    """Enqueue a backtest run for the dedicated worker.
+
+    Returns 202 Accepted with the allocated ``run_id`` immediately.
+    The operator polls ``/runs/{run_id}/status`` for progress.
+
+    Session/provider-dataset resolution happens at enqueue time so
+    the worker doesn't need to re-resolve.
+    """
+    from services.backtest.job_runner import enqueue_run
+
+    payload: dict[str, Any] = {
+        "source_code": req.source_code,
+        "slug": req.slug,
+        "config": req.config,
+        "token_ids": req.token_ids,
+        "start": req.start,
+        "end": req.end,
+        "session_id": req.session_id,
+        "provider_dataset_ids": req.provider_dataset_ids,
+        "initial_capital_usd": req.initial_capital_usd,
+        "submit_p50_ms": req.submit_p50_ms,
+        "submit_p95_ms": req.submit_p95_ms,
+        "cancel_p50_ms": req.cancel_p50_ms,
+        "cancel_p95_ms": req.cancel_p95_ms,
+        "seed": req.seed,
+        "counterfactual_sample_size": req.counterfactual_sample_size,
+        "ensemble_sample_size": req.ensemble_sample_size,
+        "impact_strength_bps": req.impact_strength_bps,
+        "maker_rebate_bps": req.maker_rebate_bps,
+        "maker_rebate_max_spread_bps": req.maker_rebate_max_spread_bps,
+    }
+    row = await enqueue_run(payload)
+    return {
+        "run_id": row.id,
+        "status": row.status,
+        "message": row.message,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/runs/{run_id}/status")
+async def get_run_status(run_id: str) -> dict[str, Any]:
+    """Lightweight status for polling.  Distinct from /runs/{id} which
+    returns the full result blob (heavy)."""
+    from sqlalchemy import select as sa_select
+    from models.database import AsyncSessionLocal as _Sess, BacktestRun
+
+    async with _Sess() as session:
+        row = (
+            await session.execute(
+                sa_select(BacktestRun).where(BacktestRun.id == run_id)
+            )
+        ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return {
+        "run_id": row.id,
+        "status": row.status,
+        "progress": float(row.progress or 0.0),
+        "message": row.message,
+        "snapshots_processed": int(row.snapshots_processed or 0),
+        "snapshots_total_estimate": (
+            int(row.snapshots_total_estimate)
+            if row.snapshots_total_estimate is not None
+            else None
+        ),
+        "trade_count": int(row.trade_count or 0),
+        "total_return_pct": float(row.total_return_pct or 0.0),
+        "error": row.error,
+        "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "worker_id": row.worker_id,
+        "cancel_requested": bool(row.cancel_requested),
+    }
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, Any]:
+    """Request cancel.  The worker honors this on the next progress
+    yield (within ~1s) and writes ``status='cancelled'`` to the row.
+    Returns 404 if the run doesn't exist or is already terminal.
+    """
+    from services.backtest.job_runner import request_cancel
+
+    ok = await request_cancel(run_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run '{run_id}' not found or already finished",
+        )
+    return {"run_id": run_id, "cancel_requested": True}
+
+
 class WalkForwardRequest(BaseModel):
     source_code: str = Field(..., min_length=10)
     slug: str = Field(default="_backtest_walk_forward", min_length=1)

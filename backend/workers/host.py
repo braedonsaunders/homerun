@@ -215,6 +215,12 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             # jobs that benefit from the same plane.
             "workers.provider_import_worker",
             "workers.strategy_reverse_engineer_worker",
+            # Drains the BacktestRun job queue.  Backtests are CPU-
+            # heavy (1M-snapshot replays chew the GIL for minutes) so
+            # they MUST live off the trading plane — running them
+            # here gives full process isolation from the live
+            # orchestrator.  See workers/backtest_worker.py.
+            "workers.backtest_worker",
         ),
         "runtime_names": (),
         # Load the ``traders`` strategy bucket so
@@ -264,6 +270,12 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.fill_simulator_refresh_worker",
             "workers.provider_import_worker",
             "workers.strategy_reverse_engineer_worker",
+            # Drains the BacktestRun job queue.  Backtests are CPU-
+            # heavy (1M-snapshot replays chew the GIL for minutes) so
+            # they MUST live off the trading plane — running them
+            # here gives full process isolation from the live
+            # orchestrator.  See workers/backtest_worker.py.
+            "workers.backtest_worker",
         ),
         "runtime_names": (
             "trader_orchestrator",

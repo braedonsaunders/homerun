@@ -2085,6 +2085,12 @@ async def run_execution_backtest(
     maker_rebate_bps: float = 0.0,
     maker_rebate_max_spread_bps: float = 50.0,
     latency_correlation_window_ms: float = 5.0,
+    # Optional progress hook for the worker-process job runner.  Fired
+    # by ``BacktestEngine.run`` every ~1k snapshots; the runner uses
+    # it to update the BacktestRun row's progress + message so the UI
+    # can render a live progress bar.  Sync callers leave it at None
+    # and the engine treats that as "no callback".
+    progress_callback: Any = None,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
@@ -3009,7 +3015,11 @@ async def run_execution_backtest(
                         f"Replay source: SNAPSHOTS — {snapshots_total:,} mms rows "
                         f"vs {deltas_total:,} delta events in window."
                     )
-            bt_result = await engine.run(book_source=replay_for_run, trade_intents=intents)
+            bt_result = await engine.run(
+                book_source=replay_for_run,
+                trade_intents=intents,
+                progress_callback=progress_callback,
+            )
     except Exception as e:
         result.runtime_error = f"Backtest engine error: {e}"
         result.runtime_traceback = traceback.format_exc()

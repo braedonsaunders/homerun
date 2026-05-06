@@ -905,6 +905,8 @@ async def run_unified_backtest(
     token_ids: list[str] | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    session_id: str | None = None,
+    provider_dataset_ids: list[str] | None = None,
     initial_capital_usd: float = 1000.0,
     submit_p50_ms: float | None = None,
     submit_p95_ms: float | None = None,
@@ -919,14 +921,25 @@ async def run_unified_backtest(
     maker_rebate_bps: float | None = None,
     maker_rebate_max_spread_bps: float | None = None,
     latency_correlation_window_ms: float | None = None,
+    # Async-job-queue path: when the dedicated backtest worker process
+    # invokes this function, it passes a pre-allocated ``run_id`` (so
+    # the operator's polling already has a stable pointer) and a
+    # ``progress_callback`` the engine fires every ~1k snapshots.
+    # Sync callers (legacy POST /backtest/run) leave both at None.
+    run_id: str | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Run the full backtest pipeline + augment with fill-simulator data.
 
     Returns a JSON-safe dict that the new BacktestStudio UI consumes
     directly.  Persisted in process-local LRU; retrieve by run_id via
     ``get_recent_run``.
+
+    When called from the worker, ``progress_callback`` is wired through
+    to ``BacktestEngine.run`` so the UI can render a live progress bar.
     """
-    run_id = uuid.uuid4().hex[:16]
+    if run_id is None:
+        run_id = uuid.uuid4().hex[:16]
     started_at = datetime.now(timezone.utc).isoformat()
     started_perf = time.perf_counter()
 
@@ -962,6 +975,12 @@ async def run_unified_backtest(
         exec_kwargs["maker_rebate_max_spread_bps"] = float(maker_rebate_max_spread_bps)
     if latency_correlation_window_ms is not None:
         exec_kwargs["latency_correlation_window_ms"] = float(latency_correlation_window_ms)
+    # Wire the worker's progress callback through to the engine.  The
+    # unified runner itself doesn't fire intermediate progress (its
+    # post-engine analytics are fast); the engine's snapshot-loop is
+    # where the long wall-clock lives.
+    if progress_callback is not None:
+        exec_kwargs["progress_callback"] = progress_callback
     exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     exec_dict = exec_result.to_dict()
 
