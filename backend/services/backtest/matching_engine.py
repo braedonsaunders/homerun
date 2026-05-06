@@ -403,6 +403,14 @@ class MatchingEngine:
 
         self._orders: dict[str, BacktestOrder] = {}
         self._working_by_token: dict[str, list[str]] = {}
+        # Per-token count of orders in ANY non-terminal state (PENDING /
+        # WORKING / PARTIAL).  Used by the engine's fast-path bail to
+        # decide whether a snapshot for ``token_id`` can be skipped — if
+        # zero, no order on this token needs the matcher's attention.
+        # Maintained alongside _working_by_token (which is WORKING-only)
+        # because PENDING orders also need matcher.advance_to to run on
+        # their token's next snapshot to be admitted.
+        self._active_count_by_token: dict[str, int] = {}
         self._pending_cancels: dict[str, datetime] = {}  # order_id -> effective_at
         self._books: dict[str, _ResidualBook] = {}
         self._now: Optional[datetime] = None
@@ -449,7 +457,39 @@ class MatchingEngine:
         order.state = OrderState.PENDING
         self._orders[order.order_id] = order
         self._fills_by_order[order.order_id] = []
+        # Track this order in the per-token active-count index so the
+        # engine's fast-path doesn't skip its token's next snapshot.
+        self._active_count_by_token[order.token_id] = (
+            self._active_count_by_token.get(order.token_id, 0) + 1
+        )
         return order
+
+    def _decrement_active(self, token_id: str) -> None:
+        """Drop the active-count by 1 for a token that just had an order
+        transition to a terminal state.  Removes the dict key when count
+        hits zero so memory doesn't grow with completed runs.
+        """
+        n = self._active_count_by_token.get(token_id, 0) - 1
+        if n <= 0:
+            self._active_count_by_token.pop(token_id, None)
+        else:
+            self._active_count_by_token[token_id] = n
+
+    def _terminate(self, order: "BacktestOrder", new_state: "OrderState") -> None:
+        """Centralized terminal transition: set state + decrement the
+        per-token active-count index.  Idempotent — calling twice is
+        safe (the second call is a no-op).
+        """
+        if order.is_terminal:
+            return
+        order.state = new_state
+        self._decrement_active(order.token_id)
+
+    def has_active_orders_for_token(self, token_id: str) -> bool:
+        """True if any order on this token is in a non-terminal state.
+        Cheap O(1) lookup; used by the engine's fast-path bail.
+        """
+        return self._active_count_by_token.get(token_id, 0) > 0
 
     def cancel(self, *, order_id: str, requested_at: datetime) -> bool:
         order = self._orders.get(order_id)
@@ -547,12 +587,12 @@ class MatchingEngine:
         if order is None or order.is_terminal:
             return
         if order.state == OrderState.PARTIAL or order.state == OrderState.WORKING:
-            order.state = OrderState.CANCELLED
+            self._terminate(order, OrderState.CANCELLED)
             order.cancelled_at = effective_at
             self._remove_from_working(order)
         elif order.state == OrderState.PENDING:
             # Cancelled before the venue received it — never made the book.
-            order.state = OrderState.CANCELLED
+            self._terminate(order, OrderState.CANCELLED)
             order.cancelled_at = effective_at
 
     def _remove_from_working(self, order: BacktestOrder) -> None:
@@ -584,8 +624,8 @@ class MatchingEngine:
             best_bid=snap.best_bid,
             best_ask=snap.best_ask,
         ):
-            order.state = OrderState.REJECTED
             order.reject_reason = "post_only_crosses_book"
+            self._terminate(order, OrderState.REJECTED)
             return
 
         marketable = self.venue.is_marketable(
@@ -600,31 +640,33 @@ class MatchingEngine:
         if tif == TIF_FOK:
             available = self._available_for_taker(book, order.side, order.price)
             if available + 1e-12 < order.size:
-                order.state = OrderState.REJECTED
                 order.reject_reason = "fok_insufficient_liquidity"
+                self._terminate(order, OrderState.REJECTED)
                 return
             self._consume_levels(order, book, produced)
-            order.state = OrderState.FILLED
+            self._terminate(order, OrderState.FILLED)
             return
 
         if marketable:
             self._consume_levels(order, book, produced)
             if order.remaining_size > 0:
                 if tif in {TIF_IOC, TIF_FAK}:
-                    order.state = OrderState.CANCELLED
                     order.cancelled_at = order.venue_received_at
+                    self._terminate(order, OrderState.CANCELLED)
                 else:
+                    # PARTIAL is non-terminal; no decrement.
                     order.state = OrderState.PARTIAL
                     self._add_to_working(order)
             else:
-                order.state = OrderState.FILLED
+                self._terminate(order, OrderState.FILLED)
             return
 
         # Not marketable. IOC/FAK with no fill → cancel; GTC/GTD → rest.
         if tif in {TIF_IOC, TIF_FAK}:
-            order.state = OrderState.CANCELLED
             order.cancelled_at = order.venue_received_at
+            self._terminate(order, OrderState.CANCELLED)
         else:
+            # WORKING is non-terminal; no decrement.
             order.state = OrderState.WORKING
             self._add_to_working(order)
 
@@ -773,7 +815,7 @@ class MatchingEngine:
                 remaining -= take
 
         if order.remaining_size <= 1e-12 and order.state != OrderState.FILLED:
-            order.state = OrderState.FILLED
+            self._terminate(order, OrderState.FILLED)
             self._remove_from_working(order)
 
     def _record_resting_fill(
