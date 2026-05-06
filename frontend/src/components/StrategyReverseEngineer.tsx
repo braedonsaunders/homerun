@@ -66,11 +66,45 @@ export interface StrategyReverseEngineerProps {
 }
 
 
+// localStorage key for the currently-viewed reverse-engineer job.  The
+// jobs themselves live server-side so navigation only needs to remember
+// "which one was the user looking at?" — the lifecycle (queued ->
+// running -> completed) is the backend's responsibility.
+const RE_SELECTED_JOB_KEY = 'hr_reverse_engineer_selected_job_id'
+
+const readSelectedJobId = (): string | null => {
+  try {
+    return localStorage.getItem(RE_SELECTED_JOB_KEY)
+  } catch {
+    return null
+  }
+}
+const writeSelectedJobId = (id: string | null) => {
+  try {
+    if (id) localStorage.setItem(RE_SELECTED_JOB_KEY, id)
+    else localStorage.removeItem(RE_SELECTED_JOB_KEY)
+  } catch {
+    /* silent — quota / disabled storage */
+  }
+}
+
 export default function StrategyReverseEngineer({
   initialWalletAddress = null,
 }: StrategyReverseEngineerProps) {
   const queryClient = useQueryClient()
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  // Initialise from localStorage so navigating back to this tab restores
+  // the previously-viewed job without flicker.  The job's own data is
+  // refetched by jobsQuery on mount; we just need the pointer.
+  const [selectedJobId, setSelectedJobIdState] = useState<string | null>(
+    () => readSelectedJobId(),
+  )
+  // Wrap setter so every selection write persists.  Survives tab
+  // navigation, page reload, and browser restart (the server-side
+  // job_id stays valid for the run's full retention window).
+  const setSelectedJobId = (id: string | null) => {
+    writeSelectedJobId(id)
+    setSelectedJobIdState(id)
+  }
   const [showCreate, setShowCreate] = useState<boolean>(!!initialWalletAddress)
 
   const jobsQuery = useQuery({
@@ -86,12 +120,17 @@ export default function StrategyReverseEngineer({
   })
   const jobs = jobsQuery.data ?? []
 
-  // Auto-select the first job when one exists and nothing is picked.
+  // Auto-select fallback: if storage pointed at a job that no longer
+  // exists (deleted, retention window passed), fall back to the most
+  // recent.  Otherwise leave the user's selection alone.
   useEffect(() => {
-    if (selectedJobId == null && jobs.length > 0) {
+    if (jobs.length === 0) return
+    const stillExists = selectedJobId != null && jobs.some((j) => j.id === selectedJobId)
+    if (!stillExists) {
       setSelectedJobId(jobs[0].id)
     }
-  }, [jobs, selectedJobId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs])
 
   return (
     <div className="flex h-full min-h-0">
@@ -209,8 +248,17 @@ function JobListRow({
         {job.label || `wallet ${job.wallet_address.slice(0, 6)}…${job.wallet_address.slice(-4)}`}
       </div>
       <div className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>iter {job.current_iteration}/{job.max_iterations}</span>
-        <span>{job.best_score != null ? `score ${(job.best_score * 100).toFixed(1)}%` : '—'}</span>
+        {job.report_mode === 'report' ? (
+          <>
+            <span>report mode</span>
+            <span>${(job.total_cost_usd ?? 0).toFixed(4)}</span>
+          </>
+        ) : (
+          <>
+            <span>iter {job.current_iteration}/{job.max_iterations}</span>
+            <span>{job.best_score != null ? `score ${(job.best_score * 100).toFixed(1)}%` : '—'}</span>
+          </>
+        )}
       </div>
       {isActive ? (
         <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-card/40">
@@ -725,22 +773,42 @@ function JobDetailView({ jobId }: { jobId: string }) {
           </div>
         ) : null}
 
-        {/* Score card */}
-        <div className="rounded-md border border-border/40 bg-card/40 p-3">
-          <div className="flex items-end justify-between">
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground">Composite score</div>
-              <div className="text-2xl font-bold">
-                {job.best_score != null ? `${(job.best_score * 100).toFixed(1)}%` : '—'}
+        {/* Score card.  Report-mode jobs run a deterministic analytics
+            pipeline + LLM section drafters — there's no iterative
+            optimization, so the composite-score gauge and target are
+            irrelevant.  Show "Sections / Tokens / Cost" instead. */}
+        {job.report_mode === 'report' ? (
+          <div className="rounded-md border border-border/40 bg-card/40 p-3">
+            <div className="flex items-end justify-between">
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Analytical report</div>
+                <div className="text-lg font-semibold">
+                  {job.status === 'completed' ? 'Sections drafted' : 'Pipeline running'}
+                </div>
+              </div>
+              <div className="text-right text-[10.5px] text-muted-foreground">
+                <div>tokens in/out: {(job.total_input_tokens ?? 0).toLocaleString()} / {(job.total_output_tokens ?? 0).toLocaleString()}</div>
+                <div>${(job.total_cost_usd ?? 0).toFixed(4)} spent</div>
               </div>
             </div>
-            <div className="text-right text-[10.5px] text-muted-foreground">
-              <div>iter {job.current_iteration}/{job.max_iterations}</div>
-              <div>target {(job.target_score * 100).toFixed(0)}%</div>
-              <div>${job.total_cost_usd.toFixed(4)} spent</div>
+          </div>
+        ) : (
+          <div className="rounded-md border border-border/40 bg-card/40 p-3">
+            <div className="flex items-end justify-between">
+              <div>
+                <div className="text-[10px] uppercase text-muted-foreground">Composite score</div>
+                <div className="text-2xl font-bold">
+                  {job.best_score != null ? `${(job.best_score * 100).toFixed(1)}%` : '—'}
+                </div>
+              </div>
+              <div className="text-right text-[10.5px] text-muted-foreground">
+                <div>iter {job.current_iteration}/{job.max_iterations}</div>
+                <div>target {(job.target_score * 100).toFixed(0)}%</div>
+                <div>${job.total_cost_usd.toFixed(4)} spent</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Wallet profile summary */}
         {job.wallet_profile?.summary ? (
@@ -852,6 +920,7 @@ function fmtDuration(start: string | null, end: string | null): string {
 
 function RunMetadata({ job }: { job: ReverseEngineerJob }) {
   const totalTokens = (job.total_input_tokens || 0) + (job.total_output_tokens || 0)
+  const isReport = job.report_mode === 'report'
   return (
     <div className="rounded-md border border-border/40 bg-card/40 p-3">
       <div className="mb-2 text-xs font-semibold">Run metadata</div>
@@ -865,12 +934,22 @@ function RunMetadata({ job }: { job: ReverseEngineerJob }) {
           label="In/Out tokens"
           value={`${(job.total_input_tokens || 0).toLocaleString()} / ${(job.total_output_tokens || 0).toLocaleString()}`}
         />
-        <MetaRow label="Iterations" value={`${job.current_iteration} / ${job.max_iterations}`} />
-        <MetaRow label="Target score" value={`${(job.target_score * 100).toFixed(0)}%`} />
-        <MetaRow
-          label="Best score"
-          value={job.best_score != null ? `${(job.best_score * 100).toFixed(1)}%` : '—'}
-        />
+        {/* Iterations + score widgets only meaningful in strategy_seed
+            mode.  Report mode runs a single deterministic pass + N
+            section drafters in parallel, so showing "1/10" or "70%
+            target" is misleading. */}
+        {!isReport && (
+          <MetaRow label="Iterations" value={`${job.current_iteration} / ${job.max_iterations}`} />
+        )}
+        {!isReport && (
+          <MetaRow label="Target score" value={`${(job.target_score * 100).toFixed(0)}%`} />
+        )}
+        {!isReport && (
+          <MetaRow
+            label="Best score"
+            value={job.best_score != null ? `${(job.best_score * 100).toFixed(1)}%` : '—'}
+          />
+        )}
         <MetaRow label="Created" value={fmtDate(job.created_at)} />
         <MetaRow label="Started" value={fmtDate(job.started_at)} />
         <MetaRow label="Finished" value={fmtDate(job.finished_at)} />

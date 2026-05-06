@@ -66,6 +66,17 @@ BackfillScope = Literal["token", "strategy", "session", "catalog_top_liquid"]
 # market spread — operators can override per-call.
 _DEFAULT_SYNTHETIC_SPREAD_BPS = 50.0
 
+# Synthetic depth per side (shares).  REST /prices-history doesn't
+# expose L2 depth — only mids — so we have to fabricate it.  Writing
+# size=0 made the matching engine see a "book with no liquidity" and
+# every backtest order silently failed to fill.  Writing a generous
+# fixed depth (1000 shares ≈ $300-1000 notional at typical prediction-
+# market prices) means any reasonably-sized retail backtest order
+# fills against the BBO without becoming notional-bound.  Synthetic
+# rows are still tagged ``payload_json.synthetic=True`` so the Cox PH
+# fill model + UI fidelity banner can downweight them.
+_DEFAULT_SYNTHETIC_DEPTH_SHARES = 1000.0
+
 
 @dataclass
 class BackfillTokenResult:
@@ -270,15 +281,27 @@ async def _backfill_one_token(
         from services.polymarket import polymarket_client
 
         client = polymarket_client
+        # Polymarket CLOB ``/prices-history`` rejects requests with
+        # 400 when BOTH ``interval`` AND ``startTs/endTs`` are sent
+        # (they're mutually exclusive on the API: interval is a
+        # relative-window shortcut, startTs/endTs is the absolute-
+        # range path).  Since this code-path always has a concrete
+        # window, drop the interval when we have start/end and rely
+        # on ``fidelity`` for sampling cadence.
         kwargs: dict[str, Any] = {
             "token_id": token_id,
             "start_ts": int(start_dt.timestamp()),
             "end_ts": int(end_dt.timestamp()),
         }
-        if interval:
-            kwargs["interval"] = interval
         if fidelity_minutes is not None:
             kwargs["fidelity"] = int(fidelity_minutes)
+        elif interval:
+            # Only fall back to ``interval`` when no fidelity was given
+            # AND no explicit window — but we always have a window
+            # here, so this branch is effectively dead.  Kept for
+            # clarity in case the caller starts passing fidelity=None
+            # to mean "let the CLOB pick its own bucket."
+            kwargs["interval"] = interval
         history = await client.get_prices_history(**kwargs)
         res.points_fetched = len(history)
         if not history:
@@ -323,14 +346,22 @@ async def _backfill_one_token(
                 best_bid=float(best_bid),
                 best_ask=float(best_ask),
                 spread_bps=spread_bps,
-                bids_json=[{"price": float(best_bid), "size": 0.0}],
-                asks_json=[{"price": float(best_ask), "size": 0.0}],
+                # Single-level synthetic book with fabricated depth.
+                # See ``_DEFAULT_SYNTHETIC_DEPTH_SHARES`` for the
+                # rationale — size=0 books make every backtest order
+                # silently no-fill because the matcher walks book
+                # depth to determine fills.  The synthetic flag in
+                # payload_json is the canonical "this isn't real L2"
+                # marker; downstream calibration uses it.
+                bids_json=[{"price": float(best_bid), "size": float(_DEFAULT_SYNTHETIC_DEPTH_SHARES)}],
+                asks_json=[{"price": float(best_ask), "size": float(_DEFAULT_SYNTHETIC_DEPTH_SHARES)}],
                 payload_json={
                     "synthetic": True,
                     "source": "rest_backfill",
                     "interval": interval,
                     "fidelity_minutes": fidelity_minutes,
                     "synthetic_spread_bps": synthetic_spread_bps,
+                    "synthetic_depth_shares": _DEFAULT_SYNTHETIC_DEPTH_SHARES,
                 },
                 created_at=datetime.now(timezone.utc),
             ))

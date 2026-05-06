@@ -2894,9 +2894,27 @@ async def run_execution_backtest(
     engine_config = BacktestConfig(
         portfolio=PortfolioConfig(
             initial_capital_usd=float(initial_capital_usd),
+            # ── Risk-cap mapping: backtest = live invariant ─────────────────
+            # CRITICAL: ``per_trade_cap`` is the size of an INDIVIDUAL trade
+            # ($5 per-position), NOT total per-market or per-strategy
+            # exposure.  Mapping it to ``max_per_market_notional_usd`` and
+            # ``max_per_strategy_notional_usd`` (the previous wiring)
+            # made the FIRST filled trade saturate the cap and silently
+            # reject every subsequent intent at the portfolio gate.  Live
+            # trading does not have this artificial single-trade ceiling
+            # — the strategy fires repeatedly across a market and across
+            # the day, with cross-trade exposure governed solely by
+            # ``gross_exposure_max`` and the strategy's own dedup logic
+            # (``stacking_guard`` etc.).  Backtest must match.
+            #
+            # The total-exposure ceiling lives on ``max_gross_exposure_usd``
+            # (default = 50% of capital, or whatever the strategy config
+            # sets via ``max_gross_exposure_usd``).  Per-market and per-
+            # strategy caps stay UNCAPPED unless the strategy explicitly
+            # exposes its own values for them.
             max_gross_exposure_usd=gross_cap,
-            max_per_market_notional_usd=per_trade_cap,
-            max_per_strategy_notional_usd=per_trade_cap,
+            max_per_market_notional_usd=_safe_float_cfg("max_per_market_notional_usd", None),
+            max_per_strategy_notional_usd=_safe_float_cfg("max_per_strategy_notional_usd", None),
             max_open_positions=open_pos_cap,
         ),
         latency=LatencyModel(
