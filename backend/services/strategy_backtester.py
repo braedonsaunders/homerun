@@ -1614,6 +1614,29 @@ class ExecutionBacktestResult:
     validation_warnings: list[str] = field(default_factory=list)
     runtime_error: Optional[str] = None
     runtime_traceback: Optional[str] = None
+    # Pre-flight data coverage stats — populated before the engine runs
+    # so the operator can see whether "0 trades" is a strategy outcome
+    # or a data-fidelity outcome.  Schema:
+    #   {
+    #     "opp_tokens": int,                      # tokens with opps in window
+    #     "tokens_with_snapshots": int,           # of those, in mms table
+    #     "tokens_with_deltas": int,              # of those, in book_delta_events
+    #     "snapshots_total": int,                 # total mms rows in window
+    #     "deltas_total": int,                    # total bde rows in window
+    #     "median_snaps_per_token_per_hour": float,
+    #     "p10_snaps_per_token_per_hour": float,
+    #     "fidelity_rating": "high"|"medium"|"low"|"none",
+    #     "recommended_action": str,              # human-readable advice
+    #   }
+    data_coverage: dict[str, Any] = field(default_factory=dict)
+    # Which book-replay source the engine ran against.  One of:
+    #   - "snapshots"       — BookReplay reading market_microstructure_snapshots
+    #   - "deltas"          — BookDeltaReplay reading book_delta_events
+    #   - "deltas+anchor"   — BookDeltaReplay seeded from mms anchor + replayed
+    # The selection is automatic: deltas (the live system's data source)
+    # are preferred when their coverage is materially richer than
+    # snapshots for the run's window.
+    replay_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1837,6 +1860,198 @@ def _exec_ci_to_dict(metric: Any) -> dict[str, Any]:
             else None
         ),
     }
+
+
+# ── Pre-flight data-coverage measurement ─────────────────────────────────
+#
+# Backtests are only as good as the historical data they replay.  Live
+# trading writes every L2 delta to ``book_delta_events`` (3-4M rows/wk
+# in steady state); the standalone microstructure recorder writes full
+# snapshots to ``market_microstructure_snapshots``.  Operators who never
+# ran the recorder discover this only after seeing inexplicable "0
+# trades" outcomes when live had real fills in the same window.
+#
+# This helper measures coverage in BOTH tables and produces a fidelity
+# rating + actionable recommendation.  The matching engine only reads
+# from market_microstructure_snapshots today (Phase 1) — surfacing
+# delta coverage tells the operator that even though the snapshot
+# table is sparse, the data DOES exist and a backfill / Phase-2
+# delta-replay would unlock it.
+
+_FIDELITY_HIGH_SNAPS_PER_HOUR = 30.0   # ~1 every 2 min — strategies that
+                                       # rest GTC limits will see the book
+                                       # cross them often enough.
+_FIDELITY_MEDIUM_SNAPS_PER_HOUR = 6.0  # ~1 every 10 min — taker-mode
+                                       # strategies still work; passive
+                                       # rests get sparse fill data.
+
+
+async def _measure_data_coverage(
+    *,
+    session: Any,
+    opp_tokens: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> dict[str, Any]:
+    """Compute per-window data-coverage stats for the opp_tokens universe.
+
+    Returns a dict suitable for ``ExecutionBacktestResult.data_coverage``.
+    Cheap — two chunked aggregate queries (snapshots, deltas).  Failure
+    is non-fatal; we return a stub dict with ``error`` set so the caller
+    surfaces a single warning rather than aborting the run.
+    """
+    from sqlalchemy import select, func as sa_func
+    from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
+
+    coverage: dict[str, Any] = {
+        "opp_tokens": len(opp_tokens),
+        "tokens_with_snapshots": 0,
+        "tokens_with_deltas": 0,
+        "snapshots_total": 0,
+        "deltas_total": 0,
+        "median_snaps_per_token_per_hour": 0.0,
+        "p10_snaps_per_token_per_hour": 0.0,
+        "median_deltas_per_token_per_hour": 0.0,
+        "fidelity_rating": "none",
+        "recommended_action": "",
+    }
+    if not opp_tokens or end_dt <= start_dt:
+        coverage["recommended_action"] = "No opp tokens in window — nothing to measure."
+        return coverage
+
+    window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
+    CHUNK = 50
+
+    # Snapshot density per token
+    snaps_per_token: dict[str, int] = {}
+    try:
+        for i in range(0, len(opp_tokens), CHUNK):
+            chunk = opp_tokens[i : i + CHUNK]
+            stmt = (
+                select(
+                    MarketMicrostructureSnapshot.token_id,
+                    sa_func.count(MarketMicrostructureSnapshot.id).label("c"),
+                )
+                .where(
+                    MarketMicrostructureSnapshot.observed_at >= start_dt,
+                    MarketMicrostructureSnapshot.observed_at <= end_dt,
+                    MarketMicrostructureSnapshot.snapshot_type == "book",
+                    MarketMicrostructureSnapshot.token_id.in_(chunk),
+                )
+                .group_by(MarketMicrostructureSnapshot.token_id)
+            )
+            for tid, cnt in (await session.execute(stmt)).all():
+                if tid:
+                    snaps_per_token[str(tid)] = int(cnt)
+    except Exception as exc:
+        coverage["error"] = f"snapshot density query failed: {exc}"
+        # Continue — delta query may still succeed.
+
+    # Delta-event density per token (the live system's data source)
+    deltas_per_token: dict[str, int] = {}
+    try:
+        for i in range(0, len(opp_tokens), CHUNK):
+            chunk = opp_tokens[i : i + CHUNK]
+            stmt = (
+                select(
+                    BookDeltaEvent.token_id,
+                    sa_func.count(BookDeltaEvent.id).label("c"),
+                )
+                .where(
+                    BookDeltaEvent.observed_at >= start_dt,
+                    BookDeltaEvent.observed_at <= end_dt,
+                    BookDeltaEvent.token_id.in_(chunk),
+                )
+                .group_by(BookDeltaEvent.token_id)
+            )
+            for tid, cnt in (await session.execute(stmt)).all():
+                if tid:
+                    deltas_per_token[str(tid)] = int(cnt)
+    except Exception as exc:
+        prev_err = coverage.get("error", "")
+        coverage["error"] = (prev_err + " | " if prev_err else "") + f"delta density query failed: {exc}"
+
+    coverage["tokens_with_snapshots"] = len(snaps_per_token)
+    coverage["tokens_with_deltas"] = len(deltas_per_token)
+    coverage["snapshots_total"] = sum(snaps_per_token.values())
+    coverage["deltas_total"] = sum(deltas_per_token.values())
+
+    # Per-token-per-hour rates.  Tokens with 0 snapshots are included as
+    # zeros so the median reflects the WHOLE opp universe, not just the
+    # covered subset — that's the metric the operator cares about.
+    rates_snaps = sorted(
+        [snaps_per_token.get(t, 0) / window_hours for t in opp_tokens]
+    )
+    rates_deltas = sorted(
+        [deltas_per_token.get(t, 0) / window_hours for t in opp_tokens]
+    )
+
+    def _percentile(sorted_vals: list[float], p: float) -> float:
+        if not sorted_vals:
+            return 0.0
+        idx = max(0, min(len(sorted_vals) - 1, int(p * (len(sorted_vals) - 1))))
+        return float(sorted_vals[idx])
+
+    coverage["median_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.5)
+    coverage["p10_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.1)
+    coverage["median_deltas_per_token_per_hour"] = _percentile(rates_deltas, 0.5)
+
+    # Fidelity rating from snapshot density (the engine's data source).
+    median_rate = coverage["median_snaps_per_token_per_hour"]
+    if median_rate >= _FIDELITY_HIGH_SNAPS_PER_HOUR:
+        coverage["fidelity_rating"] = "high"
+    elif median_rate >= _FIDELITY_MEDIUM_SNAPS_PER_HOUR:
+        coverage["fidelity_rating"] = "medium"
+    elif median_rate > 0:
+        coverage["fidelity_rating"] = "low"
+    else:
+        coverage["fidelity_rating"] = "none"
+
+    # Recommendations — most useful when fidelity is bad but data is
+    # available in deltas (i.e. the live system has been ingesting but
+    # the snapshot table is sparse for the chosen window).
+    has_delta_coverage = (
+        coverage["tokens_with_deltas"] > 0.5 * len(opp_tokens)
+        and coverage["median_deltas_per_token_per_hour"] >= 5.0
+    )
+    if coverage["fidelity_rating"] in ("low", "none"):
+        if has_delta_coverage:
+            # The auto-source-selection logic in run_execution_backtest
+            # will already have picked BookDeltaReplay for this run, so
+            # this message is informational rather than actionable.
+            coverage["recommended_action"] = (
+                "Snapshot table sparse, BUT book_delta_events has dense coverage "
+                f"({coverage['tokens_with_deltas']}/{len(opp_tokens)} tokens, "
+                f"median {coverage['median_deltas_per_token_per_hour']:.0f} deltas/hr). "
+                "The engine auto-switched to live-parity delta replay — see the "
+                "replay-source pill on the result.  No action required."
+            )
+        else:
+            coverage["recommended_action"] = (
+                f"Sparse data: median {median_rate:.1f} snapshots/token/hr "
+                f"(target ≥{_FIDELITY_HIGH_SNAPS_PER_HOUR:.0f}/hr for high fidelity), "
+                f"and book_delta_events is ALSO sparse for this window.  This means "
+                f"the live ingestor wasn't capturing these markets during the "
+                f"backtest window — go to Data Lab → Record → Proactive coverage "
+                f"and confirm the WS subscription cap covers your strategy's opp "
+                f"universe.  Options: (1) widen WS coverage so future runs have "
+                f"data, (2) backfill historical mids via Data Lab → Providers "
+                f"(synthetic single-level book from Polymarket REST), (3) import "
+                f"full L2 from polybacktest.com if you have a key (BTC/ETH/SOL only)."
+            )
+    elif coverage["fidelity_rating"] == "medium":
+        coverage["recommended_action"] = (
+            f"Medium fidelity: median {median_rate:.1f} snapshots/token/hr. "
+            "Taker-mode strategies will replay accurately; passive resting "
+            "GTC limits may underfill.  If book_delta_events has denser "
+            "coverage, the engine will auto-select the delta-replay path."
+        )
+    else:  # high
+        coverage["recommended_action"] = (
+            f"High fidelity: median {median_rate:.1f} snapshots/token/hr. ✓"
+        )
+
+    return coverage
 
 
 async def run_execution_backtest(
@@ -2166,6 +2381,50 @@ async def run_execution_backtest(
                             f"{opps_total_in_window - len(opps)} opportunities "
                             f"exceeded max_intents cap ({int(max_intents)}) — "
                             f"raise max_intents to capture them"
+                        )
+
+                    # ── Pre-flight data-coverage measurement ─────────────
+                    # Cheap (chunked aggregate queries).  Surfaces how
+                    # dense the historical book data is for THIS run's
+                    # opp universe.  Operators see this BEFORE eating a
+                    # 30s replay that ends in "0 trades because the book
+                    # was sampled once every 3 hours".
+                    coverage = await _measure_data_coverage(
+                        session=session,
+                        opp_tokens=candidate_tokens,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                    )
+                    result.data_coverage = coverage
+                    fidelity = coverage.get("fidelity_rating", "unknown")
+                    rec = coverage.get("recommended_action") or ""
+                    median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
+                    p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
+                    n_with_deltas = coverage.get("tokens_with_deltas", 0)
+                    deltas_total = coverage.get("deltas_total", 0)
+                    # Loud, prominent warning when coverage is degraded.
+                    # The funnel line above tells the operator how many
+                    # tokens HAVE any data; this tells them whether that
+                    # data is dense enough to trust the fill simulation.
+                    if fidelity in ("low", "none"):
+                        result.validation_warnings.append(
+                            f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
+                            f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
+                            f"Backtest fills are NOT representative of live.  "
+                            f"book_delta_events has {deltas_total:,} rows across "
+                            f"{n_with_deltas} of {len(candidate_tokens)} tokens "
+                            f"(live system's data — not yet used by the matcher). "
+                            f"{rec}"
+                        )
+                    elif fidelity == "medium":
+                        result.validation_warnings.append(
+                            f"DATA FIDELITY: medium — median {median_rate:.1f} "
+                            f"snaps/token/hr.  {rec}"
+                        )
+                    else:
+                        result.validation_warnings.append(
+                            f"DATA FIDELITY: high — median {median_rate:.1f} "
+                            f"snaps/token/hr ✓"
                         )
                 # If the strategy has zero opportunities (e.g. a fresh
                 # strategy), fall back to "top tokens by snapshot
@@ -2663,17 +2922,75 @@ async def run_execution_backtest(
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 
+    # ── Source selection: snapshots vs deltas ────────────────────────────
+    #
+    # The matching engine takes a ``_BookSource`` protocol — either
+    # ``BookReplay`` (snapshots) or ``BookDeltaReplay`` (deltas + mms
+    # anchor).  Both produce ``BookSnapshot`` instances; the engine
+    # doesn't care which.  We pick the source with materially richer
+    # coverage for THIS window:
+    #
+    #   * deltas_total > 5x snapshots_total AND ≥ 10 deltas/token/hr
+    #     median across the universe → use BookDeltaReplay
+    #     (live-parity path: same data the live system writes)
+    #   * else fall back to BookReplay over snapshots
+    #
+    # The threshold is tuned so a fully-populated mms (high-fidelity
+    # snapshot path) wins, but a sparse-mms-but-dense-bde state
+    # (typical when the unified ingestor is recent) flips to deltas.
+    cov = result.data_coverage or {}
+    deltas_total = int(cov.get("deltas_total") or 0)
+    snapshots_total = int(cov.get("snapshots_total") or 0)
+    median_deltas_per_hr = float(cov.get("median_deltas_per_token_per_hour") or 0.0)
+    use_delta_replay = (
+        deltas_total > 5 * max(snapshots_total, 1)
+        and median_deltas_per_hr >= 10.0
+    )
+    # Import locally to avoid circular imports at module load.
+    from services.backtest.book_replay import BookDeltaReplay as _BookDeltaReplay
+
     run_start = time.monotonic()
-    replay_for_run: Optional[BookReplay] = None
+    replay_for_run: Any = None
     try:
         async with AsyncSessionLocal() as run_session:
-            replay_for_run = BookReplay(
-                session=run_session,
-                token_ids=tokens,
-                start=start_dt,
-                end=end_dt,
-                snapshot_type="book",
-            )
+            if use_delta_replay:
+                replay_for_run = _BookDeltaReplay(
+                    session=run_session,
+                    token_ids=tokens,
+                    start=start_dt,
+                    end=end_dt,
+                )
+                # Annotate which source was used.  "+anchor" if the
+                # delta replay had any tokens with usable mms anchors
+                # (we only know after iter_snapshots starts, but the
+                # presence of mms rows for the universe is a proxy).
+                result.replay_source = (
+                    "deltas+anchor"
+                    if int(cov.get("tokens_with_snapshots") or 0) > 0
+                    else "deltas"
+                )
+                result.validation_warnings.append(
+                    f"Replay source: BOOK DELTAS (live-parity path) — "
+                    f"{deltas_total:,} delta events vs {snapshots_total:,} snapshots "
+                    f"in window.  This is the same data feed the live system uses."
+                )
+            else:
+                replay_for_run = BookReplay(
+                    session=run_session,
+                    token_ids=tokens,
+                    start=start_dt,
+                    end=end_dt,
+                    snapshot_type="book",
+                )
+                result.replay_source = "snapshots"
+                # Only mention source explicitly when the delta path
+                # was a near-miss; otherwise keep the warning list
+                # focused on actionable items.
+                if deltas_total > 0 and median_deltas_per_hr > 0:
+                    result.validation_warnings.append(
+                        f"Replay source: SNAPSHOTS — {snapshots_total:,} mms rows "
+                        f"vs {deltas_total:,} delta events in window."
+                    )
             bt_result = await engine.run(book_source=replay_for_run, trade_intents=intents)
     except Exception as e:
         result.runtime_error = f"Backtest engine error: {e}"
@@ -2689,13 +3006,13 @@ async def run_execution_backtest(
     # The matching engine processed whatever snapshots arrived before
     # the truncation, so the run may still be useful — but the
     # operator needs to know the trade count is a lower bound.
-    if replay_for_run is not None and replay_for_run.truncated:
+    if replay_for_run is not None and getattr(replay_for_run, "truncated", False):
         result.validation_warnings.append(
             f"Book replay TRUNCATED after {replay_for_run.snapshots_yielded} "
             f"snapshots — a chunk query failed: "
-            f"{replay_for_run.truncation_reason or 'unknown'}.  Trade count "
-            f"is a LOWER BOUND.  Likely cause: live DB load competing with "
-            f"the backtest run-session.  Retry when the live system is "
+            f"{getattr(replay_for_run, 'truncation_reason', None) or 'unknown'}.  "
+            f"Trade count is a LOWER BOUND.  Likely cause: live DB load competing "
+            f"with the backtest run-session.  Retry when the live system is "
             f"quieter, or shrink the time window / token universe."
         )
 

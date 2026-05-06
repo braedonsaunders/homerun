@@ -478,6 +478,149 @@ function HazardBar({ label, hr }: { label: string; hr: number }) {
   )
 }
 
+/**
+ * Replay-source pill.  Tiny indicator that shows which book-replay
+ * data source the matching engine ran against:
+ *
+ *   - snapshots     → BookReplay over market_microstructure_snapshots
+ *   - deltas        → BookDeltaReplay over book_delta_events (live-parity)
+ *   - deltas+anchor → BookDeltaReplay seeded from mms anchors
+ *
+ * Color codes: deltas* paths get an emerald tint (live-parity), the
+ * pure-snapshots path is neutral.  Both light + dark colorways
+ * preserve AA contrast.
+ */
+function ReplaySourcePill({ source }: { source?: string }) {
+  if (!source) return null
+  const isDelta = source.startsWith('deltas')
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+        isDelta
+          ? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/30'
+          : 'bg-muted text-muted-foreground',
+      )}
+      title={
+        isDelta
+          ? 'Engine replayed book_delta_events — same data source as the live system (live-parity).'
+          : 'Engine replayed market_microstructure_snapshots.  Switch to the delta path by populating book_delta_events (it does so automatically once the live system runs).'
+      }
+    >
+      replay: {source}
+    </span>
+  )
+}
+
+/**
+ * Data-coverage / fidelity banner.
+ *
+ * Renders ABOVE the trade-count KPI tiles when a run completes so the
+ * operator immediately sees whether 0 trades is a strategy result or
+ * a data-coverage artifact.  Color coding (paired light + dark for
+ * AA contrast on both):
+ *   - high   → emerald, single line summary
+ *   - medium → amber, recommendation
+ *   - low/none → red, recommendation + explicit deltas-vs-snapshots split
+ *
+ * The banner reflects the live-parity delta-replay path: when the
+ * engine ran on book_delta_events (deltas*), fidelity is implicitly
+ * high regardless of the snapshot table — it's the SAME data the live
+ * system uses.
+ */
+function DataCoverageBanner({
+  coverage,
+  replaySource,
+}: {
+  coverage?: UnifiedBacktestResult['data_coverage']
+  replaySource?: string
+}) {
+  if (!coverage || !coverage.fidelity_rating) return null
+  const rating = coverage.fidelity_rating
+  const median = coverage.median_snaps_per_token_per_hour ?? 0
+  const deltasMedian = coverage.median_deltas_per_token_per_hour ?? 0
+  const tokensWithDeltas = coverage.tokens_with_deltas ?? 0
+  const tokensWithSnaps = coverage.tokens_with_snapshots ?? 0
+  const oppTokens = coverage.opp_tokens ?? 0
+  const rec = coverage.recommended_action || ''
+  const ranOnDeltas = replaySource?.startsWith('deltas') ?? false
+
+  // Delta-replay path → live-parity, always green regardless of the
+  // snapshot-table coverage rating.
+  if (ranOnDeltas) {
+    return (
+      <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
+        <div>
+          <span className="font-semibold">LIVE-PARITY REPLAY</span>
+          <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
+            engine ran against book_delta_events — same source as live
+            ({tokensWithDeltas}/{oppTokens} tokens · median {deltasMedian.toFixed(1)} deltas/hr)
+          </span>
+        </div>
+        <ReplaySourcePill source={replaySource} />
+      </div>
+    )
+  }
+
+  if (rating === 'high') {
+    return (
+      <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
+        <div>
+          <span className="font-semibold">DATA FIDELITY: high</span>
+          <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
+            median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens covered
+          </span>
+        </div>
+        <ReplaySourcePill source={replaySource} />
+      </div>
+    )
+  }
+
+  if (rating === 'medium') {
+    return (
+      <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold">⚠ DATA FIDELITY: medium</span>
+          <ReplaySourcePill source={replaySource} />
+        </div>
+        <div className="mt-1 text-amber-900/90 dark:text-amber-300/90">
+          median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens.
+          Taker-mode strategies replay accurately; passive resting GTC limits may underfill.
+        </div>
+        {rec ? <div className="mt-1 text-amber-900/80 dark:text-amber-200/80">{rec}</div> : null}
+      </div>
+    )
+  }
+
+  // low / none — most actionable case.  This is what shows when "0
+  // trades" is a coverage problem.
+  return (
+    <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-500/50 dark:bg-red-500/10 dark:text-red-100">
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-red-900 dark:text-red-200">
+          ⚠ DATA FIDELITY: {rating.toUpperCase()} — backtest fills NOT representative of live
+        </span>
+        <ReplaySourcePill source={replaySource} />
+      </div>
+      <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-red-900/90 dark:text-red-100/90">
+        <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
+          <div className="text-red-800/80 dark:text-red-200/70">market_microstructure_snapshots (engine)</div>
+          <div className="font-mono">
+            {tokensWithSnaps}/{oppTokens} tokens · median {median.toFixed(1)}/hr
+          </div>
+        </div>
+        <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
+          <div className="text-red-800/80 dark:text-red-200/70">book_delta_events (live source)</div>
+          <div className="font-mono">
+            {tokensWithDeltas}/{oppTokens} tokens · median {deltasMedian.toFixed(1)}/hr
+          </div>
+        </div>
+      </div>
+      {rec ? <div className="mt-2 text-red-900/90 dark:text-red-100/90">{rec}</div> : null}
+    </div>
+  )
+}
+
 function EnsembleBand({ band }: { band: UnifiedBacktestResult['ensemble_band'] }) {
   if (!band || band.length === 0) {
     return (
@@ -961,14 +1104,89 @@ export default function BacktestStudio({
   // ribbon-equivalent so the workbench doesn't scroll-and-pray.
   const [centerTab, setCenterTab] = useState<'performance' | 'fill_quality' | 'robustness' | 'portfolio'>('performance')
 
-  // Active run.
+  // Active run.  State survives navigation across the app via
+  // localStorage: the run_id is the canonical pointer (the result
+  // payload is fetched on mount via getBacktestRun).  This is the
+  // institutional pattern — ID in storage, fresh fetch on mount,
+  // never trust a stale serialized payload that may be out of sync
+  // with the backend.
   const [activeRun, setActiveRun] = useState<UnifiedBacktestResult | null>(null)
+  // Set when the user clicks Run.  Persists immediately (BEFORE the
+  // run finishes) so that if the user navigates away mid-flight, we
+  // can find the row in the recent-runs list once it lands.  Cleared
+  // on success or after a 5-min timeout.
+  type PendingRun = { startedAt: number; strategySlug: string }
 
   const runsQuery = useQuery({
     queryKey: ['backtest', 'runs'],
     queryFn: listBacktestRuns,
     refetchInterval: 5000,
   })
+
+  // ── Cross-navigation run persistence ────────────────────────────────
+  //
+  // Two storage keys:
+  //
+  //   hr_backtest_active_run_id      string | null
+  //     The completed run currently displayed in the studio.  Set on
+  //     run-mutation success and on Recent-Runs row click.  Cleared
+  //     when the user explicitly resets.
+  //
+  //   hr_backtest_pending_run        { startedAt, strategySlug } | null
+  //     Marker for an in-flight run.  Set the moment the user clicks
+  //     Run (BEFORE the backend finishes), so navigating away mid-
+  //     flight doesn't lose the run.  When the user navigates BACK,
+  //     we scan the recent-runs list for a row whose started_at >=
+  //     this marker AND whose strategy_slug matches AND completed_at
+  //     is non-null — that's our run.  Marker times out after 5 min.
+  //
+  // On mount, if either key has a value, restore the run.  This is
+  // why the studio survives tab navigation, page reload, and even
+  // browser restart.
+
+  const ACTIVE_RUN_ID_KEY = 'hr_backtest_active_run_id'
+  const PENDING_RUN_KEY = 'hr_backtest_pending_run'
+  const PENDING_RUN_TIMEOUT_MS = 5 * 60_000
+
+  const persistActiveRunId = (id: string | null) => {
+    try {
+      if (id) localStorage.setItem(ACTIVE_RUN_ID_KEY, id)
+      else localStorage.removeItem(ACTIVE_RUN_ID_KEY)
+    } catch {
+      /* quota / disabled storage — silent */
+    }
+  }
+  const persistPendingRun = (pending: PendingRun | null) => {
+    try {
+      if (pending) localStorage.setItem(PENDING_RUN_KEY, JSON.stringify(pending))
+      else localStorage.removeItem(PENDING_RUN_KEY)
+    } catch {
+      /* silent */
+    }
+  }
+  const readPendingRun = (): PendingRun | null => {
+    try {
+      const raw = localStorage.getItem(PENDING_RUN_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed.startedAt !== 'number') return null
+      // Expire stale markers.
+      if (Date.now() - parsed.startedAt > PENDING_RUN_TIMEOUT_MS) {
+        localStorage.removeItem(PENDING_RUN_KEY)
+        return null
+      }
+      return parsed as PendingRun
+    } catch {
+      return null
+    }
+  }
+  const readActiveRunId = (): string | null => {
+    try {
+      return localStorage.getItem(ACTIVE_RUN_ID_KEY)
+    } catch {
+      return null
+    }
+  }
 
   // Live state — independent of any single run.  Drives the top
   // ribbon so the workbench shows what the platform is doing RIGHT
@@ -1079,16 +1297,96 @@ export default function BacktestStudio({
 
   const loadRunMutation = useMutation({
     mutationFn: getBacktestRun,
-    onSuccess: (data) => setActiveRun(data),
+    onSuccess: (data) => {
+      setActiveRun(data)
+      persistActiveRunId(data.run_id)
+    },
   })
 
   const runMutation = useMutation({
     mutationFn: runUnifiedBacktest,
+    // Drop a "pending run" marker BEFORE the request resolves.  If
+    // the user navigates away mid-flight, this is what lets the
+    // studio find the run when they come back.  We don't yet have a
+    // run_id (the backend allocates one when the run completes), so
+    // we record (startedAt, strategySlug) and reconcile against the
+    // runs list on remount.
+    onMutate: (vars) => {
+      persistPendingRun({
+        startedAt: Date.now(),
+        strategySlug: vars.slug || initialSlug || '_backtest_unified',
+      })
+    },
     onSuccess: (data) => {
       setActiveRun(data)
+      persistActiveRunId(data.run_id)
+      persistPendingRun(null)
       queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
     },
+    onError: () => {
+      // Clear the pending marker on error too — otherwise it would
+      // sit in storage and make the next mount poll for a run that
+      // never completed.
+      persistPendingRun(null)
+    },
   })
+
+  // ── Restore on mount ────────────────────────────────────────────────
+  //
+  // Two paths:
+  //
+  // 1. activeRunId in localStorage → fetch the completed run.  This
+  //    is the common case: user backtested, navigated away, came
+  //    back.  The fetch happens immediately and the studio is fully
+  //    populated within ~100ms.
+  //
+  // 2. pendingRun marker in localStorage → the user navigated away
+  //    while the backtest was still running on the backend.  We
+  //    don't know the run_id yet.  Watch the recent-runs list for a
+  //    matching just-completed row; once seen, promote it.
+  //
+  // Both effects run only when activeRun is null — clicking a row in
+  // the Recent Runs sidebar already handles promotion via
+  // loadRunMutation.
+
+  useEffect(() => {
+    if (activeRun) return
+    const stored = readActiveRunId()
+    if (!stored) return
+    // Fire-and-forget — onSuccess sets activeRun.  If the run was
+    // deleted server-side, the 4xx surfaces in mutation.error and
+    // the user sees an empty state; clear stale id so the next mount
+    // doesn't keep re-fetching a 404.
+    loadRunMutation.mutate(stored, {
+      onError: () => persistActiveRunId(null),
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (activeRun) return
+    const pending = readPendingRun()
+    if (!pending) return
+    const runs = runsQuery.data || []
+    // Match: started after the marker (with 30s clock-skew slack),
+    // strategy slug matches, AND the run has completed (completed_at
+    // is set).  Pick the most recent match if multiple.
+    const candidate = runs
+      .filter((r) => {
+        if (!r.completed_at) return false
+        if (r.strategy_slug && pending.strategySlug && r.strategy_slug !== pending.strategySlug)
+          return false
+        const startedMs = new Date(r.started_at).getTime()
+        return startedMs >= pending.startedAt - 30_000
+      })
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0]
+    if (candidate) {
+      persistPendingRun(null)
+      persistActiveRunId(candidate.run_id)
+      loadRunMutation.mutate(candidate.run_id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runsQuery.data, activeRun])
 
   const errorMessage = useMemo(() => {
     const err = runMutation.error as { response?: { data?: { detail?: string } }; message?: string } | undefined
@@ -1906,6 +2204,16 @@ export default function BacktestStudio({
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
                 Loading run data…
               </div>
+            ) : runMutation.isPending || readPendingRun() ? (
+              // Run is in flight on the backend.  Either we're holding
+              // the in-flight mutation (user stayed in the studio) OR
+              // we navigated away and came back and the marker tells
+              // us the backend is still chewing.  The runs-list poll
+              // (every 5s) will reconcile the row when it lands.
+              <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-200 dark:text-amber-300">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <span className="text-muted-foreground">Backtest running on the backend — results will appear here when complete.  Safe to switch tabs.</span>
+              </div>
             ) : null}
 
             {/* SUBTAB STRIP — always visible.  Performance / Fill
@@ -2195,6 +2503,16 @@ export default function BacktestStudio({
               {/* HEADLINE KPIS + SECONDARY METRICS — Performance tab. */}
               {centerTab === 'performance' && (
               <>
+              {/* Data fidelity / replay-source banner — must appear BEFORE
+                  the trade-count headline.  When fidelity is low/none AND
+                  the engine ran on snapshots (not deltas), "0 trades" is
+                  a data-coverage problem.  When the engine ran on the
+                  delta-replay path it's live-parity regardless of mms
+                  density — that turns the banner emerald. */}
+              <DataCoverageBanner
+                coverage={activeRun.data_coverage}
+                replaySource={activeRun.execution?.replay_source}
+              />
               <div className="grid grid-cols-4 gap-2">
                 <StatTile
                   label="Return"

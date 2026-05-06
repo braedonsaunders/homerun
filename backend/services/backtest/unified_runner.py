@@ -773,16 +773,17 @@ def _capture_trade_order_monte_carlo(execution: dict[str, Any]) -> dict[str, Any
 
 
 def _capture_data_quality() -> dict[str, Any]:
-    """Snapshot the microstructure recorder's data-quality counters.
+    """Snapshot the unified market-data ingestor's data-quality counters.
 
-    Surfaces accept-rate, sequence gaps, and per-reason reject counts
-    so the BacktestStudio UI can flag data corruption that would
-    otherwise silently pollute the Cox PH training set.
+    Surfaces accept-rate, sequence gaps, per-reason reject counts, and
+    persistence-flush latency so the BacktestStudio UI can flag data
+    corruption that would otherwise silently pollute the Cox PH
+    training set.  Reads from the singleton — cheap, no I/O.
     """
     try:
-        from services.microstructure_recorder import get_microstructure_recorder
+        from services.market_data_ingestor import get_market_data_ingestor
 
-        return get_microstructure_recorder().get_data_quality_stats()
+        return get_market_data_ingestor().get_data_quality_stats()
     except Exception:
         return {"accepted_books": 0, "total_attempts": 0, "accept_rate": None}
 
@@ -1026,6 +1027,12 @@ async def run_unified_backtest(
         "data_quality": data_quality,
         "outcome_netting": outcome_netting,
         "trade_order_monte_carlo": trade_order_mc,
+        # Hoist data_coverage to top level so the UI can render a
+        # prominent banner without digging into ``execution.*``.  The
+        # operator needs to see fidelity ratings BEFORE interpreting
+        # trade counts — "0 trades" with low fidelity is a data
+        # problem, not a strategy problem.
+        "data_coverage": exec_dict.get("data_coverage", {}),
     }
     _store_run(out)
     return out

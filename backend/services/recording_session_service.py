@@ -4,10 +4,11 @@ A recording session is a user-defined, scoped market-data capture.
 The session row carries the spec (markets, capture types, tick
 interval, time window).  The actual rows still land in
 ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent`` — those tables
-are populated by the always-on WebSocket recorder regardless.  The
-session pins the rows it "owns" by ``(target_token_ids, started_at,
-ended_at)`` so the unified backtester can replay just that slice
-without a separate datastore.
+are populated by the always-on ``LiveMarketDataIngestor`` (see
+services/market_data_ingestor.py) regardless.  The session pins the
+rows it "owns" by ``(target_token_ids, started_at, ended_at)`` so the
+unified backtester can replay just that slice without a separate
+datastore.
 
 What the service does:
 

@@ -3229,7 +3229,8 @@ class BookDeltaEvent(Base):
     carry the level + side that emptied with ``cancel_size`` set.
 
     Persisted by the WebSocket consumer in services/ws_feeds.py — see
-    ``BookDeltaDecomposer``.
+    ``LiveMarketDataIngestor`` in services/market_data_ingestor.py
+    (formerly the standalone ``BookDeltaDecomposer``).
     """
 
     __tablename__ = "book_delta_events"

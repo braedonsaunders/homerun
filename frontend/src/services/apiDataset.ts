@@ -280,7 +280,16 @@ export interface MicrostructureRecorderStatus {
   accept_rate: number | null
   rejects_by_reason: Record<string, number>
   sequence_gaps_observed: number
+  /** Aggregate of snapshot + delta queue drops (kept for backwards-compat). */
   queue_dropped: number
+  /** Snapshot persistence queue drops (full L2 books → mms). */
+  snapshot_queue_dropped?: number
+  /** Delta persistence queue drops (per-level changes → bde). */
+  delta_queue_dropped?: number
+  /** Persistence-task flush latency p50 (ms). */
+  flush_latency_ms_p50?: number | null
+  /** Persistence-task flush latency p95 (ms). */
+  flush_latency_ms_p95?: number | null
   error?: string
 }
 

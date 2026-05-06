@@ -872,14 +872,17 @@ async def proactive_subscription_status() -> dict[str, Any]:
 
 @router.get("/recorder/microstructure")
 async def microstructure_recorder_status() -> dict[str, Any]:
-    """Live status of the WebSocket-driven microstructure recorder.
+    """Live status of the unified market-data ingestor.
 
-    This is the always-on book + trade-print capture path for the
-    prediction-market venues (Polymarket, Kalshi).  Unlike the crypto
-    OHLC recorder, it has no per-asset config — it captures whatever
-    the orchestrator + scanner are subscribed to and applies the
-    structural validation gate (price bounds, ordering, sequence
-    monotonicity) before persistence.
+    The previous standalone ``MicrostructureRecorder`` was merged into
+    ``LiveMarketDataIngestor`` (see services/market_data_ingestor.py).
+    The endpoint path is preserved for backwards compatibility with
+    the Data Lab UI, but now reads from the unified ingestor's stats.
+
+    The ingestor is in-process and always-on whenever the WebSocket
+    feed is alive — there is no separate recorder process to start /
+    stop / configure.  Persistence runs off the hot path so it cannot
+    impact the orchestrator's sub-second decision loop.
 
     Returns:
       running: bool — heuristic ("any tokens tracked in this process?")
@@ -887,17 +890,17 @@ async def microstructure_recorder_status() -> dict[str, Any]:
       accepted_books, total_attempts, accept_rate
       rejects_by_reason: per-reason counters
       sequence_gaps_observed: forward jumps > 1
-      queue_dropped: backpressure drops
+      snapshot_queue_dropped, delta_queue_dropped: backpressure drops
+      flush_latency_ms_p50/p95: persistence-task latency
     """
     try:
-        from services.microstructure_recorder import get_microstructure_recorder
+        from services.market_data_ingestor import get_market_data_ingestor
 
-        rec = get_microstructure_recorder()
-        stats = rec.get_data_quality_stats()
-        # "Running" heuristic — recorder is in-process and recording
-        # whenever the WebSocket feed is alive; we proxy on whether
-        # any token has been seen.  Once we add an explicit lifecycle
-        # API on the recorder this can become a real status field.
+        ing = get_market_data_ingestor()
+        stats = ing.get_data_quality_stats()
+        # "Running" heuristic — ingestor is in-process and active
+        # whenever the WS feed is alive; proxy on whether any token
+        # has been seen.
         stats["running"] = bool(stats.get("tokens_tracked"))
         return stats
     except Exception as exc:

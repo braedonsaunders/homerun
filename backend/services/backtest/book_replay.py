@@ -25,7 +25,7 @@ from __future__ import annotations
 import bisect
 import logging
 import os as _os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable, Optional, Sequence
 
@@ -391,9 +391,409 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+# ── BookDeltaReplay ──────────────────────────────────────────────────────
+#
+# Live-parity replay path: reconstruct full book state by walking
+# ``book_delta_events`` (the live system's authoritative feed) from
+# the most recent ``MarketMicrostructureSnapshot`` anchor.
+#
+# This is the answer to "why was the backtest reading from a sparse
+# table when the live system populates a dense one?"  ``book_delta_events``
+# carries 3-4M rows/week in steady state — every level change the live
+# orchestrator sees lands here.  ``MarketMicrostructureSnapshot`` is
+# now an ANCHOR table: the unified ingestor writes one snapshot per
+# token every ~0.5s as the running state, plus external backfill /
+# provider imports populate it with point-in-time books.
+#
+# Replay algorithm:
+#
+#   1. For each token in scope, find the most recent ``snapshot_type='book'``
+#      row at-or-before ``start``.  This is the anchor.  If absent, the
+#      bootstrap mode below is used.
+#
+#   2. Maintain per-token running state ``{(side, price): size}`` seeded
+#      from the anchor.  Walk delta events in (observed_at, id) order.
+#      For each delta, mutate the running state:
+#        * ``trade`` events decrement the level by ``trade_size`` (or
+#          remove it if depth_after=0)
+#        * ``cancel`` events decrement the level by ``cancel_size``
+#      For monotonicity, when ``queue_depth_after`` is provided we
+#      authoritatively set the level to that value rather than
+#      computing trade/cancel arithmetic — the ingestor already did
+#      that work and including it bypasses cumulative drift.
+#
+#   3. After each delta, emit a ``BookSnapshot`` reflecting the new
+#      state.  The matching engine consumes these as if they came
+#      from the snapshot table — same ``BookSnapshot`` struct, same
+#      ordering invariants.
+#
+# Bootstrap mode: when there is NO anchor for a token (most common
+# situation when the unified ingestor only just started recording),
+# we synthesize a starting state from the first delta's
+# ``queue_depth_before`` per (price, side).  This produces a partial
+# initial book — only price levels that have changed since the
+# replay began are visible.  The matching engine handles this
+# gracefully (untracked levels just don't get fills).  Coverage
+# improves rapidly as more deltas land (typically within minutes).
+
+
+@dataclass
+class _RunningBook:
+    """Mutable running per-token book state for delta replay."""
+
+    bids: dict[float, float] = field(default_factory=dict)  # price → size
+    asks: dict[float, float] = field(default_factory=dict)
+    last_observed_at: Optional[datetime] = None
+
+    def to_snapshot(
+        self,
+        *,
+        token_id: str,
+        observed_at: datetime,
+        spread_bps: Optional[float],
+    ) -> BookSnapshot:
+        bids_sorted = sorted(self.bids.items(), key=lambda kv: kv[0], reverse=True)
+        asks_sorted = sorted(self.asks.items(), key=lambda kv: kv[0])
+        return BookSnapshot(
+            token_id=token_id,
+            observed_at=observed_at,
+            bids=tuple(PriceLevel(price=p, size=s) for p, s in bids_sorted),
+            asks=tuple(PriceLevel(price=p, size=s) for p, s in asks_sorted),
+            sequence=None,
+            spread_bps=spread_bps,
+            trade_price=None,
+            trade_size=None,
+            trade_side=None,
+        )
+
+
+class BookDeltaReplay:
+    """Stream synthesized book snapshots from ``book_delta_events`` + anchors.
+
+    Same public surface as ``BookReplay`` (``iter_snapshots`` +
+    ``snapshot_at``) so callers can swap impls based on coverage.
+
+    Memory bounded: per-token running state is at most ~50 entries (25
+    levels × 2 sides).  No materialization of the full delta stream.
+
+    Truncation safety inherited from BookReplay: if any chunk query
+    fails, log + truncate rather than crash.  Truncation flags are
+    surfaced on the instance for caller introspection.
+    """
+
+    def __init__(
+        self,
+        *,
+        session: AsyncSession,
+        token_ids: Sequence[str],
+        start: datetime,
+        end: datetime,
+        chunk_size: int = 5000,
+    ):
+        from models.database import BookDeltaEvent  # local to avoid cycle
+        self._BookDeltaEvent = BookDeltaEvent
+        self._session = session
+        self._token_ids = list({tid for tid in token_ids if tid})
+        self._start = _to_utc(start)
+        self._end = _to_utc(end)
+        self._chunk_size = max(100, int(chunk_size))
+        self._timeout_raised = False
+        self.truncated: bool = False
+        self.truncation_reason: Optional[str] = None
+        self.snapshots_yielded: int = 0
+
+    async def _raise_session_timeout(self) -> None:
+        """Bump statement_timeout for this session.  Same rationale as
+        BookReplay — the multi-day delta scan can legitimately take
+        >30s under live DB load.
+        """
+        if self._timeout_raised:
+            return
+        try:
+            await self._session.execute(
+                text(f"SET statement_timeout = {int(_BACKTEST_STATEMENT_TIMEOUT_MS)}")
+            )
+        except Exception as exc:
+            logger.warning("Failed to raise statement_timeout for delta replay: %s", exc)
+        self._timeout_raised = True
+
+    async def _load_anchors(self) -> dict[str, _RunningBook]:
+        """For each token, fetch the most recent snapshot at-or-before
+        ``start`` and seed a ``_RunningBook`` from it.  Tokens with no
+        anchor get an empty book (bootstrap mode).
+        """
+        anchors: dict[str, _RunningBook] = {}
+        if not self._token_ids:
+            return anchors
+        # Chunk by token to keep per-query plans bounded.  We do one
+        # subquery per chunk that finds (per token) the row with the
+        # max observed_at <= start, and then a join to fetch its
+        # bids_json / asks_json.
+        CHUNK = 50
+        for i in range(0, len(self._token_ids), CHUNK):
+            chunk = self._token_ids[i : i + CHUNK]
+            try:
+                stmt = (
+                    select(MarketMicrostructureSnapshot)
+                    .where(
+                        MarketMicrostructureSnapshot.token_id.in_(chunk),
+                        MarketMicrostructureSnapshot.observed_at <= self._start,
+                        MarketMicrostructureSnapshot.snapshot_type == "book",
+                    )
+                    .order_by(
+                        MarketMicrostructureSnapshot.token_id.asc(),
+                        MarketMicrostructureSnapshot.observed_at.desc(),
+                    )
+                )
+                rows = (await self._session.execute(stmt)).scalars().all()
+            except Exception as exc:
+                logger.warning("Anchor lookup failed for chunk; using bootstrap: %s", exc)
+                try:
+                    await self._session.rollback()
+                except Exception:
+                    pass
+                continue
+            # First row per token is the most recent (we sorted desc).
+            seen: set[str] = set()
+            for row in rows:
+                tid = str(row.token_id or "")
+                if not tid or tid in seen:
+                    continue
+                seen.add(tid)
+                rb = _RunningBook()
+                for lvl in row.bids_json or []:
+                    p = float(lvl.get("price") or 0.0)
+                    s = float(lvl.get("size") or 0.0)
+                    if p > 0 and s > 0:
+                        rb.bids[round(p, 4)] = s
+                for lvl in row.asks_json or []:
+                    p = float(lvl.get("price") or 0.0)
+                    s = float(lvl.get("size") or 0.0)
+                    if p > 0 and s > 0:
+                        rb.asks[round(p, 4)] = s
+                rb.last_observed_at = row.observed_at
+                anchors[tid] = rb
+        return anchors
+
+    async def iter_snapshots(self) -> AsyncIterator[BookSnapshot]:
+        """Yield synthesized snapshots in (observed_at, id) order across
+        all tokens.
+
+        Memory model: maintains one ``_RunningBook`` per token; each is
+        bounded to ~50 entries.  Total memory is O(tokens × 50) which
+        for a 500-token universe is ~25k float pairs — trivial.
+        """
+        if not self._token_ids:
+            return
+        await self._raise_session_timeout()
+
+        # Seed running state from anchors.  Tokens without anchors get
+        # empty books and are populated lazily from delta queue_depth_before.
+        running: dict[str, _RunningBook] = await self._load_anchors()
+
+        # Walk deltas in time order, batched.
+        BookDeltaEvent = self._BookDeltaEvent
+        last_observed = self._start
+        last_id: Optional[str] = None
+        chunk_index = 0
+        total_yielded = 0
+        while True:
+            stmt = (
+                select(BookDeltaEvent)
+                .where(
+                    BookDeltaEvent.token_id.in_(self._token_ids),
+                    BookDeltaEvent.observed_at >= last_observed,
+                    BookDeltaEvent.observed_at <= self._end,
+                )
+                .order_by(
+                    BookDeltaEvent.observed_at.asc(),
+                    BookDeltaEvent.id.asc(),
+                )
+                .limit(self._chunk_size)
+            )
+            if last_id is not None:
+                stmt = stmt.where(BookDeltaEvent.id != last_id)
+            try:
+                rows = (await self._session.execute(stmt)).scalars().all()
+            except Exception as exc:
+                logger.warning(
+                    "BookDeltaReplay chunk %d failed after %d snapshots; truncating: %s",
+                    chunk_index, total_yielded, exc,
+                )
+                self.truncated = True
+                self.truncation_reason = str(exc)[:500]
+                try:
+                    await self._session.rollback()
+                except Exception:
+                    pass
+                break
+            if not rows:
+                break
+
+            for row in rows:
+                tid = str(row.token_id or "")
+                if not tid:
+                    continue
+                rb = running.setdefault(tid, _RunningBook())
+                price = float(row.price or 0.0)
+                if price <= 0:
+                    continue
+                key = round(price, 4)
+                # Determine which side dict to mutate.  Delta events
+                # use side='bid'|'ask' (lowercase per the schema).
+                side_norm = (row.side or "").strip().lower()
+                if side_norm not in {"bid", "ask"}:
+                    continue
+                book_side = rb.bids if side_norm == "bid" else rb.asks
+
+                # Bootstrap: if we've never seen this level and the
+                # delta carries queue_depth_before, seed it.  This
+                # backfills levels we missed before the replay anchor.
+                if key not in book_side and row.queue_depth_before is not None:
+                    qb = float(row.queue_depth_before)
+                    if qb > 0:
+                        book_side[key] = qb
+
+                # Authoritative state update: queue_depth_after is the
+                # post-event size.  The ingestor recorded it; trust it.
+                # Falling back to subtraction would accumulate drift.
+                if row.queue_depth_after is not None:
+                    qa = float(row.queue_depth_after)
+                    if qa > 0:
+                        book_side[key] = qa
+                    else:
+                        # Level emptied — remove it so it doesn't
+                        # appear as zero-size in the snapshot.
+                        book_side.pop(key, None)
+
+                rb.last_observed_at = row.observed_at
+                spread_bps = (
+                    float(row.spread_bps_at_event)
+                    if row.spread_bps_at_event is not None
+                    else None
+                )
+
+                # Emit a snapshot at this delta's timestamp.
+                snap = rb.to_snapshot(
+                    token_id=tid,
+                    observed_at=row.observed_at,
+                    spread_bps=spread_bps,
+                )
+                yield snap
+                last_observed = row.observed_at
+                last_id = str(row.id)
+                total_yielded += 1
+
+            chunk_index += 1
+            self.snapshots_yielded = total_yielded
+            if len(rows) < self._chunk_size:
+                break
+
+    async def snapshot_at(
+        self, *, token_id: str, ts: datetime
+    ) -> Optional[BookSnapshot]:
+        """Reconstruct the book state at ``ts`` for one token.
+
+        Walks anchor + deltas up to ``ts``.  Used by point-in-time
+        queries (e.g., the matching engine's _submit_entry).  Memory
+        bounded to one running book.
+        """
+        BookDeltaEvent = self._BookDeltaEvent
+        target = _to_utc(ts)
+
+        # Anchor.
+        rb = _RunningBook()
+        try:
+            anchor_stmt = (
+                select(MarketMicrostructureSnapshot)
+                .where(
+                    MarketMicrostructureSnapshot.token_id == token_id,
+                    MarketMicrostructureSnapshot.observed_at <= target,
+                    MarketMicrostructureSnapshot.snapshot_type == "book",
+                )
+                .order_by(MarketMicrostructureSnapshot.observed_at.desc())
+                .limit(1)
+            )
+            row = (await self._session.execute(anchor_stmt)).scalars().first()
+            if row is not None:
+                for lvl in row.bids_json or []:
+                    p = float(lvl.get("price") or 0.0)
+                    s = float(lvl.get("size") or 0.0)
+                    if p > 0 and s > 0:
+                        rb.bids[round(p, 4)] = s
+                for lvl in row.asks_json or []:
+                    p = float(lvl.get("price") or 0.0)
+                    s = float(lvl.get("size") or 0.0)
+                    if p > 0 and s > 0:
+                        rb.asks[round(p, 4)] = s
+                rb.last_observed_at = row.observed_at
+        except Exception as exc:
+            logger.warning("snapshot_at anchor lookup failed: %s", exc)
+            try:
+                await self._session.rollback()
+            except Exception:
+                pass
+
+        # Apply deltas anchor → ts.
+        anchor_ts = rb.last_observed_at or self._start
+        try:
+            stmt = (
+                select(BookDeltaEvent)
+                .where(
+                    BookDeltaEvent.token_id == token_id,
+                    BookDeltaEvent.observed_at > anchor_ts,
+                    BookDeltaEvent.observed_at <= target,
+                )
+                .order_by(
+                    BookDeltaEvent.observed_at.asc(),
+                    BookDeltaEvent.id.asc(),
+                )
+            )
+            rows = (await self._session.execute(stmt)).scalars().all()
+        except Exception as exc:
+            logger.warning("snapshot_at delta lookup failed: %s", exc)
+            try:
+                await self._session.rollback()
+            except Exception:
+                pass
+            rows = []
+
+        spread_bps: Optional[float] = None
+        for row in rows:
+            price = float(row.price or 0.0)
+            if price <= 0:
+                continue
+            key = round(price, 4)
+            side_norm = (row.side or "").strip().lower()
+            if side_norm not in {"bid", "ask"}:
+                continue
+            book_side = rb.bids if side_norm == "bid" else rb.asks
+            if key not in book_side and row.queue_depth_before is not None:
+                qb = float(row.queue_depth_before)
+                if qb > 0:
+                    book_side[key] = qb
+            if row.queue_depth_after is not None:
+                qa = float(row.queue_depth_after)
+                if qa > 0:
+                    book_side[key] = qa
+                else:
+                    book_side.pop(key, None)
+            if row.spread_bps_at_event is not None:
+                spread_bps = float(row.spread_bps_at_event)
+
+        if not rb.bids and not rb.asks:
+            return None
+        return rb.to_snapshot(
+            token_id=token_id,
+            observed_at=target,
+            spread_bps=spread_bps,
+        )
+
+
 __all__ = [
     "PriceLevel",
     "BookSnapshot",
     "BookReplay",
+    "BookDeltaReplay",
     "InMemoryBookReplay",
 ]

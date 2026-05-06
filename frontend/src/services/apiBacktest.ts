@@ -56,6 +56,10 @@ export interface ExecutionResult {
   validation_warnings: string[]
   runtime_error: string | null
   runtime_traceback: string | null
+  /** Which replay source the engine ran against (live-parity if "deltas*"). */
+  replay_source?: ReplaySource
+  /** Pre-flight data coverage stats — same struct as the top-level field. */
+  data_coverage?: DataCoverageStats
 }
 
 export interface CalibrationBin {
@@ -258,7 +262,44 @@ export interface UnifiedBacktestResult {
   data_quality?: DataQualityStats
   outcome_netting?: OutcomeNettingReport
   trade_order_monte_carlo?: TradeOrderMonteCarlo
+  /**
+   * Pre-flight historical-data coverage stats for the run's opp universe.
+   * "0 trades" with low fidelity is a data problem, not a strategy
+   * problem — surface this prominently before the trade-count headline.
+   */
+  data_coverage?: DataCoverageStats
 }
+
+/**
+ * Backtest data coverage / fidelity rating.
+ *
+ * The matching engine reads from ``market_microstructure_snapshots``;
+ * the live system writes deltas to ``book_delta_events``.  When the
+ * snapshot table is sparse (no recorder ever ran) but deltas are
+ * dense, fidelity comes back "low" / "none" with a recommendation
+ * pointing to the backfill or provider-import path.
+ */
+export interface DataCoverageStats {
+  opp_tokens: number
+  tokens_with_snapshots: number
+  tokens_with_deltas: number
+  snapshots_total: number
+  deltas_total: number
+  median_snaps_per_token_per_hour: number
+  p10_snaps_per_token_per_hour: number
+  median_deltas_per_token_per_hour: number
+  fidelity_rating: 'high' | 'medium' | 'low' | 'none' | 'unknown'
+  recommended_action: string
+  error?: string
+}
+
+/**
+ * Which book-replay source the matching engine ran against.
+ *   - "snapshots"     — BookReplay reading market_microstructure_snapshots
+ *   - "deltas"        — BookDeltaReplay reading book_delta_events (live-parity)
+ *   - "deltas+anchor" — BookDeltaReplay seeded from mms anchors + replayed
+ */
+export type ReplaySource = 'snapshots' | 'deltas' | 'deltas+anchor' | ''
 
 export interface BacktestRunSummary {
   run_id: string

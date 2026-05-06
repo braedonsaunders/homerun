@@ -1680,11 +1680,14 @@ class FeedManager:
             self._started = True
             loop = asyncio.get_running_loop()
             self._loop = loop  # store for thread-safe scheduling from callbacks
-            from services.microstructure_recorder import get_microstructure_recorder
-            from services.book_delta_decomposer import get_book_delta_decomposer
+            # Single unified ingestor — replaces the previous split between
+            # microstructure_recorder + book_delta_decomposer.  Validates
+            # books once, walks levels once, persists snapshots + deltas
+            # off the hot path.  See services/market_data_ingestor.py for
+            # the financial-institution-grade hot-path constraints.
+            from services.market_data_ingestor import get_market_data_ingestor
 
-            get_microstructure_recorder().start()
-            get_book_delta_decomposer().start()
+            get_market_data_ingestor().start()
             self._eviction_task = loop.create_task(self._cache_eviction_loop())
             # Wire PositionMarkState to receive every price tick
             from services.position_mark_state import get_position_mark_state
@@ -1712,11 +1715,9 @@ class FeedManager:
             await self._polymarket_user_feed.stop()
         except Exception as exc:
             logger.debug("Polymarket user feed stop failed (non-fatal)", exc_info=exc)
-        from services.microstructure_recorder import get_microstructure_recorder
-        from services.book_delta_decomposer import get_book_delta_decomposer
+        from services.market_data_ingestor import get_market_data_ingestor
 
-        await get_microstructure_recorder().stop()
-        await get_book_delta_decomposer().stop()
+        await get_market_data_ingestor().stop()
         self._cache.clear()
         self._ws_push_clients.clear()
         self._token_to_ws_clients.clear()
@@ -1796,16 +1797,15 @@ class FeedManager:
     def _on_trade(self, token_id: str, trade: "TradeRecord") -> None:
         """Dispatch a TRADE_EXECUTION DataEvent for each trade."""
         try:
-            from services.microstructure_recorder import get_microstructure_recorder
-            from services.book_delta_decomposer import get_book_delta_decomposer
-
-            get_microstructure_recorder().record_trade(token_id=token_id, trade=trade)
             # Order matters — feed the trade BEFORE the post-trade book
-            # update arrives so the decomposer can match the depth delta
-            # against this print.
-            get_book_delta_decomposer().record_trade(token_id=token_id, trade=trade)
+            # update arrives so the ingestor's delta classifier can
+            # match the depth decrease against this print (trade vs
+            # cancel disambiguation).  Single in-memory call now.
+            from services.market_data_ingestor import get_market_data_ingestor
+
+            get_market_data_ingestor().record_trade(token_id=token_id, trade=trade)
         except Exception as exc:
-            logger.debug("Microstructure trade record failed", exc_info=exc)
+            logger.debug("Market data ingestor trade record failed", exc_info=exc)
         if self._loop is None:
             return
         try:
@@ -1848,11 +1848,14 @@ class FeedManager:
         flushes them to registered WS clients.
         """
         try:
-            from services.microstructure_recorder import get_microstructure_recorder
-            from services.book_delta_decomposer import get_book_delta_decomposer
+            from services.market_data_ingestor import get_market_data_ingestor
 
             order_book_snapshot = self._cache.get_order_book(token_id)
-            get_microstructure_recorder().record_book(
+            # Single unified call: validates, classifies deltas, throttles
+            # snapshot writes, persists both off the hot path.  The
+            # previous double-call (recorder + decomposer) walked the
+            # same level list twice and duplicated validation work.
+            get_market_data_ingestor().record_book(
                 token_id=token_id,
                 order_book=order_book_snapshot,
                 best_bid=bid,
@@ -1861,15 +1864,8 @@ class FeedManager:
                 ingest_ts=ingest_ts,
                 sequence=sequence,
             )
-            get_book_delta_decomposer().record_book(
-                token_id=token_id,
-                order_book=order_book_snapshot,
-                best_bid=bid,
-                best_ask=ask,
-                observed_ts=ingest_ts,
-            )
         except Exception as exc:
-            logger.debug("Microstructure book record failed", exc_info=exc)
+            logger.debug("Market data ingestor book record failed", exc_info=exc)
         should_schedule = False
         ws_ids = self._token_to_ws_clients.get(token_id)
         if not ws_ids:
