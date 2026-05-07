@@ -19,18 +19,8 @@ class EventDispatcher:
         self._subscriptions: dict[str, set[str]] = defaultdict(set)
         self._start_lock = asyncio.Lock()
         self._running = False
-        self._handler_timeout_seconds = float(
-            max(
-                5.0,
-                60.0,
-            )
-        )
-        self._handler_cancel_grace_seconds = float(
-            max(
-                0.1,
-                5.0,
-            )
-        )
+        self._handler_timeout_seconds = 20.0
+        self._handler_cancel_grace_seconds = 2.0
         self._timed_out_handler_tasks: set[asyncio.Task[Any]] = set()
         self._force_kill_tasks: set[asyncio.Task[Any]] = set()
 
@@ -192,7 +182,7 @@ class EventDispatcher:
         # strategy spawning its own HTTP/DB sub-tasks, multiplying loop
         # pressure into the hundreds.  At small N (<=6) keep the simple
         # gather form so the typical case has zero scheduling overhead.
-        if len(handlers) <= 6:
+        if len(handlers) <= 4:
             tasks = [
                 asyncio.create_task(
                     self._safe_invoke(
@@ -231,15 +221,15 @@ class EventDispatcher:
                         queue.task_done()
                         await asyncio.sleep(0)
 
-            # Concurrency=8 keeps the loop healthy even when 20+
+            # Concurrency=4 keeps the loop healthy even when 20+
             # strategies are registered.  Each strategy still gets
-            # the same per-handler timeout; we just run at most 8 at
+            # the same per-handler timeout; we just run at most 4 at
             # a time instead of all in parallel.
             workers = [
                 asyncio.create_task(
                     _dispatch_worker(), name=f"event-dispatch-worker-{i}"
                 )
-                for i in range(min(8, len(handlers)))
+                for i in range(min(4, len(handlers)))
             ]
             try:
                 await asyncio.gather(*workers, return_exceptions=True)

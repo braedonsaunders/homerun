@@ -32,6 +32,10 @@ _MAX_DELAY = 30.0
 # doesn't get hit again every 30s.
 _DATA_API_ENDPOINT_COOLDOWN_BASE_SECONDS = 30.0
 _DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS = 300.0
+_DATA_POSITIONS_PAGE_SIZE = 50
+_CLOSED_POSITIONS_MAX_FETCH = 300
+_WALLET_PNL_CLOSED_POSITIONS_MAX_FETCH = 250
+_WALLET_POSITIONS_MAX_PAGES = 4
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
@@ -340,13 +344,14 @@ class PolymarketClient:
                 # simultaneous HTTP requests, exhausting OS thread/lock
                 # resources (the "can't allocate lock" error observed in
                 # the backtest meltdown was the smoking gun).
-                async with rate_limiter.inflight_slot():
-                    response = await client.get(url, **kwargs)
-                    # Read the body inside the slot so chunked/stream read
-                    # failures are retried instead of escaping at
-                    # response.json(), AND so the connection isn't held
-                    # past the slot release.
-                    await response.aread()
+                async with rate_limiter.endpoint_inflight_slot(endpoint):
+                    async with rate_limiter.inflight_slot():
+                        response = await client.get(url, **kwargs)
+                        # Read the body inside the slot so chunked/stream read
+                        # failures are retried instead of escaping at
+                        # response.json(), AND so the connection isn't held
+                        # past the slot release.
+                        await response.aread()
             except Exception as exc:
                 if not isinstance(exc, httpx.TransportError) and not self._is_retryable_closed_client_error(exc):
                     raise
@@ -863,11 +868,17 @@ class PolymarketClient:
         if not normalized_slugs:
             return []
 
-        semaphore = asyncio.Semaphore(12)
         events: list[Event] = []
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        for slug in normalized_slugs:
+            queue.put_nowait(slug)
 
-        async def _fetch(slug: str) -> None:
-            async with semaphore:
+        async def _fetch_worker() -> None:
+            while True:
+                try:
+                    slug = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
                 try:
                     response = await self._rate_limited_get(
                         f"{self.gamma_url}/events",
@@ -878,9 +889,21 @@ class PolymarketClient:
                     if isinstance(data, list) and data:
                         events.append(Event.from_gamma_response(data[0]))
                 except Exception:
-                    return
+                    pass
+                finally:
+                    queue.task_done()
+                    await asyncio.sleep(0)
 
-        await asyncio.gather(*[_fetch(slug) for slug in normalized_slugs])
+        workers = [
+            asyncio.create_task(_fetch_worker(), name=f"polymarket-events-by-slug-{i}")
+            for i in range(min(4, len(normalized_slugs)))
+        ]
+        try:
+            await asyncio.gather(*workers, return_exceptions=True)
+        finally:
+            for worker in workers:
+                if not worker.done():
+                    worker.cancel()
         return events
 
     async def _evict_market_cache_entry(self, *keys: str):
@@ -2058,7 +2081,7 @@ class PolymarketClient:
         all_rows: list[dict] = []
         seen_position_keys: set[tuple[str, str, str]] = set()
 
-        for _ in range(20):
+        for _ in range(_WALLET_POSITIONS_MAX_PAGES):
             response = await self._rate_limited_get(
                 f"{self.data_url}/positions",
                 params={
@@ -2967,7 +2990,10 @@ class PolymarketClient:
         token bucket bounds the cross-wallet aggregate rate.
         """
         normalized_address = str(address or "").strip().lower()
-        capped_max_positions = max(1, int(max_positions or 200))
+        capped_max_positions = min(
+            max(1, int(max_positions or 200)),
+            _CLOSED_POSITIONS_MAX_FETCH,
+        )
         if not normalized_address:
             return []
         cache_key = (normalized_address, capped_max_positions)
@@ -2975,7 +3001,7 @@ class PolymarketClient:
         async def _fetch() -> list[dict]:
             all_positions: list[dict] = []
             offset = 0
-            page_size = 50
+            page_size = _DATA_POSITIONS_PAGE_SIZE
             while len(all_positions) < capped_max_positions:
                 page = await self.get_closed_positions(
                     normalized_address, limit=page_size, offset=offset
@@ -3140,47 +3166,53 @@ class PolymarketClient:
         trade history for buy/sell activity counts.
         """
         try:
-            # Fetch all data sources in parallel for speed. If one endpoint
-            # is temporarily rate-limited/unavailable, continue with partial
-            # data instead of failing the whole PnL calculation.
-            closed_positions_result, positions_result, trades_result = await asyncio.gather(
-                self.get_closed_positions_paginated(address, max_positions=1000),
-                self.get_wallet_positions_with_prices(address),
-                self.get_wallet_trades(address, limit=500),
-                return_exceptions=True,
-            )
-
             closed_positions: list[dict] = []
             positions: list[dict] = []
             trades: list[dict] = []
 
-            if isinstance(closed_positions_result, Exception):
+            try:
+                closed_positions = await self.get_closed_positions_paginated(
+                    address,
+                    max_positions=_WALLET_PNL_CLOSED_POSITIONS_MAX_FETCH,
+                )
+            except Exception as closed_positions_exc:
                 _logger.warning(
                     "Closed-positions fetch failed during PnL calculation; using empty fallback",
                     address=address,
-                    error=str(closed_positions_result),
-                    error_type=type(closed_positions_result).__name__,
-                    exc_info=closed_positions_result,
+                    error=str(closed_positions_exc),
+                    error_type=type(closed_positions_exc).__name__,
+                    exc_info=closed_positions_exc,
                 )
-            else:
-                closed_positions = closed_positions_result
 
-            if isinstance(positions_result, Exception):
-                _logger.warning(
-                    "Open-positions fetch failed during PnL calculation; using empty fallback",
-                    address=address,
-                    error=str(positions_result),
-                    error_type=type(positions_result).__name__,
-                    exc_info=positions_result,
-                )
-            else:
-                positions = positions_result
-
-            if isinstance(trades_result, Exception):
+            try:
+                positions = await self.get_wallet_positions_with_prices(address)
+            except Exception as positions_exc:
                 is_rate_limited = (
-                    isinstance(trades_result, httpx.HTTPStatusError)
-                    and trades_result.response is not None
-                    and trades_result.response.status_code == 429
+                    isinstance(positions_exc, httpx.HTTPStatusError)
+                    and positions_exc.response is not None
+                    and positions_exc.response.status_code == 429
+                )
+                if is_rate_limited:
+                    _logger.debug(
+                        "Open-positions fetch rate-limited during PnL calculation; continuing without open positions",
+                        address=address,
+                    )
+                else:
+                    _logger.warning(
+                        "Open-positions fetch failed during PnL calculation; using empty fallback",
+                        address=address,
+                        error=str(positions_exc),
+                        error_type=type(positions_exc).__name__,
+                        exc_info=positions_exc,
+                    )
+
+            try:
+                trades = await self.get_wallet_trades(address, limit=500)
+            except Exception as trades_exc:
+                is_rate_limited = (
+                    isinstance(trades_exc, httpx.HTTPStatusError)
+                    and trades_exc.response is not None
+                    and trades_exc.response.status_code == 429
                 )
                 if is_rate_limited:
                     _logger.debug(
@@ -3191,12 +3223,10 @@ class PolymarketClient:
                     _logger.warning(
                         "Trade history fetch failed during PnL calculation; using empty fallback",
                         address=address,
-                        error=str(trades_result),
-                        error_type=type(trades_result).__name__,
-                        exc_info=trades_result,
+                        error=str(trades_exc),
+                        error_type=type(trades_exc).__name__,
+                        exc_info=trades_exc,
                     )
-            else:
-                trades = trades_result
 
             # Apply time period filter to trades
             trades = self._filter_by_time_period(trades, time_period)

@@ -26,6 +26,8 @@ _MAX_UINT256 = 2**256 - 1
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 _ZERO_BYTES32 = "0x" + "00" * 32
 _MIN_APPROVAL_BUFFER_BASE = 10_000_000  # 10 USDC (6 decimals)
+_REDEEMER_DRY_RUN_CONDITION_BUDGET = 25
+_REDEEMER_REAL_CONDITION_BUDGET = 50
 _NONCE_RACE_ERROR_MARKERS = (
     "replacement transaction underpriced",
     "transaction underpriced",
@@ -257,6 +259,7 @@ class CTFExecutionService:
 
     def __init__(self) -> None:
         self._tx_lock = asyncio.Lock()
+        self._redeemer_condition_cursor = 0
 
     def _rpc_candidates(self) -> list[str]:
         candidates: list[str] = []
@@ -1443,8 +1446,19 @@ class CTFExecutionService:
         resolved = 0
         redeemable_value_usd = 0.0
         errors: list[str] = []
+        grouped_items = list(grouped.items())
+        condition_budget = (
+            _REDEEMER_DRY_RUN_CONDITION_BUDGET
+            if dry_run
+            else _REDEEMER_REAL_CONDITION_BUDGET
+        )
+        if len(grouped_items) > condition_budget:
+            start = self._redeemer_condition_cursor % len(grouped_items)
+            rotated = grouped_items[start:] + grouped_items[:start]
+            grouped_items = rotated[:condition_budget]
+            self._redeemer_condition_cursor = (start + len(grouped_items)) % len(grouped)
 
-        for condition_id, holdings in grouped.items():
+        for condition_id, holdings in grouped_items:
             try:
                 denominator = await asyncio.to_thread(
                     lambda: ctf.functions.payoutDenominator(condition_id).call()
@@ -1640,7 +1654,8 @@ class CTFExecutionService:
         return {
             "wallet_address": execution_wallet,
             "positions_scanned": len(positions),
-            "conditions_checked": len(grouped),
+            "conditions_checked": len(grouped_items),
+            "conditions_total": len(grouped),
             "resolved_conditions": resolved,
             "redeemable_value_usd": round(redeemable_value_usd, 4),
             "redeemed": redeemed,

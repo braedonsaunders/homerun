@@ -59,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -112,6 +113,7 @@ _DELTA_QUEUE_MAX = 10000              # 2x snapshot queue — deltas are higher 
 _SNAPSHOT_FLUSH_BATCH = 250
 _DELTA_FLUSH_BATCH = 500
 _FLUSH_INTERVAL_SECONDS = 0.20
+_FLUSH_COMMIT_TIMEOUT_SECONDS = 2.0
 
 # Reject reasons surfaced via get_data_quality_stats().
 _REJECT_REASONS = (
@@ -704,17 +706,19 @@ class LiveMarketDataIngestor:
         if not rows:
             return
         t0 = time.perf_counter()
-        try:
-            async with AsyncSessionLocal() as session:
+        async with AsyncSessionLocal() as session:
+            try:
                 session.add_all(rows)
-                await session.commit()
-        except Exception as exc:
-            logger.warning(
-                f"LiveMarketDataIngestor failed to persist {kind} batch",
-                exc_info=exc,
-                rows=len(rows),
-            )
-            return
+                await asyncio.wait_for(session.commit(), timeout=_FLUSH_COMMIT_TIMEOUT_SECONDS)
+            except Exception as exc:
+                with suppress(Exception):
+                    await session.rollback()
+                logger.warning(
+                    f"LiveMarketDataIngestor failed to persist {kind} batch",
+                    exc_info=exc,
+                    rows=len(rows),
+                )
+                return
         latency_ms = (time.perf_counter() - t0) * 1000.0
         # Bounded sliding window of last 100 latencies for p50/p95 stats.
         self._flush_latency_samples.append(latency_ms)

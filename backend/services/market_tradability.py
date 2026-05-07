@@ -24,7 +24,7 @@ _cache: dict[str, tuple[datetime, bool]] = {}
 # parked on the event loop.  The semaphore is created lazily on the
 # first call to bind it to the active asyncio loop (modules can be
 # imported before any loop exists).
-_GLOBAL_CONCURRENCY_LIMIT = 12
+_GLOBAL_CONCURRENCY_LIMIT = 4
 _global_semaphore: Optional[asyncio.Semaphore] = None
 
 
@@ -161,7 +161,7 @@ async def get_market_tradability_map(
 
     workers = [
         asyncio.create_task(_worker(), name=f"market-tradability-worker-{i}")
-        for i in range(max(1, int(max_concurrency)))
+        for i in range(min(max(1, int(max_concurrency)), _GLOBAL_CONCURRENCY_LIMIT, len(keys)))
     ]
     try:
         await asyncio.gather(*workers, return_exceptions=True)

@@ -549,6 +549,7 @@ class LiveExecutionService:
         self._persist_lock: Optional[asyncio.Lock] = None
         self._orders_persist_lock: Optional[asyncio.Lock] = None
         self._positions_persist_lock: Optional[asyncio.Lock] = None
+        self._runtime_state_persist_dirty = False
         self._balance_signature_type: Optional[int] = None
         self._runtime_state_loaded_for_wallet: Optional[str] = None
         self._daily_volume = ZERO
@@ -2969,6 +2970,18 @@ class LiveExecutionService:
         return result
 
     async def _persist_runtime_state(self) -> None:
+        lock = self._get_persist_lock()
+        if lock.locked():
+            self._runtime_state_persist_dirty = True
+            return
+        async with lock:
+            while True:
+                self._runtime_state_persist_dirty = False
+                await self._persist_runtime_state_once()
+                if not self._runtime_state_persist_dirty:
+                    return
+
+    async def _persist_runtime_state_once(self) -> None:
         wallet = self._wallet_for_persistence()
         if not wallet:
             return
@@ -2985,9 +2998,9 @@ class LiveExecutionService:
         # perf-harness loop (post-_persist_orders UPSERT) showed
         # ``select_state`` averaging 2.0-2.6s per slow event.  This
         # is the same SELECT-then-UPDATE anti-pattern we just killed
-        # in ``_persist_orders``.  Apply the same fix:
-        #  - Drop the persist_lock acquire.  Concurrent calls
-        #    UPSERT the same id row → race-safe via ON CONFLICT.
+        # in ``_persist_orders``.  Keep the single UPSERT shape:
+        #  - The outer wrapper coalesces overlapping persist calls.
+        #  - PG resolves insert/update races via ON CONFLICT on the PK.
         #  - Replace SELECT-then-INSERT-or-UPDATE with single
         #    ``INSERT ... ON CONFLICT DO UPDATE``.  Saves the PK
         #    SELECT round-trip; PG does the existence check inline
@@ -5807,7 +5820,7 @@ class LiveExecutionService:
         self,
         condition_ids: list[str],
         *,
-        max_concurrent: int = 4,
+        max_concurrent: int = 2,
     ) -> dict[str, Any]:
         # Fix Y addendum: dedup overlapping prewarm calls.  market_runtime
         # fires one prewarm task per crypto refresh (~3 min); under
@@ -5832,7 +5845,7 @@ class LiveExecutionService:
         self,
         condition_ids: list[str],
         *,
-        max_concurrent: int = 4,
+        max_concurrent: int = 2,
     ) -> dict[str, Any]:
         """Pre-populate the SDK's per-token caches so ``create_order`` is HTTP-free.
 
@@ -5889,21 +5902,34 @@ class LiveExecutionService:
         if not targets:
             return {"prewarmed": 0, "skipped": "all_cached", "total": len(unique_ids)}
 
-        sem = asyncio.Semaphore(max(1, int(max_concurrent)))
         succeeded = 0
         failed = 0
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        for cid in targets:
+            queue.put_nowait(cid)
 
-        async def _warm_one(cid: str) -> None:
+        async def _warm_worker() -> None:
             nonlocal succeeded, failed
-            async with sem:
+            while True:
+                try:
+                    cid = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
                 try:
                     await asyncio.to_thread(self._client.get_clob_market_info, cid)
                     succeeded += 1
                 except Exception:
                     failed += 1
+                finally:
+                    queue.task_done()
+                    await asyncio.sleep(0)
 
+        workers = [
+            asyncio.create_task(_warm_worker(), name=f"clob-market-info-prewarm-{idx}")
+            for idx in range(min(max(1, int(max_concurrent)), len(targets)))
+        ]
         try:
-            await asyncio.gather(*[_warm_one(cid) for cid in targets], return_exceptions=True)
+            await asyncio.gather(*workers, return_exceptions=True)
         except Exception:
             return {
                 "prewarmed": succeeded,
@@ -5911,6 +5937,10 @@ class LiveExecutionService:
                 "total": len(unique_ids),
                 "targets": len(targets),
             }
+        finally:
+            for worker in workers:
+                if not worker.done():
+                    worker.cancel()
         if succeeded > 0:
             try:
                 logger.info(

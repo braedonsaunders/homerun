@@ -68,7 +68,6 @@ FALLBACK_HTTP_RPC_URLS = (
     DEFAULT_PUBLIC_HTTP_RPC_URL,           # publicnode (current primary)
     "https://polygon-rpc.com",              # Polygon Foundation official
     "https://polygon.llamarpc.com",         # LlamaNodes
-    "https://polygon.drpc.org",             # dRPC (no-auth tier)
     "https://1rpc.io/matic",                # 1RPC (no-auth tier)
 )
 
@@ -1231,6 +1230,31 @@ class WalletWebSocketMonitor:
                     _status = getattr(getattr(e, "response", None), "status_code", None)
                     if _status in (401, 403):
                         self._evict_rpc_endpoint(endpoint)
+                        break
+                    if _status == 400 and method == "eth_getLogs":
+                        response_error: object = None
+                        try:
+                            response_obj = getattr(e, "response", None)
+                            if response_obj is not None:
+                                response_json = response_obj.json()
+                                if isinstance(response_json, dict):
+                                    response_error = response_json.get("error") or response_json
+                        except Exception:
+                            response_error = None
+                        self._evict_rpc_endpoint(endpoint)
+                        now_log = time.monotonic()
+                        if (
+                            now_log - self._rpc_last_endpoint_failure_log_at
+                        ) >= self._rpc_endpoint_failure_log_interval_seconds:
+                            self._rpc_last_endpoint_failure_log_at = now_log
+                            logger.warning(
+                                "Wallet monitor RPC endpoint rejected eth_getLogs; evicting endpoint",
+                                method=method,
+                                endpoint=endpoint,
+                                block=block_hex or None,
+                                status_code=_status,
+                                rpc_error=response_error,
+                            )
                         break
                     # 2026-05-05: 429 = rate-limited. Honor Retry-After if
                     # present, fall back to exponential cooldown. Mark the

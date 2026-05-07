@@ -155,8 +155,8 @@ class ArbitrageScanner:
         # price history recorded.  Updated after each scan cycle.
         self._opportunity_market_ids: set[str] = set()
         self._market_history_backfill_retry_ms: int = 5 * 60 * 1000
-        self._market_history_backfill_concurrency: int = 8
-        self._market_history_backfill_max_markets: int = 120
+        self._market_history_backfill_concurrency: int = 3
+        self._market_history_backfill_max_markets: int = 60
         self._market_history_backfill_task: Optional[asyncio.Task] = None
         self._market_history_backfill_queue: list[Opportunity] = []
 

@@ -221,10 +221,8 @@ async def _fetch_market_info(row: TraderOrder) -> dict[str, Any] | None:
     return None
 
 
-# Bound concurrent Polymarket lookups when pre-fetching market_info for a
-# batch of rows.  8 in flight is plenty (the client has its own per-host
-# connection pool) without DDoSing the data API.
-_MARKET_INFO_PREFETCH_CONCURRENCY = 8
+_MARKET_INFO_PREFETCH_CONCURRENCY = 4
+_CLOSED_POSITIONS_VERIFY_MAX_FETCH = 300
 
 
 async def _prefetch_market_info(
@@ -237,24 +235,40 @@ async def _prefetch_market_info(
     inside ``async with release_conn(session):``) — the whole point of
     pre-fetching is to keep PG sessions out of the HTTP critical path.
     """
-    sem = asyncio.Semaphore(_MARKET_INFO_PREFETCH_CONCURRENCY)
     rows_list = [r for r in rows if r is not None]
     if not rows_list:
         return {}
 
-    async def _bounded(r: TraderOrder) -> tuple[str, dict[str, Any] | None]:
-        async with sem:
-            try:
-                info = await _fetch_market_info(r)
-            except Exception:
-                info = None
-            return str(r.id), info
+    queue: asyncio.Queue[TraderOrder] = asyncio.Queue()
+    for row in rows_list:
+        queue.put_nowait(row)
+    results: dict[str, dict[str, Any] | None] = {}
 
-    results = await asyncio.gather(
-        *(_bounded(r) for r in rows_list),
-        return_exceptions=False,
-    )
-    return dict(results)
+    async def _worker() -> None:
+        while True:
+            try:
+                row = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                results[str(row.id)] = await _fetch_market_info(row)
+            except Exception:
+                results[str(row.id)] = None
+            finally:
+                queue.task_done()
+                await asyncio.sleep(0)
+
+    workers = [
+        asyncio.create_task(_worker(), name=f"trade-verifier-market-info-{idx}")
+        for idx in range(min(_MARKET_INFO_PREFETCH_CONCURRENCY, len(rows_list)))
+    ]
+    try:
+        await asyncio.gather(*workers, return_exceptions=True)
+    finally:
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+    return results
 
 
 def _market_is_resolved(market_info: dict[str, Any]) -> bool:
@@ -996,7 +1010,7 @@ async def verify_orders_against_closed_positions(
     wallet_address: str,
     order_window_start: datetime | None = None,
     order_ids: Iterable[str] | None = None,
-    max_positions: int = 2000,
+    max_positions: int = _CLOSED_POSITIONS_VERIFY_MAX_FETCH,
     commit: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -1026,10 +1040,14 @@ async def verify_orders_against_closed_positions(
     if not wallet_lower:
         return {"error": "missing_wallet_address", "examined": 0, "verified": 0, "unmatched": 0}
 
+    fetch_limit = min(
+        max(1, int(max_positions or _CLOSED_POSITIONS_VERIFY_MAX_FETCH)),
+        _CLOSED_POSITIONS_VERIFY_MAX_FETCH,
+    )
     try:
         positions_raw = await asyncio.wait_for(
             polymarket_client.get_closed_positions_paginated(
-                wallet_lower, max_positions=max_positions
+                wallet_lower, max_positions=fetch_limit
             ),
             timeout=_HTTP_FETCH_TIMEOUT_SECONDS,
         )

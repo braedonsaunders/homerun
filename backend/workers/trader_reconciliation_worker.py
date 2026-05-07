@@ -835,9 +835,9 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
             closed_positions_raw = await asyncio.wait_for(
                 polymarket_client.get_closed_positions_paginated(
                     wallet_lower,
-                    max_positions=2000,
+                    max_positions=300,
                 ),
-                timeout=20.0,
+                timeout=12.0,
             )
             if isinstance(closed_positions_raw, list):
                 closed_positions = closed_positions_raw

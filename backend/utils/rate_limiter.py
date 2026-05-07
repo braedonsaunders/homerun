@@ -73,24 +73,22 @@ class RateLimiter:
     #
     # Fix S: ``burst_limit`` set on the tightest endpoints — most
     # notably ``data_positions``.  Without it the bucket capacity
-    # equals ``requests_per_window`` (60) so after any quiet
-    # window the bucket refills to 60 and a fan-out caller (e.g.
+    # equals ``requests_per_window`` so after any quiet
+    # window the bucket refills and a fan-out caller (e.g.
     # ``polymarket_trade_verifier`` + ``trader_reconciliation_worker``
     # + per-trader ``position_lifecycle`` all fetching closed-positions
     # within the same second) drains the bucket in <1s — the wire-
     # level burst hits Polymarket's server-side throttle which is
-    # tighter than the documented ``60/10s`` for sustained traffic
+    # tighter than the documented sustained traffic allowance
     # on this specific endpoint, producing the recurring
     # ``429 Too Many Requests`` errors observed in the 5/2026/05
     # 21:00 soak (``[DISCOVERY] polymarket get_closed_positions()
     # closed-positions fetch failed ... '429 Too Many Requests'``).
     #
-    # Burst limit of 12 = 2 seconds at sustained 6/s, leaving the
+    # Burst limit of 3 on data_positions leaves the
     # token bucket configured for steady-state throughput while
-    # bounding the worst-case 1-second arrival rate to 12 — which
-    # is the threshold where Polymarket's throttle stops triggering
-    # in our environment.  ``data_trades`` and ``gamma_search`` get
-    # the same treatment as a defense-in-depth measure (these
+    # bounding the worst-case 1-second arrival rate.  ``data_trades``
+    # and ``gamma_search`` get the same treatment (these
     # endpoints have similar fan-out patterns from scanner /
     # reconciliation paths) — their burst caps are sized to roughly
     # 2 seconds of sustained rate.
@@ -104,20 +102,27 @@ class RateLimiter:
         "clob_markets_batch": RateLimitConfig(requests_per_window=500, window_seconds=10),
         "clob_prices_history": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
-        "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10, burst_limit=40),
-        "data_positions": RateLimitConfig(requests_per_window=60, window_seconds=10, burst_limit=12),
+        "data_trades": RateLimitConfig(requests_per_window=120, window_seconds=10, burst_limit=12),
+        "data_positions": RateLimitConfig(requests_per_window=30, window_seconds=10, burst_limit=3),
     }
 
-    # Cap on simultaneous in-flight Polymarket HTTP requests across all
-    # callers and endpoints.  24 leaves comfortable headroom under
-    # every individual endpoint's per-second budget while bounding
-    # the asyncio task fan-out the event-loop watchdog observed.
-    GLOBAL_INFLIGHT_LIMIT = 24
+    GLOBAL_INFLIGHT_LIMIT = 16
+    ENDPOINT_INFLIGHT_LIMITS = {
+        "data_positions": 2,
+        "data_trades": 4,
+        "gamma_events": 6,
+        "gamma_markets": 6,
+        "gamma_search": 4,
+        "clob_prices_history": 4,
+        "clob_market": 8,
+        "clob_markets_batch": 8,
+    }
 
     def __init__(self):
         self._buckets: Dict[str, TokenBucket] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
         self._inflight_semaphore: Optional[asyncio.Semaphore] = None
+        self._endpoint_inflight_semaphores: Dict[str, asyncio.Semaphore] = {}
 
     def _get_bucket(self, endpoint: str) -> TokenBucket:
         """Get or create a token bucket for an endpoint"""
@@ -140,6 +145,13 @@ class RateLimiter:
             self._inflight_semaphore = asyncio.Semaphore(self.GLOBAL_INFLIGHT_LIMIT)
         return self._inflight_semaphore
 
+    def _get_endpoint_inflight_semaphore(self, endpoint: str) -> asyncio.Semaphore:
+        normalized = endpoint or "default"
+        if normalized not in self._endpoint_inflight_semaphores:
+            limit = self.ENDPOINT_INFLIGHT_LIMITS.get(normalized, self.GLOBAL_INFLIGHT_LIMIT)
+            self._endpoint_inflight_semaphores[normalized] = asyncio.Semaphore(max(1, int(limit)))
+        return self._endpoint_inflight_semaphores[normalized]
+
     def inflight_slot(self):
         """Return an awaitable context manager that holds an in-flight
         slot for the duration of the actual HTTP request.  Callers wrap
@@ -147,6 +159,10 @@ class RateLimiter:
         so the slot is held only across the wire, not across cache
         lookups or post-processing."""
         return self._get_inflight_semaphore()
+
+    def endpoint_inflight_slot(self, endpoint: str):
+        """Return an endpoint-specific in-flight slot for the HTTP request."""
+        return self._get_endpoint_inflight_semaphore(endpoint)
 
     async def acquire(self, endpoint: str, tokens: int = 1) -> float:
         """
@@ -183,6 +199,7 @@ class RateLimiter:
                 "capacity": bucket.capacity,
                 "refill_rate": bucket.refill_rate,
                 "limit": f"{config.requests_per_window}/{config.window_seconds}s" if config else "default",
+                "inflight_limit": self.ENDPOINT_INFLIGHT_LIMITS.get(endpoint, self.GLOBAL_INFLIGHT_LIMIT),
             }
         return status
 
