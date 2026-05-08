@@ -697,6 +697,7 @@ type GlobalSettingsDraft = {
   liveProviderHealthMinErrors: string
   liveProviderHealthBlockSeconds: string
   traderCycleTimeoutSeconds: string
+  runtimeTriggerCycleTimeoutSeconds: string
 }
 
 const DEFAULT_ORCHESTRATOR_GLOBAL_RISK = {
@@ -741,6 +742,7 @@ const DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME = {
     block_seconds: 120,
   },
   trader_cycle_timeout_seconds: null as number | null,
+  runtime_trigger_cycle_timeout_seconds: null as number | null,
 } as const
 const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
 const RESOLVED_ORDER_STATUSES = new Set([
@@ -967,6 +969,9 @@ function buildGlobalSettingsDraft(
     traderCycleTimeoutSeconds: runtime.trader_cycle_timeout_seconds === null
       ? ''
       : String(runtime.trader_cycle_timeout_seconds),
+    runtimeTriggerCycleTimeoutSeconds: runtime.runtime_trigger_cycle_timeout_seconds == null
+      ? ''
+      : String(runtime.runtime_trigger_cycle_timeout_seconds),
   }
 }
 
@@ -6786,6 +6791,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const traderCycleTimeoutSeconds = traderCycleTimeoutRaw
         ? clampNumber(toNumber(traderCycleTimeoutRaw), 3, 120, 0)
         : null
+      const runtimeTriggerCycleTimeoutRaw = globalSettingsDraft.runtimeTriggerCycleTimeoutSeconds.trim()
+      const runtimeTriggerCycleTimeoutSeconds = runtimeTriggerCycleTimeoutRaw
+        ? clampNumber(toNumber(runtimeTriggerCycleTimeoutRaw), 3, 60, 0)
+        : null
       const maxTradeSizeUsd = clampNumber(
         toNumber(globalSettingsDraft.maxTradeSizeUsd),
         1,
@@ -6854,6 +6863,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
             block_seconds: liveProviderHealthBlockSeconds,
           },
           trader_cycle_timeout_seconds: traderCycleTimeoutSeconds,
+          runtime_trigger_cycle_timeout_seconds: runtimeTriggerCycleTimeoutSeconds,
         },
       }
 
@@ -12758,6 +12768,26 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       onChange={(event) => setGlobalSettingsField('traderCycleTimeoutSeconds', event.target.value)}
                       className="mt-1"
                     />
+                    <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
+                      Cap for full maintenance/exit cycles initiated by the periodic loop. Default 60s when blank.
+                    </p>
+                  </div>
+                  <div>
+                    <Label>Runtime-Trigger Cycle Timeout (seconds, blank = 10s default)</Label>
+                    <Input
+                      type="number"
+                      min={3}
+                      max={60}
+                      placeholder="10"
+                      value={globalSettingsDraft.runtimeTriggerCycleTimeoutSeconds}
+                      onChange={(event) => setGlobalSettingsField('runtimeTriggerCycleTimeoutSeconds', event.target.value)}
+                      className="mt-1"
+                    />
+                    <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
+                      Cap for lightweight cycles fired by `signals.publish` runtime triggers (entry path).
+                      The hard-coded default is 10s; raise to 30–45s if `selected` decisions never reach `trader_orders`
+                      due to `cycle_timeout` log lines (Cox-PH / microstructure / multi-gate evaluations exceeding 10s).
+                    </p>
                   </div>
                 </div>
 
