@@ -2984,7 +2984,39 @@ class LiveExecutionService:
         async with lock:
             while True:
                 self._runtime_state_persist_dirty = False
-                await self._persist_runtime_state_once()
+                # 2026-05-08: wall-clock bound on _persist_runtime_state_once.
+                # The 2026-05-07 soak showed individual upserts taking
+                # 1.4-3.1s under DB pool contention. Without this bound,
+                # a single stalled asyncpg connection would hold the per-
+                # instance persist lock indefinitely and starve the
+                # coalesce queue (every subsequent persist request would
+                # just set the dirty bit and return, losing observability
+                # of how deep the backlog got). 15s is comfortably above
+                # the DB-level statement_timeout (main pool: 30s) — wait,
+                # that's backwards. We want the client bound to fire
+                # BEFORE statement_timeout so we can rollback cleanly,
+                # log that the persist cycle overran, and let the next
+                # tick retry. 20s — below statement_timeout, above the
+                # 99p observed latency (~3s) with margin.
+                try:
+                    await asyncio.wait_for(
+                        self._persist_runtime_state_once(),
+                        timeout=20.0,
+                    )
+                except asyncio.TimeoutError:
+                    # Keep dirty bit set so next caller re-enters the
+                    # coalesce loop and retries. The stalled SQL will
+                    # eventually be cancelled by statement_timeout or
+                    # the pool reaper; we're just releasing the app-
+                    # level lock here so we don't compound the stall.
+                    self._runtime_state_persist_dirty = True
+                    try:
+                        logger.warning(
+                            "_persist_runtime_state exceeded 20s wall-clock budget; will retry",
+                        )
+                    except Exception:
+                        pass
+                    return
                 if not self._runtime_state_persist_dirty:
                     return
 

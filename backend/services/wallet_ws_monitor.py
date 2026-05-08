@@ -443,7 +443,13 @@ class WalletWebSocketMonitor:
         self._rpc_failure_streak: int = 0
         self._rpc_backoff_until: float = 0.0
         self._rpc_backoff_base_seconds: float = 2.0
-        self._rpc_backoff_max_seconds: float = 30.0
+        # 2026-05-08: raised from 30s → 120s. With the cap at 30s, a persistently
+        # timing-out endpoint (observed: polygon-bor-rpc.publicnode.com during
+        # soak) was retried every 30s even after the failure streak saturated
+        # the cap, producing ~60 WARNING log lines per 90-minute window for the
+        # same underlying condition. 120s gives the endpoint real recovery time
+        # while still bounding the WS-fallback catch-up window.
+        self._rpc_backoff_max_seconds: float = 120.0
         self._max_block_failures_before_skip: int = 5
         self._block_failure_counts: dict[int, int] = {}
         self._rpc_last_endpoint_failure_log_at: float = 0.0
@@ -1338,6 +1344,24 @@ class WalletWebSocketMonitor:
                     if endpoint_attempt < RPC_ATTEMPTS_PER_ENDPOINT - 1:
                         await asyncio.sleep(0.2 * (endpoint_attempt + 1))
                         continue
+                    # 2026-05-08: once all attempts on this endpoint are
+                    # exhausted with a transport-level error (timeout,
+                    # connection reset, network error), mark the endpoint
+                    # cooled-down so the round-robin skips it on the next
+                    # call. Otherwise a single flaky endpoint (observed:
+                    # polygon-bor-rpc.publicnode.com) keeps getting retried
+                    # every cycle at position 0, contributing ~60 warnings
+                    # per 90-minute window to the soak log and delaying
+                    # legitimate WS-fallback work. Reuses the 429 cooldown
+                    # machinery (exponential attempts-based backoff, capped
+                    # at _RPC_ENDPOINT_COOLDOWN_MAX_SECONDS) so a briefly
+                    # slow endpoint recovers quickly while a persistently
+                    # broken one gets skipped longer.
+                    timeout_cooldown_seconds: Optional[float] = None
+                    if _should_reset_http_client(e):
+                        timeout_cooldown_seconds = self._cool_down_rpc_endpoint(
+                            endpoint,
+                        )
                     now = time.monotonic()
                     if (now - self._rpc_last_endpoint_failure_log_at) >= self._rpc_endpoint_failure_log_interval_seconds:
                         self._rpc_last_endpoint_failure_log_at = now
@@ -1348,6 +1372,11 @@ class WalletWebSocketMonitor:
                             block=block_hex or None,
                             error_type=type(e).__name__,
                             error=_exception_text(e),
+                            cooldown_seconds=(
+                                round(timeout_cooldown_seconds, 1)
+                                if timeout_cooldown_seconds is not None
+                                else None
+                            ),
                         )
                     else:
                         logger.debug(

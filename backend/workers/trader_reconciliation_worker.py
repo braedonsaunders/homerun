@@ -144,6 +144,36 @@ _RECONCILE_TRIGGER_EVENTS = frozenset(
 _abandoned_timed_tasks: set[asyncio.Task] = set()
 _inflight_timed_tasks: dict[str, asyncio.Task] = {}
 
+# 2026-05-08: per-trader dedup for the "Live reconciliation timed out"
+# warning. During the 2026-05-07 soak a single slow trader produced the
+# same warning every 30s for 10 minutes straight (same attempt=3/3,
+# same trader_id, same reason). Collapse into one warning per
+# _TRADER_RECONCILE_TIMEOUT_LOG_INTERVAL_SECONDS window; carry a
+# suppressed-count so the next emitted warning tells the operator how
+# many were skipped.
+_TRADER_RECONCILE_TIMEOUT_LOG_INTERVAL_SECONDS = 300.0
+_reconcile_timeout_last_log_mono: dict[str, float] = {}
+_reconcile_timeout_suppressed_count: dict[str, int] = {}
+
+
+def _should_emit_reconcile_timeout_warning(trader_id: str) -> tuple[bool, int]:
+    """Return (emit, suppressed_count_since_last_emit).
+
+    The caller emits the warning when ``emit`` is True, and attaches
+    ``suppressed_count`` to the log so the operator can tell that a
+    single warning now represents N underlying failures.
+    """
+    now_mono = time.monotonic()
+    last = _reconcile_timeout_last_log_mono.get(trader_id, 0.0)
+    if (now_mono - last) >= _TRADER_RECONCILE_TIMEOUT_LOG_INTERVAL_SECONDS:
+        suppressed = _reconcile_timeout_suppressed_count.pop(trader_id, 0)
+        _reconcile_timeout_last_log_mono[trader_id] = now_mono
+        return True, suppressed
+    _reconcile_timeout_suppressed_count[trader_id] = (
+        _reconcile_timeout_suppressed_count.get(trader_id, 0) + 1
+    )
+    return False, 0
+
 
 class _TimedTaskStillRunningError(RuntimeError):
     pass
@@ -1493,14 +1523,25 @@ async def _run_reconciliation_cycle(
                 summary["failures"] = int(summary["failures"]) + 1
                 break
             except asyncio.TimeoutError:
-                logger.warning(
-                    "Live reconciliation timed out for trader=%s reason=%s attempt=%d/%d timeout=%.1fs",
-                    trader_id,
-                    reason,
-                    attempt + 1,
-                    _TRADER_RECONCILE_ATTEMPTS,
-                    _TRADER_RECONCILE_TIMEOUT_SECONDS,
-                )
+                emit, suppressed = _should_emit_reconcile_timeout_warning(trader_id)
+                if emit:
+                    logger.warning(
+                        "Live reconciliation timed out for trader=%s reason=%s attempt=%d/%d timeout=%.1fs suppressed_since_last=%d",
+                        trader_id,
+                        reason,
+                        attempt + 1,
+                        _TRADER_RECONCILE_ATTEMPTS,
+                        _TRADER_RECONCILE_TIMEOUT_SECONDS,
+                        suppressed,
+                    )
+                else:
+                    logger.debug(
+                        "Live reconciliation timed out (suppressed) trader=%s reason=%s attempt=%d/%d",
+                        trader_id,
+                        reason,
+                        attempt + 1,
+                        _TRADER_RECONCILE_ATTEMPTS,
+                    )
                 summary["failures"] = int(summary["failures"]) + 1
                 break
             except StaleDataError as exc:

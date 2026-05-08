@@ -1326,7 +1326,22 @@ class MarketRuntime:
         fetch_elapsed = time.monotonic() - step_started
         step_started = time.monotonic()
         payload = self._build_crypto_market_payload(markets or [])
+        build_elapsed = time.monotonic() - step_started
+        # 2026-05-08: the combined timing below used to be labeled
+        # "ml_queue_seconds" even though it also included the synchronous
+        # ``_attach_polymarket_price_history`` call + build payload. During
+        # the 2026-05-07 soak this showed ml_queue_seconds=6.5-9.0s,
+        # misleadingly pointing at the ML queue when the ML queue itself
+        # is fire-and-forget; the true cost was the price-history attach
+        # (which in turn delegates into scanner.attach_price_history_to_markets
+        # with timeout_seconds=0.0, so the cost is presumably from the
+        # in-memory hot-path hydration over many rows rather than a
+        # network call). Split the timings so operators can see which
+        # part is slow.
+        step_started = time.monotonic()
         await self._attach_polymarket_price_history(payload)
+        history_elapsed = time.monotonic() - step_started
+        step_started = time.monotonic()
         await self._queue_ml_pipeline_refresh(payload, allow_record=True)
         ml_queue_elapsed = time.monotonic() - step_started
         step_started = time.monotonic()
@@ -1410,12 +1425,22 @@ class MarketRuntime:
             full_source_sweep=full_source_sweep,
         )
         dispatch_elapsed = time.monotonic() - step_started
-        total_elapsed = fetch_elapsed + ml_queue_elapsed + subscription_elapsed + publish_elapsed + dispatch_elapsed
+        total_elapsed = (
+            fetch_elapsed
+            + build_elapsed
+            + history_elapsed
+            + ml_queue_elapsed
+            + subscription_elapsed
+            + publish_elapsed
+            + dispatch_elapsed
+        )
         if total_elapsed >= 5.0:
             logger.warning(
                 "Market runtime refresh timing",
                 trigger=trigger,
                 fetch_seconds=round(fetch_elapsed, 3),
+                build_seconds=round(build_elapsed, 3),
+                history_seconds=round(history_elapsed, 3),
                 ml_queue_seconds=round(ml_queue_elapsed, 3),
                 subscription_seconds=round(subscription_elapsed, 3),
                 publish_seconds=round(publish_elapsed, 3),
@@ -1501,10 +1526,25 @@ class MarketRuntime:
             logger.debug("Crypto price-history attach skipped (scanner unavailable)", exc_info=exc)
             return
         try:
-            await market_scanner.attach_price_history_to_markets(
-                payload,
-                timeout_seconds=0.0,
-                block_for_backfill=False,
+            # 2026-05-08: even with timeout_seconds=0.0 and block_for_backfill
+            # =False (so no network round-trip on the hot path), the
+            # in-memory hydration over every crypto row still showed
+            # multi-second elapsed times during the 2026-05-07 soak. Wrap
+            # in a hard wall-clock bound so a pathological row can't
+            # stall the refresh cycle — if we overrun, the rows just
+            # miss this tick's sparkline and get backfilled on the next.
+            await asyncio.wait_for(
+                market_scanner.attach_price_history_to_markets(
+                    payload,
+                    timeout_seconds=0.0,
+                    block_for_backfill=False,
+                ),
+                timeout=3.0,
+            )
+        except asyncio.TimeoutError:
+            logger.info(
+                "Crypto price-history attach exceeded 3s budget; skipping this tick",
+                rows=len(payload),
             )
         except Exception as exc:
             logger.debug("Crypto price-history attach failed", exc_info=exc)
