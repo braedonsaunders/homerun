@@ -580,3 +580,78 @@ def test_aggressive_limit_buy_submit_as_gtc_falls_back_to_risk_limits_when_unset
         {"aggressive_limit_buy_submit_as_gtc": True},
     ) is True
     assert order_manager._aggressive_limit_buy_submit_as_gtc({}, {}) is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_buy_with_chase_up_lifts_simulator_limit_so_asks_above_mid_fill(monkeypatch):
+    """Without chase-up, mid=0.55 vs ask=0.60 → simulator break → no fill.
+
+    With risk_limits.allow_taker_limit_buy_above_signal=True the simulator
+    receives an effective ceiling at max_execution_price (or 1.0 when no
+    cap), so it walks asks above mid and produces a real fill — which is
+    the whole point of the toggle in shadow mode.
+    """
+    execution_mock = AsyncMock(side_effect=AssertionError("shadow must not call live broker"))
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    token_id = "999988887777666655554"
+    signal = SimpleNamespace(
+        id="sig-chase-shadow",
+        market_id="m-chase-shadow",
+        direction="buy_yes",
+        entry_price=0.55,
+        market_question="Will chase-up shadow fill?",
+        payload_json={
+            "selected_token_id": token_id,
+            "live_market": {
+                "live_selected_price": 0.55,
+                "execution_order_book": {
+                    "bids": [{"price": 0.54, "size": 100.0}],
+                    "asks": [{"price": 0.60, "size": 200.0}],
+                },
+                "execution_recent_trades": [
+                    {"price": 0.60, "size": 50.0, "side": "BUY", "timestamp": 100.0},
+                ],
+                "execution_order_book_age_ms": 100.0,
+            },
+        },
+    )
+
+    leg = {
+        "leg_id": "leg_chase",
+        "market_id": signal.market_id,
+        "market_question": signal.market_question,
+        "side": "buy",
+        "outcome": "yes",
+        "limit_price": 0.55,
+        "price_policy": "taker_limit",
+    }
+
+    no_chase_result = await order_manager.submit_execution_leg(
+        mode="shadow",
+        signal=signal,
+        leg=leg,
+        notional_usd=10.0,
+        strategy_params={},
+        risk_limits={"allow_taker_limit_buy_above_signal": False},
+    )
+    assert no_chase_result.payload["reason"] == "limit_price_not_executable", (
+        "Without chase-up the simulator must reject mid<ask as before; otherwise the "
+        "test fixture has drifted and no longer exercises the bug we are fixing."
+    )
+
+    chase_result = await order_manager.submit_execution_leg(
+        mode="shadow",
+        signal=signal,
+        leg=dict(leg),
+        notional_usd=10.0,
+        strategy_params={},
+        risk_limits={"allow_taker_limit_buy_above_signal": True},
+    )
+    assert chase_result.status == "executed", (
+        f"chase-up should produce a fill; got status={chase_result.status} "
+        f"reason={chase_result.payload.get('reason')!r}"
+    )
+    assert chase_result.effective_price == pytest.approx(0.60, rel=1e-9)
+    assert chase_result.payload["submission"] == "shadow_microstructure_simulated"
+    assert chase_result.payload["shadow_simulation"]["execution_estimate"]["levels_consumed"] >= 1
