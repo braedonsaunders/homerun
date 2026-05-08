@@ -6696,15 +6696,15 @@ async def test_run_trader_once_live_runtime_trigger_processes_runtime_trigger_ba
         trigger_signal_snapshots_by_source={"scanner": {signal.id: {"id": signal.id} for signal in signals}},
     )
 
-    assert decisions_written == 1
+    # Standard lane per-cycle signal limit is 4; with 5 signals queued,
+    # the cycle processes the first 4 and re-publishes signal-5 back to
+    # the runtime-trigger queue for the next cycle.
+    assert decisions_written == 4
     assert orders_written == 0
-    assert processed_signals == 1
-    assert len(decisions) == 1
+    assert processed_signals == 4
+    assert len(decisions) == 4
     publish_signal_batch_mock.assert_awaited_once()
     assert publish_signal_batch_mock.await_args.kwargs["signal_ids"] == [
-        "signal-2",
-        "signal-3",
-        "signal-4",
         "signal-5",
     ]
 

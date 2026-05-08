@@ -864,17 +864,28 @@ _STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE = 200
 _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE = 5000
 _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
 _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
-_STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT = 1
-# Crypto/high-freq trader: keep batch tiny so a cycle never blocks the
-# queue for more than one signal's worth of work.  At ~360ms per signal
-# (telemetry p50: 133ms wake→context + 225ms context→decision), a 32-
-# signal batch took ~11s and pushed emit_to_queue_wake_ms p50 to 4s.
-# With limit=1 each cycle drains in <500ms; overflow signals are re-
-# published to the runtime stream (see overflow handling near :4212)
-# and picked up by the next cycle, so no signals are lost.
-_HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT = 1
-_STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 1
-_HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 1
+_STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT = 4
+# Crypto/high-freq trader: amortize per-cycle fixed overhead (DB session
+# checkout, orchestrator-control lookup, trader enumeration, live-context
+# build, heartbeat / cursor writes — collectively ~400-600ms) across more
+# than one signal.  At 360ms/signal p50 telemetry with a 10s cycle
+# timeout, limit=8 lands cycles at ~3-4s with >=5s budget slack for the
+# cycle-budget bail (line ~5690) to defer cleanly if a per-signal outlier
+# hits.
+#
+# Historical context: 2026-04 reduced this to 1 because a 32-signal batch
+# was blowing the queue-wake p50 to 4s.  The 2026-05 soak (post Round 1/2
+# fixes) showed the OPPOSITE problem: with limit=1 every overflow signal
+# takes a full round-trip through the lane queue (publish_signal_batch →
+# wait_for_signal_batch coalesce → _build_runtime_trigger_specs → new
+# cycle), so cycle overhead *dominates* per-signal work and the queue
+# backlog climbs 20-50s deep before a signal's turn comes up.  The
+# overflow-truncation path at line ~4510 + the cycle-budget bail at line
+# ~5690 together bound the worst-case cycle length, so raising the
+# per-cycle limit is safe even on bursts.
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT = 8
+_STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 4
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 8
 # Max concurrent runtime-trigger cycles per trader.  Allowing N parallel
 # cycles trades a small race window on shared trader state (open-position
 # count, occupied markets) for queue throughput.  Pre-2026-04-29 this
