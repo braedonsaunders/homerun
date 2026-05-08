@@ -150,6 +150,24 @@ class Settings(BaseSettings):
     # volume > 0 qualifies.  Raise to e.g. 100.0 to drop micro-volume
     # noise that's tradable on paper but never actually trades.
     MARKET_UNIVERSE_MIN_VOLUME: float = 0.0
+    # Tag aggregator hook — every ingest cycle records distinct tags
+    # observed on raw markets/events into ``market_tags_seen`` so the
+    # operator-facing tag chooser in ``Settings → Scanner`` has data
+    # to render.  Disable at runtime if upserts ever become a hot
+    # loop bottleneck; it's cheap today (≤ few hundred unique tags
+    # per cycle, single ON CONFLICT statement).
+    MARKET_TAG_AGGREGATOR_ENABLED: bool = True
+    # Retention for the ``market_tags_seen`` table. Rows whose
+    # ``last_seen`` is older than this are pruned by the periodic
+    # housekeeping pass in the scanner worker (see
+    # ``services.market_tag_aggregator.prune_stale_tags``). 0 disables
+    # pruning; the table stays small even without it under normal load.
+    MARKET_TAG_RETENTION_DAYS: int = 7
+    # Period for the prune housekeeping pass (seconds). Defaults to
+    # once a day so the operator-visible chooser doesn't accumulate
+    # the long tail of one-off tags. The aggregator itself is
+    # incremental and cheap; this purely bounds chooser cardinality.
+    MARKET_TAG_PRUNE_INTERVAL_SECONDS: int = 86_400
 
     # Opportunity Quality Filters (hard rejection thresholds)
     MIN_LIQUIDITY_HARD: float = 1000.0  # Reject opportunities below this liquidity ($)

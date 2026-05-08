@@ -6697,11 +6697,20 @@ async def record_signal_consumption(
             .where(TradeSignal.id == signal_id)
             .scalar_subquery(),
         )
+    normalized_decision_id = str(decision_id or "").strip() or None
+    if normalized_decision_id is not None:
+        existing_decision_id = (
+            await session.execute(
+                select(TraderDecision.id).where(TraderDecision.id == normalized_decision_id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing_decision_id is None:
+            normalized_decision_id = None
     stmt = pg_insert(TraderSignalConsumption).values(
         id=_new_id(),
         trader_id=trader_id,
         signal_id=signal_id,
-        decision_id=decision_id,
+        decision_id=normalized_decision_id,
         outcome=outcome,
         reason=reason,
         payload_json=payload or {},
@@ -6710,7 +6719,7 @@ async def record_signal_consumption(
     stmt = stmt.on_conflict_do_update(
         constraint="uq_trader_signal_consumption",
         set_={
-            "decision_id": stmt.excluded.decision_id,
+            "decision_id": func.coalesce(stmt.excluded.decision_id, TraderSignalConsumption.decision_id),
             "outcome": stmt.excluded.outcome,
             "reason": stmt.excluded.reason,
             "payload_json": stmt.excluded.payload_json,

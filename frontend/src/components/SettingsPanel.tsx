@@ -20,6 +20,8 @@ import {
   Upload,
   Wifi,
   Search,
+  X,
+  Tag,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -49,10 +51,12 @@ import {
   testTradingProxy,
   exportSettingsBundle,
   importSettingsBundle,
+  getMarketFilterAvailableTags,
   type DiscoverySettings,
   type UILockSettings,
   type SettingsTransferCategory,
   type SettingsExportBundle,
+  type MarketFilterAvailableTag,
 } from '../services/apiSettings'
 
 type SettingsSection =
@@ -247,6 +251,7 @@ export default function SettingsPanel({
     max_opportunities_per_strategy: 120,
     skipped_signal_reactivation_cooldown_seconds: 180,
     strict_ws_max_age_ms: 30000,
+    market_filter_tags: [] as string[],
   })
 
   const [maintenanceForm, setMaintenanceForm] = useState({
@@ -417,6 +422,9 @@ export default function SettingsPanel({
         skipped_signal_reactivation_cooldown_seconds:
           settings.scanner?.skipped_signal_reactivation_cooldown_seconds ?? 180,
         strict_ws_max_age_ms: settings.scanner?.strict_ws_max_age_ms ?? 30000,
+        market_filter_tags: Array.isArray(settings.scanner?.market_filter_tags)
+          ? (settings.scanner?.market_filter_tags ?? [])
+          : [],
       })
 
       setMaintenanceForm({
@@ -1238,6 +1246,12 @@ export default function SettingsPanel({
                           </div>
                         </div>
                       </div>
+                      <MarketTagFilterSection
+                        selectedTags={scannerForm.market_filter_tags}
+                        onChange={(next) =>
+                          setScannerForm((p) => ({ ...p, market_filter_tags: next }))
+                        }
+                      />
                       <Separator className="opacity-30" />
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
@@ -2520,6 +2534,141 @@ export default function SettingsPanel({
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+interface MarketTagFilterSectionProps {
+  selectedTags: string[]
+  onChange: (next: string[]) => void
+}
+
+function MarketTagFilterSection({ selectedTags, onChange }: MarketTagFilterSectionProps) {
+  const [draft, setDraft] = useState('')
+
+  const availableTagsQuery = useQuery({
+    queryKey: ['settings', 'market-filter', 'available-tags'],
+    queryFn: getMarketFilterAvailableTags,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const normalised = (value: string): string => value.trim().toLowerCase()
+
+  const addTag = (raw: string) => {
+    const cleaned = normalised(raw)
+    if (!cleaned) return
+    if (selectedTags.includes(cleaned)) return
+    onChange([...selectedTags, cleaned])
+  }
+
+  const removeTag = (tag: string) => {
+    onChange(selectedTags.filter((t) => t !== tag))
+  }
+
+  const handleSubmitDraft = () => {
+    if (!draft.trim()) return
+    addTag(draft)
+    setDraft('')
+  }
+
+  const suggestions: MarketFilterAvailableTag[] = (
+    availableTagsQuery.data?.tags ?? []
+  ).filter((entry) => !selectedTags.includes(entry.name))
+
+  const datalistId = 'market-filter-tag-suggestions'
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/15 p-3 space-y-3">
+      <div className="flex items-center gap-2">
+        <Tag className="w-3.5 h-3.5 text-muted-foreground" />
+        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+          Market Tag Filter
+        </p>
+      </div>
+      <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+        Limit which markets the scanner ingests. Markets must carry at least one
+        matching tag (OR-logic, case-insensitive). Empty list = no filter applied —
+        the scanner ingests every Polymarket / Kalshi market as today.
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {selectedTags.length === 0 ? (
+          <span className="text-[11px] italic text-muted-foreground/70">
+            No tags selected — filter inactive.
+          </span>
+        ) : (
+          selectedTags.map((tag) => (
+            <Badge
+              key={tag}
+              variant="secondary"
+              className="pl-2 pr-1 gap-1 text-[11px] font-normal"
+            >
+              {tag}
+              <button
+                type="button"
+                onClick={() => removeTag(tag)}
+                className="rounded-full hover:bg-muted-foreground/20 p-0.5 transition-colors"
+                aria-label={`Remove ${tag}`}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </Badge>
+          ))
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Input
+          type="text"
+          list={datalistId}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              handleSubmitDraft()
+            }
+          }}
+          placeholder="Type or pick a tag, press Enter"
+          className="text-sm"
+        />
+        <datalist id={datalistId}>
+          {suggestions.map((entry) => (
+            <option key={entry.name} value={entry.name}>
+              {`${entry.name} - seen ${entry.occurrences}x in last 24h`}
+            </option>
+          ))}
+        </datalist>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={handleSubmitDraft}
+          disabled={!draft.trim()}
+        >
+          Add
+        </Button>
+      </div>
+      <div className="text-[10px] text-muted-foreground/70">
+        {availableTagsQuery.isLoading ? (
+          <span className="inline-flex items-center gap-1">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Loading tag suggestions...
+          </span>
+        ) : availableTagsQuery.isError ? (
+          <span className="text-destructive/80">
+            Failed to load tag suggestions - try again later.
+          </span>
+        ) : (availableTagsQuery.data?.total ?? 0) === 0 ? (
+          <span>
+            No tags ingested yet - the list is populated from live Polymarket
+            traffic and refreshes within one ingest cycle.
+          </span>
+        ) : (
+          <span>
+            {availableTagsQuery.data?.total ?? 0} distinct tag
+            {(availableTagsQuery.data?.total ?? 0) === 1 ? '' : 's'} seen in the
+            last 24 h.
+          </span>
+        )}
       </div>
     </div>
   )

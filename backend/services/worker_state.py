@@ -34,6 +34,8 @@ _COMMIT_RETRYABLE_MARKERS = (
     "serialization failure",
     "could not serialize access",
     "lock not available",
+    "lock timeout",
+    "canceling statement due to lock timeout",
 )
 
 

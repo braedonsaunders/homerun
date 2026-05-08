@@ -474,6 +474,10 @@ async def _run_scan_loop() -> None:
     last_backlog_pending: int | None = None
     queue_backlogged = False
 
+    # Periodic housekeeping deadlines. Wall-clock-bound (monotonic) so
+    # the schedule survives DB latency spikes and scan-cycle stalls.
+    next_market_tag_prune_at: float = 0.0
+
     # Publish startup status through the aggregation plane.
     try:
         startup_status = scanner.get_status()
@@ -723,6 +727,28 @@ async def _run_scan_loop() -> None:
                 )
             except Exception as exc:
                 logger.warning("Scanner stale-opportunity cleanup failed", exc_info=exc)
+
+            # Daily prune of the market_tags_seen retention window. The
+            # aggregator itself is incremental and cheap; this purely
+            # bounds chooser cardinality. Failure is non-fatal — if the
+            # delete raises, we just retry on the next cycle.
+            now_mono = time.monotonic()
+            if now_mono >= next_market_tag_prune_at:
+                prune_interval = max(
+                    300,
+                    int(getattr(settings, "MARKET_TAG_PRUNE_INTERVAL_SECONDS", 86_400) or 0),
+                )
+                try:
+                    from services.market_tag_aggregator import prune_stale_tags
+
+                    async with AsyncSessionLocal() as session:
+                        await prune_stale_tags(session)
+                except Exception as exc:
+                    logger.warning(
+                        "market_tag_aggregator periodic prune failed (non-fatal)",
+                        exc_info=exc,
+                    )
+                next_market_tag_prune_at = now_mono + prune_interval
 
             try:
                 opportunities = scanner.get_opportunities()

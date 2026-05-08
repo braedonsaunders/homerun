@@ -83,6 +83,16 @@ _RPC_ENDPOINT_COOLDOWN_BASE_SECONDS = 30.0  # First 429 → 30s skip
 _RPC_ENDPOINT_COOLDOWN_MAX_SECONDS = 600.0  # Cap at 10 minutes
 _RPC_429_RETRY_AFTER_FALLBACK_SECONDS = 60.0  # If Retry-After header missing
 
+# 2026-05-07: eviction TTL for transient failures. Without this, a fallback
+# endpoint that times out 5 times in a row (consecutive-failure threshold)
+# stays evicted for the lifetime of the process — observed in scanner soak
+# logs as the "endpoints=['publicnode']" single-element error after fallbacks
+# silently dropped during a brief network blip. Re-include evicted endpoints
+# after this window to give them a chance to recover. Permanent evictions
+# (auth required / method-not-supported / 400 Bad Request on eth_getLogs)
+# pass ``permanent=True`` and stay out forever.
+_RPC_EVICTION_RETRY_AFTER_SECONDS = 1800.0  # 30 min
+
 
 # ==================== DATA MODEL ====================
 
@@ -413,10 +423,15 @@ class WalletWebSocketMonitor:
         self._callbacks: list[Callable] = []
         self._ws_url: str = DEFAULT_WS_URL
         self._http_rpc_url: str = _normalize_rpc_http_url(DEFAULT_HTTP_RPC_URL) or DEFAULT_PUBLIC_HTTP_RPC_URL
+        # Permanent eviction set (auth/method/400 errors — never auto-revive).
         self._evicted_rpc_urls: set[str] = set()
+        # Transient eviction map: URL → monotonic deadline when eviction expires.
+        # Used for consecutive-failure evictions; cleared on
+        # ``_active_evicted_urls`` access if past the deadline.
+        self._evicted_rpc_urls_until: dict[str, float] = {}
         self._rpc_urls: list[str] = _build_rpc_candidates(
             self._http_rpc_url,
-            excluded_urls=self._evicted_rpc_urls,
+            excluded_urls=self._active_evicted_urls(),
         )
         self._reconnect_delay: int = 5
         self._max_reconnect_delay: int = 60
@@ -478,17 +493,37 @@ class WalletWebSocketMonitor:
             "last_fallback_poll_at": "",
         }
 
+    def _active_evicted_urls(self) -> set[str]:
+        """Return currently-active eviction set, expiring stale transient entries.
+
+        Permanent evictions (auth / method-not-supported / 400) stay forever.
+        Transient ones (consecutive-failure threshold) expire after
+        ``_RPC_EVICTION_RETRY_AFTER_SECONDS`` so the endpoint gets re-tried.
+        """
+        now = time.monotonic()
+        if self._evicted_rpc_urls_until:
+            expired = [url for url, deadline in self._evicted_rpc_urls_until.items() if deadline <= now]
+            for url in expired:
+                self._evicted_rpc_urls_until.pop(url, None)
+        return set(self._evicted_rpc_urls) | set(self._evicted_rpc_urls_until)
+
     def _refresh_rpc_candidates(self) -> None:
         self._rpc_urls = _build_rpc_candidates(
             self._http_rpc_url,
-            excluded_urls=self._evicted_rpc_urls,
+            excluded_urls=self._active_evicted_urls(),
         )
 
-    def _evict_rpc_endpoint(self, endpoint: str) -> None:
+    def _evict_rpc_endpoint(self, endpoint: str, *, permanent: bool = True) -> None:
         normalized = _normalize_rpc_http_url(endpoint)
         if not normalized:
             return
-        self._evicted_rpc_urls.add(normalized)
+        if permanent:
+            self._evicted_rpc_urls.add(normalized)
+            self._evicted_rpc_urls_until.pop(normalized, None)
+        else:
+            self._evicted_rpc_urls_until[normalized] = (
+                time.monotonic() + _RPC_EVICTION_RETRY_AFTER_SECONDS
+            )
         self._rpc_urls = [url for url in self._rpc_urls if url != normalized]
         self._rpc_endpoint_consecutive_failures.pop(normalized, None)
         if self._http_rpc_url == normalized:
@@ -516,8 +551,11 @@ class WalletWebSocketMonitor:
                 endpoint=normalized,
                 consecutive_failures=count,
                 threshold=self._rpc_endpoint_evict_threshold,
+                retry_after_seconds=_RPC_EVICTION_RETRY_AFTER_SECONDS,
             )
-            self._evict_rpc_endpoint(normalized)
+            # Transient: failure-threshold evictions get retried after TTL —
+            # network blips shouldn't take a fallback out of rotation forever.
+            self._evict_rpc_endpoint(normalized, permanent=False)
             return True
         return False
 
@@ -1340,11 +1378,18 @@ class WalletWebSocketMonitor:
             now = time.monotonic()
             if (now - self._rpc_last_total_failure_log_at) >= self._rpc_total_failure_log_interval_seconds:
                 self._rpc_last_total_failure_log_at = now
+                # Surface evicted endpoints alongside the active list so the
+                # operator can tell single-endpoint exhaustion ("everything is
+                # evicted, only publicnode remains") from genuine all-endpoint
+                # outage. Without this, the log line ``endpoints=['publicnode']``
+                # is ambiguous and looks like a config bug.
                 logger.error(
                     "Wallet monitor RPC failed across all endpoints",
                     method=method,
                     block=block_hex or None,
                     endpoints=self._rpc_urls,
+                    evicted_permanent=sorted(self._evicted_rpc_urls),
+                    evicted_transient=sorted(self._evicted_rpc_urls_until),
                     failure_streak=self._rpc_failure_streak,
                     cooldown_seconds=round(cooldown_seconds, 2),
                     error_type=type(last_error).__name__,

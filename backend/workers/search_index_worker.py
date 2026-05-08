@@ -68,6 +68,14 @@ _REINDEX_COLLECTORS_PER_CYCLE = 4
 # already this far into the cycle, defer the rest.  Picked below the
 # expected statement_timeout so we don't paint ourselves into a corner.
 _REINDEX_CYCLE_SOFT_BUDGET_SECONDS = 30.0
+# Hard per-collector cap.  The soft budget only checks BETWEEN
+# collectors; one collector that runs longer than the budget (observed
+# 68.7s vs 30s budget in the 2026-05-07 soak) blows the deferral
+# guarantee. Wrap each collector in wait_for so a slow one is
+# cancelled cleanly and the next cycle picks it up. Picked at 25s
+# (under the soft budget) so we still observe the deferral path
+# rather than always running the slowest collector to completion.
+_REINDEX_COLLECTOR_HARD_TIMEOUT_SECONDS = 25.0
 
 
 async def _run_loop() -> None:
@@ -124,7 +132,21 @@ async def _run_loop() -> None:
                         },
                     )
             except Exception as exc:
-                state["last_error"] = str(exc)
+                # Heartbeat writes use a 3s SET LOCAL statement_timeout
+                # (see worker_state._apply_snapshot_write_timeouts). A
+                # QueryCanceledError is the timeout firing under DB
+                # contention and is expected — don't sticky-set it as
+                # last_error or every UI poll will misreport the worker
+                # as failed even after the contention clears.
+                exc_name = type(exc).__name__
+                msg = str(exc).lower()
+                is_expected_timeout = (
+                    "QueryCanceled" in exc_name
+                    or "statement timeout" in msg
+                    or "canceling statement" in msg
+                )
+                if not is_expected_timeout:
+                    state["last_error"] = str(exc)
                 logger.warning("search_index heartbeat snapshot write failed: %s", exc)
             try:
                 await asyncio.wait_for(
@@ -224,8 +246,23 @@ async def _run_loop() -> None:
                     state["activity"] = f"Reindexing {entity_type} (cursor={idx}/{n_types})..."
                     state["progress"] = (idx + 1) / n_types
                     try:
-                        async with AsyncSessionLocal() as session:
-                            result = await reindex_one(session, entity_type)
+                        async def _reindex_collector() -> dict[str, Any]:
+                            async with AsyncSessionLocal() as session:
+                                return await reindex_one(session, entity_type)
+                        try:
+                            result = await asyncio.wait_for(
+                                _reindex_collector(),
+                                timeout=_REINDEX_COLLECTOR_HARD_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Search reindex hard-timeout for %s after %ss; deferring to next cycle",
+                                entity_type,
+                                _REINDEX_COLLECTOR_HARD_TIMEOUT_SECONDS,
+                            )
+                            # Don't advance cursor past this collector — same
+                            # one re-runs next cycle so it isn't permanently skipped.
+                            break
                         if result.get("ok"):
                             total_upserted += int(result.get("upserted") or 0)
                             total_deleted += int(result.get("deleted") or 0)

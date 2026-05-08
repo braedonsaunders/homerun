@@ -9880,27 +9880,44 @@ async def reconcile_live_positions(
             for row in touched_rows:
                 if inspect(row).session is session.sync_session:
                     session.sync_session.expunge(row)
-            # Fix QQ — explicit handler for the lock_timeout=2s the
-            # statement above arms.  asyncpg raises ``LockNotAvailableError``
-            # (wrapped by SQLAlchemy as DBAPIError) when another writer
-            # holds the row lock past 2 s; without this catch, the
-            # exception propagates as a full ERROR-level traceback every
-            # cycle under contention and fills the logs with noise.  The
-            # contract here is "next reconcile cycle retries", and that
-            # contract is what this except block enforces.  Note: we still
-            # need ``rollback()`` so the aborted transaction state from
-            # the failed UPDATE doesn't poison the session for the rest
-            # of the calling code.
+            # asyncpg raises LockNotAvailableError when another writer
+            # holds the row lock past lock_timeout. The next reconcile
+            # cycle re-reads venue truth and retries these rows, so treat
+            # that contention as deferred work rather than a hard failure.
             try:
                 with session.no_autoflush:
                     await session.execute(stmt, params)
                 _lc_t3b = _time.monotonic()
                 await session.commit()
             except Exception as _bulk_exc:
+                _bulk_orig = getattr(_bulk_exc, "orig", None)
+                _bulk_cause = getattr(_bulk_exc, "__cause__", None)
+                _bulk_context = getattr(_bulk_exc, "__context__", None)
+                _bulk_sqlstate = str(
+                    getattr(_bulk_orig, "sqlstate", "")
+                    or getattr(_bulk_cause, "sqlstate", "")
+                    or getattr(_bulk_context, "sqlstate", "")
+                    or getattr(_bulk_exc, "sqlstate", "")
+                    or ""
+                ).strip()
+                _bulk_message = " ".join(
+                    str(part or "")
+                    for part in (
+                        type(_bulk_exc).__name__,
+                        _bulk_exc,
+                        type(_bulk_orig).__name__ if _bulk_orig is not None else "",
+                        _bulk_orig,
+                        _bulk_cause,
+                        _bulk_context,
+                    )
+                ).lower()
                 _is_lock_timeout = (
-                    "lockNotAvailable" in type(_bulk_exc).__name__
-                    or "lock_timeout" in str(_bulk_exc).lower()
-                    or "55P03" in str(getattr(_bulk_exc, "orig", "") or "")
+                    _bulk_sqlstate == "55P03"
+                    or "locknotavailable" in _bulk_message
+                    or "lock not available" in _bulk_message
+                    or "lock timeout" in _bulk_message
+                    or "lock_timeout" in _bulk_message
+                    or "canceling statement due to lock timeout" in _bulk_message
                 )
                 try:
                     await session.rollback()

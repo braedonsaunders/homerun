@@ -514,6 +514,10 @@ def _strategy_runtime_metadata(opportunity: Opportunity) -> dict[str, Any]:
         execution_activation = "immediate"
     elif source_key == "scanner":
         execution_activation = "ws_current"
+    elif source_key == "traders":
+        # Copy-trade leader-wallet tokens are usually not on the CLOB feed,
+        # so ws_post_arm_tick would defer the signal indefinitely.
+        execution_activation = "immediate"
     else:
         execution_activation = "ws_post_arm_tick"
     return {

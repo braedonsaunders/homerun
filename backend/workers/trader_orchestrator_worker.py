@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from sqlalchemy import and_, func, select, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 
 from config import settings
 from models.database import (
@@ -182,17 +182,31 @@ _SIGNAL_TRANSIENT_ERROR_MARKERS = (
     "deadlock detected",
     "serialization failure",
     "could not serialize access",
+    "lock timeout",
+    "statement timeout",
+    "canceling statement due to statement timeout",
+    "server disconnected",
+    "connection is closed",
+    "connection was closed",
+    "connection has been invalidated",
+    "connection invalidated",
+    "another operation is in progress",
+    "cannot switch to state",
+    "got result for unknown protocol state",
 )
 
 
 def _is_transient_db_error(exc: Exception) -> bool:
-    """Return True for DB errors that are safe to retry (deadlock, serialization)."""
+    """Return True for DB/session errors that are safe to retry without consuming the signal."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, InterfaceError, OperationalError)):
+        return True
+    if _is_retryable_db_error(exc):
+        return True
     msg = str(getattr(exc, "orig", exc)).lower()
     return any(marker in msg for marker in _SIGNAL_TRANSIENT_ERROR_MARKERS)
 
 _STRATEGY_EVAL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="strategy-eval")
 _abandoned_trader_cycle_tasks: set[asyncio.Task] = set()
-_backgrounded_trader_cycle_tasks: set[asyncio.Task] = set()
 _inflight_trader_cycle_tasks: dict[str, set[asyncio.Task]] = {}
 # Per-task metadata (start_time + process_signals flag).  Keyed by Task
 # rather than trader_id so multiple concurrent cycles for the same
@@ -204,22 +218,10 @@ _skip_log_last_at: dict[str, float] = {}  # trader_id -> last log monotonic time
 _skip_log_suppressed: dict[str, int] = {}  # trader_id -> suppressed count
 _SKIP_LOG_INTERVAL_SECONDS = 60.0  # only log once per minute per trader
 _OVERLAP_WARNING_MIN_STUCK_SECONDS = 15.0
-# Force-kill threshold for trader-cycle tasks that have been running
-# longer than the soft timeout × small multiple.  Pre-2026-04-28 this
-# was 300s — far too generous: with up to
-# ``_RUNTIME_TRIGGER_MAX_CONCURRENT_PER_TRADER`` (4) signal cycles
-# allowed per trader, and the soft-timeout backgrounding pattern that
-# leaves leaked tasks in the running set, a slow trader could
-# accumulate 4 × 5min = 20 task-minutes of pending work — exactly the
-# cascade observed when ``c8851ef7`` showed ``stuck=120s`` (suppressed
-# 5 duplicates) and ``f88cc061`` had ``running=4``.
-#
-# 90s is well past the soft timeout (20s) + cancel-grace (5s) plus
-# headroom for a slow Polymarket gateway, so a healthy submission has
-# every chance to complete.  Past 90s the order is either already on
-# the venue (the wallet-trade verifier will discover it on its next
-# 5-minute cycle) or genuinely stuck — leaking the task buys nothing
-# and starves every other inflight cycle.
+# Force-kill threshold for trader-cycle tasks that keep running after
+# cancellation. Trader cycles are serialized per trader, so one stuck
+# provider or DB await can block every queued runtime trigger for that
+# trader until this guard clears it.
 _STUCK_TASK_HARD_KILL_SECONDS = 90.0
 
 
@@ -383,8 +385,6 @@ async def _launch_pending_runtime_cycle_if_any(trader_id: str) -> None:
 
 
 def _handle_trader_cycle_task_done(trader_id: str, task: asyncio.Task) -> None:
-    backgrounded = task in _backgrounded_trader_cycle_tasks
-    _backgrounded_trader_cycle_tasks.discard(task)
     _clear_inflight_trader_cycle_task(trader_id, task)
     # Skip-log counters are per-trader, not per-task: clear them only
     # when the trader has no remaining inflight cycles, otherwise we'd
@@ -393,32 +393,6 @@ def _handle_trader_cycle_task_done(trader_id: str, task: asyncio.Task) -> None:
     if trader_id and not _running_inflight_tasks(trader_id):
         _skip_log_last_at.pop(trader_id, None)
         _skip_log_suppressed.pop(trader_id, None)
-    if backgrounded:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            logger.warning(
-                "Backgrounded live trader cycle was cancelled before completion trader=%s",
-                trader_id,
-            )
-        except OperationalError as exc:
-            if _is_retryable_db_error(exc):
-                logger.warning(
-                    "Backgrounded live trader cycle ended with transient DB error trader=%s",
-                    trader_id,
-                )
-            else:
-                logger.warning(
-                    "Backgrounded live trader cycle raised database error trader=%s",
-                    trader_id,
-                    exc_info=exc,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Backgrounded live trader cycle raised after exceeding soft timeout trader=%s",
-                trader_id,
-                exc_info=exc,
-            )
     if not trader_id or trader_id not in _pending_runtime_cycle_specs:
         return
     try:
@@ -911,12 +885,10 @@ _HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 1
 # observed as ``db_list_signals: 3-9s`` in the fast-trader stats and
 # ``running=4 stuck=29s`` in the orchestrator skip telemetry.
 #
-# Lowered to 2: still allows two-signal bursts to dispatch in
-# parallel (the original throughput motivation) while halving the
-# steady-state DB-connection footprint per trader.  Position caps
-# still bound over-trading because each cycle re-reads positions
-# from the DB before each decision.
-_RUNTIME_TRIGGER_MAX_CONCURRENT_PER_TRADER = 2
+# Runtime-trigger cycles are serialized per trader.  The worker already
+# coalesces pending runtime specs, so parallel cycles only multiply DB
+# writers for the same trader and widen the duplicate-submit window.
+_RUNTIME_TRIGGER_MAX_CONCURRENT_PER_TRADER = 1
 _trader_idle_maintenance_last_run: dict[str, datetime] = {}
 _TRADER_CYCLE_HEARTBEAT_EVENT_INTERVAL_SECONDS = 1
 _trader_cycle_heartbeat_last_emitted: dict[str, datetime] = {}
@@ -935,7 +907,14 @@ _RUNTIME_TRIGGER_DEFAULT_CYCLE_TIMEOUT_SECONDS = 10.0
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
-_TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS = 20.0
+# Lowered from 20.0s on 2026-05-07 — maintenance runs INLINE inside the
+# trader cycle (which itself is bounded at 20s). With two maintenance
+# steps each at 20s, a single contended one could blow the entire cycle
+# budget — observed in soak as stage_timings_ms={'maintenance': 11922.0}
+# eating the whole 12.89s slow-cycle window. Tighter per-step caps mean
+# slow steps re-run on the next maintenance interval rather than
+# starving signal processing.
+_TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS = 8.0
 _TRADER_PENDING_EXIT_SUMMARY_TIMEOUT_SECONDS = 5.0
 _WS_FAILURE_PAUSE_THRESHOLD = 10
 _ws_auto_paused = False
@@ -5610,8 +5589,8 @@ async def _run_trader_once_inner(
                 # signal cleanly, defer the rest to the next cycle.
                 # Pre-fix the loop ran to completion regardless of
                 # budget; a 23-signal batch (≈3.5s/signal) consistently
-                # blew the 30s soft timeout, leaking the cycle as a
-                # backgrounded task and starving sibling traders.
+                # blew the 30s soft timeout, leaving the cycle stuck
+                # in the inflight slot and starving sibling traders.
                 # Reserve ~3s for the trailing commit + book-keeping;
                 # if less than that remains, defer the remaining
                 # signals to the next reconcile cycle.
@@ -8072,7 +8051,6 @@ async def _run_trader_once_with_timeout(
     requested_timeout = max(1.0, min(180.0, float(effective_timeout)))
     timeout = requested_timeout
     run_mode = _canonical_trader_mode(control.get("mode"), default="shadow")
-    allow_background_completion = bool(process_signals and run_mode == "live")
     if process_signals and run_mode == "live":
         timeout = max(_MIN_LIVE_PROCESS_SIGNAL_CYCLE_TIMEOUT_SECONDS, timeout)
     trader_id = str(trader.get("id") or "")
@@ -8097,8 +8075,8 @@ async def _run_trader_once_with_timeout(
 
     # Preemption: if a maintenance-only cycle is running and a runtime
     # signal trigger arrives, preempt the maintenance task so the signal
-    # gets prompt service.  Concurrent signal cycles for the same trader
-    # don't preempt each other — they run side by side.
+    # gets prompt service. Signal cycles for the same trader do not
+    # preempt each other; the concurrency gate below coalesces them.
     if is_signal_processing:
         for sibling in list(_running_inflight_tasks(trader_id)):
             if _inflight_trader_cycle_process_signals.get(sibling, False):
@@ -8129,8 +8107,8 @@ async def _run_trader_once_with_timeout(
             else:
                 _clear_inflight_trader_cycle_task(trader_id, sibling)
 
-    # Concurrency gate.  Signal-processing cycles (the hot path) may run
-    # up to N at once per trader so a burst of signals can fan out.
+    # Concurrency gate.  Runtime triggers are coalesced while any cycle
+    # is running for the trader, then launched from the done callback.
     # Maintenance-only cycles stay strictly serial — they're not
     # latency-sensitive and might do book-keeping that races with itself.
     running_signal_cycles = _count_running_signal_cycles(trader_id)
@@ -8218,35 +8196,6 @@ async def _run_trader_once_with_timeout(
         if done:
             return task.result()
 
-        if allow_background_completion:
-            _backgrounded_trader_cycle_tasks.add(task)
-            logger.warning(
-                "Live trader cycle exceeded soft timeout; leaving inflight task running to finish live submission trader=%s process_signals=%s timeout=%.1fs",
-                trader_id,
-                process_signals,
-                timeout,
-            )
-            if trader_id:
-                try:
-                    async with AsyncSessionLocal() as session:
-                        await create_trader_event(
-                            session,
-                            trader_id=trader_id,
-                            event_type="cycle_budget_exceeded",
-                            severity="warn",
-                            source="worker",
-                            message=f"Trader cycle exceeded soft live budget after {timeout:.1f}s; leaving inflight submission running.",
-                            payload={
-                                "process_signals": bool(process_signals),
-                                "timeout_seconds": timeout,
-                                "background_completion": True,
-                            },
-                            commit=True,
-                        )
-                except Exception as exc:
-                    logger.warning("Failed to persist trader soft-timeout event: %s", exc)
-            return 0, 0, 0
-
         task.cancel()
         done_after, _ = await asyncio.wait({task}, timeout=_TRADER_TIMEOUT_CANCEL_GRACE_SECONDS)
         if done_after:
@@ -8268,6 +8217,8 @@ async def _run_trader_once_with_timeout(
             trader_id,
             process_signals,
         )
+        _abandoned_trader_cycle_tasks.add(task)
+        task.add_done_callback(_discard_abandoned_trader_cycle)
         return 0, 0, 0
     except asyncio.TimeoutError:
         logger.warning(
@@ -8278,20 +8229,17 @@ async def _run_trader_once_with_timeout(
         )
         if trader_id:
             try:
-                async with AsyncSessionLocal() as session:
-                    await create_trader_event(
-                        session,
-                        trader_id=trader_id,
-                        event_type="cycle_timeout",
-                        severity="warn",
-                        source="worker",
-                        message=f"Trader cycle timed out after {timeout:.1f}s",
-                        payload={
-                            "process_signals": bool(process_signals),
-                            "timeout_seconds": timeout,
-                        },
-                        commit=True,
-                    )
+                await hot_state.buffer_trader_event(
+                    trader_id=trader_id,
+                    event_type="cycle_timeout",
+                    severity="warn",
+                    source="worker",
+                    message=f"Trader cycle timed out after {timeout:.1f}s",
+                    payload={
+                        "process_signals": bool(process_signals),
+                        "timeout_seconds": timeout,
+                    },
+                )
             except Exception as exc:
                 logger.warning("Failed to persist trader timeout event: %s", exc)
         return 0, 0, 0

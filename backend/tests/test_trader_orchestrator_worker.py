@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import asyncpg
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -31,6 +32,24 @@ def test_worker_logger_accepts_structured_warning_kwargs():
         lane="general",
         error="timeout",
     )
+
+
+def test_signal_db_transient_classifier_handles_connection_and_timeout_errors():
+    assert trader_orchestrator_worker._is_transient_db_error(asyncio.TimeoutError())
+    assert trader_orchestrator_worker._is_transient_db_error(
+        trader_orchestrator_worker.InterfaceError(
+            "select 1",
+            {},
+            RuntimeError("server disconnected"),
+        )
+    )
+    assert trader_orchestrator_worker._is_transient_db_error(
+        Exception("cannot switch to state 15; another operation is in progress")
+    )
+    assert not trader_orchestrator_worker._is_transient_db_error(
+        IntegrityError("insert", {}, RuntimeError("foreign key violation"))
+    )
+    assert not trader_orchestrator_worker._is_transient_db_error(Exception("strategy validation failed"))
 
 
 def test_enforce_strict_ws_strategy_params_preserves_tighter_existing_budget():
@@ -1665,9 +1684,8 @@ async def test_run_trader_once_with_timeout_queues_pending_runtime_trigger_when_
 
 
 @pytest.mark.asyncio
-async def test_run_trader_once_with_timeout_dispatches_concurrent_signal_cycle_under_cap(monkeypatch):
-    """With one signal cycle already running, the next runtime trigger
-    should dispatch concurrently (up to the per-trader cap)."""
+async def test_run_trader_once_with_timeout_queues_signal_cycle_when_trader_already_running(monkeypatch):
+    """With one signal cycle already running, the next runtime trigger is coalesced."""
     trader_id = "trader-concurrent"
     bucket: set[asyncio.Task] = set()
     trader_orchestrator_worker._inflight_trader_cycle_tasks[trader_id] = bucket
@@ -1700,10 +1718,14 @@ async def test_run_trader_once_with_timeout_dispatches_concurrent_signal_cycle_u
         incumbent.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await incumbent
-        trader_orchestrator_worker._pending_runtime_cycle_specs.pop(trader_id, None)
 
-    assert result == (1, 2, 3)
-    run_once_mock.assert_awaited_once()
+    pending = trader_orchestrator_worker._pending_runtime_cycle_specs.pop(trader_id, None)
+
+    assert result == (0, 0, 0)
+    assert pending is not None
+    assert pending["trigger_signal_ids_by_source"] == {"scanner": ["signal-1"]}
+    assert pending["process_signals"] is True
+    run_once_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1753,33 +1775,23 @@ async def test_run_trader_once_with_timeout_preempts_inflight_maintenance_for_ru
 
 
 @pytest.mark.asyncio
-async def test_run_trader_once_with_timeout_leaves_live_signal_cycle_running_after_soft_timeout(monkeypatch):
+async def test_run_trader_once_with_timeout_cancels_live_signal_cycle_after_soft_timeout(monkeypatch):
     trader_id = "trader-soft-timeout"
-    finish_cycle = asyncio.Event()
     created_events: list[dict[str, object]] = []
 
-    class _FakeSessionContext:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
     async def _slow_run_once(*args, **kwargs):
-        await finish_cycle.wait()
+        await asyncio.Future()
         return 5, 6, 7
 
-    async def _create_event(_session, **kwargs):
+    async def _buffer_event(**kwargs):
         created_events.append(kwargs)
-        return None
+        return "event-1"
 
     monkeypatch.setattr(trader_orchestrator_worker, "_run_trader_once", _slow_run_once)
     monkeypatch.setattr(trader_orchestrator_worker, "_MIN_LIVE_PROCESS_SIGNAL_CYCLE_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(trader_orchestrator_worker, "AsyncSessionLocal", lambda: _FakeSessionContext())
-    monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", _create_event)
+    monkeypatch.setattr(trader_orchestrator_worker.hot_state, "buffer_trader_event", _buffer_event)
 
     trader_orchestrator_worker._pending_runtime_cycle_specs.pop(trader_id, None)
-    trader_orchestrator_worker._backgrounded_trader_cycle_tasks.clear()
     trader_orchestrator_worker._inflight_trader_cycle_tasks.pop(trader_id, None)
 
     try:
@@ -1791,32 +1803,23 @@ async def test_run_trader_once_with_timeout_leaves_live_signal_cycle_running_aft
             trigger_signal_snapshots_by_source={"scanner": {"signal-1": {"id": "signal-1"}}},
             timeout_seconds=0.01,
         )
-        bucket = trader_orchestrator_worker._inflight_trader_cycle_tasks.get(trader_id)
-        live_task = next(iter(bucket)) if bucket else None
+        await asyncio.sleep(0)
 
         assert result == (0, 0, 0)
-        assert live_task is not None
-        assert not live_task.done()
-        assert live_task in trader_orchestrator_worker._backgrounded_trader_cycle_tasks
+        assert trader_orchestrator_worker._inflight_trader_cycle_tasks.get(trader_id) is None
         assert created_events
-        assert created_events[-1]["event_type"] == "cycle_budget_exceeded"
-
-        finish_cycle.set()
-        assert await live_task == (5, 6, 7)
-        await asyncio.sleep(0)
+        assert created_events[-1]["event_type"] == "cycle_timeout"
     finally:
-        finish_cycle.set()
         trader_orchestrator_worker._pending_runtime_cycle_specs.pop(trader_id, None)
         bucket = trader_orchestrator_worker._inflight_trader_cycle_tasks.pop(trader_id, None)
-        background_task = next(iter(bucket)) if bucket else None
-        if background_task is not None:
-            trader_orchestrator_worker._inflight_trader_cycle_process_signals.pop(background_task, None)
-            trader_orchestrator_worker._inflight_trader_cycle_start.pop(background_task, None)
-        trader_orchestrator_worker._backgrounded_trader_cycle_tasks.clear()
-        if background_task is not None and not background_task.done():
-            background_task.cancel()
+        live_task = next(iter(bucket)) if bucket else None
+        if live_task is not None:
+            trader_orchestrator_worker._inflight_trader_cycle_process_signals.pop(live_task, None)
+            trader_orchestrator_worker._inflight_trader_cycle_start.pop(live_task, None)
+        if live_task is not None and not live_task.done():
+            live_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await background_task
+                await live_task
 
     assert trader_orchestrator_worker._inflight_trader_cycle_tasks.get(trader_id) is None
 

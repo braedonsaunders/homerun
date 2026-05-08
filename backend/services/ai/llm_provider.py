@@ -2,7 +2,7 @@
 Multi-provider LLM abstraction layer.
 
 Supports: OpenAI, Anthropic, Google (Gemini), xAI (Grok), DeepSeek,
-OpenRouter, Ollama, LM Studio, and other OpenAI-compatible APIs.
+OpenRouter, Ollama, LM Studio, NVIDIA NIM, and other OpenAI-compatible APIs.
 
 Provider is detected by model name prefix:
 - gpt-*, o1-*, o3-*, o4-*, chatgpt-* -> OpenAI
@@ -13,6 +13,7 @@ Provider is detected by model name prefix:
 - openrouter/* -> OpenRouter
 - ollama/* -> Ollama
 - lmstudio/* -> LM Studio
+- nvidia/* -> NVIDIA NIM
 - Any other -> selected provider, then first configured provider
 
 Usage:
@@ -83,6 +84,7 @@ PRICING: dict[str, tuple[float, float]] = {
 OPENAI_MODEL_PREFIXES: tuple[str, ...] = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
 XAI_MODEL_PREFIXES: tuple[str, ...] = ("grok-",)
 DEEPSEEK_MODEL_PREFIXES: tuple[str, ...] = ("deepseek-",)
+NVIDIA_MODEL_PREFIXES: tuple[str, ...] = ("nvidia/",)
 
 
 # ==================== DATA CLASSES ====================
@@ -152,6 +154,7 @@ class LLMProvider(str, Enum):
     OPENROUTER = "openrouter"
     OLLAMA = "ollama"
     LMSTUDIO = "lmstudio"
+    NVIDIA = "nvidia"
 
 
 def _ensure_openai_compatible_base_url(base_url: str, default_base_url: str) -> str:
@@ -183,6 +186,8 @@ def _normalize_model_name_for_provider(model: str, provider: LLMProvider) -> str
         return model_name[len("ollama/") :]
     if provider == LLMProvider.LMSTUDIO and model_name.startswith("lmstudio/"):
         return model_name[len("lmstudio/") :]
+    if provider == LLMProvider.NVIDIA and model_name.startswith("nvidia/"):
+        return model_name[len("nvidia/") :]
     return model_name
 
 
@@ -764,11 +769,18 @@ class OpenAIProvider(BaseLLMProvider):
                 logger.warning("Failed to list OpenAI models: %s", response.text[:200])
                 return []
             data = response.json()
-            models = []
+            seen_ids: set[str] = set()
+            models: list[dict[str, str]] = []
             for m in data.get("data", []):
                 model_id = m.get("id", "")
+                if not model_id or model_id in seen_ids:
+                    # Some OpenAI-compatible backends (e.g. NVIDIA NIM) return
+                    # duplicate entries for the same model id; the downstream
+                    # cache key is `provider_<id>` so we dedupe here.
+                    continue
                 if self._model_prefixes and not any(model_id.startswith(p) for p in self._model_prefixes):
                     continue
+                seen_ids.add(model_id)
                 display_name = m.get("name") or model_id
                 models.append({"id": model_id, "name": display_name})
             models.sort(key=lambda x: x["id"])
@@ -1881,6 +1893,92 @@ class OpenRouterProvider(BaseLLMProvider):
         return await self._delegate.structured_output(messages, schema, model, temperature)
 
 
+# ==================== NVIDIA NIM PROVIDER ====================
+
+
+class NvidiaProvider(BaseLLMProvider):
+    """NVIDIA NIM provider using OpenAI-compatible API.
+
+    NVIDIA hosts third-party models (Llama 3.x, Nemotron, Mixtral, ...) at
+    ``https://integrate.api.nvidia.com/v1`` in ``vendor/model`` form.
+    The shared routing prefix ``nvidia/`` is prepended in the UI / DB
+    (e.g. ``nvidia/meta/llama-3.3-70b-instruct``) so ``detect_provider``
+    can disambiguate it from OpenRouter, and the prefix is stripped
+    here before the HTTP call.
+    """
+
+    provider = LLMProvider.NVIDIA
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://integrate.api.nvidia.com/v1",
+    ):
+        """Initialize the NVIDIA NIM provider.
+
+        Args:
+            api_key: NVIDIA NIM API key (``nvapi-...``).
+            base_url: API base URL (override for self-hosted NIM).
+        """
+        self.api_key = api_key
+        self.base_url = _ensure_openai_compatible_base_url(
+            base_url, "https://integrate.api.nvidia.com/v1"
+        )
+        self._delegate = OpenAIProvider(
+            api_key=api_key,
+            base_url=self.base_url,
+            model_prefixes=None,
+            structured_output_format="json_schema",
+        )
+
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the NVIDIA NIM API."""
+        return await self._delegate.list_models()
+
+    async def chat(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        tools: Optional[list[ToolDefinition]] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
+        """Send a chat completion request via the NVIDIA NIM API."""
+        normalized_model = _normalize_model_name_for_provider(model, self.provider)
+        response = await self._delegate.chat(
+            messages, normalized_model, tools, temperature, max_tokens
+        )
+        response.provider = self.provider.value
+        return response
+
+    async def chat_stream(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> AsyncGenerator[str, None]:
+        """Stream chat completion tokens via the NVIDIA NIM API."""
+        normalized_model = _normalize_model_name_for_provider(model, self.provider)
+        async for chunk in self._delegate.chat_stream(
+            messages, normalized_model, temperature, max_tokens
+        ):
+            yield chunk
+
+    async def structured_output(
+        self,
+        messages: list[LLMMessage],
+        schema: dict,
+        model: str,
+        temperature: float = 0.0,
+    ) -> dict:
+        """Get structured JSON output from the NVIDIA NIM API."""
+        normalized_model = _normalize_model_name_for_provider(model, self.provider)
+        return await self._delegate.structured_output(
+            messages, schema, normalized_model, temperature
+        )
+
+
 # ==================== OLLAMA PROVIDER ====================
 
 
@@ -2228,6 +2326,15 @@ class LLMManager:
                     )
                     logger.info("Initialized OpenRouter LLM provider")
 
+                nvidia_key = decrypt_secret(app_settings.nvidia_api_key)
+                nvidia_base_url = app_settings.nvidia_base_url
+                if nvidia_key:
+                    self._providers[LLMProvider.NVIDIA] = NvidiaProvider(
+                        api_key=nvidia_key,
+                        base_url=nvidia_base_url or "https://integrate.api.nvidia.com/v1",
+                    )
+                    logger.info("Initialized NVIDIA NIM LLM provider")
+
                 enable_ollama = selected_provider == LLMProvider.OLLAMA or bool((ollama_base_url or "").strip())
                 if enable_ollama:
                     self._providers[LLMProvider.OLLAMA] = OllamaProvider(
@@ -2266,6 +2373,7 @@ class LLMManager:
                     LLMProvider.OPENROUTER: "openrouter/auto",
                     LLMProvider.OLLAMA: "llama3.2:latest",
                     LLMProvider.LMSTUDIO: "local-model",
+                    LLMProvider.NVIDIA: "nvidia/meta/llama-3.3-70b-instruct",
                 }
 
                 configured_model = app_settings.ai_default_model or app_settings.llm_model
@@ -2385,6 +2493,8 @@ class LLMManager:
             return LLMProvider.OLLAMA
         if model_lower.startswith("lmstudio/"):
             return LLMProvider.LMSTUDIO
+        if model_lower.startswith("nvidia/"):
+            return LLMProvider.NVIDIA
 
         # For generic local model names (e.g. llama3.2, qwen2.5),
         # prefer the explicit provider selected in settings.

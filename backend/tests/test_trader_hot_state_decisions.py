@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -190,3 +191,80 @@ async def test_flush_audit_buffer_drops_entries_that_exhaust_retry_budget(monkey
         assert trader_hot_state._audit_buffer == []
     finally:
         _reset_hot_state()
+
+
+@pytest.mark.asyncio
+async def test_flush_consumptions_nulls_missing_decision_ids_before_upsert():
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return ["decision-ok"]
+
+    class _Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, stmt):
+            self.statements.append(stmt)
+            return _Result()
+
+    session = _Session()
+
+    await trader_hot_state._flush_consumptions_bulk(
+        session,
+        [
+            {
+                "trader_id": "trader-1",
+                "signal_id": "signal-1",
+                "decision_id": "decision-ok",
+                "outcome": "selected",
+            },
+            {
+                "trader_id": "trader-1",
+                "signal_id": "signal-2",
+                "decision_id": "decision-missing",
+                "outcome": "failed",
+            },
+        ],
+    )
+
+    assert len(session.statements) == 2
+    compiled = session.statements[1].compile(dialect=postgresql.dialect())
+    assert compiled.params["decision_id_m0"] == "decision-ok"
+    assert compiled.params["decision_id_m1"] is None
+    assert "coalesce(excluded.decision_id, trader_signal_consumption.decision_id)" in str(compiled).lower()
+
+
+@pytest.mark.asyncio
+async def test_flush_decision_checks_filters_missing_decision_ids():
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return ["decision-ok"]
+
+    class _Session:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, stmt):
+            self.statements.append(stmt)
+            return _Result()
+
+    session = _Session()
+
+    await trader_hot_state._flush_decision_checks_bulk(
+        session,
+        [
+            {"decision_id": "decision-ok", "checks": [{"key": "risk", "label": "Risk", "passed": True}]},
+            {"decision_id": "decision-missing", "checks": [{"key": "risk", "label": "Risk", "passed": False}]},
+        ],
+    )
+
+    assert len(session.statements) == 2
+    compiled = session.statements[1].compile(dialect=postgresql.dialect())
+    assert compiled.params["decision_id_m0"] == "decision-ok"
+    assert "decision_id_m1" not in compiled.params

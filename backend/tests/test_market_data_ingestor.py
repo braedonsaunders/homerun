@@ -342,3 +342,34 @@ def test_stats_after_mixed_traffic():
     assert stats["rejects_by_reason"]["price_out_of_bounds"] == 1
     assert stats["accept_rate"] == pytest.approx(2 / 3)
     assert stats["tokens_tracked"] == 3  # t1, t2, t3 all created state entries
+
+
+@pytest.mark.asyncio
+async def test_flush_batch_requeues_rows_after_commit_timeout(monkeypatch):
+    ing = _ingestor_with_queues()
+    row = object()
+    ing._snapshot_queue.put_nowait(row)
+
+    class _Session:
+        def add_all(self, rows):
+            self.rows = rows
+
+        async def commit(self):
+            raise TimeoutError("simulated commit timeout")
+
+        async def rollback(self):
+            return None
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("services.market_data_ingestor.AsyncSessionLocal", lambda: _SessionContext())
+
+    await ing._flush_batch(queue=ing._snapshot_queue, batch=10, kind="snapshot")
+
+    assert ing._snapshot_queue.qsize() == 1
+    assert ing._snapshot_queue.get_nowait() is row

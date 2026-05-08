@@ -132,6 +132,17 @@ const PROVIDERS: ProviderConfig[] = [
     isLocal: true,
     description: 'Local models via LM Studio',
   },
+  {
+    id: 'nvidia',
+    name: 'NVIDIA NIM',
+    icon: Sparkles,
+    keyField: 'nvidia_api_key',
+    keyPlaceholder: 'nvapi-...',
+    hasBaseUrl: true,
+    baseUrlField: 'nvidia_base_url',
+    baseUrlDefault: 'https://integrate.api.nvidia.com/v1',
+    description: 'Llama 3.x, Nemotron, Mixtral via build.nvidia.com',
+  },
 ]
 
 type TestStatus = { status: 'idle' | 'testing' | 'success' | 'error'; message?: string }
@@ -396,6 +407,7 @@ export default function AIProvidersView() {
     setBaseUrls({
       ollama_base_url: llm?.ollama_base_url || '',
       lmstudio_base_url: llm?.lmstudio_base_url || '',
+      nvidia_base_url: llm?.nvidia_base_url || '',
     })
     // Populate keys from server masked values (e.g. "sk-p***") so
     // the input shows that a key is configured. Only overwrite keys

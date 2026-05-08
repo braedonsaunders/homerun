@@ -26,6 +26,7 @@ import asyncio
 import os as _os
 import time as _time
 import warnings as _warnings
+import weakref
 from config import settings
 from models.types import PreciseFloat as Float
 
@@ -1222,6 +1223,27 @@ class ScannerSettings(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class MarketTagSeen(Base):
+    """Distinct tags observed on Polymarket / Kalshi markets and events.
+
+    Populated by ``services.market_tag_aggregator.record_tags_from_markets``
+    on every ingest cycle, before any filter is applied. Feeds the
+    operator-facing tag chooser in ``Settings → Scanner → Market Tag
+    Filter``. Old rows are purged by ``prune_stale_tags`` once a day.
+    """
+
+    __tablename__ = "market_tags_seen"
+
+    tag = Column(String, primary_key=True)
+    first_seen = Column(DateTime, nullable=False, default=_utcnow)
+    last_seen = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    occurrences = Column(BigInteger, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("idx_market_tags_seen_last_seen", "last_seen"),
+    )
+
+
 # ==================== APP SETTINGS ====================
 
 
@@ -1263,6 +1285,8 @@ class AppSettings(Base):
     ollama_base_url = Column(String, nullable=True)
     lmstudio_api_key = Column(String, nullable=True)
     lmstudio_base_url = Column(String, nullable=True)
+    nvidia_api_key = Column(String, nullable=True)
+    nvidia_base_url = Column(String, nullable=True)
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
@@ -1318,6 +1342,14 @@ class AppSettings(Base):
     scanner_max_opportunities_per_strategy = Column(Integer, default=120)
     scanner_skipped_signal_reactivation_cooldown_seconds = Column(Integer, default=180)
     scanner_strict_ws_max_age_ms = Column(Integer, default=30000)
+
+    # Market Tag Filter (whitelist applied at Polymarket/Kalshi ingest before
+    # the catalog is written). Empty / null list = filter inactive (no markets
+    # dropped on tag). Stored already-normalised: lowercased, trimmed, deduped.
+    # ``market_filter_updated_at`` is the audit timestamp of the last operator
+    # write — surfaced in the API payload so the UI can render "last changed".
+    market_filter_tags = Column(JSON, nullable=True)
+    market_filter_updated_at = Column(DateTime, nullable=True)
 
     # Discovery Engine Settings
     discovery_max_discovered_wallets = Column(Integer, default=20_000)
@@ -4786,6 +4818,18 @@ def _on_checkout(dbapi_connection, connection_record, connection_proxy):
     connection_record.info["checkout_time"] = _time.monotonic()
     connection_record.info["checkout_task_name"] = task_name
     connection_record.info["checkout_task_coro"] = coro_name
+    # Weakref to the owning task so the reaper can cancel it (not just
+    # invalidate the underlying connection) when checkout exceeds the
+    # hard limit. Without this, the reaper closes the socket and moves
+    # on, but the owning task is still scheduled — it will surface a
+    # confusing InterfaceError on its next await of the (now-dead)
+    # connection. Cancelling the task surfaces the error at its real
+    # source. weakref so we don't pin the task in memory.
+    try:
+        task = asyncio.current_task()
+        connection_record.info["checkout_task_ref"] = weakref.ref(task) if task is not None else None
+    except RuntimeError:
+        connection_record.info["checkout_task_ref"] = None
     try:
         cursor = dbapi_connection.cursor()
         try:
@@ -5198,6 +5242,34 @@ async def _reap_stale_checkouts() -> None:
                 reaped += 1
         except Exception as e:
             _db_logger.warning("REAPER: Failed to invalidate connection: %s", e)
+
+        # Cancel the owning task as well — without this, the task is
+        # still scheduled and surfaces a confusing InterfaceError on
+        # its next await of the (now-dead) connection. Cancelling
+        # propagates an asyncio.CancelledError at the actual await
+        # point, which the task's structured try/finally can handle
+        # cleanly. weakref so a GC'd task doesn't pin memory.
+        task_ref = info.get("checkout_task_ref")
+        owning_task = None
+        if callable(task_ref):
+            try:
+                owning_task = task_ref()
+            except Exception:
+                owning_task = None
+        if owning_task is not None and not owning_task.done():
+            try:
+                owning_task.cancel()
+                _db_logger.warning(
+                    "REAPER: Cancelled owning task=%s coro=%s after invalidating its connection",
+                    task_name,
+                    coro_name,
+                )
+            except Exception as cancel_exc:
+                _db_logger.warning(
+                    "REAPER: Failed to cancel owning task=%s: %s",
+                    task_name,
+                    cancel_exc,
+                )
 
     return reaped
 

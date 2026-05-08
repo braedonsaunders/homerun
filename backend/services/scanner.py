@@ -102,6 +102,14 @@ class ArbitrageScanner:
         # Live scanning activity line (streamed to frontend via WebSocket)
         self._current_activity: str = "Idle"
 
+        # Operator-managed tag whitelist for ingest filtering. Empty
+        # frozenset = no filter active. Refreshed from
+        # ``AppSettings.market_filter_tags`` once per ingest cycle by
+        # ``_load_market_filter_tags``; the cached value is consumed by
+        # the cached-merged-scan and incremental-fetch paths that run
+        # without re-touching the DB.
+        self._cached_market_filter_tags: frozenset[str] = frozenset()
+
         # Track the running AI scoring task so we can cancel it on pause
         self._ai_scoring_task: Optional[asyncio.Task] = None
 
@@ -1005,6 +1013,130 @@ class ArbitrageScanner:
                 len(kept_markets),
                 len(kept_events),
             )
+        return kept_events, kept_markets
+
+    @staticmethod
+    async def _load_market_filter_tags() -> frozenset[str]:
+        """Read the operator's tag whitelist from ``AppSettings``.
+
+        Returns a frozenset of normalised tag strings (lowercased,
+        trimmed). Empty result = no filter active. Fails open: if the
+        DB read raises, the funnel keeps every market (we never want
+        a transient DB hiccup to silently empty the trading universe).
+        """
+        try:
+            from models.database import AppSettings
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(AppSettings).where(AppSettings.id == "default")
+                )
+                row = result.scalar_one_or_none()
+            if row is None:
+                return frozenset()
+            raw = getattr(row, "market_filter_tags", None) or []
+            if not isinstance(raw, list):
+                return frozenset()
+            normalised: set[str] = set()
+            for item in raw:
+                if not isinstance(item, str):
+                    continue
+                trimmed = item.strip().lower()
+                if trimmed:
+                    normalised.add(trimmed)
+            return frozenset(normalised)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load market_filter_tags from app_settings; "
+                "treating filter as inactive (fail-open)",
+                exc_info=exc,
+            )
+            return frozenset()
+
+    @staticmethod
+    def _apply_market_tag_whitelist(
+        events: list,
+        markets: list,
+        whitelist: frozenset[str],
+    ) -> tuple[list, list]:
+        """Drop markets whose ``(market.tags ∪ event.tags)`` intersection
+        with ``whitelist`` is empty. OR-logic — a single matching tag is
+        enough to keep the market.
+
+        ``whitelist`` empty/None → no-op (returns inputs unchanged).
+        Events without surviving children are themselves dropped.
+
+        Tag matching is case-insensitive: both whitelist and per-row tags
+        are normalised to lowercase before intersecting. Diagnostics log
+        the pre/post counts and a `market_filter_tags_no_match` reason
+        whenever any markets are dropped, mirroring
+        ``_filter_tradable_markets``.
+
+        When the whitelist is non-empty and the post-filter market count
+        is zero, we emit a WARNING-level log so the operator gets a
+        signal that the whitelist is misconfigured for the current
+        upstream tag distribution.
+        """
+        if not whitelist:
+            return events, markets
+
+        event_tags_by_slug: dict[str, set[str]] = {}
+        for event in events:
+            slug = str(getattr(event, "slug", "") or "").strip()
+            if not slug:
+                continue
+            tags = {
+                str(t).strip().lower()
+                for t in list(getattr(event, "tags", None) or [])
+                if isinstance(t, str) and str(t).strip()
+            }
+            event_tags_by_slug[slug] = tags
+
+        def _market_tags(market: object) -> set[str]:
+            tags: set[str] = set()
+            for raw in list(getattr(market, "tags", None) or []):
+                if isinstance(raw, str):
+                    cleaned = raw.strip().lower()
+                    if cleaned:
+                        tags.add(cleaned)
+            event_slug = str(getattr(market, "event_slug", "") or "").strip()
+            if event_slug:
+                tags |= event_tags_by_slug.get(event_slug, set())
+            return tags
+
+        pre_count = len(markets)
+        kept_markets = [m for m in markets if _market_tags(m) & whitelist]
+        kept_market_ids = {
+            str(getattr(m, "id", "") or "") for m in kept_markets if getattr(m, "id", None)
+        }
+        kept_events: list = []
+        for event in events:
+            event_kept = [
+                m
+                for m in list(getattr(event, "markets", None) or [])
+                if str(getattr(m, "id", "") or "") in kept_market_ids
+            ]
+            if event_kept:
+                event.markets = event_kept
+                kept_events.append(event)
+
+        if pre_count != len(kept_markets):
+            logger.info(
+                "Catalog tag-whitelist filter: %d → %d markets "
+                "(%d events kept; whitelist=%s; reason=market_filter_tags_no_match)",
+                pre_count,
+                len(kept_markets),
+                len(kept_events),
+                sorted(whitelist),
+            )
+            if pre_count > 0 and not kept_markets:
+                logger.warning(
+                    "market_filter_tags whitelist matched zero markets out of %d. "
+                    "The whitelist may be stale or the upstream tag taxonomy may "
+                    "have shifted. Whitelist=%s",
+                    pre_count,
+                    sorted(whitelist),
+                )
         return kept_events, kept_markets
 
     @staticmethod
@@ -2855,10 +2987,32 @@ class ArbitrageScanner:
                 except Exception as e:
                     logger.info(f"  Kalshi fetch failed (non-fatal): {e}")
 
-            # Phase 2b — prune closed/resolved/expired, hard-gate tradability,
+            # Phase 2b — prune closed/resolved/expired, record raw tags,
+            # apply the operator's tag whitelist, hard-gate tradability,
             # then enforce caps.  Tradable-only is the dominant heap-saver
             # (cuts 250K → ~14K active universe); see ``MARKET_UNIVERSE_TRADABLE_ONLY``.
             events, markets = self._prune_active_catalog(events, markets, now)
+            # Record every distinct tag observed on the *raw* stream before
+            # the tradability filter prunes markets that would otherwise
+            # be invisible to the operator's tag chooser. Failure here is
+            # non-fatal and must never block ingest.
+            try:
+                from services.market_tag_aggregator import record_tags_from_markets
+
+                async with AsyncSessionLocal() as session:
+                    await record_tags_from_markets(session, events, markets)
+            except Exception as exc:
+                logger.warning(
+                    "market_tag_aggregator ingest hook failed (non-fatal)",
+                    exc_info=exc,
+                )
+            # Refresh the cached tag whitelist from AppSettings so the
+            # cached-merged-scan and incremental-fetch paths see the
+            # latest operator selection without an extra DB hit.
+            self._cached_market_filter_tags = await self._load_market_filter_tags()
+            events, markets = self._apply_market_tag_whitelist(
+                events, markets, self._cached_market_filter_tags
+            )
             events, markets = self._filter_tradable_markets(events, markets)
             events, markets = self._enforce_catalog_caps(events, markets)
             dedup_msg = f" (+{extra_from_events} from events)" if extra_from_events else ""
@@ -3182,6 +3336,9 @@ class ArbitrageScanner:
         merged_events = list(event_map.values())
         def _prune_and_cap(scanner, evts, mkts, ts):
             evts, mkts = scanner._prune_active_catalog(evts, mkts, ts)
+            evts, mkts = scanner._apply_market_tag_whitelist(
+                evts, mkts, scanner._cached_market_filter_tags
+            )
             evts, mkts = scanner._filter_tradable_markets(evts, mkts)
             evts, mkts = scanner._enforce_catalog_caps(evts, mkts)
             return evts, mkts
@@ -3300,8 +3457,16 @@ class ArbitrageScanner:
 
         now = datetime.now(timezone.utc)
 
+        # Refresh the cached tag whitelist before the executor sync —
+        # the cached value is then read by ``_hydrate_sync`` without
+        # re-touching the DB from a worker thread.
+        self._cached_market_filter_tags = await self._load_market_filter_tags()
+
         def _hydrate_sync(scanner, evts, mkts, ts):
             evts, mkts = scanner._prune_active_catalog(evts, mkts, ts)
+            evts, mkts = scanner._apply_market_tag_whitelist(
+                evts, mkts, scanner._cached_market_filter_tags
+            )
             evts, mkts = scanner._filter_tradable_markets(evts, mkts)
             evts, mkts = scanner._enforce_catalog_caps(evts, mkts)
             scanner._cached_events = evts
@@ -3381,6 +3546,11 @@ class ArbitrageScanner:
                             scanner._cached_events,
                             scanner._cached_markets,
                             ts,
+                        )
+                        scanner._cached_events, scanner._cached_markets = scanner._apply_market_tag_whitelist(
+                            scanner._cached_events,
+                            scanner._cached_markets,
+                            scanner._cached_market_filter_tags,
                         )
                         scanner._cached_events, scanner._cached_markets = scanner._filter_tradable_markets(
                             scanner._cached_events,
