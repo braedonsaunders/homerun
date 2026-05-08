@@ -102,7 +102,7 @@ class LLMSettings(BaseModel):
 
     provider: str = Field(
         default="none",
-        description="LLM provider: none, openai, anthropic, google, xai, deepseek, openrouter, ollama, lmstudio",
+        description="LLM provider: none, openai, anthropic, google, xai, deepseek, openrouter, ollama, lmstudio, nvidia",
     )
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
@@ -120,6 +120,11 @@ class LLMSettings(BaseModel):
     lmstudio_api_key: Optional[str] = Field(default=None, description="LM Studio API key (optional)")
     lmstudio_base_url: Optional[str] = Field(
         default=None, description="LM Studio base URL (default: http://localhost:1234/v1)"
+    )
+    nvidia_api_key: Optional[str] = Field(default=None, description="NVIDIA NIM API key (nvapi-...)")
+    nvidia_base_url: Optional[str] = Field(
+        default=None,
+        description="NVIDIA NIM base URL (default: https://integrate.api.nvidia.com/v1)",
     )
     model: Optional[str] = Field(default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)")
     max_monthly_spend: Optional[float] = Field(default=None, ge=0, description="Monthly LLM cost cap in USD")
@@ -886,7 +891,7 @@ SETTINGS_TRANSFER_CATEGORY_ORDER: tuple[str, ...] = (
 )
 
 _ALLOWED_DATA_SOURCE_KINDS = {"python", "rss", "rest_api", "twitter"}
-_ALLOWED_LLM_PROVIDERS = {"none", "openai", "anthropic", "google", "xai", "deepseek", "openrouter", "ollama", "lmstudio"}
+_ALLOWED_LLM_PROVIDERS = {"none", "openai", "anthropic", "google", "xai", "deepseek", "openrouter", "ollama", "lmstudio", "nvidia"}
 
 
 class SettingsExportRequest(BaseModel):
@@ -1401,6 +1406,8 @@ async def _export_transfer_bundle(categories: list[str]) -> tuple[dict[str, Any]
                 "ollama_base_url": _coerce_string(settings_row.ollama_base_url),
                 "lmstudio_api_key": decrypt_secret(settings_row.lmstudio_api_key),
                 "lmstudio_base_url": _coerce_string(settings_row.lmstudio_base_url),
+                "nvidia_api_key": decrypt_secret(settings_row.nvidia_api_key),
+                "nvidia_base_url": _coerce_string(settings_row.nvidia_base_url),
             }
             bundle[SettingsTransferCategory.LLM_CONFIGURATION.value] = llm_configuration
             counts[SettingsTransferCategory.LLM_CONFIGURATION.value] = 1
@@ -1486,6 +1493,7 @@ def _apply_llm_configuration_import(settings_row: AppSettings, payload: dict[str
     settings_row.openrouter_base_url = _coerce_string(payload.get("openrouter_base_url"))
     settings_row.ollama_base_url = _coerce_string(payload.get("ollama_base_url"))
     settings_row.lmstudio_base_url = _coerce_string(payload.get("lmstudio_base_url"))
+    settings_row.nvidia_base_url = _coerce_string(payload.get("nvidia_base_url"))
 
     set_encrypted_secret(settings_row, "openai_api_key", _coerce_string(payload.get("openai_api_key")))
     set_encrypted_secret(settings_row, "anthropic_api_key", _coerce_string(payload.get("anthropic_api_key")))
@@ -1495,6 +1503,7 @@ def _apply_llm_configuration_import(settings_row: AppSettings, payload: dict[str
     set_encrypted_secret(settings_row, "openrouter_api_key", _coerce_string(payload.get("openrouter_api_key")))
     set_encrypted_secret(settings_row, "ollama_api_key", _coerce_string(payload.get("ollama_api_key")))
     set_encrypted_secret(settings_row, "lmstudio_api_key", _coerce_string(payload.get("lmstudio_api_key")))
+    set_encrypted_secret(settings_row, "nvidia_api_key", _coerce_string(payload.get("nvidia_api_key")))
 
 
 def _apply_telegram_configuration_import(settings_row: AppSettings, payload: dict[str, Any]) -> None:
@@ -3163,7 +3172,7 @@ async def test_llm_connection(provider: Optional[str] = None):
         manager_provider = provider_name or None
         if provider_name in {"", "none"}:
             manager_provider = None
-        elif provider_name not in {"openai", "anthropic", "google", "xai", "deepseek", "openrouter", "ollama", "lmstudio"}:
+        elif provider_name not in {"openai", "anthropic", "google", "xai", "deepseek", "openrouter", "ollama", "lmstudio", "nvidia"}:
             return {
                 "status": "error",
                 "message": f"Unsupported LLM provider '{provider_name}'.",

@@ -1284,6 +1284,8 @@ class AppSettings(Base):
     ollama_base_url = Column(String, nullable=True)
     lmstudio_api_key = Column(String, nullable=True)
     lmstudio_base_url = Column(String, nullable=True)
+    nvidia_api_key = Column(String, nullable=True)
+    nvidia_base_url = Column(String, nullable=True)
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features

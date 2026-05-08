@@ -37,6 +37,8 @@ export interface LLMSettings {
   lmstudio_base_url: string | null
   openrouter_api_key: string | null
   openrouter_base_url: string | null
+  nvidia_api_key: string | null
+  nvidia_base_url: string | null
   model: string | null
   max_monthly_spend: number | null
   model_assignments: Record<string, string>
