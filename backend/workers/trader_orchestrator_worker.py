@@ -920,6 +920,25 @@ _WS_FAILURE_PAUSE_THRESHOLD = 10
 _ws_auto_paused = False
 _LATENCY_SLA_STAGE_KEY = "ws_release_to_submit_start_ms"
 _LATENCY_SLA_BREACH_LOG_COOLDOWN_SECONDS = 60.0
+# Sub-stages that together make up ws_release_to_submit_start_ms. Surfaced
+# in the SLA breach log so the warning tells us WHERE inside the span the
+# time burned (queue wake, live-context build, strategy/risk eval, or the
+# decision->submit DB commit block) rather than just the overall p95.
+_LATENCY_SLA_SUBSTAGE_KEYS: tuple[str, ...] = (
+    "emit_to_queue_wake_ms",
+    "wake_to_context_ready_ms",
+    "context_ready_to_decision_ms",
+    "ws_release_to_decision_ms",
+    "decision_to_submit_start_ms",
+    "submit_round_trip_ms",
+)
+# Per-sample warning threshold: any individual latency sample whose
+# ws_release_to_submit_start_ms exceeds this fires a structured warning
+# with the sub-stage breakdown for that specific signal. Throttled per
+# trader so a single slow trader can't flood the soak log.
+_LATENCY_SLA_PER_SAMPLE_WARN_MS = 5000
+_LATENCY_SLA_PER_SAMPLE_WARN_COOLDOWN_SECONDS = 30.0
+_latency_per_sample_warn_logged_at: dict[str, datetime] = {}
 _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
 _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
 _LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
@@ -3775,6 +3794,62 @@ def _worst_latency_group(groups: dict[str, Any], *, stage_key: str) -> tuple[str
     return worst_label, worst_p95
 
 
+def _maybe_log_per_sample_latency_breach(
+    *,
+    trader_id: str,
+    source: str,
+    strategy_key: str,
+    signal_id: Any,
+    sample: dict[str, Any],
+) -> None:
+    """Emit a warning-level log for any single hot-path sample whose
+    ``ws_release_to_submit_start_ms`` exceeds the per-sample threshold,
+    with the full sub-stage breakdown so the soak log immediately reveals
+    which stage burned the budget on THIS specific signal.
+
+    Throttled per-trader so one chronically slow trader cannot flood the
+    log; the SLA aggregate log still shows the full percentile picture.
+    """
+    total_ms = safe_int(sample.get(_LATENCY_SLA_STAGE_KEY), None)
+    if total_ms is None or total_ms < _LATENCY_SLA_PER_SAMPLE_WARN_MS:
+        return
+
+    trader_key = str(trader_id or "").strip() or "unknown"
+    now = utcnow()
+    last_logged_at = _latency_per_sample_warn_logged_at.get(trader_key)
+    if (
+        last_logged_at is not None
+        and (now - last_logged_at).total_seconds() < _LATENCY_SLA_PER_SAMPLE_WARN_COOLDOWN_SECONDS
+    ):
+        return
+    _latency_per_sample_warn_logged_at[trader_key] = now
+
+    logger.warning(
+        "Execution latency per-sample breach",
+        trader_id=trader_key,
+        source=str(source or "unknown"),
+        strategy_key=str(strategy_key or "unknown"),
+        signal_id=str(signal_id or "unknown"),
+        stage_key=_LATENCY_SLA_STAGE_KEY,
+        threshold_ms=_LATENCY_SLA_PER_SAMPLE_WARN_MS,
+        total_ms=total_ms,
+        armed_to_ws_release_ms=safe_int(sample.get("armed_to_ws_release_ms"), None),
+        emit_to_queue_wake_ms=safe_int(sample.get("emit_to_queue_wake_ms"), None),
+        wake_to_context_ready_ms=safe_int(sample.get("wake_to_context_ready_ms"), None),
+        context_ready_to_decision_ms=safe_int(sample.get("context_ready_to_decision_ms"), None),
+        ws_release_to_decision_ms=safe_int(sample.get("ws_release_to_decision_ms"), None),
+        decision_to_submit_start_ms=safe_int(sample.get("decision_to_submit_start_ms"), None),
+        # Decision->submit-start internal spans (populated alongside the
+        # outer stages when the submit path attaches the commit-block
+        # sub-timings). Reveals whether the budget burned in the pre-commit
+        # DB writes, the COMMIT itself, or the post-commit bookkeeping.
+        decision_ready_to_commit_start_ms=safe_int(sample.get("decision_ready_to_commit_start_ms"), None),
+        commit_wait_ms=safe_int(sample.get("commit_wait_ms"), None),
+        commit_done_to_submit_start_ms=safe_int(sample.get("commit_done_to_submit_start_ms"), None),
+        submit_round_trip_ms=safe_int(sample.get("submit_round_trip_ms"), None),
+    )
+
+
 def _maybe_log_execution_latency_sla_breach(*, lane: str, metrics: dict[str, Any]) -> None:
     lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
     execution_latency = metrics.get("execution_latency")
@@ -3816,6 +3891,22 @@ def _maybe_log_execution_latency_sla_breach(*, lane: str, metrics: dict[str, Any
         execution_latency.get("by_trader") or {},
         stage_key=_LATENCY_SLA_STAGE_KEY,
     )
+    # Sub-stage breakdown so the warning reveals WHERE in the span the
+    # time is going. Overall p95 across all traders, plus the worst
+    # trader's per-stage p95 so a single misbehaving trader surfaces its
+    # specific bottleneck (queue wake vs. live-context vs. DB commit).
+    substage_overall_p95 = {
+        key: _latency_stage_percentile(overall, stage_key=key, percentile_key="p95")
+        for key in _LATENCY_SLA_SUBSTAGE_KEYS
+    }
+    worst_trader_substage_p95: dict[str, int | None] = {}
+    if worst_trader:
+        worst_trader_summary = (execution_latency.get("by_trader") or {}).get(worst_trader)
+        if isinstance(worst_trader_summary, dict):
+            worst_trader_substage_p95 = {
+                key: _latency_stage_percentile(worst_trader_summary, stage_key=key, percentile_key="p95")
+                for key in _LATENCY_SLA_SUBSTAGE_KEYS
+            }
     logger.warning(
         "Execution latency SLA breached",
         lane=lane_key,
@@ -3829,6 +3920,8 @@ def _maybe_log_execution_latency_sla_breach(*, lane: str, metrics: dict[str, Any
         worst_strategy_p95=worst_strategy_p95,
         worst_trader=worst_trader,
         worst_trader_p95=worst_trader_p95,
+        substage_overall_p95=substage_overall_p95,
+        worst_trader_substage_p95=worst_trader_substage_p95,
     )
 
 
@@ -6945,6 +7038,12 @@ async def _run_trader_once_inner(
                             execution_plan_override_applied = True
 
                     decision_ready_at = utcnow()
+                    # Monotonic marker used to slice decision_to_submit_start_ms
+                    # into three sub-spans: decision-ready -> commit-start
+                    # (pre-commit DB writes), commit-wait (the actual
+                    # _commit_with_retry duration), and commit-done ->
+                    # submit-start (session.reset + cursor bookkeeping).
+                    _decision_ready_mono = time.monotonic()
                     decision_latency_payload = _compute_signal_latency_payload(
                         runtime_signal,
                         live_context=live_context,
@@ -7130,12 +7229,26 @@ async def _run_trader_once_inner(
                             cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
                         _commit_mono = time.monotonic()
                         await _commit_with_retry(session)
+                        _commit_done_mono = time.monotonic()
                         _accumulate("ps_db_commit", _commit_mono)
                         try:
                             await session.reset()
                         except Exception:
                             pass
                         submit_started_at = utcnow()
+                        _submit_start_mono = time.monotonic()
+                        # Slice decision_to_submit_start_ms into its three
+                        # internal spans so the per-sample breach log can
+                        # pinpoint which burned the budget.
+                        _decision_to_commit_start_ms = max(
+                            0, int((_commit_mono - _decision_ready_mono) * 1000.0)
+                        )
+                        _commit_wait_ms = max(
+                            0, int((_commit_done_mono - _commit_mono) * 1000.0)
+                        )
+                        _commit_done_to_submit_start_ms = max(
+                            0, int((_submit_start_mono - _commit_done_mono) * 1000.0)
+                        )
                         _enter_stage("submit_order")
                         _submit_mono = time.monotonic()
                         submit_result = await submit_order(
@@ -7216,11 +7329,32 @@ async def _run_trader_once_inner(
                             submit_started_at=submit_started_at,
                             submit_completed_at=submit_completed_at,
                         )
+                        # Attach the decision->submit-start internal sub-spans
+                        # (pre-commit DB writes, commit wait, session reset +
+                        # cursor bookkeeping). These are NOT aggregated in
+                        # execution_latency_metrics._STAGE_KEYS but travel
+                        # with the sample so the per-sample breach warning
+                        # can log them alongside the outer stages.
+                        latency_sample["decision_ready_to_commit_start_ms"] = _decision_to_commit_start_ms
+                        latency_sample["commit_wait_ms"] = _commit_wait_ms
+                        latency_sample["commit_done_to_submit_start_ms"] = _commit_done_to_submit_start_ms
                         await execution_latency_metrics.record(
                             trader_id=trader_id,
                             source=signal_source,
                             strategy_key=resolved_strategy_key,
                             payload=latency_sample,
+                        )
+                        # Surface per-sample SLA breaches with the full
+                        # sub-stage breakdown so the soak log pinpoints
+                        # which stage (queue wake, live-context build,
+                        # strategy/risk eval, DB commit block, or the
+                        # CLOB submit round-trip) spent the budget.
+                        _maybe_log_per_sample_latency_breach(
+                            trader_id=trader_id,
+                            source=signal_source,
+                            strategy_key=resolved_strategy_key,
+                            signal_id=signal_id,
+                            sample=latency_sample,
                         )
                         submit_latency_payload.update(
                             {
