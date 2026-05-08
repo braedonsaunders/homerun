@@ -1370,6 +1370,7 @@ class ExecutionSessionEngine:
                         signal=signal,
                         legs_with_notionals=legs_with_notionals,
                         strategy_params=strategy_params,
+                        risk_limits=risk_limits,
                     )
             except asyncio.CancelledError:
                 await asyncio.shield(

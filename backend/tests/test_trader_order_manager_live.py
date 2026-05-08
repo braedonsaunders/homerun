@@ -543,3 +543,40 @@ async def test_submit_execution_wave_fails_fast_when_leg_submission_hangs(monkey
     assert len(results) == 1
     assert results[0].status == "failed"
     assert results[0].error_message == "Order submission timed out."
+
+
+def test_allow_taker_limit_buy_above_signal_strategy_params_take_priority_over_risk_limits():
+    """Strategy_params explicit setting wins over risk_limits."""
+    assert order_manager._allow_taker_limit_buy_above_signal(
+        {"allow_taker_limit_buy_above_signal": False},
+        {"allow_taker_limit_buy_above_signal": True},
+    ) is False
+    assert order_manager._allow_taker_limit_buy_above_signal(
+        {"allow_taker_limit_buy_above_signal": True},
+        {"allow_taker_limit_buy_above_signal": False},
+    ) is True
+
+
+def test_allow_taker_limit_buy_above_signal_falls_back_to_risk_limits_when_unset():
+    """When strategy_params has no policy key, risk_limits.allow_taker_limit_buy_above_signal wins."""
+    assert order_manager._allow_taker_limit_buy_above_signal(
+        {},
+        {"allow_taker_limit_buy_above_signal": True},
+    ) is True
+    assert order_manager._allow_taker_limit_buy_above_signal(
+        None,
+        {"allow_taker_limit_buy_above_signal": True},
+    ) is True
+
+
+def test_allow_taker_limit_buy_above_signal_defaults_to_false_when_neither_set():
+    assert order_manager._allow_taker_limit_buy_above_signal({}, {}) is False
+    assert order_manager._allow_taker_limit_buy_above_signal(None, None) is False
+
+
+def test_aggressive_limit_buy_submit_as_gtc_falls_back_to_risk_limits_when_unset():
+    assert order_manager._aggressive_limit_buy_submit_as_gtc(
+        {},
+        {"aggressive_limit_buy_submit_as_gtc": True},
+    ) is True
+    assert order_manager._aggressive_limit_buy_submit_as_gtc({}, {}) is False

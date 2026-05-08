@@ -248,6 +248,7 @@ async def execute_fast_signal(
     mode: str,
     size_usd: float,
     reason: str | None,
+    risk_limits: dict[str, Any] | None = None,
 ) -> FastSubmitResult:
     """Fast-tier single-leg direct submit.
 
@@ -564,6 +565,7 @@ async def execute_fast_signal(
                     leg=leg,
                     notional_usd=notional,
                     strategy_params=strategy_params,
+                    risk_limits=risk_limits,
                 ),
                 timeout=_FAST_LEG_SUBMIT_TIMEOUT_SECONDS,
             )

@@ -1490,3 +1490,84 @@ def test_generic_risk_block_reason_includes_failed_risk_detail():
     assert result["final_reason"].startswith("Risk blocked: trader_open_positions")
     assert "next=2 max=1" in result["final_reason"]
 
+
+def test_resolve_market_data_age_budget_falls_back_to_risk_limits_when_strategy_param_missing():
+    """When strategy_params has no max_market_data_age_ms, risk_limits.max_market_data_age_ms wins
+    over env-default EXECUTION_MARKET_DATA_MAX_AGE_MS.
+    """
+    budget = decision_gates_module._resolve_market_data_age_budget_ms(
+        strategy_params={},
+        timeframe="",
+        risk_limits={"max_market_data_age_ms": 25000},
+    )
+    assert budget == 25000
+
+
+def test_resolve_market_data_age_budget_strategy_params_take_priority_over_risk_limits():
+    """strategy_params.max_market_data_age_ms wins over risk_limits when both present."""
+    budget = decision_gates_module._resolve_market_data_age_budget_ms(
+        strategy_params={"max_market_data_age_ms": 5000},
+        timeframe="",
+        risk_limits={"max_market_data_age_ms": 25000},
+    )
+    assert budget == 5000
+
+
+def test_resolve_market_data_age_budget_falls_back_to_env_default_when_neither_set():
+    env_default = max(50, int(getattr(settings, "EXECUTION_MARKET_DATA_MAX_AGE_MS", 1200)))
+    budget = decision_gates_module._resolve_market_data_age_budget_ms(
+        strategy_params={},
+        timeframe="",
+        risk_limits={"max_market_data_age_ms": None},
+    )
+    assert budget == env_default
+
+
+def test_market_data_freshness_uses_risk_limits_fallback_for_staleness_budget():
+    """Verifies the gate plumbs effective_risk_limits → _resolve_market_data_age_budget_ms.
+
+    With risk_limits.max_market_data_age_ms=20000 and a 15000ms-old quote, the gate
+    must pass even though strategy_params has no override and the env default is much smaller.
+    """
+    runtime_signal = SimpleNamespace(
+        id="signal-fresh-via-risk-limits",
+        market_id="market-1",
+        direction="buy_yes",
+        source="scanner",
+        payload_json={
+            "source_observed_at": "2026-02-28T00:00:00Z",
+            "strategy_context": {"source": "scanner"},
+            "live_market": {
+                "market_data_source": "ws_strict",
+                "market_data_age_ms": 15000,
+                "ws_subscription_current": False,
+            },
+        },
+    )
+    result = apply_platform_decision_gates(
+        decision_obj=_decision(25.0),
+        runtime_signal=runtime_signal,
+        strategy=None,
+        checks_payload=[],
+        trading_schedule_ok=True,
+        trading_schedule_config={},
+        global_limits={"max_gross_exposure_usd": 5000.0},
+        effective_risk_limits={
+            "max_trade_notional_usd": 1000.0,
+            "max_market_data_age_ms": 20000,
+        },
+        allow_averaging=True,
+        occupied_market_ids=set(),
+        pending_live_exit_count=0,
+        pending_live_exit_summary={"count": 0, "order_ids": [], "market_ids": [], "statuses": {}},
+        portfolio_allocator=None,
+        risk_evaluator=_risk_evaluator,
+        invoke_hooks=False,
+        strategy_params={"require_live_market_revalidation": False},
+    )
+
+    assert result["final_decision"] == "selected"
+    freshness_gate = next(gate for gate in result["platform_gates"] if gate["gate"] == "market_data_freshness")
+    assert freshness_gate["status"] == "passed"
+    assert freshness_gate["payload"]["max_age_ms"] == 20000
+

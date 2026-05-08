@@ -1258,6 +1258,7 @@ class _FastTraderTask:
                     mode=mode,
                     size_usd=evaluated_size,
                     reason=reason or None,
+                    risk_limits=dict(self._trader.get("risk_limits") or {}),
                 )
                 submit_duration_seconds = time.monotonic() - submit_started_at
                 self._accumulate_stage_ms("submit", submit_started_at)
